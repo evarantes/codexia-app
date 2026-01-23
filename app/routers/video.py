@@ -1,0 +1,63 @@
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from typing import List
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.models import Book, Post
+from app.services.video_generator import VideoGenerator
+from app.services.ai_generator import AIContentGenerator
+import uuid
+
+router = APIRouter(prefix="/video", tags=["Video"])
+video_gen = VideoGenerator()
+
+class VideoRequest(BaseModel):
+    title: str
+    script: List[str]
+
+class AutoVideoRequest(BaseModel):
+    book_id: int
+    style: str = "drama"
+
+@router.post("/generate")
+def generate_video(request: VideoRequest):
+    try:
+        filename = f"{uuid.uuid4()}.mp4"
+        video_url = video_gen.generate_simple_video(request.title, request.script, filename)
+        return {"video_url": video_url}
+    except Exception as e:
+        print(f"Erro ao gerar vídeo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/generate-auto")
+def generate_auto_video(request: AutoVideoRequest, db: Session = Depends(get_db)):
+    try:
+        book = db.query(Book).filter(Book.id == request.book_id).first()
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+        
+        # 1. Gerar Roteiro com IA
+        ai_service = AIContentGenerator()
+        script_plan = ai_service.generate_video_script(book.title, book.synopsis, request.style)
+        
+        # 2. Gerar Vídeo
+        # Instancia VideoGenerator passando ai_service para gerar imagens
+        video_gen = VideoGenerator(ai_service=ai_service)
+        
+        # Resolve caminho da capa se existir
+        cover_path = None
+        if book.cover_image_url:
+            # Se for url relativa, converte para caminho absoluto
+            if book.cover_image_url.startswith("/static"):
+                cover_path = f"app{book.cover_image_url}"
+            else:
+                # Se for URL externa, precisaria baixar. Por enquanto assume local se começar com /static
+                # TODO: Implementar download de capa externa se necessário
+                pass
+
+        video_url = video_gen.create_video_from_plan(script_plan, cover_image_path=cover_path)
+        
+        return {"video_url": video_url, "script": script_plan}
+    except Exception as e:
+        print(f"Erro ao gerar vídeo automático: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
