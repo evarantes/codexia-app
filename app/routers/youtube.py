@@ -193,7 +193,16 @@ def process_scheduled_video(video_id: int):
         ratio = "9:16" if video.video_type == 'short' else "16:9"
         
         print(f"Renderizando video {video_id}...")
-        video_path = video_service.create_video_from_plan(final_script, aspect_ratio=ratio, progress_callback=progress_callback)
+        result = video_service.create_video_from_plan(final_script, aspect_ratio=ratio, progress_callback=progress_callback)
+        video_path = result["video_url"]
+        
+        # Adicionar créditos ao script_data se possível ou salvar na descrição do vídeo
+        if result.get("music_credit"):
+            credit = f"\n\n{result['music_credit']}"
+            if not video.description:
+                video.description = ""
+            if credit not in video.description:
+                video.description += credit
         
         video.status = "completed"
         video.video_url = video_path # path relativo /static/videos/...
@@ -259,7 +268,8 @@ def process_video_generation(request: VideoRequest, task_id):
             task_progress = 20 + int(progress * 0.7)
             update_task(task_id, progress=task_progress, message=message)
             
-        video_path = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback)
+        video_result = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback)
+        video_path = video_result["video_url"]
         
         # O path retornado é relativo para web (/static/...), precisamos do absoluto para upload
         abs_video_path = "c:/dev/TRAE/vibraface/app" + video_path 
@@ -269,10 +279,15 @@ def process_video_generation(request: VideoRequest, task_id):
         if request.auto_upload:
             update_task(task_id, progress=90, message="Iniciando upload para o YouTube...")
             print("Iniciando upload para YouTube...")
+            
+            description = script.get('description', 'Vídeo motivacional.')
+            if video_result.get("music_credit"):
+                description += f"\n\n{video_result['music_credit']}"
+            
             yt_service.upload_video(
                 abs_video_path,
                 title=script.get('title', f"Motivação: {topic}"),
-                description=script.get('description', 'Vídeo motivacional.'),
+                description=description,
                 tags=script.get('tags', ['motivação', 'sucesso'])
             )
             update_task(task_id, progress=100, status="completed", message="Vídeo gerado e publicado com sucesso!", result={"video_url": video_path})

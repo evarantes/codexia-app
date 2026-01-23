@@ -55,9 +55,9 @@ def generate_auto_video(request: AutoVideoRequest, db: Session = Depends(get_db)
                 # TODO: Implementar download de capa externa se necessário
                 pass
 
-        video_url = video_gen.create_video_from_plan(script_plan, cover_image_path=cover_path)
+        result = video_gen.create_video_from_plan(script_plan, cover_image_path=cover_path)
         
-        return {"video_url": video_url, "script": script_plan}
+        return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit")}
     except Exception as e:
         print(f"Erro ao gerar vídeo automático: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -14,6 +14,11 @@ class VideoGenerator:
         self.music_dir = "app/static/music"
         os.makedirs(self.music_dir, exist_ok=True)
         self.ai_service = ai_service
+        self.MUSIC_CREDITS = {
+            "drama": "Music: Impact Prelude by Kevin MacLeod\nFree download: https://filmmusic.io/song/3900-impact-prelude\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
+            "epic": "Music: Impact Andante by Kevin MacLeod\nFree download: https://filmmusic.io/song/3898-impact-andante\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
+            "happy": "Music: Carefree by Kevin MacLeod\nFree download: https://filmmusic.io/song/3476-carefree\nLicense (CC BY 4.0): https://filmmusic.io/standard-license"
+        }
         self._ensure_fallback_music()
 
     def _ensure_fallback_music(self):
@@ -23,9 +28,9 @@ class VideoGenerator:
             if not glob.glob(os.path.join(self.music_dir, "*.mp3")):
                 print("Baixando músicas de fallback...")
                 music_urls = {
-                    "drama.mp3": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kevin_MacLeod/Impact/Kevin_MacLeod_-_03_-_Impact_Prelude.mp3",
-                    "epic.mp3": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kevin_MacLeod/Impact/Kevin_MacLeod_-_04_-_Impact_Andante.mp3",
-                    "happy.mp3": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Scott_Holmes/Inspiring__Upbeat_Music/Scott_Holmes_-_04_-_Upbeat_Party.mp3"
+                    "drama.mp3": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Impact%20Prelude.mp3",
+                    "epic.mp3": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Impact%20Andante.mp3",
+                    "happy.mp3": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Carefree.mp3"
                 }
                 
                 for filename, url in music_urls.items():
@@ -333,22 +338,23 @@ class VideoGenerator:
                      print(f"Erro ao procurar fallback de música: {e}")
         
         if music_path and os.path.exists(music_path):
+            # Tentar identificar o crédito se for uma das músicas padrão
+            if not used_music_credit:
+                filename = os.path.basename(music_path).lower()
+                for key, credit in self.MUSIC_CREDITS.items():
+                    if key in filename:
+                        used_music_credit = credit
+                        break
+
             try:
                 bg_music = AudioFileClip(music_path)
                 
                 # Se a música for menor que o vídeo, precisaríamos fazer loop
                 if bg_music.duration < final_clip.duration:
-                    # Loopa a música
-                    # moviepy v1 usa afx.audio_loop(bg_music, duration=final_clip.duration)
-                    # moviepy v2 (se instalado) pode ser diferente
-                    # Vamos tentar uma abordagem manual de concatenação se necessário
-                    # Mas a maioria das músicas de exemplo são curtas.
-                    # Loop simples
                     num_loops = int(final_clip.duration / bg_music.duration) + 1
-                    bg_music = concatenate_videoclips([bg_music.set_duration(bg_music.duration)] * num_loops).audio
-                    bg_music = bg_music.set_duration(final_clip.duration)
-                else:
-                    bg_music = bg_music.with_duration(final_clip.duration)
+                    bg_music = concatenate_audioclips([bg_music] * num_loops)
+                
+                bg_music = bg_music.with_duration(final_clip.duration)
                 
                 # Volume baixo (10%)
                 bg_music = bg_music.with_volume_scaled(0.1)
@@ -376,7 +382,7 @@ class VideoGenerator:
         if progress_callback:
             progress_callback(100, "Vídeo renderizado com sucesso!")
         
-        return f"/static/videos/{filename}"
+        return {"video_url": f"/static/videos/{filename}", "music_credit": used_music_credit}
 
     def generate_simple_video(self, title, script_lines, output_filename="video.mp4"):
         # Mantendo compatibilidade com código antigo se necessário
@@ -384,4 +390,7 @@ class VideoGenerator:
             "title": title,
             "scenes": [{"text": line} for line in script_lines if line.strip()]
         }
-        return self.create_video_from_plan(plan)
+        result = self.create_video_from_plan(plan)
+        # Mantém compatibilidade retornando apenas URL se for o esperado por chamadas antigas diretas
+        # Mas vamos atualizar os chamadores para lidar com dict
+        return result["video_url"]

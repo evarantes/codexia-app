@@ -1,0 +1,27 @@
+# Ignore git and local config
+.git
+.gitignore
+.env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+vibraface.db
+temp_uploads/
+generated_books/
+app/static/generated/
+app/static/temp_uploads/
