@@ -4,8 +4,17 @@ __pycache__/
 .env
 *.db
 *.sqlite3
-app/static/videos/*.mp4
-app/static/covers/*.png
+# Ignore media files but keep the directories
+app/static/videos/*
+!app/static/videos/.gitkeep
+app/static/covers/*
+!app/static/covers/.gitkeep
+app/static/icons/*
+!app/static/icons/.gitkeep
+# Root level temporary files
+*.mp4
+*.mp3
+*.png
 .DS_Store
 .idea/
 .vscode/
