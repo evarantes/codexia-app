@@ -128,3 +128,27 @@ def payment_failure():
 @app.get("/pending")
 def payment_pending():
     return {"status": "Pagamento Pendente."}
+
+@app.get("/debug-reset-user")
+def debug_reset_user():
+    db = Session(bind=engine)
+    try:
+        user = db.query(User).filter(User.email == "evarantes2@gmail.com").first()
+        if user:
+            db.delete(user)
+            db.commit()
+        
+        hashed_password = get_password_hash("123456")
+        new_user = User(
+            email="evarantes2@gmail.com", 
+            hashed_password=hashed_password,
+            must_change_password=True
+        )
+        db.add(new_user)
+        db.commit()
+        return {"status": "User evarantes2@gmail.com reset to 123456"}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        db.close()
+
