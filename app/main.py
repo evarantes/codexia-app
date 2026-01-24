@@ -94,6 +94,18 @@ app = FastAPI(
 # Montar arquivos estáticos
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
+@app.get("/")
+async def read_root():
+    return FileResponse('app/static/index.html')
+
+@app.get("/login.html")
+async def read_login():
+    return FileResponse('app/static/login.html')
+
+@app.get("/reset-password.html")
+async def read_reset_password():
+    return FileResponse('app/static/reset-password.html')
+
 # Routers
 app.include_router(auth.router)
 app.include_router(books.router)
