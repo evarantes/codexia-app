@@ -19,7 +19,7 @@ class VideoGenerator:
             "epic": "Music: Impact Andante by Kevin MacLeod\nFree download: https://filmmusic.io/song/3898-impact-andante\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
             "happy": "Music: Carefree by Kevin MacLeod\nFree download: https://filmmusic.io/song/3476-carefree\nLicense (CC BY 4.0): https://filmmusic.io/standard-license"
         }
-        self._ensure_fallback_music()
+        # self._ensure_fallback_music() removido do init para evitar delay no startup
 
     def _ensure_fallback_music(self):
         """Baixa músicas de fallback se a pasta estiver vazia"""
@@ -321,6 +321,9 @@ class VideoGenerator:
         
         # Se falhou ou não tem IA, usa biblioteca local
         if not music_path or not os.path.exists(music_path):
+             # Garante que as músicas de fallback existam
+             self._ensure_fallback_music()
+             
              # 1. Tenta encontrar arquivo específico do mood
              local_path = os.path.join("app/static/music", f"{music_mood}.mp3")
              if os.path.exists(local_path):

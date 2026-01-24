@@ -9,7 +9,6 @@ from app.services.ai_generator import AIContentGenerator
 import uuid
 
 router = APIRouter(prefix="/video", tags=["Video"])
-video_gen = VideoGenerator()
 
 class VideoRequest(BaseModel):
     title: str
@@ -23,7 +22,9 @@ class AutoVideoRequest(BaseModel):
 def generate_video(request: VideoRequest):
     try:
         filename = f"{uuid.uuid4()}.mp4"
-        video_url = video_gen.generate_simple_video(request.title, request.script, filename)
+        # Instancia sob demanda para evitar problemas de startup
+        local_video_gen = VideoGenerator()
+        video_url = local_video_gen.generate_simple_video(request.title, request.script, filename)
         return {"video_url": video_url}
     except Exception as e:
         print(f"Erro ao gerar vídeo: {e}")
