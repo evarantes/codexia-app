@@ -98,6 +98,20 @@
                         <div class="text-3xl font-bold">{{ customers.length }}</div>
                     </div>
                 </div>
+
+                <!-- Monitoring Reports -->
+                <div class="bg-white rounded-lg shadow p-6 mb-8" v-if="monitorReports.length > 0">
+                    <h2 class="text-xl font-bold mb-4">Relatórios de Monitoramento</h2>
+                    <div class="space-y-4 max-h-96 overflow-y-auto">
+                        <div v-for="report in monitorReports" :key="report.id" class="border-l-4 border-indigo-500 bg-gray-50 p-4 rounded">
+                            <div class="flex justify-between items-start mb-2">
+                                <span class="font-bold text-indigo-900">Relatório Automático</span>
+                                <span class="text-xs text-gray-500">{{ new Date(report.created_at).toLocaleString() }}</span>
+                            </div>
+                            <div class="text-sm text-gray-700 whitespace-pre-wrap">{{ report.content }}</div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Books Tab -->
@@ -190,6 +204,41 @@
             <div v-if="currentTab === 'youtube'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">YouTube Automation</h1>
                 
+                <!-- Connection & Actions -->
+                <div class="bg-white rounded-lg shadow p-6 mb-8">
+                    <div class="flex flex-col md:flex-row justify-between items-center gap-4">
+                        <div class="flex items-center gap-4">
+                            <div :class="`w-4 h-4 rounded-full ${youtubeStats.connected ? 'bg-green-500' : 'bg-red-500'}`"></div>
+                            <div>
+                                <h2 class="text-xl font-bold">{{ youtubeStats.title || 'Canal Desconectado' }}</h2>
+                                <p class="text-sm text-gray-500">{{ youtubeStats.connected ? 'Monitoramento Ativo (10min)' : 'Conecte seu canal para ativar a automação' }}</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button v-if="!youtubeStats.connected" @click="connectYoutube" class="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                <i class="fab fa-youtube"></i> Conectar YouTube
+                            </button>
+                            <button v-else @click="runOptimization" :disabled="ytLoading" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
+                                <i v-if="ytLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-magic"></i> Executar Melhorias Agora</span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Optimization Result -->
+                    <div v-if="channelAnalysis" class="mt-6 p-4 bg-indigo-50 rounded border border-indigo-100">
+                        <h3 class="font-bold text-indigo-900 mb-2">Relatório de Melhorias</h3>
+                        <p class="mb-2">{{ channelAnalysis.message }}</p>
+                        <div v-if="channelAnalysis.changes" class="text-sm">
+                            <ul class="list-disc pl-5 space-y-1">
+                                <li v-for="(change, key) in channelAnalysis.changes" :key="key">
+                                    <span class="font-semibold">{{ key }}:</span> {{ change }}
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Stats -->
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
                     <div class="bg-white p-6 rounded-lg shadow flex items-center gap-4">
@@ -496,6 +545,18 @@
                         <input v-model="settings.mercadopago_access_token" type="password" class="w-full border p-2 rounded">
                     </div>
                     <div class="mb-4">
+                        <label class="block font-bold mb-2">YouTube Client ID</label>
+                        <input v-model="settings.youtube_client_id" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">YouTube Client Secret</label>
+                        <input v-model="settings.youtube_client_secret" type="password" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">YouTube Refresh Token</label>
+                        <input v-model="settings.youtube_refresh_token" type="password" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4">
                         <label class="block font-bold mb-2">Facebook Page ID</label>
                         <input v-model="settings.facebook_page_id" class="w-full border p-2 rounded">
                     </div>
@@ -697,6 +758,9 @@
                     // Settings
                     settings: {
                         openai_api_key: '',
+                        youtube_client_id: '',
+                        youtube_client_secret: '',
+                        youtube_refresh_token: '',
                         facebook_page_id: '',
                         facebook_access_token: '',
                         mercadopago_access_token: ''
@@ -836,6 +900,38 @@
                         this.youtubeStats.connected = false;
                     } finally {
                         this.checkingYoutube = false;
+                    }
+                },
+                async connectYoutube() {
+                    try {
+                        const res = await this.authFetch('/youtube/auth_url');
+                        const data = await res.json();
+                        if (data.auth_url) {
+                            window.location.href = data.auth_url;
+                        } else {
+                            alert("Erro ao obter URL de autenticação");
+                        }
+                    } catch (e) {
+                        alert("Erro de conexão: " + e);
+                    }
+                },
+                async runOptimization() {
+                    this.ytLoading = true;
+                    this.channelAnalysis = null;
+                    try {
+                        const res = await this.authFetch('/youtube/optimize', { method: 'POST' });
+                        const data = await res.json();
+                        
+                        if (res.ok) {
+                            this.channelAnalysis = data;
+                            this.fetchYoutubeStats();
+                        } else {
+                            alert("Erro na otimização: " + (data.detail || data.error));
+                        }
+                    } catch (e) {
+                        alert("Erro ao executar melhorias: " + e);
+                    } finally {
+                        this.ytLoading = false;
                     }
                 },
                 async fetchBooks() {
