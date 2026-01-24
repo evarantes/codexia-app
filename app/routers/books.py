@@ -5,8 +5,14 @@ from app.models import Book
 from pydantic import BaseModel
 import shutil
 import os
+import uuid
+from pathlib import Path
 
 router = APIRouter(prefix="/books", tags=["Books"])
+
+def get_safe_filename(original_filename: str) -> str:
+    extension = Path(original_filename).suffix
+    return f"{uuid.uuid4()}{extension}"
 
 @router.post("/")
 def create_book(
@@ -23,21 +29,23 @@ def create_book(
     if file:
         upload_dir = "app/static/books"
         os.makedirs(upload_dir, exist_ok=True)
-        file_location = os.path.join(upload_dir, file.filename)
+        safe_filename = get_safe_filename(file.filename)
+        file_location = os.path.join(upload_dir, safe_filename)
         with open(file_location, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
         # Caminho relativo para acesso via web
-        file_path = f"/static/books/{file.filename}"
+        file_path = f"/static/books/{safe_filename}"
 
     cover_image_url = None
     if cover_file:
         cover_dir = "app/static/covers"
         os.makedirs(cover_dir, exist_ok=True)
-        cover_location = os.path.join(cover_dir, cover_file.filename)
+        safe_covername = get_safe_filename(cover_file.filename)
+        cover_location = os.path.join(cover_dir, safe_covername)
         with open(cover_location, "wb") as buffer:
             shutil.copyfileobj(cover_file.file, buffer)
-        cover_image_url = f"/static/covers/{cover_file.filename}"
+        cover_image_url = f"/static/covers/{safe_covername}"
 
     db_book = Book(
         title=title,
@@ -82,18 +90,20 @@ def update_book(
     if file:
         upload_dir = "app/static/books"
         os.makedirs(upload_dir, exist_ok=True)
-        file_location = os.path.join(upload_dir, file.filename)
+        safe_filename = get_safe_filename(file.filename)
+        file_location = os.path.join(upload_dir, safe_filename)
         with open(file_location, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        db_book.file_path = f"/static/books/{file.filename}"
+        db_book.file_path = f"/static/books/{safe_filename}"
 
     if cover_file:
         cover_dir = "app/static/covers"
         os.makedirs(cover_dir, exist_ok=True)
-        cover_location = os.path.join(cover_dir, cover_file.filename)
+        safe_covername = get_safe_filename(cover_file.filename)
+        cover_location = os.path.join(cover_dir, safe_covername)
         with open(cover_location, "wb") as buffer:
             shutil.copyfileobj(cover_file.file, buffer)
-        db_book.cover_image_url = f"/static/covers/{cover_file.filename}"
+        db_book.cover_image_url = f"/static/covers/{safe_covername}"
 
     db.commit()
     db.refresh(db_book)
