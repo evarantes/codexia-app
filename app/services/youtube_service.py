@@ -171,7 +171,7 @@ class YouTubeService:
     def update_channel_info(self, title=None, description=None):
         """Atualiza título e descrição do canal"""
         if not self.service:
-            return {"status": "mock_updated", "title": title, "description": description}
+            return {"error": "Canal não conectado. Vá em Configurações > YouTube e conecte seu canal primeiro."}
         
         try:
             # 1. Get current channel info using helper
