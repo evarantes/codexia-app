@@ -9,9 +9,6 @@ import datetime
 
 router = APIRouter(prefix="/webhook", tags=["Webhook"])
 
-email_service = EmailService()
-payment_service = PaymentService()
-
 class WebhookPayload(BaseModel):
     action: str
     data: dict
@@ -72,6 +69,8 @@ async def mercadopago_webhook(payload: dict, db: Session = Depends(get_db)):
                 else:
                      download_link = f"http://codexia.com/download/{book.id}/secure-token-123"
                 
+                # Instancia serviço de email sob demanda
+                email_service = EmailService()
                 email_service.send_delivery_email(customer.email, customer.name, book.title, download_link)
 
     return {"status": "received"}

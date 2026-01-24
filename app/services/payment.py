@@ -5,7 +5,9 @@ from app.models import Settings
 
 class PaymentService:
     def __init__(self):
-        self._load_config()
+        # Configuração será carregada sob demanda
+        self.access_token = None
+        self.sdk = None
 
     def _load_config(self):
         db = SessionLocal()
