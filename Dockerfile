@@ -5,7 +5,10 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install system dependencies required for moviepy, imageio, and opencv
+# Added build-essential and python3-dev for compilation support
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3-dev \
     ffmpeg \
     imagemagick \
     libsm6 \
