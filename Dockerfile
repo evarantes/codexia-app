@@ -31,10 +31,11 @@ RUN mkdir -p app/static/videos app/static/covers app/static/icons
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
 
-# Define environment variable
+# Set environment variables
 ENV MODULE_NAME="app.main"
 ENV VARIABLE_NAME="app"
 ENV PORT=8000
+ENV PYTHONUNBUFFERED=1
 
-# Run the application
-CMD sh -c "gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${PORT:-8000}"
+# Run the application with uvicorn directly (lighter for free tier)
+CMD sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
