@@ -117,10 +117,6 @@ app.include_router(webhook.router)
 app.include_router(youtube.router)
 app.include_router(book_factory.router)
 
-@app.get("/")
-def read_root():
-    return FileResponse('app/static/index.html')
-
 @app.get("/success")
 def payment_success():
     return {"status": "Pagamento Aprovado! Envie o livro."}
