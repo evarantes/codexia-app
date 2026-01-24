@@ -264,6 +264,53 @@
                     </div>
                 </div>
 
+                <!-- Content Planner -->
+                <div class="bg-white rounded-lg shadow p-6 mb-8">
+                    <h2 class="text-xl font-bold mb-4">Planejamento Automático de Conteúdo</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div class="md:col-span-2">
+                            <label class="block font-bold mb-2">Tema / Nicho</label>
+                            <input v-model="scheduleTheme" placeholder="Ex: Dicas de Produtividade, Resumos de Livros..." class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-2">Tipo</label>
+                            <select v-model="scheduleType" class="w-full border p-2 rounded">
+                                <option value="days">Dias</option>
+                                <option value="weeks">Semanas</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-2">Quantidade</label>
+                            <input v-model="scheduleQuantity" type="number" min="1" max="30" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-2">Início</label>
+                            <input v-model="scheduleStartDate" type="date" class="w-full border p-2 rounded">
+                        </div>
+                    </div>
+                    <button @click="generateSchedule" :disabled="scheduleLoading" class="bg-purple-600 text-white px-6 py-2 rounded hover:bg-purple-700 w-full flex justify-center items-center gap-2">
+                        <i v-if="scheduleLoading" class="fas fa-spinner fa-spin"></i>
+                        <span v-else><i class="fas fa-calendar-alt"></i> Gerar Planejamento de Vídeos</span>
+                    </button>
+                    
+                    <!-- Preview of Generated Plan -->
+                    <div v-if="schedulePlan.length > 0" class="mt-6">
+                        <h3 class="font-bold text-gray-700 mb-2">Prévia do Planejamento</h3>
+                        <div class="space-y-2 mb-4">
+                            <div v-for="(item, idx) in schedulePlan" :key="idx" class="flex items-center justify-between bg-gray-50 p-3 rounded border">
+                                <div>
+                                    <span class="font-bold text-indigo-600">Dia {{ idx + 1 }}:</span> {{ item.title || 'Título Pendente' }}
+                                    <span class="text-xs text-gray-500 ml-2">({{ item.theme_of_day || 'Tema Geral' }})</span>
+                                </div>
+                                <span class="text-xs text-gray-500">{{ item.date || 'Data Auto' }}</span>
+                            </div>
+                        </div>
+                        <button @click="confirmSchedule" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 w-full">
+                            <i class="fas fa-check"></i> Confirmar e Agendar Produção
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Schedule -->
                 <div class="bg-white rounded-lg shadow p-6 mb-8">
                     <h2 class="text-xl font-bold mb-4">Agendamento de Vídeos</h2>
@@ -1063,6 +1110,55 @@
                         'failed': 'Falha'
                     };
                     return map[status] || status;
+                },
+                async generateSchedule() {
+                    if (!this.scheduleTheme) return alert("Digite um tema!");
+                    this.scheduleLoading = true;
+                    this.schedulePlan = [];
+                    try {
+                        const res = await this.authFetch('/youtube/schedule/generate', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                theme: this.scheduleTheme,
+                                duration_type: this.scheduleType,
+                                duration_value: this.scheduleQuantity,
+                                start_date: this.scheduleStartDate || undefined
+                            })
+                        });
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.schedulePlan = data.schedule || data; // Adjust based on AI response structure
+                        } else {
+                            alert("Erro ao gerar planejamento");
+                        }
+                    } catch (e) {
+                        alert("Erro: " + e);
+                    } finally {
+                        this.scheduleLoading = false;
+                    }
+                },
+                async confirmSchedule() {
+                    if (!confirm("Isso agendará a produção de " + this.schedulePlan.length + " itens. Continuar?")) return;
+                    this.scheduleLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/schedule/save', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.schedulePlan)
+                        });
+                        if (res.ok) {
+                            alert("Agendamento confirmado! Os vídeos entrarão na fila de produção.");
+                            this.schedulePlan = [];
+                            this.fetchScheduledVideos();
+                        } else {
+                            alert("Erro ao salvar agendamento");
+                        }
+                    } catch (e) {
+                        alert("Erro: " + e);
+                    } finally {
+                        this.scheduleLoading = false;
+                    }
                 },
                 async regenerateScheduledVideo(video) {
                     if (!confirm("Deseja regenerar este vídeo? O conteúdo atual será perdido.")) return;
