@@ -6,12 +6,13 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.video_generator import VideoGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db
-from app.models import ScheduledVideo
+from app.models import ScheduledVideo, ChannelReport
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import json
 from datetime import datetime
+from app.services.video_processing import process_scheduled_video
 
 router = APIRouter(
     prefix="/youtube",
@@ -25,6 +26,11 @@ class VideoRequest(BaseModel):
     auto_upload: bool = False
     mode: str = "topic" # topic | story
     story_content: Optional[str] = None
+
+@router.get("/reports")
+def get_reports(db: Session = Depends(get_db)):
+    """Retorna o histórico de relatórios de monitoramento"""
+    return db.query(ChannelReport).order_by(ChannelReport.id.desc()).limit(20).all()
 
 @router.get("/stats")
 def get_stats():
@@ -56,10 +62,51 @@ def optimize_channel():
 
 @router.post("/optimize/execute")
 def execute_optimization(data: Dict[str, Any]):
-    """Executa as melhorias sugeridas (título/descrição)"""
+    """Executa as melhorias sugeridas (título/descrição/banner)"""
     yt_service = YouTubeService()
-    # data expects {'title': '...', 'description': '...'}
-    return yt_service.update_channel_info(title=data.get('title'), description=data.get('description'))
+    ai_service = AIContentGenerator()
+    
+    # data expects {'title': '...', 'description': '...', 'banner_prompt': '...'}
+    
+    results = {
+        "banner_generated": False,
+        "banner_uploaded": False,
+        "channel_updated": False,
+        "errors": []
+    }
+
+    banner_url = None
+    if data.get('banner_prompt'):
+        # 1. Generate Image
+        try:
+            generated_image_url = ai_service.generate_banner_image(data['banner_prompt'])
+            if generated_image_url:
+                results["banner_generated"] = True
+                # 2. Upload to YouTube
+                banner_url = yt_service.upload_channel_banner(generated_image_url)
+                if banner_url:
+                    results["banner_uploaded"] = True
+                else:
+                    results["errors"].append("Falha ao fazer upload do banner para o YouTube")
+            else:
+                results["errors"].append("Falha ao gerar imagem do banner com IA")
+        except Exception as e:
+            results["errors"].append(f"Erro no processamento do banner: {str(e)}")
+    
+    # 3. Update Channel Info
+    update_res = yt_service.update_channel_info(
+        title=data.get('title'), 
+        description=data.get('description'),
+        banner_external_url=banner_url
+    )
+    
+    if "error" in update_res:
+        results["errors"].append(f"Erro ao atualizar canal: {update_res['error']}")
+    else:
+        results["channel_updated"] = True
+        results["update_details"] = update_res
+        
+    return results
 
 class ScheduleRequest(BaseModel):
     theme: str
@@ -170,7 +217,7 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if video.video_url:
         try:
             # Caminho relativo para absoluto
-            abs_path = os.path.join("c:/dev/TRAE/vibraface/app", video.video_url.lstrip('/'))
+            abs_path = os.path.join("c:/dev/TRAE/codexia/app", video.video_url.lstrip('/'))
             if os.path.exists(abs_path):
                 os.remove(abs_path)
         except Exception as e:
@@ -179,64 +226,6 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     db.delete(video)
     db.commit()
     return {"status": "deleted"}
-
-def process_scheduled_video(video_id: int):
-    # Re-instanciar DB session pois estamos em thread separada
-    from app.database import SessionLocal
-    db = SessionLocal()
-    try:
-        video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
-        if not video:
-            return
-            
-        video.status = "processing"
-        db.commit()
-        
-        # Recuperar dados do script
-        script_data = json.loads(video.script_data)
-        
-        ai_service = AIContentGenerator()
-        video_service = VideoGenerator(ai_service=ai_service)
-        
-        topic = video.title
-        concept = video.description
-        
-        # Gerar roteiro detalhado
-        # Se for short, 1 min. Se video, 5 min (padrão solicitado pelo user antes)
-        duration = 1 if video.video_type == 'short' else 3 # 3 min para ser mais rápido que 5
-        
-        print(f"Gerando script para video {video_id}: {topic}")
-        final_script = ai_service.generate_motivational_script(f"{topic}. Conceito: {concept}", duration)
-        
-        # Gerar vídeo
-        def progress_callback(p, m):
-            pass # Sem feedback detalhado por task manager por enquanto, apenas status no DB
-            
-        ratio = "9:16" if video.video_type == 'short' else "16:9"
-        
-        print(f"Renderizando video {video_id}...")
-        result = video_service.create_video_from_plan(final_script, aspect_ratio=ratio, progress_callback=progress_callback)
-        video_path = result["video_url"]
-        
-        # Adicionar créditos ao script_data se possível ou salvar na descrição do vídeo
-        if result.get("music_credit"):
-            credit = f"\n\n{result['music_credit']}"
-            if not video.description:
-                video.description = ""
-            if credit not in video.description:
-                video.description += credit
-        
-        video.status = "completed"
-        video.video_url = video_path # path relativo /static/videos/...
-        db.commit()
-        print(f"Video {video_id} concluído: {video_path}")
-        
-    except Exception as e:
-        print(f"Erro ao gerar video agendado {video_id}: {e}")
-        video.status = "failed"
-        db.commit()
-    finally:
-        db.close()
 
 @router.get("/schedule")
 def get_schedule(db: Session = Depends(get_db)):
@@ -294,7 +283,7 @@ def process_video_generation(request: VideoRequest, task_id):
         video_path = video_result["video_url"]
         
         # O path retornado é relativo para web (/static/...), precisamos do absoluto para upload
-        abs_video_path = "c:/dev/TRAE/vibraface/app" + video_path 
+        abs_video_path = "c:/dev/TRAE/codexia/app" + video_path 
         print(f"Vídeo gerado em: {abs_video_path}")
         
         # 3. Upload (se solicitado)

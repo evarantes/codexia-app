@@ -51,11 +51,21 @@ class YouTubeService:
             
         # 3. Atualizar token se expirado
         if self.credentials and self.credentials.expired and self.credentials.refresh_token:
+            print("Token expirado. Tentando atualizar...")
             try:
                 self.credentials.refresh(Request())
+                print("Token atualizado com sucesso.")
             except Exception as e:
-                print(f"Erro ao atualizar token: {e}")
-                self.credentials = None
+                print(f"Erro ao atualizar token (tentativa 1): {e}")
+                # Retry once
+                try:
+                    import time
+                    time.sleep(1)
+                    self.credentials.refresh(Request())
+                    print("Token atualizado com sucesso na tentativa 2.")
+                except Exception as e2:
+                    print(f"ERRO FATAL ao atualizar token (tentativa 2): {e2}. Desconectando.")
+                    self.credentials = None
 
         if self.credentials:
             self.service = build('youtube', 'v3', credentials=self.credentials)
@@ -168,7 +178,39 @@ class YouTubeService:
         # Retorna a análise para o usuário confirmar a execução
         return analysis
 
-    def update_channel_info(self, title=None, description=None):
+    def upload_channel_banner(self, image_url):
+        """Faz upload de uma imagem para banner do canal"""
+        if not self.service:
+            return None
+            
+        import requests
+        from io import BytesIO
+        from googleapiclient.http import MediaIoBaseUpload
+        
+        try:
+            print(f"Baixando banner de {image_url}...")
+            response = requests.get(image_url)
+            if response.status_code != 200:
+                print("Erro ao baixar imagem do banner")
+                return None
+            
+            image_data = BytesIO(response.content)
+            # Google exige mimetype image/png ou image/jpeg
+            media = MediaIoBaseUpload(image_data, mimetype='image/png', resumable=True)
+            
+            print("Enviando banner para YouTube...")
+            request = self.service.channelBanners().insert(
+                body={},
+                media_body=media
+            )
+            response = request.execute()
+            print(f"Banner enviado. URL: {response.get('url')}")
+            return response.get('url')
+        except Exception as e:
+            print(f"Erro ao fazer upload do banner: {e}")
+            return None
+
+    def update_channel_info(self, title=None, description=None, banner_external_url=None):
         """Atualiza título e descrição do canal"""
         if not self.service:
             return {"error": "Canal não conectado. Vá em Configurações > YouTube e conecte seu canal primeiro."}
@@ -180,45 +222,54 @@ class YouTubeService:
                 return {"error": "Channel not found"}
                 
             channel_id = item['id']
-            # We need to preserve the categoryId if it exists, otherwise update might fail or reset it
-            current_snippet = item['snippet']
             
-            # Construct a MINIMAL snippet with only the fields we want to update.
-            # IMPORTANT: For channels.update with 'snippet', we MUST include 'title' and 'description' at minimum if we are updating them.
-            # But we should also be careful about other fields.
+            # Prepare update parts
+            parts = []
+            body = {"id": channel_id}
             
-            new_snippet = {
-                "title": title if title else current_snippet.get('title'),
-                "description": description if description else current_snippet.get('description'),
-                # It is often required to send back the categoryId if present
-                "categoryId": current_snippet.get('categoryId') 
-            }
-            
-            # Remove None values
-            new_snippet = {k: v for k, v in new_snippet.items() if v is not None}
-            
-            # 2. Update using snippet
-            # If this still fails with 400, it might be due to immutable fields or specific channel state.
-            # An alternative is using 'brandingSettings' BUT ensuring we nest it correctly and dont send read-only stuff.
-            # Let's try brandingSettings again but properly this time, as it is the "Modern" way to update channel metadata.
-            
+            # Update Branding Settings (Banner, and legacy title/desc)
             branding_settings = item.get('brandingSettings', {})
             if 'channel' not in branding_settings:
                 branding_settings['channel'] = {}
+            if 'image' not in branding_settings:
+                branding_settings['image'] = {}
             
-            # Update values in brandingSettings
+            branding_updated = False
             if title:
                 branding_settings['channel']['title'] = title
+                branding_updated = True
             if description:
                 branding_settings['channel']['description'] = description
+                branding_updated = True
+            if banner_external_url:
+                branding_settings['image']['bannerExternalUrl'] = banner_external_url
+                branding_updated = True
                 
-            # Execute update with brandingSettings part
+            if branding_updated:
+                parts.append("brandingSettings")
+                body["brandingSettings"] = branding_settings
+            
+            # Update Snippet (Main Title/Description)
+            snippet = item.get('snippet', {})
+            snippet_updated = False
+            if title:
+                snippet['title'] = title
+                snippet_updated = True
+            if description:
+                snippet['description'] = description
+                snippet_updated = True
+            
+            if snippet_updated:
+                parts.append("snippet")
+                body["snippet"] = snippet
+                
+            if not parts:
+                return {"message": "Nada a atualizar"}
+
+            # Execute update
             update_request = self.service.channels().update(
-                part="brandingSettings",
-                body={
-                    "id": channel_id,
-                    "brandingSettings": branding_settings
-                }
+                part=",".join(parts),
+                body=body
             )
             update_response = update_request.execute()
             return update_response

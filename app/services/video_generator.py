@@ -1,8 +1,9 @@
 import os
 import uuid
 import requests
+import gc
 from gtts import gTTS
-from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip
+from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 import textwrap
 import numpy as np
@@ -196,197 +197,216 @@ class VideoGenerator:
             progress_callback(0, "Iniciando composição do vídeo...")
             
         clips = []
-        title = plan.get('title', 'Vídeo Sem Título')
-        scenes = plan.get('scenes', [])
+        final_clip = None
+        bg_music = None
         
-        # Define tamanho do vídeo
-        if aspect_ratio == "16:9":
-            video_size = (1920, 1080)
-        else:
-            video_size = (1080, 1920)
-
-        # 1. Slide de Título (Com capa se disponível)
-        if progress_callback:
-            progress_callback(5, "Criando slide de título...")
+        try:
+            title = plan.get('title', 'Vídeo Sem Título')
+            scenes = plan.get('scenes', [])
             
-        title_audio_path = self.generate_audio(title)
-        
-        start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
-        img_title = self.create_text_image(title, size=video_size, bg_color=(50, 0, 100), bg_image_path=start_bg_path)
-        
-        clip_title = ImageClip(img_title)
-        
-        if title_audio_path:
-            audio_clip = AudioFileClip(title_audio_path)
-            # Adiciona um pouco de tempo extra
-            clip_title = clip_title.with_duration(audio_clip.duration + 1.5)
-            clip_title = clip_title.with_audio(audio_clip)
-        else:
-            clip_title = clip_title.with_duration(3)
-            
-        clips.append(clip_title)
-        
-        # 2. Cenas
-        total_scenes = len(scenes)
-        for i, scene in enumerate(scenes):
-            if progress_callback:
-                # Progresso proporcional entre 10% e 80%
-                scene_progress = 10 + int((i / total_scenes) * 70)
-                progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
-                
-            text = scene.get('text', '')
-            image_prompt = scene.get('image_prompt', '')
-            
-            # Tentar gerar imagem com IA
-            bg_image_path = None
-            if self.ai_service and image_prompt:
-                print(f"Gerando imagem para cena {i+1}...")
-                # Otimiza prompt para aspect ratio
-                prompt_suffix = f". Aspect ratio {aspect_ratio}."
-                image_url = self.ai_service.generate_image(image_prompt + prompt_suffix)
-                if image_url:
-                    bg_image_path = self.download_image(image_url)
-
-            # Fallback colors
-            bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
-            bg_color = bg_colors[i % len(bg_colors)]
-            
-            # Gerar Audio da cena
-            audio_path = self.generate_audio(text)
-            
-            # Gerar Imagem
-            img = self.create_text_image(text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
-            clip = ImageClip(img)
-            
-            if audio_path:
-                audio_clip = AudioFileClip(audio_path)
-                clip = clip.with_duration(audio_clip.duration + 0.5)
-                clip = clip.with_audio(audio_clip)
+            # Otimização de memória: Reduzir resolução para 720p para evitar OOM em tiers gratuitos
+            if aspect_ratio == "16:9":
+                video_size = (1280, 720) # Antes: 1920, 1080
             else:
-                clip = clip.with_duration(4)
-                
-            clips.append(clip)
-            
-            # Limpar imagem temporária se foi baixada
-            if bg_image_path and "temp_" in bg_image_path:
-                try:
-                    os.remove(bg_image_path)
-                except:
-                    pass
-            
-        # 3. Slide Final (CTA)
-        if progress_callback:
-            progress_callback(85, "Criando slide final...")
-            
-        end_text = "Inscreva-se no Canal!\nLink na Bio."
-        audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.")
-        
-        end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
-        img_end = self.create_text_image(end_text, size=video_size, bg_color=(0, 100, 50), bg_image_path=end_bg_path)
-        
-        clip_end = ImageClip(img_end)
-        
-        if audio_end_path:
-            audio_clip = AudioFileClip(audio_end_path)
-            clip_end = clip_end.with_duration(audio_clip.duration + 1)
-            clip_end = clip_end.with_audio(audio_clip)
-        else:
-            clip_end = clip_end.with_duration(3)
-            
-        clips.append(clip_end)
-        
-        # Concatenar todos
-        final_clip = concatenate_videoclips(clips, method="compose")
-        
-        # 4. Adicionar Música de Fundo
-        if progress_callback:
-            progress_callback(90, "Adicionando trilha sonora...")
-            
-        music_mood = plan.get('music_mood', 'drama')
-        music_path = None
-        used_music_credit = None
-        
-        # Tenta gerar música exclusiva com IA
-        if self.ai_service:
-            print(f"Gerando música exclusiva para mood: {music_mood}...")
-            # Usa o título do livro para contextualizar ainda mais se possível, mas aqui só temos o mood
-            # O prompt pode ser melhorado
-            music_content = self.ai_service.generate_music(f"{music_mood} style, inspired by {title}")
-            if music_content:
-                filename = f"music_{uuid.uuid4()}.wav" 
-                generated_music_path = os.path.join(self.output_dir, filename)
-                with open(generated_music_path, "wb") as f:
-                    f.write(music_content)
-                music_path = generated_music_path
-        
-        # Se falhou ou não tem IA, usa biblioteca local
-        if not music_path or not os.path.exists(music_path):
-             # Garante que as músicas de fallback existam
-             self._ensure_fallback_music()
-             
-             # 1. Tenta encontrar arquivo específico do mood
-             local_path = os.path.join("app/static/music", f"{music_mood}.mp3")
-             if os.path.exists(local_path):
-                 music_path = local_path
-             else:
-                 # 2. Fallback: Procura QUALQUER mp3 na pasta
-                 try:
-                     import glob
-                     mp3_files = glob.glob("app/static/music/*.mp3")
-                     if mp3_files:
-                         music_path = mp3_files[0]
-                         print(f"Usando música fallback genérica: {music_path}")
-                     else:
-                         print("Nenhuma música encontrada em app/static/music/")
-                 except Exception as e:
-                     print(f"Erro ao procurar fallback de música: {e}")
-        
-        if music_path and os.path.exists(music_path):
-            # Tentar identificar o crédito se for uma das músicas padrão
-            if not used_music_credit:
-                filename = os.path.basename(music_path).lower()
-                for key, credit in self.MUSIC_CREDITS.items():
-                    if key in filename:
-                        used_music_credit = credit
-                        break
+                video_size = (720, 1280) # Antes: 1080, 1920
 
-            try:
-                bg_music = AudioFileClip(music_path)
+            # 1. Slide de Título (Com capa se disponível)
+            if progress_callback:
+                progress_callback(5, "Criando slide de título...")
                 
-                # Se a música for menor que o vídeo, precisaríamos fazer loop
-                if bg_music.duration < final_clip.duration:
-                    num_loops = int(final_clip.duration / bg_music.duration) + 1
-                    bg_music = concatenate_audioclips([bg_music] * num_loops)
+            title_audio_path = self.generate_audio(title)
+            
+            start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
+            img_title = self.create_text_image(title, size=video_size, bg_color=(50, 0, 100), bg_image_path=start_bg_path)
+            
+            clip_title = ImageClip(img_title)
+            
+            if title_audio_path:
+                audio_clip = AudioFileClip(title_audio_path)
+                # Adiciona um pouco de tempo extra
+                clip_title = clip_title.with_duration(audio_clip.duration + 1.5)
+                clip_title = clip_title.with_audio(audio_clip)
+            else:
+                clip_title = clip_title.with_duration(3)
                 
-                bg_music = bg_music.with_duration(final_clip.duration)
-                
-                # Volume baixo (10%)
-                bg_music = bg_music.with_volume_scaled(0.1)
-                
-                # Mixar com o áudio da narração
-                if final_clip.audio:
-                    final_audio = CompositeAudioClip([bg_music, final_clip.audio])
-                else:
-                    final_audio = bg_music
+            clips.append(clip_title)
+            
+            # 2. Cenas
+            total_scenes = len(scenes)
+            for i, scene in enumerate(scenes):
+                if progress_callback:
+                    # Progresso proporcional entre 10% e 80%
+                    scene_progress = 10 + int((i / total_scenes) * 70)
+                    progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
                     
-                final_clip = final_clip.with_audio(final_audio)
-            except Exception as e:
-                print(f"Erro ao adicionar música de fundo: {e}")
+                text = scene.get('text', '')
+                image_prompt = scene.get('image_prompt', '')
+                
+                # Tentar gerar imagem com IA
+                bg_image_path = None
+                if self.ai_service and image_prompt:
+                    print(f"Gerando imagem para cena {i+1}...")
+                    # Otimiza prompt para aspect ratio
+                    prompt_suffix = f". Aspect ratio {aspect_ratio}."
+                    image_url = self.ai_service.generate_image(image_prompt + prompt_suffix)
+                    if image_url:
+                        bg_image_path = self.download_image(image_url)
 
-        # Output
-        if progress_callback:
-            progress_callback(95, "Renderizando arquivo final...")
+                # Fallback colors
+                bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
+                bg_color = bg_colors[i % len(bg_colors)]
+                
+                # Gerar Audio da cena
+                audio_path = self.generate_audio(text)
+                
+                # Gerar Imagem
+                img = self.create_text_image(text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                clip = ImageClip(img)
+                
+                if audio_path:
+                    audio_clip_scene = AudioFileClip(audio_path)
+                    clip = clip.with_duration(audio_clip_scene.duration + 0.5)
+                    clip = clip.with_audio(audio_clip_scene)
+                else:
+                    clip = clip.with_duration(4)
+                    
+                clips.append(clip)
+                
+                # Limpar imagem temporária se foi baixada
+                if bg_image_path and "temp_" in bg_image_path:
+                    try:
+                        os.remove(bg_image_path)
+                    except:
+                        pass
+                
+                # Forçar coleta de lixo a cada cena para evitar pico
+                gc.collect()
+                
+            # 3. Slide Final (CTA)
+            if progress_callback:
+                progress_callback(85, "Criando slide final...")
+                
+            end_text = "Inscreva-se no Canal!\nLink na Bio."
+            audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.")
             
-        filename = f"{uuid.uuid4()}.mp4"
-        output_path = os.path.join(self.output_dir, filename)
-        
-        # Escreve o arquivo (sem audio codec especificado as vezes falha, mas aac é padrão)
-        final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
-        
-        if progress_callback:
-            progress_callback(100, "Vídeo renderizado com sucesso!")
-        
-        return {"video_url": f"/static/videos/{filename}", "music_credit": used_music_credit}
+            end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
+            img_end = self.create_text_image(end_text, size=video_size, bg_color=(0, 100, 50), bg_image_path=end_bg_path)
+            
+            clip_end = ImageClip(img_end)
+            
+            if audio_end_path:
+                audio_clip_end = AudioFileClip(audio_end_path)
+                clip_end = clip_end.with_duration(audio_clip_end.duration + 1)
+                clip_end = clip_end.with_audio(audio_clip_end)
+            else:
+                clip_end = clip_end.with_duration(3)
+                
+            clips.append(clip_end)
+            
+            # Concatenar todos
+            final_clip = concatenate_videoclips(clips, method="compose")
+            
+            # 4. Adicionar Música de Fundo
+            if progress_callback:
+                progress_callback(90, "Adicionando trilha sonora...")
+                
+            music_mood = plan.get('music_mood', 'drama')
+            music_path = None
+            used_music_credit = None
+            
+            # Tenta gerar música exclusiva com IA
+            if self.ai_service:
+                print(f"Gerando música exclusiva para mood: {music_mood}...")
+                music_content = self.ai_service.generate_music(f"{music_mood} style, inspired by {title}")
+                if music_content:
+                    filename = f"music_{uuid.uuid4()}.wav" 
+                    generated_music_path = os.path.join(self.output_dir, filename)
+                    with open(generated_music_path, "wb") as f:
+                        f.write(music_content)
+                    music_path = generated_music_path
+            
+            # Se falhou ou não tem IA, usa biblioteca local
+            if not music_path or not os.path.exists(music_path):
+                 self._ensure_fallback_music()
+                 local_path = os.path.join("app/static/music", f"{music_mood}.mp3")
+                 if os.path.exists(local_path):
+                     music_path = local_path
+                 else:
+                     try:
+                         import glob
+                         mp3_files = glob.glob("app/static/music/*.mp3")
+                         if mp3_files:
+                             music_path = mp3_files[0]
+                             print(f"Usando música fallback genérica: {music_path}")
+                     except Exception as e:
+                         print(f"Erro ao procurar fallback de música: {e}")
+            
+            if music_path and os.path.exists(music_path):
+                if not used_music_credit:
+                    filename = os.path.basename(music_path).lower()
+                    for key, credit in self.MUSIC_CREDITS.items():
+                        if key in filename:
+                            used_music_credit = credit
+                            break
+
+                try:
+                    bg_music = AudioFileClip(music_path)
+                    
+                    if bg_music.duration < final_clip.duration:
+                        num_loops = int(final_clip.duration / bg_music.duration) + 1
+                        bg_music = concatenate_audioclips([bg_music] * num_loops)
+                    
+                    bg_music = bg_music.with_duration(final_clip.duration)
+                    bg_music = bg_music.with_volume_scaled(0.1)
+                    
+                    if final_clip.audio:
+                        final_audio = CompositeAudioClip([bg_music, final_clip.audio])
+                    else:
+                        final_audio = bg_music
+                        
+                    final_clip = final_clip.with_audio(final_audio)
+                except Exception as e:
+                    print(f"Erro ao adicionar música de fundo: {e}")
+
+            # Output
+            if progress_callback:
+                progress_callback(95, "Renderizando arquivo final...")
+                
+            filename = f"{uuid.uuid4()}.mp4"
+            output_path = os.path.join(self.output_dir, filename)
+            
+            # Escreve o arquivo
+            # threads=1 para reduzir uso de memória durante encoding
+            final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", threads=1)
+            
+            if progress_callback:
+                progress_callback(100, "Vídeo renderizado com sucesso!")
+            
+            return {"video_url": f"/static/videos/{filename}", "music_credit": used_music_credit}
+            
+        except Exception as e:
+            print(f"Erro na geração do vídeo: {e}")
+            raise e
+        finally:
+            # Resource Cleanup
+            print("Limpando recursos de memória...")
+            try:
+                if final_clip:
+                    final_clip.close()
+                if bg_music:
+                    bg_music.close()
+                for clip in clips:
+                    try:
+                        clip.close()
+                        if clip.audio:
+                            clip.audio.close()
+                    except:
+                        pass
+            except Exception as e:
+                print(f"Erro ao limpar recursos: {e}")
+                
+            # Force GC
+            gc.collect()
 
     def generate_simple_video(self, title, script_lines, output_filename="video.mp4"):
         # Mantendo compatibilidade com código antigo se necessário

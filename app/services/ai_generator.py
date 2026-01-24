@@ -438,7 +438,8 @@ class AIContentGenerator:
             "analysis": "Sua análise...",
             "action_plan": ["Passo 1", "Passo 2", "Passo 3"],
             "new_title": "Novo Nome Sugerido",
-            "new_description": "Nova descrição sugerida..."
+            "new_description": "Nova descrição sugerida...",
+            "banner_prompt": "Descrição visual para o banner do canal..."
         }}
         """
         
@@ -447,7 +448,8 @@ class AIContentGenerator:
                 "analysis": "Simulação: O canal tem potencial mas precisa de consistência.",
                 "action_plan": ["Postar 2x por semana", "Melhorar Thumbnails", "Focar em Shorts"],
                 "new_title": "Codexia - Livros & Mente",
-                "new_description": "Canal oficial sobre livros e desenvolvimento pessoal. Inscreva-se para transformar sua vida."
+                "new_description": "Canal oficial sobre livros e desenvolvimento pessoal. Inscreva-se para transformar sua vida.",
+                "banner_prompt": "Uma biblioteca mística com luz dourada, estilo digital art, alta qualidade, 4k"
             }
             
         try:
@@ -461,6 +463,78 @@ class AIContentGenerator:
             return json.loads(content)
         except Exception as e:
             return {"error": str(e)}
+
+    def generate_banner_image(self, prompt_text: str) -> str:
+        """Gera um banner para o canal do YouTube usando DALL-E 3"""
+        self._load_config()
+        if not self.api_key:
+            return None
+
+        try:
+            response = openai.chat.completions.create(
+                model="dall-e-3",
+                prompt=f"YouTube Channel Banner, 16:9 aspect ratio, professional, high quality. Theme: {prompt_text}",
+                size="1024x1024", # DALL-E 3 standard, YouTube will crop/resize
+                quality="standard",
+                n=1,
+            )
+            # Nota: DALL-E 3 gera 1024x1024 ou 1024x1792. Para banner YouTube ideal é 2560x1440.
+            # Vamos usar o link gerado. O YouTube Service terá que lidar com o upload.
+            # DALL-E 3 API (via images.generate, not chat.completions - correção abaixo)
+            return response.data[0].url
+        except Exception as e:
+            # Fallback para correção da chamada
+            try:
+                response = openai.images.generate(
+                    model="dall-e-3",
+                    prompt=f"YouTube Channel Banner art, {prompt_text}, wide aspect ratio, professional design, minimal text",
+                    size="1024x1024", 
+                    quality="standard",
+                    n=1,
+                )
+                return response.data[0].url
+            except Exception as e2:
+                print(f"Erro ao gerar banner: {e2}")
+                return None
+
+    def generate_monitor_report(self, stats):
+        """Gera relatório curto de monitoramento"""
+        self._load_config()
+        
+        prompt = f"""
+        Analise o status atual do canal (Monitoramento em Tempo Real):
+        - Inscritos: {stats.get('subscribers')}
+        - Views: {stats.get('views')}
+        - Vídeos: {stats.get('videos')}
+        
+        Forneça:
+        1. Uma análise curta de 1 frase sobre o desempenho atual.
+        2. Uma sugestão estratégica imediata (1 frase).
+        
+        Retorne JSON:
+        {{
+            "analysis": "...",
+            "strategy": "..."
+        }}
+        """
+        
+        if not self.api_key:
+            return {
+                "analysis": "Monitoramento simulado: Canal estável.",
+                "strategy": "Continue postando regularmente para aumentar engajamento."
+            }
+            
+        try:
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            import json
+            content = response.choices[0].message.content
+            content = content.replace("```json", "").replace("```", "")
+            return json.loads(content)
+        except Exception as e:
+            return {"analysis": "Erro na análise.", "strategy": "Verifique logs."}
 
     def _build_prompt(self, title, synopsis, style):
         if style == "cliffhanger":
@@ -597,7 +671,27 @@ class AIContentGenerator:
             )
             return response.data[0].url
         except Exception as e:
-            print(f"Erro ao gerar imagem DALL-E: {e}")
+            print(f"Erro ao gerar imagem: {e}")
+            return None
+
+    def generate_banner_image(self, prompt):
+        self._load_config()
+        if not self.api_key:
+            return None
+            
+        try:
+            full_prompt = f"{prompt}. Horizontal YouTube Channel Banner, 16:9 aspect ratio. Professional digital art, high quality, 4k. No text."
+            
+            response = openai.images.generate(
+                model="dall-e-3",
+                prompt=full_prompt,
+                size="1792x1024", # Horizontal
+                quality="standard",
+                n=1,
+            )
+            return response.data[0].url
+        except Exception as e:
+            print(f"Erro ao gerar banner: {e}")
             return None
 
     def generate_audio(self, text, voice="onyx"):

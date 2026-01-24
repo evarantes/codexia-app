@@ -57,6 +57,9 @@
                 <a href="#" @click="currentTab = 'settings'" :class="{'bg-indigo-700': currentTab === 'settings'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-cog"></i> Configurações
                 </a>
+                <a href="#" @click="logout" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-red-700 transition mt-auto text-red-200 hover:text-white">
+                    <i class="fas fa-sign-out-alt"></i> Sair
+                </a>
             </nav>
             <div class="p-4 bg-indigo-950 text-xs text-center text-gray-400">
                 Codexia v1.0 Beta
@@ -78,6 +81,174 @@
             <!-- Main Content -->
             <main class="flex-1 overflow-y-auto p-4 md:p-8">
             
+            <!-- Dashboard Tab -->
+            <div v-if="currentTab === 'dashboard'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Dashboard</h1>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-indigo-500">
+                        <div class="text-gray-500">Vendas Totais</div>
+                        <div class="text-3xl font-bold">R$ {{ totalSales.toFixed(2) }}</div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-green-500">
+                        <div class="text-gray-500">Livros Publicados</div>
+                        <div class="text-3xl font-bold">{{ books.length }}</div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-purple-500">
+                        <div class="text-gray-500">Clientes</div>
+                        <div class="text-3xl font-bold">{{ customers.length }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Books Tab -->
+            <div v-if="currentTab === 'books'">
+                <div class="flex justify-between items-center mb-6">
+                    <h1 class="text-3xl font-bold text-gray-800">Meus Livros</h1>
+                    <button @click="openAddBookModal" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">
+                        <i class="fas fa-plus"></i> Novo Livro
+                    </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div v-for="book in books" :key="book.id" class="bg-white rounded-lg shadow overflow-hidden">
+                        <img :src="book.cover_image_url || 'https://via.placeholder.com/300x400'" class="w-full h-48 object-cover">
+                        <div class="p-4">
+                            <h3 class="font-bold text-lg mb-1">{{ book.title }}</h3>
+                            <p class="text-gray-600 text-sm mb-2">{{ book.author }}</p>
+                            <div class="flex justify-between items-center mt-4">
+                                <span class="text-green-600 font-bold">R$ {{ book.price }}</span>
+                                <div class="flex gap-2">
+                                    <button @click="openEditModal(book)" class="text-blue-600 hover:text-blue-800"><i class="fas fa-edit"></i></button>
+                                    <button @click="deleteBook(book.id)" class="text-red-600 hover:text-red-800"><i class="fas fa-trash"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Campaigns Tab -->
+            <div v-if="currentTab === 'campaigns'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Campanhas de Marketing</h1>
+                <div class="bg-white p-6 rounded-lg shadow max-w-2xl">
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">Livro</label>
+                        <select v-model="selectedBookId" class="w-full border p-2 rounded">
+                            <option v-for="book in books" :value="book.id">{{ book.title }}</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">Estilo do Anúncio</label>
+                        <select v-model="adStyle" class="w-full border p-2 rounded">
+                            <option value="cliffhanger">Misterioso (Cliffhanger)</option>
+                            <option value="benefit">Benefícios</option>
+                            <option value="story">Storytelling</option>
+                        </select>
+                    </div>
+                    <button @click="generateAd" :disabled="loading" class="bg-indigo-600 text-white px-4 py-2 rounded w-full mb-4">
+                        <i v-if="loading" class="fas fa-spinner fa-spin"></i> Gerar Anúncio
+                    </button>
+                    <div v-if="generatedAd">
+                        <textarea v-model="generatedAd" class="w-full border p-2 rounded mb-4" rows="6"></textarea>
+                        <button @click="postToFacebook" class="bg-blue-600 text-white px-4 py-2 rounded w-full">
+                            <i class="fab fa-facebook"></i> Postar no Facebook
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Video Tab -->
+            <div v-if="currentTab === 'video'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Criador de Vídeos</h1>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h2 class="text-xl font-bold mb-4">Configuração</h2>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Título do Vídeo</label>
+                            <input v-model="videoTitle" class="w-full border p-2 rounded">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Roteiro (Linha por Linha)</label>
+                            <textarea v-model="videoScript" class="w-full border p-2 rounded" rows="10"></textarea>
+                        </div>
+                        <button @click="generateVideo" :disabled="videoLoading" class="bg-indigo-600 text-white px-4 py-2 rounded w-full">
+                            <i v-if="videoLoading" class="fas fa-spinner fa-spin"></i> Gerar Vídeo
+                        </button>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h2 class="text-xl font-bold mb-4">Resultado</h2>
+                        <div v-if="generatedVideoUrl" class="aspect-w-16 aspect-h-9 bg-black rounded flex items-center justify-center">
+                            <video :src="generatedVideoUrl" controls class="w-full h-full"></video>
+                        </div>
+                        <div v-else class="h-64 bg-gray-100 flex items-center justify-center text-gray-400">
+                            O vídeo gerado aparecerá aqui
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- YouTube Tab -->
+            <div v-if="currentTab === 'youtube'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">YouTube Automation</h1>
+                
+                <!-- Stats -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div class="bg-white p-6 rounded-lg shadow flex items-center gap-4">
+                        <div class="bg-red-100 p-3 rounded-full text-red-600"><i class="fab fa-youtube text-2xl"></i></div>
+                        <div>
+                            <div class="text-gray-500">Inscritos</div>
+                            <div class="text-2xl font-bold">{{ youtubeStats.subscribers }}</div>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow flex items-center gap-4">
+                        <div class="bg-blue-100 p-3 rounded-full text-blue-600"><i class="fas fa-eye text-2xl"></i></div>
+                        <div>
+                            <div class="text-gray-500">Visualizações</div>
+                            <div class="text-2xl font-bold">{{ youtubeStats.views }}</div>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow flex items-center gap-4">
+                        <div class="bg-green-100 p-3 rounded-full text-green-600"><i class="fas fa-video text-2xl"></i></div>
+                        <div>
+                            <div class="text-gray-500">Vídeos</div>
+                            <div class="text-2xl font-bold">{{ youtubeStats.videos }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Schedule -->
+                <div class="bg-white rounded-lg shadow p-6 mb-8">
+                    <h2 class="text-xl font-bold mb-4">Agendamento de Vídeos</h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead>
+                                <tr class="bg-gray-50">
+                                    <th class="p-3 text-left">Título</th>
+                                    <th class="p-3 text-left">Data</th>
+                                    <th class="p-3 text-left">Status</th>
+                                    <th class="p-3 text-left">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="video in scheduledVideos" :key="video.id" class="border-t">
+                                    <td class="p-3">{{ video.title }}</td>
+                                    <td class="p-3">{{ new Date(video.scheduled_for).toLocaleString() }}</td>
+                                    <td class="p-3">
+                                        <span :class="{'bg-yellow-100 text-yellow-800': video.status === 'pending', 'bg-green-100 text-green-800': video.status === 'published'}" class="px-2 py-1 rounded text-xs font-bold uppercase">
+                                            {{ translateStatus(video.status) }}
+                                        </span>
+                                    </td>
+                                    <td class="p-3 flex gap-2">
+                                        <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-blue-600"><i class="fas fa-play"></i></button>
+                                        <button @click="regenerateScheduledVideo(video)" class="text-orange-600"><i class="fas fa-sync"></i></button>
+                                        <button @click="deleteScheduledVideo(video)" class="text-red-600"><i class="fas fa-trash"></i></button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Book Factory Tab -->
             <div v-if="currentTab === 'book_factory'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Fábrica de Livros</h1>
@@ -86,13 +257,11 @@
                 <!-- Step 1: Upload -->
                 <div v-if="factoryStep === 1" class="bg-white rounded-lg shadow p-8 max-w-2xl mx-auto">
                     <h2 class="text-xl font-bold mb-6 border-b pb-2">1. Upload do Material</h2>
-                    
                     <div class="mb-6">
                         <label class="block font-bold mb-2">Manuscrito (Texto Completo)</label>
                         <input type="file" ref="manuscriptFile" accept=".docx,.pdf" class="w-full border p-3 rounded bg-gray-50">
                         <p class="text-sm text-gray-500 mt-1">Formatos aceitos: .docx, .pdf</p>
                     </div>
-
                     <button @click="uploadBookMaterial" :disabled="factoryLoading" class="w-full bg-indigo-600 text-white py-3 rounded hover:bg-indigo-700 flex justify-center items-center gap-2 text-lg font-bold">
                         <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
                         <span v-else>Iniciar Análise e Montagem</span>
@@ -271,748 +440,139 @@
                             <div class="mt-8 border-t pt-4">
                                 <div class="flex justify-between items-center mb-2">
                                     <h4 class="font-bold text-gray-600">Estrutura Detectada (Corpo do Texto)</h4>
-                                    <button @click="addChapter" class="text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded hover:bg-indigo-100">
-                                        <i class="fas fa-plus"></i> Adicionar Capítulo
-                                    </button>
                                 </div>
-                                <div class="bg-white border rounded max-h-60 overflow-y-auto p-4">
-                                    <div v-if="factoryData.sections.textual.length === 0" class="text-gray-400 italic text-sm mb-2">
-                                        Nenhum capítulo detectado automaticamente. Adicione manualmente se desejar.
-                                    </div>
-                                    <div v-for="(chap, idx) in factoryData.sections.textual" :key="idx" class="border-b py-2 last:border-0 flex gap-2 items-center">
-                                        <span class="font-bold text-indigo-600 text-xs whitespace-nowrap">Cap {{ idx + 1 }}:</span>
-                                        <input v-model="chap.title" class="flex-1 border rounded px-2 py-1 text-sm" placeholder="Título do Capítulo">
-                                        <button @click="removeChapter(idx)" class="text-red-400 hover:text-red-600 px-2" title="Remover">
-                                            <i class="fas fa-times"></i>
-                                        </button>
-                                    </div>
-                                </div>
-                                <p class="text-xs text-gray-400 mt-1">Você pode renomear ou ajustar a ordem dos capítulos detectados.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Step 3: Success -->
-                <div v-if="factoryStep === 3" class="bg-white rounded-lg shadow p-12 text-center max-w-2xl mx-auto">
-                    <div class="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center text-4xl mx-auto mb-6">
-                        <i class="fas fa-check"></i>
-                    </div>
-                    <h2 class="text-2xl font-bold mb-2">Livro Gerado com Sucesso!</h2>
-                    <p class="text-gray-600 mb-8">Seu livro foi estruturado e montado em PDF.</p>
-                    
-                    <a :href="generatedBookUrl" download class="bg-indigo-600 text-white px-8 py-3 rounded-lg text-lg hover:bg-indigo-700 inline-flex items-center gap-2">
-                        <i class="fas fa-download"></i> Baixar PDF Agora
-                    </a>
-                    
-                    <button @click="factoryStep = 1" class="block mt-6 text-gray-500 hover:underline mx-auto">Criar outro livro</button>
-                </div>
-
-                <!-- Preview Modal -->
-                <div v-if="showPreviewModal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
-                    <div class="bg-white rounded-lg shadow-xl w-full h-full max-w-5xl flex flex-col">
-                        <div class="flex justify-between items-center p-4 border-b">
-                            <h3 class="font-bold text-lg">Prévia do Livro</h3>
-                            <button @click="showPreviewModal = false" class="text-gray-500 hover:text-gray-700">
-                                <i class="fas fa-times text-xl"></i>
-                            </button>
-                        </div>
-                        <div class="flex-1 bg-gray-100 p-4 relative">
-                            <iframe v-if="previewUrl" :src="previewUrl" class="w-full h-full border rounded shadow bg-white"></iframe>
-                            <div v-else class="flex items-center justify-center h-full">
-                                <i class="fas fa-spinner fa-spin text-4xl text-indigo-600"></i>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Dashboard Tab -->
-            <div v-if="currentTab === 'dashboard'">
-                <header class="flex justify-between items-center mb-8">
-                    <div>
-                        <h1 class="text-3xl font-bold text-gray-800">Visão Geral</h1>
-                        <p class="text-gray-500 italic mt-1">Codexia: Sua fábrica de conteúdo movida a inteligência.</p>
-                    </div>
-                    <div class="flex items-center gap-4">
-                        <button class="bg-white p-2 rounded-full shadow hover:bg-gray-50"><i class="fas fa-bell text-gray-600"></i></button>
-                        <div class="w-10 h-10 bg-indigo-500 rounded-full flex items-center justify-center text-white font-bold">A</div>
-                    </div>
-                </header>
-
-                <!-- Stats Cards -->
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-blue-500">
-                        <div class="text-gray-500 text-sm mb-1">Livros Cadastrados</div>
-                        <div class="text-2xl font-bold">{{ books.length }}</div>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-500">
-                        <div class="text-gray-500 text-sm mb-1">Vendas Totais</div>
-                        <div class="text-2xl font-bold">R$ {{ totalSales.toFixed(2).replace('.', ',') }}</div>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-purple-500">
-                        <div class="text-gray-500 text-sm mb-1">Clientes</div>
-                        <div class="text-2xl font-bold">{{ customers.length }}</div>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-orange-500">
-                        <div class="text-gray-500 text-sm mb-1">Campanhas Ativas</div>
-                        <div class="text-2xl font-bold">0</div>
-                    </div>
-                </div>
-
-                <div class="bg-white rounded-lg shadow-sm p-6">
-                    <h2 class="text-xl font-bold mb-4">Ações Rápidas</h2>
-                    <div class="flex gap-4">
-                        <button @click="currentTab = 'campaigns'" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700">Criar Novo Anúncio</button>
-                        <button @click="currentTab = 'books'" class="border border-gray-300 px-6 py-2 rounded hover:bg-gray-50">Adicionar Livro</button>
-                        <button @click="simulateSale" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700"><i class="fas fa-vial"></i> Simular Venda Teste</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Books Tab -->
-            <div v-if="currentTab === 'books'">
-                <div class="flex justify-between items-center mb-6">
-                    <h1 class="text-3xl font-bold text-gray-800">Meus Livros</h1>
-                    <button @click="openAddBookModal" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700">
-                        <i class="fas fa-plus"></i> Adicionar Livro
-                    </button>
-                </div>
-                
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    <div v-for="book in books" :key="book.id" class="bg-white rounded-lg shadow overflow-hidden flex flex-col">
-                        <div class="h-48 bg-gray-200 flex items-center justify-center overflow-hidden relative">
-                            <img v-if="book.cover_image_url" :src="book.cover_image_url" @error="book.cover_image_url = null" class="w-full h-full object-cover" alt="Capa">
-                            <i v-else class="fas fa-book text-4xl text-gray-400"></i>
-                        </div>
-                        <div class="p-4 flex-1 flex flex-col">
-                            <h3 class="font-bold text-lg mb-2">{{ book.title }}</h3>
-                            <p class="text-gray-600 text-sm mb-4 line-clamp-3">{{ book.synopsis }}</p>
-                            <div class="mt-auto pt-4 border-t flex justify-between items-center">
-                                <span class="font-bold text-green-600">R$ {{ book.price }}</span>
-                                <div class="flex gap-2 items-center">
-                                    <i v-if="book.file_path" class="fas fa-file-pdf text-red-500" title="Arquivo disponível"></i>
-                                    <button @click="openEditModal(book)" class="text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
-                                        <i class="fas fa-edit"></i> Editar
-                                    </button>
-                                    <button @click="deleteBook(book.id)" class="text-red-600 hover:text-red-800 flex items-center gap-1 ml-2">
-                                        <i class="fas fa-trash-alt"></i> Excluir
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Modal Adicionar/Editar Livro -->
-                <div v-if="showAddBookModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
-                        <h2 class="text-xl font-bold mb-4">{{ isEditing ? 'Editar Livro' : 'Adicionar Novo Livro' }}</h2>
-                        <form @submit.prevent="saveBook">
-                            <div class="mb-4">
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Título</label>
-                                <input v-model="newBook.title" type="text" required class="w-full border rounded p-2">
-                            </div>
-                            <div class="mb-4">
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Autor</label>
-                                <input v-model="newBook.author" type="text" required class="w-full border rounded p-2">
-                            </div>
-                            <div class="mb-4">
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Sinopse</label>
-                                <textarea v-model="newBook.synopsis" required class="w-full border rounded p-2" rows="3"></textarea>
-                            </div>
-                            <div class="mb-4">
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Preço (R$)</label>
-                                <input v-model="newBook.price" type="number" step="0.01" required class="w-full border rounded p-2">
-                            </div>
-                            <div class="mb-4">
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Arquivo do Livro (PDF/EPUB)</label>
-                                <input type="file" @change="handleFileUpload" accept=".pdf,.epub" class="w-full border rounded p-2">
-                                <p class="text-xs text-gray-500 mt-1">A IA usará este arquivo para extrair conteúdo.</p>
-                            </div>
-                            <div class="mb-4">
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Capa do Livro (Imagem)</label>
-                                <input type="file" @change="handleCoverUpload" accept="image/*" class="w-full border rounded p-2">
-                                <p class="text-xs text-gray-500 mt-1">Usada para gerar vídeos e anúncios.</p>
-                            </div>
-                            <div class="flex justify-end gap-2 mt-6">
-                                <button type="button" @click="showAddBookModal = false" class="bg-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-400">Cancelar</button>
-                                <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">{{ isEditing ? 'Salvar Alterações' : 'Salvar Livro' }}</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Campaigns Tab (AI) -->
-            <div v-if="currentTab === 'campaigns'">
-                <h1 class="text-3xl font-bold text-gray-800 mb-6">Criador de Conteúdo IA</h1>
-                
-                <div class="bg-white rounded-lg shadow p-6 mb-6">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Escolha o Livro</label>
-                            <select v-model="selectedBookId" class="w-full border rounded p-2 mb-4">
-                                <option v-for="book in books" :value="book.id">{{ book.title }}</option>
-                            </select>
-
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Estilo do Conteúdo</label>
-                            <select v-model="adStyle" class="w-full border rounded p-2 mb-4">
-                                <option value="cliffhanger">Cliffhanger (Suspense)</option>
-                                <option value="storytelling">Storytelling (Emocional)</option>
-                                <option value="direct">Venda Direta</option>
-                            </select>
-
-                            <button @click="generateAd" :disabled="loading" class="w-full bg-purple-600 text-white py-3 rounded hover:bg-purple-700 flex justify-center items-center gap-2">
-                                <i v-if="loading" class="fas fa-spinner fa-spin"></i>
-                                <span v-else><i class="fas fa-magic"></i> Gerar com IA</span>
-                            </button>
-                        </div>
-                        
-                        <div class="bg-gray-50 p-4 rounded border">
-                            <label class="block text-sm font-medium text-gray-500 mb-2">Prévia do Anúncio</label>
-                            <textarea v-model="generatedAd" class="w-full h-48 bg-white border rounded p-3 text-sm" placeholder="O texto gerado aparecerá aqui..."></textarea>
-                            <div class="mt-2 flex gap-2" v-if="generatedAd">
-                                <button @click="postToFacebook" class="flex-1 bg-blue-600 text-white py-2 rounded text-sm hover:bg-blue-700">
-                                    <i class="fab fa-facebook"></i> Publicar Agora
-                                </button>
-                                <button class="flex-1 bg-gray-200 text-gray-700 py-2 rounded text-sm hover:bg-gray-300">
-                                    <i class="far fa-copy"></i> Copiar
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Video Tab -->
-            <div v-if="currentTab === 'video'">
-                <h1 class="text-3xl font-bold text-gray-800 mb-6">Gerador de Vídeo IA</h1>
-                <div class="bg-white rounded-lg shadow p-6">
-                    <div class="mb-6 border-b pb-6">
-                        <h2 class="text-xl font-bold mb-4">Gerar Automaticamente com IA</h2>
-                        <p class="text-gray-600 mb-4">Selecione o livro e o estilo, e a IA criará roteiro, narração e vídeo para você.</p>
-                        
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Escolha o Livro</label>
-                                <select v-model="selectedVideoBookId" class="w-full border rounded p-2">
-                                    <option v-for="book in books" :value="book.id">{{ book.title }}</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Estilo do Vídeo</label>
-                                <select v-model="videoStyle" class="w-full border rounded p-2">
-                                    <option value="drama">Drama / Emocional</option>
-                                    <option value="suspense">Suspense / Thriller</option>
-                                    <option value="romance">Romance</option>
-                                    <option value="motivation">Motivacional</option>
-                                </select>
-                            </div>
-                        </div>
-                        <button @click="generateAutoVideo" :disabled="videoLoading" class="mt-4 bg-purple-600 text-white px-6 py-3 rounded hover:bg-purple-700 w-full md:w-auto">
-                            <i v-if="videoLoading" class="fas fa-spinner fa-spin"></i>
-                            <span v-else><i class="fas fa-magic"></i> Gerar Vídeo Completo (Roteiro + Áudio + Imagens)</span>
-                        </button>
-                    </div>
-
-                    <div v-if="generatedVideoUrl" class="mt-6">
-                        <h3 class="font-bold mb-2">Resultado:</h3>
-                        <video controls class="w-full max-w-md rounded shadow bg-black" :src="generatedVideoUrl"></video>
-                        <a :href="generatedVideoUrl" download class="block mt-2 text-blue-600 hover:underline">Baixar Vídeo</a>
-                        
-                        <div v-if="videoScriptPlan" class="mt-4 p-4 bg-gray-50 rounded border text-sm">
-                            <h4 class="font-bold">Roteiro Gerado:</h4>
-                            <p><strong>Título:</strong> {{ videoScriptPlan.title }}</p>
-                            <ul class="list-disc pl-5 mt-2">
-                                <li v-for="scene in videoScriptPlan.scenes">{{ scene.text }}</li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- YouTube Auto Tab -->
-            <div v-if="currentTab === 'youtube'">
-                <h1 class="text-3xl font-bold text-gray-800 mb-6 flex items-center justify-between">
-                    <span>Automação YouTube</span>
-                    <span v-if="youtubeStats.connected" class="text-sm bg-green-100 text-green-800 px-3 py-1 rounded-full flex items-center gap-2">
-                        <span class="w-2 h-2 bg-green-500 rounded-full"></span> Conectado: {{ youtubeStats.title }}
-                    </span>
-                    <span v-else class="text-sm bg-red-100 text-red-800 px-3 py-1 rounded-full flex items-center gap-2">
-                        <span class="w-2 h-2 bg-red-500 rounded-full"></span> Desconectado
-                    </span>
-                </h1>
-
-                <!-- Stats Cards -->
-                <div v-if="youtubeStats.connected" class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-red-600">
-                        <div class="text-gray-500 text-sm mb-1">Inscritos</div>
-                        <div class="text-3xl font-bold">{{ youtubeStats.subscribers }}</div>
-                    </div>
-                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-red-600">
-                        <div class="text-gray-500 text-sm mb-1">Visualizações</div>
-                        <div class="text-3xl font-bold">{{ youtubeStats.views }}</div>
-                    </div>
-                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-red-600">
-                        <div class="text-gray-500 text-sm mb-1">Vídeos</div>
-                        <div class="text-3xl font-bold">{{ youtubeStats.videos }}</div>
-                    </div>
-                    <div class="bg-white rounded-lg shadow p-6 flex items-center justify-center">
-                        <button @click="optimizeChannel" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 w-full">
-                            <i class="fas fa-magic"></i> Analisar & Otimizar Canal
-                        </button>
-                    </div>
-                </div>
-                
-                <div v-else class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <i class="fas fa-exclamation-triangle text-yellow-400"></i>
-                        </div>
-                        <div class="ml-3">
-                            <p class="text-sm text-yellow-700">
-                                O sistema não está conectado ao seu canal do YouTube. 
-                                <a href="#" @click="currentTab='settings'" class="font-bold underline">Vá para Configurações</a> e insira suas credenciais (Client ID, Secret, Refresh Token).
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <!-- Generator Form -->
-                    <div class="bg-white rounded-lg shadow p-6">
-                        <h2 class="text-xl font-bold mb-4">Gerar Vídeo Motivacional (Longo)</h2>
-                        <p class="text-gray-600 mb-4 text-sm">Crie vídeos de 5 a 10 minutos com roteiro profundo, narração e imagens temáticas.</p>
-                        
-                        <!-- Mode Selection -->
-                        <div class="mb-4">
-                            <label class="block text-gray-700 text-sm font-bold mb-2">Modo de Geração</label>
-                            <div class="flex gap-4">
-                                <label class="inline-flex items-center">
-                                    <input type="radio" v-model="ytVideoMode" value="topic" class="form-radio text-indigo-600">
-                                    <span class="ml-2">Gerar por Tema</span>
-                                </label>
-                                <label class="inline-flex items-center">
-                                    <input type="radio" v-model="ytVideoMode" value="story" class="form-radio text-indigo-600">
-                                    <span class="ml-2">Minha História</span>
-                                </label>
-                            </div>
-                        </div>
-
-                        <div class="mb-4" v-if="ytVideoMode === 'topic'">
-                            <label class="block text-gray-700 text-sm font-bold mb-2">Tópico / Tema</label>
-                            <input v-model="ytVideoTopic" type="text" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" placeholder="Ex: Estoicismo para dias difíceis">
-                        </div>
-
-                        <div class="mb-4" v-if="ytVideoMode === 'story'">
-                            <label class="block text-gray-700 text-sm font-bold mb-2">Sua História / Texto Base</label>
-                            <textarea v-model="ytStoryContent" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" rows="6" placeholder="Cole aqui sua história, parábola ou texto motivacional completo..."></textarea>
-                            <p class="text-xs text-gray-500 mt-1">A IA irá adaptar este texto para roteiro de vídeo, mantendo a narrativa original.</p>
-                        </div>
-
-                        <div class="mb-4">
-                            <label class="block text-gray-700 text-sm font-bold mb-2">Duração (minutos)</label>
-                            <select v-model="ytVideoDuration" class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
-                                <option value="3">3 Minutos</option>
-                                <option value="5">5 Minutos</option>
-                                <option value="8">8 Minutos</option>
-                                <option value="10">10 Minutos</option>
-                            </select>
-                        </div>
-
-                        <div class="mb-6">
-                            <label class="flex items-center">
-                                <input type="checkbox" v-model="ytAutoUpload" class="form-checkbox h-5 w-5 text-red-600">
-                                <span class="ml-2 text-gray-700">Publicar automaticamente no canal</span>
-                            </label>
-                        </div>
-
-                        <button @click="generateYoutubeVideo" :disabled="ytLoading || currentTaskId" class="w-full bg-red-600 text-white py-3 rounded hover:bg-red-700 flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                            <i v-if="ytLoading" class="fas fa-spinner fa-spin"></i>
-                            <span v-else><i class="fas fa-video"></i> Iniciar Produção Automática</span>
-                        </button>
-                    </div>
-
-                    <!-- Task Progress UI -->
-                    <div v-if="currentTaskId" class="bg-white rounded-lg shadow p-6 mt-6 border-l-4 border-indigo-500">
-                        <h3 class="font-bold text-lg mb-4 flex justify-between items-center">
-                            <span>Status da Produção</span>
-                            <span class="text-sm font-normal px-2 py-1 rounded" :class="{'bg-yellow-100 text-yellow-800': taskStatus === 'processing' || taskStatus === 'pending', 'bg-green-100 text-green-800': taskStatus === 'completed', 'bg-red-100 text-red-800': taskStatus === 'failed'}">
-                                {{ taskStatus === 'pending' ? 'Pendente' : taskStatus === 'processing' ? 'Em Produção' : taskStatus === 'completed' ? 'Concluído' : 'Falha' }}
-                            </span>
-                        </h3>
-                        
-                        <div class="mb-4">
-                            <div class="flex justify-between text-sm text-gray-600 mb-1">
-                                <span>Progresso</span>
-                                <span>{{ taskProgress }}%</span>
-                            </div>
-                            <div class="w-full bg-gray-200 rounded-full h-2.5">
-                                <div class="bg-indigo-600 h-2.5 rounded-full transition-all duration-500" :style="{ width: taskProgress + '%' }"></div>
-                            </div>
-                        </div>
-                        
-                        <p class="text-gray-700 mb-4 text-sm"><i class="fas fa-info-circle text-indigo-500 mr-1"></i> {{ taskMessage }}</p>
-                        
-                        <div v-if="taskStatus === 'processing'" class="text-xs text-gray-500 italic mb-4">
-                            Tempo estimado restante: {{ Math.max(0, Math.ceil((100 - taskProgress) * (ytVideoDuration * 60 / 100))).toFixed(0) }} segundos...
-                        </div>
-
-                        <div v-if="taskStatus === 'completed'" class="bg-green-50 p-4 rounded border border-green-200 mb-4">
-                            <p class="text-green-800 font-bold mb-2"><i class="fas fa-check-circle"></i> Vídeo gerado com sucesso!</p>
-                            <div v-if="taskResult && taskResult.video_url" class="flex gap-2">
-                                <a :href="taskResult.video_url" target="_blank" class="bg-green-600 text-white px-4 py-2 rounded text-sm hover:bg-green-700 flex-1 text-center">
-                                    <i class="fas fa-play"></i> Assistir
-                                </a>
-                                <a :href="taskResult.video_url" download class="bg-white text-green-600 border border-green-600 px-4 py-2 rounded text-sm hover:bg-green-50 flex-1 text-center">
-                                    <i class="fas fa-download"></i> Baixar
-                                </a>
-                            </div>
-                        </div>
-
-                        <div v-if="taskStatus === 'failed'" class="bg-red-50 p-4 rounded border border-red-200 mb-4">
-                            <p class="text-red-800"><i class="fas fa-times-circle"></i> Ocorreu um erro na geração.</p>
-                        </div>
-                        
-                        <button v-if="taskStatus === 'completed' || taskStatus === 'failed'" @click="resetTask" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
-                            <i class="fas fa-redo"></i> Gerar Novo Vídeo
-                        </button>
-                    </div>
-
-                    <!-- Optimization/History Results -->
-                    <div class="space-y-6">
-                         <!-- Generated Videos History -->
-                         <div class="bg-white rounded-lg shadow p-6">
-                            <h2 class="text-xl font-bold mb-4">Histórico de Vídeos Gerados</h2>
-                            <div v-if="generatedVideos.length > 0" class="overflow-y-auto max-h-60">
-                                <ul class="divide-y divide-gray-200">
-                                    <li v-for="video in generatedVideos" :key="video.filename" class="py-3 flex justify-between items-center">
-                                        <div class="flex items-center gap-3">
-                                            <i class="fas fa-file-video text-red-500 text-xl"></i>
-                                            <div>
-                                                <p class="text-sm font-medium text-gray-900 truncate w-48" :title="video.filename">{{ video.filename }}</p>
-                                                <p class="text-xs text-gray-500">{{ new Date(video.created_at * 1000).toLocaleString() }}</p>
-                                            </div>
-                                        </div>
-                                        <div class="flex gap-2">
-                                            <a :href="video.url" target="_blank" class="text-indigo-600 hover:text-indigo-900 text-sm"><i class="fas fa-play"></i> Assistir</a>
-                                            <a :href="video.url" download class="text-gray-600 hover:text-gray-900 text-sm"><i class="fas fa-download"></i></a>
-                                        </div>
-                                    </li>
-                                </ul>
-                            </div>
-                            <div v-else class="text-center text-gray-500 py-6">
-                                Nenhum vídeo gerado ainda.
-                            </div>
-                            <button @click="fetchGeneratedVideos" class="mt-2 text-sm text-indigo-600 hover:text-indigo-800 w-full text-center">
-                                <i class="fas fa-sync"></i> Atualizar Lista
-                            </button>
-                        </div>
-
-                        <!-- Analysis -->
-                        <div class="bg-white rounded-lg shadow p-6">
-                            <h2 class="text-xl font-bold mb-4">Análise do Canal</h2>
-                            <div v-if="channelAnalysis" class="space-y-4">
-                                <div class="p-3 bg-blue-50 rounded border border-blue-100">
-                                    <h3 class="font-bold text-blue-800 text-sm">Análise IA</h3>
-                                    <p class="text-sm text-blue-900 mt-1">{{ channelAnalysis.analysis }}</p>
-                                </div>
-                                <div>
-                                    <h3 class="font-bold text-gray-700 text-sm mb-2">Plano de Ação:</h3>
-                                    <ul class="list-disc pl-5 text-sm text-gray-600 space-y-1">
-                                        <li v-for="step in channelAnalysis.action_plan">{{ step }}</li>
-                                    </ul>
-                                </div>
-                                <div class="p-3 bg-green-50 rounded border border-green-100">
-                                    <h3 class="font-bold text-green-800 text-sm">Sugestões de Otimização</h3>
-                                    <div class="mt-2">
-                                        <span class="font-bold text-xs text-green-700 uppercase">Novo Título:</span>
-                                        <p class="text-sm font-bold text-green-900 mb-2">{{ channelAnalysis.new_title }}</p>
-                                        
-                                        <span class="font-bold text-xs text-green-700 uppercase">Nova Descrição:</span>
-                                        <p class="text-xs text-green-900 mt-1 italic">"{{ channelAnalysis.new_description }}"</p>
-                                    </div>
-                                </div>
-                                
-                                <button @click="executeOptimization" :disabled="ytLoading" class="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700 flex justify-center items-center gap-2">
-                                    <i v-if="ytLoading" class="fas fa-spinner fa-spin"></i>
-                                    <span v-else><i class="fas fa-check-double"></i> Executar Melhorias Agora</span>
-                                </button>
-                            </div>
-                            <div v-else class="text-center text-gray-500 py-6">
-                                <span v-if="youtubeStats.connected">Clique em "Analisar & Otimizar Canal" para ver sugestões.</span>
-                                <span v-else>Conecte o canal para habilitar a análise.</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Weekly Schedule Section -->
-                <div class="mt-8 bg-white rounded-lg shadow p-6">
-                    <h2 class="text-xl font-bold mb-6 border-b pb-2">Planejamento de Conteúdo</h2>
-                    
-                    <div class="mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                        <div class="md:col-span-4">
-                            <label class="block font-bold text-gray-700 mb-2">Tema do Planejamento</label>
-                            <input v-model="scheduleTheme" type="text" class="w-full border rounded p-3" placeholder="Ex: Jesus te Salvou, Estoicismo, Vida Saudável...">
-                        </div>
-
-                        <div>
-                            <label class="block font-bold text-gray-700 mb-2">Tipo</label>
-                            <select v-model="scheduleType" class="w-full border rounded p-3">
-                                <option value="days">Dias</option>
-                                <option value="weeks">Semanas</option>
-                                <option value="months">Meses</option>
-                            </select>
-                        </div>
-                        
-                        <div>
-                            <label class="block font-bold text-gray-700 mb-2">Quantidade</label>
-                            <input v-model="scheduleQuantity" type="number" min="1" class="w-full border rounded p-3">
-                        </div>
-                        
-                        <div>
-                            <label class="block font-bold text-gray-700 mb-2">Início</label>
-                            <input v-model="scheduleStartDate" type="date" class="w-full border rounded p-3">
-                        </div>
-
-                        <div>
-                            <button @click="generateSchedule" :disabled="scheduleLoading || !scheduleTheme" class="w-full bg-indigo-600 text-white px-6 py-3 rounded hover:bg-indigo-700 font-bold flex items-center justify-center gap-2">
-                                <i v-if="scheduleLoading" class="fas fa-spinner fa-spin"></i>
-                                <span v-else>Gerar Agenda</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div v-if="schedulePlan.length > 0" class="animate-fade-in">
-                        <div class="flex justify-between items-center mb-4">
-                            <h3 class="font-bold text-lg text-gray-800">Cronograma Gerado ({{ schedulePlan.length }} Dias)</h3>
-                            <button @click="saveSchedule" :disabled="scheduleLoading" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 text-sm font-bold flex items-center gap-2">
-                                <i class="fas fa-save"></i> Salvar e Agendar Todos
-                            </button>
-                        </div>
-
-                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                            <div v-for="day in schedulePlan" :key="day.day" class="bg-gray-50 border rounded-lg p-4">
-                                <div class="font-bold text-indigo-900 mb-2 border-b pb-1 flex justify-between items-start">
-                                    <div class="flex flex-col">
-                                        <span>Dia {{ day.day }}</span>
-                                        <span v-if="day.date" class="text-xs text-gray-500 font-normal">{{ day.date }}</span>
-                                    </div>
-                                    <span class="text-xs bg-indigo-100 text-indigo-800 px-2 py-1 rounded">{{ day.theme_of_day }}</span>
-                                </div>
-                                <div class="space-y-3">
-                                    <div v-for="(video, vIdx) in day.videos" :key="vIdx" class="bg-white p-2 rounded border shadow-sm text-sm relative group hover:border-indigo-300 transition">
-                                        <div class="flex justify-between items-start mb-1">
-                                            <span class="font-bold text-xs" :class="video.type === 'short' ? 'text-purple-600' : 'text-blue-600'">
-                                                <i :class="video.type === 'short' ? 'fas fa-bolt' : 'fas fa-video'"></i> {{ video.time }}
-                                            </span>
-                                            <span class="text-[10px] text-gray-400 uppercase">{{ video.type }}</span>
-                                        </div>
-                                        <p class="font-medium leading-tight mb-1">{{ video.title }}</p>
-                                        <p class="text-xs text-gray-500 line-clamp-2" :title="video.concept">{{ video.concept }}</p>
+                                <div class="space-y-4">
+                                    <div v-for="(chapter, idx) in factoryData.sections.textual" :key="idx" class="border rounded p-4 bg-white">
+                                        <input v-model="chapter.title" class="font-bold w-full mb-2 border-b border-transparent hover:border-gray-300 focus:border-indigo-500 outline-none" placeholder="Título do Capítulo">
+                                        <textarea v-model="chapter.content" class="w-full text-sm text-gray-600 border rounded p-2" rows="4"></textarea>
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    </div>
-                </div>
+                            
+                            <!-- Epilogue -->
+                            <div v-if="factoryConfig.hasEpilogue" class="mt-8 border-t pt-4">
+                                <label class="block font-bold text-sm mb-1">Posfácio/Epílogo</label>
+                                <textarea v-model="factoryData.sections.post_textual.epilogue" class="w-full border rounded p-2" rows="4"></textarea>
+                            </div>
 
-                <!-- Scheduled Videos List (New) -->
-                <div class="mt-8 bg-white rounded-lg shadow p-6">
-                    <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-xl font-bold">Agenda de Vídeos</h2>
-                        <button @click="fetchScheduledVideos" class="text-indigo-600 hover:text-indigo-800 text-sm">
-                            <i class="fas fa-sync-alt"></i> Atualizar Lista
-                        </button>
-                    </div>
-                    
-                    <div v-if="scheduledVideos.length === 0" class="text-center py-8 text-gray-500 bg-gray-50 rounded">
-                        Nenhum vídeo agendado. Gere uma agenda acima.
-                    </div>
-                    
-                    <div v-else class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tema/Título</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-200">
-                                <tr v-for="video in scheduledVideos" :key="video.id">
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full" 
-                                              :class="{
-                                                  'bg-yellow-100 text-yellow-800': video.status === 'pending' || video.status === 'queued',
-                                                  'bg-blue-100 text-blue-800': video.status === 'processing',
-                                                  'bg-green-100 text-green-800': video.status === 'completed',
-                                                  'bg-red-100 text-red-800': video.status === 'failed'
-                                              }">
-                                            <i v-if="video.status === 'processing'" class="fas fa-spinner fa-spin mr-1"></i>
-                                            {{ translateStatus(video.status) }}
-                                        </span>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 uppercase">{{ video.video_type }}</td>
-                                    <td class="px-6 py-4">
-                                        <div class="text-sm font-medium text-gray-900">{{ video.title }}</div>
-                                        <div class="text-xs text-gray-500">{{ video.theme }}</div>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                                        <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-900" title="Assistir">
-                                            <i class="fas fa-play-circle text-lg"></i>
-                                        </button>
-                                        <button v-if="video.status === 'failed' || video.status === 'completed'" @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-900" title="Refazer/Regenerar">
-                                            <i class="fas fa-redo"></i>
-                                        </button>
-                                        <button @click="deleteScheduledVideo(video)" class="text-red-600 hover:text-red-900" title="Excluir">
-                                            <i class="fas fa-trash"></i>
-                                        </button>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Customers Tab (CRM) -->
+            <!-- Customers Tab -->
             <div v-if="currentTab === 'customers'">
-                <h1 class="text-3xl font-bold text-gray-800 mb-6">Meus Clientes</h1>
-                
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Clientes (CRM)</h1>
                 <div class="bg-white rounded-lg shadow overflow-hidden">
-                    <div class="p-6 border-b flex justify-between items-center">
-                        <h2 class="text-xl font-bold">Base de Compradores</h2>
-                        <button @click="createRemarketingCampaign" class="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700">
-                            <i class="fas fa-mail-bulk"></i> Criar Campanha de Remarketing
-                        </button>
-                    </div>
-                    <table class="min-w-full divide-y divide-gray-200">
+                    <table class="w-full">
                         <thead class="bg-gray-50">
                             <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nome</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Data Cadastro</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th>
+                                <th class="p-4 text-left">Nome</th>
+                                <th class="p-4 text-left">Email</th>
+                                <th class="p-4 text-left">Data Cadastro</th>
                             </tr>
                         </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            <tr v-for="customer in customers" :key="customer.id">
-                                <td class="px-6 py-4 whitespace-nowrap">{{ customer.name }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap">{{ customer.email }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ new Date(customer.created_at).toLocaleDateString('pt-BR') }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                    <a href="#" @click.prevent="viewHistory(customer.id)" class="text-indigo-600 hover:text-indigo-900 mr-4">Ver Histórico</a>
-                                    <a href="#" @click.prevent="sendOffer(customer.id)" class="text-green-600 hover:text-green-900" title="Enviar Oferta"><i class="fas fa-gift"></i></a>
-                                </td>
-                            </tr>
-                            <tr v-if="customers.length === 0">
-                                <td colspan="4" class="px-6 py-10 text-center text-gray-500">
-                                    Nenhum cliente encontrado ainda.
-                                </td>
+                        <tbody>
+                            <tr v-for="customer in customers" :key="customer.id" class="border-t hover:bg-gray-50">
+                                <td class="p-4">{{ customer.name }}</td>
+                                <td class="p-4">{{ customer.email }}</td>
+                                <td class="p-4">{{ new Date(customer.created_at).toLocaleDateString() }}</td>
                             </tr>
                         </tbody>
                     </table>
-                </div>
-
-                <div class="mt-8 bg-white rounded-lg shadow p-6">
-                    <h2 class="text-xl font-bold mb-4">Últimas Vendas</h2>
-                    <ul class="divide-y divide-gray-200">
-                        <li v-for="sale in sales" :key="sale.id" class="py-4 flex justify-between">
-                            <div>
-                                <p class="text-sm font-medium text-gray-900">{{ sale.book_title }}</p>
-                                <p class="text-sm text-gray-500">{{ sale.customer_name }}</p>
-                            </div>
-                            <div class="text-right">
-                                <p class="text-sm font-bold text-green-600">R$ {{ sale.amount.toFixed(2).replace('.', ',') }}</p>
-                                <p class="text-xs text-gray-400">{{ new Date(sale.date).toLocaleDateString('pt-BR') }}</p>
-                            </div>
-                        </li>
-                    </ul>
                 </div>
             </div>
 
             <!-- Settings Tab -->
             <div v-if="currentTab === 'settings'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Configurações</h1>
-                <div class="bg-white rounded-lg shadow p-6 max-w-2xl">
-                    <p class="mb-4 text-sm text-gray-600">Insira suas chaves de API para ativar as integrações reais.</p>
-                    
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">OpenAI API Key</label>
-                            <input v-model="settings.openai_api_key" type="password" class="w-full border rounded p-2 focus:ring focus:ring-indigo-200" placeholder="sk-...">
-                        </div>
-                        
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Facebook Page ID</label>
-                            <input v-model="settings.facebook_page_id" type="text" class="w-full border rounded p-2 focus:ring focus:ring-indigo-200">
-                        </div>
-
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Facebook Access Token</label>
-                            <input v-model="settings.facebook_access_token" type="password" class="w-full border rounded p-2 focus:ring focus:ring-indigo-200">
-                        </div>
-
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Mercado Pago Access Token</label>
-                            <input v-model="settings.mercadopago_access_token" type="password" class="w-full border rounded p-2 focus:ring focus:ring-indigo-200">
-                        </div>
-
-                        <!-- YouTube Integration -->
-                        <div class="border-t pt-4 mt-4">
-                            <h3 class="font-bold text-lg mb-2 text-red-600"><i class="fab fa-youtube"></i> Integração YouTube</h3>
-                            <p class="text-xs text-gray-500 mb-3">
-                                Para acesso automático, crie um projeto no Google Cloud Console, ative a YouTube Data API v3 e crie credenciais OAuth 2.0.
-                                Obtenha o Refresh Token usando o OAuth Playground (https://developers.google.com/oauthplayground).
-                            </p>
-                            
-                            <div class="space-y-3">
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Client ID</label>
-                                    <input v-model="settings.youtube_client_id" type="text" class="w-full border rounded p-2 focus:ring focus:ring-indigo-200" placeholder="xxx.apps.googleusercontent.com">
-                                </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Client Secret</label>
-                                    <input v-model="settings.youtube_client_secret" type="password" class="w-full border rounded p-2 focus:ring focus:ring-indigo-200">
-                                </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Refresh Token (Permanente)</label>
-                                    <input v-model="settings.youtube_refresh_token" type="password" class="w-full border rounded p-2 focus:ring focus:ring-indigo-200" placeholder="1//0g...">
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="pt-4">
-                            <button @click="saveSettings" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 w-full">
-                                <i class="fas fa-save"></i> Salvar Configurações
-                            </button>
-                        </div>
-                        <div v-if="saveMessage" class="mt-2 text-center text-green-600 font-medium">
-                            {{ saveMessage }}
-                        </div>
+                <div class="bg-white p-6 rounded-lg shadow max-w-2xl">
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">OpenAI API Key</label>
+                        <input v-model="settings.openai_api_key" type="password" class="w-full border p-2 rounded">
                     </div>
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">Mercado Pago Access Token</label>
+                        <input v-model="settings.mercadopago_access_token" type="password" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">Facebook Page ID</label>
+                        <input v-model="settings.facebook_page_id" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2">Facebook Access Token</label>
+                        <input v-model="settings.facebook_access_token" type="password" class="w-full border p-2 rounded">
+                    </div>
+                    <button @click="saveSettings" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700">
+                        Salvar Configurações
+                    </button>
+                    <p v-if="saveMessage" class="mt-4 text-green-600 font-bold">{{ saveMessage }}</p>
                 </div>
             </div>
 
-        </main>
+            </main>
         </div>
-        
-        <!-- Cover Preview Modal -->
-        <div v-if="previewCoverUrl" class="fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-4 animate-fade-in" style="display: none" :style="{ display: previewCoverUrl ? 'flex' : 'none' }" @click.self="previewCoverUrl = null">
-            <div class="relative max-w-4xl max-h-full flex flex-col items-center">
-                <button @click="previewCoverUrl = null" class="absolute -top-10 right-0 text-white text-2xl hover:text-gray-300 flex items-center gap-2">
-                    <i class="fas fa-times"></i> Fechar
-                </button>
-                <img :src="previewCoverUrl" class="max-w-full max-h-[80vh] rounded shadow-2xl border-4 border-white mb-6">
-                <button @click="selectCoverByUrl(previewCoverUrl); previewCoverUrl = null" class="bg-purple-600 text-white px-8 py-3 rounded-full font-bold text-lg hover:bg-purple-700 shadow-lg transform transition hover:scale-105 flex items-center gap-2">
-                    <i class="fas fa-check-circle"></i> Escolher Esta Capa
-                </button>
+
+        <!-- Add Book Modal -->
+        <div v-if="showAddBookModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
+                <h2 class="text-2xl font-bold mb-4">{{ isEditing ? 'Editar Livro' : 'Novo Livro' }}</h2>
+                <div class="space-y-4">
+                    <input v-model="newBook.title" placeholder="Título" class="w-full border p-2 rounded">
+                    <input v-model="newBook.author" placeholder="Autor" class="w-full border p-2 rounded">
+                    <textarea v-model="newBook.synopsis" placeholder="Sinopse" class="w-full border p-2 rounded"></textarea>
+                    <input v-model="newBook.price" type="number" step="0.01" placeholder="Preço" class="w-full border p-2 rounded">
+                    <input v-model="newBook.payment_link" placeholder="Link de Pagamento" class="w-full border p-2 rounded">
+                    <div>
+                        <label class="block text-sm font-bold mb-1">Arquivo do Livro (PDF/DOCX)</label>
+                        <input type="file" @change="handleFileUpload" class="w-full border p-2 rounded">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-1">Capa (Imagem)</label>
+                        <input type="file" @change="handleCoverUpload" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="flex justify-end gap-2 mt-4">
+                        <button @click="showAddBookModal = false" class="px-4 py-2 text-gray-600">Cancelar</button>
+                        <button @click="saveBook" class="bg-indigo-600 text-white px-4 py-2 rounded">Salvar</button>
+                    </div>
+                </div>
             </div>
         </div>
+
+        <!-- Change Password Modal -->
+        <div v-if="showChangePasswordModal" class="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-md w-full">
+                <h2 class="text-2xl font-bold mb-4 text-gray-800">Alterar Senha</h2>
+                <p v-if="mustChangePassword" class="mb-4 text-amber-600 font-medium bg-amber-50 p-3 rounded border border-amber-200">
+                    <i class="fas fa-exclamation-triangle mr-2"></i> Por segurança, você deve alterar sua senha no primeiro acesso.
+                </p>
+                <form @submit.prevent="changePassword">
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">Senha Atual</label>
+                        <input v-model="passwordForm.current" type="password" class="w-full border rounded p-2" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">Nova Senha</label>
+                        <input v-model="passwordForm.new" type="password" class="w-full border rounded p-2" required minlength="6">
+                    </div>
+                    <div class="mb-6">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">Confirmar Nova Senha</label>
+                        <input v-model="passwordForm.confirm" type="password" class="w-full border rounded p-2" required minlength="6">
+                    </div>
+                    <div v-if="passwordMessage" :class="`mb-4 text-sm ${passwordMessageType === 'error' ? 'text-red-600' : 'text-green-600'}`">
+                        {{ passwordMessage }}
+                    </div>
+                    <div class="flex justify-end gap-2">
+                        <button v-if="!mustChangePassword" type="button" @click="showChangePasswordModal = false" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+                        <button type="submit" :disabled="loading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50">
+                            <span v-if="!loading">Alterar Senha</span>
+                            <i v-else class="fas fa-spinner fa-spin"></i>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -1043,8 +603,10 @@
                     ytVideoDuration: 5,
                     ytAutoUpload: false,
                     ytLoading: false,
+                    checkingYoutube: true,
                     channelAnalysis: null,
                     generatedVideos: [], // Lista de vídeos gerados
+                    monitorReports: [], // Lista de relatórios de monitoramento
                     
                     // Weekly Schedule
                     scheduleTheme: '',
@@ -1139,7 +701,15 @@
                         facebook_access_token: '',
                         mercadopago_access_token: ''
                     },
-                    saveMessage: ''
+                    saveMessage: '',
+
+                    // Auth
+                    showChangePasswordModal: false,
+                    mustChangePassword: false,
+                    passwordForm: { current: '', new: '', confirm: '' },
+                    passwordMessage: '',
+                    passwordMessageType: '',
+                    user: null
                 }
             },
             computed: {
@@ -1148,27 +718,139 @@
                 }
             },
             async mounted() {
+                await this.checkAuth();
+                
                 await this.fetchBooks();
                 await this.fetchSettings();
                 await this.fetchCRMData();
                 await this.fetchScheduledVideos();
+                await this.fetchReports();
+                await this.fetchYoutubeStats(); // Check YouTube status on load
                 
                 // Polling for updates
                 setInterval(() => {
                     if (this.currentTab === 'youtube') {
                         this.fetchScheduledVideos();
+                        this.fetchReports();
+                        this.fetchYoutubeStats(); // Keep status updated
                     }
                 }, 10000);
             },
             methods: {
+                getAuthHeaders() {
+                    const token = localStorage.getItem('access_token');
+                    return token ? { 'Authorization': `Bearer ${token}` } : {};
+                },
+                async authFetch(url, options = {}) {
+                    const headers = { ...options.headers, ...this.getAuthHeaders() };
+                    const res = await fetch(url, { ...options, headers });
+                    if (res.status === 401) {
+                        this.logout();
+                    }
+                    return res;
+                },
+                async checkAuth() {
+                    const token = localStorage.getItem('access_token');
+                    if (!token) {
+                        window.location.href = '/login.html';
+                        return;
+                    }
+                    
+                    try {
+                        const res = await fetch('/auth/me', {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.user = data;
+                            if (data.must_change_password) {
+                                this.mustChangePassword = true;
+                                this.showChangePasswordModal = true;
+                            }
+                        } else {
+                            this.logout();
+                        }
+                    } catch (e) {
+                        this.logout();
+                    }
+                },
+                logout() {
+                    localStorage.removeItem('access_token');
+                    localStorage.removeItem('must_change_password');
+                    window.location.href = '/login.html';
+                },
+                async changePassword() {
+                    if (this.passwordForm.new !== this.passwordForm.confirm) {
+                        this.passwordMessage = 'As senhas não coincidem';
+                        this.passwordMessageType = 'error';
+                        return;
+                    }
+                    
+                    this.loading = true;
+                    this.passwordMessage = '';
+                    
+                    try {
+                        const res = await fetch('/auth/change-password', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+                            },
+                            body: JSON.stringify({
+                                current_password: this.passwordForm.current,
+                                new_password: this.passwordForm.new
+                            })
+                        });
+                        
+                        if (res.ok) {
+                            this.passwordMessage = 'Senha alterada com sucesso!';
+                            this.passwordMessageType = 'success';
+                            this.mustChangePassword = false;
+                            setTimeout(() => {
+                                this.showChangePasswordModal = false;
+                                this.passwordForm = { current: '', new: '', confirm: '' };
+                            }, 1500);
+                        } else {
+                            const data = await res.json();
+                            this.passwordMessage = data.detail || 'Erro ao alterar senha';
+                            this.passwordMessageType = 'error';
+                        }
+                    } catch (e) {
+                        this.passwordMessage = 'Erro de conexão';
+                        this.passwordMessageType = 'error';
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                async fetchYoutubeStats() {
+                    this.checkingYoutube = true;
+                    try {
+                        const res = await this.authFetch('/youtube/stats');
+                        if (res.ok) {
+                            this.youtubeStats = await res.json();
+                        } else {
+                            this.youtubeStats.connected = false;
+                        }
+                    } catch (e) {
+                        console.error("Error fetching YouTube stats:", e);
+                        this.youtubeStats.connected = false;
+                    } finally {
+                        this.checkingYoutube = false;
+                    }
+                },
                 async fetchBooks() {
                     try {
-                        const res = await fetch('/books/');
+                        console.log("Fetching books...");
+                        const res = await this.authFetch('/books/');
+                        if (!res.ok) throw new Error("Falha na resposta do servidor: " + res.status);
                         this.books = await res.json();
+                        console.log("Books loaded:", this.books);
                         if (this.books.length > 0) {
                             this.selectedBookId = this.books[0].id;
                         }
-                    } catch (e) { console.error(e); }
+                    } catch (e) { 
+                        console.error("Error fetching books:", e); 
+                    }
                 },
                 handleFileUpload(event) {
                     this.newBook.file = event.target.files[0];
@@ -1191,7 +873,7 @@
                 async deleteBook(id) {
                     if(!confirm("Tem certeza que deseja excluir este livro?")) return;
                     try {
-                        const res = await fetch(`/books/${id}`, { method: 'DELETE' });
+                        const res = await this.authFetch(`/books/${id}`, { method: 'DELETE' });
                         if (res.ok) {
                             alert("Livro excluído com sucesso!");
                             this.fetchBooks();
@@ -1226,7 +908,10 @@
                             method = 'PUT';
                         }
 
-                        const res = await fetch(url, {
+                        // Use simple fetch here because FormData is special with headers (Content-Type)
+                        // Actually, if we use authFetch, we pass headers. fetch handles FormData Content-Type automatically IF we don't set it.
+                        // authFetch adds Authorization. It should be fine.
+                        const res = await this.authFetch(url, {
                             method: method,
                             body: formData
                         });
@@ -1245,25 +930,33 @@
                 },
                 async fetchSettings() {
                     try {
-                        const res = await fetch('/settings/');
+                        const res = await this.authFetch('/settings/');
                         this.settings = await res.json();
                     } catch (e) { console.error(e); }
                 },
                 async fetchCRMData() {
                     try {
-                        const custRes = await fetch('/crm/customers');
+                        const custRes = await this.authFetch('/crm/customers');
                         this.customers = await custRes.json();
                         
-                        const salesRes = await fetch('/crm/sales');
+                        const salesRes = await this.authFetch('/crm/sales');
                         this.sales = await salesRes.json();
                     } catch (e) { console.error(e); }
                 },
                 // Scheduled Videos Methods
                 async fetchScheduledVideos() {
                     try {
-                        const res = await fetch('/youtube/schedule');
+                        const res = await this.authFetch('/youtube/schedule');
                         this.scheduledVideos = await res.json();
                     } catch (e) { console.error("Erro ao buscar agenda:", e); }
+                },
+                async fetchReports() {
+                    try {
+                        const res = await this.authFetch('/youtube/reports');
+                        if (res.ok) {
+                            this.monitorReports = await res.json();
+                        }
+                    } catch (e) { console.error(e); }
                 },
                 translateStatus(status) {
                     const map = {
@@ -1278,7 +971,7 @@
                 async regenerateScheduledVideo(video) {
                     if (!confirm("Deseja regenerar este vídeo? O conteúdo atual será perdido.")) return;
                     try {
-                        const res = await fetch(`/youtube/schedule/${video.id}/regenerate`, { method: 'POST' });
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}/regenerate`, { method: 'POST' });
                         if (res.ok) {
                             alert("Vídeo colocado na fila de regeneração.");
                             this.fetchScheduledVideos();
@@ -1290,7 +983,7 @@
                 async deleteScheduledVideo(video) {
                     if (!confirm("Tem certeza que deseja excluir este agendamento?")) return;
                     try {
-                        const res = await fetch(`/youtube/schedule/${video.id}`, { method: 'DELETE' });
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}`, { method: 'DELETE' });
                         if (res.ok) {
                             this.fetchScheduledVideos();
                         } else {
@@ -1307,7 +1000,7 @@
                 },
                 async saveSettings() {
                     try {
-                        const res = await fetch('/settings/', {
+                        const res = await this.authFetch('/settings/', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(this.settings)
@@ -1323,7 +1016,7 @@
                 async generateAd() {
                     this.loading = true;
                     try {
-                        const res = await fetch('/marketing/generate-ad', {
+                        const res = await this.authFetch('/marketing/generate-ad', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
@@ -1342,7 +1035,7 @@
                 async postToFacebook() {
                     if (!confirm("Tem certeza que deseja postar na Fanpage?")) return;
                     try {
-                        const res = await fetch('/marketing/post-to-facebook', {
+                        const res = await this.authFetch('/marketing/post-to-facebook', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
@@ -1362,7 +1055,7 @@
                     this.generatedVideoUrl = null;
                     try {
                         const scriptLines = this.videoScript.split('\n').filter(line => line.trim() !== '');
-                        const res = await fetch('/video/generate', {
+                        const res = await this.authFetch('/video/generate', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
@@ -1378,299 +1071,56 @@
                         this.videoLoading = false;
                     }
                 },
-                async generateAutoVideo() {
-                    this.videoLoading = true;
-                    this.generatedVideoUrl = null;
-                    this.videoScriptPlan = null;
-                    try {
-                        const res = await fetch('/video/generate-auto', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({
-                                book_id: this.selectedVideoBookId,
-                                style: this.videoStyle
-                            })
-                        });
-                        const data = await res.json();
-                        if (res.ok) {
-                            this.generatedVideoUrl = data.video_url;
-                            this.videoScriptPlan = data.script;
-                        } else {
-                            alert("Erro: " + data.detail);
-                        }
-                    } catch (e) {
-                        alert("Erro ao gerar vídeo automático: " + e);
-                    } finally {
-                        this.videoLoading = false;
-                    }
-                },
-                async fetchYoutubeStats() {
-                    try {
-                        const response = await fetch('/youtube/stats');
-                        this.youtubeStats = await response.json();
-                        this.fetchGeneratedVideos(); // Carregar vídeos gerados ao carregar stats
-                    } catch (error) {
-                        console.error('Erro ao buscar stats do YouTube:', error);
-                    }
-                },
-                async fetchGeneratedVideos() {
-                    try {
-                        const res = await fetch('/youtube/videos');
-                        this.generatedVideos = await res.json();
-                    } catch (e) { console.error(e); }
-                },
-                async optimizeChannel() {
-                    try {
-                        const response = await fetch('/youtube/optimize', { method: 'POST' });
-                        this.channelAnalysis = await response.json();
-                    } catch (error) {
-                        console.error('Erro na otimização:', error);
-                        alert('Erro ao otimizar canal');
-                    }
-                },
-                async executeOptimization() {
-                    if (!this.channelAnalysis) return;
-                    if (!confirm("Isso atualizará o título e a descrição do seu canal. Deseja continuar?")) return;
-                    
-                    this.ytLoading = true;
-                    try {
-                        const res = await fetch('/youtube/optimize/execute', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({
-                                title: this.channelAnalysis.new_title,
-                                description: this.channelAnalysis.new_description
-                            })
-                        });
-                        const data = await res.json();
-                        if (data.error) {
-                            alert("Erro: " + data.error);
-                        } else {
-                            alert("Canal atualizado com sucesso!");
-                            this.fetchYoutubeStats(); // Refresh stats
-                        }
-                    } catch (e) {
-                        alert("Erro ao executar otimização: " + e);
-                    } finally {
-                        this.ytLoading = false;
-                    }
-                },
-                async generateSchedule() {
-                    this.scheduleLoading = true;
-                    this.schedulePlan = [];
-                    try {
-                        const res = await fetch('/youtube/schedule/generate', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ 
-                                theme: this.scheduleTheme,
-                                duration_type: this.scheduleType,
-                                duration_value: this.scheduleQuantity,
-                                start_date: this.scheduleStartDate
-                            })
-                        });
-                        if (res.ok) {
-                            this.schedulePlan = await res.json();
-                        } else {
-                            alert("Erro ao gerar agenda");
-                        }
-                    } catch (e) {
-                        alert("Erro: " + e);
-                    } finally {
-                        this.scheduleLoading = false;
-                    }
-                },
-                async saveSchedule() {
-                    if (!this.schedulePlan.length) return;
-                    if (!confirm(`Deseja agendar ${this.schedulePlan.length * 5} vídeos?`)) return;
-
-                    this.scheduleLoading = true;
-                    try {
-                        const res = await fetch('/youtube/schedule/save', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify(this.schedulePlan)
-                        });
-                        if (res.ok) {
-                            alert("Agenda salva com sucesso! Os vídeos serão processados em segundo plano.");
-                            this.schedulePlan = [];
-                            this.scheduleTheme = '';
-                            this.fetchScheduledVideos();
-                        } else {
-                            alert("Erro ao salvar agenda");
-                        }
-                    } catch (e) {
-                        alert("Erro: " + e);
-                    } finally {
-                        this.scheduleLoading = false;
-                    }
-                },
-                // --- Book Factory Methods ---
+                
+                // Book Factory Methods
                 async uploadBookMaterial() {
-                    if (!this.$refs.manuscriptFile.files[0]) return alert('Selecione o arquivo do livro!');
+                    const file = this.$refs.manuscriptFile.files[0];
+                    if (!file) return alert("Selecione um arquivo!");
                     
                     this.factoryLoading = true;
                     const formData = new FormData();
-                    formData.append('file', this.$refs.manuscriptFile.files[0]);
-
+                    formData.append('file', file);
+                    
                     try {
-                        const res = await fetch('/factory/upload', {
+                        const res = await this.authFetch('/factory/upload-manuscript', {
                             method: 'POST',
                             body: formData
                         });
                         const data = await res.json();
                         
-                        // Populate Factory Data
-                        this.factoryData.metadata.title = data.filename.replace(/\.[^/.]+$/, ""); // remove extension
-                        this.factoryData.cover_filename = null;
-                        this.factoryData.raw_text_preview = data.raw_text_preview || "";
-                        
-                        // Populate Sections based on Analysis
-                        if (data.suggestions.synopsis) {
-                            // Assuming Back Cover is not in the list but handled as Synopsis logic for now or we create a specific field
-                            // For this MVP, we treat synopsis as a prompt result for "Back Cover" if needed, or just let user edit.
-                        }
-                        
-                        // Set suggestions
-                        this.factoryData.sections.pre_textual.dedication = data.suggestions.dedication || "";
-                        this.factoryData.sections.pre_textual.acknowledgments = data.suggestions.acknowledgments || "";
-                        this.factoryData.sections.pre_textual.introduction = data.suggestions.introduction || "";
-                        this.factoryData.sections.pre_textual.epigraph = data.suggestions.epigraph;
-                        this.factoryData.sections.pre_textual.preface = data.suggestions.preface;
-                        
-                        if (data.suggestions.dedication) this.factoryConfig.hasDedication = true;
-                        if (data.suggestions.acknowledgments) this.factoryConfig.hasAcknowledgments = true;
-                        if (data.suggestions.introduction) this.factoryConfig.hasIntroduction = true;
-                        
-                        if (data.suggestions.preface) {
-                            this.factoryConfig.hasPreface = true;
-                        }
-                        
-                        // Handle Chapters
-                        if (data.detected_chapters && data.detected_chapters.length > 0) {
-                            this.factoryData.sections.textual = data.detected_chapters.map(item => ({
-                                title: typeof item === 'string' ? item : item.title,
-                                content: typeof item === 'string' ? "" : (item.content || "")
-                            }));
-                        }
-
-                        this.factoryStep = 2;
-                    } catch (e) {
-                        console.error(e);
-                        alert('Erro no upload/análise: ' + e);
-                    } finally {
-                        this.factoryLoading = false;
-                    }
-                },
-                async uploadCover(event) {
-                     const file = event.target.files[0];
-                     if (!file) return;
-                     
-                     const formData = new FormData();
-                     formData.append('file', file);
-                     
-                     this.factoryLoading = true;
-                     try {
-                         const res = await fetch('/factory/upload_cover', {
-                             method: 'POST',
-                             body: formData
-                         });
-                         const data = await res.json();
-                         this.factoryData.cover_filename = data.filename;
-                     } catch (e) {
-                         alert("Erro ao fazer upload da capa: " + e);
-                     } finally {
-                         this.factoryLoading = false;
-                     }
-                },
-                async generateCovers() {
-                     if (!this.factoryData.raw_text_preview && !this.factoryData.metadata.title) {
-                         alert("É necessário ter conteúdo ou título para gerar capas.");
-                         return;
-                     }
-                     
-                     this.factoryLoading = true;
-                     this.generatedCovers = [];
-                     this.selectedCoverIndex = null;
-                     
-                     try {
-                         const res = await fetch('/factory/generate_covers', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({
-                                title: this.factoryData.metadata.title || "Livro",
-                                context: this.factoryData.raw_text_preview || "",
-                                author: this.factoryData.metadata.author || "",
-                                subtitle: this.factoryData.metadata.subtitle || ""
-                            })
-                        });
-                         const data = await res.json();
-                         this.generatedCovers = data.covers;
-                     } catch (e) {
-                         alert("Erro ao gerar capas: " + e);
-                     } finally {
-                         this.factoryLoading = false;
-                     }
-                },
-                selectCover(idx) {
-                     this.selectedCoverIndex = idx;
-                     this.factoryData.cover_filename = this.generatedCovers[idx];
-                },
-                selectCoverByUrl(url) {
-                     const idx = this.generatedCovers.indexOf(url);
-                     if (idx !== -1) {
-                         this.selectCover(idx);
-                     } else {
-                         this.factoryData.cover_filename = url;
-                     }
-                },
-                async regenerateSection(section) {
-                    if (!confirm("Regenerar este conteúdo? O texto atual será substituído.")) return;
-                    
-                    this.factoryLoading = true;
-                    try {
-                        const res = await fetch('/factory/regenerate_section', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({
-                                section_type: section,
-                                context: this.factoryData.raw_text_preview || "",
-                                title: this.factoryData.metadata.title
-                            })
-                        });
-                        const data = await res.json();
-                        
-                        if (section === 'epigraph') {
-                            this.factoryData.sections.pre_textual.epigraph = data.content;
-                        } else if (section === 'preface') {
-                            this.factoryData.sections.pre_textual.preface = data.content;
+                        if (data.analysis) {
+                            this.factoryData.metadata.title = data.analysis.title || "";
+                            this.factoryData.metadata.author = data.analysis.author || "";
+                            this.factoryData.sections.textual = data.analysis.chapters || [];
+                            
+                            // Detect existing sections
+                            if (data.analysis.dedication) { this.factoryConfig.hasDedication = true; this.factoryData.sections.pre_textual.dedication = data.analysis.dedication; }
+                            if (data.analysis.acknowledgments) { this.factoryConfig.hasAcknowledgments = true; this.factoryData.sections.pre_textual.acknowledgments = data.analysis.acknowledgments; }
+                            if (data.analysis.introduction) { this.factoryConfig.hasIntroduction = true; this.factoryData.sections.pre_textual.introduction = data.analysis.introduction; }
+                            if (data.analysis.preface) { this.factoryConfig.hasPreface = true; this.factoryData.sections.pre_textual.preface = data.analysis.preface; }
+                            
+                            this.factoryStep = 2;
                         }
                     } catch (e) {
-                        alert("Erro ao regenerar: " + e);
+                        alert("Erro no upload: " + e);
                     } finally {
                         this.factoryLoading = false;
                     }
                 },
                 async previewBook() {
-                    this.showPreviewModal = true;
-                    this.previewUrl = null;
                     this.factoryLoading = true;
                     try {
-                        const res = await fetch('/factory/preview', {
+                        const res = await this.authFetch('/factory/generate-preview', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(this.factoryData)
                         });
                         const data = await res.json();
-                        if (data.status === 'success') {
-                            this.previewUrl = data.preview_url;
-                        } else {
-                            alert('Erro ao gerar prévia: ' + data.detail);
-                            this.showPreviewModal = false;
+                        if (data.preview_url) {
+                            window.open(data.preview_url, '_blank');
                         }
                     } catch (e) {
-                        alert('Erro ao gerar prévia: ' + e);
-                        this.showPreviewModal = false;
+                        alert("Erro ao gerar prévia: " + e);
                     } finally {
                         this.factoryLoading = false;
                     }
@@ -1678,164 +1128,72 @@
                 async generateBookPdf() {
                     this.factoryLoading = true;
                     try {
-                        const res = await fetch('/factory/generate', {
+                        const res = await this.authFetch('/factory/generate-pdf', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(this.factoryData)
                         });
                         const data = await res.json();
-                        if (data.status === 'success') {
-                            this.generatedBookUrl = data.download_url;
-                            this.factoryStep = 3;
-                        } else {
-                            alert('Erro na geração');
+                        if (data.pdf_url) {
+                            window.open(data.pdf_url, '_blank');
+                            // Refresh books list to show new book
+                            this.fetchBooks();
                         }
                     } catch (e) {
-                        alert('Erro ao gerar PDF: ' + e);
+                        alert("Erro ao gerar PDF final: " + e);
                     } finally {
                         this.factoryLoading = false;
                     }
                 },
-                addChapter() {
-                    this.factoryData.sections.textual.push({
-                        title: `Capítulo ${this.factoryData.sections.textual.length + 1}`,
-                        content: ""
-                    });
-                },
-                removeChapter(index) {
-                    this.factoryData.sections.textual.splice(index, 1);
-                },
-                async generateYoutubeVideo() {
-                    if (this.ytVideoMode === 'topic' && !this.ytVideoTopic) return alert('Digite um tópico!');
-                    if (this.ytVideoMode === 'story' && !this.ytStoryContent) return alert('Insira o conteúdo da história!');
-
-                    this.ytLoading = true;
-                    this.resetTask();
+                async uploadCover(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
                     try {
-                        const response = await fetch('/youtube/generate_video', {
+                        const res = await this.authFetch('/factory/upload-cover', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await res.json();
+                        this.factoryData.cover_filename = data.filename;
+                    } catch (e) {
+                        console.error(e);
+                    }
+                },
+                async generateCovers() {
+                    this.factoryLoading = true;
+                    this.generatedCovers = [];
+                    try {
+                        const res = await this.authFetch('/factory/generate-covers', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
-                                topic: this.ytVideoTopic,
-                                duration: parseInt(this.ytVideoDuration),
-                                auto_upload: this.ytAutoUpload,
-                                mode: this.ytVideoMode,
-                                story_content: this.ytStoryContent
+                                title: this.factoryData.metadata.title,
+                                author: this.factoryData.metadata.author,
+                                description: this.factoryData.sections.textual.map(c => c.content).join(" ").substring(0, 500)
                             })
                         });
-                        const data = await response.json();
-                        if (data.task_id) {
-                            this.currentTaskId = data.task_id;
-                            this.taskStatus = 'pending';
-                            this.taskMessage = 'Iniciando...';
-                            this.pollTaskStatus();
-                        } else {
-                            alert('Erro: ID da tarefa não retornado.');
-                        }
-                    } catch (error) {
-                        console.error('Erro ao gerar vídeo:', error);
-                        alert('Erro ao iniciar geração');
+                        const data = await res.json();
+                        this.generatedCovers = data.covers;
+                    } catch (e) {
+                        alert("Erro ao gerar capas: " + e);
                     } finally {
-                        this.ytLoading = false;
+                        this.factoryLoading = false;
                     }
                 },
-                pollTaskStatus() {
-                    if (this.pollingInterval) clearInterval(this.pollingInterval);
-                    
-                    this.pollingInterval = setInterval(async () => {
-                        if (!this.currentTaskId) return;
-                        
-                        try {
-                            const res = await fetch(`/youtube/task/${this.currentTaskId}`);
-                            if (!res.ok) return;
-                            
-                            const task = await res.json();
-                            this.taskStatus = task.status;
-                            this.taskProgress = task.progress;
-                            this.taskMessage = task.message;
-                            this.taskResult = task.result;
-                            
-                            if (task.status === 'completed' || task.status === 'failed') {
-                                clearInterval(this.pollingInterval);
-                                this.pollingInterval = null;
-                                if (task.status === 'completed') {
-                                    this.fetchGeneratedVideos(); // Atualiza lista
-                                    this.fetchYoutubeStats(); // Atualiza stats
-                                }
-                            }
-                        } catch (e) {
-                            console.error("Erro no polling:", e);
-                        }
-                    }, 2000); // Poll a cada 2 segundos
+                selectCover(idx) {
+                    this.selectedCoverIndex = idx;
+                    this.factoryData.cover_filename = this.generatedCovers[idx];
                 },
-                resetTask() {
-                    this.currentTaskId = null;
-                    this.taskStatus = null;
-                    this.taskProgress = 0;
-                    this.taskMessage = '';
-                    this.taskResult = null;
-                    if (this.pollingInterval) {
-                        clearInterval(this.pollingInterval);
-                        this.pollingInterval = null;
-                    }
-                },
-                async simulateSale() {
-                    try {
-                        const res = await fetch('/webhook/simulate-sale', { method: 'POST' });
-                        const data = await res.json();
-                        alert(`Venda simulada!\nCliente: ${data.customer}\nLivro: ${data.book}`);
-                        this.fetchCRMData(); // Refresh data
-                    } catch (e) {
-                        alert("Erro ao simular venda");
-                    }
-                },
-                async createRemarketingCampaign() {
-                    if(!confirm("Deseja enviar oferta para toda a base de clientes?")) return;
-                    try {
-                        const res = await fetch('/crm/remarketing', { method: 'POST' });
-                        const data = await res.json();
-                        alert(data.message);
-                    } catch (e) {
-                        alert("Erro ao criar campanha");
-                    }
-                },
-                async viewHistory(customerId) {
-                    try {
-                        const res = await fetch(`/crm/history/${customerId}`);
-                        const data = await res.json();
-                        let historyText = `Histórico do Cliente ${data.customer_id}:\n\n`;
-                        data.history.forEach(item => {
-                            historyText += `- ${item.date}: ${item.action}\n`;
-                        });
-                        alert(historyText);
-                    } catch (e) {
-                        alert("Erro ao buscar histórico");
-                    }
-                },
-                async sendOffer(customerId) {
-                    if(!confirm("Enviar cupom de desconto para este cliente?")) return;
-                    try {
-                        const res = await fetch(`/crm/send-offer/${customerId}`, { method: 'POST' });
-                        const data = await res.json();
-                        alert(data.message);
-                    } catch (e) {
-                        alert("Erro ao enviar oferta");
-                    }
+                async regenerateSection(sectionType) {
+                    // Logic to call AI for a specific section
+                    alert("Funcionalidade de regeneração individual em desenvolvimento.");
                 }
             }
         }).mount('#app')
-
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/static/sw.js')
-                    .then(registration => {
-                        console.log('SW registered: ', registration);
-                    })
-                    .catch(registrationError => {
-                        console.log('SW registration failed: ', registrationError);
-                    });
-            });
-        }
     </script>
 </body>
 </html>

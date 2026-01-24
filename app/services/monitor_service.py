@@ -1,0 +1,94 @@
+from apscheduler.schedulers.background import BackgroundScheduler
+from app.services.youtube_service import YouTubeService
+from app.services.ai_generator import AIContentGenerator
+from app.services.video_processing import process_scheduled_video
+from app.database import SessionLocal
+from app.models import ChannelReport, ScheduledVideo
+import datetime
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class MonitorService:
+    def __init__(self):
+        self.scheduler = BackgroundScheduler()
+        self.job = None
+        self.queue_job = None
+
+    def start(self):
+        if not self.job:
+            # Run every 10 minutes
+            self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=10)
+            # Run video queue check every 1 minute
+            self.queue_job = self.scheduler.add_job(self.process_video_queue, 'interval', minutes=1, max_instances=1)
+            
+            self.scheduler.start()
+            logger.info("Monitoramento do canal e processador de fila iniciados.")
+
+    def stop(self):
+        if self.scheduler.running:
+            self.scheduler.shutdown()
+            logger.info("Monitoramento do canal parado.")
+
+    def process_video_queue(self):
+        """Verifica se há vídeos na fila e inicia processamento"""
+        db = SessionLocal()
+        try:
+            # 1. Check if any video is currently processing (to avoid overload)
+            processing = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").first()
+            if processing:
+                # Optional: Check if stuck (e.g. > 1 hour) and reset?
+                # For now, just wait.
+                logger.info(f"Fila ocupada: Vídeo {processing.id} está processando.")
+                return
+
+            # 2. Pick next queued video
+            next_video = db.query(ScheduledVideo).filter(ScheduledVideo.status == "queued").order_by(ScheduledVideo.id.asc()).first()
+            
+            if next_video:
+                logger.info(f"Iniciando processamento do vídeo agendado {next_video.id}...")
+                # We call the processor directly (synchronously in this thread)
+                # Since we use max_instances=1, this won't overlap with itself.
+                process_scheduled_video(next_video.id)
+            else:
+                pass # Nothing to do
+                
+        except Exception as e:
+            logger.error(f"Erro no processador de fila: {e}")
+        finally:
+            db.close()
+
+    def check_channel_status(self):
+        logger.info(f"[{datetime.datetime.now()}] Executando verificação de canal...")
+        db = SessionLocal()
+        try:
+            yt_service = YouTubeService()
+            stats = yt_service.get_channel_stats()
+            
+            # Even if not connected (mock data), we can generate a report for testing purposes if desired,
+            # but usually we want real data. For now, let's proceed if stats are returned.
+            
+            # Analyze with IA
+            ai_service = AIContentGenerator()
+            report_data = ai_service.generate_monitor_report(stats)
+            
+            # Save Report
+            report = ChannelReport(
+                subscribers=int(stats.get('subscribers', 0)),
+                views=int(stats.get('views', 0)),
+                videos=int(stats.get('videos', 0)),
+                analysis_text=report_data.get('analysis', 'Sem análise'),
+                strategy_suggestion=report_data.get('strategy', 'Sem sugestão')
+            )
+            db.add(report)
+            db.commit()
+            logger.info("Relatório de monitoramento salvo com sucesso.")
+            
+        except Exception as e:
+            logger.error(f"Erro no monitoramento: {e}")
+        finally:
+            db.close()
+
+monitor_service = MonitorService()

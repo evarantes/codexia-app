@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Codexia</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div id="app" class="w-full max-w-md">
+        <div class="bg-white rounded-lg shadow-xl overflow-hidden">
+            <div class="bg-indigo-700 p-6 text-center">
+                <h1 class="text-3xl font-bold text-white mb-2">Codexia</h1>
+                <p class="text-indigo-200">Entre para gerenciar seu império</p>
+            </div>
+            
+            <div class="p-8">
+                <!-- Login Form -->
+                <div v-if="mode === 'login'">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">Login</h2>
+                    
+                    <form @submit.prevent="login">
+                        <div class="mb-4">
+                            <label class="block text-gray-700 text-sm font-bold mb-2" for="email">
+                                Email
+                            </label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3">
+                                    <i class="fas fa-envelope text-gray-400"></i>
+                                </span>
+                                <input v-model="email" class="w-full pl-10 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+                                    id="email" type="email" placeholder="seu@email.com" required>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-6">
+                            <label class="block text-gray-700 text-sm font-bold mb-2" for="password">
+                                Senha
+                            </label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3">
+                                    <i class="fas fa-lock text-gray-400"></i>
+                                </span>
+                                <input v-model="password" class="w-full pl-10 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+                                    id="password" type="password" placeholder="********" required>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-center justify-between mb-6">
+                            <a href="#" @click.prevent="mode = 'forgot'" class="text-sm text-indigo-600 hover:text-indigo-800">
+                                Esqueci minha senha
+                            </a>
+                        </div>
+                        
+                        <button type="submit" :disabled="loading" class="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 transition duration-200 flex items-center justify-center">
+                            <span v-if="!loading">Entrar</span>
+                            <i v-else class="fas fa-spinner fa-spin"></i>
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Forgot Password Form -->
+                <div v-if="mode === 'forgot'">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">Recuperar Senha</h2>
+                    <p class="text-gray-600 mb-6 text-center text-sm">Digite seu email para receber um link de redefinição.</p>
+                    
+                    <form @submit.prevent="forgotPassword">
+                        <div class="mb-6">
+                            <label class="block text-gray-700 text-sm font-bold mb-2" for="reset-email">
+                                Email
+                            </label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3">
+                                    <i class="fas fa-envelope text-gray-400"></i>
+                                </span>
+                                <input v-model="email" class="w-full pl-10 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+                                    id="reset-email" type="email" placeholder="seu@email.com" required>
+                            </div>
+                        </div>
+                        
+                        <button type="submit" :disabled="loading" class="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 transition duration-200 flex items-center justify-center mb-4">
+                            <span v-if="!loading">Enviar Link</span>
+                            <i v-else class="fas fa-spinner fa-spin"></i>
+                        </button>
+                        
+                        <div class="text-center">
+                            <a href="#" @click.prevent="mode = 'login'" class="text-sm text-gray-600 hover:text-gray-800">
+                                <i class="fas fa-arrow-left mr-1"></i> Voltar para o Login
+                            </a>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Message Alert -->
+                <div v-if="message" :class="`mt-4 p-3 rounded text-sm ${messageType === 'error' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`">
+                    {{ message }}
+                </div>
+            </div>
+        </div>
+        <p class="text-center text-gray-500 text-xs mt-4">&copy; 2025 Codexia. Todos os direitos reservados.</p>
+    </div>
+
+    <script>
+        const { createApp } = Vue
+
+        createApp({
+            data() {
+                return {
+                    mode: 'login', // login, forgot
+                    email: '',
+                    password: '',
+                    loading: false,
+                    message: '',
+                    messageType: '' // error, success
+                }
+            },
+            mounted() {
+                // Check if already logged in
+                if (localStorage.getItem('access_token')) {
+                    window.location.href = '/';
+                }
+            },
+            methods: {
+                async login() {
+                    this.loading = true;
+                    this.message = '';
+                    
+                    const formData = new URLSearchParams();
+                    formData.append('username', this.email);
+                    formData.append('password', this.password);
+                    
+                    try {
+                        const res = await fetch('/token', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                            },
+                            body: formData
+                        });
+                        
+                        if (res.ok) {
+                            const data = await res.json();
+                            localStorage.setItem('access_token', data.access_token);
+                            if (data.must_change_password) {
+                                localStorage.setItem('must_change_password', 'true');
+                            } else {
+                                localStorage.removeItem('must_change_password');
+                            }
+                            window.location.href = '/';
+                        } else {
+                            const data = await res.json();
+                            this.message = data.detail || 'Falha no login';
+                            this.messageType = 'error';
+                        }
+                    } catch (e) {
+                        this.message = 'Erro de conexão';
+                        this.messageType = 'error';
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                async forgotPassword() {
+                    this.loading = true;
+                    this.message = '';
+                    
+                    try {
+                        const res = await fetch('/auth/forgot-password', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ email: this.email })
+                        });
+                        
+                        if (res.ok) {
+                            this.message = 'Se o email existir, enviamos um link de recuperação.';
+                            this.messageType = 'success';
+                        } else {
+                            this.message = 'Erro ao processar solicitação.';
+                            this.messageType = 'error';
+                        }
+                    } catch (e) {
+                        this.message = 'Erro de conexão';
+                        this.messageType = 'error';
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>

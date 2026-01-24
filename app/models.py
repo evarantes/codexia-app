@@ -14,6 +14,7 @@ class Book(Base):
     price = Column(Float)
     payment_link = Column(String)
     cover_image_url = Column(String)
+    cover_image_base64 = Column(Text, nullable=True) # Armazena a imagem em Base64 para persistência no Render sem disco
     file_path = Column(String) # Caminho do arquivo do livro (PDF/EPUB)
     
     posts = relationship("Post", back_populates="book")
@@ -97,3 +98,33 @@ class ScheduledVideo(Base):
     # Store the generated script/plan so we can execute it later
     script_data = Column(Text) # JSON string
     video_url = Column(String, nullable=True) # Caminho do vídeo gerado
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    is_active = Column(Boolean, default=True)
+    must_change_password = Column(Boolean, default=False)
+    reset_token = Column(String, nullable=True)
+    reset_token_expire = Column(DateTime, nullable=True)
+
+class ChannelReport(Base):
+    __tablename__ = "channel_reports"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Snapshot stats
+    subscribers = Column(Integer)
+    views = Column(Integer)
+    videos = Column(Integer)
+    
+    # Analysis
+    analysis_text = Column(Text) # IA Analysis
+    strategy_suggestion = Column(Text) # Sugestão de ação
+    
+    # Status
+    status = Column(String, default="generated")
+

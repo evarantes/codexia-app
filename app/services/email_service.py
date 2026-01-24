@@ -63,3 +63,32 @@ class EmailService:
         print(f"[EMAIL MOCK] Corpo: {body}\n")
         
         return True
+
+    def send_password_reset_email(self, to_email, token):
+        """
+        Simula envio de email de recuperação de senha.
+        """
+        subject = "Recuperação de Senha - Codexia"
+        reset_link = f"http://codexia-psh3.onrender.com/reset-password.html?token={token}"
+        # Em desenvolvimento local, usar localhost
+        # reset_link = f"http://localhost:8000/reset-password.html?token={token}"
+        
+        body = f"""
+        Olá!
+        
+        Recebemos uma solicitação para redefinir sua senha.
+        
+        Se foi você, clique no link abaixo para criar uma nova senha:
+        {reset_link}
+        
+        Se não foi você, ignore este email.
+        
+        Atenciosamente,
+        Equipe Codexia
+        """
+        
+        print(f"\n[EMAIL MOCK - RESET] Enviando para: {to_email}")
+        print(f"[EMAIL MOCK] Assunto: {subject}")
+        print(f"[EMAIL MOCK] Corpo: {body}\n")
+        
+        return True

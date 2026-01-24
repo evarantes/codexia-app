@@ -22,3 +22,6 @@ reportlab
 mercadopago
 gTTS
 numpy
+apscheduler
+passlib[bcrypt]
+python-jose[cryptography]
