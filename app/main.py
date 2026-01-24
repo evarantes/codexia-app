@@ -16,8 +16,6 @@ app = FastAPI(title="Codexia API", description="Sua fábrica de conteúdo movida
 
 # Montar arquivos estáticos
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
-# Mount generated books directory specifically to allow downloads
-app.mount("/static/generated", StaticFiles(directory="generated_books"), name="generated")
 
 # Routers
 app.include_router(books.router)
