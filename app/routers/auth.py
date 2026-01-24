@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import secrets
@@ -20,7 +20,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 24 horas
 
 router = APIRouter(tags=["Authentication"])
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 class Token(BaseModel):
@@ -44,10 +43,24 @@ class PasswordChange(BaseModel):
 
 # Helpers
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    if isinstance(plain_password, str):
+        plain_password = plain_password.encode('utf-8')
+    if isinstance(hashed_password, str):
+        hashed_password = hashed_password.encode('utf-8')
+    
+    # bcrypt.checkpw expects bytes
+    try:
+        return bcrypt.checkpw(plain_password, hashed_password)
+    except ValueError:
+        return False
 
 def get_password_hash(password):
-    return pwd_context.hash(password)
+    if isinstance(password, str):
+        password = password.encode('utf-8')
+    
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password, salt)
+    return hashed.decode('utf-8')
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()

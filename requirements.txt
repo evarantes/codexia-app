@@ -25,3 +25,4 @@ numpy
 apscheduler
 passlib[bcrypt]
 python-jose[cryptography]
+bcrypt
