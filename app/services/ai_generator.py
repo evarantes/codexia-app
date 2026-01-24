@@ -470,19 +470,46 @@ class AIContentGenerator:
         else: # direct
             return f"Crie um anúncio de vendas direto e persuasivo para o livro '{title}'. Sinopse: {synopsis}. Liste 3 benefícios e faça uma oferta irresistível."
 
-    def generate_weekly_plan(self, theme):
-        """Gera plano semanal de conteúdo"""
+    def generate_content_plan(self, theme, duration_type="days", duration_value=7, start_date=None):
+        """Gera plano de conteúdo personalizado"""
         self._load_config()
+        
+        from datetime import datetime, timedelta
+        import json
+        
+        if not start_date:
+            start_date_obj = datetime.now() + timedelta(days=1)
+        else:
+            try:
+                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+            except:
+                start_date_obj = datetime.now() + timedelta(days=1)
+                
+        total_days = int(duration_value)
+        if duration_type == "weeks":
+            total_days = total_days * 7
+        elif duration_type == "months":
+            total_days = total_days * 30
+            
+        # Limit total days to 30 for safety in this iteration to avoid timeouts/context limits
+        if total_days > 31:
+            total_days = 31
+
         prompt = f"""
-        Crie um planejamento de conteúdo semanal para um canal do YouTube sobre o tema '{theme}'.
-        Para cada dia da semana (7 dias), eu preciso de:
+        Crie um planejamento de conteúdo para um canal do YouTube sobre o tema '{theme}'.
+        Período: {total_days} dias, começando em {start_date_obj.strftime('%d/%m/%Y')}.
+        
+        Para CADA dia ({total_days} dias), eu preciso de:
         1. 3 Vídeos Longos (Manhã, Tarde, Noite) com Título, Ideia Central e Horário sugerido.
         2. 2 Shorts aleatórios baseados no tema do dia.
         
-        Retorne APENAS um JSON com a estrutura:
+        IMPORTANTE: As datas devem ser sequenciais a partir de {start_date_obj.strftime('%Y-%m-%d')}.
+        
+        Retorne APENAS um JSON válido com a estrutura:
         [
             {{
                 "day": 1,
+                "date": "YYYY-MM-DD",
                 "theme_of_day": "Subtema do dia",
                 "videos": [
                     {{"title": "...", "concept": "...", "time": "08:00", "type": "video"}},
@@ -492,19 +519,28 @@ class AIContentGenerator:
                     {{"title": "...", "concept": "...", "time": "18:00", "type": "short"}}
                 ]
             }},
-            ... (dias 2 a 7)
+            ...
         ]
         """
         
         if not self.api_key:
              # Mock response
-             return [{"day": 1, "theme_of_day": f"Introdução a {theme}", "videos": [
-                 {"title": f"O que é {theme}?", "concept": "Explicação básica", "time": "08:00", "type": "video"},
-                 {"title": f"Por que {theme} importa?", "concept": "Benefícios", "time": "14:00", "type": "video"},
-                 {"title": f"Como começar em {theme}", "concept": "Passos práticos", "time": "20:00", "type": "video"},
-                 {"title": f"Dica rápida de {theme}", "concept": "Tip", "time": "10:00", "type": "short"},
-                 {"title": f"Curiosidade sobre {theme}", "concept": "Fun fact", "time": "18:00", "type": "short"}
-             ]}]
+             mock_plan = []
+             for i in range(total_days):
+                 current_date = start_date_obj + timedelta(days=i)
+                 mock_plan.append({
+                     "day": i + 1,
+                     "date": current_date.strftime('%Y-%m-%d'),
+                     "theme_of_day": f"Tema do Dia {i+1}: {theme}",
+                     "videos": [
+                         {"title": f"Manhã: {theme} {i+1}", "concept": "Conceito manhã", "time": "08:00", "type": "video"},
+                         {"title": f"Tarde: {theme} {i+1}", "concept": "Conceito tarde", "time": "14:00", "type": "video"},
+                         {"title": f"Noite: {theme} {i+1}", "concept": "Conceito noite", "time": "20:00", "type": "video"},
+                         {"title": f"Short 1: {theme}", "concept": "Curiosidade", "time": "10:00", "type": "short"},
+                         {"title": f"Short 2: {theme}", "concept": "Dica", "time": "18:00", "type": "short"}
+                     ]
+                 })
+             return mock_plan
         
         try:
             response = openai.chat.completions.create(
@@ -512,12 +548,11 @@ class AIContentGenerator:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7
             )
-            import json
             content = response.choices[0].message.content
             content = content.replace("```json", "").replace("```", "")
             return json.loads(content)
         except Exception as e:
-            print(f"Erro ao gerar plano semanal: {e}")
+            print(f"Erro ao gerar plano: {e}")
             return []
 
     def _mock_response(self, title, style, error=None):

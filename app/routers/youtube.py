@@ -63,11 +63,19 @@ def execute_optimization(data: Dict[str, Any]):
 
 class ScheduleRequest(BaseModel):
     theme: str
+    duration_type: str = "days" # days, weeks, months
+    duration_value: int = 7
+    start_date: str = None # YYYY-MM-DD
 
 @router.post("/schedule/generate")
 def generate_schedule(request: ScheduleRequest):
     ai_service = AIContentGenerator()
-    return ai_service.generate_weekly_plan(request.theme)
+    return ai_service.generate_content_plan(
+        request.theme, 
+        request.duration_type, 
+        request.duration_value, 
+        request.start_date
+    )
 
 @router.post("/schedule/save")
 def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -77,8 +85,22 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     try:
         for day in plan:
             theme_day = day.get('theme_of_day', 'Geral')
-            # Videos
+            date_str = day.get('date') # YYYY-MM-DD
+            
+            # Processar lista unificada de vídeos e shorts
             for vid in day.get('videos', []):
+                time_str = vid.get('time', '12:00')
+                
+                # Calcular data/hora do agendamento
+                scheduled_dt = datetime.now()
+                if date_str:
+                    try:
+                        # Tenta combinar data do plano com horário sugerido
+                        scheduled_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+                    except:
+                        # Fallback se falhar parser
+                        pass
+
                 new_video = ScheduledVideo(
                     theme=theme_day,
                     title=vid.get('title'),
@@ -86,14 +108,14 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
                     status="queued", # Já marcamos como na fila
                     video_type=vid.get('type', 'video'),
                     script_data=json.dumps(vid),
-                    scheduled_for=datetime.now() # Placeholder, deveria vir do plano
+                    scheduled_for=scheduled_dt
                 )
                 db.add(new_video)
                 db.flush() # Para pegar o ID
                 saved_ids.append(new_video.id)
                 count += 1
             
-            # Shorts
+            # Manter suporte legado caso a IA separe (opcional, mas seguro)
             for vid in day.get('shorts', []):
                  new_video = ScheduledVideo(
                     theme=theme_day,
