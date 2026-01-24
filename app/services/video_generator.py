@@ -304,6 +304,7 @@ class VideoGenerator:
             
         music_mood = plan.get('music_mood', 'drama')
         music_path = None
+        used_music_credit = None
         
         # Tenta gerar música exclusiva com IA
         if self.ai_service:
