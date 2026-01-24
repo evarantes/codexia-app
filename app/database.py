@@ -6,6 +6,10 @@ from sqlalchemy.orm import sessionmaker
 # Use DATABASE_URL env var if available (Cloud), else local SQLite
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./vibraface.db")
 
+# Fix for Render/Heroku providing postgres:// instead of postgresql://
+if SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 # SQLite requires specific args, PostgreSQL does not
 connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
 
