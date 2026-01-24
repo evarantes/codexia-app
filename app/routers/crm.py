@@ -1,17 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Lead, Book
+from app.models import Lead, Book, Customer, Sale
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime
 
 router = APIRouter(prefix="/crm", tags=["CRM"])
 
-# Mocks para demonstração, já que não temos tabelas de Vendas/Clientes completas ainda
-# Vamos usar a tabela 'Lead' como base de clientes por enquanto, ou simular.
-# Na verdade, o frontend espera 'customers' e 'sales'. 
-# Vamos criar endpoints que retornam dados simulados baseados no que temos ou dados hardcoded se o DB estiver vazio.
+# Endpoints reais consultando o banco de dados.
 
 class CustomerOut(BaseModel):
     id: int
@@ -28,27 +25,21 @@ class SaleOut(BaseModel):
 
 @router.get("/customers", response_model=List[CustomerOut])
 def get_customers(db: Session = Depends(get_db)):
-    # Simulação: retornar leads convertidos ou dados fictícios se vazio
-    # Para demonstração rápida, vamos criar alguns dados na memória se o DB estiver vazio
-    customers = []
-    # Aqui idealmente buscaríamos de uma tabela 'Customer' ou 'Order'
-    # Como não criamos tabela Customer explícita (temos Lead), vamos mockar um pouco para a UI funcionar
-    
-    # Mock data para teste imediato do usuário
-    if not customers:
-        customers = [
-            {"id": 1, "name": "Maria Silva", "email": "maria@email.com", "created_at": datetime.now()},
-            {"id": 2, "name": "João Souza", "email": "joao@email.com", "created_at": datetime.now()},
-        ]
-    return customers
+    return db.query(Customer).all()
 
 @router.get("/sales", response_model=List[SaleOut])
 def get_sales(db: Session = Depends(get_db)):
-    # Mock data
-    return [
-        {"id": 1, "book_title": "A Hora da Virada", "customer_name": "Maria Silva", "amount": 29.90, "date": datetime.now()},
-        {"id": 2, "book_title": "A Virada de ANA", "customer_name": "João Souza", "amount": 19.90, "date": datetime.now()},
-    ]
+    sales = db.query(Sale).all()
+    result = []
+    for sale in sales:
+        result.append({
+            "id": sale.id,
+            "book_title": sale.book.title if sale.book else "Livro Removido",
+            "customer_name": sale.customer.name if sale.customer else "Cliente Desconhecido",
+            "amount": sale.amount,
+            "date": sale.created_at
+        })
+    return result
 
 @router.post("/remarketing")
 def create_remarketing_campaign():
