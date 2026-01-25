@@ -1390,8 +1390,15 @@
                             this.schedulePlan = [];
                             this.fetchScheduledVideos();
                         } else {
-                            const err = await res.json();
-                            alert("Erro ao salvar agendamento: " + (err.detail || err.message || "Erro desconhecido"));
+                            let errorMsg = "Erro desconhecido";
+                            try {
+                                const err = await res.json();
+                                errorMsg = err.detail || err.message || JSON.stringify(err);
+                            } catch (e) {
+                                errorMsg = await res.text();
+                            }
+                            alert("Falha no Agendamento (Server): " + errorMsg.substring(0, 200));
+                            console.error("Erro completo:", errorMsg);
                         }
                     } catch (e) {
                         alert("Erro: " + e);

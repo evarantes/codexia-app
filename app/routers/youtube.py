@@ -199,9 +199,26 @@ def generate_schedule(request: ScheduleRequest):
         request.start_date
     )
 
+from sqlalchemy import text, inspect
+
 @router.post("/schedule/save")
 def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Salva o plano no banco de dados e inicia geração"""
+    
+    # Auto-fix: Ensure columns exist (fail-safe for migration issues)
+    try:
+        db.execute(text("SELECT auto_post FROM scheduled_videos LIMIT 1"))
+    except Exception:
+        print("Column auto_post missing in save_schedule. Attempting to add...")
+        try:
+            db.rollback()
+            db.execute(text("ALTER TABLE scheduled_videos ADD COLUMN auto_post BOOLEAN DEFAULT FALSE"))
+            db.commit()
+            print("Column auto_post added successfully.")
+        except Exception as e:
+            print(f"Failed to auto-fix DB: {e}")
+            # Continue anyway, maybe it was a transient error
+
     count = 0
     saved_ids = []
     try:
