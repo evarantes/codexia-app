@@ -24,10 +24,21 @@ class MonitorService:
         if not self.job:
             # Run every 10 minutes
             self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=10)
-            # Run video queue check every 1 minute
-            self.queue_job = self.scheduler.add_job(self.process_video_queue, 'interval', minutes=1, max_instances=1)
-            # Run upload check every 5 minutes
-            self.upload_job = self.scheduler.add_job(self.check_scheduled_uploads, 'interval', minutes=5)
+            # Run video queue check every 1 minute, starting immediately
+            self.queue_job = self.scheduler.add_job(
+                self.process_video_queue, 
+                'interval', 
+                minutes=1, 
+                max_instances=1,
+                next_run_time=datetime.datetime.now()
+            )
+            # Run upload check every 5 minutes, starting immediately (catch up on missed uploads)
+            self.upload_job = self.scheduler.add_job(
+                self.check_scheduled_uploads, 
+                'interval', 
+                minutes=5,
+                next_run_time=datetime.datetime.now()
+            )
             
             self.scheduler.start()
             logger.info("Monitoramento do canal, processador de fila e agendador de uploads iniciados.")
@@ -102,7 +113,16 @@ class MonitorService:
                             except:
                                 pass
 
+                        # Check for lateness
+                        time_diff = now - video.scheduled_for
+                        if time_diff.total_seconds() > 600: # 10 minutes late
+                            logger.warning(f"EMERGÊNCIA: Upload do vídeo {video.id} está atrasado em {time_diff}. Iniciando imediatamente.")
+                        else:
+                            logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
+
                         # Upload
+                        # video_path must be relative to app root or absolute
+                        # We stored relative path in DB like "/static/videos/..."
                         video_id = yt_service.upload_video(
                             abs_video_path,
                             title=video.title,
