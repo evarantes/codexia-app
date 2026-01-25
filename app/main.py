@@ -103,9 +103,27 @@ async def lifespan(app: FastAPI):
     # Create default user
     create_default_user()
     
+    # Start Monitor Service
     monitor_service.start()
+    
+    # RECOVERY: Reset any stuck 'processing' videos to 'queued'
+    # This handles cases where the server crashed (OOM) during processing
+    try:
+        from app.models import ScheduledVideo
+        db = Session(bind=engine)
+        stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
+        if stuck_videos:
+            print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
+            for vid in stuck_videos:
+                vid.status = "queued"
+            db.commit()
+        db.close()
+    except Exception as e:
+        print(f"Startup Recovery Error: {e}")
+    
     yield
     # Shutdown
+    print("Desligando aplicação...")
     monitor_service.stop()
 
 app = FastAPI(

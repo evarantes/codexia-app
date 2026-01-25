@@ -298,10 +298,10 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
                  
         db.commit()
         
-        # Iniciar geração em background para cada vídeo salvo
-        # Isso pode ser pesado, mas atende ao pedido "fiquem pre gerados"
-        for vid_id in saved_ids:
-            background_tasks.add_task(process_scheduled_video, vid_id)
+        # OTIMIZAÇÃO DE MEMÓRIA: Não iniciar processamento em paralelo.
+        # Deixar o MonitorService pegar um por um a cada minuto.
+        # for vid_id in saved_ids:
+        #    background_tasks.add_task(process_scheduled_video, vid_id)
             
         return {"status": "success", "saved_items": count}
     except Exception as e:
