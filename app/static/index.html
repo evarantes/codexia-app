@@ -1324,7 +1324,8 @@
                             alert("Agendamento atualizado com sucesso!");
                             this.fetchScheduledVideos();
                         } else {
-                            alert("Erro ao atualizar agendamento.");
+                            const err = await res.json();
+                            alert("Erro ao atualizar agendamento: " + (err.detail || err.message || "Erro desconhecido"));
                         }
                     } catch (e) {
                         alert("Erro: " + e);
@@ -1389,7 +1390,8 @@
                             this.schedulePlan = [];
                             this.fetchScheduledVideos();
                         } else {
-                            alert("Erro ao salvar agendamento");
+                            const err = await res.json();
+                            alert("Erro ao salvar agendamento: " + (err.detail || err.message || "Erro desconhecido"));
                         }
                     } catch (e) {
                         alert("Erro: " + e);

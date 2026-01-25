@@ -56,7 +56,8 @@ def run_migrations(engine):
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN publish_at DATETIME"))
                     if "auto_post" not in sv_columns:
                         print("Migrating: Adding auto_post to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN auto_post BOOLEAN DEFAULT 0"))
+                        # Use FALSE for compatibility with both SQLite and PostgreSQL
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN auto_post BOOLEAN DEFAULT FALSE"))
                     if "youtube_video_id" not in sv_columns:
                         print("Migrating: Adding youtube_video_id to scheduled_videos...")
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN youtube_video_id TEXT"))
