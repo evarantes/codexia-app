@@ -54,11 +54,49 @@ def list_videos():
     videos.sort(key=lambda x: x['created_at'], reverse=True)
     return videos
 
+@router.get("/auth_url")
+def get_auth_url():
+    service = YouTubeService()
+    return {"auth_url": service.get_auth_url()}
+
+@router.post("/auth/exchange")
+def exchange_code(data: Dict[str, str]):
+    code = data.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Código não fornecido")
+    
+    service = YouTubeService()
+    success = service.exchange_code_for_token(code)
+    
+    if success:
+        return {"message": "Autenticação realizada com sucesso!"}
+    else:
+        raise HTTPException(status_code=400, detail="Falha ao autenticar com o YouTube. Verifique o código.")
+
+
 @router.post("/optimize")
-def optimize_channel():
+def optimize_channel(execute: bool = False):
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
-    return yt_service.optimize_channel(ai_service)
+    
+    analysis = yt_service.optimize_channel(ai_service)
+    
+    if execute and analysis:
+        # Map analysis result to execution format
+        # analysis expected to have: title, description, strategy (for banner prompt)
+        exec_data = {
+            "title": analysis.get("title_suggestion"),
+            "description": analysis.get("description_suggestion"),
+            "banner_prompt": analysis.get("banner_prompt")
+        }
+        
+        # Execute immediately
+        execution_results = execute_optimization(exec_data)
+        
+        # Merge results
+        analysis["execution_results"] = execution_results
+        
+    return analysis
 
 @router.post("/optimize/execute")
 def execute_optimization(data: Dict[str, Any]):
@@ -113,6 +151,38 @@ class ScheduleRequest(BaseModel):
     duration_type: str = "days" # days, weeks, months
     duration_value: int = 7
     start_date: str = None # YYYY-MM-DD
+
+    script_data: Optional[str] = None
+
+@router.put("/schedule/{video_id}")
+def update_scheduled_video(video_id: int, data: Dict[str, Any], db: Session = Depends(get_db)):
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    if "scheduled_for" in data:
+        try:
+            # Expects ISO format or "YYYY-MM-DD HH:MM"
+            dt_str = data["scheduled_for"]
+            if "T" in dt_str:
+                video.scheduled_for = datetime.fromisoformat(dt_str)
+            else:
+                video.scheduled_for = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+        except ValueError:
+            pass # Keep old value if format error
+            
+    if "auto_post" in data:
+        video.auto_post = bool(data["auto_post"])
+        
+    if "title" in data:
+        video.title = data["title"]
+        
+    db.commit()
+    return {"message": "Video updated", "video": {
+        "id": video.id, 
+        "scheduled_for": video.scheduled_for.isoformat() if video.scheduled_for else None,
+        "auto_post": video.auto_post
+    }}
 
 @router.post("/schedule/generate")
 def generate_schedule(request: ScheduleRequest):

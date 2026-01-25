@@ -153,20 +153,64 @@ class VideoGenerator:
         return np.array(img)
 
     def generate_audio(self, text, lang='pt'):
-        """Gera arquivo de áudio usando OpenAI (Human-like) ou gTTS (Fallback)"""
+        """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text.strip(): return None
         
-        # 1. Tentar OpenAI TTS (Qualidade Humana)
+        # 1. Tentar OpenAI TTS (Qualidade Humana Premium)
         if self.ai_service:
-            audio_content = self.ai_service.generate_audio(text, voice="onyx") # Onyx é uma voz masculina profunda e narrativa
-            if audio_content:
-                filename = f"{uuid.uuid4()}.mp3"
-                path = os.path.join(self.output_dir, filename)
-                with open(path, "wb") as f:
-                    f.write(audio_content)
-                return path
+            try:
+                audio_content = self.ai_service.generate_audio(text, voice="onyx")
+                if audio_content:
+                    filename = f"{uuid.uuid4()}.mp3"
+                    path = os.path.join(self.output_dir, filename)
+                    with open(path, "wb") as f:
+                        f.write(audio_content)
+                    return path
+            except Exception as e:
+                print(f"OpenAI TTS falhou, tentando fallback: {e}")
 
-        # 2. Fallback gTTS (Robótico, mas funciona sempre)
+        # 2. Edge TTS (Qualidade Natural Gratuita - Microsoft)
+        try:
+            import edge_tts
+            import asyncio
+            
+            voice = "pt-BR-FranciscaNeural" if lang == 'pt' else "en-US-ChristopherNeural"
+            filename = f"{uuid.uuid4()}.mp3"
+            path = os.path.join(self.output_dir, filename)
+            
+            async def _run_edge_tts():
+                communicate = edge_tts.Communicate(text, voice)
+                await communicate.save(path)
+                
+            # Executa o async em contexto síncrono
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Se já existe loop rodando (ex: dentro do FastAPI endpoint), usamos run_in_executor ou similar,
+                    # mas aqui estamos num método síncrono que pode ser chamado de background tasks.
+                    # Para simplificar e evitar "Event loop is closed" ou "nested", criamos um novo loop se necessário
+                    # ou usamos uma thread separada se o loop estiver bloqueado.
+                    # Melhor abordagem para script simples:
+                    asyncio.run(_run_edge_tts())
+                else:
+                    loop.run_until_complete(_run_edge_tts())
+            except RuntimeError:
+                 # Fallback para caso de "asyncio.run() cannot be called from a running event loop"
+                 # Isso acontece se chamado de dentro de uma rota async
+                 asyncio.create_task(_run_edge_tts())
+                 # Mas espera, create_task não bloqueia. Precisamos bloquear.
+                 # Hack seguro para sync wrapper:
+                 import threading
+                 t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
+                 t.start()
+                 t.join()
+
+            if os.path.exists(path):
+                return path
+        except Exception as e:
+             print(f"Edge TTS falhou: {e}")
+
+        # 3. Fallback gTTS (Robótico)
         try:
             tts = gTTS(text=text, lang=lang)
             filename = f"{uuid.uuid4()}.mp3"
@@ -174,7 +218,7 @@ class VideoGenerator:
             tts.save(path)
             return path
         except Exception as e:
-            print(f"Erro no TTS: {e}")
+            print(f"Erro no TTS Final: {e}")
             return None
 
     def download_image(self, url):

@@ -44,6 +44,28 @@ def run_migrations(engine):
                     conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0"))
                     conn.commit()
 
+            # Check for ScheduledVideo new columns
+            if "scheduled_videos" in inspector.get_table_names():
+                sv_columns = [c["name"] for c in inspector.get_columns("scheduled_videos")]
+                with engine.connect() as conn:
+                    if "progress" not in sv_columns:
+                        print("Migrating: Adding progress to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN progress INTEGER DEFAULT 0"))
+                    if "publish_at" not in sv_columns:
+                        print("Migrating: Adding publish_at to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN publish_at DATETIME"))
+                    if "auto_post" not in sv_columns:
+                        print("Migrating: Adding auto_post to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN auto_post BOOLEAN DEFAULT 0"))
+                    if "youtube_video_id" not in sv_columns:
+                        print("Migrating: Adding youtube_video_id to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN youtube_video_id TEXT"))
+                    if "uploaded_at" not in sv_columns:
+                        print("Migrating: Adding uploaded_at to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at DATETIME"))
+                    conn.commit()
+
+
     except Exception as e:
         print(f"Migration warning: {e}")
 
@@ -151,4 +173,19 @@ def debug_reset_user():
         return {"error": str(e)}
     finally:
         db.close()
+
+@app.get("/health/db")
+def check_db_status():
+    """Check database connection and type"""
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 1"))
+            return {
+                "status": "connected", 
+                "database_url_configured": "postgres" in os.getenv('DATABASE_URL', ''),
+                "url_prefix": os.getenv('DATABASE_URL', 'sqlite')[:10]
+            }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
 

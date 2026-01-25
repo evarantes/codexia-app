@@ -98,6 +98,13 @@ class ScheduledVideo(Base):
     # Store the generated script/plan so we can execute it later
     script_data = Column(Text) # JSON string
     video_url = Column(String, nullable=True) # Caminho do vídeo gerado
+    
+    # New fields for progress and scheduling
+    progress = Column(Integer, default=0)
+    publish_at = Column(DateTime, nullable=True)
+    auto_post = Column(Boolean, default=False)
+    youtube_video_id = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
 
 class User(Base):
     __tablename__ = "users"

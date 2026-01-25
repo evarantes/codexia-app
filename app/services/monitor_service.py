@@ -6,6 +6,8 @@ from app.database import SessionLocal
 from app.models import ChannelReport, ScheduledVideo
 import datetime
 import logging
+import json
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +18,7 @@ class MonitorService:
         self.scheduler = BackgroundScheduler()
         self.job = None
         self.queue_job = None
+        self.upload_job = None
 
     def start(self):
         if not self.job:
@@ -23,9 +26,11 @@ class MonitorService:
             self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=10)
             # Run video queue check every 1 minute
             self.queue_job = self.scheduler.add_job(self.process_video_queue, 'interval', minutes=1, max_instances=1)
+            # Run upload check every 5 minutes
+            self.upload_job = self.scheduler.add_job(self.check_scheduled_uploads, 'interval', minutes=5)
             
             self.scheduler.start()
-            logger.info("Monitoramento do canal e processador de fila iniciados.")
+            logger.info("Monitoramento do canal, processador de fila e agendador de uploads iniciados.")
 
     def stop(self):
         if self.scheduler.running:
@@ -57,6 +62,69 @@ class MonitorService:
                 
         except Exception as e:
             logger.error(f"Erro no processador de fila: {e}")
+        finally:
+            db.close()
+
+    def check_scheduled_uploads(self):
+        """Verifica vídeos prontos e agendados para upload"""
+        db = SessionLocal()
+        try:
+            now = datetime.datetime.now()
+            # Videos that are completed, have auto_post=True, scheduled time passed, and not yet uploaded
+            videos_to_upload = db.query(ScheduledVideo).filter(
+                ScheduledVideo.status == "completed",
+                ScheduledVideo.auto_post == True,
+                ScheduledVideo.scheduled_for <= now,
+                ScheduledVideo.uploaded_at == None
+            ).all()
+            
+            if videos_to_upload:
+                yt_service = YouTubeService()
+                for video in videos_to_upload:
+                    logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
+                    try:
+                        # Construct absolute path
+                        abs_video_path = os.path.join("c:/dev/TRAE/codexia/app", video.video_url.lstrip('/'))
+                        
+                        if not os.path.exists(abs_video_path):
+                            logger.error(f"Arquivo de vídeo não encontrado: {abs_video_path}")
+                            # Don't fail completely, maybe it was moved? But here we mark as failed upload
+                            # video.status = "failed_upload" 
+                            continue
+
+                        # Parse script data for tags if available
+                        tags = ["motivação", "sucesso"]
+                        if video.script_data:
+                            try:
+                                script = json.loads(video.script_data)
+                                if "tags" in script:
+                                    tags = script["tags"]
+                            except:
+                                pass
+
+                        # Upload
+                        video_id = yt_service.upload_video(
+                            abs_video_path,
+                            title=video.title,
+                            description=video.description or "Vídeo gerado automaticamente por Codexia.",
+                            tags=tags
+                        )
+                        
+                        if video_id:
+                            video.uploaded_at = datetime.datetime.now()
+                            video.youtube_video_id = video_id
+                            video.status = "published"
+                            logger.info(f"Vídeo {video.id} publicado com sucesso! ID: {video_id}")
+                        else:
+                            logger.error(f"Falha no upload do vídeo {video.id}")
+                            
+                        db.commit()
+                        
+                    except Exception as e:
+                        logger.error(f"Erro ao fazer upload do vídeo {video.id}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Erro no verificador de uploads: {e}")
         finally:
             db.close()
 

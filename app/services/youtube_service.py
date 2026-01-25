@@ -75,8 +75,49 @@ class YouTubeService:
         # Nota: Em produção, isso seria um fluxo Web Server, não InstalledApp
         flow = InstalledAppFlow.from_client_secrets_file(
             'client_secret.json', SCOPES) # Requer arquivo client_secret.json do Google Cloud Console
+        # Use urn:ietf:wg:oauth:2.0:oob for manual copy-paste
+        flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
         auth_url, _ = flow.authorization_url(prompt='consent')
         return auth_url
+
+    def exchange_code_for_token(self, code):
+        """Troca o código de autorização por tokens e salva no banco"""
+        try:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'client_secret.json', SCOPES)
+            flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+            flow.fetch_token(code=code)
+            self.credentials = flow.credentials
+            
+            # Salvar no banco
+            self._save_credentials_to_db()
+            return True
+        except Exception as e:
+            print(f"Erro ao trocar código por token: {e}")
+            return False
+
+    def _save_credentials_to_db(self):
+        """Salva as credenciais atuais no banco de dados"""
+        if not self.credentials:
+            return
+
+        db = SessionLocal()
+        try:
+            settings = db.query(Settings).first()
+            if not settings:
+                settings = Settings()
+                db.add(settings)
+            
+            settings.youtube_refresh_token = self.credentials.refresh_token
+            settings.youtube_client_id = self.credentials.client_id
+            settings.youtube_client_secret = self.credentials.client_secret
+            db.commit()
+            print("Credenciais do YouTube salvas no banco com sucesso.")
+        except Exception as e:
+            print(f"Erro ao salvar credenciais no banco: {e}")
+        finally:
+            db.close()
+
 
     def _get_my_channel(self):
         """Helper para buscar o canal autenticado"""

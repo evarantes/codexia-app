@@ -81,9 +81,14 @@ async def create_book(
 
 @router.get("/")
 def list_books(db: Session = Depends(get_db)):
-    books = db.query(Book).all()
-    print(f"Listing {len(books)} books")
-    return books
+    try:
+        books = db.query(Book).all()
+        print(f"Listing {len(books)} books from DB")
+        return books
+    except Exception as e:
+        print(f"Error listing books: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching books")
+
 
 @router.put("/{book_id}")
 async def update_book(

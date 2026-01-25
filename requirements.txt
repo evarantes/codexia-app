@@ -21,6 +21,7 @@ pypdf
 reportlab
 mercadopago
 gTTS
+edge-tts
 numpy
 apscheduler
 passlib[bcrypt]

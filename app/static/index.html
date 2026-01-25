@@ -176,14 +176,38 @@
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     <div class="bg-white p-6 rounded-lg shadow">
                         <h2 class="text-xl font-bold mb-4">Configuração</h2>
+                        
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Modo de Criação</label>
+                            <select v-model="videoMode" class="w-full border p-2 rounded">
+                                <option value="manual">Manual (Roteiro Pronto)</option>
+                                <option value="topic">Por Tópico (IA Cria Roteiro)</option>
+                                <option value="story">História/Ficção (IA Cria Narrativa)</option>
+                            </select>
+                        </div>
+
                         <div class="mb-4">
                             <label class="block font-bold mb-2">Título do Vídeo</label>
                             <input v-model="videoTitle" class="w-full border p-2 rounded">
                         </div>
-                        <div class="mb-4">
+
+                        <div class="mb-4" v-if="videoMode === 'manual'">
                             <label class="block font-bold mb-2">Roteiro (Linha por Linha)</label>
-                            <textarea v-model="videoScript" class="w-full border p-2 rounded" rows="10"></textarea>
+                            <textarea v-model="videoScript" class="w-full border p-2 rounded" rows="10" placeholder="Digite cada frase do vídeo em uma linha nova..."></textarea>
                         </div>
+
+                        <div class="mb-4" v-if="videoMode === 'topic'">
+                            <label class="block font-bold mb-2">Tópico do Vídeo</label>
+                            <input v-model="videoContent" class="w-full border p-2 rounded" placeholder="Ex: 5 Dicas para ser mais produtivo">
+                            <label class="block font-bold mt-2 mb-2">Duração (minutos)</label>
+                            <input type="number" v-model="videoDuration" class="w-full border p-2 rounded" min="1" max="10">
+                        </div>
+
+                        <div class="mb-4" v-if="videoMode === 'story'">
+                            <label class="block font-bold mb-2">Ideia da História / Prompt</label>
+                            <textarea v-model="videoContent" class="w-full border p-2 rounded" rows="5" placeholder="Descreva a história que você quer contar..."></textarea>
+                        </div>
+
                         <button @click="generateVideo" :disabled="videoLoading" class="bg-indigo-600 text-white px-4 py-2 rounded w-full">
                             <i v-if="videoLoading" class="fas fa-spinner fa-spin"></i> Gerar Vídeo
                         </button>
@@ -195,6 +219,11 @@
                         </div>
                         <div v-else class="h-64 bg-gray-100 flex items-center justify-center text-gray-400">
                             O vídeo gerado aparecerá aqui
+                        </div>
+                        
+                        <div v-if="generatedVideoScript" class="mt-4 p-4 bg-gray-50 rounded border max-h-64 overflow-y-auto">
+                             <h3 class="font-bold text-sm mb-2">Roteiro Gerado:</h3>
+                             <pre class="text-xs whitespace-pre-wrap">{{ JSON.stringify(generatedVideoScript, null, 2) }}</pre>
                         </div>
                     </div>
                 </div>
@@ -319,7 +348,9 @@
                             <thead>
                                 <tr class="bg-gray-50">
                                     <th class="p-3 text-left">Título</th>
-                                    <th class="p-3 text-left">Data</th>
+                                    <th class="p-3 text-left">Progresso</th>
+                                    <th class="p-3 text-left">Agendado Para</th>
+                                    <th class="p-3 text-center">Auto Post</th>
                                     <th class="p-3 text-left">Status</th>
                                     <th class="p-3 text-left">Ações</th>
                                 </tr>
@@ -327,16 +358,28 @@
                             <tbody>
                                 <tr v-for="video in scheduledVideos" :key="video.id" class="border-t">
                                     <td class="p-3">{{ video.title }}</td>
-                                    <td class="p-3">{{ new Date(video.scheduled_for).toLocaleString() }}</td>
+                                    <td class="p-3 w-32">
+                                        <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                            <div class="bg-blue-600 h-2.5 rounded-full" :style="{width: (video.progress || 0) + '%'}"></div>
+                                        </div>
+                                        <div class="text-xs text-center mt-1 text-gray-500">{{ video.progress || 0 }}%</div>
+                                    </td>
                                     <td class="p-3">
-                                        <span :class="{'bg-yellow-100 text-yellow-800': video.status === 'pending', 'bg-green-100 text-green-800': video.status === 'published'}" class="px-2 py-1 rounded text-xs font-bold uppercase">
+                                        <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full">
+                                    </td>
+                                    <td class="p-3 text-center">
+                                         <input type="checkbox" v-model="video.auto_post" class="w-4 h-4 text-indigo-600 rounded">
+                                    </td>
+                                    <td class="p-3">
+                                        <span :class="{'bg-yellow-100 text-yellow-800': video.status === 'pending' || video.status === 'queued', 'bg-blue-100 text-blue-800': video.status === 'processing', 'bg-green-100 text-green-800': video.status === 'completed' || video.status === 'published', 'bg-red-100 text-red-800': video.status === 'failed'}" class="px-2 py-1 rounded text-xs font-bold uppercase block text-center">
                                             {{ translateStatus(video.status) }}
                                         </span>
                                     </td>
                                     <td class="p-3 flex gap-2">
-                                        <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-blue-600"><i class="fas fa-play"></i></button>
-                                        <button @click="regenerateScheduledVideo(video)" class="text-orange-600"><i class="fas fa-sync"></i></button>
-                                        <button @click="deleteScheduledVideo(video)" class="text-red-600"><i class="fas fa-trash"></i></button>
+                                        <button @click="saveScheduledVideo(video)" class="text-green-600 hover:text-green-800" title="Salvar Alterações"><i class="fas fa-save"></i></button>
+                                        <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-blue-600 hover:text-blue-800" title="Assistir"><i class="fas fa-play"></i></button>
+                                        <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800" title="Regerar"><i class="fas fa-sync"></i></button>
+                                        <button @click="deleteScheduledVideo(video)" class="text-red-600 hover:text-red-800" title="Excluir"><i class="fas fa-trash"></i></button>
                                     </td>
                                 </tr>
                             </tbody>
@@ -621,6 +664,21 @@
             </main>
         </div>
 
+        <!-- Auth Code Modal -->
+        <div v-if="showAuthCodeModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
+                <h2 class="text-2xl font-bold mb-4">Conectar YouTube</h2>
+                <p class="mb-4 text-gray-600">Uma nova janela foi aberta. Autorize o aplicativo, copie o código exibido e cole abaixo.</p>
+                <div class="space-y-4">
+                    <input v-model="authCode" placeholder="Cole o código aqui" class="w-full border p-2 rounded">
+                    <div class="flex justify-end gap-2">
+                        <button @click="showAuthCodeModal = false" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+                        <button @click="submitAuthCode" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Conectar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Add Book Modal -->
         <div v-if="showAddBookModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
@@ -778,9 +836,10 @@
 
                     // Video
                     selectedVideoBookId: null,
-                    videoStyle: 'drama',
+                    videoMode: 'manual', // manual, topic, story
                     videoTitle: 'A Hora da Virada',
-                    videoScript: 'Descubra o segredo...\nQue mudou tudo.\nLeia agora!',
+                    videoContent: '', // Shared for script/topic/story prompt
+                    videoDuration: 1,
                     videoLoading: false,
                     generatedVideoUrl: null,
 
@@ -815,6 +874,8 @@
                     saveMessage: '',
 
                     // Auth
+                    showAuthCodeModal: false,
+                    authCode: '',
                     showChangePasswordModal: false,
                     mustChangePassword: false,
                     passwordForm: { current: '', new: '', confirm: '' },
@@ -966,12 +1027,25 @@
                     this.ytLoading = true;
                     this.channelAnalysis = null;
                     try {
-                        const res = await this.authFetch('/youtube/optimize', { method: 'POST' });
+                        // Added execute=true to apply changes immediately as requested
+                        const res = await this.authFetch('/youtube/optimize?execute=true', { method: 'POST' });
                         const data = await res.json();
                         
                         if (res.ok) {
                             this.channelAnalysis = data;
                             this.fetchYoutubeStats();
+                            
+                            if (data.execution_results) {
+                                let msg = "Melhorias aplicadas com sucesso!\n";
+                                if (data.execution_results.channel_updated) msg += "- Título e Descrição atualizados\n";
+                                if (data.execution_results.banner_uploaded) msg += "- Banner novo gerado e enviado\n";
+                                if (data.execution_results.errors && data.execution_results.errors.length > 0) {
+                                    msg += "\nErros:\n" + data.execution_results.errors.join("\n");
+                                }
+                                alert(msg);
+                            } else {
+                                alert("Análise concluída! Confira as sugestões abaixo.");
+                            }
                         } else {
                             alert("Erro na otimização: " + (data.detail || data.error));
                         }
@@ -1090,8 +1164,33 @@
                 async fetchScheduledVideos() {
                     try {
                         const res = await this.authFetch('/youtube/schedule');
-                        this.scheduledVideos = await res.json();
+                        const data = await res.json();
+                        this.scheduledVideos = data.map(v => ({
+                            ...v,
+                            scheduled_for_local: v.scheduled_for ? v.scheduled_for.slice(0, 16) : ''
+                        }));
                     } catch (e) { console.error("Erro ao buscar agenda:", e); }
+                },
+                async saveScheduledVideo(video) {
+                    try {
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}`, {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                scheduled_for: video.scheduled_for_local,
+                                auto_post: video.auto_post,
+                                title: video.title
+                            })
+                        });
+                        if (res.ok) {
+                            alert("Agendamento atualizado com sucesso!");
+                            this.fetchScheduledVideos();
+                        } else {
+                            alert("Erro ao atualizar agendamento.");
+                        }
+                    } catch (e) {
+                        alert("Erro: " + e);
+                    }
                 },
                 async fetchReports() {
                     try {
@@ -1245,20 +1344,37 @@
                 async generateVideo() {
                     this.videoLoading = true;
                     this.generatedVideoUrl = null;
+                    this.generatedVideoScript = null;
+                    
                     try {
-                        const scriptLines = this.videoScript.split('\n').filter(line => line.trim() !== '');
-                        const res = await this.authFetch('/video/generate', {
+                        let content = '';
+                        if (this.videoMode === 'manual') {
+                             content = this.videoScript;
+                        } else {
+                             content = this.videoContent;
+                        }
+                        
+                        const res = await this.authFetch('/video/create', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
+                                mode: this.videoMode,
                                 title: this.videoTitle,
-                                script: scriptLines
+                                content: content,
+                                duration: this.videoDuration
                             })
                         });
+                        
+                        if (!res.ok) {
+                            const err = await res.json();
+                            throw new Error(err.detail || "Erro desconhecido");
+                        }
+                        
                         const data = await res.json();
                         this.generatedVideoUrl = data.video_url;
+                        this.generatedVideoScript = data.script;
                     } catch (e) {
-                        alert("Erro ao gerar vídeo: " + e);
+                        alert("Erro ao gerar vídeo: " + e.message);
                     } finally {
                         this.videoLoading = false;
                     }

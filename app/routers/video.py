@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Post
@@ -17,6 +17,44 @@ class VideoRequest(BaseModel):
 class AutoVideoRequest(BaseModel):
     book_id: int
     style: str = "drama"
+
+class CreateVideoRequest(BaseModel):
+    mode: str = "manual" # manual, topic, story
+    title: str
+    content: str # Script lines (manual), Topic (topic), or Story Prompt (story)
+    duration: int = 1
+
+@router.post("/create")
+def create_video(request: CreateVideoRequest):
+    try:
+        ai_service = AIContentGenerator()
+        video_gen = VideoGenerator(ai_service=ai_service)
+        
+        script_plan = {}
+        
+        if request.mode == "manual":
+            script_plan = {
+                "title": request.title,
+                "scenes": [{"text": line} for line in request.content.split('\n') if line.strip()]
+            }
+        elif request.mode == "topic":
+            # Generate script from topic
+            script_plan = ai_service.generate_motivational_script(request.content, request.duration)
+            script_plan["title"] = request.title # Override title if desired
+        elif request.mode == "story":
+            # Generate script from story prompt
+            # We can use generate_video_script generic or a specific story one
+            # Using generate_video_script with "story" style
+            script_plan = ai_service.generate_video_script(request.title, request.content, "story")
+            
+        # Generate Video
+        result = video_gen.create_video_from_plan(script_plan)
+        
+        return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit")}
+        
+    except Exception as e:
+        print(f"Erro ao criar vídeo ({request.mode}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/generate")
 def generate_video(request: VideoRequest):

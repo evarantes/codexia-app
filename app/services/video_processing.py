@@ -41,7 +41,12 @@ def process_scheduled_video(video_id: int):
         
         # Gerar vídeo
         def progress_callback(p, m):
-            pass # Sem feedback detalhado por task manager por enquanto, apenas status no DB
+            try:
+                # p is 0-100
+                video.progress = int(p)
+                db.commit()
+            except:
+                pass
             
         ratio = "9:16" if video.video_type == 'short' else "16:9"
         
@@ -58,6 +63,7 @@ def process_scheduled_video(video_id: int):
                 video.description += credit
         
         video.status = "completed"
+        video.progress = 100
         video.video_url = video_path # path relativo /static/videos/...
         db.commit()
         print(f"Video {video_id} concluído: {video_path}")
@@ -66,6 +72,7 @@ def process_scheduled_video(video_id: int):
         print(f"Erro ao gerar video agendado {video_id}: {e}")
         if video:
             video.status = "failed"
+            video.progress = 0
             db.commit()
     finally:
         db.close()
