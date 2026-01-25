@@ -206,18 +206,29 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     """Salva o plano no banco de dados e inicia geração"""
     
     # Auto-fix: Ensure columns exist (fail-safe for migration issues)
-    try:
-        db.execute(text("SELECT auto_post FROM scheduled_videos LIMIT 1"))
-    except Exception:
-        print("Column auto_post missing in save_schedule. Attempting to add...")
+    # List of potentially missing columns and their types
+    # Added comprehensive check for all new columns
+    missing_cols = [
+        ("progress", "INTEGER DEFAULT 0"),
+        ("publish_at", "TIMESTAMP"),
+        ("auto_post", "BOOLEAN DEFAULT FALSE"),
+        ("youtube_video_id", "TEXT"),
+        ("uploaded_at", "TIMESTAMP")
+    ]
+    
+    for col_name, col_type in missing_cols:
         try:
-            db.rollback()
-            db.execute(text("ALTER TABLE scheduled_videos ADD COLUMN auto_post BOOLEAN DEFAULT FALSE"))
-            db.commit()
-            print("Column auto_post added successfully.")
-        except Exception as e:
-            print(f"Failed to auto-fix DB: {e}")
-            # Continue anyway, maybe it was a transient error
+            db.execute(text(f"SELECT {col_name} FROM scheduled_videos LIMIT 1"))
+        except Exception:
+            print(f"Column {col_name} missing in save_schedule. Attempting to add...")
+            try:
+                db.rollback()
+                db.execute(text(f"ALTER TABLE scheduled_videos ADD COLUMN {col_name} {col_type}"))
+                db.commit()
+                print(f"Column {col_name} added successfully.")
+            except Exception as e:
+                print(f"Failed to auto-fix DB for {col_name}: {e}")
+                # Continue anyway, maybe it was a transient error
 
     count = 0
     saved_ids = []
