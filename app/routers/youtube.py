@@ -121,7 +121,12 @@ def execute_optimization(data: Dict[str, Any]):
             if generated_image_url:
                 results["banner_generated"] = True
                 # 2. Upload to YouTube
-                banner_url = yt_service.upload_channel_banner(generated_image_url)
+                # Convert relative path to absolute
+                banner_path = generated_image_url
+                if banner_path.startswith("/"):
+                    banner_path = "c:/dev/TRAE/codexia/app" + banner_path
+                
+                banner_url = yt_service.upload_channel_banner(banner_path)
                 if banner_url:
                     results["banner_uploaded"] = True
                 else:
@@ -202,11 +207,13 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     try:
         for day in plan:
             theme_day = day.get('theme_of_day', 'Geral')
-            date_str = day.get('date') # YYYY-MM-DD
+            day_date_str = day.get('date') # YYYY-MM-DD
             
             # Processar lista unificada de vídeos e shorts
             for vid in day.get('videos', []):
                 time_str = vid.get('time', '12:00')
+                # Prefer video-specific date, fallback to day date
+                date_str = vid.get('date', day_date_str)
                 
                 # Calcular data/hora do agendamento
                 scheduled_dt = datetime.now()
@@ -214,7 +221,8 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
                     try:
                         # Tenta combinar data do plano com horário sugerido
                         scheduled_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-                    except:
+                    except Exception as e:
+                        print(f"Erro ao parsear data {date_str} {time_str}: {e}")
                         # Fallback se falhar parser
                         pass
 
@@ -225,7 +233,8 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
                     status="queued", # Já marcamos como na fila
                     video_type=vid.get('type', 'video'),
                     script_data=json.dumps(vid),
-                    scheduled_for=scheduled_dt
+                    scheduled_for=scheduled_dt,
+                    auto_post=vid.get('auto_post', False) # Support auto_post from plan
                 )
                 db.add(new_video)
                 db.flush() # Para pegar o ID
@@ -234,6 +243,17 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
             
             # Manter suporte legado caso a IA separe (opcional, mas seguro)
             for vid in day.get('shorts', []):
+                 # Mesma lógica para shorts legados
+                 time_str = vid.get('time', '12:00')
+                 date_str = vid.get('date', day_date_str)
+                 
+                 scheduled_dt = datetime.now()
+                 if date_str:
+                     try:
+                         scheduled_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+                     except:
+                         pass
+
                  new_video = ScheduledVideo(
                     theme=theme_day,
                     title=vid.get('title'),
@@ -241,7 +261,7 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
                     status="queued",
                     video_type='short',
                     script_data=json.dumps(vid),
-                    scheduled_for=datetime.now()
+                    scheduled_for=scheduled_dt
                 )
                  db.add(new_video)
                  db.flush()

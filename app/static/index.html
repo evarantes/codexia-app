@@ -174,11 +174,20 @@
             <div v-if="currentTab === 'video'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Criador de Vídeos</h1>
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div class="bg-white p-6 rounded-lg shadow">
+                    <div class="bg-white p-6 rounded-lg shadow-md mb-8">
                         <h2 class="text-xl font-bold mb-4">Configuração</h2>
                         
                         <div class="mb-4">
-                            <label class="block font-bold mb-2">Modo de Criação</label>
+                            <label class="block text-gray-700 font-bold mb-2">Baseado em Livro (Opcional)</label>
+                            <select v-model="selectedBook" class="w-full border rounded p-2 text-gray-700 bg-white">
+                                <option :value="null">-- Selecione um Livro para preencher --</option>
+                                <option v-for="book in books" :key="book.id" :value="book">{{ book.title }}</option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Ao selecionar, o título e roteiro serão preenchidos automaticamente.</p>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="block text-gray-700 font-bold mb-2">Modo de Criação</label>
                             <select v-model="videoMode" class="w-full border p-2 rounded">
                                 <option value="manual">Manual (Roteiro Pronto)</option>
                                 <option value="topic">Por Tópico (IA Cria Roteiro)</option>
@@ -247,10 +256,41 @@
                             <button v-if="!youtubeStats.connected" @click="connectYoutube" class="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 flex items-center gap-2">
                                 <i class="fab fa-youtube"></i> Conectar YouTube
                             </button>
-                            <button v-else @click="runOptimization" :disabled="ytLoading" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
+                            <button v-else @click="analyzeChannel" :disabled="ytLoading" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
                                 <i v-if="ytLoading" class="fas fa-spinner fa-spin"></i>
-                                <span v-else><i class="fas fa-magic"></i> Executar Melhorias Agora</span>
+                                <span v-else><i class="fas fa-magic"></i> Analisar Canal</span>
                             </button>
+                        </div>
+                    </div>
+
+                    <!-- Optimization Approval Modal -->
+                    <div v-if="showOptimizationModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                        <div class="bg-white p-6 rounded-lg w-full max-w-2xl shadow-xl">
+                            <h3 class="text-xl font-bold mb-4 text-indigo-900">Aprovar Melhorias</h3>
+                            <p class="mb-4 text-gray-600">A IA analisou seu canal e sugeriu as seguintes mudanças. Edite se necessário e confirme.</p>
+                            
+                            <div class="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+                                <div>
+                                    <label class="block text-sm font-bold text-gray-700 mb-1">Título Sugerido</label>
+                                    <input v-model="optimizationData.title_suggestion" class="w-full border rounded p-2 focus:ring-2 focus:ring-indigo-500 outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-bold text-gray-700 mb-1">Descrição</label>
+                                    <textarea v-model="optimizationData.description_suggestion" class="w-full border rounded p-2 h-32 focus:ring-2 focus:ring-indigo-500 outline-none"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-bold text-gray-700 mb-1">Prompt para Novo Banner</label>
+                                    <textarea v-model="optimizationData.banner_prompt" class="w-full border rounded p-2 h-20 focus:ring-2 focus:ring-indigo-500 outline-none"></textarea>
+                                </div>
+                            </div>
+                            
+                            <div class="flex justify-end gap-3 mt-6 pt-4 border-t">
+                                <button @click="showOptimizationModal = false" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancelar</button>
+                                <button @click="confirmOptimization" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-bold flex items-center gap-2">
+                                    <i v-if="ytLoading" class="fas fa-spinner fa-spin"></i>
+                                    <span>Aprovar e Aplicar</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                     
@@ -324,18 +364,74 @@
                     
                     <!-- Preview of Generated Plan -->
                     <div v-if="schedulePlan.length > 0" class="mt-6">
-                        <h3 class="font-bold text-gray-700 mb-2">Prévia do Planejamento</h3>
-                        <div class="space-y-2 mb-4">
-                            <div v-for="(item, idx) in schedulePlan" :key="idx" class="flex items-center justify-between bg-gray-50 p-3 rounded border">
-                                <div>
-                                    <span class="font-bold text-indigo-600">Dia {{ idx + 1 }}:</span> {{ item.title || 'Título Pendente' }}
-                                    <span class="text-xs text-gray-500 ml-2">({{ item.theme_of_day || 'Tema Geral' }})</span>
+                        <h3 class="font-bold text-gray-700 mb-4">Prévia do Planejamento (Edite antes de confirmar)</h3>
+                        <div class="space-y-4 mb-6">
+                            <div v-for="(day, index) in schedulePlan" :key="index" class="bg-gray-50 p-4 rounded border border-gray-200 shadow-sm">
+                                <div class="flex justify-between items-center mb-3 border-b pb-2">
+                                    <span class="font-bold text-indigo-700">Dia {{ index + 1 }} - {{ day.theme_of_day || 'Geral' }}</span>
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-xs text-gray-500">Data Base:</span>
+                                        <input type="date" v-model="day.date" class="border rounded px-2 py-1 text-sm bg-white">
+                                    </div>
                                 </div>
-                                <span class="text-xs text-gray-500">{{ item.date || 'Data Auto' }}</span>
+                                
+                                <!-- Render Videos List if exists -->
+                                <div v-if="day.videos && day.videos.length">
+                                    <div v-for="(video, vIdx) in day.videos" :key="vIdx" class="ml-2 mb-3 p-3 bg-white border rounded shadow-sm hover:shadow-md transition-shadow">
+                                        <div class="mb-2">
+                                            <label class="block text-xs font-bold text-gray-500 uppercase">Título</label>
+                                            <input v-model="video.title" class="w-full font-bold text-gray-800 border-b border-gray-300 focus:border-indigo-500 outline-none py-1" placeholder="Título do Vídeo">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label class="block text-xs font-bold text-gray-500 uppercase">Roteiro / Conceito</label>
+                                            <textarea v-model="video.concept" class="w-full text-sm text-gray-600 border rounded p-2 focus:ring-1 focus:ring-indigo-500 outline-none" rows="2" placeholder="Conceito do vídeo..."></textarea>
+                                        </div>
+                                        
+                                        <div class="grid grid-cols-2 gap-4 bg-gray-50 p-2 rounded mt-2">
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Horário</label>
+                                                <input type="time" v-model="video.time" class="w-full border rounded px-2 py-1 text-sm">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Automação</label>
+                                                <label class="flex items-center text-sm gap-2 cursor-pointer h-full">
+                                                    <input type="checkbox" v-model="video.auto_post" class="text-indigo-600 rounded focus:ring-indigo-500">
+                                                    <span class="font-medium text-gray-700">Auto Postar</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Fallback for flat structure (if day itself is the video item) -->
+                                <div v-else class="ml-2 mb-3 p-3 bg-white border rounded shadow-sm hover:shadow-md transition-shadow">
+                                    <div class="mb-2">
+                                        <label class="block text-xs font-bold text-gray-500 uppercase">Título</label>
+                                        <input v-model="day.title" class="w-full font-bold text-gray-800 border-b border-gray-300 focus:border-indigo-500 outline-none py-1" placeholder="Título do Vídeo">
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="block text-xs font-bold text-gray-500 uppercase">Roteiro / Conceito</label>
+                                        <textarea v-model="day.concept" class="w-full text-sm text-gray-600 border rounded p-2 focus:ring-1 focus:ring-indigo-500 outline-none" rows="2" placeholder="Conceito do vídeo..."></textarea>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-2 gap-4 bg-gray-50 p-2 rounded mt-2">
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">Horário</label>
+                                            <input type="time" v-model="day.time" class="w-full border rounded px-2 py-1 text-sm">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">Automação</label>
+                                            <label class="flex items-center text-sm gap-2 cursor-pointer h-full">
+                                                <input type="checkbox" v-model="day.auto_post" class="text-indigo-600 rounded focus:ring-indigo-500">
+                                                <span class="font-medium text-gray-700">Auto Postar</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                        <button @click="confirmSchedule" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 w-full">
-                            <i class="fas fa-check"></i> Confirmar e Agendar Produção
+                        <button @click="confirmSchedule" class="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 w-full shadow-lg transform transition hover:scale-[1.01] flex justify-center items-center gap-2 font-bold text-lg">
+                            <i class="fas fa-check-circle"></i> Confirmar e Agendar Produção
                         </button>
                     </div>
                 </div>
@@ -750,6 +846,9 @@
                     mobileMenuOpen: false,
                     currentTab: 'dashboard',
                     books: [],
+                    selectedBook: null, // New for Video Creator
+                    optimizationData: null, // New for Youtube Auto
+                    showOptimizationModal: false, // New for Youtube Auto
                     selectedBookId: null,
                     adStyle: 'cliffhanger',
                     generatedAd: '',
@@ -889,7 +988,26 @@
                     return this.sales.reduce((sum, sale) => sum + sale.amount, 0);
                 }
             },
+            watch: {
+                selectedBook(book) {
+                    if (book) {
+                        this.videoTitle = book.title;
+                        this.videoMode = 'manual';
+                        let content = "Roteiro Baseado no Livro: " + book.title + "\n\n";
+                        if (book.synopsis) content += "Sinopse:\n" + book.synopsis + "\n\n";
+                        content += "[Adicione o roteiro detalhado aqui]";
+                        this.videoContent = content;
+                    }
+                }
+            },
             async mounted() {
+                // Start polling for scheduled videos progress
+                setInterval(() => {
+                    if (this.scheduledVideos.some(v => v.status === 'processing' || v.status === 'queued')) {
+                        this.fetchScheduledVideos();
+                    }
+                }, 5000);
+                
                 await this.checkAuth();
                 
                 await this.fetchBooks();
@@ -1023,14 +1141,39 @@
                         alert("Erro de conexão: " + e);
                     }
                 },
-                async runOptimization() {
+                async analyzeChannel() {
                     this.ytLoading = true;
                     this.channelAnalysis = null;
                     try {
-                        // Added execute=true to apply changes immediately as requested
-                        const res = await this.authFetch('/youtube/optimize?execute=true', { method: 'POST' });
+                        const res = await this.authFetch('/youtube/optimize', { method: 'POST' });
+                        if (res.ok) {
+                            this.optimizationData = await res.json();
+                            this.showOptimizationModal = true;
+                        } else {
+                            const err = await res.json();
+                            alert("Erro na análise: " + (err.detail || "Desconhecido"));
+                        }
+                    } catch (e) {
+                        alert("Erro de conexão: " + e);
+                    } finally {
+                        this.ytLoading = false;
+                    }
+                },
+                async confirmOptimization() {
+                    this.ytLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/optimize/execute', { 
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                title: this.optimizationData.title_suggestion,
+                                description: this.optimizationData.description_suggestion,
+                                banner_prompt: this.optimizationData.banner_prompt
+                            })
+                        });
                         const data = await res.json();
                         
+                        this.showOptimizationModal = false;
                         if (res.ok) {
                             this.channelAnalysis = data;
                             this.fetchYoutubeStats();
@@ -1043,17 +1186,12 @@
                                     msg += "\nErros:\n" + data.execution_results.errors.join("\n");
                                 }
                                 alert(msg);
-                            } else {
-                                alert("Análise concluída! Confira as sugestões abaixo.");
                             }
                         } else {
-                            alert("Erro na otimização: " + (data.detail || data.error));
+                            alert("Erro ao aplicar melhorias.");
                         }
-                    } catch (e) {
-                        alert("Erro ao executar melhorias: " + e);
-                    } finally {
-                        this.ytLoading = false;
-                    }
+                    } catch (e) { alert("Erro: " + e); }
+                    finally { this.ytLoading = false; }
                 },
                 async fetchBooks() {
                     try {
