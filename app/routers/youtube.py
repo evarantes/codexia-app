@@ -183,6 +183,12 @@ def update_scheduled_video(video_id: int, data: Dict[str, Any], db: Session = De
         
     if "title" in data:
         video.title = data["title"]
+
+    if "voice_style" in data:
+        video.voice_style = data["voice_style"]
+        
+    if "voice_gender" in data:
+        video.voice_gender = data["voice_gender"]
         
     db.commit()
     return {"message": "Video updated", "video": {
@@ -296,7 +302,9 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
                     status="queued",
                     video_type='short',
                     script_data=json.dumps(vid),
-                    scheduled_for=scheduled_dt
+                    scheduled_for=scheduled_dt,
+                    voice_style=vid.get('voice_style', 'human'),
+                    voice_gender=vid.get('voice_gender', 'female')
                 )
                  db.add(new_video)
                  db.flush()

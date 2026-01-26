@@ -60,7 +60,13 @@ def process_scheduled_video(video_id: int):
         ratio = "9:16" if video.video_type == 'short' else "16:9"
         
         print(f"Renderizando video {video_id}...")
-        result = video_service.create_video_from_plan(final_script, aspect_ratio=ratio, progress_callback=progress_callback)
+        result = video_service.create_video_from_plan(
+            final_script, 
+            aspect_ratio=ratio, 
+            progress_callback=progress_callback,
+            voice_style=video.voice_style,
+            voice_gender=video.voice_gender
+        )
         video_path = result["video_url"]
         
         # Adicionar créditos ao script_data se possível ou salvar na descrição do vídeo

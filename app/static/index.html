@@ -454,6 +454,22 @@
                             <label class="block font-bold mb-2">Início</label>
                             <input v-model="scheduleStartDate" type="date" class="w-full border p-2 rounded">
                         </div>
+                        <div>
+                            <label class="block font-bold mb-2">Estilo de Voz</label>
+                            <select v-model="voiceStyle" class="w-full border p-2 rounded">
+                                <option value="human">Humana (Natural)</option>
+                                <option value="robotic">Robótica</option>
+                                <option value="child">Criança</option>
+                                <option value="angelic">Angelical</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-2">Gênero de Voz</label>
+                            <select v-model="voiceGender" class="w-full border p-2 rounded">
+                                <option value="male">Masculina</option>
+                                <option value="female">Feminina</option>
+                            </select>
+                        </div>
                     </div>
                     <button @click="generateSchedule" :disabled="scheduleLoading" class="bg-purple-600 text-white px-6 py-2 rounded hover:bg-purple-700 w-full flex justify-center items-center gap-2">
                         <i v-if="scheduleLoading" class="fas fa-spinner fa-spin"></i>
@@ -1643,7 +1659,9 @@
                             body: JSON.stringify({
                                 scheduled_for: video.scheduled_for_local,
                                 auto_post: video.auto_post,
-                                title: video.title
+                                title: video.title,
+                                voice_style: video.voice_style,
+                                voice_gender: video.voice_gender
                             })
                         });
                         if (res.ok) {
@@ -1699,8 +1717,26 @@
                             if (!Array.isArray(this.schedulePlan)) {
                                  // Se por acaso vier encapsulado de outra forma, tenta achar um array
                                  if (data.plan && Array.isArray(data.plan)) this.schedulePlan = data.plan;
-                                 else if (data.schedule && Array.isArray(data.schedule)) this.schedulePlan = data.schedule;
+                                else if (data.schedule && Array.isArray(data.schedule)) this.schedulePlan = data.schedule;
                             }
+                            
+                            // Inject default voice settings
+                            if (this.schedulePlan) {
+                                this.schedulePlan.forEach(day => {
+                                    if (day.videos) {
+                                        day.videos.forEach(v => {
+                                            v.voice_style = this.voiceStyle;
+                                            v.voice_gender = this.voiceGender;
+                                        });
+                                    }
+                                    // Fallback for flat structure
+                                    if (day.title && !day.videos) { 
+                                        day.voice_style = this.voiceStyle;
+                                        day.voice_gender = this.voiceGender;
+                                    }
+                                });
+                            }
+
                             console.log("Plano gerado:", this.schedulePlan);
                             
                             if (this.schedulePlan.length === 0) {

@@ -110,6 +110,8 @@ class ScheduledVideo(Base):
     progress = Column(Integer, default=0)
     publish_at = Column(DateTime, nullable=True)
     auto_post = Column(Boolean, default=False)
+    voice_style = Column(String, default="human")
+    voice_gender = Column(String, default="female")
     youtube_video_id = Column(String, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
 
