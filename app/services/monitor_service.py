@@ -24,13 +24,13 @@ class MonitorService:
         if not self.job:
             # Run every 10 minutes
             self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=10)
-            # Run video queue check every 1 minute, starting immediately
+            # Run video queue check every 1 minute
+            # REMOVED next_run_time=now to allow server to startup fully before heavy processing
             self.queue_job = self.scheduler.add_job(
                 self.process_video_queue, 
                 'interval', 
                 minutes=1, 
-                max_instances=1,
-                next_run_time=datetime.datetime.now()
+                max_instances=1
             )
             # Run upload check every 5 minutes, starting immediately (catch up on missed uploads)
             self.upload_job = self.scheduler.add_job(

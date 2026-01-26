@@ -58,6 +58,114 @@ class AIContentGenerator:
             print(f"Erro ao gerar seção {section_type}: {e}")
             return f"Erro ao gerar {section_type}."
 
+    def generate_full_book_draft(self, title: str, idea: str, num_chapters: int, style: str = "didático", num_pages: int = 50):
+        """Generates a full book structure and content based on an idea"""
+        self._load_config()
+        
+        if not self.api_key:
+            # Mock response
+            return {
+                "dedication": "Aos sonhadores.",
+                "acknowledgments": "Agradeço à IA.",
+                "introduction": "Esta é uma introdução gerada automaticamente.",
+                "preface": "Um prefácio curto.",
+                "epigraph": "O conhecimento é poder.",
+                "chapters": [
+                    {"title": f"Capítulo {i+1}", "content": f"Conteúdo simulado do capítulo {i+1} sobre {idea}..."} 
+                    for i in range(num_chapters)
+                ],
+                "cover_url": "https://placehold.co/400x600?text=Capa+Simulada"
+            }
+
+        # Estimate word count based on pages (approx 250-300 words per page)
+        total_words = num_pages * 250
+        words_per_chapter = max(300, int(total_words / max(1, num_chapters)))
+
+        # 1. Generate Outline
+        outline_prompt = f"""
+        Atue como um autor best-seller. Crie o planejamento de um livro completo.
+        Título: {title}
+        Ideia Central: {idea}
+        Número de Capítulos: {num_chapters}
+        Estimativa de Páginas: {num_pages} (aprox. {total_words} palavras no total)
+        Estilo: {style}
+
+        Retorne APENAS um JSON com a seguinte estrutura:
+        {{
+            "dedication": "Sugestão de dedicatória",
+            "epigraph": "Sugestão de epígrafe",
+            "chapters": [
+                {{"title": "Título do Cap 1", "summary": "Breve resumo do que abordar neste capítulo"}},
+                {{"title": "Título do Cap 2", "summary": "Breve resumo do que abordar neste capítulo"}}
+            ]
+        }}
+        """
+
+        try:
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": outline_prompt}],
+                temperature=0.7
+            )
+            import json
+            content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+            structure = json.loads(content)
+            
+            # 2. Generate Cover (Parallel if possible, but sequential here for simplicity)
+            # We generate 1 suggestion
+            try:
+                cover_urls = self.generate_cover_options(title, idea, n=1)
+                structure["cover_url"] = cover_urls[0] if cover_urls else None
+            except Exception as e:
+                print(f"Erro ao gerar capa: {e}")
+                structure["cover_url"] = None
+
+            # 3. Generate Content for each chapter
+            # Note: For a real production app, this should be done in background or streamed.
+            # Here we do it sequentially but keep it concise to avoid timeout.
+            final_chapters = []
+            
+            for chap in structure.get("chapters", []):
+                chap_title = chap.get("title", "Capítulo")
+                chap_summary = chap.get("summary", "")
+                
+                content_prompt = f"""
+                Escreva o conteúdo completo do capítulo '{chap_title}' do livro '{title}'.
+                Contexto do capítulo: {chap_summary}
+                Estilo: {style}
+                Meta de tamanho: Aprox. {words_per_chapter} palavras.
+                
+                Escreva de forma envolvente, detalhada e bem estruturada. Use parágrafos claros.
+                """
+                
+                res_chap = openai.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": content_prompt}],
+                    temperature=0.7
+                )
+                chap_content = res_chap.choices[0].message.content
+                
+                final_chapters.append({
+                    "title": chap_title,
+                    "content": chap_content
+                })
+            
+            structure["chapters"] = final_chapters
+            
+            # Fill other sections if missing
+            if "introduction" not in structure:
+                structure["introduction"] = self.generate_book_section("introduction", idea, title)
+            if "preface" not in structure:
+                structure["preface"] = self.generate_book_section("preface", idea, title)
+            if "acknowledgments" not in structure:
+                structure["acknowledgments"] = self.generate_book_section("acknowledgments", idea, title)
+
+            return structure
+
+        except Exception as e:
+            print(f"Erro ao gerar livro: {e}")
+            raise e
+
     def analyze_manuscript_structure(self, text_sample):
         """Analyzes text to identify potential structure (chapters) and extracts content"""
         self._load_config()
@@ -350,9 +458,8 @@ class AIContentGenerator:
             "description": "Descrição otimizada para YouTube com hashtags",
             "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
             "scenes": [
-                {{"text": "Texto da narração (aprox 30-40 seg)...", "image_prompt": "Descrição visual abstrata/simbólica e cinemática para a parte 1"}},
-                {{"text": "Texto da narração...", "image_prompt": "Descrição visual..."}},
-                ... (gere cenas suficientes para cobrir o tempo, aprox 10-15 cenas)
+                {{"text": "Texto EXATO da narração (sem 'Cena 1:', sem 'Narrador:', apenas o que será falado)...", "image_prompt": "Descrição visual..."}},
+                ...
             ],
             "music_mood": "epic_cinematic"
         }}
@@ -544,7 +651,7 @@ class AIContentGenerator:
         else: # direct
             return f"Crie um anúncio de vendas direto e persuasivo para o livro '{title}'. Sinopse: {synopsis}. Liste 3 benefícios e faça uma oferta irresistível."
 
-    def generate_content_plan(self, theme, duration_type="days", duration_value=7, start_date=None):
+    def generate_content_plan(self, theme, duration_type="days", duration_value=7, start_date=None, videos_per_day=1, video_duration=5):
         """Gera plano de conteúdo personalizado"""
         self._load_config()
         
@@ -574,27 +681,28 @@ class AIContentGenerator:
         Período: {total_days} dias, começando em {start_date_obj.strftime('%d/%m/%Y')}.
         
         Para CADA dia ({total_days} dias), eu preciso de:
-        1. 3 Vídeos Longos (Manhã, Tarde, Noite) com Título, Ideia Central e Horário sugerido.
-        2. 2 Shorts aleatórios baseados no tema do dia.
+        1. {videos_per_day} Vídeo(s) Longo(s) com Título, Ideia Central e Horário sugerido.
         
         IMPORTANTE: As datas devem ser sequenciais a partir de {start_date_obj.strftime('%Y-%m-%d')}.
         
         Retorne APENAS um JSON válido com a estrutura:
-        [
-            {{
-                "day": 1,
-                "date": "YYYY-MM-DD",
-                "theme_of_day": "Subtema do dia",
-                "videos": [
-                    {{"title": "...", "concept": "...", "time": "08:00", "type": "video"}},
-                    {{"title": "...", "concept": "...", "time": "14:00", "type": "video"}},
-                    {{"title": "...", "concept": "...", "time": "20:00", "type": "video"}},
-                    {{"title": "...", "concept": "...", "time": "10:00", "type": "short"}},
-                    {{"title": "...", "concept": "...", "time": "18:00", "type": "short"}}
-                ]
-            }},
-            ...
-        ]
+        {{
+            "plan": [
+                {{
+                    "date": "YYYY-MM-DD",
+                    "theme_of_day": "Tema do dia",
+                    "videos": [
+                        {{
+                            "title": "Título",
+                            "concept": "Ideia do vídeo",
+                            "time": "HH:MM",
+                            "type": "video",
+                            "duration": {video_duration}
+                        }}
+                    ]
+                }}
+            ]
+        }}
         """
         
         if not self.api_key:

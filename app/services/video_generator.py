@@ -2,6 +2,8 @@ import os
 import uuid
 import requests
 import gc
+import threading
+import asyncio
 from gtts import gTTS
 from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
@@ -108,34 +110,7 @@ class VideoGenerator:
         # Mas idealmente o texto deve ser curto.
         # Vamos desenhar o fundo preto
         
-        # Desenha fundo semi-transparente para o texto
-        # Precisamos de uma imagem RGBA para transparência
-        overlay = Image.new('RGBA', size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        
-        # Padding
-        padding = 20
-        # Calcula largura máxima do texto
-        max_width = 0
-        for line in lines:
-            bbox = d.textbbox((0, 0), line, font=font)
-            w = bbox[2] - bbox[0]
-            if w > max_width: max_width = w
-            
-        # Box background
-        # Centralizado horizontalmente
-        box_left = (size[0] - max_width) / 2 - padding
-        box_top = y_text - padding
-        box_right = (size[0] + max_width) / 2 + padding
-        box_bottom = y_text + text_block_height + padding
-        
-        draw.rectangle([box_left, box_top, box_right, box_bottom], fill=(0, 0, 0, 160)) # Black with alpha
-        
-        # Compoe overlay na imagem original
-        img = img.convert("RGBA")
-        img = Image.alpha_composite(img, overlay)
-        img = img.convert("RGB")
-        d = ImageDraw.Draw(img) # Novo draw object
+        # Fundo transparente (background box removido)
         
         for line in lines:
             bbox = d.textbbox((0, 0), line, font=font)
@@ -156,10 +131,14 @@ class VideoGenerator:
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text.strip(): return None
         
+        # Limpeza de segurança para evitar leitura de metadados
+        clean_text = text.replace("Narrador:", "").replace("Cena:", "").replace("Imagem:", "").replace("**", "").strip()
+        
         # 1. Tentar OpenAI TTS (Qualidade Humana Premium)
-        if self.ai_service:
+        if self.ai_service and self.ai_service.api_key:
             try:
-                audio_content = self.ai_service.generate_audio(text, voice="onyx")
+                # print("Tentando OpenAI TTS...")
+                audio_content = self.ai_service.generate_audio(clean_text, voice="onyx")
                 if audio_content:
                     filename = f"{uuid.uuid4()}.mp3"
                     path = os.path.join(self.output_dir, filename)
@@ -171,48 +150,35 @@ class VideoGenerator:
 
         # 2. Edge TTS (Qualidade Natural Gratuita - Microsoft)
         try:
+            # print("Tentando Edge TTS...")
             import edge_tts
             import asyncio
+            import threading
             
             voice = "pt-BR-FranciscaNeural" if lang == 'pt' else "en-US-ChristopherNeural"
             filename = f"{uuid.uuid4()}.mp3"
             path = os.path.join(self.output_dir, filename)
-            
+
             async def _run_edge_tts():
-                communicate = edge_tts.Communicate(text, voice)
+                communicate = edge_tts.Communicate(clean_text, voice)
                 await communicate.save(path)
                 
-            # Executa o async em contexto síncrono
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # Se já existe loop rodando (ex: dentro do FastAPI endpoint), usamos run_in_executor ou similar,
-                    # mas aqui estamos num método síncrono que pode ser chamado de background tasks.
-                    # Para simplificar e evitar "Event loop is closed" ou "nested", criamos um novo loop se necessário
-                    # ou usamos uma thread separada se o loop estiver bloqueado.
-                    # Melhor abordagem para script simples:
-                    asyncio.run(_run_edge_tts())
-                else:
-                    loop.run_until_complete(_run_edge_tts())
-            except RuntimeError:
-                 # Fallback para caso de "asyncio.run() cannot be called from a running event loop"
-                 # Isso acontece se chamado de dentro de uma rota async
-                 asyncio.create_task(_run_edge_tts())
-                 # Mas espera, create_task não bloqueia. Precisamos bloquear.
-                 # Hack seguro para sync wrapper:
-                 import threading
-                 t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
-                 t.start()
-                 t.join()
+            # Execução thread-safe do async
+            t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
+            t.start()
+            t.join()
 
-            if os.path.exists(path):
+            if os.path.exists(path) and os.path.getsize(path) > 0:
                 return path
+            else:
+                print("Edge TTS gerou arquivo vazio ou falhou.")
         except Exception as e:
              print(f"Edge TTS falhou: {e}")
 
         # 3. Fallback gTTS (Robótico)
         try:
-            tts = gTTS(text=text, lang=lang)
+            print("Usando Fallback gTTS (Robótico)...")
+            tts = gTTS(text=clean_text, lang=lang)
             filename = f"{uuid.uuid4()}.mp3"
             path = os.path.join(self.output_dir, filename)
             tts.save(path)
@@ -284,6 +250,9 @@ class VideoGenerator:
                     progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
                     
                 text = scene.get('text', '')
+                # Limpeza de segurança para evitar metadados no vídeo
+                clean_text = text.replace("Narrador:", "").replace("Cena:", "").replace("Imagem:", "").replace("**", "").strip()
+                
                 image_prompt = scene.get('image_prompt', '')
                 
                 # Tentar gerar imagem com IA
@@ -301,10 +270,10 @@ class VideoGenerator:
                 bg_color = bg_colors[i % len(bg_colors)]
                 
                 # Gerar Audio da cena
-                audio_path = self.generate_audio(text)
+                audio_path = self.generate_audio(clean_text)
                 
                 # Gerar Imagem
-                img = self.create_text_image(text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                img = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
                 clip = ImageClip(img)
                 
                 if audio_path:

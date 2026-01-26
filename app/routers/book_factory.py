@@ -106,6 +106,47 @@ async def upload_manuscript(
         "raw_text_preview": text_content[:5000] # Limit for frontend
     }
 
+class CreateDraftRequest(BaseModel):
+    title: str
+    idea: str
+    num_chapters: int
+    num_pages: int = 50
+    style: str = "didático"
+
+@router.post("/create_draft")
+async def create_draft(request: CreateDraftRequest):
+    """
+    Generates a full book structure from scratch using AI.
+    """
+    ai_service = AIContentGenerator()
+    try:
+        structure = ai_service.generate_full_book_draft(
+            title=request.title,
+            idea=request.idea,
+            num_chapters=request.num_chapters,
+            style=request.style,
+            num_pages=request.num_pages
+        )
+        
+        # Format response to match existing frontend expectations
+        return {
+            "filename": f"generated_{uuid.uuid4().hex[:8]}.txt",
+            "cover_filename": structure.get("cover_url"), # Direct URL or None
+            "detected_chapters": structure.get("chapters", []),
+            "suggestions": {
+                "synopsis": ai_service.generate_book_section("synopsis", request.idea, request.title),
+                "epigraph": structure.get("epigraph", ""),
+                "preface": structure.get("preface", ""),
+                "dedication": structure.get("dedication", ""),
+                "acknowledgments": structure.get("acknowledgments", ""),
+                "introduction": structure.get("introduction", "")
+            },
+            "raw_text_preview": f"Livro gerado por IA: {request.title}\n\nIdeia: {request.idea}\n\nMeta de Páginas: {request.num_pages}"
+        }
+    except Exception as e:
+        print(f"Error generating draft: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/upload_cover")
 async def upload_cover(file: UploadFile = File(...)):
     """

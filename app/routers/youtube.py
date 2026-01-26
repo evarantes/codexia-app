@@ -155,7 +155,9 @@ class ScheduleRequest(BaseModel):
     theme: str
     duration_type: str = "days" # days, weeks, months
     duration_value: int = 7
-    start_date: str = None # YYYY-MM-DD
+    start_date: Optional[str] = None # YYYY-MM-DD
+    videos_per_day: int = 1
+    video_duration: int = 5
 
     script_data: Optional[str] = None
 
@@ -196,7 +198,9 @@ def generate_schedule(request: ScheduleRequest):
         request.theme, 
         request.duration_type, 
         request.duration_value, 
-        request.start_date
+        request.start_date,
+        request.videos_per_day,
+        request.video_duration
     )
 
 from sqlalchemy import text, inspect
@@ -317,7 +321,8 @@ def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, d
     video.status = "queued"
     db.commit()
     
-    background_tasks.add_task(process_scheduled_video, video_id)
+    # background_tasks.add_task(process_scheduled_video, video_id)
+    # Não iniciar imediatamente para respeitar a fila sequencial
     return {"status": "queued"}
 
 @router.post("/schedule/{video_id}/regenerate")

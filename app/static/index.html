@@ -349,8 +349,16 @@
                             </select>
                         </div>
                         <div>
-                            <label class="block font-bold mb-2">Quantidade</label>
+                            <label class="block font-bold mb-2">Quantidade (Dias)</label>
                             <input v-model="scheduleQuantity" type="number" min="1" max="30" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-2">Vídeos/Dia</label>
+                            <input v-model="scheduleVideosPerDay" type="number" min="1" max="5" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-2">Duração (min)</label>
+                            <input v-model="scheduleDuration" type="number" min="1" max="15" class="w-full border p-2 rounded">
                         </div>
                         <div>
                             <label class="block font-bold mb-2">Início</label>
@@ -489,18 +497,71 @@
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Fábrica de Livros</h1>
                 <p class="text-gray-600 mb-6">Transforme seu manuscrito (Word/PDF) em um livro profissionalmente estruturado com ajuda da IA.</p>
                 
-                <!-- Step 1: Upload -->
+                <!-- Step 1: Upload or Create -->
                 <div v-if="factoryStep === 1" class="bg-white rounded-lg shadow p-8 max-w-2xl mx-auto">
-                    <h2 class="text-xl font-bold mb-6 border-b pb-2">1. Upload do Material</h2>
-                    <div class="mb-6">
-                        <label class="block font-bold mb-2">Manuscrito (Texto Completo)</label>
-                        <input type="file" ref="manuscriptFile" accept=".docx,.pdf" class="w-full border p-3 rounded bg-gray-50">
-                        <p class="text-sm text-gray-500 mt-1">Formatos aceitos: .docx, .pdf</p>
+                    <h2 class="text-xl font-bold mb-6 border-b pb-2">1. Início do Projeto</h2>
+                    
+                    <div class="flex gap-4 mb-6 border-b pb-4">
+                        <button @click="factoryMode = 'upload'" :class="{'border-b-4 border-indigo-600 text-indigo-700 font-bold': factoryMode === 'upload', 'text-gray-500 hover:text-gray-700': factoryMode !== 'upload'}" class="flex-1 py-2 text-center transition">
+                            <i class="fas fa-file-upload mr-2"></i> Upload Manuscrito
+                        </button>
+                        <button @click="factoryMode = 'ai'" :class="{'border-b-4 border-purple-600 text-purple-700 font-bold': factoryMode === 'ai', 'text-gray-500 hover:text-gray-700': factoryMode !== 'ai'}" class="flex-1 py-2 text-center transition">
+                            <i class="fas fa-magic mr-2"></i> Monte seu Livro IA
+                        </button>
                     </div>
-                    <button @click="uploadBookMaterial" :disabled="factoryLoading" class="w-full bg-indigo-600 text-white py-3 rounded hover:bg-indigo-700 flex justify-center items-center gap-2 text-lg font-bold">
-                        <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
-                        <span v-else>Iniciar Análise e Montagem</span>
-                    </button>
+
+                    <!-- Upload Mode -->
+                    <div v-if="factoryMode === 'upload'" class="animate-fade-in">
+                        <div class="mb-6">
+                            <label class="block font-bold mb-2">Manuscrito (Texto Completo)</label>
+                            <input type="file" ref="manuscriptFile" accept=".docx,.pdf" class="w-full border p-3 rounded bg-gray-50">
+                            <p class="text-sm text-gray-500 mt-1">Formatos aceitos: .docx, .pdf</p>
+                        </div>
+                        <button @click="uploadBookMaterial" :disabled="factoryLoading" class="w-full bg-indigo-600 text-white py-3 rounded hover:bg-indigo-700 flex justify-center items-center gap-2 text-lg font-bold">
+                            <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
+                            <span v-else>Iniciar Análise e Montagem</span>
+                        </button>
+                    </div>
+
+                    <!-- AI Mode -->
+                    <div v-if="factoryMode === 'ai'" class="animate-fade-in">
+                        <div class="bg-purple-50 p-4 rounded mb-6 border border-purple-100">
+                            <p class="text-purple-800 text-sm"><i class="fas fa-info-circle mr-1"></i> Descreva o livro que você deseja e a IA criará a estrutura, o conteúdo e a capa para você.</p>
+                        </div>
+                        <div class="space-y-4 mb-6">
+                            <div>
+                                <label class="block font-bold mb-1">Título do Livro</label>
+                                <input v-model="aiBook.title" class="w-full border p-3 rounded" placeholder="Ex: O Segredo da Mente Milionária">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1">Sua Solicitação / Ideia Central</label>
+                                <textarea v-model="aiBook.idea" class="w-full border p-3 rounded" rows="4" placeholder="Ex: Crie um livro sobre produtividade para empreendedores, focando em gestão de tempo e priorização..."></textarea>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block font-bold mb-1">Capítulos</label>
+                                    <input v-model="aiBook.num_chapters" type="number" min="1" max="20" class="w-full border p-3 rounded">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1">Páginas (Estimativa)</label>
+                                    <input v-model="aiBook.num_pages" type="number" min="10" max="500" class="w-full border p-3 rounded">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1">Estilo</label>
+                                <select v-model="aiBook.style" class="w-full border p-3 rounded">
+                                    <option value="didático">Didático / Educativo</option>
+                                    <option value="ficção">Ficção / Romance</option>
+                                    <option value="autoajuda">Autoajuda / Motivacional</option>
+                                    <option value="técnico">Técnico / Profissional</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button @click="createBookFromAI" :disabled="factoryLoading" class="w-full bg-purple-600 text-white py-3 rounded hover:bg-purple-700 flex justify-center items-center gap-2 text-lg font-bold">
+                            <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
+                            <span v-else><i class="fas fa-robot"></i> Gerar Livro Completo</span>
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Step 2: Configuration Wizard -->
@@ -540,8 +601,15 @@
                         <div v-if="coverMode === 'upload'" class="animate-fade-in">
                             <p class="text-sm text-gray-600 mb-2">Faça o upload da imagem da capa (JPG, PNG).</p>
                             <input type="file" ref="step2CoverFile" @change="uploadCover" accept="image/*" class="w-full max-w-md border p-2 rounded bg-white">
-                            <div v-if="factoryData.cover_filename && !factoryData.cover_filename.startsWith('covers/')" class="mt-2 text-green-600 text-sm flex items-center gap-1">
-                                <i class="fas fa-check"></i> Capa carregada: {{ factoryData.cover_filename }}
+                            
+                            <div v-if="factoryData.cover_filename" class="mt-4">
+                                <div v-if="factoryData.cover_filename.startsWith('http')" class="max-w-xs border rounded shadow-lg overflow-hidden bg-white">
+                                    <img :src="factoryData.cover_filename" alt="Capa Gerada" class="w-full h-auto">
+                                    <p class="text-center text-xs text-gray-500 py-1 bg-gray-50">Capa sugerida pela IA</p>
+                                </div>
+                                <div v-else-if="!factoryData.cover_filename.startsWith('covers/')" class="text-green-600 text-sm flex items-center gap-1">
+                                    <i class="fas fa-check"></i> Capa carregada: {{ factoryData.cover_filename }}
+                                </div>
                             </div>
                         </div>
 
@@ -884,6 +952,14 @@
 
                     // Book Factory Data
                     factoryStep: 1,
+                    factoryMode: 'upload',
+                    aiBook: {
+                        title: '',
+                        idea: '',
+                        num_chapters: 5,
+                        num_pages: 50,
+                        style: 'didático'
+                    },
                     factoryLoading: false,
                     showPreviewModal: false,
                     previewUrl: null,
@@ -1528,6 +1604,65 @@
                 },
                 
                 // Book Factory Methods
+                async createBookFromAI() {
+                    if (!this.aiBook.title || !this.aiBook.idea) {
+                        alert("Por favor, preencha o título e a ideia central.");
+                        return;
+                    }
+                    
+                    this.factoryLoading = true;
+                    try {
+                        const res = await this.authFetch('/factory/create_draft', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.aiBook)
+                        });
+                        
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.setupFactoryData(data);
+                            this.factoryStep = 2;
+                        } else {
+                            const err = await res.json();
+                            alert("Erro ao gerar livro: " + (err.detail || "Erro desconhecido"));
+                        }
+                    } catch (e) {
+                        alert("Erro de conexão: " + e);
+                    } finally {
+                        this.factoryLoading = false;
+                    }
+                },
+                
+                setupFactoryData(data) {
+                    this.factoryData.metadata.title = this.aiBook.title || "Novo Livro";
+                    
+                    // Cover
+                    if (data.cover_filename) {
+                        this.factoryData.cover_filename = data.cover_filename;
+                        this.coverMode = 'upload'; // Switch to upload mode to show the generated cover
+                    }
+
+                    // Suggestions
+                    if (data.suggestions) {
+                        if (data.suggestions.synopsis) this.factoryData.sections.pre_textual.synopsis = data.suggestions.synopsis;
+                        if (data.suggestions.epigraph) { this.factoryConfig.hasEpigraph = true; this.factoryData.sections.pre_textual.epigraph = data.suggestions.epigraph; }
+                        if (data.suggestions.preface) { this.factoryConfig.hasPreface = true; this.factoryData.sections.pre_textual.preface = data.suggestions.preface; }
+                        if (data.suggestions.dedication) { this.factoryConfig.hasDedication = true; this.factoryData.sections.pre_textual.dedication = data.suggestions.dedication; }
+                        if (data.suggestions.acknowledgments) { this.factoryConfig.hasAcknowledgments = true; this.factoryData.sections.pre_textual.acknowledgments = data.suggestions.acknowledgments; }
+                        if (data.suggestions.introduction) { this.factoryConfig.hasIntroduction = true; this.factoryData.sections.pre_textual.introduction = data.suggestions.introduction; }
+                    }
+                    
+                    // Chapters
+                    if (data.detected_chapters) {
+                        this.factoryData.sections.textual = data.detected_chapters.map(c => ({
+                            title: c.title,
+                            content: c.content
+                        }));
+                    }
+                    
+                    this.factoryData.raw_text_preview = data.raw_text_preview;
+                },
+
                 async uploadBookMaterial() {
                     const file = this.$refs.manuscriptFile.files[0];
                     if (!file) return alert("Selecione um arquivo!");

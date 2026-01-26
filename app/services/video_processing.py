@@ -34,7 +34,16 @@ def process_scheduled_video(video_id: int):
         
         # Gerar roteiro detalhado
         # Se for short, 1 min. Se video, 5 min (padrão solicitado pelo user antes)
-        duration = 1 if video.video_type == 'short' else 3 # 3 min para ser mais rápido que 5
+        # Prioridade: Duração solicitada > Tipo Short (1min) > Padrão (3min)
+        duration = 3 # Padrão
+        
+        if script_data.get('duration'):
+             try:
+                 duration = int(script_data.get('duration'))
+             except:
+                 pass
+        elif video.video_type == 'short':
+             duration = 1
         
         print(f"Gerando script para video {video_id}: {topic}")
         final_script = ai_service.generate_motivational_script(f"{topic}. Conceito: {concept}", duration)
