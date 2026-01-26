@@ -4,6 +4,7 @@ import requests
 import gc
 import threading
 import asyncio
+import re
 from gtts import gTTS
 from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
@@ -127,12 +128,38 @@ class VideoGenerator:
 
         return np.array(img)
 
+    def _clean_text(self, text):
+        """Limpa o texto de metadados, instruções de roteiro e markdown"""
+        if not text: return ""
+        
+        # 1. Remove Markdown Bold (**text**) -> text (keep content, remove markers) or remove content?
+        # Usually we want the content, just not the bold markers.
+        text = text.replace("**", "")
+        
+        # 2. Remove Script Prefixes
+        # "Narrador:", "Cena 1:", "Imagem:"
+        text = re.sub(r'(?i)^(Narrador|Narrator|Cena|Scene|Imagem|Visual)(\s+\d+)?\s*[:.-]\s*', '', text)
+        
+        # 3. Remove Instructions in Brackets [Visual: ...] or [Sound: ...]
+        text = re.sub(r'\[.*?\]', '', text)
+        
+        # 4. Remove Instructions in Parentheses that look like metadata (simple heuristic)
+        # Removes (Music: ...), (Visual: ...), (Tone: ...)
+        text = re.sub(r'\((?i)(Music|Visual|Sound|Tone|Credit|Source).*?\)', '', text)
+        
+        # 5. Remove explicit credits lines
+        text = re.sub(r'(?i)^Music:.*$', '', text, flags=re.MULTILINE)
+        text = re.sub(r'(?i)^Credits:.*$', '', text, flags=re.MULTILINE)
+
+        return text.strip()
+
     def generate_audio(self, text, lang='pt', voice_style=None, voice_gender=None):
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text.strip(): return None
         
         # Limpeza de segurança para evitar leitura de metadados
-        clean_text = text.replace("Narrador:", "").replace("Cena:", "").replace("Imagem:", "").replace("**", "").strip()
+        clean_text = self._clean_text(text)
+        if not clean_text: return None
 
         style = (voice_style or "human").lower()
         gender = (voice_gender or "female").lower()
@@ -282,7 +309,7 @@ class VideoGenerator:
                     
                 text = scene.get('text', '')
                 # Limpeza de segurança para evitar metadados no vídeo
-                clean_text = text.replace("Narrador:", "").replace("Cena:", "").replace("Imagem:", "").replace("**", "").strip()
+                clean_text = self._clean_text(text)
                 
                 image_prompt = scene.get('image_prompt', '')
                 

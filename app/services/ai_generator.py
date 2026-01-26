@@ -58,14 +58,37 @@ class AIContentGenerator:
         providers_to_try = []
         
         # Determine priority list
+        available_providers = []
+        if self.api_key: available_providers.append("openai")
+        if self.gemini_key: available_providers.append("gemini")
+        if self.deepseek_key: available_providers.append("deepseek")
+        if self.anthropic_key: available_providers.append("anthropic")
+        if self.mistral_key: available_providers.append("mistral")
+        if self.groq_key: available_providers.append("groq")
+        if self.openrouter_key: available_providers.append("openrouter")
+
+        providers_to_try = []
+        
         if self.provider == "hybrid":
-            # Priority: OpenAI -> DeepSeek -> Anthropic -> Mistral -> Gemini -> Groq -> OpenRouter
-            providers_to_try = ["openai", "deepseek", "anthropic", "mistral", "gemini", "groq", "openrouter"]
-        elif self.provider == "gemini":
-            # Smart Fallback: If Gemini is explicitly selected but fails, try OpenAI if available
-            providers_to_try = ["gemini", "openai"]
+             # Priority: OpenAI -> DeepSeek -> Anthropic -> Mistral -> Gemini -> Groq -> OpenRouter
+             preferred_order = ["openai", "deepseek", "anthropic", "mistral", "gemini", "groq", "openrouter"]
+             providers_to_try = [p for p in preferred_order if p in available_providers]
+             # Add any others not in preferred list but available
+             for p in available_providers:
+                 if p not in providers_to_try:
+                     providers_to_try.append(p)
         else:
-            providers_to_try = [self.provider]
+            # User selected specific provider. Try it first.
+            if self.provider in available_providers:
+                providers_to_try.append(self.provider)
+            
+            # Then fallback to ALL other available providers (AUTO-FALLBACK)
+            for p in available_providers:
+                if p != self.provider:
+                    providers_to_try.append(p)
+            
+            # If the selected provider wasn't available (no key), we still try others.
+
 
         last_error = None
 
@@ -176,9 +199,9 @@ class AIContentGenerator:
                         )
                         return response.text
                     except Exception as e:
-                        print(f"Gemini 1.5 Flash failed: {e}. Trying gemini-pro...")
-                        # Fallback to gemini-pro
-                        model = genai.GenerativeModel('gemini-pro')
+                        print(f"Gemini 1.5 Flash failed: {e}. Trying gemini-1.5-pro...")
+                        # Fallback to gemini-1.5-pro
+                        model = genai.GenerativeModel('gemini-1.5-pro')
                         response = model.generate_content(final_prompt)
                         return response.text
 
@@ -648,14 +671,20 @@ class AIContentGenerator:
         """Gera um roteiro longo para vídeo motivacional"""
         self._load_config()
         if not (self.api_key or self.gemini_key):
-            return self._mock_response(topic, "motivational_long")
+            return self._mock_response(topic, "motivational_long", duration=duration_minutes)
+
+        # Estimate word count: approx 150 words per minute
+        target_word_count = duration_minutes * 150
+        min_scenes = max(5, duration_minutes * 2) # At least 2 scenes per minute
 
         prompt = f"""
         Crie um Roteiro de Vídeo Motivacional Profundo de {duration_minutes} minutos sobre '{topic}'.
         Estilo: Inspirador, Estoico, Narrativa Poderosa.
+        Meta de Palavras: Aproximadamente {target_word_count} palavras.
         
-        O roteiro deve ser estruturado para manter a retenção.
-        Divida em 5 partes principais (Introdução, Problema, Virada, Solução/Mindset, Conclusão/CTA).
+        O roteiro deve ser estruturado para manter a retenção e COBRIR O TEMPO SOLICITADO.
+        Divida em pelo menos {min_scenes} cenas/partes para garantir dinamismo.
+        Estrutura sugerida: Introdução, Problema, Virada, Desenvolvimento (longo), Solução/Mindset, Conclusão/CTA.
         
         Retorne APENAS um JSON válido com a estrutura:
         {{
@@ -663,7 +692,7 @@ class AIContentGenerator:
             "description": "Descrição otimizada para YouTube com hashtags",
             "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
             "scenes": [
-                {{"text": "Texto EXATO da narração (sem 'Cena 1:', sem 'Narrador:', apenas o que será falado)...", "image_prompt": "Descrição visual..."}},
+                {{"text": "Texto EXATO da narração (sem 'Cena 1:', sem 'Narrador:', apenas o que será falado). Deve ser longo o suficiente...", "image_prompt": "Descrição visual..."}},
                 ...
             ],
             "music_mood": "epic_cinematic"
@@ -673,7 +702,7 @@ class AIContentGenerator:
         try:
             content = self._generate_text(
                 prompt,
-                system_prompt="Você é um roteirista de vídeos motivacionais virais. Retorne apenas JSON.",
+                system_prompt="Você é um roteirista de vídeos motivacionais virais. Seus roteiros são longos, profundos e respeitam o tempo solicitado.",
                 temperature=0.8,
                 json_mode=True
             )
@@ -687,7 +716,7 @@ class AIContentGenerator:
             return json.loads(content)
         except Exception as e:
             print(f"Erro ao gerar roteiro motivacional: {e}")
-            return self._mock_response(topic, "motivational_long", error=str(e))
+            return self._mock_response(topic, "motivational_long", error=str(e), duration=duration_minutes)
 
     def generate_script_from_text(self, text, duration_minutes=5):
         """Estrutura um texto existente em formato de roteiro de vídeo"""
