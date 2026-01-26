@@ -288,10 +288,14 @@ class AIContentGenerator:
             "synopsis": f"Escreva uma sinopse instigante para a quarta capa do livro '{title}'. Baseado neste contexto: {context_text[:1000]}...",
             "epigraph": f"Sugira uma epígrafe (citação curta e profunda) que combine com o tema do livro '{title}'. Contexto: {context_text[:500]}...",
             "preface": f"Escreva um prefácio curto para o livro '{title}', introduzindo o tema e preparando o leitor. Contexto: {context_text[:1000]}...",
-            "dedication": f"Sugira uma dedicatória genérica e emocionante para o livro '{title}'."
+            "dedication": f"Sugira uma dedicatória genérica e emocionante para o livro '{title}'.",
+            "introduction": f"Escreva uma introdução envolvente para o livro '{title}', apresentando os conceitos principais. Contexto: {context_text[:1000]}...",
+            "epilogue": f"Escreva um epílogo conclusivo para o livro '{title}', amarrando as pontas soltas e oferecendo uma reflexão final. Contexto: {context_text[:1000]}...",
+            "conclusion": f"Escreva uma conclusão resumida para o livro '{title}', recapitulando os pontos principais. Contexto: {context_text[:1000]}...",
+            "chapter": f"Escreva o conteúdo completo para o capítulo '{title}'. Mantenha o estilo do livro. Contexto: {context_text[:1000]}..."
         }
         
-        prompt = prompts.get(section_type, f"Escreva um texto para {section_type} do livro '{title}'.")
+        prompt = prompts.get(section_type, f"Escreva um texto para {section_type} do livro '{title}'. Contexto: {context_text[:500]}...")
 
         try:
             content = self._generate_text(prompt)
@@ -1012,7 +1016,7 @@ class AIContentGenerator:
             
             return {"plan": mock_plan}
 
-    def _mock_response(self, title, style, error=None):
+    def _mock_response(self, title, style, error=None, duration=None, **kwargs):
         base_msg = f"⚠️ MODO SIMULAÇÃO (Vá em Configurações e adicione sua chave OpenAI)\n\n"
         if error:
             base_msg += f"Erro detectado: {error}\n\n"
@@ -1023,14 +1027,27 @@ class AIContentGenerator:
             return base_msg + f"📖 [Simulação] Quando escrevi '{title}', eu queria..."
         elif style == "motivational_long":
             import json
+            
+            # Simple scaling of scenes based on duration if provided
+            num_scenes = 3
+            if duration:
+                try:
+                    num_scenes = max(3, int(duration) * 2)
+                except:
+                    pass
+            
+            scenes = []
+            scenes.append({"text": f"Bem-vindo a este vídeo sobre {title}. A vida é cheia de desafios...", "image_prompt": "Mountain peak sunrise"})
+            
+            for i in range(num_scenes - 2):
+                scenes.append({"text": f"O passo {i+1} é acreditar em si mesmo e nunca desistir, pois a persistência é a chave.", "image_prompt": f"Motivational scene {i+1} nature landscape"})
+                
+            scenes.append({"text": "Acredite em si mesmo e conquiste seus sonhos.", "image_prompt": "Lion looking at horizon"})
+
             return {
                 "title": f"Motivação: {title} (Vídeo Épico)",
                 "description": "Vídeo motivacional gerado automaticamente.",
-                "scenes": [
-                    {"text": "A vida é cheia de desafios... mas você pode superá-los.", "image_prompt": "Mountain peak sunrise"},
-                    {"text": "Não desista agora, o sucesso está logo ali.", "image_prompt": "Runner crossing finish line"},
-                    {"text": "Acredite em si mesmo.", "image_prompt": "Lion looking at horizon"}
-                ],
+                "scenes": scenes,
                 "music_mood": "epic"
             }
         else:

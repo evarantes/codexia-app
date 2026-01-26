@@ -90,10 +90,17 @@ def process_scheduled_video(video_id: int):
         print(f"Video {video_id} concluído: {video_path}")
         
     except Exception as e:
-        print(f"Erro ao gerar video agendado {video_id}: {e}")
+        import traceback
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"Erro ao gerar video agendado {video_id}: {error_msg}")
         if video:
             video.status = "failed"
             video.progress = 0
+            # Append error to description for visibility in UI
+            current_desc = video.description or ""
+            # Avoid duplicating error messages
+            if "[ERRO]" not in current_desc:
+                video.description = f"{current_desc}\n\n[ERRO]: {error_msg}"[:5000] # Increased limit for traceback
             db.commit()
     finally:
         db.close()

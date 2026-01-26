@@ -750,6 +750,10 @@
                     <h2 class="text-xl font-bold mb-6 flex justify-between items-center">
                         <span>2. Estrutura e Capa do Livro</span>
                         <div class="flex gap-2">
+                            <button @click="reviseBook" :disabled="factoryLoading" class="bg-yellow-500 text-white px-4 py-2 rounded text-sm hover:bg-yellow-600 flex items-center gap-2" title="Preencher seções vazias e completar capítulos">
+                                <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-sync"></i> Revisar / Completar</span>
+                            </button>
                             <button @click="previewBook" :disabled="factoryLoading" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 flex items-center gap-2">
                                 <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
                                 <span v-else><i class="fas fa-eye"></i> Visualizar Prévia</span>
@@ -1542,6 +1546,28 @@
                     } catch (e) { alert("Erro: " + e); }
                     finally { this.ytLoading = false; }
                 },
+                async reviseBook() {
+                    if (!confirm("A IA irá analisar e completar seções vazias (como capítulos sem texto ou epílogo). O conteúdo existente será mantido. Continuar?")) return;
+                    this.factoryLoading = true;
+                    try {
+                        const res = await this.authFetch('/factory/revise', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.factoryData)
+                        });
+                        const data = await res.json();
+                        if (data.status === 'success') {
+                            this.factoryData.sections = data.sections;
+                            alert(data.message || "Livro revisado com sucesso!");
+                        } else {
+                            alert("Erro na revisão: " + (data.message || "Desconhecido"));
+                        }
+                    } catch (e) {
+                        alert("Erro ao revisar livro: " + e);
+                    } finally {
+                        this.factoryLoading = false;
+                    }
+                },
                 async fetchBooks() {
                     try {
                         console.log("Fetching books...");
@@ -2003,6 +2029,28 @@
                         }
                     } catch (e) {
                         alert("Erro no upload: " + e);
+                    } finally {
+                        this.factoryLoading = false;
+                    }
+                },
+                async reviseBook() {
+                    if (!confirm("A IA irá analisar e completar seções vazias (como capítulos sem texto ou epílogo). O conteúdo existente será mantido. Continuar?")) return;
+                    this.factoryLoading = true;
+                    try {
+                        const res = await this.authFetch('/factory/revise', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.factoryData)
+                        });
+                        const data = await res.json();
+                        if (data.status === 'success') {
+                            this.factoryData.sections = data.sections;
+                            alert(data.message || "Livro revisado com sucesso!");
+                        } else {
+                            alert("Erro na revisão: " + (data.message || "Desconhecido"));
+                        }
+                    } catch (e) {
+                        alert("Erro ao revisar livro: " + e);
                     } finally {
                         this.factoryLoading = false;
                     }

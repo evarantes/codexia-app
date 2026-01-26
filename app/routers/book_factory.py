@@ -33,6 +33,55 @@ class BookGenerationRequest(BaseModel):
     sections: dict
     cover_filename: Optional[str] = None
 
+class BookRevisionRequest(BaseModel):
+    metadata: dict
+    sections: dict
+
+@router.post("/revise")
+async def revise_book(data: BookRevisionRequest):
+    """
+    Revisa o livro, preenchendo seções vazias (como capítulos ou epílogo) 
+    usando a IA, sem sobrescrever conteúdo existente.
+    """
+    ai_service = AIContentGenerator()
+    sections = data.sections
+    book_title = data.metadata.get("title", "Meu Livro")
+    book_synopsis = data.metadata.get("synopsis", "")
+    
+    # Construir um contexto básico com o que já existe
+    context_summary = f"Livro: {book_title}\nSinopse: {book_synopsis}\n"
+    
+    updated_count = 0
+    
+    for key, section in sections.items():
+        content = section.get("content", "").strip()
+        title = section.get("title", key)
+        
+        # Critério para "vazio": string vazia ou muito curta (< 50 chars)
+        if not content or len(content) < 50:
+            prompt_type = "chapter"
+            if "synopsis" in key.lower(): prompt_type = "synopsis"
+            elif "epigraph" in key.lower(): prompt_type = "epigraph"
+            elif "preface" in key.lower(): prompt_type = "preface"
+            elif "dedication" in key.lower(): prompt_type = "dedication"
+            elif "epilogue" in key.lower() or "epílogo" in title.lower(): prompt_type = "epilogue"
+            elif "conclusion" in key.lower(): prompt_type = "conclusion"
+            
+            # Gerar conteúdo
+            # Passamos o contexto acumulado e o título da seção
+            print(f"Gerando conteúdo para seção vazia: {title} ({key})")
+            new_content = ai_service.generate_book_section(prompt_type, context_summary, title)
+            
+            if new_content:
+                section["content"] = new_content
+                updated_count += 1
+                
+    return {
+        "status": "success", 
+        "sections": sections, 
+        "message": f"Revisão concluída. {updated_count} seções foram preenchidas."
+    }
+
 @router.post("/upload")
 async def upload_manuscript(
     file: UploadFile = File(...),
@@ -227,6 +276,63 @@ def resolve_cover_path(filename: str) -> Optional[str]:
         return p2
         
     return None
+
+@router.post("/revise")
+async def revise_book(request: BookGenerationRequest):
+    """
+    Analyzes the current book structure and content, filling in missing parts
+    (empty chapters, epilogues) without overwriting existing content.
+    """
+    ai_service = AIContentGenerator()
+    
+    # 1. Revise Textual Chapters
+    chapters = request.sections.get('textual', [])
+    updated_chapters = []
+    
+    for i, chapter in enumerate(chapters):
+        content = chapter.get('content', '')
+        title = chapter.get('title', f'Capítulo {i+1}')
+        
+        # If content is missing or too short (placeholder), generate it
+        if len(content.strip()) < 50:
+            print(f"Revising: Generating content for chapter '{title}'...")
+            # Use the book title and idea/synopsis as context
+            book_title = request.metadata.get('title', 'Livro')
+            context = f"Livro: {book_title}. "
+            if request.sections.get('pre_textual', {}).get('synopsis'):
+                 context += f"Sinopse: {request.sections['pre_textual']['synopsis']}"
+            
+            # Generate chapter content
+            # We reuse generate_book_section but we might need a more specific prompt for a chapter
+            # Let's use a specialized method or reuse generate_book_section with clear instructions
+            new_content = ai_service.generate_chapter_content(
+                chapter_title=title,
+                book_title=book_title,
+                context=context,
+                style=request.metadata.get('style', 'didático') # We might need to pass style in metadata
+            )
+            chapter['content'] = new_content
+        
+        updated_chapters.append(chapter)
+    
+    request.sections['textual'] = updated_chapters
+    
+    # 2. Revise Post-Textual (Epilogue)
+    post_textual = request.sections.get('post_textual', {})
+    if 'epilogue' in post_textual:
+        # If epilogue is requested (present in keys) but empty
+        if len(post_textual['epilogue'].strip()) < 50:
+             print("Revising: Generating Epilogue...")
+             book_title = request.metadata.get('title', 'Livro')
+             context = f"Livro: {book_title}."
+             new_epilogue = ai_service.generate_book_section("epilogue", context, book_title)
+             post_textual['epilogue'] = new_epilogue
+
+    return {
+        "status": "success", 
+        "sections": request.sections,
+        "message": "Livro revisado e completado com sucesso!"
+    }
 
 @router.post("/preview")
 async def preview_book_pdf(request: BookGenerationRequest):

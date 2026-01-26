@@ -132,24 +132,23 @@ class VideoGenerator:
         """Limpa o texto de metadados, instruções de roteiro e markdown"""
         if not text: return ""
         
-        # 1. Remove Markdown Bold (**text**) -> text (keep content, remove markers) or remove content?
-        # Usually we want the content, just not the bold markers.
+        # 1. Remove Markdown Bold (**text**) -> text (keep content, remove markers)
         text = text.replace("**", "")
         
         # 2. Remove Script Prefixes
         # "Narrador:", "Cena 1:", "Imagem:"
-        text = re.sub(r'(?i)^(Narrador|Narrator|Cena|Scene|Imagem|Visual)(\s+\d+)?\s*[:.-]\s*', '', text)
+        text = re.sub(r'^(Narrador|Narrator|Cena|Scene|Imagem|Visual)(\s+\d+)?\s*[:.-]\s*', '', text, flags=re.IGNORECASE)
         
         # 3. Remove Instructions in Brackets [Visual: ...] or [Sound: ...]
         text = re.sub(r'\[.*?\]', '', text)
         
-        # 4. Remove Instructions in Parentheses that look like metadata (simple heuristic)
+        # 4. Remove Instructions in Parentheses that look like metadata
         # Removes (Music: ...), (Visual: ...), (Tone: ...)
-        text = re.sub(r'\((?i)(Music|Visual|Sound|Tone|Credit|Source).*?\)', '', text)
+        text = re.sub(r'\((Music|Visual|Sound|Tone|Credit|Source).*?\)', '', text, flags=re.IGNORECASE)
         
         # 5. Remove explicit credits lines
-        text = re.sub(r'(?i)^Music:.*$', '', text, flags=re.MULTILINE)
-        text = re.sub(r'(?i)^Credits:.*$', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^Music:.*$', '', text, flags=re.MULTILINE|re.IGNORECASE)
+        text = re.sub(r'^Credits:.*$', '', text, flags=re.MULTILINE|re.IGNORECASE)
 
         return text.strip()
 
