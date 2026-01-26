@@ -66,6 +66,39 @@ def run_migrations(engine):
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at DATETIME"))
                     conn.commit()
 
+            # Check for Settings new columns
+            if "settings" in inspector.get_table_names():
+                settings_columns = [c["name"] for c in inspector.get_columns("settings")]
+                with engine.connect() as conn:
+                    if "gemini_api_key" not in settings_columns:
+                    print("Migrating: Adding gemini_api_key to settings...")
+                    conn.execute(text("ALTER TABLE settings ADD COLUMN gemini_api_key TEXT"))
+                
+                if "deepseek_api_key" not in settings_columns:
+                    print("Migrating: Adding deepseek_api_key to settings...")
+                    conn.execute(text("ALTER TABLE settings ADD COLUMN deepseek_api_key TEXT"))
+                
+                if "groq_api_key" not in settings_columns:
+                    print("Migrating: Adding groq_api_key to settings...")
+                    conn.execute(text("ALTER TABLE settings ADD COLUMN groq_api_key TEXT"))
+                    
+                if "anthropic_api_key" not in settings_columns:
+                    print("Migrating: Adding anthropic_api_key to settings...")
+                    conn.execute(text("ALTER TABLE settings ADD COLUMN anthropic_api_key TEXT"))
+
+                if "mistral_api_key" not in settings_columns:
+                    print("Migrating: Adding mistral_api_key to settings...")
+                    conn.execute(text("ALTER TABLE settings ADD COLUMN mistral_api_key TEXT"))
+
+                if "openrouter_api_key" not in settings_columns:
+                    print("Migrating: Adding openrouter_api_key to settings...")
+                    conn.execute(text("ALTER TABLE settings ADD COLUMN openrouter_api_key TEXT"))
+
+                if "ai_provider" not in settings_columns:
+                    print("Migrating: Adding ai_provider to settings...")
+                    conn.execute(text("ALTER TABLE settings ADD COLUMN ai_provider TEXT DEFAULT 'openai'"))
+                conn.commit()
+
 
     except Exception as e:
         print(f"Migration warning: {e}")

@@ -790,7 +790,57 @@
             <div v-if="currentTab === 'settings'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Configurações</h1>
                 <div class="bg-white p-6 rounded-lg shadow max-w-2xl">
-                    <div class="mb-4">
+                    <div class="mb-6 p-4 bg-gray-50 border rounded-lg">
+                        <label class="block font-bold mb-2 text-indigo-700">Provedor de Inteligência Artificial</label>
+                        <select v-model="settings.ai_provider" class="w-full border p-2 rounded mb-4 bg-white">
+                            <option value="openai">OpenAI (GPT-3.5/4)</option>
+                            <option value="gemini">Google Gemini (Mais barato)</option>
+                            <option value="deepseek">DeepSeek (Custo-Benefício)</option>
+                            <option value="anthropic">Anthropic (Claude 3)</option>
+                            <option value="mistral">Mistral AI (Europeu/Open)</option>
+                            <option value="groq">Groq (Ultra Rápido/Llama 3)</option>
+                            <option value="openrouter">OpenRouter (Todas as IAs)</option>
+                            <option value="hybrid">✨ Modo Híbrido (Todas as IAs)</option>
+                        </select>
+                        
+                        <div v-if="settings.ai_provider === 'gemini' || settings.ai_provider === 'hybrid'" class="mb-2">
+                            <label class="block font-bold mb-2">Google Gemini API Key</label>
+                            <input v-model="settings.gemini_api_key" type="password" class="w-full border p-2 rounded" placeholder="Cole sua chave do Google AI Studio aqui">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://aistudio.google.com/" target="_blank" class="text-blue-600 underline">Google AI Studio</a></p>
+                        </div>
+
+                        <div v-if="settings.ai_provider === 'deepseek' || settings.ai_provider === 'hybrid'" class="mb-2">
+                            <label class="block font-bold mb-2">DeepSeek API Key</label>
+                            <input v-model="settings.deepseek_api_key" type="password" class="w-full border p-2 rounded" placeholder="sk-...">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://platform.deepseek.com/" target="_blank" class="text-blue-600 underline">DeepSeek Platform</a></p>
+                        </div>
+
+                        <div v-if="settings.ai_provider === 'anthropic' || settings.ai_provider === 'hybrid'" class="mb-2">
+                            <label class="block font-bold mb-2">Anthropic (Claude) API Key</label>
+                            <input v-model="settings.anthropic_api_key" type="password" class="w-full border p-2 rounded" placeholder="sk-ant-...">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://console.anthropic.com/" target="_blank" class="text-blue-600 underline">Anthropic Console</a></p>
+                        </div>
+
+                        <div v-if="settings.ai_provider === 'mistral' || settings.ai_provider === 'hybrid'" class="mb-2">
+                            <label class="block font-bold mb-2">Mistral AI API Key</label>
+                            <input v-model="settings.mistral_api_key" type="password" class="w-full border p-2 rounded" placeholder="...mistral...">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://console.mistral.ai/" target="_blank" class="text-blue-600 underline">Mistral Console</a></p>
+                        </div>
+
+                        <div v-if="settings.ai_provider === 'groq' || settings.ai_provider === 'hybrid'" class="mb-2">
+                            <label class="block font-bold mb-2">Groq API Key</label>
+                            <input v-model="settings.groq_api_key" type="password" class="w-full border p-2 rounded" placeholder="gsk_...">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://console.groq.com/" target="_blank" class="text-blue-600 underline">Groq Console</a></p>
+                        </div>
+
+                        <div v-if="settings.ai_provider === 'openrouter' || settings.ai_provider === 'hybrid'" class="mb-2">
+                            <label class="block font-bold mb-2">OpenRouter API Key (Gateway Universal)</label>
+                            <input v-model="settings.openrouter_api_key" type="password" class="w-full border p-2 rounded" placeholder="sk-or-...">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://openrouter.ai/" target="_blank" class="text-blue-600 underline">OpenRouter</a></p>
+                        </div>
+                    </div>
+
+                    <div class="mb-4" v-if="settings.ai_provider === 'openai' || settings.ai_provider === 'hybrid'">
                         <label class="block font-bold mb-2">OpenAI API Key</label>
                         <input v-model="settings.openai_api_key" type="password" class="w-full border p-2 rounded">
                     </div>
@@ -1039,6 +1089,13 @@
                     // Settings
                     settings: {
                         openai_api_key: '',
+                        gemini_api_key: '',
+                        deepseek_api_key: '',
+                        anthropic_api_key: '',
+                        mistral_api_key: '',
+                        openrouter_api_key: '',
+                        groq_api_key: '',
+                        ai_provider: 'openai',
                         youtube_client_id: '',
                         youtube_client_secret: '',
                         youtube_refresh_token: '',

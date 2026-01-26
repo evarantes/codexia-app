@@ -1,6 +1,7 @@
 import os
 import openai
 import requests
+import google.generativeai as genai
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app.models import Settings
@@ -18,25 +19,225 @@ class AIContentGenerator:
         db.close()
 
         self.api_key = None
+        self.gemini_key = None
+        self.deepseek_key = None
+        self.groq_key = None
+        self.anthropic_key = None
+        self.mistral_key = None
+        self.openrouter_key = None
+        self.provider = "openai"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN") # Para MusicGen
 
-        if settings and settings.openai_api_key:
+        if settings:
             self.api_key = settings.openai_api_key
+            self.gemini_key = settings.gemini_api_key
+            self.deepseek_key = settings.deepseek_api_key
+            self.groq_key = settings.groq_api_key
+            self.anthropic_key = settings.anthropic_api_key
+            self.mistral_key = settings.mistral_api_key
+            self.openrouter_key = settings.openrouter_api_key
+            self.provider = settings.ai_provider or "openai"
         
-        if not self.api_key:
-            self.api_key = os.getenv("OPENAI_API_KEY")
+        # Fallback to env vars
+        if not self.api_key: self.api_key = os.getenv("OPENAI_API_KEY")
+        if not self.gemini_key: self.gemini_key = os.getenv("GEMINI_API_KEY")
+        if not self.deepseek_key: self.deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+        if not self.groq_key: self.groq_key = os.getenv("GROQ_API_KEY")
+        if not self.anthropic_key: self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if not self.mistral_key: self.mistral_key = os.getenv("MISTRAL_API_KEY")
+        if not self.openrouter_key: self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
 
-        if self.api_key and self.api_key != "sua_chave_openai_aqui":
-            openai.api_key = self.api_key
+        # Configure Gemini
+        if self.gemini_key:
+            genai.configure(api_key=self.gemini_key)
+
+    def _generate_text(self, prompt, system_prompt=None, temperature=0.7, json_mode=False):
+        """Unified method to generate text using the configured provider"""
+        self._load_config()
+        
+        providers_to_try = []
+        
+        # Determine priority list
+        if self.provider == "hybrid":
+            # Priority: OpenAI -> DeepSeek -> Anthropic -> Mistral -> Gemini -> Groq -> OpenRouter
+            providers_to_try = ["openai", "deepseek", "anthropic", "mistral", "gemini", "groq", "openrouter"]
         else:
-            self.api_key = None
-            print("⚠️ AVISO: Chave da OpenAI não configurada.")
+            providers_to_try = [self.provider]
+
+        last_error = None
+
+        for current_provider in providers_to_try:
+            try:
+                if current_provider == "mistral" and self.mistral_key:
+                    import requests
+                    headers = {
+                        "Authorization": f"Bearer {self.mistral_key}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    }
+                    
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({"role": "user", "content": prompt})
+
+                    data = {
+                        "model": "mistral-small-latest",
+                        "messages": messages,
+                        "temperature": temperature,
+                        "response_format": {"type": "json_object"} if json_mode else None
+                    }
+                    
+                    response = requests.post(
+                        "https://api.mistral.ai/v1/chat/completions",
+                        headers=headers,
+                        json=data
+                    )
+                    
+                    if response.status_code != 200:
+                        raise Exception(f"Mistral Error {response.status_code}: {response.text}")
+                        
+                    return response.json()["choices"][0]["message"]["content"]
+
+                elif current_provider == "openrouter" and self.openrouter_key:
+                    # Use OpenAI Client compatible interface
+                    client = openai.OpenAI(
+                        api_key=self.openrouter_key, 
+                        base_url="https://openrouter.ai/api/v1",
+                        default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"}
+                    )
+                    
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({"role": "user", "content": prompt})
+
+                    # OpenRouter auto-routes, but we can specify a cheap default like auto or specific
+                    response = client.chat.completions.create(
+                        model="openai/gpt-3.5-turbo", # OpenRouter supports mapping, or use "mistralai/mistral-7b-instruct"
+                        messages=messages,
+                        temperature=temperature,
+                        response_format={"type": "json_object"} if json_mode else None
+                    )
+                    return response.choices[0].message.content
+
+                elif current_provider == "anthropic" and self.anthropic_key:
+                    import requests
+                    headers = {
+                        "x-api-key": self.anthropic_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json"
+                    }
+                    
+                    system_msg = system_prompt if system_prompt else "You are a helpful assistant."
+                    if json_mode:
+                        system_msg += " Output ONLY valid JSON."
+
+                    data = {
+                        "model": "claude-3-haiku-20240307", # Cheap and fast
+                        "max_tokens": 4000,
+                        "system": system_msg,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": temperature
+                    }
+                    
+                    response = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers=headers,
+                        json=data
+                    )
+                    
+                    if response.status_code != 200:
+                        raise Exception(f"Anthropic Error {response.status_code}: {response.text}")
+                        
+                    result = response.json()
+                    return result["content"][0]["text"]
+
+                elif current_provider == "gemini" and self.gemini_key:
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    final_prompt = prompt
+                    if system_prompt:
+                        final_prompt = f"System Instruction: {system_prompt}\n\nUser Request: {prompt}"
+                    if json_mode:
+                        final_prompt += "\n\nIMPORTANT: Output ONLY valid JSON."
+                    
+                    response = model.generate_content(
+                        final_prompt,
+                        generation_config=genai.types.GenerationConfig(
+                            temperature=temperature,
+                            response_mime_type="application/json" if json_mode else "text/plain"
+                        )
+                    )
+                    return response.text
+
+                elif current_provider == "openai" and self.api_key:
+                    openai.api_key = self.api_key
+                    openai.base_url = "https://api.openai.com/v1" # Reset to default
+                    
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({"role": "user", "content": prompt})
+
+                    response = openai.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=messages,
+                        temperature=temperature,
+                        response_format={"type": "json_object"} if json_mode else None
+                    )
+                    return response.choices[0].message.content
+
+                elif current_provider == "deepseek" and self.deepseek_key:
+                    # Use OpenAI Client compatible interface
+                    client = openai.OpenAI(api_key=self.deepseek_key, base_url="https://api.deepseek.com")
+                    
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({"role": "user", "content": prompt})
+
+                    response = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=messages,
+                        temperature=temperature,
+                        response_format={"type": "json_object"} if json_mode else None
+                    )
+                    return response.choices[0].message.content
+
+                elif current_provider == "groq" and self.groq_key:
+                    # Use OpenAI Client compatible interface
+                    client = openai.OpenAI(api_key=self.groq_key, base_url="https://api.groq.com/openai/v1")
+                    
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({"role": "user", "content": prompt})
+
+                    # Groq supports Llama 3 8b/70b
+                    response = client.chat.completions.create(
+                        model="llama3-70b-8192",
+                        messages=messages,
+                        temperature=temperature,
+                        response_format={"type": "json_object"} if json_mode else None
+                    )
+                    return response.choices[0].message.content
+
+            except Exception as e:
+                print(f"Erro no provedor {current_provider}: {e}")
+                last_error = e
+                continue # Try next provider
+        
+        # If we get here, all providers failed
+        if last_error:
+            raise last_error
+        return None
 
     def generate_book_section(self, section_type, context_text, title):
         """Generates specific book sections like synopsis, epigraph, preface"""
         self._load_config()
-        if not self.api_key:
-            return "Conteúdo gerado por IA (Simulação)"
+        # Verify if any key is available
+        if not (self.api_key or self.gemini_key):
+             return "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
         prompts = {
             "synopsis": f"Escreva uma sinopse instigante para a quarta capa do livro '{title}'. Baseado neste contexto: {context_text[:1000]}...",
@@ -48,21 +249,19 @@ class AIContentGenerator:
         prompt = prompts.get(section_type, f"Escreva um texto para {section_type} do livro '{title}'.")
 
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
-            )
-            return response.choices[0].message.content
+            content = self._generate_text(prompt)
+            if not content:
+                return "Erro: Nenhuma IA configurada."
+            return content
         except Exception as e:
             print(f"Erro ao gerar seção {section_type}: {e}")
-            return f"Erro ao gerar {section_type}."
+            return f"Erro ao gerar {section_type}: {str(e)}"
 
     def generate_full_book_draft(self, title: str, idea: str, num_chapters: int, style: str = "didático", num_pages: int = 50):
         """Generates a full book structure and content based on an idea"""
         self._load_config()
         
-        if not self.api_key:
+        if not (self.api_key or self.gemini_key):
             # Mock response
             return {
                 "dedication": "Aos sonhadores.",
@@ -102,13 +301,14 @@ class AIContentGenerator:
         """
 
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": outline_prompt}],
-                temperature=0.7
-            )
             import json
-            content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+            
+            # Using unified generator
+            content = self._generate_text(outline_prompt, json_mode=True)
+            if not content:
+                 raise Exception("Falha na geração do outline (resposta vazia)")
+                 
+            content = content.replace("```json", "").replace("```", "").strip()
             structure = json.loads(content)
             
             # 2. Generate Cover (Parallel if possible, but sequential here for simplicity)
@@ -138,16 +338,11 @@ class AIContentGenerator:
                 Escreva de forma envolvente, detalhada e bem estruturada. Use parágrafos claros.
                 """
                 
-                res_chap = openai.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": content_prompt}],
-                    temperature=0.7
-                )
-                chap_content = res_chap.choices[0].message.content
+                chap_content = self._generate_text(content_prompt)
                 
                 final_chapters.append({
                     "title": chap_title,
-                    "content": chap_content
+                    "content": chap_content or "Conteúdo não gerado."
                 })
             
             structure["chapters"] = final_chapters
@@ -169,8 +364,7 @@ class AIContentGenerator:
             # Tratamento amigável para erro de cota
             if "insufficient_quota" in error_msg or "429" in error_msg:
                 raise Exception(
-                    "Créditos da OpenAI esgotados. Sua conta da OpenAI atingiu o limite de uso ou está sem créditos. "
-                    "Por favor, acesse https://platform.openai.com/account/billing para verificar seu saldo e adicionar créditos."
+                    "Créditos da IA esgotados. Verifique sua cota na OpenAI ou Gemini."
                 )
             
             raise e
@@ -290,24 +484,15 @@ class AIContentGenerator:
         # Recarrega config a cada chamada para pegar atualizações
         self._load_config()
 
-        if not self.api_key:
+        if not (self.api_key or self.gemini_key):
             return self._mock_response(book_title, style)
 
         prompt = self._build_prompt(book_title, synopsis, style)
         
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "Você é um especialista em copywriting para venda de livros. Crie textos persuasivos, emocionantes e com alto potencial de conversão."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-            return response.choices[0].message.content
+            return self._generate_text(prompt, system_prompt="Você é um especialista em copywriting para venda de livros. Crie textos persuasivos, emocionantes e com alto potencial de conversão.") or "Erro na geração."
         except Exception as e:
-            print(f"Erro na OpenAI: {e}")
+            print(f"Erro na IA: {e}")
             return self._mock_response(book_title, style, error=str(e))
 
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
@@ -389,7 +574,7 @@ class AIContentGenerator:
         self._load_config()
         
         # Se não tiver chave, retorna mock
-        if not self.api_key:
+        if not (self.api_key or self.gemini_key):
             return {
                 "title": f"Trailer: {book_title}",
                 "scenes": [
@@ -418,17 +603,16 @@ class AIContentGenerator:
         """
 
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "Você é um roteirista de vídeo especialista em trailers de livros. Retorne apenas JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=600
+            content = self._generate_text(
+                prompt, 
+                system_prompt="Você é um roteirista de vídeo especialista em trailers de livros. Retorne apenas JSON.",
+                json_mode=True
             )
+            
             import json
-            content = response.choices[0].message.content
+            if not content:
+                 raise Exception("Resposta vazia da IA")
+
             # Tenta limpar markdown se houver
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
@@ -451,7 +635,7 @@ class AIContentGenerator:
     def generate_motivational_script(self, topic, duration_minutes=5):
         """Gera um roteiro longo para vídeo motivacional"""
         self._load_config()
-        if not self.api_key:
+        if not (self.api_key or self.gemini_key):
             return self._mock_response(topic, "motivational_long")
 
         prompt = f"""
@@ -475,13 +659,17 @@ class AIContentGenerator:
         """
         
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo-16k", # Modelo com janela maior para texto longo
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.8
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um roteirista de vídeos motivacionais virais. Retorne apenas JSON.",
+                temperature=0.8,
+                json_mode=True
             )
+            
             import json
-            content = response.choices[0].message.content
+            if not content:
+                raise Exception("Resposta vazia da IA")
+
             # Limpeza básica de markdown json
             content = content.replace("```json", "").replace("```", "")
             return json.loads(content)
@@ -492,7 +680,7 @@ class AIContentGenerator:
     def generate_script_from_text(self, text, duration_minutes=5):
         """Estrutura um texto existente em formato de roteiro de vídeo"""
         self._load_config()
-        if not self.api_key:
+        if not (self.api_key or self.gemini_key):
             return self._mock_response("História do Usuário", "motivational_long")
 
         prompt = f"""
@@ -521,13 +709,17 @@ class AIContentGenerator:
         """
         
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo-16k",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um editor de vídeo profissional. Retorne apenas JSON.",
+                temperature=0.7,
+                json_mode=True
             )
+            
             import json
-            content = response.choices[0].message.content
+            if not content:
+                 raise Exception("Resposta vazia da IA")
+
             content = content.replace("```json", "").replace("```", "")
             return json.loads(content)
         except Exception as e:
@@ -559,7 +751,7 @@ class AIContentGenerator:
         }}
         """
         
-        if not self.api_key:
+        if not (self.api_key or self.gemini_key):
             return {
                 "analysis": "Simulação: O canal tem potencial mas precisa de consistência.",
                 "action_plan": ["Postar 2x por semana", "Melhorar Thumbnails", "Focar em Shorts"],
@@ -569,49 +761,44 @@ class AIContentGenerator:
             }
             
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}]
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um estrategista de YouTube. Retorne apenas JSON.",
+                json_mode=True
             )
+            
             import json
-            content = response.choices[0].message.content
+            if not content:
+                 raise Exception("Resposta vazia da IA")
+
             content = content.replace("```json", "").replace("```", "")
             return json.loads(content)
         except Exception as e:
+            print(f"Erro na análise do canal: {e}")
             return {"error": str(e)}
 
     def generate_banner_image(self, prompt_text: str) -> str:
         """Gera um banner para o canal do YouTube usando DALL-E 3"""
         self._load_config()
+        
+        # DALL-E requires OpenAI Key
         if not self.api_key:
+            print("OpenAI Key missing for Image Generation. Skipping banner.")
             return None
 
         try:
-            response = openai.chat.completions.create(
+            # Correct call for DALL-E 3
+            response = openai.images.generate(
                 model="dall-e-3",
-                prompt=f"YouTube Channel Banner, 16:9 aspect ratio, professional, high quality. Theme: {prompt_text}",
-                size="1024x1024", # DALL-E 3 standard, YouTube will crop/resize
+                prompt=f"YouTube Channel Banner art, {prompt_text}, wide aspect ratio, professional design, minimal text, 4k resolution",
+                size="1024x1024", 
                 quality="standard",
                 n=1,
             )
-            # Nota: DALL-E 3 gera 1024x1024 ou 1024x1792. Para banner YouTube ideal é 2560x1440.
-            # Vamos usar o link gerado. O YouTube Service terá que lidar com o upload.
-            # DALL-E 3 API (via images.generate, not chat.completions - correção abaixo)
             return response.data[0].url
         except Exception as e:
-            # Fallback para correção da chamada
-            try:
-                response = openai.images.generate(
-                    model="dall-e-3",
-                    prompt=f"YouTube Channel Banner art, {prompt_text}, wide aspect ratio, professional design, minimal text",
-                    size="1024x1024", 
-                    quality="standard",
-                    n=1,
-                )
-                return response.data[0].url
-            except Exception as e2:
-                print(f"Erro ao gerar banner: {e2}")
-                return None
+            print(f"Error generating banner: {e}")
+            return None
 
     def generate_monitor_report(self, stats):
         """Gera relatório curto de monitoramento"""

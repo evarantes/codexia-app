@@ -9,6 +9,13 @@ router = APIRouter(prefix="/settings", tags=["Settings"])
 
 class SettingsUpdate(BaseModel):
     openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    mistral_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    ai_provider: Optional[str] = None
     facebook_page_id: Optional[str] = None
     facebook_access_token: Optional[str] = None
     mercadopago_access_token: Optional[str] = None
@@ -36,6 +43,20 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
     
     if settings_update.openai_api_key is not None:
         settings.openai_api_key = settings_update.openai_api_key
+    if settings_update.gemini_api_key is not None:
+        settings.gemini_api_key = settings_update.gemini_api_key
+    if settings_update.deepseek_api_key is not None:
+        settings.deepseek_api_key = settings_update.deepseek_api_key
+    if settings_update.groq_api_key is not None:
+        settings.groq_api_key = settings_update.groq_api_key
+    if settings_update.anthropic_api_key is not None:
+        settings.anthropic_api_key = settings_update.anthropic_api_key
+    if settings_update.mistral_api_key is not None:
+        settings.mistral_api_key = settings_update.mistral_api_key
+    if settings_update.openrouter_api_key is not None:
+        settings.openrouter_api_key = settings_update.openrouter_api_key
+    if settings_update.ai_provider is not None:
+        settings.ai_provider = settings_update.ai_provider
     if settings_update.facebook_page_id is not None:
         settings.facebook_page_id = settings_update.facebook_page_id
     if settings_update.facebook_access_token is not None:

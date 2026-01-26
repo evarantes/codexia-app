@@ -49,6 +49,13 @@ class Settings(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     openai_api_key = Column(String, nullable=True)
+    gemini_api_key = Column(String, nullable=True)
+    deepseek_api_key = Column(String, nullable=True)
+    groq_api_key = Column(String, nullable=True)
+    anthropic_api_key = Column(String, nullable=True)
+    mistral_api_key = Column(String, nullable=True)
+    openrouter_api_key = Column(String, nullable=True)
+    ai_provider = Column(String, default="openai") # openai | gemini | deepseek | groq | anthropic | mistral | openrouter | hybrid
     facebook_page_id = Column(String, nullable=True)
     facebook_access_token = Column(String, nullable=True)
     mercadopago_access_token = Column(String, nullable=True)
