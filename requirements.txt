@@ -5,6 +5,7 @@ python-multipart
 jinja2
 requests
 openai
+google-generativeai
 python-dotenv
 moviepy
 imageio
