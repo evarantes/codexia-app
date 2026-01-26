@@ -211,21 +211,25 @@ class AIContentGenerator:
                         raise gemini_error
 
                 elif current_provider == "openai" and self.api_key:
-                    openai.api_key = self.api_key
-                    openai.base_url = "https://api.openai.com/v1" # Reset to default
+                    # Use OpenAI Client (v1.0+) explicitly to avoid global state issues
+                    client = openai.OpenAI(api_key=self.api_key)
                     
                     messages = []
                     if system_prompt:
                         messages.append({"role": "system", "content": system_prompt})
                     messages.append({"role": "user", "content": prompt})
 
-                    response = openai.chat.completions.create(
-                        model="gpt-3.5-turbo",
-                        messages=messages,
-                        temperature=temperature,
-                        response_format={"type": "json_object"} if json_mode else None
-                    )
-                    return response.choices[0].message.content
+                    try:
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=messages,
+                            temperature=temperature,
+                            response_format={"type": "json_object"} if json_mode else None
+                        )
+                        return response.choices[0].message.content
+                    except Exception as e:
+                        print(f"OpenAI Error: {e}")
+                        raise e
 
                 elif current_provider == "deepseek" and self.deepseek_key:
                     # Use OpenAI Client compatible interface
@@ -277,7 +281,7 @@ class AIContentGenerator:
         """Generates specific book sections like synopsis, epigraph, preface"""
         self._load_config()
         # Verify if any key is available
-        if not (self.api_key or self.gemini_key):
+        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.mistral_key or self.groq_key or self.openrouter_key):
              return "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
         prompts = {
@@ -302,7 +306,7 @@ class AIContentGenerator:
         """Generates a full book structure and content based on an idea"""
         self._load_config()
         
-        if not (self.api_key or self.gemini_key):
+        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.mistral_key or self.groq_key or self.openrouter_key):
             # Mock response
             return {
                 "dedication": "Aos sonhadores.",
