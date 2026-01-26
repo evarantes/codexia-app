@@ -370,17 +370,20 @@ class AIContentGenerator:
             # Here we do it sequentially but keep it concise to avoid timeout.
             final_chapters = []
             
-            for chap in structure.get("chapters", []):
-                chap_title = chap.get("title", "Capítulo")
+            for i, chap in enumerate(structure.get("chapters", [])):
+                chap_title = chap.get("title", f"Capítulo {i+1}")
                 chap_summary = chap.get("summary", "")
                 
                 content_prompt = f"""
-                Escreva o conteúdo completo do capítulo '{chap_title}' do livro '{title}'.
+                Escreva o conteúdo completo do Capítulo {i+1} de {len(structure.get("chapters", []))}: '{chap_title}' do livro '{title}'.
                 Contexto do capítulo: {chap_summary}
                 Estilo: {style}
                 Meta de tamanho: Aprox. {words_per_chapter} palavras.
                 
-                Escreva de forma envolvente, detalhada e bem estruturada. Use parágrafos claros.
+                IMPORTANTE: 
+                1. NÃO repita o título "Capítulo {i+1}" ou o nome do capítulo no início do texto. Comece diretamente o conteúdo.
+                2. Mantenha a coerência com os capítulos anteriores e posteriores.
+                3. Escreva de forma envolvente, detalhada e bem estruturada. Use parágrafos claros.
                 """
                 
                 chap_content = self._generate_text(content_prompt)
