@@ -30,8 +30,14 @@ def process_scheduled_video(video_id: int):
         video_service = VideoGenerator(ai_service=ai_service)
         
         topic = video.title
-        concept = video.description
+        concept = video.description or ""
         
+        # Limpar créditos de música antigos do conceito/descrição para não contaminar o prompt
+        if "Music:" in concept:
+            concept = concept.split("Music:")[0].strip()
+        if "http" in concept: # Remove URLs comuns em créditos
+            concept = concept.split("http")[0].strip()
+            
         # Gerar roteiro detalhado
         # Se for short, 1 min. Se video, 5 min (padrão solicitado pelo user antes)
         # Prioridade: Duração solicitada > Tipo Short (1min) > Padrão (3min)

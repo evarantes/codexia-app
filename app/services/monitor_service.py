@@ -22,6 +22,9 @@ class MonitorService:
 
     def start(self):
         if not self.job:
+            # Startup Recovery: Reset any 'processing' videos to 'queued'
+            self._reset_stuck_videos()
+
             # Run every 10 minutes
             self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=10)
             # Run video queue check every 1 minute
@@ -45,6 +48,22 @@ class MonitorService:
             
             self.scheduler.start()
             logger.info("Monitoramento do canal, processador de fila e agendador de uploads iniciados.")
+
+    def _reset_stuck_videos(self):
+        """Reseta vídeos que ficaram presos em 'processing' devido a reinicialização do servidor"""
+        db = SessionLocal()
+        try:
+            stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
+            if stuck_videos:
+                logger.warning(f"Encontrados {len(stuck_videos)} vídeos presos em 'processing'. Resetando para 'queued'.")
+                for video in stuck_videos:
+                    video.status = "queued"
+                    video.progress = 0
+                db.commit()
+        except Exception as e:
+            logger.error(f"Erro ao resetar vídeos presos: {e}")
+        finally:
+            db.close()
 
     def check_file_integrity(self):
         """Verifica se os arquivos de vídeos 'completos' realmente existem no disco.

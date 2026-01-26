@@ -245,10 +245,20 @@ class VideoGenerator:
             if progress_callback:
                 progress_callback(5, "Criando slide de título...")
                 
-            title_audio_path = self.generate_audio(title, voice_style=voice_style, voice_gender=voice_gender)
+            # Limpeza do título para evitar mostrar créditos ou URLs
+            clean_title = title
+            if "Music:" in clean_title:
+                clean_title = clean_title.split("Music:")[0].strip()
+            if "http" in clean_title:
+                clean_title = clean_title.split("http")[0].strip()
+            # Limita tamanho do título no slide
+            if len(clean_title) > 100:
+                clean_title = clean_title[:97] + "..."
+
+            title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
             
             start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
-            img_title = self.create_text_image(title, size=video_size, bg_color=(50, 0, 100), bg_image_path=start_bg_path)
+            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(50, 0, 100), bg_image_path=start_bg_path)
             
             clip_title = ImageClip(img_title)
             
