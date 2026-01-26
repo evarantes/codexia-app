@@ -64,6 +64,15 @@ def run_migrations(engine):
                     if "uploaded_at" not in sv_columns:
                         print("Migrating: Adding uploaded_at to scheduled_videos...")
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at DATETIME"))
+                    
+                    if "voice_style" not in sv_columns:
+                        print("Migrating: Adding voice_style to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_style VARCHAR DEFAULT 'human'"))
+                    
+                    if "voice_gender" not in sv_columns:
+                        print("Migrating: Adding voice_gender to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_gender VARCHAR DEFAULT 'female'"))
+                        
                     conn.commit()
 
             # Check for Settings new columns
