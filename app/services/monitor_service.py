@@ -40,8 +40,53 @@ class MonitorService:
                 next_run_time=datetime.datetime.now()
             )
             
+            # Executar verificação de integridade de arquivos (Self-Healing)
+            self.check_file_integrity()
+            
             self.scheduler.start()
             logger.info("Monitoramento do canal, processador de fila e agendador de uploads iniciados.")
+
+    def check_file_integrity(self):
+        """Verifica se os arquivos de vídeos 'completos' realmente existem no disco.
+           Se não existirem (ex: Render reiniciou), marca como 'queued' para regenerar."""
+        logger.info("Verificando integridade dos arquivos de vídeo...")
+        db = SessionLocal()
+        try:
+            # Pega vídeos marcados como prontos mas ainda não upados
+            videos = db.query(ScheduledVideo).filter(
+                ScheduledVideo.status == "completed",
+                ScheduledVideo.uploaded_at == None
+            ).all()
+            
+            restored_count = 0
+            for video in videos:
+                if not video.video_url:
+                    continue
+                    
+                # Caminho relativo seguro (remove primeira barra se houver)
+                rel_path = video.video_url.lstrip('/')
+                if rel_path.startswith("static"):
+                     # Ajuste para estrutura do projeto: app/static/...
+                     rel_path = os.path.join("app", rel_path)
+                
+                abs_path = os.path.join(os.getcwd(), rel_path)
+                
+                if not os.path.exists(abs_path):
+                    logger.warning(f"Arquivo sumiu para vídeo {video.id} ({video.title}). Reiniciando geração...")
+                    video.status = "queued"
+                    video.progress = 0
+                    restored_count += 1
+            
+            if restored_count > 0:
+                db.commit()
+                logger.info(f"Recuperação: {restored_count} vídeos retornados para a fila de geração.")
+            else:
+                logger.info("Integridade ok. Todos os vídeos completos possuem arquivos.")
+                
+        except Exception as e:
+            logger.error(f"Erro na verificação de integridade: {e}")
+        finally:
+            db.close()
 
     def stop(self):
         if self.scheduler.running:
@@ -94,13 +139,21 @@ class MonitorService:
                 for video in videos_to_upload:
                     logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
                     try:
-                        # Construct absolute path
-                        abs_video_path = os.path.join("c:/dev/TRAE/codexia/app", video.video_url.lstrip('/'))
+                        # Construct absolute path (Platform Independent)
+                        # video.video_url is usually "/static/videos/..."
+                        rel_path = video.video_url.lstrip('/')
+                        if rel_path.startswith("static"):
+                             rel_path = os.path.join("app", rel_path)
+                             
+                        abs_video_path = os.path.join(os.getcwd(), rel_path)
                         
                         if not os.path.exists(abs_video_path):
                             logger.error(f"Arquivo de vídeo não encontrado: {abs_video_path}")
-                            # Don't fail completely, maybe it was moved? But here we mark as failed upload
-                            # video.status = "failed_upload" 
+                            # Se o arquivo não existe, marcamos para regenerar (queued) em vez de ignorar
+                            logger.info(f"Tentando recuperar vídeo {video.id} reenviando para fila...")
+                            video.status = "queued"
+                            video.progress = 0
+                            db.commit()
                             continue
 
                         # Parse script data for tags if available
