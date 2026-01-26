@@ -956,23 +956,33 @@ class AIContentGenerator:
 
     def generate_image(self, prompt):
         self._load_config()
-        if not self.api_key:
-            return None
-            
+        
+        # 1. Tenta OpenAI DALL-E 3 se tiver chave
+        if self.api_key:
+            try:
+                # Enforcing original, artistic creation via prompt engineering
+                full_prompt = f"{prompt}. Vertical aspect ratio 9:16. Original digital art, unique composition, cinematic lighting, 8k resolution, highly detailed. No text, copyright free style."
+                
+                response = openai.images.generate(
+                    model="dall-e-3",
+                    prompt=full_prompt,
+                    size="1024x1792",
+                    quality="standard",
+                    n=1,
+                )
+                return response.data[0].url
+            except Exception as e:
+                print(f"Erro ao gerar imagem OpenAI (fallback para Pollinations): {e}")
+        
+        # 2. Fallback: Pollinations.ai (Gratuito, sem chave)
         try:
-            # Enforcing original, artistic creation via prompt engineering
-            full_prompt = f"{prompt}. Vertical aspect ratio 9:16. Original digital art, unique composition, cinematic lighting, 8k resolution, highly detailed. No text, copyright free style."
-            
-            response = openai.images.generate(
-                model="dall-e-3",
-                prompt=full_prompt,
-                size="1024x1792",
-                quality="standard",
-                n=1,
-            )
-            return response.data[0].url
+            import urllib.parse
+            # Otimiza prompt para Pollinations
+            safe_prompt = urllib.parse.quote(f"{prompt} vertical 9:16 cinematic lighting high quality")
+            # Pollinations URL format
+            return f"https://image.pollinations.ai/prompt/{safe_prompt}?width=720&height=1280&model=flux&nologo=true"
         except Exception as e:
-            print(f"Erro ao gerar imagem: {e}")
+            print(f"Erro no fallback Pollinations: {e}")
             return None
 
     def generate_banner_image(self, prompt):

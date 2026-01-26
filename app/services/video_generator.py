@@ -411,7 +411,11 @@ class VideoGenerator:
             
             # Escreve o arquivo
             # threads=1 para reduzir uso de memória durante encoding
+            print(f"Renderizando vídeo para: {output_path}")
             final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", threads=1)
+            
+            abs_path = os.path.abspath(output_path)
+            print(f"Vídeo salvo com sucesso em: {abs_path} (Size: {os.path.getsize(output_path)} bytes)")
             
             if progress_callback:
                 progress_callback(100, "Vídeo renderizado com sucesso!")
