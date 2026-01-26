@@ -154,8 +154,8 @@ class AIContentGenerator:
                     return result["content"][0]["text"]
 
                 elif current_provider == "gemini" and self.gemini_key:
-                    # Usando gemini-1.5-flash-latest para evitar erro 404 na v1beta
-                    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                    # Usando gemini-1.5-flash (versão estável)
+                    model = genai.GenerativeModel('gemini-1.5-flash')
                     final_prompt = prompt
                     if system_prompt:
                         final_prompt = f"System Instruction: {system_prompt}\n\nUser Request: {prompt}"
