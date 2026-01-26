@@ -158,6 +158,7 @@ async def lifespan(app: FastAPI):
             print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
             for vid in stuck_videos:
                 vid.status = "queued"
+                vid.progress = 0 # Reset progress to avoid UI confusion
             db.commit()
         db.close()
     except Exception as e:

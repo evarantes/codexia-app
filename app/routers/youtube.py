@@ -330,6 +330,7 @@ def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, d
         raise HTTPException(status_code=404, detail="Video not found")
     
     video.status = "queued"
+    video.progress = 0 # Reset progress
     db.commit()
     
     # background_tasks.add_task(process_scheduled_video, video_id)
