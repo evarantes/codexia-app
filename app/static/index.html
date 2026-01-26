@@ -1437,12 +1437,21 @@
                                 theme: this.scheduleTheme,
                                 duration_type: this.scheduleType,
                                 duration_value: this.scheduleQuantity,
-                                start_date: this.scheduleStartDate || undefined
+                                start_date: this.scheduleStartDate || undefined,
+                                videos_per_day: this.scheduleVideosPerDay,
+                                video_duration: this.scheduleDuration
                             })
                         });
                         if (res.ok) {
                             const data = await res.json();
-                            this.schedulePlan = data.schedule || data; // Adjust based on AI response structure
+                            // Corrigido: Mapear 'data.plan' ou 'data.schedule' ou fallback 'data'
+                            this.schedulePlan = data.plan || data.schedule || data;
+                            if (!Array.isArray(this.schedulePlan)) {
+                                 // Se por acaso vier encapsulado de outra forma, tenta achar um array
+                                 if (data.plan && Array.isArray(data.plan)) this.schedulePlan = data.plan;
+                                 else if (data.schedule && Array.isArray(data.schedule)) this.schedulePlan = data.schedule;
+                            }
+                            console.log("Plano gerado:", this.schedulePlan);
                         } else {
                             alert("Erro ao gerar planejamento");
                         }
