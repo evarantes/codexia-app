@@ -23,6 +23,8 @@ class CreateVideoRequest(BaseModel):
     title: str
     content: str # Script lines (manual), Topic (topic), or Story Prompt (story)
     duration: int = 1
+    voice_style: Optional[str] = "human"
+    voice_gender: Optional[str] = "female"
 
 @router.post("/create")
 def create_video(request: CreateVideoRequest):
@@ -48,7 +50,11 @@ def create_video(request: CreateVideoRequest):
             script_plan = ai_service.generate_video_script(request.title, request.content, "story")
             
         # Generate Video
-        result = video_gen.create_video_from_plan(script_plan)
+        result = video_gen.create_video_from_plan(
+            script_plan,
+            voice_style=request.voice_style,
+            voice_gender=request.voice_gender
+        )
         
         return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit")}
         

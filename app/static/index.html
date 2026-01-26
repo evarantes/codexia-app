@@ -266,6 +266,25 @@
                             </select>
                         </div>
 
+                        <div class="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-gray-700 font-bold mb-2">Tipo de Voz</label>
+                                <select v-model="voiceStyle" class="w-full border p-2 rounded">
+                                    <option value="robotic">Robótica</option>
+                                    <option value="human">Humana</option>
+                                    <option value="infantil">Infantil</option>
+                                    <option value="angelic">Angelical</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-gray-700 font-bold mb-2">Gênero da Voz</label>
+                                <select v-model="voiceGender" class="w-full border p-2 rounded">
+                                    <option value="male">Masculina</option>
+                                    <option value="female">Feminina</option>
+                                </select>
+                            </div>
+                        </div>
+
                         <div class="mb-4">
                             <label class="block font-bold mb-2">Título do Vídeo</label>
                             <input v-model="videoTitle" class="w-full border p-2 rounded">
@@ -1210,6 +1229,8 @@
                     videoTitle: 'A Hora da Virada',
                     videoContent: '', // Shared for script/topic/story prompt
                     videoDuration: 1,
+                    voiceStyle: 'human',
+                    voiceGender: 'female',
                     videoLoading: false,
                     generatedVideoUrl: null,
 
@@ -1827,7 +1848,9 @@
                                 mode: this.videoMode,
                                 title: this.videoTitle,
                                 content: content,
-                                duration: this.videoDuration
+                                duration: this.videoDuration,
+                                voice_style: this.voiceStyle,
+                                voice_gender: this.voiceGender
                             })
                         });
                         

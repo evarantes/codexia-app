@@ -127,18 +127,30 @@ class VideoGenerator:
 
         return np.array(img)
 
-    def generate_audio(self, text, lang='pt'):
+    def generate_audio(self, text, lang='pt', voice_style=None, voice_gender=None):
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text.strip(): return None
         
         # Limpeza de segurança para evitar leitura de metadados
         clean_text = text.replace("Narrador:", "").replace("Cena:", "").replace("Imagem:", "").replace("**", "").strip()
+
+        style = (voice_style or "human").lower()
+        gender = (voice_gender or "female").lower()
+        
+        openai_voice = "onyx"
+        if style in ["human", "humana"]:
+            openai_voice = "onyx" if gender == "male" else "nova"
+        elif style in ["child", "infantil"]:
+            openai_voice = "echo" if gender == "male" else "shimmer"
+        elif style in ["angelic", "angelical"]:
+            openai_voice = "fable"
+        elif style in ["robotic", "robotica", "robótica"]:
+            openai_voice = None
         
         # 1. Tentar OpenAI TTS (Qualidade Humana Premium)
-        if self.ai_service and self.ai_service.api_key:
+        if openai_voice and self.ai_service and self.ai_service.api_key:
             try:
-                # print("Tentando OpenAI TTS...")
-                audio_content = self.ai_service.generate_audio(clean_text, voice="onyx")
+                audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice)
                 if audio_content:
                     filename = f"{uuid.uuid4()}.mp3"
                     path = os.path.join(self.output_dir, filename)
@@ -149,31 +161,40 @@ class VideoGenerator:
                 print(f"OpenAI TTS falhou, tentando fallback: {e}")
 
         # 2. Edge TTS (Qualidade Natural Gratuita - Microsoft)
-        try:
-            # print("Tentando Edge TTS...")
-            import edge_tts
-            import asyncio
-            import threading
-            
-            voice = "pt-BR-FranciscaNeural" if lang == 'pt' else "en-US-ChristopherNeural"
-            filename = f"{uuid.uuid4()}.mp3"
-            path = os.path.join(self.output_dir, filename)
-
-            async def _run_edge_tts():
-                communicate = edge_tts.Communicate(clean_text, voice)
-                await communicate.save(path)
+        if style not in ["robotic", "robotica", "robótica"]:
+            try:
+                import edge_tts
+                import asyncio
+                import threading
                 
-            # Execução thread-safe do async
-            t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
-            t.start()
-            t.join()
+                if lang == 'pt':
+                    if gender == "male":
+                        voice = "pt-BR-AntonioNeural"
+                    else:
+                        voice = "pt-BR-FranciscaNeural"
+                else:
+                    if gender == "male":
+                        voice = "en-US-ChristopherNeural"
+                    else:
+                        voice = "en-US-JennyNeural"
 
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                return path
-            else:
-                print("Edge TTS gerou arquivo vazio ou falhou.")
-        except Exception as e:
-             print(f"Edge TTS falhou: {e}")
+                filename = f"{uuid.uuid4()}.mp3"
+                path = os.path.join(self.output_dir, filename)
+
+                async def _run_edge_tts():
+                    communicate = edge_tts.Communicate(clean_text, voice)
+                    await communicate.save(path)
+                    
+                t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
+                t.start()
+                t.join()
+
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    return path
+                else:
+                    print("Edge TTS gerou arquivo vazio ou falhou.")
+            except Exception as e:
+                 print(f"Edge TTS falhou: {e}")
 
         # 3. Fallback gTTS (Robótico)
         try:
@@ -201,7 +222,7 @@ class VideoGenerator:
             print(f"Erro ao baixar imagem: {e}")
         return None
 
-    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None):
+    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None):
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
         if progress_callback:
             progress_callback(0, "Iniciando composição do vídeo...")
@@ -224,7 +245,7 @@ class VideoGenerator:
             if progress_callback:
                 progress_callback(5, "Criando slide de título...")
                 
-            title_audio_path = self.generate_audio(title)
+            title_audio_path = self.generate_audio(title, voice_style=voice_style, voice_gender=voice_gender)
             
             start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             img_title = self.create_text_image(title, size=video_size, bg_color=(50, 0, 100), bg_image_path=start_bg_path)
@@ -270,7 +291,7 @@ class VideoGenerator:
                 bg_color = bg_colors[i % len(bg_colors)]
                 
                 # Gerar Audio da cena
-                audio_path = self.generate_audio(clean_text)
+                audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
                 
                 # Gerar Imagem
                 img = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
@@ -300,7 +321,7 @@ class VideoGenerator:
                 progress_callback(85, "Criando slide final...")
                 
             end_text = "Inscreva-se no Canal!\nLink na Bio."
-            audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.")
+            audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.", voice_style=voice_style, voice_gender=voice_gender)
             
             end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             img_end = self.create_text_image(end_text, size=video_size, bg_color=(0, 100, 50), bg_image_path=end_bg_path)
