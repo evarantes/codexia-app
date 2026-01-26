@@ -101,14 +101,85 @@
 
                 <!-- Monitoring Reports -->
                 <div class="bg-white rounded-lg shadow p-6 mb-8" v-if="monitorReports.length > 0">
-                    <h2 class="text-xl font-bold mb-4">Relatórios de Monitoramento</h2>
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold">Relatórios de Monitoramento</h2>
+                        <input v-model="reportFilter" type="text" placeholder="Filtrar relatórios..." class="border p-2 rounded w-64 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                    </div>
+                    
                     <div class="space-y-4 max-h-96 overflow-y-auto">
-                        <div v-for="report in monitorReports" :key="report.id" class="border-l-4 border-indigo-500 bg-gray-50 p-4 rounded">
+                        <div v-for="report in filteredReports" :key="report.id" class="border-l-4 border-indigo-500 bg-gray-50 p-4 rounded hover:bg-gray-100 transition-colors cursor-pointer" @click="openReport(report)">
                             <div class="flex justify-between items-start mb-2">
-                                <span class="font-bold text-indigo-900">Relatório Automático</span>
-                                <span class="text-xs text-gray-500">{{ new Date(report.created_at).toLocaleString() }}</span>
+                                <div>
+                                    <span class="font-bold text-indigo-900 block">Relatório #{{ report.id }}</span>
+                                    <span class="text-xs text-gray-500">
+                                        <i class="fas fa-users mr-1"></i> {{ report.subscribers }} subs | 
+                                        <i class="fas fa-eye mr-1"></i> {{ report.views }} views
+                                    </span>
+                                </div>
+                                <span class="text-xs text-gray-500 bg-white px-2 py-1 rounded border">{{ new Date(report.created_at).toLocaleString() }}</span>
                             </div>
-                            <div class="text-sm text-gray-700 whitespace-pre-wrap">{{ report.content }}</div>
+                            <div class="text-sm text-gray-700 line-clamp-2">
+                                {{ report.analysis_text || 'Sem análise disponível.' }}
+                            </div>
+                            <div class="mt-2 text-xs text-indigo-600 font-semibold text-right">
+                                Ver detalhes <i class="fas fa-arrow-right ml-1"></i>
+                            </div>
+                        </div>
+                        <div v-if="filteredReports.length === 0" class="text-center text-gray-500 py-4">
+                            Nenhum relatório encontrado para o filtro "{{ reportFilter }}".
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Report Details Modal -->
+                <div v-if="showReportModal && selectedReport" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="closeReportModal">
+                    <div class="bg-white rounded-lg w-full max-w-3xl shadow-xl max-h-[90vh] flex flex-col">
+                        <div class="p-6 border-b flex justify-between items-center bg-gray-50 rounded-t-lg">
+                            <div>
+                                <h3 class="text-2xl font-bold text-indigo-900">Detalhes do Relatório #{{ selectedReport.id }}</h3>
+                                <p class="text-sm text-gray-500">{{ new Date(selectedReport.created_at).toLocaleString() }}</p>
+                            </div>
+                            <button @click="closeReportModal" class="text-gray-500 hover:text-red-500 text-2xl">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                        
+                        <div class="p-6 overflow-y-auto">
+                            <!-- Stats Grid -->
+                            <div class="grid grid-cols-3 gap-4 mb-6">
+                                <div class="bg-blue-50 p-4 rounded text-center">
+                                    <div class="text-blue-800 text-sm font-bold">Inscritos</div>
+                                    <div class="text-2xl font-bold text-blue-900">{{ selectedReport.subscribers }}</div>
+                                </div>
+                                <div class="bg-green-50 p-4 rounded text-center">
+                                    <div class="text-green-800 text-sm font-bold">Visualizações</div>
+                                    <div class="text-2xl font-bold text-green-900">{{ selectedReport.views }}</div>
+                                </div>
+                                <div class="bg-purple-50 p-4 rounded text-center">
+                                    <div class="text-purple-800 text-sm font-bold">Vídeos</div>
+                                    <div class="text-2xl font-bold text-purple-900">{{ selectedReport.videos }}</div>
+                                </div>
+                            </div>
+
+                            <div class="mb-6">
+                                <h4 class="font-bold text-lg text-gray-800 mb-2 border-b pb-1"><i class="fas fa-robot mr-2 text-indigo-600"></i>Análise da IA</h4>
+                                <div class="bg-gray-50 p-4 rounded text-gray-700 whitespace-pre-wrap text-sm leading-relaxed border">
+                                    {{ selectedReport.analysis_text }}
+                                </div>
+                            </div>
+
+                            <div>
+                                <h4 class="font-bold text-lg text-gray-800 mb-2 border-b pb-1"><i class="fas fa-lightbulb mr-2 text-yellow-600"></i>Sugestão Estratégica</h4>
+                                <div class="bg-yellow-50 p-4 rounded text-gray-800 whitespace-pre-wrap text-sm leading-relaxed border border-yellow-100">
+                                    {{ selectedReport.strategy_suggestion }}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="p-4 border-t bg-gray-50 rounded-b-lg text-right">
+                            <button @click="closeReportModal" class="bg-gray-200 text-gray-800 px-6 py-2 rounded hover:bg-gray-300 font-medium">
+                                Fechar
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -990,6 +1061,9 @@
                     channelAnalysis: null,
                     generatedVideos: [], // Lista de vídeos gerados
                     monitorReports: [], // Lista de relatórios de monitoramento
+                    reportFilter: '',
+                    showReportModal: false,
+                    selectedReport: null,
                     
                     // Weekly Schedule
                     scheduleTheme: '',
@@ -1119,6 +1193,16 @@
             computed: {
                 totalSales() {
                     return this.sales.reduce((sum, sale) => sum + sale.amount, 0);
+                },
+                filteredReports() {
+                    if (!this.reportFilter) return this.monitorReports;
+                    const lowerFilter = this.reportFilter.toLowerCase();
+                    return this.monitorReports.filter(r => 
+                        (r.analysis_text && r.analysis_text.toLowerCase().includes(lowerFilter)) ||
+                        (r.strategy_suggestion && r.strategy_suggestion.toLowerCase().includes(lowerFilter)) ||
+                        new Date(r.created_at).toLocaleString().toLowerCase().includes(lowerFilter) ||
+                        r.id.toString().includes(lowerFilter)
+                    );
                 }
             },
             watch: {
@@ -1160,6 +1244,14 @@
                 }, 10000);
             },
             methods: {
+                openReport(report) {
+                    this.selectedReport = report;
+                    this.showReportModal = true;
+                },
+                closeReportModal() {
+                    this.showReportModal = false;
+                    this.selectedReport = null;
+                },
                 getAuthHeaders() {
                     const token = localStorage.getItem('access_token');
                     return token ? { 'Authorization': `Bearer ${token}` } : {};
