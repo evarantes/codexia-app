@@ -61,6 +61,9 @@ class AIContentGenerator:
         if self.provider == "hybrid":
             # Priority: OpenAI -> DeepSeek -> Anthropic -> Mistral -> Gemini -> Groq -> OpenRouter
             providers_to_try = ["openai", "deepseek", "anthropic", "mistral", "gemini", "groq", "openrouter"]
+        elif self.provider == "gemini":
+            # Smart Fallback: If Gemini is explicitly selected but fails, try OpenAI if available
+            providers_to_try = ["gemini", "openai"]
         else:
             providers_to_try = [self.provider]
 
@@ -155,21 +158,29 @@ class AIContentGenerator:
 
                 elif current_provider == "gemini" and self.gemini_key:
                     # Usando gemini-1.5-flash (versão estável)
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    final_prompt = prompt
-                    if system_prompt:
-                        final_prompt = f"System Instruction: {system_prompt}\n\nUser Request: {prompt}"
-                    if json_mode:
-                        final_prompt += "\n\nIMPORTANT: Output ONLY valid JSON."
-                    
-                    response = model.generate_content(
-                        final_prompt,
-                        generation_config=genai.types.GenerationConfig(
-                            temperature=temperature,
-                            response_mime_type="application/json" if json_mode else "text/plain"
+                    # Fallback to gemini-pro if flash fails or 404
+                    try:
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        final_prompt = prompt
+                        if system_prompt:
+                            final_prompt = f"System Instruction: {system_prompt}\n\nUser Request: {prompt}"
+                        if json_mode:
+                            final_prompt += "\n\nIMPORTANT: Output ONLY valid JSON."
+                        
+                        response = model.generate_content(
+                            final_prompt,
+                            generation_config=genai.types.GenerationConfig(
+                                temperature=temperature,
+                                response_mime_type="application/json" if json_mode else "text/plain"
+                            )
                         )
-                    )
-                    return response.text
+                        return response.text
+                    except Exception as e:
+                        print(f"Gemini 1.5 Flash failed: {e}. Trying gemini-pro...")
+                        # Fallback to gemini-pro
+                        model = genai.GenerativeModel('gemini-pro')
+                        response = model.generate_content(final_prompt)
+                        return response.text
 
                 elif current_provider == "openai" and self.api_key:
                     openai.api_key = self.api_key
