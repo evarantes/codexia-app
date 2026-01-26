@@ -515,50 +515,121 @@
                     </div>
                 </div>
 
-                <!-- Schedule -->
-                <div class="bg-white rounded-lg shadow p-6 mb-8">
-                    <h2 class="text-xl font-bold mb-4">Agendamento de Vídeos</h2>
-                    <div class="overflow-x-auto">
-                        <table class="w-full">
-                            <thead>
-                                <tr class="bg-gray-50">
-                                    <th class="p-3 text-left">Título</th>
-                                    <th class="p-3 text-left">Progresso</th>
-                                    <th class="p-3 text-left">Agendado Para</th>
-                                    <th class="p-3 text-center">Auto Post</th>
-                                    <th class="p-3 text-left">Status</th>
-                                    <th class="p-3 text-left">Ações</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="video in scheduledVideos" :key="video.id" class="border-t">
-                                    <td class="p-3">{{ video.title }}</td>
-                                    <td class="p-3 w-32">
-                                        <div class="w-full bg-gray-200 rounded-full h-2.5">
-                                            <div class="bg-blue-600 h-2.5 rounded-full" :style="{width: (video.progress || 0) + '%'}"></div>
-                                        </div>
-                                        <div class="text-xs text-center mt-1 text-gray-500">{{ video.progress || 0 }}%</div>
-                                    </td>
-                                    <td class="p-3">
-                                        <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full">
-                                    </td>
-                                    <td class="p-3 text-center">
-                                         <input type="checkbox" v-model="video.auto_post" class="w-4 h-4 text-indigo-600 rounded">
-                                    </td>
-                                    <td class="p-3">
-                                        <span :class="{'bg-yellow-100 text-yellow-800': video.status === 'pending' || video.status === 'queued', 'bg-blue-100 text-blue-800': video.status === 'processing', 'bg-green-100 text-green-800': video.status === 'completed' || video.status === 'published', 'bg-red-100 text-red-800': video.status === 'failed'}" class="px-2 py-1 rounded text-xs font-bold uppercase block text-center">
-                                            {{ translateStatus(video.status) }}
-                                        </span>
-                                    </td>
-                                    <td class="p-3 flex gap-2">
-                                        <button @click="saveScheduledVideo(video)" class="text-green-600 hover:text-green-800" title="Salvar Alterações"><i class="fas fa-save"></i></button>
-                                        <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-blue-600 hover:text-blue-800" title="Assistir"><i class="fas fa-play"></i></button>
-                                        <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800" title="Regerar"><i class="fas fa-sync"></i></button>
-                                        <button @click="deleteScheduledVideo(video)" class="text-red-600 hover:text-red-800" title="Excluir"><i class="fas fa-trash"></i></button>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                <!-- Schedule & Production -->
+                <div class="grid grid-cols-1 gap-8 mb-8">
+                    
+                    <!-- 1. Production Queue -->
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-yellow-400">
+                        <h2 class="text-xl font-bold mb-4 text-yellow-800"><i class="fas fa-industry"></i> Fila de Produção</h2>
+                        <div v-if="productionVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo em produção no momento.</div>
+                        <div v-else class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead>
+                                    <tr class="bg-yellow-50 text-yellow-900">
+                                        <th class="p-3 text-left">Título</th>
+                                        <th class="p-3 text-left">Progresso</th>
+                                        <th class="p-3 text-left">Status</th>
+                                        <th class="p-3 text-left">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="video in productionVideos" :key="video.id" class="border-t border-yellow-100 hover:bg-yellow-50 transition">
+                                        <td class="p-3 font-medium">{{ video.title }}</td>
+                                        <td class="p-3 w-48">
+                                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                                <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" :style="{width: (video.progress || 0) + '%'}"></div>
+                                            </div>
+                                            <div class="text-xs text-center mt-1 text-gray-500">{{ video.progress || 0 }}%</div>
+                                        </td>
+                                        <td class="p-3">
+                                            <span :class="{'bg-yellow-100 text-yellow-800': video.status === 'pending' || video.status === 'queued', 'bg-blue-100 text-blue-800': video.status === 'processing', 'bg-red-100 text-red-800': video.status === 'failed'}" class="px-2 py-1 rounded text-xs font-bold uppercase block text-center">
+                                                {{ translateStatus(video.status) }}
+                                            </span>
+                                        </td>
+                                        <td class="p-3 flex gap-2">
+                                            <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800" title="Regerar"><i class="fas fa-sync"></i></button>
+                                            <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700" title="Cancelar/Excluir"><i class="fas fa-trash"></i></button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 2. Ready to Publish (The "Other Field") -->
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
+                        <h2 class="text-xl font-bold mb-4 text-green-800"><i class="fas fa-clock"></i> Aguardando Publicação</h2>
+                        <div v-if="readyVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo aguardando publicação.</div>
+                        <div v-else class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead>
+                                    <tr class="bg-green-50 text-green-900">
+                                        <th class="p-3 text-left">Título</th>
+                                        <th class="p-3 text-left">Agendado Para</th>
+                                        <th class="p-3 text-center">Auto Post</th>
+                                        <th class="p-3 text-left">Status</th>
+                                        <th class="p-3 text-left">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="video in readyVideos" :key="video.id" class="border-t border-green-100 hover:bg-green-50 transition">
+                                        <td class="p-3 font-medium">{{ video.title }}</td>
+                                        <td class="p-3">
+                                            <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-white">
+                                        </td>
+                                        <td class="p-3 text-center">
+                                             <input type="checkbox" v-model="video.auto_post" class="w-5 h-5 text-green-600 rounded focus:ring-green-500">
+                                        </td>
+                                        <td class="p-3">
+                                            <span class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-bold uppercase block text-center">
+                                                {{ translateStatus(video.status) }}
+                                            </span>
+                                        </td>
+                                        <td class="p-3 flex gap-2">
+                                            <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
+                                            <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                            <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
+                                            <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 3. Published History -->
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-gray-400 opacity-90 hover:opacity-100 transition">
+                        <h2 class="text-xl font-bold mb-4 text-gray-700"><i class="fas fa-history"></i> Histórico de Publicados</h2>
+                         <div v-if="publishedVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum histórico disponível.</div>
+                        <div v-else class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead>
+                                    <tr class="bg-gray-50">
+                                        <th class="p-3 text-left">Título</th>
+                                        <th class="p-3 text-left">Agendado Para</th>
+                                        <th class="p-3 text-left">Status</th>
+                                        <th class="p-3 text-left">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="video in publishedVideos" :key="video.id" class="border-t">
+                                        <td class="p-3">{{ video.title }}</td>
+                                        <td class="p-3 text-sm text-gray-600">
+                                            <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-gray-100" disabled>
+                                        </td>
+                                        <td class="p-3">
+                                            <span class="bg-gray-200 text-gray-800 px-2 py-1 rounded text-xs font-bold uppercase">
+                                                {{ translateStatus(video.status) }}
+                                            </span>
+                                        </td>
+                                        <td class="p-3">
+                                            <button @click="deleteScheduledVideo(video)" class="text-red-400 hover:text-red-600" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
+                                            <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1191,6 +1262,15 @@
                 }
             },
             computed: {
+                productionVideos() {
+                    return this.scheduledVideos.filter(v => ['pending', 'queued', 'processing', 'failed'].includes(v.status));
+                },
+                readyVideos() {
+                    return this.scheduledVideos.filter(v => ['completed', 'ready'].includes(v.status));
+                },
+                publishedVideos() {
+                    return this.scheduledVideos.filter(v => ['published'].includes(v.status));
+                },
                 totalSales() {
                     return this.sales.reduce((sum, sale) => sum + sale.amount, 0);
                 },
