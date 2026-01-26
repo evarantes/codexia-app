@@ -821,23 +821,20 @@ class AIContentGenerator:
         }}
         """
         
-        if not self.api_key:
-            return {
-                "analysis": "Monitoramento simulado: Canal estável.",
-                "strategy": "Continue postando regularmente para aumentar engajamento."
-            }
-            
         try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}]
-            )
+            content = self._generate_text(prompt, json_mode=True)
+            if not content:
+                raise Exception("No content generated")
+                
             import json
-            content = response.choices[0].message.content
-            content = content.replace("```json", "").replace("```", "")
+            content = content.replace("```json", "").replace("```", "").strip()
             return json.loads(content)
         except Exception as e:
-            return {"analysis": "Erro na análise.", "strategy": "Verifique logs."}
+            print(f"Error generating monitor report: {e}")
+            return {
+                "analysis": "Monitoramento simulado (Erro IA): Canal estável.",
+                "strategy": "Continue postando regularmente para aumentar engajamento."
+            }
 
     def _build_prompt(self, title, synopsis, style):
         if style == "cliffhanger":
@@ -901,47 +898,36 @@ class AIContentGenerator:
         }}
         """
         
-        if not self.api_key:
-             # Mock response
-             mock_plan = []
-             for i in range(total_days):
-                 current_date = start_date_obj + timedelta(days=i)
-                 mock_plan.append({
-                     "day": i + 1,
-                     "date": current_date.strftime('%Y-%m-%d'),
-                     "theme_of_day": f"Tema do Dia {i+1}: {theme}",
-                     "videos": [
+        try:
+            content = self._generate_text(prompt, json_mode=True)
+            if not content:
+                 raise Exception("Resposta vazia da IA ou nenhum provedor configurado")
+
+            content = content.replace("```json", "").replace("```", "").strip()
+            return json.loads(content)
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Erro ao gerar plano: {error_msg}")
+            
+            # Mock fallback
+            mock_plan = []
+            for i in range(total_days):
+                current_date = start_date_obj + timedelta(days=i)
+                mock_plan.append({
+                    "day": i + 1,
+                    "date": current_date.strftime('%Y-%m-%d'),
+                    "theme_of_day": f"Tema do Dia {i+1}: {theme}",
+                    "videos": [
                          {"title": f"Manhã: {theme} {i+1}", "concept": "Conceito manhã", "time": "08:00", "type": "video"},
                          {"title": f"Tarde: {theme} {i+1}", "concept": "Conceito tarde", "time": "14:00", "type": "video"},
                          {"title": f"Noite: {theme} {i+1}", "concept": "Conceito noite", "time": "20:00", "type": "video"},
                          {"title": f"Short 1: {theme}", "concept": "Curiosidade", "time": "10:00", "type": "short"},
                          {"title": f"Short 2: {theme}", "concept": "Dica", "time": "18:00", "type": "short"}
-                     ]
-                 })
-             return mock_plan
-        
-        try:
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
-            )
-            content = response.choices[0].message.content
-            content = content.replace("```json", "").replace("```", "")
-            return json.loads(content)
-        except Exception as e:
-            error_msg = str(e)
-            print(f"Erro ao gerar plano: {error_msg}")
+                    ]
+                })
             
-            # Tratamento amigável para erro de cota
-            if "insufficient_quota" in error_msg or "429" in error_msg:
-                raise Exception(
-                    "Créditos da OpenAI esgotados. Sua conta da OpenAI atingiu o limite de uso ou está sem créditos. "
-                    "Por favor, acesse https://platform.openai.com/account/billing para verificar seu saldo e adicionar créditos."
-                )
-
-            # Raise exception to be handled by caller
-            raise Exception(f"Falha na geração do plano IA: {str(e)}")
+            return {"plan": mock_plan}
 
     def _mock_response(self, title, style, error=None):
         base_msg = f"⚠️ MODO SIMULAÇÃO (Vá em Configurações e adicione sua chave OpenAI)\n\n"
