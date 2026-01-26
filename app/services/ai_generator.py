@@ -180,30 +180,35 @@ class AIContentGenerator:
                     return result["content"][0]["text"]
 
                 elif current_provider == "gemini" and self.gemini_key:
-                    # Usando gemini-1.5-flash (versão estável)
-                    # Fallback to gemini-pro if flash fails or 404
-                    try:
-                        model = genai.GenerativeModel('gemini-1.5-flash')
-                        final_prompt = prompt
-                        if system_prompt:
-                            final_prompt = f"System Instruction: {system_prompt}\n\nUser Request: {prompt}"
-                        if json_mode:
-                            final_prompt += "\n\nIMPORTANT: Output ONLY valid JSON."
-                        
-                        response = model.generate_content(
-                            final_prompt,
-                            generation_config=genai.types.GenerationConfig(
-                                temperature=temperature,
-                                response_mime_type="application/json" if json_mode else "text/plain"
+                    # Lista de modelos para tentar em ordem de preferência/custo
+                    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro']
+                    gemini_error = None
+                    
+                    for model_name in models_to_try:
+                        try:
+                            model = genai.GenerativeModel(model_name)
+                            final_prompt = prompt
+                            if system_prompt:
+                                final_prompt = f"System Instruction: {system_prompt}\n\nUser Request: {prompt}"
+                            if json_mode:
+                                final_prompt += "\n\nIMPORTANT: Output ONLY valid JSON."
+                            
+                            response = model.generate_content(
+                                final_prompt,
+                                generation_config=genai.types.GenerationConfig(
+                                    temperature=temperature,
+                                    response_mime_type="application/json" if json_mode else "text/plain"
+                                )
                             )
-                        )
-                        return response.text
-                    except Exception as e:
-                        print(f"Gemini 1.5 Flash failed: {e}. Trying gemini-1.5-pro...")
-                        # Fallback to gemini-1.5-pro
-                        model = genai.GenerativeModel('gemini-1.5-pro')
-                        response = model.generate_content(final_prompt)
-                        return response.text
+                            return response.text
+                        except Exception as e:
+                            print(f"Gemini model {model_name} failed: {e}")
+                            gemini_error = e
+                            continue # Tenta o próximo modelo da lista
+                    
+                    # Se todos os modelos Gemini falharem, lança erro para tentar próximo provedor
+                    if gemini_error:
+                        raise gemini_error
 
                 elif current_provider == "openai" and self.api_key:
                     openai.api_key = self.api_key
@@ -264,7 +269,8 @@ class AIContentGenerator:
         
         # If we get here, all providers failed
         if last_error:
-            raise last_error
+            print(f"CRITICAL: All AI providers failed. Last error: {last_error}")
+            raise Exception("Todas as IAs configuradas estão indisponíveis ou sem saldo. Verifique suas chaves de API e tente novamente.")
         return None
 
     def generate_book_section(self, section_type, context_text, title):
