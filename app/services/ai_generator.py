@@ -163,7 +163,16 @@ class AIContentGenerator:
             return structure
 
         except Exception as e:
-            print(f"Erro ao gerar livro: {e}")
+            error_msg = str(e)
+            print(f"Erro ao gerar livro: {error_msg}")
+            
+            # Tratamento amigável para erro de cota
+            if "insufficient_quota" in error_msg or "429" in error_msg:
+                raise Exception(
+                    "Créditos da OpenAI esgotados. Sua conta da OpenAI atingiu o limite de uso ou está sem créditos. "
+                    "Por favor, acesse https://platform.openai.com/account/billing para verificar seu saldo e adicionar créditos."
+                )
+            
             raise e
 
     def analyze_manuscript_structure(self, text_sample):
@@ -734,7 +743,16 @@ class AIContentGenerator:
             content = content.replace("```json", "").replace("```", "")
             return json.loads(content)
         except Exception as e:
-            print(f"Erro ao gerar plano: {e}")
+            error_msg = str(e)
+            print(f"Erro ao gerar plano: {error_msg}")
+            
+            # Tratamento amigável para erro de cota
+            if "insufficient_quota" in error_msg or "429" in error_msg:
+                raise Exception(
+                    "Créditos da OpenAI esgotados. Sua conta da OpenAI atingiu o limite de uso ou está sem créditos. "
+                    "Por favor, acesse https://platform.openai.com/account/billing para verificar seu saldo e adicionar créditos."
+                )
+
             # Raise exception to be handled by caller
             raise Exception(f"Falha na geração do plano IA: {str(e)}")
 
