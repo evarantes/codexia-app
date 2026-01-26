@@ -1452,8 +1452,13 @@
                                  else if (data.schedule && Array.isArray(data.schedule)) this.schedulePlan = data.schedule;
                             }
                             console.log("Plano gerado:", this.schedulePlan);
+                            
+                            if (this.schedulePlan.length === 0) {
+                                alert("O sistema não gerou nenhum plano. Verifique se sua chave OpenAI está configurada e se os limites de tokens não foram excedidos.");
+                            }
                         } else {
-                            alert("Erro ao gerar planejamento");
+                            const errData = await res.json().catch(() => ({}));
+                            alert("Erro ao gerar planejamento: " + (errData.detail || "Erro desconhecido"));
                         }
                     } catch (e) {
                         alert("Erro: " + e);

@@ -194,14 +194,17 @@ def update_scheduled_video(video_id: int, data: Dict[str, Any], db: Session = De
 @router.post("/schedule/generate")
 def generate_schedule(request: ScheduleRequest):
     ai_service = AIContentGenerator()
-    return ai_service.generate_content_plan(
-        request.theme, 
-        request.duration_type, 
-        request.duration_value, 
-        request.start_date,
-        request.videos_per_day,
-        request.video_duration
-    )
+    try:
+        return ai_service.generate_content_plan(
+            request.theme, 
+            request.duration_type, 
+            request.duration_value, 
+            request.start_date,
+            request.videos_per_day,
+            request.video_duration
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 from sqlalchemy import text, inspect
 

@@ -735,7 +735,8 @@ class AIContentGenerator:
             return json.loads(content)
         except Exception as e:
             print(f"Erro ao gerar plano: {e}")
-            return []
+            # Raise exception to be handled by caller
+            raise Exception(f"Falha na geração do plano IA: {str(e)}")
 
     def _mock_response(self, title, style, error=None):
         base_msg = f"⚠️ MODO SIMULAÇÃO (Vá em Configurações e adicione sua chave OpenAI)\n\n"
