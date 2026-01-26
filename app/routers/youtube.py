@@ -157,6 +157,7 @@ class ScheduleRequest(BaseModel):
     duration_value: int = 7
     start_date: Optional[str] = None # YYYY-MM-DD
     videos_per_day: int = 1
+    shorts_per_day: int = 0
     video_duration: int = 5
 
     script_data: Optional[str] = None
@@ -207,6 +208,7 @@ def generate_schedule(request: ScheduleRequest):
             request.duration_value, 
             request.start_date,
             request.videos_per_day,
+            request.shorts_per_day,
             request.video_duration
         )
     except Exception as e:

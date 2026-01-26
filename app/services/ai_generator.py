@@ -856,7 +856,7 @@ class AIContentGenerator:
         else: # direct
             return f"Crie um anúncio de vendas direto e persuasivo para o livro '{title}'. Sinopse: {synopsis}. Liste 3 benefícios e faça uma oferta irresistível."
 
-    def generate_content_plan(self, theme, duration_type="days", duration_value=7, start_date=None, videos_per_day=1, video_duration=5):
+    def generate_content_plan(self, theme, duration_type="days", duration_value=7, start_date=None, videos_per_day=1, shorts_per_day=0, video_duration=5):
         """Gera plano de conteúdo personalizado"""
         self._load_config()
         
@@ -885,10 +885,12 @@ class AIContentGenerator:
         Crie um planejamento de conteúdo para um canal do YouTube sobre o tema '{theme}'.
         Período: {total_days} dias, começando em {start_date_obj.strftime('%d/%m/%Y')}.
         
-        Para CADA dia ({total_days} dias), eu preciso de:
-        1. {videos_per_day} Vídeo(s) Longo(s) com Título, Ideia Central e Horário sugerido.
+        Para CADA dia ({total_days} dias), eu preciso EXATAMENTE de:
+        1. {videos_per_day} Vídeo(s) Longo(s) (type="video") com duração de {video_duration} min.
+        2. {shorts_per_day} Vídeo(s) Curto(s) (type="short") com duração de 1 min.
         
         IMPORTANTE: As datas devem ser sequenciais a partir de {start_date_obj.strftime('%Y-%m-%d')}.
+        Respeite rigorosamente a quantidade de vídeos e shorts por dia solicitada.
         
         Retorne APENAS um JSON válido com a estrutura:
         {{
@@ -903,6 +905,13 @@ class AIContentGenerator:
                             "time": "HH:MM",
                             "type": "video",
                             "duration": {video_duration}
+                        }},
+                        {{
+                            "title": "Título do Short",
+                            "concept": "Ideia do short",
+                            "time": "HH:MM",
+                            "type": "short",
+                            "duration": 1
                         }}
                     ]
                 }}
@@ -926,17 +935,37 @@ class AIContentGenerator:
             mock_plan = []
             for i in range(total_days):
                 current_date = start_date_obj + timedelta(days=i)
+                day_videos = []
+                
+                # Mock Videos
+                for v in range(int(videos_per_day)):
+                    hour = 8 + (v * 4) # 8, 12, 16...
+                    if hour > 22: hour = 22
+                    day_videos.append({
+                        "title": f"Vídeo {v+1}: {theme} {i+1}", 
+                        "concept": f"Conceito vídeo {v+1}", 
+                        "time": f"{hour:02d}:00", 
+                        "type": "video",
+                        "duration": video_duration
+                    })
+                
+                # Mock Shorts
+                for s in range(int(shorts_per_day)):
+                    hour = 10 + (s * 2) # 10, 12, 14...
+                    if hour > 23: hour = 23
+                    day_videos.append({
+                        "title": f"Short {s+1}: {theme}", 
+                        "concept": "Curiosidade rápida", 
+                        "time": f"{hour:02d}:30", 
+                        "type": "short",
+                        "duration": 1
+                    })
+
                 mock_plan.append({
                     "day": i + 1,
                     "date": current_date.strftime('%Y-%m-%d'),
                     "theme_of_day": f"Tema do Dia {i+1}: {theme}",
-                    "videos": [
-                         {"title": f"Manhã: {theme} {i+1}", "concept": "Conceito manhã", "time": "08:00", "type": "video"},
-                         {"title": f"Tarde: {theme} {i+1}", "concept": "Conceito tarde", "time": "14:00", "type": "video"},
-                         {"title": f"Noite: {theme} {i+1}", "concept": "Conceito noite", "time": "20:00", "type": "video"},
-                         {"title": f"Short 1: {theme}", "concept": "Curiosidade", "time": "10:00", "type": "short"},
-                         {"title": f"Short 2: {theme}", "concept": "Dica", "time": "18:00", "type": "short"}
-                    ]
+                    "videos": day_videos
                 })
             
             return {"plan": mock_plan}

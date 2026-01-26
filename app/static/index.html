@@ -447,6 +447,10 @@
                             <input v-model="scheduleVideosPerDay" type="number" min="1" max="5" class="w-full border p-2 rounded">
                         </div>
                         <div>
+                            <label class="block font-bold mb-2">Shorts/Dia</label>
+                            <input v-model="scheduleShortsPerDay" type="number" min="0" max="10" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
                             <label class="block font-bold mb-2">Duração (min)</label>
                             <input v-model="scheduleDuration" type="number" min="1" max="15" class="w-full border p-2 rounded">
                         </div>
@@ -1175,6 +1179,9 @@
                     scheduleTheme: '',
                     scheduleType: 'days',
                     scheduleQuantity: 7,
+                    scheduleVideosPerDay: 1,
+                    scheduleShortsPerDay: 0,
+                    scheduleDuration: 5,
                     scheduleStartDate: '',
                     schedulePlan: [],
                     scheduleLoading: false,
@@ -1707,6 +1714,7 @@
                                 duration_value: this.scheduleQuantity,
                                 start_date: this.scheduleStartDate || undefined,
                                 videos_per_day: this.scheduleVideosPerDay,
+                                shorts_per_day: this.scheduleShortsPerDay,
                                 video_duration: this.scheduleDuration
                             })
                         });
