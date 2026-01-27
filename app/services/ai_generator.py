@@ -622,6 +622,33 @@ class AIContentGenerator:
             print(f"Error generating covers: {e}")
             return [f"https://placehold.co/400x600?text=Error+{i+1}" for i in range(n)]
 
+    def generate_image(self, prompt: str):
+        """Gera uma imagem única a partir de um prompt (usado para cenas de vídeo)"""
+        self._load_config()
+        
+        if not self.api_key:
+            return None # Retorna None para usar cor de fundo
+
+        try:
+            response = openai.images.generate(
+                model="dall-e-3",
+                prompt=prompt[:4000], # Limite do DALL-E
+                n=1,
+                size="1024x1024", # Quadrado ou landscape para vídeo
+                quality="standard",
+                style="vivid"
+            )
+            return response.data[0].url
+        except Exception as e:
+            print(f"Erro ao gerar imagem (DALL-E): {e}")
+            return None
+
+    def generate_music(self, prompt: str):
+        """Gera música a partir de um prompt (Placeholder)"""
+        # Implementação futura com MusicGen/HuggingFace
+        print(f"Solicitação de música recebida: {prompt}")
+        return None
+
     def generate_video_script(self, book_title: str, synopsis: str, style: str = "drama"):
         self._load_config()
         

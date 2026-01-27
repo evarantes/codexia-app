@@ -584,6 +584,9 @@
                                             <span :class="{'bg-yellow-100 text-yellow-800': video.status === 'pending' || video.status === 'queued', 'bg-blue-100 text-blue-800': video.status === 'processing', 'bg-red-100 text-red-800': video.status === 'failed'}" class="px-2 py-1 rounded text-xs font-bold uppercase block text-center">
                                                 {{ translateStatus(video.status) }}
                                             </span>
+                                            <button v-if="video.status === 'failed'" @click="showError(video)" class="block mx-auto mt-1 text-red-500 hover:text-red-700 text-xs underline" title="Clique para ver detalhes do erro">
+                                                Ver Erro
+                                            </button>
                                         </td>
                                         <td class="p-3 flex gap-2">
                                             <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800" title="Regerar"><i class="fas fa-sync"></i></button>
@@ -1845,6 +1848,9 @@
                      } else {
                          alert("URL do vídeo não disponível.");
                      }
+                },
+                showError(video) {
+                    alert("Detalhes do Erro:\n\n" + (video.description || "Erro desconhecido. Verifique os logs do servidor."));
                 },
                 async saveSettings() {
                     try {
