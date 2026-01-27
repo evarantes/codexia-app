@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from app.database import get_db
 from app.models import Settings
 from app.services.ai_generator import AIContentGenerator
@@ -17,7 +18,7 @@ def run_diagnostics(db: Session = Depends(get_db)):
     
     # 1. Database Check
     try:
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         report["checks"].append({"name": "Database", "status": "OK", "message": "Connected successfully"})
     except Exception as e:
         report["status"] = "degraded"
@@ -47,29 +48,64 @@ def run_diagnostics(db: Session = Depends(get_db)):
 
     # 3. AI Service Configuration
     settings = db.query(Settings).first()
-    if settings:
+    
+    # Determine provider
+    provider = "openai" # Default
+    if settings and settings.ai_provider:
         provider = settings.ai_provider
-        key_name = f"{provider}_api_key"
-        api_key = getattr(settings, key_name, None)
         
-        if api_key:
-            report["checks"].append({"name": "AI Configuration", "status": "OK", "message": f"Provider: {provider}, Key present"})
-        else:
-            report["status"] = "degraded"
-            report["checks"].append({"name": "AI Configuration", "status": "FAIL", "message": f"Provider: {provider}, Key missing"})
+    # Check keys based on provider
+    key_found = False
+    details = ""
+    
+    known_providers = {
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "mistral": "MISTRAL_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY"
+    }
+    
+    if provider == "hybrid":
+        # Check if ANY key is present
+        found_providers = []
+        for p, env_var in known_providers.items():
+            # Check DB
+            db_key = getattr(settings, f"{p}_api_key", None) if settings else None
+            # Check Env
+            env_key = os.getenv(env_var)
             
-        # Optional: Test AI Connectivity (Ping)
-        # Only if we have a key
-        if api_key:
-            try:
-                # Simple dry run or ping logic here
-                # For now just assuming key presence is good enough to avoid cost
-                pass
-            except Exception as e:
-                 pass
+            if db_key or env_key:
+                found_providers.append(p)
+                
+        if found_providers:
+            key_found = True
+            details = f"Hybrid (Found: {', '.join(found_providers)})"
+        else:
+            details = "Hybrid (No keys found)"
+            
+    else:
+        # Check specific provider key
+        env_var = known_providers.get(provider, f"{provider.upper()}_API_KEY")
+        
+        # Check DB
+        db_key = getattr(settings, f"{provider}_api_key", None) if settings else None
+        # Check Env
+        env_key = os.getenv(env_var)
+        
+        if db_key or env_key:
+            key_found = True
+            details = f"Provider: {provider}, Key present"
+        else:
+            details = f"Provider: {provider}, Key missing"
+
+    if key_found:
+        report["checks"].append({"name": "AI Configuration", "status": "OK", "message": details})
     else:
         report["status"] = "degraded"
-        report["checks"].append({"name": "Settings", "status": "FAIL", "message": "No settings found in DB"})
+        report["checks"].append({"name": "AI Configuration", "status": "FAIL", "message": details})
 
     # 4. Critical Dependencies (FFmpeg)
     # This is a bit OS specific, but we can try running it
