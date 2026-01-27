@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.database import engine, Base, get_db
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics
 from dotenv import load_dotenv
 import os
 from contextlib import asynccontextmanager
