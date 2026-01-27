@@ -1124,8 +1124,10 @@ class AIContentGenerator:
     def generate_music(self, prompt):
         """Gera música usando Hugging Face (MusicGen)"""
         # Se não tiver token, tenta sem (pode falhar por rate limit)
-        # URL da API de inferência (gratuita com limitações)
-        API_URL = "https://api-inference.huggingface.co/models/facebook/musicgen-small"
+        # URL atualizada conforme erro 410
+        API_URL = "https://router.huggingface.co/models/facebook/musicgen-small"
+        # Fallback URL antiga se necessário
+        # API_URL = "https://api-inference.huggingface.co/models/facebook/musicgen-small"
         
         headers = {}
         if self.hf_token:
