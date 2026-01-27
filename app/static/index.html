@@ -2191,17 +2191,25 @@
                     this.factoryLoading = true;
                     this.generatedCovers = [];
                     try {
+                        const desc = (this.factoryData.sections?.textual || []).map(c => c.content).join(" ").substring(0, 500)
+                            || (this.factoryData.metadata?.title || "Livro");
                         const res = await this.authFetch('/factory/generate-covers', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
-                                title: this.factoryData.metadata.title,
-                                author: this.factoryData.metadata.author,
-                                description: this.factoryData.sections.textual.map(c => c.content).join(" ").substring(0, 500)
+                                title: this.factoryData.metadata?.title || "Livro",
+                                author: this.factoryData.metadata?.author || "",
+                                description: desc,
+                                subtitle: this.factoryData.metadata?.subtitle || ""
                             })
                         });
-                        const data = await res.json();
-                        this.generatedCovers = data.covers;
+                        const data = await res.json().catch(() => ({}));
+                        this.generatedCovers = Array.isArray(data.covers) ? data.covers : [];
+                        if (!res.ok) {
+                            alert("Erro ao gerar capas. Verifique a chave da OpenAI nas Configurações.");
+                        } else if (this.generatedCovers.length === 0) {
+                            alert("Nenhuma capa retornada. Verifique a chave da OpenAI e tente novamente.");
+                        }
                     } catch (e) {
                         alert("Erro ao gerar capas: " + e);
                     } finally {

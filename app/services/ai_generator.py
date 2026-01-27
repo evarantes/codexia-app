@@ -550,15 +550,15 @@ class AIContentGenerator:
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
         self._load_config()
         
-        # Mock response if no API key
+        # Mock response if no API key (usa chave do banco ou env)
         if not self.api_key:
-            # Return distinct placeholder colors/text
             colors = ["1e293b", "4f46e5", "059669"]
             return [f"https://placehold.co/400x600/{color}/ffffff?text={title[:10]}...%0A{author}" for i, color in enumerate(colors[:n])]
 
+        import json
         try:
+            client = openai.OpenAI(api_key=self.api_key)
             # 1. Get Prompts from GPT to ensure variety
-            # We ask for visual descriptions ONLY, we will handle text placement in the final prompt
             prompt_gen_prompt = f"""
             Crie {n} descrições visuais artísticas e detalhadas para a capa do livro '{title}'.
             Contexto/Sinopse: {context[:500]}
@@ -569,53 +569,39 @@ class AIContentGenerator:
             Retorne apenas um JSON: {{ "prompts": ["descrição visual 1...", "descrição visual 2...", "descrição visual 3..."] }}
             """
             
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt_gen_prompt}],
                 temperature=0.7
             )
-            import json
             content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
             prompts = json.loads(content).get("prompts", [])
             
             image_urls = []
-            # 2. Generate Images with DALL-E 3 (Better text support)
             for p in prompts[:n]:
-                 # Construct a specific prompt for DALL-E 3 to handle text
-                 dalle_prompt = f"""
-                 A professional book cover design.
-                 Title: "{title}"
-                 Author: "{author}"
-                 Subtitle: "{subtitle}"
-                 
-                 Visual Art: {p}
-                 
-                 Layout instructions:
-                 - The Title "{title}" must be clearly visible, large, and elegant.
-                 - The Author name "{author}" should be legible, usually at the bottom or top.
-                 - The Subtitle "{subtitle}" (if present) should be smaller and balanced.
-                 - Ensure the text does not blend into the background. Use contrasting colors for text.
-                 - High quality, cinematic lighting, 8k resolution.
-                 """
-                 
-                 try:
-                     img_res = openai.images.generate(
-                         model="dall-e-3",
-                         prompt=dalle_prompt.strip(),
-                         n=1,
-                         size="1024x1792", # Vertical format for books supported by DALL-E 3
-                         quality="standard",
-                         style="vivid"
-                     )
-                     image_urls.append(img_res.data[0].url)
-                 except Exception as e_img:
-                     print(f"Error generating single image: {e_img}")
-                     # Fallback or retry?
+                dalle_prompt = f"""
+                A professional book cover design.
+                Title: "{title}"
+                Author: "{author}"
+                Subtitle: "{subtitle}"
+                Visual Art: {p}
+                Layout: Title clearly visible, author legible, high quality, cinematic lighting, 8k resolution.
+                """
+                try:
+                    img_res = client.images.generate(
+                        model="dall-e-3",
+                        prompt=dalle_prompt.strip(),
+                        n=1,
+                        size="1024x1792",
+                        quality="standard",
+                        style="vivid"
+                    )
+                    image_urls.append(img_res.data[0].url)
+                except Exception as e_img:
+                    print(f"Error generating single image: {e_img}")
             
-            # Fill if failed to get enough
             while len(image_urls) < n:
-                 image_urls.append(f"https://placehold.co/400x600?text=Falha+na+Geracao")
-
+                image_urls.append(f"https://placehold.co/400x600?text=Falha+na+Geracao")
             return image_urls
 
         except Exception as e:

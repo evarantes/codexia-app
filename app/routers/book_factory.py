@@ -180,35 +180,35 @@ class GenerateCoverRequest(BaseModel):
 
 @router.post("/generate-covers")
 async def generate_covers(request: GenerateCoverRequest):
-    # Map description to context if context is missing
     context_text = request.context or request.description or "Livro sem descrição"
-    
-    ai_service = AIContentGenerator()
-    urls = ai_service.generate_cover_options(request.title, context_text, request.author, request.subtitle)
-    
     saved_urls = []
-    # Ensure static/covers exists
-    COVERS_DIR = os.path.join("app", "static", "covers")
-    os.makedirs(COVERS_DIR, exist_ok=True)
-    
-    for url in urls:
-        if url.startswith("http"):
-            try:
-                response = requests.get(url, stream=True)
-                if response.status_code == 200:
-                    filename = f"cover_{uuid.uuid4().hex}.png"
-                    file_path = os.path.join(COVERS_DIR, filename)
-                    with open(file_path, 'wb') as out_file:
-                        shutil.copyfileobj(response.raw, out_file)
-                    saved_urls.append(f"/static/covers/{filename}")
-                else:
+    try:
+        ai_service = AIContentGenerator()
+        urls = ai_service.generate_cover_options(
+            request.title, context_text,
+            request.author or "", request.subtitle or ""
+        )
+        COVERS_DIR = os.path.join("app", "static", "covers")
+        os.makedirs(COVERS_DIR, exist_ok=True)
+        for url in (urls or []):
+            if url and str(url).startswith("http"):
+                try:
+                    response = requests.get(url, stream=True, timeout=60)
+                    if response.status_code == 200:
+                        filename = f"cover_{uuid.uuid4().hex}.png"
+                        file_path = os.path.join(COVERS_DIR, filename)
+                        with open(file_path, "wb") as out_file:
+                            shutil.copyfileobj(response.raw, out_file)
+                        saved_urls.append(f"/static/covers/{filename}")
+                    else:
+                        saved_urls.append(url)
+                except Exception as e:
+                    print(f"Failed to download cover: {e}")
                     saved_urls.append(url)
-            except Exception as e:
-                print(f"Failed to download cover: {e}")
+            elif url:
                 saved_urls.append(url)
-        else:
-            saved_urls.append(url)
-            
+    except Exception as e:
+        print(f"generate-covers error: {e}")
     return {"covers": saved_urls}
 
 def resolve_cover_path(filename: str) -> Optional[str]:
