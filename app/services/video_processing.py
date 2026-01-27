@@ -1,6 +1,7 @@
 import json
 import os
 import gc
+import datetime
 from app.database import SessionLocal
 from app.models import ScheduledVideo
 from app.services.ai_generator import AIContentGenerator
@@ -57,8 +58,9 @@ def process_scheduled_video(video_id: int):
         # Gerar vídeo
         def progress_callback(p, m):
             try:
-                # p is 0-100
+                # p is 0-100; atualiza updated_at para o monitor não dar timeout durante o render final
                 video.progress = int(p)
+                video.updated_at = datetime.datetime.now()
                 db.commit()
             except:
                 pass

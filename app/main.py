@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from app.database import engine, Base, get_db
+from app.database import engine, Base, get_db, SessionLocal
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics
 from dotenv import load_dotenv
 import os
@@ -10,7 +10,6 @@ from app.services.monitor_service import monitor_service
 from sqlalchemy import text, inspect
 from app.models import User
 from app.routers.auth import get_password_hash
-from sqlalchemy.orm import Session
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -116,7 +115,7 @@ def run_migrations(engine):
         print(f"Migration warning: {e}")
 
 def create_default_user():
-    db = Session(bind=engine)
+    db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == "evarantes2@gmail.com").first()
         if not user:
@@ -155,15 +154,17 @@ async def lifespan(app: FastAPI):
     # This handles cases where the server crashed (OOM) during processing
     try:
         from app.models import ScheduledVideo
-        db = Session(bind=engine)
-        stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
-        if stuck_videos:
-            print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
-            for vid in stuck_videos:
-                vid.status = "queued"
-                vid.progress = 0 # Reset progress to avoid UI confusion
-            db.commit()
-        db.close()
+        db = SessionLocal()
+        try:
+            stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
+            if stuck_videos:
+                print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
+                for vid in stuck_videos:
+                    vid.status = "queued"
+                    vid.progress = 0 # Reset progress to avoid UI confusion
+                db.commit()
+        finally:
+            db.close()
     except Exception as e:
         print(f"Startup Recovery Error: {e}")
     
@@ -219,7 +220,7 @@ def payment_pending():
 
 @app.get("/debug-reset-user")
 def debug_reset_user():
-    db = Session(bind=engine)
+    db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == "evarantes2@gmail.com").first()
         if user:

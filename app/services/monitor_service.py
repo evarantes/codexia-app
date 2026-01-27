@@ -123,12 +123,14 @@ class MonitorService:
                 # If updated_at is missing (legacy), assume it's stuck if we are here (simplification)
                 # or rely on a reasonable default if null.
                 
-                # Default timeout: 40 minutes
-                timeout_limit = datetime.timedelta(minutes=40)
+                # Timeout: 40 min normalmente; 90 min se já estiver em fase final (95%+), pois write_videofile é pesado
+                is_final_render = (processing.progress or 0) >= 90
+                timeout_minutes = 90 if is_final_render else 40
+                timeout_limit = datetime.timedelta(minutes=timeout_minutes)
                 last_update = processing.updated_at or processing.scheduled_for or datetime.datetime.now()
                 
                 if datetime.datetime.now() - last_update > timeout_limit:
-                    logger.warning(f"Vídeo {processing.id} expirou (stuck). Marcando como falha.")
+                    logger.warning(f"Vídeo {processing.id} expirou (timeout {timeout_minutes}min). Marcando como falha.")
                     processing.status = "failed"
                     processing.description = (processing.description or "") + "\n\n[SISTEMA]: Processo expirou (timeout de 40min). Tente novamente."
                     db.commit()

@@ -459,10 +459,36 @@ class VideoGenerator:
             filename = f"{uuid.uuid4()}.mp4"
             output_path = os.path.join(self.output_dir, filename)
             
+            # Logger customizado: durante write_videofile (etapa mais longa) pinga 95→99
+            # para o progress_callback atualizar o DB e evitar timeout do monitor
+            write_logger = None
+            if progress_callback:
+                try:
+                    import proglog
+                    class RenderProgressLogger(proglog.ProgressBarLogger):
+                        def __init__(self, callback):
+                            super().__init__()
+                            self._cb = callback
+                        def bars_callback(self, bar, attr, value, old_value=None):
+                            super().bars_callback(bar, attr, value, old_value)
+                            if not self._cb or bar not in self.bars:
+                                return
+                            total = self.bars[bar].get("total")
+                            if total and value is not None:
+                                pct = 95 + int(4 * (value / total))
+                                try:
+                                    self._cb(min(99, pct), "Renderizando arquivo final...")
+                                except Exception:
+                                    pass
+                    write_logger = RenderProgressLogger(progress_callback)
+                except Exception:
+                    pass
+            logger_kw = {"logger": write_logger} if write_logger else {}
+            
             # Escreve o arquivo
             # threads=1 para reduzir uso de memória durante encoding
             print(f"Renderizando vídeo para: {output_path}")
-            final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", threads=1)
+            final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", threads=1, **logger_kw)
             
             abs_path = os.path.abspath(output_path)
             print(f"Vídeo salvo com sucesso em: {abs_path} (Size: {os.path.getsize(output_path)} bytes)")
