@@ -64,7 +64,10 @@ def run_migrations(engine):
                     if "uploaded_at" not in sv_columns:
                         print("Migrating: Adding uploaded_at to scheduled_videos...")
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at DATETIME"))
-                    
+                    if "updated_at" not in sv_columns:
+                        print("Migrating: Adding updated_at to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN updated_at DATETIME"))
+
                     if "voice_style" not in sv_columns:
                         print("Migrating: Adding voice_style to scheduled_videos...")
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_style VARCHAR DEFAULT 'human'"))

@@ -114,6 +114,7 @@ class ScheduledVideo(Base):
     voice_gender = Column(String, default="female")
     youtube_video_id = Column(String, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 class User(Base):
     __tablename__ = "users"

@@ -119,9 +119,23 @@ class MonitorService:
             # 1. Check if any video is currently processing (to avoid overload)
             processing = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").first()
             if processing:
-                # Optional: Check if stuck (e.g. > 1 hour) and reset?
-                # For now, just wait.
-                logger.info(f"Fila ocupada: Vídeo {processing.id} está processando.")
+                # Check for timeout (stuck video)
+                # If updated_at is missing (legacy), assume it's stuck if we are here (simplification)
+                # or rely on a reasonable default if null.
+                
+                # Default timeout: 40 minutes
+                timeout_limit = datetime.timedelta(minutes=40)
+                last_update = processing.updated_at or processing.scheduled_for or datetime.datetime.now()
+                
+                if datetime.datetime.now() - last_update > timeout_limit:
+                    logger.warning(f"Vídeo {processing.id} expirou (stuck). Marcando como falha.")
+                    processing.status = "failed"
+                    processing.description = (processing.description or "") + "\n\n[SISTEMA]: Processo expirou (timeout de 40min). Tente novamente."
+                    db.commit()
+                    # Continue to pick next video in next cycle (or now if we want to be aggressive)
+                    return
+                
+                logger.info(f"Fila ocupada: Vídeo {processing.id} está processando (Atualizado em: {last_update}).")
                 return
 
             # 2. Pick next queued video
