@@ -261,6 +261,15 @@ class VideoGenerator:
             title = plan.get('title', 'Vídeo Sem Título')
             scenes = plan.get('scenes', [])
             
+            # Validação extra: Se 'scenes' não for lista, tenta corrigir ou usa lista vazia
+            if not isinstance(scenes, list):
+                print(f"ALERTA: 'scenes' não é lista. Tipo: {type(scenes)}. Valor: {scenes}")
+                if isinstance(scenes, str):
+                    # Pode ser que a IA retornou uma string única como cena
+                    scenes = [{"text": scenes, "image_prompt": ""}]
+                else:
+                    scenes = []
+
             # Otimização de memória: Reduzir resolução para 720p para evitar OOM em tiers gratuitos
             if aspect_ratio == "16:9":
                 video_size = (1280, 720) # Antes: 1920, 1080
@@ -306,11 +315,15 @@ class VideoGenerator:
                     scene_progress = 10 + int((i / total_scenes) * 70)
                     progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
                     
-                text = scene.get('text', '')
+                if isinstance(scene, str):
+                    text = scene
+                    image_prompt = ""
+                else:
+                    text = scene.get('text', '')
+                    image_prompt = scene.get('image_prompt', '')
+
                 # Limpeza de segurança para evitar metadados no vídeo
                 clean_text = self._clean_text(text)
-                
-                image_prompt = scene.get('image_prompt', '')
                 
                 # Tentar gerar imagem com IA
                 bg_image_path = None
