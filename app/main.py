@@ -53,7 +53,7 @@ def run_migrations(engine):
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN progress INTEGER DEFAULT 0"))
                     if "publish_at" not in sv_columns:
                         print("Migrating: Adding publish_at to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN publish_at DATETIME"))
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN publish_at TIMESTAMP"))
                     if "auto_post" not in sv_columns:
                         print("Migrating: Adding auto_post to scheduled_videos...")
                         # Use FALSE for compatibility with both SQLite and PostgreSQL
@@ -63,10 +63,10 @@ def run_migrations(engine):
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN youtube_video_id TEXT"))
                     if "uploaded_at" not in sv_columns:
                         print("Migrating: Adding uploaded_at to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at DATETIME"))
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at TIMESTAMP"))
                     if "updated_at" not in sv_columns:
                         print("Migrating: Adding updated_at to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN updated_at DATETIME"))
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN updated_at TIMESTAMP"))
 
                     if "voice_style" not in sv_columns:
                         print("Migrating: Adding voice_style to scheduled_videos...")
