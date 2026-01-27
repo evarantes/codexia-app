@@ -33,56 +33,7 @@ class BookGenerationRequest(BaseModel):
     sections: dict
     cover_filename: Optional[str] = None
 
-class BookRevisionRequest(BaseModel):
-    metadata: dict
-    sections: dict
-
-@router.post("/revise")
-async def revise_book(data: BookRevisionRequest):
-    """
-    Revisa o livro, preenchendo seções vazias (como capítulos ou epílogo) 
-    usando a IA, sem sobrescrever conteúdo existente.
-    """
-    ai_service = AIContentGenerator()
-    sections = data.sections
-    book_title = data.metadata.get("title", "Meu Livro")
-    book_synopsis = data.metadata.get("synopsis", "")
-    
-    # Construir um contexto básico com o que já existe
-    context_summary = f"Livro: {book_title}\nSinopse: {book_synopsis}\n"
-    
-    updated_count = 0
-    
-    for key, section in sections.items():
-        content = section.get("content", "").strip()
-        title = section.get("title", key)
-        
-        # Critério para "vazio": string vazia ou muito curta (< 50 chars)
-        if not content or len(content) < 50:
-            prompt_type = "chapter"
-            if "synopsis" in key.lower(): prompt_type = "synopsis"
-            elif "epigraph" in key.lower(): prompt_type = "epigraph"
-            elif "preface" in key.lower(): prompt_type = "preface"
-            elif "dedication" in key.lower(): prompt_type = "dedication"
-            elif "epilogue" in key.lower() or "epílogo" in title.lower(): prompt_type = "epilogue"
-            elif "conclusion" in key.lower(): prompt_type = "conclusion"
-            
-            # Gerar conteúdo
-            # Passamos o contexto acumulado e o título da seção
-            print(f"Gerando conteúdo para seção vazia: {title} ({key})")
-            new_content = ai_service.generate_book_section(prompt_type, context_summary, title)
-            
-            if new_content:
-                section["content"] = new_content
-                updated_count += 1
-                
-    return {
-        "status": "success", 
-        "sections": sections, 
-        "message": f"Revisão concluída. {updated_count} seções foram preenchidas."
-    }
-
-@router.post("/upload")
+@router.post("/upload-manuscript")
 async def upload_manuscript(
     file: UploadFile = File(...),
     cover: Optional[UploadFile] = File(None)
@@ -196,7 +147,7 @@ async def create_draft(request: CreateDraftRequest):
         print(f"Error generating draft: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/upload_cover")
+@router.post("/upload-cover")
 async def upload_cover(file: UploadFile = File(...)):
     """
     Uploads a cover image separately.
@@ -222,14 +173,18 @@ async def regenerate_section(request: RegenerationRequest):
 
 class GenerateCoverRequest(BaseModel):
     title: str
-    context: str
+    context: Optional[str] = None
+    description: Optional[str] = None # Frontend sends 'description'
     author: Optional[str] = ""
     subtitle: Optional[str] = ""
 
-@router.post("/generate_covers")
+@router.post("/generate-covers")
 async def generate_covers(request: GenerateCoverRequest):
+    # Map description to context if context is missing
+    context_text = request.context or request.description or "Livro sem descrição"
+    
     ai_service = AIContentGenerator()
-    urls = ai_service.generate_cover_options(request.title, request.context, request.author, request.subtitle)
+    urls = ai_service.generate_cover_options(request.title, context_text, request.author, request.subtitle)
     
     saved_urls = []
     # Ensure static/covers exists
@@ -334,7 +289,7 @@ async def revise_book(request: BookGenerationRequest):
         "message": "Livro revisado e completado com sucesso!"
     }
 
-@router.post("/preview")
+@router.post("/generate-preview")
 async def preview_book_pdf(request: BookGenerationRequest):
     """
     Generates a temporary PDF for preview.
@@ -358,7 +313,7 @@ async def preview_book_pdf(request: BookGenerationRequest):
         print(f"Error generating preview: {e}")
         return {"status": "error", "detail": str(e)}
 
-@router.post("/generate")
+@router.post("/generate-pdf")
 async def generate_book_pdf(request: BookGenerationRequest, db: Session = Depends(get_db)):
     """
     Generates the final PDF based on the user-approved structure.
@@ -393,4 +348,4 @@ async def generate_book_pdf(request: BookGenerationRequest, db: Session = Depend
     except Exception as e:
         print(f"Erro ao salvar livro no banco: {e}")
 
-    return {"status": "success", "download_url": f"/static/generated/{os.path.basename(output_file)}"}
+    return {"status": "success", "pdf_url": f"/static/generated/{os.path.basename(output_file)}"}

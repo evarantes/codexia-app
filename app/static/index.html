@@ -1056,7 +1056,33 @@
                         <label class="block font-bold mb-2">Facebook Access Token</label>
                         <input v-model="settings.facebook_access_token" type="password" class="w-full border p-2 rounded">
                     </div>
-                    <button @click="saveSettings" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700">
+                    
+                    <div class="border-t pt-4 mt-6">
+                        <h3 class="text-lg font-bold mb-4">Diagnóstico do Sistema</h3>
+                        <button @click="runDiagnostics" :disabled="diagnosticLoading" class="bg-gray-800 text-white px-6 py-2 rounded hover:bg-gray-900 w-full mb-2">
+                            <i v-if="diagnosticLoading" class="fas fa-spinner fa-spin mr-2"></i>
+                            <span v-else><i class="fas fa-stethoscope mr-2"></i> Executar Diagnóstico Completo</span>
+                        </button>
+                        
+                        <div v-if="diagnosticReport" class="mt-4 bg-gray-50 p-4 rounded border">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="font-bold">Status:</span>
+                                <span :class="diagnosticReport.status === 'healthy' ? 'text-green-600 font-bold' : 'text-red-600 font-bold'">
+                                    {{ diagnosticReport.status.toUpperCase() }}
+                                </span>
+                            </div>
+                            <div class="space-y-2">
+                                <div v-for="(check, idx) in diagnosticReport.checks" :key="idx" class="flex justify-between text-sm border-b pb-1">
+                                    <span>{{ check.name }}</span>
+                                    <span :class="check.status === 'OK' ? 'text-green-600' : 'text-red-600'">
+                                        {{ check.message }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button @click="saveSettings" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 mt-4">
                         Salvar Configurações
                     </button>
                     <p v-if="saveMessage" class="mt-4 text-green-600 font-bold">{{ saveMessage }}</p>
@@ -1309,7 +1335,11 @@
                     passwordForm: { current: '', new: '', confirm: '' },
                     passwordMessage: '',
                     passwordMessageType: '',
-                    user: null
+                    user: null,
+
+                    // Diagnostics
+                    diagnosticLoading: false,
+                    diagnosticReport: null
                 }
             },
             computed: {
@@ -1375,6 +1405,37 @@
                 }, 10000);
             },
             methods: {
+                async runDiagnostics() {
+                    this.diagnosticLoading = true;
+                    this.diagnosticReport = null;
+                    try {
+                        // Run basic system checks
+                        const res = await this.authFetch('/diagnostics/run');
+                        const report = await res.json();
+                        
+                        // Run PDF Test
+                        try {
+                            const pdfRes = await this.authFetch('/diagnostics/test-pdf-generation', { method: 'POST' });
+                            if (pdfRes.ok) {
+                                report.checks.push({ name: "Teste PDF", status: "OK", message: "Gerado com sucesso" });
+                            } else {
+                                report.checks.push({ name: "Teste PDF", status: "FAIL", message: "Falha na geração" });
+                            }
+                        } catch (e) {
+                             report.checks.push({ name: "Teste PDF", status: "FAIL", message: "Erro: " + e });
+                        }
+
+                        // Run AI Test (Optional, might be slow/costly so maybe skip or warn)
+                        // For now we skip to keep it fast, or add if user really wants full check
+                        
+                        this.diagnosticReport = report;
+                        
+                    } catch (e) {
+                        alert("Erro ao executar diagnóstico: " + e);
+                    } finally {
+                        this.diagnosticLoading = false;
+                    }
+                },
                 openReport(report) {
                     this.selectedReport = report;
                     this.showReportModal = true;
@@ -2059,6 +2120,15 @@
                         alert("Erro ao revisar livro: " + e);
                     } finally {
                         this.factoryLoading = false;
+                    }
+                },
+                showError(video) {
+                    if (video.error_msg) {
+                        alert("Detalhes do Erro:\n\n" + video.error_msg);
+                    } else if (video.error) {
+                         alert("Detalhes do Erro:\n\n" + video.error);
+                    } else {
+                        alert("Erro desconhecido. Verifique o console do servidor.");
                     }
                 },
                 async previewBook() {

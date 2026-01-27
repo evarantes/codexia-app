@@ -317,7 +317,8 @@ class VideoGenerator:
                     
                 if isinstance(scene, str):
                     text = scene
-                    image_prompt = ""
+                    # Auto-generate prompt for text-only scenes to ensure visuals
+                    image_prompt = f"Cinematic digital art representing: {text[:100]}"
                 else:
                     text = scene.get('text', '')
                     image_prompt = scene.get('image_prompt', '')
