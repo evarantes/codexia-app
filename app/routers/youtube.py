@@ -105,7 +105,8 @@ def auto_analysis():
     
     # 1. Fetch Stats
     stats = yt_service.get_channel_stats()
-    recent_videos = yt_service.get_recent_videos_stats(limit=10)
+    # Optimized: Limit to 5 videos to speed up AI analysis (was 10)
+    recent_videos = yt_service.get_recent_videos_stats(limit=5)
     
     if not stats.get("connected"):
         raise HTTPException(status_code=400, detail="Canal não conectado. Por favor, conecte-se na aba Configurações.")
