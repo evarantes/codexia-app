@@ -8,7 +8,7 @@ import os
 import uuid
 from pathlib import Path
 import json
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from app.services.book_assembler import BookAssembler
 
 import base64
@@ -156,6 +156,57 @@ def delete_book(book_id: int, db: Session = Depends(get_db)):
     db.delete(db_book)
     db.commit()
     return {"message": "Book deleted successfully"}
+
+@router.get("/{book_id}/cover")
+def get_book_cover(book_id: int, db: Session = Depends(get_db)):
+    """
+    Retorna a capa do livro.
+    - Se o arquivo existir no disco, retorna direto.
+    - Se não existir, retorna usando base64 salvo no banco.
+    """
+    db_book = db.query(Book).filter(Book.id == book_id).first()
+    if not db_book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    # Prioridade 1: Se temos base64, retorna direto (sempre funciona)
+    if db_book.cover_image_base64:
+        # Extrai o tipo MIME e os dados base64
+        if db_book.cover_image_base64.startswith('data:'):
+            # Formato: data:image/jpeg;base64,/9j/4AAQ...
+            parts = db_book.cover_image_base64.split(',', 1)
+            if len(parts) == 2:
+                mime_type = parts[0].split(';')[0].split(':')[1]
+                base64_data = parts[1]
+                image_bytes = base64.b64decode(base64_data)
+                return Response(content=image_bytes, media_type=mime_type)
+        else:
+            # Assume que é só base64 puro
+            try:
+                image_bytes = base64.b64decode(db_book.cover_image_base64)
+                return Response(content=image_bytes, media_type="image/jpeg")
+            except:
+                pass
+
+    # Prioridade 2: Tenta arquivo no disco
+    if db_book.cover_image_url:
+        cover_rel = db_book.cover_image_url.lstrip("/")
+        cover_path = os.path.join("app", cover_rel) if cover_rel else None
+        
+        if cover_path and os.path.exists(cover_path):
+            # Determina tipo MIME pela extensão
+            ext = os.path.splitext(cover_path)[1].lower()
+            media_type = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp'
+            }.get(ext, 'image/jpeg')
+            
+            return FileResponse(cover_path, media_type=media_type)
+
+    # Se não encontrou nada, retorna 404
+    raise HTTPException(status_code=404, detail="Book cover not found")
 
 @router.get("/{book_id}/download")
 def download_book(book_id: int, db: Session = Depends(get_db)):
