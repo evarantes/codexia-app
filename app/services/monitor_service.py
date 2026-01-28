@@ -211,20 +211,41 @@ class MonitorService:
                         # Upload
                         # video_path must be relative to app root or absolute
                         # We stored relative path in DB like "/static/videos/..."
-                        video_id = yt_service.upload_video(
+                        upload_result = yt_service.upload_video(
                             abs_video_path,
                             title=video.title,
                             description=video.description or "Vídeo gerado automaticamente por Codexia.",
                             tags=tags
                         )
                         
-                        if video_id:
-                            video.uploaded_at = datetime.datetime.now()
-                            video.youtube_video_id = video_id
-                            video.status = "published"
-                            logger.info(f"Vídeo {video.id} publicado com sucesso! ID: {video_id}")
+                        # Interpretar resultado do upload:
+                        # - Sucesso real: dict com 'id' e sem 'error'
+                        # - Mock (sem credenciais): dict com 'id' e status 'uploaded_mock'
+                        # - Falha: dict com chave 'error' ou resultado vazio
+                        is_error = False
+                        video_id_value = None
+                        if isinstance(upload_result, dict):
+                            if upload_result.get("error"):
+                                is_error = True
+                            else:
+                                video_id_value = upload_result.get("id") or str(upload_result)
                         else:
-                            logger.error(f"Falha no upload do vídeo {video.id}")
+                            # Qualquer outro tipo não-vazio é tratado como sucesso e logado como string
+                            if upload_result:
+                                video_id_value = str(upload_result)
+                            else:
+                                is_error = True
+
+                        if is_error or not video_id_value:
+                            logger.error(f"Falha no upload do vídeo {video.id}: {upload_result}")
+                            # Marcar como falha para não ficar em loop infinito de re-upload
+                            video.status = "failed"
+                            video.description = (video.description or "") + "\n\n[UPLOAD_ERRO]: falha ao enviar para o YouTube. Veja logs do servidor."
+                        else:
+                            video.uploaded_at = datetime.datetime.now()
+                            video.youtube_video_id = video_id_value
+                            video.status = "published"
+                            logger.info(f"Vídeo {video.id} publicado com sucesso! ID: {video_id_value}")
                             
                         db.commit()
                         
