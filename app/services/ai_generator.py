@@ -1039,15 +1039,29 @@ class AIContentGenerator:
             
         except Exception as e:
             print(f"Erro ao gerar insights de monetização: {e}")
+            
+            # Calculate missing values for fallback
+            subs_target = progress_data.get('subscribers_target', 1000)
+            subs_current = progress_data.get('subscribers', 0)
+            subs_missing = max(0, subs_target - subs_current)
+            
+            hours_target = progress_data.get('watch_hours_target', 4000)
+            hours_current = progress_data.get('estimated_watch_hours', 0)
+            hours_missing = max(0, hours_target - hours_current)
+            
             return {
-                "summary": "Erro na análise de monetização.",
+                "summary": "Não foi possível gerar a análise detalhada da IA, mas aqui estão seus números.",
                 "gap_analysis": {
-                    "subscribers_missing": 0,
-                    "watch_hours_missing": 0,
-                    "estimated_time_to_monetize": "Desconhecido"
+                    "subscribers_missing": subs_missing,
+                    "watch_hours_missing": hours_missing,
+                    "estimated_time_to_monetize": "Calculando..."
                 },
-                "strategy_suggestion": "Continue postando conteúdo de qualidade.",
-                "weekly_actions": []
+                "strategy_suggestion": "Continue postando conteúdo de qualidade com consistência.",
+                "weekly_actions": [
+                    "Verifique suas configurações de API da IA se o erro persistir.",
+                    "Foque em Shorts para ganhar inscritos rapidamente.",
+                    "Faça vídeos mais longos para aumentar as horas de exibição."
+                ]
             }
 
     def _build_prompt(self, title, synopsis, style):
