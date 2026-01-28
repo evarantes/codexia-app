@@ -66,20 +66,46 @@ class HotmartService:
         
         # Solicita novo token
         try:
+            import base64
+            
+            # Tenta primeiro com Basic Auth no header (método mais comum)
+            auth_string = f"{client_id}:{client_secret}"
+            auth_bytes = auth_string.encode('utf-8')
+            auth_b64 = base64.b64encode(auth_bytes).decode('utf-8')
+            
+            headers = {
+                "Authorization": f"Basic {auth_b64}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
             response = requests.post(
                 self.token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={"grant_type": "client_credentials"},
+                headers=headers,
                 timeout=10
             )
             
+            # Se falhar com Basic Auth, tenta com credenciais no body (fallback)
+            if response.status_code == 401:
+                response = requests.post(
+                    self.token_url,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": client_id,
+                        "client_secret": client_secret
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=10
+                )
+            
             if response.status_code != 200:
                 error_detail = response.text
-                raise Exception(f"Erro ao autenticar na Hotmart: {response.status_code} - {error_detail}")
+                try:
+                    error_json = response.json()
+                    error_msg = error_json.get("error_description") or error_json.get("error") or error_detail
+                except:
+                    error_msg = error_detail
+                raise Exception(f"Erro ao autenticar na Hotmart: {response.status_code} - {error_msg}")
             
             data = response.json()
             self.access_token = data.get("access_token")
