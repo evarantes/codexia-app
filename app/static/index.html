@@ -1922,7 +1922,7 @@
                 async fetchAutoInsights() {
                     try {
                         this.autoInsightsLoading = true;
-                        const res = await this.authFetch('/youtube/auto_insights');
+                        const res = await this.authFetch('/youtube/auto-analysis', { method: 'POST' });
                         const data = await res.json();
                         this.autoInsights = data;
                     } catch (e) {
@@ -1935,7 +1935,7 @@
                 async fetchMonetizationStatus() {
                     try {
                         this.monetizationLoading = true;
-                        const res = await this.authFetch('/youtube/monetization_status');
+                        const res = await this.authFetch('/youtube/monetization-status', { method: 'POST' });
                         const data = await res.json();
                         this.monetizationData = data;
                     } catch (e) {
@@ -1946,12 +1946,12 @@
                     }
                 },
                 applyAutoInsightsToSchedule() {
-                    if (!this.autoInsights || !this.autoInsights.ai_insights || !this.autoInsights.ai_insights.weekly_plan) {
+                    if (!this.autoInsights || !this.autoInsights.weekly_plan) {
                         alert("Nenhum plano semanal da IA disponível ainda. Rode a Auto Análise primeiro.");
                         return;
                     }
                     try {
-                        const plan = this.autoInsights.ai_insights.weekly_plan;
+                        const plan = this.autoInsights.weekly_plan;
                         this.schedulePlan = (plan || []).map(day => ({
                             date: day.date || '',
                             theme_of_day: day.theme || day.day || 'Geral',

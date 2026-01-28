@@ -126,7 +126,7 @@ class YouTubeService:
             
         try:
             request = self.service.channels().list(
-                part="snippet,statistics,brandingSettings",
+                part="snippet,statistics,brandingSettings,contentDetails",
                 mine=True
             )
             response = request.execute()
@@ -137,6 +137,55 @@ class YouTubeService:
             print(f"Erro no helper _get_my_channel: {e}")
             raise e
         return None
+
+    def get_recent_videos_stats(self, limit=10):
+        """Busca estatísticas dos vídeos recentes"""
+        if not self.service:
+            return []
+        
+        try:
+            # 1. Get Uploads Playlist ID
+            channel = self._get_my_channel()
+            if not channel:
+                return []
+                
+            uploads_playlist_id = channel['contentDetails']['relatedPlaylists']['uploads']
+            
+            # 2. Get Videos from Playlist
+            playlist_items = self.service.playlistItems().list(
+                part="snippet,contentDetails",
+                playlistId=uploads_playlist_id,
+                maxResults=limit
+            ).execute()
+            
+            if not playlist_items.get('items'):
+                return []
+                
+            video_ids = [item['contentDetails']['videoId'] for item in playlist_items['items']]
+            
+            # 3. Get Video Stats
+            videos_response = self.service.videos().list(
+                part="statistics,snippet",
+                id=','.join(video_ids)
+            ).execute()
+            
+            videos = []
+            for item in videos_response['items']:
+                stats = item['statistics']
+                videos.append({
+                    "id": item['id'],
+                    "title": item['snippet']['title'],
+                    "published_at": item['snippet']['publishedAt'],
+                    "views": int(stats.get('viewCount', 0)),
+                    "likes": int(stats.get('likeCount', 0)),
+                    "comments": int(stats.get('commentCount', 0))
+                })
+            
+            return videos
+            
+        except Exception as e:
+            print(f"Error fetching recent videos: {e}")
+            return []
 
     def get_channel_stats(self):
         """Retorna estatísticas do canal"""

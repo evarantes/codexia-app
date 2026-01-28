@@ -98,6 +98,64 @@ def optimize_channel(execute: bool = False):
         
     return analysis
 
+@router.post("/auto-analysis")
+def auto_analysis():
+    yt_service = YouTubeService()
+    ai_service = AIContentGenerator()
+    
+    # 1. Fetch Stats
+    stats = yt_service.get_channel_stats()
+    recent_videos = yt_service.get_recent_videos_stats(limit=10)
+    
+    if not stats.get("connected"):
+        raise HTTPException(status_code=400, detail="Canal não conectado. Por favor, conecte-se na aba Configurações.")
+    
+    # 2. Analyze with AI using centralized service
+    return ai_service.generate_auto_insights(stats, recent_videos)
+
+@router.post("/monetization-status")
+def monetization_status():
+    yt_service = YouTubeService()
+    ai_service = AIContentGenerator()
+    
+    stats = yt_service.get_channel_stats()
+    
+    if not stats.get("connected"):
+        raise HTTPException(status_code=400, detail="Canal não conectado.")
+
+    # Estimate Watch Hours (very rough assumption: 3 mins per view average)
+    total_views = int(stats.get('views', 0))
+    estimated_minutes = total_views * 3
+    estimated_hours = int(estimated_minutes / 60)
+    
+    subscribers = int(stats.get('subscribers', 0))
+    
+    # Prepare data for AI service
+    progress_data = {
+        "subscribers": subscribers,
+        "subscribers_target": 1000,
+        "estimated_watch_hours": estimated_hours,
+        "watch_hours_target": 4000,
+        "subscribers_progress_pct": round((subscribers / 1000) * 100, 1),
+        "watch_hours_progress_pct": round((estimated_hours / 4000) * 100, 1)
+    }
+    
+    # Analyze with AI
+    ai_result = ai_service.generate_monetization_insights(progress_data)
+    
+    # Structure for Frontend
+    final_response = {
+        "ai_insights": ai_result,
+        "progress": {
+            "subscribers": subscribers,
+            "subscribers_progress_pct": progress_data["subscribers_progress_pct"],
+            "estimated_watch_hours": estimated_hours,
+            "watch_hours_progress_pct": progress_data["watch_hours_progress_pct"]
+        }
+    }
+    
+    return final_response
+
 @router.post("/optimize/execute")
 def execute_optimization(data: Dict[str, Any]):
     """Executa as melhorias sugeridas (título/descrição/banner)"""
@@ -228,7 +286,9 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
         ("publish_at", "TIMESTAMP"),
         ("auto_post", "BOOLEAN DEFAULT FALSE"),
         ("youtube_video_id", "TEXT"),
-        ("uploaded_at", "TIMESTAMP")
+        ("uploaded_at", "TIMESTAMP"),
+        ("voice_style", "TEXT DEFAULT 'human'"),
+        ("voice_gender", "TEXT DEFAULT 'female'")
     ]
     
     for col_name, col_type in missing_cols:
@@ -277,7 +337,9 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
                     video_type=vid.get('type', 'video'),
                     script_data=json.dumps(vid),
                     scheduled_for=scheduled_dt,
-                    auto_post=vid.get('auto_post', False) # Support auto_post from plan
+                    auto_post=vid.get('auto_post', False), # Support auto_post from plan
+                    voice_style=vid.get('voice_style', 'human'),
+                    voice_gender=vid.get('voice_gender', 'female')
                 )
                 db.add(new_video)
                 db.flush() # Para pegar o ID

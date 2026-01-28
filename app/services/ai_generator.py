@@ -795,8 +795,8 @@ class AIContentGenerator:
         {{
             "analysis": "Sua análise...",
             "action_plan": ["Passo 1", "Passo 2", "Passo 3"],
-            "new_title": "Novo Nome Sugerido",
-            "new_description": "Nova descrição sugerida...",
+            "title_suggestion": "Novo Nome Sugerido",
+            "description_suggestion": "Nova descrição sugerida...",
             "banner_prompt": "Descrição visual para o banner do canal..."
         }}
         """
@@ -805,8 +805,8 @@ class AIContentGenerator:
             return {
                 "analysis": "Simulação: O canal tem potencial mas precisa de consistência.",
                 "action_plan": ["Postar 2x por semana", "Melhorar Thumbnails", "Focar em Shorts"],
-                "new_title": "Codexia - Livros & Mente",
-                "new_description": "Canal oficial sobre livros e desenvolvimento pessoal. Inscreva-se para transformar sua vida.",
+                "title_suggestion": "Codexia - Livros & Mente",
+                "description_suggestion": "Canal oficial sobre livros e desenvolvimento pessoal. Inscreva-se para transformar sua vida.",
                 "banner_prompt": "Uma biblioteca mística com luz dourada, estilo digital art, alta qualidade, 4k"
             }
             
@@ -886,132 +886,168 @@ class AIContentGenerator:
                 "strategy": "Continue postando regularmente para aumentar engajamento."
             }
 
-    def generate_auto_insights(self, stats, videos):
+    def generate_auto_insights(self, stats, recent_videos):
         """
-        Gera análise de conteúdo + ideias de novos vídeos/shorts
-        com base nas estatísticas e nos vídeos recentes.
+        Gera insights automáticos sobre o canal, analisando impacto por vídeo
+        e sugerindo novos conteúdos baseados nos melhores desempenhos.
         """
         self._load_config()
-
+        
         import json
-        top_examples = [
-            {
-                "title": v.get("title"),
-                "views": v.get("viewCount"),
-                "likes": v.get("likeCount"),
-                "publishedAt": v.get("publishedAt"),
-            }
-            for v in (videos or [])[:10]
-        ]
-
+        videos_json = json.dumps(recent_videos, indent=2, default=str)
+        
         prompt = f"""
-        Você é um estrategista de crescimento de canais no YouTube.
-
-        ESTATÍSTICAS GERAIS ATUAIS:
-        {json.dumps(stats, ensure_ascii=False, indent=2)}
-
-        DESEMPENHO DE VÍDEOS RECENTES (ordenados por views):
-        {json.dumps(top_examples, ensure_ascii=False, indent=2)}
-
-        TAREFA:
-        1. Identifique os padrões de vídeos/shorts que estão performando melhor (tema, título, duração, estilo, CTA).
-        2. Explique em linguagem simples O QUE está funcionando e POR QUÊ.
-        3. Gere uma lista de pelo menos 5 novas IDEIAS de VÍDEOS LONGOS (title, concept).
-        4. Gere uma lista de pelo menos 5 novas IDEIAS de SHORTS (title, concept).
-        5. Monte um mini plano de conteúdo para os próximos 7 dias combinando esses formatos.
-
-        Responda em JSON com a estrutura:
+        Atue como um Especialista Sênior em YouTube Analytics e Estratégia de Conteúdo.
+        
+        DADOS DO CANAL:
+        - Nome: {stats.get('title')}
+        - Inscritos: {stats.get('subscribers')}
+        - Total Views: {stats.get('views')}
+        - Total Vídeos: {stats.get('videos')}
+        
+        VÍDEOS RECENTES (Performance):
+        {videos_json}
+        
+        SUA MISSÃO:
+        1. Analise a evolução de cada vídeo recente e seu impacto no canal (quais trouxeram mais views/engajamento).
+        2. Identifique o vídeo de MELHOR resultado (o "Campeão").
+        3. Gere listas de ideias de vídeos longos e shorts baseados no campeão.
+        4. Gere um plano de conteúdo semanal AUTOMÁTICO focado em ALAVANCAR esse sucesso.
+        
+        Retorne APENAS um JSON válido com a seguinte estrutura:
         {{
-          "summary": "Resumo do que está funcionando hoje.",
-          "long_video_ideas": [{{"title": "...", "concept": "..."}}],
-          "short_ideas": [{{"title": "...", "concept": "..."}}],
-          "weekly_plan": [
-            {{
-              "day": "Dia 1",
-              "theme": "Tema do dia",
-              "videos": [{{"title": "...", "type": "video" ou "short", "concept": "..."}}]
-            }}
-          ]
+            "summary": "Resumo geral da saúde do canal e tendências identificadas.",
+            "video_impact_analysis": [
+                {{"video_title": "Título do Vídeo", "impact": "Análise curta do impacto"}}
+            ],
+            "best_video": {{
+                "title": "Título do Melhor Vídeo",
+                "reason": "Por que foi o melhor"
+            }},
+            "long_video_ideas": [
+                {{"title": "Título Ideia 1", "concept": "Conceito..."}},
+                {{"title": "Título Ideia 2", "concept": "Conceito..."}}
+            ],
+            "shorts_ideas": [
+                {{"title": "Título Short 1", "concept": "Conceito..."}},
+                {{"title": "Título Short 2", "concept": "Conceito..."}}
+            ],
+            "weekly_plan": [
+                {{
+                    "day": "Segunda-feira",
+                    "theme": "Continuação do Sucesso",
+                    "videos": [
+                        {{
+                            "title": "Título Sugerido",
+                            "concept": "Explicação do conceito",
+                            "time": "18:00",
+                            "type": "video",
+                            "auto_post": true
+                        }}
+                    ]
+                }},
+                {{
+                    "day": "Quarta-feira",
+                    "theme": "Short Viral",
+                    "videos": [
+                        {{
+                            "title": "Título do Short",
+                            "concept": "Hook rápido",
+                            "time": "12:00",
+                            "type": "short",
+                            "auto_post": true
+                        }}
+                    ]
+                }}
+            ]
         }}
         """
+        
         try:
-            content = self._generate_text(prompt, json_mode=True)
+            content = self._generate_text(
+                prompt, 
+                system_prompt="Você é um estrategista de YouTube focado em dados e crescimento viral.",
+                json_mode=True
+            )
+            
             if not content:
-                raise Exception("No content returned for auto insights")
-            content = content.replace("```json", "").replace("```", "").strip()
-            return json.loads(content)
+                raise Exception("Resposta vazia da IA")
+                
+            clean_content = content.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_content)
+            
         except Exception as e:
-            print(f"Error generating auto insights: {e}")
+            print(f"Erro ao gerar auto insights: {e}")
+            # Mock fallback para não quebrar o frontend
             return {
-                "summary": "Análise simulada: foque no que já está gerando mais views e retenção.",
+                "summary": "Não foi possível gerar a análise detalhada neste momento.",
+                "video_impact_analysis": [],
+                "best_video": {"title": "N/A", "reason": "Erro na análise"},
                 "long_video_ideas": [],
-                "short_ideas": [],
-                "weekly_plan": [],
+                "shorts_ideas": [],
+                "weekly_plan": []
             }
 
-    def generate_monetization_insights(self, progress):
+    def generate_monetization_insights(self, progress_data):
         """
-        Gera análise e plano para atingir monetização (1000 inscritos / 4000h)
-        com base no progresso atual estimado.
+        Gera insights focados em atingir a monetização do YouTube.
         """
         self._load_config()
-        import json
-
+        
         prompt = f"""
-        Você é um especialista em crescimento de canais no YouTube e conhece bem
-        as regras de monetização (1000 inscritos + 4000 horas de exibição em 12 meses,
-        ou alternativa via Shorts, SEM nunca violar políticas).
-
-        PROGRESSO ATUAL (estimado):
-        {json.dumps(progress, ensure_ascii=False, indent=2)}
-
-        TAREFA:
-        1. Explique em linguagem simples em que ponto o canal está em relação à monetização.
-        2. Diga quanto falta (em inscritos e horas) e dê uma estimativa de tempo com base no ritmo atual.
-        3. Proponha um plano de ação concreto para:
-           - Aumentar inscritos.
-           - Aumentar horas de exibição (vídeos longos).
-           - Usar Shorts de forma estratégica, sem spam e sem clickbait enganoso.
-        4. Liste recomendações claras do que fazer toda semana (frequência, tipos de vídeos, ajustes no canal).
-
-        Responda em JSON com a estrutura:
+        Atue como um Consultor de Monetização do YouTube.
+        
+        STATUS ATUAL:
+        - Inscritos: {progress_data.get('subscribers')} (Meta: {progress_data.get('subscribers_target')})
+        - Horas de Exibição Estimadas: {progress_data.get('estimated_watch_hours')} (Meta: {progress_data.get('watch_hours_target')})
+        - Progresso Inscritos: {progress_data.get('subscribers_progress_pct')}%
+        - Progresso Horas: {progress_data.get('watch_hours_progress_pct')}%
+        
+        MISSÃO:
+        1. Analise o que falta para a monetização.
+        2. Dê sugestões PRÁTICAS para acelerar o preenchimento das lacunas (ex: se faltam horas, sugerir lives ou vídeos longos; se faltam inscritos, sugerir shorts virais).
+        
+        Retorne APENAS um JSON válido:
         {{
-          "summary": "Resumo rápido da situação.",
-          "gap_analysis": {{
-            "subscribers_missing": 0,
-            "watch_hours_missing": 0,
-            "estimated_time_to_monetize": "estimativa em meses/semanas"
-          }},
-          "weekly_actions": [
-            "Ação 1",
-            "Ação 2"
-          ],
-          "detailed_strategy": "Texto mais detalhado com estratégia."
+            "summary": "Resumo da situação atual.",
+            "gap_analysis": {{
+                "subscribers_missing": 0,
+                "watch_hours_missing": 0,
+                "estimated_time_to_monetize": "Estimativa (ex: 3 meses)"
+            }},
+            "strategy_suggestion": "Sua principal estratégia para fechar o gap.",
+            "weekly_actions": [
+                "Ação prática 1",
+                "Ação prática 2",
+                "Ação prática 3"
+            ]
         }}
         """
+        
         try:
-            content = self._generate_text(prompt, json_mode=True)
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um especialista em monetização do YouTube.",
+                json_mode=True
+            )
+            
             if not content:
-                raise Exception("No content returned for monetization insights")
-            content = content.replace("```json", "").replace("```", "").strip()
-            return json.loads(content)
+                raise Exception("Resposta vazia da IA")
+                
+            clean_content = content.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_content)
+            
         except Exception as e:
-            print(f"Error generating monetization insights: {e}")
-            missing_subs = max(0, 1000 - int(progress.get("subscribers", 0) or 0))
-            missing_hours = max(0, 4000 - float(progress.get("estimated_watch_hours", 0) or 0))
+            print(f"Erro ao gerar insights de monetização: {e}")
             return {
-                "summary": "Análise simulada: continue crescendo gradualmente, mantendo consistência e qualidade.",
+                "summary": "Erro na análise de monetização.",
                 "gap_analysis": {
-                    "subscribers_missing": missing_subs,
-                    "watch_hours_missing": missing_hours,
-                    "estimated_time_to_monetize": "Indefinido (erro na IA)",
+                    "subscribers_missing": 0,
+                    "watch_hours_missing": 0,
+                    "estimated_time_to_monetize": "Desconhecido"
                 },
-                "weekly_actions": [
-                    "Publique pelo menos 3 vídeos longos por semana focados em temas que já performam bem.",
-                    "Publique 3–5 Shorts por semana aproveitando trechos dos melhores vídeos.",
-                    "Otimize títulos, descrições e thumbnails de vídeos já existentes para melhorar CTR e retenção."
-                ],
-                "detailed_strategy": "Estratégia simulada devido a erro na IA. Verifique as chaves de IA nas Configurações."
+                "strategy_suggestion": "Continue postando conteúdo de qualidade.",
+                "weekly_actions": []
             }
 
     def _build_prompt(self, title, synopsis, style):
