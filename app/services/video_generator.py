@@ -486,9 +486,13 @@ class VideoGenerator:
             logger_kw = {"logger": write_logger} if write_logger else {}
             
             # Escreve o arquivo
-            # threads=1 para reduzir uso de memória durante encoding
+            # threads=1 + preset ultrafast para reduzir memória e tempo (evita OOM no Render)
             print(f"Renderizando vídeo para: {output_path}")
-            final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", threads=1, **logger_kw)
+            final_clip.write_videofile(
+                output_path, fps=24, codec="libx264", audio_codec="aac", threads=1,
+                ffmpeg_params=["-preset", "ultrafast"],
+                **logger_kw
+            )
             
             abs_path = os.path.abspath(output_path)
             print(f"Vídeo salvo com sucesso em: {abs_path} (Size: {os.path.getsize(output_path)} bytes)")
