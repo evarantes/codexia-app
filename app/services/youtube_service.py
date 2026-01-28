@@ -319,3 +319,112 @@ class YouTubeService:
             print(f"Error updating channel: {e}")
             return {"error": str(e)}
 
+    def get_recent_videos_performance(self, max_results: int = 20):
+        """
+        Retorna uma lista simplificada de vídeos recentes com métricas básicas
+        (título, data de publicação, views, likes se disponíveis).
+        Usa apenas escopos já configurados (readonly).
+        """
+        if not self.service:
+            print("[YouTubeService] get_recent_videos_performance: serviço não conectado, retornando lista vazia.")
+            return []
+
+        try:
+            channel = self._get_my_channel()
+            if not channel:
+                return []
+
+            uploads_playlist_id = channel.get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+            if not uploads_playlist_id:
+                # Fallback simples: usar search.list por canal
+                search_req = self.service.search().list(
+                    part="snippet",
+                    channelId=channel["id"],
+                    maxResults=max_results,
+                    order="date",
+                    type="video"
+                )
+                search_res = search_req.execute()
+                items = search_res.get("items", [])
+                videos = []
+                for item in items:
+                    snippet = item.get("snippet", {})
+                    videos.append({
+                        "videoId": item["id"]["videoId"],
+                        "title": snippet.get("title"),
+                        "publishedAt": snippet.get("publishedAt"),
+                        "viewCount": None,
+                        "likeCount": None
+                    })
+                return videos
+
+            # Caso padrão: playlist "uploads"
+            playlist_items_req = self.service.playlistItems().list(
+                part="contentDetails,snippet",
+                playlistId=uploads_playlist_id,
+                maxResults=max_results
+            )
+            playlist_items_res = playlist_items_req.execute()
+            items = playlist_items_res.get("items", [])
+
+            video_ids = [it["contentDetails"]["videoId"] for it in items if it.get("contentDetails")]
+            if not video_ids:
+                return []
+
+            videos_req = self.service.videos().list(
+                part="snippet,statistics",
+                id=",".join(video_ids)
+            )
+            videos_res = videos_req.execute()
+            videos = []
+            for item in videos_res.get("items", []):
+                snippet = item.get("snippet", {})
+                stats = item.get("statistics", {})
+                videos.append({
+                    "videoId": item.get("id"),
+                    "title": snippet.get("title"),
+                    "publishedAt": snippet.get("publishedAt"),
+                    "viewCount": int(stats.get("viewCount", 0)) if stats.get("viewCount") is not None else 0,
+                    "likeCount": int(stats.get("likeCount", 0)) if stats.get("likeCount") is not None else 0,
+                    "commentCount": int(stats.get("commentCount", 0)) if stats.get("commentCount") is not None else 0
+                })
+            # Ordena por views desc
+            videos.sort(key=lambda v: v.get("viewCount", 0), reverse=True)
+            return videos
+        except Exception as e:
+            print(f"[YouTubeService] Erro ao buscar performance de vídeos: {e}")
+            return []
+
+    def get_monetization_progress(self):
+        """
+        Retorna um resumo simples de progresso rumo à monetização (estimado),
+        usando apenas stats básicos disponíveis sem Analytics.
+        """
+        stats = self.get_channel_stats()
+        try:
+            subscribers = int(stats.get("subscribers", 0) or 0)
+        except Exception:
+            subscribers = 0
+        try:
+            total_views = int(stats.get("views", 0) or 0)
+        except Exception:
+            total_views = 0
+
+        # Estimativa bem simplificada de horas de exibição:
+        # assumindo ~3min de watch médio por view em vídeos longos.
+        # horas ≈ (views * 3min) / 60
+        estimated_watch_hours = (total_views * 3) / 60.0
+
+        data = {
+            "subscribers": subscribers,
+            "subscribers_target": 1000,
+            "total_views": total_views,
+            "estimated_watch_hours": round(estimated_watch_hours, 1),
+            "watch_hours_target": 4000,
+            # valores percentuais para exibição
+            "subscribers_progress_pct": min(100, round(subscribers / 10.0, 1)) if subscribers else 0,
+            "watch_hours_progress_pct": min(100, round((estimated_watch_hours / 4000.0) * 100, 1)) if estimated_watch_hours else 0,
+            "raw_stats": stats,
+        }
+        return data
+

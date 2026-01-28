@@ -368,6 +368,45 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
 def get_schedule(db: Session = Depends(get_db)):
     return db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).all()
 
+@router.get("/auto_insights")
+def get_auto_insights():
+    """
+    Auto Análise:
+    - Lê estatísticas gerais do canal
+    - Lê performance recente dos vídeos
+    - Pede para a IA gerar resumo + novas ideias de vídeos/shorts
+    """
+    yt = YouTubeService()
+    ai = AIContentGenerator()
+
+    stats = yt.get_channel_stats()
+    videos = yt.get_recent_videos_performance(max_results=20)
+    ai_insights = ai.generate_auto_insights(stats, videos)
+
+    return {
+        "stats": stats,
+        "recent_videos": videos,
+        "ai_insights": ai_insights,
+    }
+
+@router.get("/monetization_status")
+def get_monetization_status():
+    """
+    Análise de Monetização:
+    - Resume progresso estimado rumo à monetização
+    - Pede para a IA gerar diagnóstico + plano de ação
+    """
+    yt = YouTubeService()
+    ai = AIContentGenerator()
+
+    progress = yt.get_monetization_progress()
+    ai_insights = ai.generate_monetization_insights(progress)
+
+    return {
+        "progress": progress,
+        "ai_insights": ai_insights,
+    }
+
 @router.post("/generate_video")
 def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     """Gera um vídeo motivacional e opcionalmente faz upload"""

@@ -332,7 +332,20 @@
             <div v-if="currentTab === 'youtube'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">YouTube Automation</h1>
                 
-                <!-- Connection & Actions -->
+                <!-- Subtabs -->
+                <div class="mb-4 flex gap-2">
+                    <button @click="youtubeSubTab = 'production'" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'production' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
+                        Produção
+                    </button>
+                    <button @click="youtubeSubTab = 'analysis'; fetchAutoInsights()" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'analysis' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
+                        Auto Análise
+                    </button>
+                    <button @click="youtubeSubTab = 'monetization'; fetchMonetizationStatus()" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'monetization' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
+                        Monetização
+                    </button>
+                </div>
+                
+                <!-- Connection & Actions (comum) -->
                 <div class="bg-white rounded-lg shadow p-6 mb-8">
                     <div class="flex flex-col md:flex-row justify-between items-center gap-4">
                         <div class="flex items-center gap-4">
@@ -398,6 +411,8 @@
                     </div>
                 </div>
 
+                <!-- PRODUÇÃO: Stats + Agenda/Fila -->
+                <div v-if="youtubeSubTab === 'production'">
                 <!-- Stats -->
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
                     <div class="bg-white p-6 rounded-lg shadow flex items-center gap-4">
@@ -674,6 +689,111 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- AUTO ANÁLISE -->
+                <div v-if="youtubeSubTab === 'analysis'" class="space-y-6">
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-purple-500">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-purple-800 flex items-center gap-2">
+                                <i class="fas fa-magic"></i> Auto Análise do Canal
+                            </h2>
+                            <button @click="fetchAutoInsights" :disabled="autoInsightsLoading" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 flex items-center gap-2 text-sm">
+                                <i v-if="autoInsightsLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else>Rodar Análise Agora</span>
+                            </button>
+                        </div>
+                        <div v-if="autoInsightsLoading" class="text-gray-500 italic">A IA está analisando seu canal...</div>
+                        <div v-else-if="!autoInsights" class="text-gray-500 italic">Clique em “Rodar Análise Agora” para gerar um relatório.</div>
+                        <div v-else class="space-y-4">
+                            <p class="text-gray-700"><strong>Resumo:</strong> {{ autoInsights.ai_insights.summary }}</p>
+                            
+                            <div>
+                                <h3 class="font-semibold text-gray-800 mb-2">Ideias de Vídeos Longos</h3>
+                                <ul class="list-disc pl-5 space-y-1 text-sm">
+                                    <li v-for="(idea, idx) in autoInsights.ai_insights.long_video_ideas" :key="'lv-'+idx">
+                                        <strong>{{ idea.title }}</strong> – {{ idea.concept }}
+                                    </li>
+                                </ul>
+                            </div>
+                            
+                            <div>
+                                <h3 class="font-semibold text-gray-800 mb-2">Ideias de Shorts</h3>
+                                <ul class="list-disc pl-5 space-y-1 text-sm">
+                                    <li v-for="(idea, idx) in autoInsights.ai_insights.short_ideas" :key="'sh-'+idx">
+                                        <strong>{{ idea.title }}</strong> – {{ idea.concept }}
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- MONETIZAÇÃO -->
+                <div v-if="youtubeSubTab === 'monetization'" class="space-y-6">
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-green-800 flex items-center gap-2">
+                                <i class="fas fa-money-bill-wave"></i> Caminho para Monetização
+                            </h2>
+                            <button @click="fetchMonetizationStatus" :disabled="monetizationLoading" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 flex items-center gap-2 text-sm">
+                                <i v-if="monetizationLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else>Atualizar Status</span>
+                            </button>
+                        </div>
+                        <div v-if="monetizationLoading" class="text-gray-500 italic">Carregando progresso de monetização...</div>
+                        <div v-else-if="!monetizationData" class="text-gray-500 italic">Clique em “Atualizar Status” para ver o progresso atual.</div>
+                        <div v-else class="space-y-4">
+                            <p class="text-gray-700"><strong>Resumo:</strong> {{ monetizationData.ai_insights.summary }}</p>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <div class="text-sm text-gray-600 mb-1">Inscritos (meta 1000)</div>
+                                    <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                        <div class="bg-green-600 h-2.5 rounded-full" :style="{width: (monetizationData.progress.subscribers_progress_pct || 0) + '%'}"></div>
+                                    </div>
+                                    <div class="text-xs text-gray-500 mt-1">
+                                        {{ monetizationData.progress.subscribers }} inscritos
+                                    </div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-600 mb-1">Horas de exibição estimadas (meta 4000)</div>
+                                    <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                        <div class="bg-blue-600 h-2.5 rounded-full" :style="{width: (monetizationData.progress.watch_hours_progress_pct || 0) + '%'}"></div>
+                                    </div>
+                                    <div class="text-xs text-gray-500 mt-1">
+                                        ~{{ monetizationData.progress.estimated_watch_hours }} horas
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div v-if="monetizationData.ai_insights.gap_analysis" class="text-sm text-gray-700">
+                                <p><strong>Falta aproximadamente:</strong></p>
+                                <ul class="list-disc pl-5">
+                                    <li v-if="monetizationData.ai_insights.gap_analysis.subscribers_missing !== undefined">
+                                        {{ monetizationData.ai_insights.gap_analysis.subscribers_missing }} inscritos
+                                    </li>
+                                    <li v-if="monetizationData.ai_insights.gap_analysis.watch_hours_missing !== undefined">
+                                        {{ monetizationData.ai_insights.gap_analysis.watch_hours_missing }} horas de exibição
+                                    </li>
+                                    <li v-if="monetizationData.ai_insights.gap_analysis.estimated_time_to_monetize">
+                                        Estimativa de tempo: {{ monetizationData.ai_insights.gap_analysis.estimated_time_to_monetize }}
+                                    </li>
+                                </ul>
+                            </div>
+
+                            <div v-if="monetizationData.ai_insights.weekly_actions && monetizationData.ai_insights.weekly_actions.length" class="text-sm text-gray-700">
+                                <h3 class="font-semibold mb-1">Ações semanais sugeridas:</h3>
+                                <ul class="list-disc pl-5 space-y-1">
+                                    <li v-for="(act, idx) in monetizationData.ai_insights.weekly_actions" :key="'wa-'+idx">
+                                        {{ act }}
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                </div> <!-- fim youtubeSubTab === 'production' wrapper -->
             </div>
 
             <!-- Book Factory Tab -->
@@ -1177,6 +1297,7 @@
                 return {
                     mobileMenuOpen: false,
                     currentTab: 'dashboard',
+                    youtubeSubTab: 'production',
                     books: [],
                     selectedBook: null, // New for Video Creator
                     optimizationData: null, // New for Youtube Auto
@@ -1207,6 +1328,10 @@
                     reportFilter: '',
                     showReportModal: false,
                     selectedReport: null,
+                    autoInsightsLoading: false,
+                    autoInsights: null,
+                    monetizationLoading: false,
+                    monetizationData: null,
                     
                     // Weekly Schedule
                     scheduleTheme: '',
@@ -1779,6 +1904,32 @@
                             this.monitorReports = await res.json();
                         }
                     } catch (e) { console.error(e); }
+                },
+                async fetchAutoInsights() {
+                    try {
+                        this.autoInsightsLoading = true;
+                        const res = await this.authFetch('/youtube/auto_insights');
+                        const data = await res.json();
+                        this.autoInsights = data;
+                    } catch (e) {
+                        console.error(e);
+                        alert("Erro ao rodar auto análise do canal.");
+                    } finally {
+                        this.autoInsightsLoading = false;
+                    }
+                },
+                async fetchMonetizationStatus() {
+                    try {
+                        this.monetizationLoading = true;
+                        const res = await this.authFetch('/youtube/monetization_status');
+                        const data = await res.json();
+                        this.monetizationData = data;
+                    } catch (e) {
+                        console.error(e);
+                        alert("Erro ao carregar status de monetização.");
+                    } finally {
+                        this.monetizationLoading = false;
+                    }
                 },
                 translateStatus(status) {
                     const map = {
