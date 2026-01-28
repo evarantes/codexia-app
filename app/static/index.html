@@ -724,6 +724,13 @@
                                     </li>
                                 </ul>
                             </div>
+
+                            <div class="pt-3 border-t mt-3 flex justify-end">
+                                <button @click="applyAutoInsightsToSchedule" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 text-sm font-semibold flex items-center gap-2">
+                                    <i class="fas fa-calendar-plus"></i>
+                                    Usar plano da IA para agendar vídeos
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1929,6 +1936,34 @@
                         alert("Erro ao carregar status de monetização.");
                     } finally {
                         this.monetizationLoading = false;
+                    }
+                },
+                applyAutoInsightsToSchedule() {
+                    if (!this.autoInsights || !this.autoInsights.ai_insights || !this.autoInsights.ai_insights.weekly_plan) {
+                        alert("Nenhum plano semanal da IA disponível ainda. Rode a Auto Análise primeiro.");
+                        return;
+                    }
+                    try {
+                        const plan = this.autoInsights.ai_insights.weekly_plan;
+                        this.schedulePlan = (plan || []).map(day => ({
+                            date: day.date || '',
+                            theme_of_day: day.theme || day.day || 'Geral',
+                            videos: (day.videos || []).map(v => ({
+                                title: v.title,
+                                concept: v.concept,
+                                time: v.time || '12:00',
+                                type: v.type || 'video',
+                                auto_post: v.auto_post !== undefined ? v.auto_post : true
+                            }))
+                        }));
+                        if (plan.length) {
+                            this.scheduleTheme = plan[0].theme || plan[0].day || this.scheduleTheme;
+                        }
+                        this.youtubeSubTab = 'production';
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                    } catch (e) {
+                        console.error(e);
+                        alert("Não foi possível aplicar o plano da IA à agenda.");
                     }
                 },
                 translateStatus(status) {
