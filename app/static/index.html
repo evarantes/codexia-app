@@ -48,6 +48,9 @@
                 <a href="#" @click="currentTab = 'youtube'; fetchYoutubeStats()" :class="{'bg-indigo-700': currentTab === 'youtube'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fab fa-youtube"></i> YouTube Auto
                 </a>
+                <a href="#" @click="currentTab = 'hotmart'; fetchBooks()" :class="{'bg-indigo-700': currentTab === 'hotmart'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-shopping-cart"></i> Hotmart Auto
+                </a>
                 <a href="#" @click="currentTab = 'book_factory'" :class="{'bg-indigo-700': currentTab === 'book_factory'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-industry"></i> Fábrica de Livros
                 </a>
@@ -819,6 +822,155 @@
                 </div>
             </div>
 
+            <!-- Hotmart Auto Tab -->
+            <div v-if="currentTab === 'hotmart'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Hotmart Auto</h1>
+                <p class="text-gray-600 mb-6">Publique seus livros automaticamente na Hotmart com configurações otimizadas pela IA.</p>
+                
+                <!-- Connection Status -->
+                <div class="bg-white rounded-lg shadow p-6 mb-6">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-4">
+                            <div :class="`w-4 h-4 rounded-full ${hotmartConnected ? 'bg-green-500' : 'bg-red-500'}`"></div>
+                            <div>
+                                <h2 class="text-xl font-bold">{{ hotmartConnected ? 'Conectado à Hotmart' : 'Desconectado' }}</h2>
+                                <p class="text-sm text-gray-500">{{ hotmartConnected ? 'Pronto para publicar produtos' : 'Configure suas credenciais em Configurações' }}</p>
+                            </div>
+                        </div>
+                        <button @click="testHotmartConnection" :disabled="hotmartTesting" class="bg-orange-600 text-white px-4 py-2 rounded hover:bg-orange-700 flex items-center gap-2">
+                            <i v-if="hotmartTesting" class="fas fa-spinner fa-spin"></i>
+                            <span v-else><i class="fas fa-plug mr-2"></i> Testar Conexão</span>
+                        </button>
+                    </div>
+                    <p v-if="hotmartTestResult" :class="hotmartTestResult.success ? 'text-green-600 mt-4 text-sm' : 'text-red-600 mt-4 text-sm'">
+                        {{ hotmartTestResult.message }}
+                    </p>
+                </div>
+
+                <!-- Book Selection -->
+                <div class="bg-white rounded-lg shadow p-6 mb-6">
+                    <h2 class="text-xl font-bold mb-4">1. Selecione o Livro</h2>
+                    <select v-model="selectedHotmartBook" @change="onHotmartBookSelected" class="w-full border p-3 rounded text-lg">
+                        <option :value="null">-- Selecione um livro para publicar --</option>
+                        <option v-for="book in books" :key="book.id" :value="book.id">
+                            {{ book.title }} - {{ book.author }} (R$ {{ book.price || 0 }})
+                        </option>
+                    </select>
+                    <p v-if="!selectedHotmartBook" class="text-gray-500 text-sm mt-2">
+                        <i class="fas fa-info-circle"></i> Selecione um livro da lista "Meus Livros" para começar.
+                    </p>
+                </div>
+
+                <!-- AI Analysis & Suggestions -->
+                <div v-if="selectedHotmartBook && hotmartBookData" class="bg-white rounded-lg shadow p-6 mb-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold">2. Análise e Sugestões da IA</h2>
+                        <button @click="analyzeBookForHotmart" :disabled="hotmartAnalyzing" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 flex items-center gap-2 text-sm">
+                            <i v-if="hotmartAnalyzing" class="fas fa-spinner fa-spin"></i>
+                            <span v-else><i class="fas fa-magic mr-2"></i> Analisar com IA</span>
+                        </button>
+                    </div>
+                    
+                    <div v-if="hotmartAnalyzing" class="text-center py-8 text-gray-500">
+                        <i class="fas fa-spinner fa-spin text-3xl mb-2"></i>
+                        <p>A IA está analisando o livro e gerando sugestões otimizadas...</p>
+                    </div>
+                    
+                    <div v-else-if="hotmartSuggestions" class="space-y-6">
+                        <!-- Book Info -->
+                        <div class="bg-gray-50 p-4 rounded border">
+                            <h3 class="font-bold mb-2">Informações do Livro</h3>
+                            <p><strong>Título:</strong> {{ hotmartBookData.title }}</p>
+                            <p><strong>Autor:</strong> {{ hotmartBookData.author }}</p>
+                            <p><strong>Preço Atual:</strong> R$ {{ hotmartBookData.price || 0 }}</p>
+                        </div>
+
+                        <!-- AI Suggestions Form -->
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block font-bold mb-2">Título Otimizado (sugerido pela IA)</label>
+                                <input v-model="hotmartProductForm.name" class="w-full border p-3 rounded text-lg" placeholder="Título do produto">
+                                <p class="text-xs text-gray-500 mt-1">Sugestão: {{ hotmartSuggestions.optimized_title }}</p>
+                            </div>
+
+                            <div>
+                                <label class="block font-bold mb-2">Subtítulo</label>
+                                <input v-model="hotmartProductForm.subtitle" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.subtitle">
+                            </div>
+
+                            <div>
+                                <label class="block font-bold mb-2">Descrição Completa</label>
+                                <textarea v-model="hotmartProductForm.description" rows="6" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.description"></textarea>
+                                <p class="text-xs text-gray-500 mt-1">Sugestão da IA: {{ hotmartSuggestions.description.substring(0, 100) }}...</p>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block font-bold mb-2">Preço (R$)</label>
+                                    <input v-model.number="hotmartProductForm.price" type="number" step="0.01" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.suggested_price">
+                                    <p class="text-xs text-gray-500 mt-1">Sugestão: R$ {{ hotmartSuggestions.suggested_price }}</p>
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Categoria</label>
+                                    <input v-model="hotmartProductForm.category" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.category">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block font-bold mb-2">Tags (separadas por vírgula)</label>
+                                <input v-model="hotmartProductForm.tags" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.tags.join(', ')">
+                            </div>
+
+                            <!-- Key Benefits -->
+                            <div v-if="hotmartSuggestions.key_benefits && hotmartSuggestions.key_benefits.length" class="bg-blue-50 p-4 rounded border border-blue-200">
+                                <h3 class="font-bold mb-2 text-blue-800">Principais Benefícios (sugeridos pela IA)</h3>
+                                <ul class="list-disc pl-5 space-y-1 text-sm">
+                                    <li v-for="(benefit, idx) in hotmartSuggestions.key_benefits" :key="idx">{{ benefit }}</li>
+                                </ul>
+                            </div>
+
+                            <!-- Sales Copy -->
+                            <div v-if="hotmartSuggestions.sales_copy" class="bg-green-50 p-4 rounded border border-green-200">
+                                <h3 class="font-bold mb-2 text-green-800">Copy de Vendas (sugestão da IA)</h3>
+                                <p class="text-sm whitespace-pre-wrap">{{ hotmartSuggestions.sales_copy }}</p>
+                            </div>
+
+                            <!-- Marketing Notes -->
+                            <div v-if="hotmartSuggestions.marketing_notes" class="bg-yellow-50 p-4 rounded border border-yellow-200">
+                                <h3 class="font-bold mb-2 text-yellow-800">Observações de Marketing</h3>
+                                <p class="text-sm">{{ hotmartSuggestions.marketing_notes }}</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div v-else class="text-center py-8 text-gray-500">
+                        <i class="fas fa-magic text-3xl mb-2"></i>
+                        <p>Clique em "Analisar com IA" para gerar sugestões otimizadas de publicação.</p>
+                    </div>
+                </div>
+
+                <!-- Publish Button -->
+                <div v-if="selectedHotmartBook && hotmartSuggestions" class="bg-white rounded-lg shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">3. Publicar na Hotmart</h2>
+                    <div class="bg-orange-50 border border-orange-200 rounded p-4 mb-4">
+                        <p class="text-sm text-orange-800">
+                            <i class="fas fa-exclamation-triangle mr-2"></i>
+                            <strong>Confirme as informações acima</strong> antes de publicar. Após a publicação, o produto estará disponível na Hotmart.
+                        </p>
+                    </div>
+                    <button @click="publishToHotmart" :disabled="hotmartPublishing" class="w-full bg-orange-600 text-white py-4 rounded hover:bg-orange-700 flex justify-center items-center gap-2 text-lg font-bold">
+                        <i v-if="hotmartPublishing" class="fas fa-spinner fa-spin"></i>
+                        <span v-else><i class="fas fa-rocket mr-2"></i> Publicar na Hotmart</span>
+                    </button>
+                    <p v-if="hotmartPublishResult" :class="hotmartPublishResult.success ? 'text-green-600 mt-4 text-center font-bold' : 'text-red-600 mt-4 text-center'">
+                        {{ hotmartPublishResult.message }}
+                        <span v-if="hotmartPublishResult.payment_link" class="block mt-2">
+                            <a :href="hotmartPublishResult.payment_link" target="_blank" class="text-blue-600 underline">Ver produto na Hotmart</a>
+                        </span>
+                    </p>
+                </div>
+            </div>
+
             <!-- Book Factory Tab -->
             <div v-if="currentTab === 'book_factory'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Fábrica de Livros</h1>
@@ -1200,6 +1352,26 @@
                         <input v-model="settings.facebook_access_token" type="password" class="w-full border p-2 rounded">
                     </div>
                     
+                    <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4">Integração Hotmart</h3>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Hotmart Client ID</label>
+                            <input v-model="settings.hotmart_client_id" class="w-full border p-2 rounded" placeholder="Seu Client ID da Hotmart">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://developers.hotmart.com/" target="_blank" class="text-blue-600 underline">Hotmart Developers</a></p>
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Hotmart Client Secret</label>
+                            <input v-model="settings.hotmart_client_secret" type="password" class="w-full border p-2 rounded" placeholder="Seu Client Secret da Hotmart">
+                        </div>
+                        <button @click="testHotmartConnection" :disabled="hotmartTesting" class="bg-orange-600 text-white px-4 py-2 rounded hover:bg-orange-700 text-sm">
+                            <i v-if="hotmartTesting" class="fas fa-spinner fa-spin mr-2"></i>
+                            <span v-else><i class="fas fa-plug mr-2"></i> Testar Conexão</span>
+                        </button>
+                        <p v-if="hotmartTestResult" :class="hotmartTestResult.success ? 'text-green-600 mt-2 text-sm' : 'text-red-600 mt-2 text-sm'">
+                            {{ hotmartTestResult.message }}
+                        </p>
+                    </div>
+                    
                     <div class="border-t pt-4 mt-6">
                         <h3 class="text-lg font-bold mb-4">Diagnóstico do Sistema</h3>
                         <button @click="runDiagnostics" :disabled="diagnosticLoading" class="bg-gray-800 text-white px-6 py-2 rounded hover:bg-gray-900 w-full mb-2">
@@ -1471,8 +1643,29 @@
                         youtube_refresh_token: '',
                         facebook_page_id: '',
                         facebook_access_token: '',
-                        mercadopago_access_token: ''
+                        mercadopago_access_token: '',
+                        hotmart_client_id: '',
+                        hotmart_client_secret: ''
                     },
+                    
+                    // Hotmart Auto
+                    hotmartConnected: false,
+                    hotmartTesting: false,
+                    hotmartTestResult: null,
+                    selectedHotmartBook: null,
+                    hotmartBookData: null,
+                    hotmartAnalyzing: false,
+                    hotmartSuggestions: null,
+                    hotmartProductForm: {
+                        name: '',
+                        subtitle: '',
+                        description: '',
+                        price: null,
+                        category: '',
+                        tags: ''
+                    },
+                    hotmartPublishing: false,
+                    hotmartPublishResult: null,
                     saveMessage: '',
 
                     // Auth
@@ -2156,6 +2349,136 @@
                         }
                     } catch (e) { 
                         alert('Erro ao salvar'); 
+                    }
+                },
+                // Hotmart Methods
+                async testHotmartConnection() {
+                    this.hotmartTesting = true;
+                    this.hotmartTestResult = null;
+                    try {
+                        const res = await this.authFetch('/hotmart/test-connection');
+                        const data = await res.json();
+                        this.hotmartTestResult = data;
+                        this.hotmartConnected = data.success;
+                    } catch (e) {
+                        this.hotmartTestResult = { success: false, message: "Erro ao testar conexão: " + e };
+                        this.hotmartConnected = false;
+                    } finally {
+                        this.hotmartTesting = false;
+                    }
+                },
+                onHotmartBookSelected() {
+                    if (this.selectedHotmartBook) {
+                        const book = this.books.find(b => b.id === this.selectedHotmartBook);
+                        if (book) {
+                            this.hotmartBookData = {
+                                id: book.id,
+                                title: book.title,
+                                author: book.author,
+                                synopsis: book.synopsis,
+                                price: book.price
+                            };
+                            // Reset form
+                            this.hotmartSuggestions = null;
+                            this.hotmartProductForm = {
+                                name: '',
+                                subtitle: '',
+                                description: '',
+                                price: null,
+                                category: '',
+                                tags: ''
+                            };
+                        }
+                    } else {
+                        this.hotmartBookData = null;
+                        this.hotmartSuggestions = null;
+                    }
+                },
+                async analyzeBookForHotmart() {
+                    if (!this.selectedHotmartBook) {
+                        alert("Selecione um livro primeiro.");
+                        return;
+                    }
+                    this.hotmartAnalyzing = true;
+                    try {
+                        const res = await this.authFetch(`/hotmart/analyze-book/${this.selectedHotmartBook}`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.hotmartSuggestions = data.suggestions;
+                            // Preenche o formulário com as sugestões
+                            this.hotmartProductForm = {
+                                name: data.suggestions.optimized_title || this.hotmartBookData.title,
+                                subtitle: data.suggestions.subtitle || '',
+                                description: data.suggestions.description || this.hotmartBookData.synopsis || '',
+                                price: data.suggestions.suggested_price || this.hotmartBookData.price || 0,
+                                category: data.suggestions.category || '',
+                                tags: Array.isArray(data.suggestions.tags) ? data.suggestions.tags.join(', ') : ''
+                            };
+                        } else {
+                            const error = await res.json();
+                            alert("Erro ao analisar livro: " + (error.detail || "Erro desconhecido"));
+                        }
+                    } catch (e) {
+                        alert("Erro ao analisar livro: " + e);
+                    } finally {
+                        this.hotmartAnalyzing = false;
+                    }
+                },
+                async publishToHotmart() {
+                    if (!this.selectedHotmartBook) {
+                        alert("Selecione um livro primeiro.");
+                        return;
+                    }
+                    if (!this.hotmartProductForm.name || !this.hotmartProductForm.description) {
+                        alert("Preencha pelo menos o título e a descrição.");
+                        return;
+                    }
+                    if (!confirm("Tem certeza que deseja publicar este livro na Hotmart?")) {
+                        return;
+                    }
+                    this.hotmartPublishing = true;
+                    this.hotmartPublishResult = null;
+                    try {
+                        const tagsArray = this.hotmartProductForm.tags ? 
+                            this.hotmartProductForm.tags.split(',').map(t => t.trim()).filter(t => t) : [];
+                        
+                        const res = await this.authFetch('/hotmart/publish', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                book_id: this.selectedHotmartBook,
+                                name: this.hotmartProductForm.name,
+                                description: this.hotmartProductForm.description,
+                                price: this.hotmartProductForm.price,
+                                category: this.hotmartProductForm.category || null,
+                                tags: tagsArray.length > 0 ? tagsArray : null,
+                                custom_fields: {
+                                    subtitle: this.hotmartProductForm.subtitle || null
+                                }
+                            })
+                        });
+                        const data = await res.json();
+                        this.hotmartPublishResult = data;
+                        if (data.success) {
+                            // Atualiza lista de livros para pegar o novo payment_link
+                            await this.fetchBooks();
+                            // Limpa formulário
+                            this.selectedHotmartBook = null;
+                            this.hotmartBookData = null;
+                            this.hotmartSuggestions = null;
+                            this.hotmartProductForm = {
+                                name: '',
+                                subtitle: '',
+                                description: '',
+                                price: null,
+                                category: '',
+                                tags: ''
+                            };
+                        }
+                    } catch (e) {
+                        this.hotmartPublishResult = { success: false, message: "Erro ao publicar: " + e };
+                    } finally {
+                        this.hotmartPublishing = false;
                     }
                 },
                 async generateAd() {

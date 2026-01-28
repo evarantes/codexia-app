@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.database import engine, Base, get_db, SessionLocal
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart
 from dotenv import load_dotenv
 import os
 from contextlib import asynccontextmanager
@@ -108,6 +108,20 @@ def run_migrations(engine):
                     if "ai_provider" not in settings_columns:
                         print("Migrating: Adding ai_provider to settings...")
                         conn.execute(text("ALTER TABLE settings ADD COLUMN ai_provider TEXT DEFAULT 'openai'"))
+                    
+                    # Hotmart Integration
+                    if "hotmart_client_id" not in settings_columns:
+                        print("Migrating: Adding hotmart_client_id to settings...")
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_client_id TEXT"))
+                    if "hotmart_client_secret" not in settings_columns:
+                        print("Migrating: Adding hotmart_client_secret to settings...")
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_client_secret TEXT"))
+                    if "hotmart_access_token" not in settings_columns:
+                        print("Migrating: Adding hotmart_access_token to settings...")
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_access_token TEXT"))
+                    if "hotmart_token_expires_at" not in settings_columns:
+                        print("Migrating: Adding hotmart_token_expires_at to settings...")
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_token_expires_at TIMESTAMP"))
                     conn.commit()
 
 
@@ -205,6 +219,7 @@ app.include_router(youtube.router)
 app.include_router(webhook.router)
 app.include_router(diagnostics.router)
 app.include_router(book_factory.router)
+app.include_router(hotmart.router)
 
 @app.get("/success")
 def payment_success():

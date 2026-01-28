@@ -1064,6 +1064,93 @@ class AIContentGenerator:
                 ]
             }
 
+    def generate_hotmart_suggestions(self, book_data):
+        """
+        Analisa um livro e gera sugestões otimizadas para publicação na Hotmart:
+        - Título otimizado para vendas
+        - Descrição persuasiva
+        - Preço sugerido baseado no mercado
+        - Categoria adequada
+        - Tags relevantes
+        - Copy de vendas
+        """
+        self._load_config()
+        import json
+        
+        prompt = f"""
+        Você é um especialista em marketing digital e vendas de produtos digitais na Hotmart.
+        
+        LIVRO PARA ANÁLISE:
+        - Título: {book_data.get('title', 'Sem título')}
+        - Autor: {book_data.get('author', 'Desconhecido')}
+        - Sinopse: {book_data.get('synopsis', 'Sem sinopse')}
+        - Preço Atual: R$ {book_data.get('price', 0)}
+        - Capítulos: {', '.join(book_data.get('chapters', [])) if book_data.get('chapters') else 'Não informado'}
+        
+        SUA MISSÃO:
+        1. Analise o conteúdo do livro e sugira um TÍTULO otimizado para vendas (pode ser diferente do original, mas mantendo a essência).
+        2. Crie uma DESCRIÇÃO persuasiva e otimizada para conversão (máximo 2000 caracteres).
+        3. Sugira um PREÇO competitivo baseado no mercado brasileiro de produtos digitais similares.
+        4. Identifique a CATEGORIA mais adequada na Hotmart (ex: Educação, Negócios, Desenvolvimento Pessoal, etc.).
+        5. Liste 5-10 TAGS relevantes para SEO e descoberta.
+        6. Crie um COPY DE VENDAS curto (2-3 parágrafos) destacando os principais benefícios.
+        7. Sugira um SUBTÍTULO chamativo.
+        
+        Retorne APENAS um JSON válido:
+        {{
+            "optimized_title": "Título otimizado para vendas",
+            "subtitle": "Subtítulo chamativo",
+            "description": "Descrição completa e persuasiva do produto...",
+            "sales_copy": "Copy de vendas destacando benefícios...",
+            "suggested_price": 97.00,
+            "category": "Educação",
+            "tags": ["tag1", "tag2", "tag3"],
+            "key_benefits": [
+                "Benefício 1",
+                "Benefício 2",
+                "Benefício 3"
+            ],
+            "target_audience": "Descrição do público-alvo",
+            "marketing_notes": "Observações importantes para marketing"
+        }}
+        """
+        
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um especialista em marketing digital e vendas de produtos digitais na Hotmart.",
+                json_mode=True
+            )
+            
+            if not content:
+                raise Exception("Resposta vazia da IA")
+                
+            clean_content = content.replace("```json", "").replace("```", "").strip()
+            suggestions = json.loads(clean_content)
+            
+            return suggestions
+            
+        except Exception as e:
+            print(f"Erro ao gerar sugestões Hotmart: {e}")
+            
+            # Fallback com dados básicos
+            return {
+                "optimized_title": book_data.get('title', 'Sem título'),
+                "subtitle": f"Por {book_data.get('author', 'Autor')}",
+                "description": book_data.get('synopsis', 'Sem descrição disponível.'),
+                "sales_copy": f"Descubra {book_data.get('title', 'este livro')} e transforme sua vida.",
+                "suggested_price": book_data.get('price', 97.00),
+                "category": "Educação",
+                "tags": ["livro", "digital", "educação"],
+                "key_benefits": [
+                    "Conteúdo de qualidade",
+                    "Acesso imediato",
+                    "Suporte ao cliente"
+                ],
+                "target_audience": "Pessoas interessadas em desenvolvimento pessoal",
+                "marketing_notes": "Configure as sugestões manualmente se necessário."
+            }
+
     def _build_prompt(self, title, synopsis, style):
         if style == "cliffhanger":
             return f"Crie um anúncio curto e misterioso para o livro '{title}'. Sinopse: {synopsis}. Termine com um gancho forte."

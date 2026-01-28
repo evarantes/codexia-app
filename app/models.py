@@ -63,6 +63,11 @@ class Settings(Base):
     youtube_client_id = Column(String, nullable=True)
     youtube_client_secret = Column(String, nullable=True)
     youtube_refresh_token = Column(String, nullable=True)
+    # Hotmart Integration
+    hotmart_client_id = Column(String, nullable=True)
+    hotmart_client_secret = Column(String, nullable=True)
+    hotmart_access_token = Column(String, nullable=True)
+    hotmart_token_expires_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
 
 class Customer(Base):
