@@ -202,8 +202,8 @@
                             <div class="flex justify-between items-center mt-4">
                                 <span class="text-green-600 font-bold">R$ {{ book.price }}</span>
                                 <div class="flex gap-2 items-center">
-                                    <!-- Download do livro, se houver arquivo -->
-                                    <a v-if="book.file_path" :href="book.file_path" target="_blank" class="text-indigo-600 hover:text-indigo-800" title="Baixar livro">
+                                    <!-- Download do livro (regenera se arquivo não existir mais no disco) -->
+                                    <a :href="`/books/${book.id}/download`" target="_blank" class="text-indigo-600 hover:text-indigo-800" title="Baixar livro">
                                         <i class="fas fa-download"></i>
                                     </a>
                                     <span v-else class="text-gray-300 cursor-not-allowed" title="Livro ainda não possui arquivo para download">

@@ -7,6 +7,9 @@ import shutil
 import os
 import uuid
 from pathlib import Path
+import json
+from fastapi.responses import FileResponse
+from app.services.book_assembler import BookAssembler
 
 import base64
 
@@ -153,3 +156,66 @@ def delete_book(book_id: int, db: Session = Depends(get_db)):
     db.delete(db_book)
     db.commit()
     return {"message": "Book deleted successfully"}
+
+@router.get("/{book_id}/download")
+def download_book(book_id: int, db: Session = Depends(get_db)):
+    """
+    Faz o download do PDF do livro.
+    - Se o arquivo existir no disco, retorna direto.
+    - Se não existir (ex: Render reiniciou), tenta REGERAR o PDF a partir do conteúdo salvo em full_text.
+    """
+    db_book = db.query(Book).filter(Book.id == book_id).first()
+    if not db_book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    # Caminho atual salvo no banco (ex: /static/generated/arquivo.pdf ou /static/books/arquivo.pdf)
+    rel_path = (db_book.file_path or "").lstrip("/")
+    abs_path = os.path.join("app", rel_path) if rel_path else None
+
+    # Se o arquivo ainda existir, devolve direto
+    if abs_path and os.path.exists(abs_path):
+        filename = os.path.basename(abs_path)
+        return FileResponse(abs_path, media_type="application/pdf", filename=filename)
+
+    # Se não existe arquivo, mas temos conteúdo salvo, tenta regerar
+    if not db_book.full_text:
+        raise HTTPException(status_code=404, detail="Book file not found and no stored content to regenerate.")
+
+    try:
+        sections = json.loads(db_book.full_text)
+    except Exception:
+        sections = {}
+
+    # Resolve caminho da capa, se existir
+    cover_image = None
+    if db_book.cover_image_url:
+        cover_rel = db_book.cover_image_url.lstrip("/")
+        cover_image = os.path.join("app", cover_rel) if cover_rel else None
+
+    # Garante diretório de saída
+    output_dir = os.path.join("app", "static", "generated")
+    os.makedirs(output_dir, exist_ok=True)
+
+    safe_title = f"book_{db_book.id}"
+    output_path = os.path.join(output_dir, f"{safe_title}.pdf")
+
+    assembler = BookAssembler(output_path=output_path)
+    book_data = {
+        "metadata": {
+            "title": db_book.title,
+            "author": db_book.author,
+        },
+        "cover_image": cover_image,
+        "sections": sections
+    }
+    try:
+        final_path = assembler.create_book(book_data)
+    except Exception as e:
+        print(f"Erro ao regerar livro {book_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao regerar o PDF do livro.")
+
+    # Atualiza caminho salvo no banco para futuras chamadas
+    db_book.file_path = f"/static/generated/{os.path.basename(final_path)}"
+    db.commit()
+
+    return FileResponse(final_path, media_type="application/pdf", filename=os.path.basename(final_path))
