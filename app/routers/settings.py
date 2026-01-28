@@ -22,6 +22,8 @@ class SettingsUpdate(BaseModel):
     youtube_client_id: Optional[str] = None
     youtube_client_secret: Optional[str] = None
     youtube_refresh_token: Optional[str] = None
+    hotmart_client_id: Optional[str] = None
+    hotmart_client_secret: Optional[str] = None
 
 @router.get("/")
 def get_settings(db: Session = Depends(get_db)):
@@ -69,6 +71,10 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         settings.youtube_client_secret = settings_update.youtube_client_secret
     if settings_update.youtube_refresh_token is not None:
         settings.youtube_refresh_token = settings_update.youtube_refresh_token
+    if settings_update.hotmart_client_id is not None:
+        settings.hotmart_client_id = settings_update.hotmart_client_id
+    if settings_update.hotmart_client_secret is not None:
+        settings.hotmart_client_secret = settings_update.hotmart_client_secret
     
     db.commit()
     db.refresh(settings)

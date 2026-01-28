@@ -27,7 +27,17 @@ class HotmartService:
         settings = self._get_settings()
         if not settings:
             return None, None
-        return settings.hotmart_client_id, settings.hotmart_client_secret
+        
+        client_id = settings.hotmart_client_id
+        client_secret = settings.hotmart_client_secret
+        
+        # Verifica se são strings vazias ou None
+        if not client_id or not client_id.strip():
+            return None, None
+        if not client_secret or not client_secret.strip():
+            return None, None
+            
+        return client_id.strip(), client_secret.strip()
     
     def authenticate(self):
         """
