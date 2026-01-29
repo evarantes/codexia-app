@@ -526,6 +526,61 @@ class VideoGenerator:
             # Force GC
             gc.collect()
 
+    def create_music_video(self, music_path, scenes, title="Música", aspect_ratio="9:16"):
+        """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
+        if not os.path.exists(music_path):
+            raise FileNotFoundError(f"Arquivo de música não encontrado: {music_path}")
+        video_size = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
+        clips = []
+        try:
+            audio_clip = AudioFileClip(music_path)
+            total_duration = audio_clip.duration
+            n = max(1, len(scenes))
+            segment_duration = total_duration / n
+            for i, scene in enumerate(scenes):
+                text = scene.get("text", "") if isinstance(scene, dict) else str(scene)
+                image_prompt = scene.get("image_prompt", "") if isinstance(scene, dict) else ""
+                bg_image_path = None
+                if self.ai_service and image_prompt:
+                    try:
+                        prompt_suffix = f". Aspect ratio {aspect_ratio}."
+                        image_url = self.ai_service.generate_image(image_prompt + prompt_suffix)
+                        if image_url:
+                            bg_image_path = self.download_image(image_url)
+                    except Exception as e:
+                        print(f"Erro ao gerar imagem cena {i+1}: {e}")
+                bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
+                bg_color = bg_colors[i % len(bg_colors)]
+                img = self.create_text_image(self._clean_text(text), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                clip = ImageClip(img).with_duration(segment_duration)
+                clips.append(clip)
+                if bg_image_path and "temp_" in bg_image_path:
+                    try:
+                        os.remove(bg_image_path)
+                    except Exception:
+                        pass
+                gc.collect()
+            final = concatenate_videoclips(clips)
+            final = final.with_audio(audio_clip)
+            filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
+            output_path = os.path.join(self.output_dir, filename)
+            final.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
+            for c in clips:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            final.close()
+            audio_clip.close()
+            return {"video_url": f"/static/videos/{filename}"}
+        except Exception as e:
+            for c in clips:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            raise e
+
     def generate_simple_video(self, title, script_lines, output_filename="video.mp4"):
         # Mantendo compatibilidade com código antigo se necessário
         plan = {

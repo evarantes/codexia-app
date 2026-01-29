@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.database import engine, Base, get_db, SessionLocal
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music
 from dotenv import load_dotenv
 import os
 from contextlib import asynccontextmanager
@@ -220,6 +220,7 @@ app.include_router(webhook.router)
 app.include_router(diagnostics.router)
 app.include_router(book_factory.router)
 app.include_router(hotmart.router)
+app.include_router(music.router)
 
 @app.get("/success")
 def payment_success():

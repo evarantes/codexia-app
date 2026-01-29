@@ -56,8 +56,25 @@ def list_videos():
 
 @router.get("/auth_url")
 def get_auth_url():
-    service = YouTubeService()
-    return {"auth_url": service.get_auth_url()}
+    try:
+        service = YouTubeService()
+        auth_url = service.get_auth_url()
+        if not auth_url:
+            raise HTTPException(
+                status_code=503,
+                detail="Não foi possível gerar a URL de autorização. Verifique se o arquivo client_secret.json está configurado (Google Cloud Console) ou se as credenciais do YouTube estão em Configurações."
+            )
+        return {"auth_url": auth_url}
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Arquivo client_secret.json não encontrado. Faça o download no Google Cloud Console (APIs & Services > Credentials) e coloque na raiz do projeto, ou configure Client ID e Client Secret em Configurações."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Erro ao conectar ao YouTube: {str(e)}"
+        )
 
 @router.post("/auth/exchange")
 def exchange_code(data: Dict[str, str]):

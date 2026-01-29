@@ -25,22 +25,26 @@ class YouTubeService:
         """Carrega credenciais do banco ou arquivo"""
         
         # 1. Tentar carregar do Banco de Dados
-        db = SessionLocal()
-        settings = db.query(Settings).first()
-        db.close()
+        try:
+            db = SessionLocal()
+            settings = db.query(Settings).first()
+            db.close()
 
-        if settings and settings.youtube_refresh_token and settings.youtube_client_id and settings.youtube_client_secret:
-            try:
-                info = {
-                    "client_id": settings.youtube_client_id,
-                    "client_secret": settings.youtube_client_secret,
-                    "refresh_token": settings.youtube_refresh_token,
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                }
-                # Não passar SCOPES aqui para evitar erro de invalid_scope se o token tiver escopos diferentes
-                self.credentials = Credentials.from_authorized_user_info(info, scopes=None)
-            except Exception as e:
-                print(f"Erro ao carregar credenciais do YouTube do banco: {e}")
+            if settings and settings.youtube_refresh_token and settings.youtube_client_id and settings.youtube_client_secret:
+                try:
+                    info = {
+                        "client_id": settings.youtube_client_id,
+                        "client_secret": settings.youtube_client_secret,
+                        "refresh_token": settings.youtube_refresh_token,
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                    }
+                    # Não passar SCOPES aqui para evitar erro de invalid_scope se o token tiver escopos diferentes
+                    self.credentials = Credentials.from_authorized_user_info(info, scopes=None)
+                except Exception as e:
+                    print(f"Erro ao carregar credenciais do YouTube do banco: {e}")
+        except Exception as e:
+            print(f"Erro ao acessar banco de dados para credenciais: {e}")
+            settings = None
 
         # 2. Fallback para arquivo local (Desenvolvimento)
         if not self.credentials and os.path.exists('token.json'):
@@ -72,10 +76,31 @@ class YouTubeService:
 
     def get_auth_url(self):
         """Gera URL para o usuário autorizar (Fluxo simplificado)"""
-        # Nota: Em produção, isso seria um fluxo Web Server, não InstalledApp
-        flow = InstalledAppFlow.from_client_secrets_file(
-            'client_secret.json', SCOPES) # Requer arquivo client_secret.json do Google Cloud Console
-        # Use urn:ietf:wg:oauth:2.0:oob for manual copy-paste
+        # 1. Tentar credenciais do banco (Client ID + Secret) para montar client_config
+        db = SessionLocal()
+        settings = db.query(Settings).first()
+        db.close()
+        if settings and settings.youtube_client_id and settings.youtube_client_secret:
+            try:
+                client_config = {
+                    "installed": {
+                        "client_id": settings.youtube_client_id.strip(),
+                        "client_secret": settings.youtube_client_secret.strip(),
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                        "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"]
+                    }
+                }
+                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+                flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+                auth_url, _ = flow.authorization_url(prompt='consent')
+                return auth_url
+            except Exception as e:
+                raise RuntimeError(f"Credenciais do YouTube no banco inválidas: {e}")
+        # 2. Fallback: arquivo client_secret.json (desenvolvimento)
+        if not os.path.exists('client_secret.json'):
+            raise FileNotFoundError("client_secret.json não encontrado e credenciais do YouTube não configuradas em Configurações.")
+        flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
         flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
         auth_url, _ = flow.authorization_url(prompt='consent')
         return auth_url

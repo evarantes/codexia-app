@@ -45,6 +45,9 @@
                 <a href="#" @click="currentTab = 'video'" :class="{'bg-indigo-700': currentTab === 'video'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-video"></i> Criar Vídeos
                 </a>
+                <a href="#" @click="currentTab = 'music_clip'" :class="{'bg-indigo-700': currentTab === 'music_clip'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-music"></i> Música e Clipe
+                </a>
                 <a href="#" @click="currentTab = 'youtube'; fetchYoutubeStats()" :class="{'bg-indigo-700': currentTab === 'youtube'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fab fa-youtube"></i> YouTube Auto
                 </a>
@@ -345,6 +348,66 @@
                         <div v-if="generatedVideoScript" class="mt-4 p-4 bg-gray-50 rounded border max-h-64 overflow-y-auto">
                              <h3 class="font-bold text-sm mb-2">Roteiro Gerado:</h3>
                              <pre class="text-xs whitespace-pre-wrap">{{ JSON.stringify(generatedVideoScript, null, 2) }}</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Música e Clipe Tab -->
+            <div v-if="currentTab === 'music_clip'" class="space-y-6">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Música e Clipe</h1>
+                <p class="text-gray-600 mb-6">Gere música instrumental a partir da letra e depois um clipe (vídeo) com cenas baseadas na letra.</p>
+                
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-xl font-bold mb-4">1. Letra e configuração</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block font-bold mb-2">Título da música</label>
+                                <input v-model="musicTitle" class="w-full border p-2 rounded" placeholder="Ex: Minha Canção">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Gênero / Estilo (opcional)</label>
+                                <input v-model="musicGenre" class="w-full border p-2 rounded" placeholder="Ex: pop, ballad, rock, eletrônica">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Letra da música</label>
+                                <textarea v-model="musicLyrics" class="w-full border p-3 rounded" rows="12" placeholder="Cole ou digite a letra aqui...&#10;&#10;Verso 1&#10;Linha 1&#10;Linha 2&#10;&#10;Refrão&#10;..."></textarea>
+                            </div>
+                            <div class="flex gap-3">
+                                <button @click="generateMusic" :disabled="musicLoading || !musicLyrics.trim()" class="flex-1 bg-purple-600 text-white py-2 rounded hover:bg-purple-700 flex items-center justify-center gap-2">
+                                    <i v-if="musicLoading" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-music"></i>
+                                    Gerar Música
+                                </button>
+                                <button @click="generateClip" :disabled="clipLoading || !musicLyrics.trim()" class="flex-1 bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 flex items-center justify-center gap-2">
+                                    <i v-if="clipLoading" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-video"></i>
+                                    Gerar Clipe
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-500">A música é instrumental (sem voz cantada). O clipe usa a música gerada e cria cenas visuais a partir da letra.</p>
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow p-6 space-y-6">
+                        <div>
+                            <h2 class="text-xl font-bold mb-4">2. Música gerada</h2>
+                            <div v-if="musicUrl" class="bg-gray-50 p-4 rounded border">
+                                <audio :src="musicUrl" controls class="w-full"></audio>
+                                <p class="text-sm text-gray-500 mt-2">Use "Gerar Clipe" para criar o vídeo com esta música.</p>
+                            </div>
+                            <div v-else class="h-24 bg-gray-100 rounded flex items-center justify-center text-gray-400">
+                                A música aparecerá aqui após gerar
+                            </div>
+                        </div>
+                        <div>
+                            <h2 class="text-xl font-bold mb-4">3. Clipe (vídeo)</h2>
+                            <div v-if="clipVideoUrl" class="aspect-[9/16] max-h-[480px] bg-black rounded flex items-center justify-center mx-auto">
+                                <video :src="clipVideoUrl" controls class="w-full h-full object-contain"></video>
+                            </div>
+                            <div v-else class="h-48 bg-gray-100 rounded flex items-center justify-center text-gray-400">
+                                O clipe aparecerá aqui após gerar
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1701,6 +1764,16 @@
                     videoLoading: false,
                     generatedVideoUrl: null,
 
+                    // Música e Clipe
+                    musicLyrics: '',
+                    musicTitle: 'Música',
+                    musicGenre: '',
+                    musicLoading: false,
+                    musicUrl: null,
+                    musicFilename: null,
+                    clipLoading: false,
+                    clipVideoUrl: null,
+
                     // Books
                     showAddBookModal: false,
                     isEditing: false,
@@ -1983,14 +2056,22 @@
                 async connectYoutube() {
                     try {
                         const res = await this.authFetch('/youtube/auth_url');
-                        const data = await res.json();
-                        if (data.auth_url) {
+                        let data = {};
+                        try {
+                            const text = await res.text();
+                            data = text ? JSON.parse(text) : {};
+                        } catch (_) {
+                            alert("Erro ao conectar ao YouTube: o servidor retornou uma resposta inválida. Verifique se as credenciais do YouTube (Client ID e Client Secret) estão em Configurações, ou se o arquivo client_secret.json está no servidor.");
+                            return;
+                        }
+                        if (res.ok && data.auth_url) {
                             window.location.href = data.auth_url;
                         } else {
-                            alert("Erro ao obter URL de autenticação");
+                            const msg = data.detail || data.message || "Erro ao obter URL de autenticação. Configure o YouTube em Configurações (Client ID e Client Secret do Google Cloud).";
+                            alert(msg);
                         }
                     } catch (e) {
-                        alert("Erro de conexão: " + e);
+                        alert("Erro de conexão: " + (e.message || e));
                     }
                 },
                 async analyzeChannel() {
@@ -2779,6 +2860,60 @@
                         alert("Erro ao gerar vídeo: " + e.message);
                     } finally {
                         this.videoLoading = false;
+                    }
+                },
+                async generateMusic() {
+                    this.musicLoading = true;
+                    this.musicUrl = null;
+                    this.musicFilename = null;
+                    try {
+                        const res = await this.authFetch('/music/generate', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                lyrics: this.musicLyrics,
+                                title: this.musicTitle,
+                                genre: this.musicGenre
+                            })
+                        });
+                        let data = {};
+                        try { data = await res.json(); } catch (_) { data = {}; }
+                        if (res.ok && data.music_url) {
+                            this.musicUrl = data.music_url;
+                            this.musicFilename = data.music_filename;
+                        } else {
+                            alert(data.detail || data.message || "Erro ao gerar música.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao gerar música: " + (e.message || e));
+                    } finally {
+                        this.musicLoading = false;
+                    }
+                },
+                async generateClip() {
+                    this.clipLoading = true;
+                    this.clipVideoUrl = null;
+                    try {
+                        const res = await this.authFetch('/music/clip', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                lyrics: this.musicLyrics,
+                                title: this.musicTitle,
+                                music_filename: this.musicFilename
+                            })
+                        });
+                        let data = {};
+                        try { data = await res.json(); } catch (_) { data = {}; }
+                        if (res.ok && data.video_url) {
+                            this.clipVideoUrl = data.video_url;
+                        } else {
+                            alert(data.detail || data.message || "Gere a música primeiro (Gerar Música) e depois clique em Gerar Clipe.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao gerar clipe: " + (e.message || e));
+                    } finally {
+                        this.clipLoading = false;
                     }
                 },
                 

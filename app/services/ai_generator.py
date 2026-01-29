@@ -1532,6 +1532,47 @@ class AIContentGenerator:
             print(f"Erro ao gerar áudio OpenAI: {e}")
             return None
 
+    def lyrics_to_music_prompt(self, lyrics: str, title: str = "", genre: str = ""):
+        """Converte letra em prompt para geração de música instrumental (MusicGen)."""
+        self._load_config()
+        if not (self.api_key or self.gemini_key):
+            return f"Emotional instrumental music, {genre or 'pop ballad'}. Cinematic, no lyrics."
+        prompt = f"""Com base nesta letra, crie UM prompt em inglês para música INSTRUMENTAL (sem voz). Uma frase curta (até 80 palavras).
+Título: {title or 'Sem título'}
+Gênero: {genre or 'qualquer'}
+Letra: {lyrics[:1200]}
+Retorne APENAS o prompt, sem aspas."""
+        try:
+            out = self._generate_text(prompt, system_prompt="You output only the music prompt.", temperature=0.7)
+            return (out or "").strip()[:300] or f"Emotional instrumental, {genre or 'cinematic'}. No lyrics."
+        except Exception as e:
+            print(f"Erro ao gerar prompt de música: {e}")
+            return f"Emotional instrumental music, {genre or 'pop'}. Cinematic, no lyrics."
+
+    def lyrics_to_clip_scenes(self, lyrics: str, title: str = ""):
+        """Converte letra em cenas (texto + image_prompt) para clipe."""
+        self._load_config()
+        lines = [l.strip() for l in lyrics.strip().split("\n") if l.strip()]
+        if not lines:
+            return [{"text": title or "Música", "image_prompt": "abstract music visual"}]
+        scenes = []
+        chunk = 3
+        for i in range(0, len(lines), chunk):
+            block = "\n".join(lines[i : i + chunk])
+            if not block:
+                continue
+            if self.api_key or self.gemini_key:
+                prompt = f"""Letra: "{block[:400]}". Título: {title or 'Música'}. Gere UM image_prompt em inglês para cena de clipe (visual artístico, sem texto na imagem). Uma frase."""
+                try:
+                    ip = self._generate_text(prompt, system_prompt="Output only the image prompt.", temperature=0.7)
+                    image_prompt = (ip or "").strip()[:250] or "cinematic music video scene"
+                except Exception:
+                    image_prompt = "cinematic music video scene"
+            else:
+                image_prompt = "cinematic music video scene"
+            scenes.append({"text": block, "image_prompt": image_prompt})
+        return scenes if scenes else [{"text": title or "Música", "image_prompt": "abstract music visual"}]
+
     def generate_music(self, prompt):
         """Gera música usando Hugging Face (MusicGen)"""
         # Se não tiver token, tenta sem (pode falhar por rate limit)
