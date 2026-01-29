@@ -2,6 +2,7 @@
 Serviço para integração com a API da Hotmart
 """
 import requests
+import json
 import os
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -157,10 +158,28 @@ class HotmartService:
             )
             
             if response.status_code not in [200, 201]:
-                error_detail = response.text
+                error_detail = response.text[:500] if response.text else response.reason
                 raise Exception(f"Erro ao criar produto na Hotmart: {response.status_code} - {error_detail}")
             
-            return response.json()
+            # Resposta pode ser vazia ou não-JSON (ex.: developers.hotmart.com retorna HTML ou vazio)
+            body = response.text.strip()
+            if not body:
+                location = response.headers.get("Location") or ""
+                product_id = location.rstrip("/").split("/")[-1] if location else None
+                if product_id:
+                    return {"id": product_id, "product_id": product_id}
+                raise Exception(
+                    "A API da Hotmart retornou resposta vazia (status %s). "
+                    "O endpoint de produtos pode não estar disponível ou as credenciais não têm permissão. "
+                    "Crie o produto manualmente em app.hotmart.com e use o link no livro."
+                % response.status_code)
+            try:
+                return response.json()
+            except (json.JSONDecodeError, ValueError):
+                raise Exception(
+                    f"A API da Hotmart retornou resposta inválida (não é JSON). "
+                    f"Status: {response.status_code}. Verifique se o endpoint de produtos está correto nas credenciais."
+                )
             
         except requests.exceptions.RequestException as e:
             raise Exception(f"Erro de conexão ao criar produto: {str(e)}")
