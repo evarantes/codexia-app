@@ -1151,6 +1151,90 @@ class AIContentGenerator:
                 "marketing_notes": "Configure as sugestões manualmente se necessário."
             }
 
+    def generate_hotmart_suggestions_sync(self, book_data, changed_field, new_value, current_form):
+        """
+        Regenera campos relacionados quando o usuário altera manualmente um campo.
+        Mantém consistência entre título, descrição, copy de vendas, etc.
+        """
+        self._load_config()
+        import json
+        
+        # Mapeia qual campo foi alterado e quais devem ser atualizados
+        field_dependencies = {
+            "name": ["sales_copy", "description", "subtitle"],  # Se título muda, atualiza copy, descrição e subtítulo
+            "description": ["sales_copy", "key_benefits"],  # Se descrição muda, atualiza copy e benefícios
+            "subtitle": ["sales_copy"],  # Se subtítulo muda, atualiza copy
+            "price": [],  # Preço não afeta outros campos
+            "category": ["tags"],  # Se categoria muda, pode atualizar tags
+            "tags": []  # Tags não afetam outros campos
+        }
+        
+        fields_to_update = field_dependencies.get(changed_field, [])
+        
+        if not fields_to_update:
+            return {}  # Nenhum campo precisa ser atualizado
+        
+        prompt = f"""
+        Você é um especialista em marketing digital e vendas de produtos digitais na Hotmart.
+        
+        CONTEXTO DO LIVRO:
+        - Título ATUAL (alterado pelo usuário): {current_form.get('name') or book_data.get('title')}
+        - Autor: {book_data.get('author', 'Desconhecido')}
+        - Descrição ATUAL: {current_form.get('description') or book_data.get('synopsis', '')}
+        - Subtítulo ATUAL: {current_form.get('subtitle', '')}
+        - Preço: R$ {current_form.get('price') or book_data.get('price', 0)}
+        - Categoria: {current_form.get('category', '')}
+        
+        CAMPO ALTERADO:
+        - Campo: {changed_field}
+        - Novo Valor: {new_value}
+        
+        SUA MISSÃO:
+        Atualize APENAS os seguintes campos para manter consistência com a alteração feita:
+        {', '.join(fields_to_update)}
+        
+        IMPORTANTE:
+        - Use o título "{current_form.get('name') or book_data.get('title')}" em TODOS os textos gerados
+        - Mantenha o tom e estilo profissional
+        - Garanta que todos os textos mencionem o título correto
+        - Se o campo alterado foi o título, atualize o copy de vendas para usar o novo título
+        
+        Retorne APENAS um JSON válido com os campos atualizados:
+        {{
+            "sales_copy": "Novo copy de vendas usando o título correto...",
+            "description": "Nova descrição se necessário...",
+            "subtitle": "Novo subtítulo se necessário...",
+            "key_benefits": ["Benefício 1", "Benefício 2", "Benefício 3"]
+        }}
+        
+        Inclua APENAS os campos que estão na lista: {fields_to_update}
+        """
+        
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um especialista em marketing digital e vendas de produtos digitais na Hotmart. Mantenha consistência entre todos os textos.",
+                json_mode=True
+            )
+            
+            if not content:
+                raise Exception("Resposta vazia da IA")
+                
+            clean_content = content.replace("```json", "").replace("```", "").strip()
+            updated_fields = json.loads(clean_content)
+            
+            # Retorna apenas os campos que devem ser atualizados
+            result = {}
+            for field in fields_to_update:
+                if field in updated_fields:
+                    result[field] = updated_fields[field]
+            
+            return result
+            
+        except Exception as e:
+            print(f"Erro ao sincronizar campos Hotmart: {e}")
+            return {}
+
     def _build_prompt(self, title, synopsis, style):
         if style == "cliffhanger":
             return f"Crie um anúncio curto e misterioso para o livro '{title}'. Sinopse: {synopsis}. Termine com um gancho forte."

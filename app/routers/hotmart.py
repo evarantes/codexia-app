@@ -22,6 +22,12 @@ class HotmartProductRequest(BaseModel):
     tags: Optional[list] = None
     custom_fields: Optional[dict] = None
 
+class SyncHotmartFieldsRequest(BaseModel):
+    book_id: int
+    changed_field: str  # 'name', 'description', 'subtitle', 'price', 'category', 'tags'
+    new_value: str
+    current_form: dict  # Estado atual do formulário completo
+
 @router.get("/test-connection")
 def test_hotmart_connection(db: Session = Depends(get_db)):
     """Testa a conexão com a Hotmart"""
@@ -110,20 +116,60 @@ def publish_book_to_hotmart(request: HotmartProductRequest, db: Session = Depend
         # Cria o produto na Hotmart
         result = service.create_product(product_data)
         
-        # Atualiza o livro com o link da Hotmart (se retornado)
-        if result.get("product_id"):
-            book.payment_link = f"https://hotmart.com/pt-br/marketplace/produtos/{result.get('product_id')}"
+        # Atualiza o livro com o link da Hotmart (API pode retornar "id" ou "product_id")
+        product_id = result.get("product_id") or result.get("id")
+        if product_id:
+            book.payment_link = f"https://hotmart.com/pt-br/marketplace/produtos/{product_id}"
             db.commit()
         
+        payment_link = book.payment_link if product_id else None
         return {
             "success": True,
             "message": "Livro publicado na Hotmart com sucesso!",
             "product": result,
-            "payment_link": book.payment_link
+            "payment_link": payment_link
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/sync-fields")
+def sync_hotmart_fields(request: SyncHotmartFieldsRequest, db: Session = Depends(get_db)):
+    """
+    Sincroniza campos relacionados quando o usuário altera manualmente um campo.
+    Regenera campos dependentes usando IA para manter consistência.
+    """
+    book = db.query(Book).filter(Book.id == request.book_id).first()
+    if not book:
+        raise HTTPException(status_code=404, detail="Livro não encontrado")
+    
+    try:
+        ai = AIContentGenerator()
+        
+        # Prepara dados do livro + alteração manual
+        book_data = {
+            "title": request.current_form.get("name") or book.title,
+            "author": book.author,
+            "synopsis": request.current_form.get("description") or book.synopsis or "",
+            "price": request.current_form.get("price") or book.price or 0,
+        }
+        
+        # Gera sugestões atualizadas com base na alteração manual
+        # A IA vai usar o valor alterado como referência principal
+        updated_suggestions = ai.generate_hotmart_suggestions_sync(
+            book_data=book_data,
+            changed_field=request.changed_field,
+            new_value=request.new_value,
+            current_form=request.current_form
+        )
+        
+        return {
+            "success": True,
+            "updated_fields": updated_suggestions
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao sincronizar campos: {str(e)}")
 
 @router.get("/products")
 def list_hotmart_products(db: Session = Depends(get_db)):

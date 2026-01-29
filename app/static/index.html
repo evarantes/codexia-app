@@ -887,21 +887,63 @@
 
                         <!-- AI Suggestions Form -->
                         <div class="space-y-4">
+                            <!-- Título Otimizado -->
                             <div>
-                                <label class="block font-bold mb-2">Título Otimizado (sugerido pela IA)</label>
-                                <input v-model="hotmartProductForm.name" class="w-full border p-3 rounded text-lg" placeholder="Título do produto">
-                                <p class="text-xs text-gray-500 mt-1">Sugestão: {{ hotmartSuggestions.optimized_title }}</p>
+                                <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+                                    <label class="block font-bold">Título Otimizado (sugerido pela IA)</label>
+                                    <div class="flex items-center gap-2">
+                                        <button @click="propagateHotmartManualChange('name')" :disabled="hotmartSyncing" class="text-xs bg-amber-500 text-white px-2 py-1 rounded hover:bg-amber-600 flex items-center gap-1" title="Substituir a sugestão da IA pelo seu texto em todos os campos">
+                                            <i class="fas fa-exchange-alt"></i>
+                                            Substituir em todos os campos
+                                        </button>
+                                        <button @click="syncHotmartField('name', hotmartProductForm.name)" :disabled="hotmartSyncing" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 flex items-center gap-1" title="Atualizar campos relacionados com base nesta alteração">
+                                            <i v-if="hotmartSyncing" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-sync"></i>
+                                            Sincronizar
+                                        </button>
+                                    </div>
+                                </div>
+                                <input v-model="hotmartProductForm.name" @blur="onHotmartFieldChanged('name', hotmartProductForm.name)" class="w-full border p-3 rounded text-lg" placeholder="Título do produto">
+                                <p class="text-xs text-gray-500 mt-1">Sugestão original: {{ hotmartSuggestions.optimized_title }}</p>
                             </div>
 
+                            <!-- Subtítulo -->
                             <div>
-                                <label class="block font-bold mb-2">Subtítulo</label>
-                                <input v-model="hotmartProductForm.subtitle" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.subtitle">
+                                <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+                                    <label class="block font-bold">Subtítulo</label>
+                                    <div class="flex items-center gap-2">
+                                        <button @click="propagateHotmartManualChange('subtitle')" :disabled="hotmartSyncing" class="text-xs bg-amber-500 text-white px-2 py-1 rounded hover:bg-amber-600 flex items-center gap-1" title="Substituir a sugestão da IA pelo seu texto em todos os campos">
+                                            <i class="fas fa-exchange-alt"></i>
+                                            Substituir em todos os campos
+                                        </button>
+                                        <button @click="syncHotmartField('subtitle', hotmartProductForm.subtitle)" :disabled="hotmartSyncing" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 flex items-center gap-1" title="Atualizar campos relacionados">
+                                            <i v-if="hotmartSyncing" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-sync"></i>
+                                            Sincronizar
+                                        </button>
+                                    </div>
+                                </div>
+                                <input v-model="hotmartProductForm.subtitle" @blur="onHotmartFieldChanged('subtitle', hotmartProductForm.subtitle)" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.subtitle">
                             </div>
 
+                            <!-- Descrição Completa -->
                             <div>
-                                <label class="block font-bold mb-2">Descrição Completa</label>
-                                <textarea v-model="hotmartProductForm.description" rows="6" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.description"></textarea>
-                                <p class="text-xs text-gray-500 mt-1">Sugestão da IA: {{ hotmartSuggestions.description.substring(0, 100) }}...</p>
+                                <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+                                    <label class="block font-bold">Descrição Completa</label>
+                                    <div class="flex items-center gap-2">
+                                        <button @click="propagateHotmartManualChange('description')" :disabled="hotmartSyncing" class="text-xs bg-amber-500 text-white px-2 py-1 rounded hover:bg-amber-600 flex items-center gap-1" title="Substituir a sugestão da IA pelo seu texto em todos os campos">
+                                            <i class="fas fa-exchange-alt"></i>
+                                            Substituir em todos os campos
+                                        </button>
+                                        <button @click="syncHotmartField('description', hotmartProductForm.description)" :disabled="hotmartSyncing" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 flex items-center gap-1" title="Atualizar campos relacionados">
+                                            <i v-if="hotmartSyncing" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-sync"></i>
+                                            Sincronizar
+                                        </button>
+                                    </div>
+                                </div>
+                                <textarea v-model="hotmartProductForm.description" @blur="onHotmartFieldChanged('description', hotmartProductForm.description)" rows="6" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.description"></textarea>
+                                <p class="text-xs text-gray-500 mt-1">Sugestão original: {{ hotmartSuggestions.description.substring(0, 100) }}...</p>
                             </div>
 
                             <div class="grid grid-cols-2 gap-4">
@@ -911,8 +953,15 @@
                                     <p class="text-xs text-gray-500 mt-1">Sugestão: R$ {{ hotmartSuggestions.suggested_price }}</p>
                                 </div>
                                 <div>
-                                    <label class="block font-bold mb-2">Categoria</label>
-                                    <input v-model="hotmartProductForm.category" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.category">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <label class="block font-bold">Categoria</label>
+                                        <button @click="syncHotmartField('category', hotmartProductForm.category)" :disabled="hotmartSyncing" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 flex items-center gap-1" title="Atualizar tags relacionadas">
+                                            <i v-if="hotmartSyncing" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-sync"></i>
+                                            Sincronizar
+                                        </button>
+                                    </div>
+                                    <input v-model="hotmartProductForm.category" @blur="onHotmartFieldChanged('category', hotmartProductForm.category)" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.category">
                                 </div>
                             </div>
 
@@ -921,18 +970,48 @@
                                 <input v-model="hotmartProductForm.tags" class="w-full border p-3 rounded" :placeholder="hotmartSuggestions.tags.join(', ')">
                             </div>
 
-                            <!-- Key Benefits -->
+                            <!-- Key Benefits (Editável) -->
                             <div v-if="hotmartSuggestions.key_benefits && hotmartSuggestions.key_benefits.length" class="bg-blue-50 p-4 rounded border border-blue-200">
-                                <h3 class="font-bold mb-2 text-blue-800">Principais Benefícios (sugeridos pela IA)</h3>
-                                <ul class="list-disc pl-5 space-y-1 text-sm">
+                                <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+                                    <h3 class="font-bold text-blue-800">Principais Benefícios (sugeridos pela IA)</h3>
+                                    <div class="flex items-center gap-2">
+                                        <button @click="propagateHotmartManualChange('key_benefits')" :disabled="hotmartSyncing" class="text-xs bg-amber-500 text-white px-2 py-1 rounded hover:bg-amber-600 flex items-center gap-1" title="Substituir a sugestão da IA pelo seu texto em todos os campos">
+                                            <i class="fas fa-exchange-alt"></i>
+                                            Substituir em todos os campos
+                                        </button>
+                                        <button @click="syncHotmartField('key_benefits', hotmartProductForm.key_benefits)" :disabled="hotmartSyncing" class="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700 flex items-center gap-1" title="Atualizar copy de vendas com base nos benefícios">
+                                            <i v-if="hotmartSyncing" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-sync"></i>
+                                            Sincronizar
+                                        </button>
+                                    </div>
+                                </div>
+                                <textarea v-model="hotmartProductForm.key_benefits" @blur="onHotmartFieldChanged('key_benefits', hotmartProductForm.key_benefits)" rows="4" class="w-full border p-2 rounded bg-white text-sm" placeholder="Liste os benefícios, um por linha"></textarea>
+                                <p class="text-xs text-gray-500 mt-1">Sugestão original:</p>
+                                <ul class="list-disc pl-5 space-y-1 text-xs text-gray-600">
                                     <li v-for="(benefit, idx) in hotmartSuggestions.key_benefits" :key="idx">{{ benefit }}</li>
                                 </ul>
                             </div>
 
-                            <!-- Sales Copy -->
+                            <!-- Sales Copy (Editável) -->
                             <div v-if="hotmartSuggestions.sales_copy" class="bg-green-50 p-4 rounded border border-green-200">
-                                <h3 class="font-bold mb-2 text-green-800">Copy de Vendas (sugestão da IA)</h3>
-                                <p class="text-sm whitespace-pre-wrap">{{ hotmartSuggestions.sales_copy }}</p>
+                                <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+                                    <h3 class="font-bold text-green-800">Copy de Vendas (sugestão da IA)</h3>
+                                    <div class="flex items-center gap-2">
+                                        <button @click="propagateHotmartManualChange('sales_copy')" :disabled="hotmartSyncing" class="text-xs bg-amber-500 text-white px-2 py-1 rounded hover:bg-amber-600 flex items-center gap-1" title="Substituir a sugestão da IA pelo seu texto em todos os campos">
+                                            <i class="fas fa-exchange-alt"></i>
+                                            Substituir em todos os campos
+                                        </button>
+                                        <button @click="syncHotmartField('sales_copy', hotmartProductForm.sales_copy)" :disabled="hotmartSyncing" class="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 flex items-center gap-1" title="Atualizar com base no título atual">
+                                            <i v-if="hotmartSyncing" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-sync"></i>
+                                            Sincronizar
+                                        </button>
+                                    </div>
+                                </div>
+                                <textarea v-model="hotmartProductForm.sales_copy" @blur="onHotmartFieldChanged('sales_copy', hotmartProductForm.sales_copy)" rows="5" class="w-full border p-3 rounded bg-white text-sm whitespace-pre-wrap" :placeholder="hotmartSuggestions.sales_copy"></textarea>
+                                <p class="text-xs text-gray-500 mt-1">Sugestão original:</p>
+                                <p class="text-xs text-gray-600 whitespace-pre-wrap">{{ hotmartSuggestions.sales_copy }}</p>
                             </div>
 
                             <!-- Marketing Notes -->
@@ -950,7 +1029,7 @@
                 </div>
 
                 <!-- Publish Button -->
-                <div v-if="selectedHotmartBook && hotmartSuggestions" class="bg-white rounded-lg shadow p-6">
+                <div v-if="selectedHotmartBook" class="bg-white rounded-lg shadow p-6">
                     <h2 class="text-xl font-bold mb-4">3. Publicar na Hotmart</h2>
                     <div class="bg-orange-50 border border-orange-200 rounded p-4 mb-4">
                         <p class="text-sm text-orange-800">
@@ -1662,10 +1741,13 @@
                         description: '',
                         price: null,
                         category: '',
-                        tags: ''
+                        tags: '',
+                        key_benefits: '',
+                        sales_copy: ''
                     },
                     hotmartPublishing: false,
                     hotmartPublishResult: null,
+                    hotmartSyncing: false,
                     saveMessage: '',
 
                     // Auth
@@ -2378,15 +2460,17 @@
                                 synopsis: book.synopsis,
                                 price: book.price
                             };
-                            // Reset form
                             this.hotmartSuggestions = null;
+                            // Preenche o formulário com dados do livro para permitir publicar mesmo sem "Analisar com IA"
                             this.hotmartProductForm = {
-                                name: '',
+                                name: book.title || '',
                                 subtitle: '',
-                                description: '',
-                                price: null,
+                                description: book.synopsis || '',
+                                price: book.price ?? null,
                                 category: '',
-                                tags: ''
+                                tags: '',
+                                key_benefits: '',
+                                sales_copy: ''
                             };
                         }
                     } else {
@@ -2412,7 +2496,9 @@
                                 description: data.suggestions.description || this.hotmartBookData.synopsis || '',
                                 price: data.suggestions.suggested_price || this.hotmartBookData.price || 0,
                                 category: data.suggestions.category || '',
-                                tags: Array.isArray(data.suggestions.tags) ? data.suggestions.tags.join(', ') : ''
+                                tags: Array.isArray(data.suggestions.tags) ? data.suggestions.tags.join(', ') : '',
+                                key_benefits: Array.isArray(data.suggestions.key_benefits) ? data.suggestions.key_benefits.join('\n') : '',
+                                sales_copy: data.suggestions.sales_copy || ''
                             };
                         } else {
                             const error = await res.json();
@@ -2422,6 +2508,121 @@
                         alert("Erro ao analisar livro: " + e);
                     } finally {
                         this.hotmartAnalyzing = false;
+                    }
+                },
+                onHotmartFieldChanged(fieldName, newValue) {
+                    // Marca que o campo foi alterado manualmente (pode ser usado para indicar visualmente)
+                    // A sincronização só acontece quando o usuário clica no botão
+                },
+                // Obtém o texto original sugerido pela IA para um campo (para propagar alteração manual)
+                getHotmartSuggestionValue(fieldName) {
+                    if (!this.hotmartSuggestions) return '';
+                    switch (fieldName) {
+                        case 'name': return this.hotmartSuggestions.optimized_title || '';
+                        case 'subtitle': return this.hotmartSuggestions.subtitle || '';
+                        case 'description': return this.hotmartSuggestions.description || '';
+                        case 'sales_copy': return this.hotmartSuggestions.sales_copy || '';
+                        case 'key_benefits': return Array.isArray(this.hotmartSuggestions.key_benefits) ? this.hotmartSuggestions.key_benefits.join('\n') : '';
+                        default: return '';
+                    }
+                },
+                // Substitui em todos os campos a sugestão da IA pelo valor que o usuário digitou (quando não aceitou a sugestão)
+                propagateHotmartManualChange(fieldName) {
+                    if (!this.hotmartSuggestions) return;
+                    const oldText = this.getHotmartSuggestionValue(fieldName);
+                    const newText = (this.hotmartProductForm[fieldName] || '').trim();
+                    if (!oldText || oldText === newText) {
+                        alert('Altere o campo manualmente (com um valor diferente da sugestão da IA) e depois clique em "Substituir em todos os campos".');
+                        return;
+                    }
+                    const textFields = ['name', 'subtitle', 'description', 'sales_copy', 'key_benefits'];
+                    let count = 0;
+                    for (const key of textFields) {
+                        if (key === fieldName) continue;
+                        const current = this.hotmartProductForm[key] || '';
+                        if (current.includes(oldText)) {
+                            this.hotmartProductForm[key] = current.split(oldText).join(newText);
+                            count++;
+                        }
+                    }
+                    if (count > 0) {
+                        alert(`Sua alteração foi aplicada em ${count} campo(s). Onde aparecia "${oldText.substring(0, 40)}${oldText.length > 40 ? '...' : ''}" foi substituído pelo seu texto.`);
+                    } else {
+                        alert('Nenhum outro campo continha o texto da sugestão da IA. Sua alteração já está apenas neste campo.');
+                    }
+                },
+                async syncHotmartField(fieldName, newValue) {
+                    if (!this.selectedHotmartBook || !this.hotmartSuggestions) {
+                        return;
+                    }
+                    
+                    if (!newValue || newValue.trim() === '') {
+                        alert("O campo está vazio. Preencha antes de sincronizar.");
+                        return;
+                    }
+                    
+                    this.hotmartSyncing = true;
+                    try {
+                        const res = await this.authFetch('/hotmart/sync-fields', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                book_id: this.selectedHotmartBook,
+                                changed_field: fieldName,
+                                new_value: newValue,
+                                current_form: {
+                                    name: this.hotmartProductForm.name,
+                                    subtitle: this.hotmartProductForm.subtitle,
+                                    description: this.hotmartProductForm.description,
+                                    price: this.hotmartProductForm.price,
+                                    category: this.hotmartProductForm.category,
+                                    tags: this.hotmartProductForm.tags
+                                }
+                            })
+                        });
+                        
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data.success && data.updated_fields) {
+                                // Atualiza os campos relacionados
+                                if (data.updated_fields.sales_copy) {
+                                    this.hotmartProductForm.sales_copy = data.updated_fields.sales_copy;
+                                    this.hotmartSuggestions.sales_copy = data.updated_fields.sales_copy;
+                                }
+                                if (data.updated_fields.description) {
+                                    this.hotmartProductForm.description = data.updated_fields.description;
+                                    this.hotmartSuggestions.description = data.updated_fields.description;
+                                }
+                                if (data.updated_fields.subtitle) {
+                                    this.hotmartProductForm.subtitle = data.updated_fields.subtitle;
+                                    this.hotmartSuggestions.subtitle = data.updated_fields.subtitle;
+                                }
+                                if (data.updated_fields.key_benefits) {
+                                    const benefits = Array.isArray(data.updated_fields.key_benefits) 
+                                        ? data.updated_fields.key_benefits 
+                                        : [data.updated_fields.key_benefits];
+                                    this.hotmartProductForm.key_benefits = benefits.join('\n');
+                                    this.hotmartSuggestions.key_benefits = benefits;
+                                }
+                                if (data.updated_fields.tags) {
+                                    const tags = Array.isArray(data.updated_fields.tags) 
+                                        ? data.updated_fields.tags 
+                                        : [data.updated_fields.tags];
+                                    this.hotmartProductForm.tags = tags.join(', ');
+                                    this.hotmartSuggestions.tags = tags;
+                                }
+                                
+                                // Feedback visual
+                                alert("Campos sincronizados com sucesso! Os campos relacionados foram atualizados.");
+                            }
+                        } else {
+                            const error = await res.json();
+                            alert("Erro ao sincronizar: " + (error.detail || "Erro desconhecido"));
+                        }
+                    } catch (e) {
+                        alert("Erro ao sincronizar campos: " + e);
+                    } finally {
+                        this.hotmartSyncing = false;
                     }
                 },
                 async publishToHotmart() {
@@ -2457,9 +2658,15 @@
                                 }
                             })
                         });
-                        const data = await res.json();
-                        this.hotmartPublishResult = data;
-                        if (data.success) {
+                        let data = {};
+                        try {
+                            data = await res.json();
+                        } catch (_) {
+                            this.hotmartPublishResult = { success: false, message: "Resposta inválida do servidor. Tente novamente." };
+                            return;
+                        }
+                        if (res.ok && data.success) {
+                            this.hotmartPublishResult = { success: true, message: data.message || "Livro publicado na Hotmart com sucesso!", payment_link: data.payment_link };
                             // Atualiza lista de livros para pegar o novo payment_link
                             await this.fetchBooks();
                             // Limpa formulário
@@ -2472,11 +2679,15 @@
                                 description: '',
                                 price: null,
                                 category: '',
-                                tags: ''
+                                tags: '',
+                                key_benefits: '',
+                                sales_copy: ''
                             };
+                        } else {
+                            this.hotmartPublishResult = { success: false, message: data.detail || data.message || "Erro ao publicar na Hotmart." };
                         }
                     } catch (e) {
-                        this.hotmartPublishResult = { success: false, message: "Erro ao publicar: " + e };
+                        this.hotmartPublishResult = { success: false, message: "Erro ao publicar: " + (e.message || e) };
                     } finally {
                         this.hotmartPublishing = false;
                     }
