@@ -39,19 +39,27 @@ def create_video(request: CreateVideoRequest):
                 "title": request.title,
                 "scenes": [{"text": line} for line in request.content.split('\n') if line.strip()]
             }
+            aspect_ratio = "16:9"
         elif request.mode == "topic":
-            # Generate script from topic
             script_plan = ai_service.generate_motivational_script(request.content, request.duration)
-            script_plan["title"] = request.title # Override title if desired
+            script_plan["title"] = request.title
+            aspect_ratio = "16:9"
         elif request.mode == "story":
-            # Generate script from story prompt
-            # We can use generate_video_script generic or a specific story one
-            # Using generate_video_script with "story" style
             script_plan = ai_service.generate_video_script(request.title, request.content, "story")
+            aspect_ratio = "16:9"
+        elif request.mode == "short":
+            # YouTube Short por prompt: um único prompt → roteiro curto → vídeo vertical 9:16
+            script_plan = ai_service.generate_short_script_from_prompt(request.content)
+            script_plan["title"] = request.title or script_plan.get("title", "Short")
+            aspect_ratio = "9:16"
+        else:
+            script_plan = ai_service.generate_video_script(request.title, request.content, "drama")
+            aspect_ratio = "16:9"
             
-        # Generate Video
+        # Generate Video (9:16 para Short, 16:9 para os demais)
         result = video_gen.create_video_from_plan(
             script_plan,
+            aspect_ratio=aspect_ratio,
             voice_style=request.voice_style,
             voice_gender=request.voice_gender
         )

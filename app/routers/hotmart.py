@@ -116,18 +116,23 @@ def publish_book_to_hotmart(request: HotmartProductRequest, db: Session = Depend
         # Cria o produto na Hotmart
         result = service.create_product(product_data)
         
-        # Atualiza o livro com o link da Hotmart (API pode retornar "id" ou "product_id")
+        # Só considera sucesso se a API retornou ID do produto (senão o produto não foi criado)
         product_id = result.get("product_id") or result.get("id")
-        if product_id:
-            book.payment_link = f"https://hotmart.com/pt-br/marketplace/produtos/{product_id}"
-            db.commit()
+        if not product_id:
+            return {
+                "success": False,
+                "message": "A Hotmart não retornou o ID do produto. A API de criação pode não estar disponível. Crie o produto manualmente em app.hotmart.com (Produtos → Criar produto), copie o link da página de vendas e cole no campo 'Link de Pagamento' do livro em Meus Livros.",
+                "payment_link": None
+            }
         
-        payment_link = book.payment_link if product_id else None
+        book.payment_link = f"https://hotmart.com/pt-br/marketplace/produtos/{product_id}"
+        db.commit()
+        
         return {
             "success": True,
             "message": "Livro publicado na Hotmart com sucesso!",
             "product": result,
-            "payment_link": payment_link
+            "payment_link": book.payment_link
         }
         
     except Exception as e:

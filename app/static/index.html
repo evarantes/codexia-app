@@ -270,6 +270,7 @@
                         <div class="mb-4">
                             <label class="block text-gray-700 font-bold mb-2">Modo de Criação</label>
                             <select v-model="videoMode" class="w-full border p-2 rounded">
+                                <option value="short">YouTube Short (um prompt)</option>
                                 <option value="manual">Manual (Roteiro Pronto)</option>
                                 <option value="topic">Por Tópico (IA Cria Roteiro)</option>
                                 <option value="story">História/Ficção (IA Cria Narrativa)</option>
@@ -295,9 +296,15 @@
                             </div>
                         </div>
 
-                        <div class="mb-4">
+                        <div class="mb-4" v-if="videoMode !== 'short'">
                             <label class="block font-bold mb-2">Título do Vídeo</label>
                             <input v-model="videoTitle" class="w-full border p-2 rounded">
+                        </div>
+
+                        <div v-if="videoMode === 'short'" class="mb-4 bg-gradient-to-r from-red-50 to-orange-50 p-4 rounded border border-red-100">
+                            <label class="block font-bold mb-2 text-red-900"><i class="fab fa-youtube text-red-600 mr-1"></i> Descreva o Short que você quer</label>
+                            <textarea v-model="videoContent" class="w-full border p-3 rounded" rows="4" placeholder="Ex.: Um vídeo motivacional de 30 segundos sobre nunca desistir dos sonhos. Ou: Um Short com dica de produtividade em uma frase por cena."></textarea>
+                            <p class="text-xs text-gray-600 mt-2">A IA gera o roteiro e o vídeo vertical (9:16), ideal para YouTube Shorts e Reels.</p>
                         </div>
 
                         <div class="mb-4" v-if="videoMode === 'manual'">
@@ -315,6 +322,11 @@
                         <div class="mb-4" v-if="videoMode === 'story'">
                             <label class="block font-bold mb-2">Ideia da História / Prompt</label>
                             <textarea v-model="videoContent" class="w-full border p-2 rounded" rows="5" placeholder="Descreva a história que você quer contar..."></textarea>
+                        </div>
+
+                        <div v-if="videoMode === 'short'" class="mb-4 text-sm text-gray-600">
+                            <label class="block font-bold mb-1 text-gray-700">Título (opcional)</label>
+                            <input v-model="videoTitle" class="w-full border p-2 rounded" placeholder="Deixe em branco para a IA sugerir">
                         </div>
 
                         <button @click="generateVideo" :disabled="videoLoading" class="bg-indigo-600 text-white px-4 py-2 rounded w-full">

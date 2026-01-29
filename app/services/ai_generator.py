@@ -676,6 +676,76 @@ class AIContentGenerator:
                 "music_mood": style
             }
 
+    def generate_short_script_from_prompt(self, prompt: str):
+        """Gera roteiro de YouTube Short (vertical, ~30-60s) a partir de um único prompt."""
+        self._load_config()
+        if not (self.api_key or self.gemini_key):
+            return {
+                "title": "Short gerado",
+                "scenes": [
+                    {"text": "Um momento que inspira.", "image_prompt": "cinematic inspiring scene"},
+                    {"text": "Vale a pena persistir.", "image_prompt": "person overcoming challenge"},
+                    {"text": "Inscreva-se para mais!", "image_prompt": "call to action minimal"}
+                ],
+                "music_mood": "drama"
+            }
+        system = (
+            "Você é um roteirista de YouTube Shorts e Reels. Crie roteiros curtos, impactantes, "
+            "com frases de efeito. Cada cena deve ter 1-2 frases no máximo (5-15 segundos de fala). "
+            "Retorne APENAS um JSON válido, sem explicações."
+        )
+        user_prompt = f"""
+        Crie um roteiro de YouTube Short (vídeo vertical, 30-60 segundos no total) com base neste pedido:
+
+        "{prompt}"
+
+        Regras:
+        - Título: uma frase chamativa (máx. 60 caracteres).
+        - Cenas: entre 3 e 5 cenas. Cada cena: "text" (frase narrada, curta) e "image_prompt" (descrição visual em inglês para gerar imagem com IA, sem texto na imagem).
+        - Estilo: dinâmico, adequado para Shorts/Reels, gancho no início.
+
+        Retorne APENAS este JSON (sem markdown, sem texto extra):
+        {{
+            "title": "Título do Short",
+            "scenes": [
+                {{"text": "Frase da cena 1", "image_prompt": "descrição visual artística da cena 1"}},
+                {{"text": "Frase da cena 2", "image_prompt": "descrição visual artística da cena 2"}}
+            ],
+            "music_mood": "drama"
+        }}
+        """
+        try:
+            content = self._generate_text(
+                user_prompt,
+                system_prompt=system,
+                json_mode=True
+            )
+            if not content:
+                raise Exception("Resposta vazia da IA")
+            import json
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0]
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0]
+            data = json.loads(content.strip())
+            if not data.get("scenes"):
+                data["scenes"] = [
+                    {"text": "Um momento inspirador.", "image_prompt": "cinematic inspiring scene"},
+                    {"text": "Persista e conquiste.", "image_prompt": "person overcoming challenge"}
+                ]
+            return data
+        except Exception as e:
+            print(f"Erro ao gerar script de Short: {e}")
+            return {
+                "title": "Short inspirador",
+                "scenes": [
+                    {"text": "Um momento que inspira.", "image_prompt": "cinematic inspiring scene"},
+                    {"text": "Vale a pena persistir.", "image_prompt": "person overcoming challenge"},
+                    {"text": "Inscreva-se para mais!", "image_prompt": "call to action minimal"}
+                ],
+                "music_mood": "drama"
+            }
+
     def generate_motivational_script(self, topic, duration_minutes=5):
         """Gera um roteiro longo para vídeo motivacional"""
         self._load_config()
