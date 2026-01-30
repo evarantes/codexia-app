@@ -93,7 +93,7 @@ class YouTubeService:
                 }
                 flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
                 flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-                auth_url, _ = flow.authorization_url(prompt='consent')
+                auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
                 return auth_url
             except Exception as e:
                 raise RuntimeError(f"Credenciais do YouTube no banco inválidas: {e}")
@@ -102,7 +102,7 @@ class YouTubeService:
             raise FileNotFoundError("client_secret.json não encontrado e credenciais do YouTube não configuradas em Configurações.")
         flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
         flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-        auth_url, _ = flow.authorization_url(prompt='consent')
+        auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
         return auth_url
 
     def exchange_code_for_token(self, code):
