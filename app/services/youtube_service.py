@@ -163,9 +163,9 @@ class YouTubeService:
             settings.youtube_refresh_token = self.credentials.refresh_token
             
             if self.credentials.client_id:
-                settings.youtube_client_id = self.credentials.client_id
+                settings.youtube_client_id = self.credentials.client_id.strip()
             if self.credentials.client_secret:
-                settings.youtube_client_secret = self.credentials.client_secret
+                settings.youtube_client_secret = self.credentials.client_secret.strip()
                 
             db.commit()
             print("Credenciais do YouTube salvas no banco com sucesso.")
