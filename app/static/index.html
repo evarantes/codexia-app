@@ -371,6 +371,14 @@
                                 <input v-model="musicGenre" class="w-full border p-2 rounded" placeholder="Ex: pop, ballad, rock, eletrônica">
                             </div>
                             <div>
+                                <label class="block font-bold mb-2">Voz cantada (Suno)</label>
+                                <select v-model="musicVocalGender" class="w-full border p-2 rounded">
+                                    <option value="">Automático</option>
+                                    <option value="f">Feminina</option>
+                                    <option value="m">Masculina</option>
+                                </select>
+                            </div>
+                            <div>
                                 <label class="block font-bold mb-2">Letra da música</label>
                                 <textarea v-model="musicLyrics" class="w-full border p-3 rounded" rows="12" placeholder="Cole ou digite a letra aqui...&#10;&#10;Verso 1&#10;Linha 1&#10;Linha 2&#10;&#10;Refrão&#10;..."></textarea>
                             </div>
@@ -386,7 +394,7 @@
                                     Gerar Clipe
                                 </button>
                             </div>
-                            <p class="text-xs text-gray-500">A música é instrumental (sem voz cantada). O clipe usa a música gerada e cria cenas visuais a partir da letra.</p>
+                            <p class="text-xs text-gray-500">Com Suno API Key em Configurações: música com voz cantada. Sem a chave: instrumental. O clipe usa a música gerada e cria cenas visuais a partir da letra.</p>
                         </div>
                     </div>
                     <div class="bg-white rounded-lg shadow p-6 space-y-6">
@@ -443,6 +451,9 @@
                         <div class="flex gap-2">
                             <button v-if="!youtubeStats.connected" @click="connectYoutube" class="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 flex items-center gap-2">
                                 <i class="fab fa-youtube"></i> Conectar YouTube
+                            </button>
+                            <button v-if="!youtubeStats.connected" @click="showAuthCodeModal = true" class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 flex items-center gap-2">
+                                <i class="fas fa-key"></i> Inserir Código Manualmente
                             </button>
                             <button v-else @click="analyzeChannel" :disabled="ytLoading" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
                                 <i v-if="ytLoading" class="fas fa-spinner fa-spin"></i>
@@ -1525,6 +1536,15 @@
                             {{ hotmartTestResult.message }}
                         </p>
                     </div>
+
+                    <div class="border-t pt-4 mt-6">
+                        <h3 class="text-lg font-bold mb-4">Suno API (música com voz cantada)</h3>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Suno API Key</label>
+                            <input v-model="settings.suno_api_key" type="password" class="w-full border p-2 rounded" placeholder="Sua API Key do Suno (opcional)">
+                            <p class="text-xs text-gray-500 mt-1">Com a chave, a seção Música e Clipe gera música com voz cantada. Obtenha em <a href="https://sunoapi.org/api-key" target="_blank" class="text-blue-600 underline">sunoapi.org</a>. Sem a chave, é gerada apenas música instrumental.</p>
+                        </div>
+                    </div>
                     
                     <div class="border-t pt-4 mt-6">
                         <h3 class="text-lg font-bold mb-4">Diagnóstico do Sistema</h3>
@@ -1768,6 +1788,7 @@
                     musicLyrics: '',
                     musicTitle: 'Música',
                     musicGenre: '',
+                    musicVocalGender: '',
                     musicLoading: false,
                     musicUrl: null,
                     musicFilename: null,
@@ -1809,7 +1830,8 @@
                         facebook_access_token: '',
                         mercadopago_access_token: '',
                         hotmart_client_id: '',
-                        hotmart_client_secret: ''
+                        hotmart_client_secret: '',
+                        suno_api_key: ''
                     },
                     
                     // Hotmart Auto
@@ -2065,13 +2087,36 @@
                             return;
                         }
                         if (res.ok && data.auth_url) {
-                            window.location.href = data.auth_url;
+                            // OOB flow requires opening in new tab and manual code entry
+                            window.open(data.auth_url, '_blank');
+                            this.showAuthCodeModal = true;
                         } else {
                             const msg = data.detail || data.message || "Erro ao obter URL de autenticação. Configure o YouTube em Configurações (Client ID e Client Secret do Google Cloud).";
                             alert(msg);
                         }
                     } catch (e) {
                         alert("Erro de conexão: " + (e.message || e));
+                    }
+                },
+                async submitAuthCode() {
+                    if (!this.authCode) return alert("Por favor, cole o código.");
+                    try {
+                        const res = await this.authFetch('/youtube/auth/exchange', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ code: this.authCode })
+                        });
+                        if (res.ok) {
+                            alert("Conectado com sucesso!");
+                            this.showAuthCodeModal = false;
+                            this.authCode = '';
+                            this.fetchYoutubeStats();
+                        } else {
+                            const data = await res.json();
+                            alert("Erro: " + (data.detail || "Falha ao autenticar"));
+                        }
+                    } catch (e) {
+                        alert("Erro de conexão: " + e);
                     }
                 },
                 async analyzeChannel() {
@@ -2873,7 +2918,8 @@
                             body: JSON.stringify({
                                 lyrics: this.musicLyrics,
                                 title: this.musicTitle,
-                                genre: this.musicGenre
+                                genre: this.musicGenre,
+                                vocal_gender: this.musicVocalGender || null
                             })
                         });
                         let data = {};
