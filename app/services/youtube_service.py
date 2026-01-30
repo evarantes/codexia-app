@@ -108,8 +108,35 @@ class YouTubeService:
     def exchange_code_for_token(self, code):
         """Troca o código de autorização por tokens e salva no banco"""
         try:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'client_secret.json', SCOPES)
+            # 1. Tentar configurar Flow via Banco de Dados
+            db = SessionLocal()
+            settings = db.query(Settings).first()
+            db.close()
+
+            flow = None
+            
+            if settings and settings.youtube_client_id and settings.youtube_client_secret:
+                try:
+                    client_config = {
+                        "installed": {
+                            "client_id": settings.youtube_client_id.strip(),
+                            "client_secret": settings.youtube_client_secret.strip(),
+                            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                            "token_uri": "https://oauth2.googleapis.com/token",
+                            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"]
+                        }
+                    }
+                    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+                except Exception as e:
+                    print(f"Erro ao criar Flow com credenciais do banco: {e}")
+
+            # 2. Fallback para arquivo se não conseguiu via banco
+            if not flow:
+                if os.path.exists('client_secret.json'):
+                    flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
+                else:
+                    raise FileNotFoundError("Credenciais não encontradas (Banco ou arquivo json)")
+
             flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
             flow.fetch_token(code=code)
             self.credentials = flow.credentials
