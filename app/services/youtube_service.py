@@ -161,8 +161,12 @@ class YouTubeService:
                 db.add(settings)
             
             settings.youtube_refresh_token = self.credentials.refresh_token
-            settings.youtube_client_id = self.credentials.client_id
-            settings.youtube_client_secret = self.credentials.client_secret
+            
+            if self.credentials.client_id:
+                settings.youtube_client_id = self.credentials.client_id
+            if self.credentials.client_secret:
+                settings.youtube_client_secret = self.credentials.client_secret
+                
             db.commit()
             print("Credenciais do YouTube salvas no banco com sucesso.")
         except Exception as e:
