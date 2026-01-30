@@ -274,6 +274,13 @@ class YouTubeService:
                     "thumbnail": snippet['thumbnails']['default']['url']
                 }
             return {"connected": False, "error": "Nenhum canal encontrado"}
+        except HttpError as e:
+            if e.resp.status == 403 and "accessNotConfigured" in str(e):
+                return {
+                    "connected": False, 
+                    "error": "A API 'YouTube Data API v3' não está ativada no Google Cloud. Ative-a no Console do Google Cloud."
+                }
+            return {"connected": False, "error": f"Erro do Google: {str(e)}"}
         except Exception as e:
             return {"connected": False, "error": f"Erro ao buscar canal: {str(e)}"}
 
