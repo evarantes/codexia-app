@@ -32,6 +32,22 @@ def get_reports(db: Session = Depends(get_db)):
     """Retorna o histórico de relatórios de monitoramento"""
     return db.query(ChannelReport).order_by(ChannelReport.id.desc()).limit(20).all()
 
+@router.get("/debug-auth")
+def debug_auth(db: Session = Depends(get_db)):
+    """Debug endpoint to check DB credentials state"""
+    settings = db.query(Settings).first()
+    if not settings:
+        return {"status": "No settings found"}
+    
+    return {
+        "status": "Settings found",
+        "has_client_id": bool(settings.youtube_client_id),
+        "client_id_prefix": settings.youtube_client_id[:5] + "..." if settings.youtube_client_id else None,
+        "has_client_secret": bool(settings.youtube_client_secret),
+        "has_refresh_token": bool(settings.youtube_refresh_token),
+        "refresh_token_prefix": settings.youtube_refresh_token[:5] + "..." if settings.youtube_refresh_token else None
+    }
+
 @router.get("/stats")
 def get_stats():
     service = YouTubeService()

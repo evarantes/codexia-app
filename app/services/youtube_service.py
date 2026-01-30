@@ -249,34 +249,33 @@ class YouTubeService:
             return []
 
     def get_channel_stats(self):
-        """Retorna estatísticas do canal"""
+        """Retorna estatísticas do canal conectado"""
         if not self.service:
-            return {
-                "title": "Desconectado",
-                "subscribers": 0,
-                "views": 0,
-                "videos": 0,
-                "connected": False
-            }
+            # Tentar descobrir POR QUE falhou
+            reason = "Autenticação falhou"
+            if not self.credentials:
+                reason = "Credenciais não encontradas no banco"
+            elif not self.credentials.valid:
+                reason = "Credenciais inválidas ou expiradas"
+                
+            return {"connected": False, "error": reason}
         
         try:
-            item = self._get_my_channel()
-            
-            if item:
+            channel = self._get_my_channel()
+            if channel:
+                stats = channel['statistics']
+                snippet = channel['snippet']
                 return {
-                    "id": item['id'],
-                    "title": item['snippet']['title'],
-                    "description": item['snippet']['description'],
-                    "subscribers": item['statistics']['subscriberCount'],
-                    "views": item['statistics']['viewCount'],
-                    "videos": item['statistics']['videoCount'],
-                    "connected": True
+                    "connected": True,
+                    "title": snippet['title'],
+                    "subscribers": stats['subscriberCount'],
+                    "views": stats['viewCount'],
+                    "videos": stats['videoCount'],
+                    "thumbnail": snippet['thumbnails']['default']['url']
                 }
+            return {"connected": False, "error": "Nenhum canal encontrado"}
         except Exception as e:
-            print(f"Erro ao buscar stats do YouTube: {e}")
-            return {"error": str(e), "connected": False}
-            
-        return {"error": "Canal não encontrado", "connected": False}
+            return {"connected": False, "error": f"Erro ao buscar canal: {str(e)}"}
 
     def upload_video(self, file_path, title, description, tags=[], category_id="27"): # 27 = Education
         """Faz upload de um vídeo para o YouTube"""
