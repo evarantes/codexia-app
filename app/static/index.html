@@ -446,6 +446,9 @@
                             <div>
                                 <h2 class="text-xl font-bold">{{ youtubeStats.title || 'Canal Desconectado' }}</h2>
                                 <p class="text-sm text-gray-500">{{ youtubeStats.connected ? 'Monitoramento Ativo (10min)' : 'Conecte seu canal para ativar a automação' }}</p>
+                                <div v-if="!youtubeStats.connected && youtubeStats.error" class="text-xs text-red-600 font-bold mt-1 bg-red-50 p-1 rounded border border-red-200">
+                                    <i class="fas fa-exclamation-triangle"></i> {{ youtubeStats.error }}
+                                </div>
                             </div>
                         </div>
                         <div class="flex gap-2">

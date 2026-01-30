@@ -160,8 +160,13 @@ class YouTubeService:
                 settings = Settings()
                 db.add(settings)
             
-            settings.youtube_refresh_token = self.credentials.refresh_token
+            # Garantir que temos refresh_token
+            if not self.credentials.refresh_token:
+                print("AVISO: Google não retornou refresh_token. Mantendo o anterior se existir.")
+            else:
+                settings.youtube_refresh_token = self.credentials.refresh_token.strip()
             
+            # Garantir que temos client_id e client_secret antes de salvar
             if self.credentials.client_id:
                 settings.youtube_client_id = self.credentials.client_id.strip()
             if self.credentials.client_secret:
