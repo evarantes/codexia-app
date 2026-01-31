@@ -193,12 +193,18 @@
 
             <!-- Books Tab -->
             <div v-if="currentTab === 'books'">
-                <div class="flex justify-between items-center mb-6">
+                <div class="flex justify-between items-center mb-4">
                     <h1 class="text-3xl font-bold text-gray-800">Meus Livros</h1>
-                    <button @click="openAddBookModal" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">
-                        <i class="fas fa-plus"></i> Novo Livro
-                    </button>
+                    <div class="flex gap-2">
+                        <a href="#" @click="currentTab = 'book_factory'; fetchFactoryDrafts()" class="text-amber-600 hover:text-amber-700 text-sm font-medium flex items-center gap-1">
+                            <i class="fas fa-industry"></i> Criar com rascunho (Fábrica de Livros)
+                        </a>
+                        <button @click="openAddBookModal" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">
+                            <i class="fas fa-plus"></i> Novo Livro
+                        </button>
+                    </div>
                 </div>
+                <p class="text-sm text-gray-500 mb-4">Para criar livros com IA, capa gerada e opção de rascunho, use a <strong>Fábrica de Livros</strong>.</p>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div v-for="book in books" :key="book.id" class="bg-white rounded-lg shadow overflow-hidden">
                         <img :src="getBookCover(book)" class="w-full h-48 object-cover bg-gray-100" @error="handleCoverError($event)" alt="Capa do livro">
@@ -1316,6 +1322,7 @@
                             <div v-if="!generatedCovers.length" class="text-center py-6 bg-white rounded border border-dashed">
                                 <i class="fas fa-magic text-4xl text-purple-300 mb-3"></i>
                                 <p class="text-gray-600 mb-4">A IA irá analisar o conteúdo do seu livro e gerar 3 opções de capa exclusivas.</p>
+                                <p class="text-sm text-amber-700 mb-4 bg-amber-50 p-2 rounded"><i class="fas fa-info-circle"></i> Preencha <strong>Título</strong> e <strong>Autor</strong> nos Metadados (abaixo) antes de gerar — assim o texto da capa ficará correto.</p>
                                 <button @click="generateCovers" :disabled="factoryLoading" 
                                         class="bg-purple-600 text-white px-6 py-2 rounded-full hover:bg-purple-700 disabled:opacity-50 transition shadow-md">
                                     <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
@@ -1782,6 +1789,7 @@
                     // Cover Logic
                     coverMode: 'upload',
                     generatedCovers: [],
+                    generatedCoversData: [],
                     previewCoverUrl: null,
                     selectedCoverIndex: null,
 
@@ -1796,6 +1804,7 @@
                     factoryData: {
                         metadata: { title: '', author: '', subtitle: '' },
                         cover_filename: null,
+                        cover_base64: null,
                         raw_text_preview: '',
                         sections: {
                             pre_textual: {
@@ -3191,6 +3200,7 @@
                             metadata: this.factoryData.metadata,
                             sections: this.factoryData.sections,
                             cover_filename: this.factoryData.cover_filename || null,
+                            cover_base64: this.factoryData.cover_base64 || null,
                             manuscript_filename: this.factoryData.manuscript_filename || null
                         };
                         const url = this.factoryDraftId ? `/factory/drafts/${this.factoryDraftId}` : '/factory/draft';
@@ -3234,6 +3244,7 @@
                         this.factoryData.metadata = data.metadata || this.factoryData.metadata;
                         this.factoryData.sections = data.sections || this.factoryData.sections;
                         this.factoryData.cover_filename = data.cover_filename || null;
+                        this.factoryData.cover_base64 = data.cover_base64 || null;
                         this.factoryData.manuscript_filename = data.manuscript_filename || null;
                         this.factoryDraftId = id;
                         const pt = (data.sections && data.sections.pre_textual) || {};
@@ -3313,6 +3324,7 @@
                 async generateCovers() {
                     this.factoryLoading = true;
                     this.generatedCovers = [];
+                    this.generatedCoversData = [];
                     try {
                         const desc = (this.factoryData.sections?.textual || []).map(c => c.content).join(" ").substring(0, 500)
                             || (this.factoryData.metadata?.title || "Livro");
@@ -3327,12 +3339,17 @@
                             })
                         });
                         const data = await res.json().catch(() => ({}));
-                        this.generatedCovers = Array.isArray(data.covers) ? data.covers : [];
+                        const raw = Array.isArray(data.covers) ? data.covers : [];
+                        this.generatedCoversData = raw.map(c => typeof c === 'string' ? { url: c, base64: null } : (c || {}));
+                        this.generatedCovers = this.generatedCoversData.map(c => (c.url != null ? c.url : (typeof c === 'string' ? c : '')));
                         if (!res.ok) {
                             alert("Erro ao gerar capas. Verifique a chave da OpenAI nas Configurações.");
                         } else if (this.generatedCovers.length === 0) {
                             alert("Nenhuma capa retornada. Verifique a chave da OpenAI e tente novamente.");
                         }
+                        this.selectedCoverIndex = null;
+                        this.factoryData.cover_filename = null;
+                        this.factoryData.cover_base64 = null;
                     } catch (e) {
                         alert("Erro ao gerar capas: " + e);
                     } finally {
@@ -3341,7 +3358,14 @@
                 },
                 selectCover(idx) {
                     this.selectedCoverIndex = idx;
-                    this.factoryData.cover_filename = this.generatedCovers[idx];
+                    const item = this.generatedCoversData[idx];
+                    if (item) {
+                        this.factoryData.cover_filename = item.url || this.generatedCovers[idx];
+                        this.factoryData.cover_base64 = item.base64 || null;
+                    } else {
+                        this.factoryData.cover_filename = this.generatedCovers[idx];
+                        this.factoryData.cover_base64 = null;
+                    }
                 },
                 async regenerateSection(sectionType) {
                     // Logic to call AI for a specific section

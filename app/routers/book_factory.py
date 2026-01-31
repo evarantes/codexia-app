@@ -32,6 +32,7 @@ class BookGenerationRequest(BaseModel):
     metadata: dict
     sections: dict
     cover_filename: Optional[str] = None
+    cover_base64: Optional[str] = None  # Imagem em base64 para persistir (ex: Render sem disco)
 
 @router.post("/upload-manuscript")
 async def upload_manuscript(
@@ -181,7 +182,7 @@ class GenerateCoverRequest(BaseModel):
 @router.post("/generate-covers")
 async def generate_covers(request: GenerateCoverRequest):
     context_text = request.context or request.description or "Livro sem descrição"
-    saved_urls = []
+    result = []  # [{ url, base64? }] para persistir capa mesmo em ambiente efêmero (Render)
     try:
         ai_service = AIContentGenerator()
         urls = ai_service.generate_cover_options(
@@ -190,26 +191,29 @@ async def generate_covers(request: GenerateCoverRequest):
         )
         COVERS_DIR = os.path.join("app", "static", "covers")
         os.makedirs(COVERS_DIR, exist_ok=True)
+        import base64
         for url in (urls or []):
             if url and str(url).startswith("http"):
                 try:
                     response = requests.get(url, stream=True, timeout=60)
                     if response.status_code == 200:
+                        img_bytes = response.content
                         filename = f"cover_{uuid.uuid4().hex}.png"
                         file_path = os.path.join(COVERS_DIR, filename)
                         with open(file_path, "wb") as out_file:
-                            shutil.copyfileobj(response.raw, out_file)
-                        saved_urls.append(f"/static/covers/{filename}")
+                            out_file.write(img_bytes)
+                        b64 = base64.b64encode(img_bytes).decode("utf-8")
+                        result.append({"url": f"/static/covers/{filename}", "base64": b64})
                     else:
-                        saved_urls.append(url)
+                        result.append({"url": url, "base64": None})
                 except Exception as e:
                     print(f"Failed to download cover: {e}")
-                    saved_urls.append(url)
+                    result.append({"url": url, "base64": None})
             elif url:
-                saved_urls.append(url)
+                result.append({"url": url, "base64": None})
     except Exception as e:
         print(f"generate-covers error: {e}")
-    return {"covers": saved_urls}
+    return {"covers": result}
 
 def resolve_cover_path(filename: str) -> Optional[str]:
     if not filename:
@@ -221,7 +225,6 @@ def resolve_cover_path(filename: str) -> Optional[str]:
         return p1
         
     # 2. Check in app/static (AI generated, passed as 'covers/xxx.png' or '/static/covers/xxx.png')
-    # Remove '/static/' prefix if present
     clean_name = filename
     if clean_name.startswith("/static/"):
         clean_name = clean_name.replace("/static/", "", 1)
@@ -231,6 +234,23 @@ def resolve_cover_path(filename: str) -> Optional[str]:
         return p2
         
     return None
+
+
+def resolve_cover_from_base64(cover_base64: Optional[str]) -> Optional[str]:
+    """Se cover_base64 fornecido, grava em arquivo temp e retorna o caminho."""
+    if not cover_base64:
+        return None
+    try:
+        import base64
+        import tempfile
+        img_data = base64.b64decode(cover_base64)
+        fd, path = tempfile.mkstemp(suffix=".png")
+        with os.fdopen(fd, "wb") as f:
+            f.write(img_data)
+        return path
+    except Exception as e:
+        print(f"Erro ao decodificar capa base64: {e}")
+        return None
 
 @router.post("/revise")
 async def revise_book(request: BookGenerationRequest):
@@ -297,11 +317,15 @@ async def preview_book_pdf(request: BookGenerationRequest):
     preview_filename = f"preview_{request.metadata.get('title', 'book')}.pdf"
     output_path = os.path.join(OUTPUT_DIR, preview_filename)
     
+    cover_path = resolve_cover_path(request.cover_filename)
+    if not cover_path and request.cover_base64:
+        cover_path = resolve_cover_from_base64(request.cover_base64)
+    
     assembler = BookAssembler(output_path=output_path)
     
     book_data = {
         "metadata": request.metadata,
-        "cover_image": resolve_cover_path(request.cover_filename),
+        "cover_image": cover_path,
         "sections": request.sections
     }
     
@@ -319,6 +343,7 @@ class SaveDraftRequest(BaseModel):
     metadata: dict
     sections: dict
     cover_filename: Optional[str] = None
+    cover_base64: Optional[str] = None
     manuscript_filename: Optional[str] = None
 
 @router.post("/draft")
@@ -369,6 +394,7 @@ async def get_draft(draft_id: int, db: Session = Depends(get_db)):
         "metadata": metadata,
         "sections": sections,
         "cover_filename": draft.cover_filename,
+        "cover_base64": draft.cover_base64,
         "manuscript_filename": draft.manuscript_filename,
     }
 
@@ -384,6 +410,7 @@ async def update_draft(draft_id: int, request: SaveDraftRequest, db: Session = D
         draft.metadata_json = json.dumps(request.metadata, ensure_ascii=False)
         draft.sections_json = json.dumps(request.sections, ensure_ascii=False)
         draft.cover_filename = request.cover_filename
+        draft.cover_base64 = request.cover_base64
         draft.manuscript_filename = request.manuscript_filename
         db.commit()
         db.refresh(draft)
@@ -401,11 +428,16 @@ async def generate_from_draft(draft_id: int, db: Session = Depends(get_db)):
     metadata = json.loads(draft.metadata_json) if draft.metadata_json else {}
     sections = json.loads(draft.sections_json) if draft.sections_json else {}
     cover_filename = draft.cover_filename
+    cover_base64 = draft.cover_base64
+
+    cover_path = resolve_cover_path(cover_filename)
+    if not cover_path and cover_base64:
+        cover_path = resolve_cover_from_base64(cover_base64)
 
     assembler = BookAssembler(output_path=os.path.join(OUTPUT_DIR, f"{metadata.get('title', 'book')}.pdf"))
     book_data = {
         "metadata": metadata,
-        "cover_image": resolve_cover_path(cover_filename),
+        "cover_image": cover_path,
         "sections": sections,
     }
     try:
@@ -450,28 +482,34 @@ async def delete_draft(draft_id: int, db: Session = Depends(get_db)):
 async def generate_book_pdf(request: BookGenerationRequest, db: Session = Depends(get_db)):
     """
     Generates the final PDF based on the user-approved structure.
+    Usa cover_base64 quando disponível (persiste capa em ambiente efêmero como Render).
     """
+    cover_path = resolve_cover_path(request.cover_filename)
+    if not cover_path and request.cover_base64:
+        cover_path = resolve_cover_from_base64(request.cover_base64)
+    
     assembler = BookAssembler(output_path=os.path.join(OUTPUT_DIR, f"{request.metadata.get('title', 'book')}.pdf"))
     
-    # Reconstruct full data for assembler
     book_data = {
         "metadata": request.metadata,
-        "cover_image": resolve_cover_path(request.cover_filename),
+        "cover_image": cover_path,
         "sections": request.sections
     }
     
     output_file = assembler.create_book(book_data)
     
-    # Save to Database for "Meus Livros"
+    # cover_image_url: path ou None (para download/regeneração futura usa cover em full_text se base64)
+    cover_url_for_db = resolve_cover_path(request.cover_filename) or request.cover_filename
+    
     try:
         new_book = Book(
             title=request.metadata.get('title', 'Sem Título'),
             author=request.metadata.get('author', 'Autor'),
-            synopsis=request.sections.get('synopsis', ''),
-            full_text=json.dumps(request.sections), # Storing sections as JSON in full_text for now
-            price=29.90, # Default price
+            synopsis=request.sections.get('pre_textual', {}).get('synopsis', '') if isinstance(request.sections, dict) else '',
+            full_text=json.dumps(request.sections),
+            price=29.90,
             payment_link="",
-            cover_image_url=resolve_cover_path(request.cover_filename),
+            cover_image_url=cover_url_for_db,
             file_path=f"/static/generated/{os.path.basename(output_file)}"
         )
         db.add(new_book)

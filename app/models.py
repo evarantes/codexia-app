@@ -31,6 +31,7 @@ class BookDraft(Base):
     metadata_json = Column(Text)  # JSON: title, author, subtitle, style, etc.
     sections_json = Column(Text)  # JSON: pre_textual, textual, post_textual
     cover_filename = Column(String, nullable=True)
+    cover_base64 = Column(Text, nullable=True)  # Imagem em base64 para persistir (Render sem disco)
     manuscript_filename = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
