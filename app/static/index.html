@@ -2104,16 +2104,20 @@
                 async submitAuthCode() {
                     if (!this.authCode) return alert("Por favor, cole o código.");
                     try {
+                        const code = String(this.authCode).trim().replace(/\s/g, '');
                         const res = await this.authFetch('/youtube/auth/exchange', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ code: this.authCode })
+                            body: JSON.stringify({ code })
                         });
                         if (res.ok) {
-                            alert("Conectado com sucesso!");
                             this.showAuthCodeModal = false;
                             this.authCode = '';
-                            this.fetchYoutubeStats();
+                            alert("Conectado com sucesso!");
+                            await this.fetchYoutubeStats();
+                            if (!this.youtubeStats.connected && this.youtubeStats.error) {
+                                alert("Conexão salva, mas ao verificar o canal ocorreu: " + this.youtubeStats.error);
+                            }
                         } else {
                             const data = await res.json();
                             alert("Erro: " + (data.detail || "Falha ao autenticar"));

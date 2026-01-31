@@ -6,7 +6,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.video_generator import VideoGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db
-from app.models import ScheduledVideo, ChannelReport
+from app.models import ScheduledVideo, ChannelReport, Settings
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -97,6 +97,9 @@ def exchange_code(data: Dict[str, str]):
     code = data.get("code")
     if not code:
         raise HTTPException(status_code=400, detail="Código não fornecido")
+    
+    # Sanitizar código: espaços e quebras de linha ao copiar do Google quebram a troca
+    code = str(code).strip().replace(" ", "").replace("\n", "").replace("\r", "")
     
     service = YouTubeService()
     success = service.exchange_code_for_token(code)

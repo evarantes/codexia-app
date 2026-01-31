@@ -5,6 +5,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 from app.database import SessionLocal
 from app.models import Settings
 
@@ -166,11 +167,16 @@ class YouTubeService:
             else:
                 settings.youtube_refresh_token = self.credentials.refresh_token.strip()
             
-            # Garantir que temos client_id e client_secret antes de salvar
-            if self.credentials.client_id:
+            # client_id e client_secret: usar do credentials ou preservar do settings
+            # (flow.credentials às vezes não inclui esses campos após fetch_token)
+            if getattr(self.credentials, 'client_id', None):
                 settings.youtube_client_id = self.credentials.client_id.strip()
-            if self.credentials.client_secret:
+            elif not settings.youtube_client_id:
+                print("AVISO: client_id não encontrado. Configure em Configurações.")
+            if getattr(self.credentials, 'client_secret', None):
                 settings.youtube_client_secret = self.credentials.client_secret.strip()
+            elif not settings.youtube_client_secret:
+                print("AVISO: client_secret não encontrado. Configure em Configurações.")
                 
             db.commit()
             print("Credenciais do YouTube salvas no banco com sucesso.")
