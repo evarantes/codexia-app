@@ -54,7 +54,7 @@
                 <a href="#" @click="currentTab = 'hotmart'; fetchBooks()" :class="{'bg-indigo-700': currentTab === 'hotmart'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-shopping-cart"></i> Hotmart Auto
                 </a>
-                <a href="#" @click="currentTab = 'book_factory'" :class="{'bg-indigo-700': currentTab === 'book_factory'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                <a href="#" @click="currentTab = 'book_factory'; fetchFactoryDrafts()" :class="{'bg-indigo-700': currentTab === 'book_factory'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-industry"></i> Fábrica de Livros
                 </a>
                 <a href="#" @click="currentTab = 'customers'" :class="{'bg-indigo-700': currentTab === 'customers'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
@@ -446,8 +446,16 @@
                             <div>
                                 <h2 class="text-xl font-bold">{{ youtubeStats.title || 'Canal Desconectado' }}</h2>
                                 <p class="text-sm text-gray-500">{{ youtubeStats.connected ? 'Monitoramento Ativo (10min)' : 'Conecte seu canal para ativar a automação' }}</p>
-                                <div v-if="!youtubeStats.connected && youtubeStats.error" class="text-xs text-red-600 font-bold mt-1 bg-red-50 p-1 rounded border border-red-200">
-                                    <i class="fas fa-exclamation-triangle"></i> {{ youtubeStats.error }}
+                                <div v-if="!youtubeStats.connected && youtubeStats.error" class="mt-2 p-3 rounded-lg border-2 border-amber-300 bg-amber-50 text-amber-900">
+                                    <p class="font-bold flex items-center gap-2">
+                                        <i class="fas fa-exclamation-triangle"></i> {{ youtubeStats.error }}
+                                    </p>
+                                    <p v-if="youtubeStats.error && youtubeStats.error.indexOf('YouTube Data API') !== -1" class="mt-2 text-sm">
+                                        <strong>Como corrigir:</strong> no mesmo projeto do Google Cloud onde você criou o Client ID/Secret, ative a API.
+                                        <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener" class="inline-flex items-center gap-1 mt-2 px-3 py-1.5 bg-amber-500 text-white rounded font-semibold hover:bg-amber-600">
+                                            <i class="fas fa-external-link-alt"></i> Abrir Console e ativar YouTube Data API v3
+                                        </a>
+                                    </p>
                                 </div>
                             </div>
                         </div>
@@ -1209,13 +1217,52 @@
                             <span v-else><i class="fas fa-robot"></i> Gerar Livro Completo</span>
                         </button>
                     </div>
+
+                    <!-- Meus Rascunhos -->
+                    <div class="mt-10 pt-6 border-t">
+                        <h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2">
+                            <i class="fas fa-file-alt text-amber-600"></i> Meus Rascunhos
+                        </h3>
+                        <p class="text-sm text-gray-500 mb-4">Rascunhos salvos para analisar e editar antes de gerar o PDF. Abra para editar, gerar o livro ou excluir.</p>
+                        <div v-if="factoryDrafts.length === 0" class="text-gray-400 text-sm py-4 bg-gray-50 rounded border border-dashed">
+                            Nenhum rascunho. Após a análise, use "Salvar como rascunho" no passo 2.
+                        </div>
+                        <ul v-else class="space-y-2">
+                            <li v-for="d in factoryDrafts" :key="d.id" class="flex items-center justify-between gap-4 p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100">
+                                <div class="min-w-0 flex-1">
+                                    <span class="font-semibold text-gray-800 block truncate">{{ d.title || 'Sem título' }}</span>
+                                    <span class="text-xs text-gray-500">{{ d.author || '—' }} · {{ d.updated_at ? new Date(d.updated_at).toLocaleDateString() : '' }}</span>
+                                </div>
+                                <div class="flex gap-2 shrink-0">
+                                    <button @click="loadFactoryDraft(d.id)" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">
+                                        <i class="fas fa-edit mr-1"></i> Editar
+                                    </button>
+                                    <button @click="generateFromDraft(d.id)" class="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700">
+                                        <i class="fas fa-file-pdf mr-1"></i> Gerar livro
+                                    </button>
+                                    <button @click="deleteFactoryDraft(d.id)" class="px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700">
+                                        <i class="fas fa-trash mr-1"></i> Excluir
+                                    </button>
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
                 </div>
 
                 <!-- Step 2: Configuration Wizard -->
                 <div v-if="factoryStep === 2" class="bg-white rounded-lg shadow p-6">
-                    <h2 class="text-xl font-bold mb-6 flex justify-between items-center">
-                        <span>2. Estrutura e Capa do Livro</span>
-                        <div class="flex gap-2">
+                    <h2 class="text-xl font-bold mb-6 flex justify-between items-center flex-wrap gap-2">
+                        <span class="flex items-center gap-2">
+                            2. Estrutura e Capa do Livro
+                            <button @click="factoryStep = 1; factoryDraftId = null" class="text-sm font-normal text-gray-500 hover:text-indigo-600">
+                                <i class="fas fa-arrow-left mr-1"></i> Voltar ao início
+                            </button>
+                        </span>
+                        <div class="flex flex-wrap gap-2">
+                            <button @click="saveFactoryDraft" :disabled="factoryLoading" class="bg-amber-500 text-white px-4 py-2 rounded text-sm hover:bg-amber-600 flex items-center gap-2" title="Salvar como rascunho para analisar e editar depois">
+                                <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-save"></i> Salvar como rascunho</span>
+                            </button>
                             <button @click="reviseBook" :disabled="factoryLoading" class="bg-yellow-500 text-white px-4 py-2 rounded text-sm hover:bg-yellow-600 flex items-center gap-2" title="Preencher seções vazias e completar capítulos">
                                 <i v-if="factoryLoading" class="fas fa-spinner fa-spin"></i>
                                 <span v-else><i class="fas fa-sync"></i> Revisar / Completar</span>
@@ -1767,6 +1814,8 @@
                             }
                         }
                     },
+                    factoryDrafts: [],
+                    factoryDraftId: null,
                     
                     // Task Tracking
                     currentTaskId: null,
@@ -1909,6 +1958,9 @@
                         content += "[Adicione o roteiro detalhado aqui]";
                         this.videoContent = content;
                     }
+                },
+                currentTab(tab) {
+                    if (tab === 'book_factory') this.fetchFactoryDrafts();
                 }
             },
             async mounted() {
@@ -3124,13 +3176,120 @@
                         const data = await res.json();
                         if (data.pdf_url) {
                             window.open(data.pdf_url, '_blank');
-                            // Refresh books list to show new book
                             this.fetchBooks();
                         }
                     } catch (e) {
                         alert("Erro ao gerar PDF final: " + e);
                     } finally {
                         this.factoryLoading = false;
+                    }
+                },
+                async saveFactoryDraft() {
+                    this.factoryLoading = true;
+                    try {
+                        const payload = {
+                            metadata: this.factoryData.metadata,
+                            sections: this.factoryData.sections,
+                            cover_filename: this.factoryData.cover_filename || null,
+                            manuscript_filename: this.factoryData.manuscript_filename || null
+                        };
+                        const url = this.factoryDraftId ? `/factory/drafts/${this.factoryDraftId}` : '/factory/draft';
+                        const method = this.factoryDraftId ? 'PUT' : 'POST';
+                        const res = await this.authFetch(url, {
+                            method,
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.factoryDraftId = data.id || this.factoryDraftId;
+                            await this.fetchFactoryDrafts();
+                            alert(data.message || "Rascunho salvo. Você pode editá-lo em 'Meus Rascunhos' ou gerar o livro quando quiser.");
+                        } else {
+                            alert("Erro ao salvar rascunho: " + (data.detail || "Desconhecido"));
+                        }
+                    } catch (e) {
+                        alert("Erro ao salvar rascunho: " + e);
+                    } finally {
+                        this.factoryLoading = false;
+                    }
+                },
+                async fetchFactoryDrafts() {
+                    try {
+                        const res = await this.authFetch('/factory/drafts');
+                        if (res.ok) this.factoryDrafts = await res.json();
+                    } catch (e) {
+                        console.error("Erro ao carregar rascunhos:", e);
+                    }
+                },
+                async loadFactoryDraft(id) {
+                    this.factoryLoading = true;
+                    try {
+                        const res = await this.authFetch(`/factory/drafts/${id}`);
+                        if (!res.ok) {
+                            alert("Rascunho não encontrado.");
+                            return;
+                        }
+                        const data = await res.json();
+                        this.factoryData.metadata = data.metadata || this.factoryData.metadata;
+                        this.factoryData.sections = data.sections || this.factoryData.sections;
+                        this.factoryData.cover_filename = data.cover_filename || null;
+                        this.factoryData.manuscript_filename = data.manuscript_filename || null;
+                        this.factoryDraftId = id;
+                        const pt = (data.sections && data.sections.pre_textual) || {};
+                        this.factoryConfig.hasDedication = !!(pt.dedication && pt.dedication.trim());
+                        this.factoryConfig.hasAcknowledgments = !!(pt.acknowledgments && pt.acknowledgments.trim());
+                        this.factoryConfig.hasIntroduction = !!(pt.introduction && pt.introduction.trim());
+                        this.factoryConfig.hasEpigraph = !!(pt.epigraph && pt.epigraph.trim());
+                        this.factoryConfig.hasPreface = !!(pt.preface && pt.preface.trim());
+                        const post = (data.sections && data.sections.post_textual) || {};
+                        this.factoryConfig.hasEpilogue = !!(post.epilogue && post.epilogue.trim());
+                        this.factoryStep = 2;
+                    } catch (e) {
+                        alert("Erro ao carregar rascunho: " + e);
+                    } finally {
+                        this.factoryLoading = false;
+                    }
+                },
+                async generateFromDraft(id) {
+                    if (!confirm("Gerar o PDF deste rascunho? O livro será salvo em Meus Livros e o rascunho será removido.")) return;
+                    this.factoryLoading = true;
+                    try {
+                        const res = await this.authFetch(`/factory/drafts/${id}/generate`, { method: 'POST' });
+                        const data = await res.json();
+                        if (data.pdf_url) {
+                            window.open(data.pdf_url, '_blank');
+                            await this.fetchFactoryDrafts();
+                            this.fetchBooks();
+                            this.factoryStep = 1;
+                            this.factoryDraftId = null;
+                            alert(data.message || "Livro gerado com sucesso!");
+                        } else {
+                            alert("Erro: " + (data.detail || "Falha ao gerar."));
+                        }
+                    } catch (e) {
+                        alert("Erro ao gerar livro: " + e);
+                    } finally {
+                        this.factoryLoading = false;
+                    }
+                },
+                async deleteFactoryDraft(id) {
+                    if (!confirm("Excluir este rascunho? Esta ação não pode ser desfeita.")) return;
+                    try {
+                        const res = await this.authFetch(`/factory/drafts/${id}`, { method: 'DELETE' });
+                        if (res.ok) {
+                            await this.fetchFactoryDrafts();
+                            if (this.factoryDraftId === id) {
+                                this.factoryDraftId = null;
+                                this.factoryStep = 1;
+                            }
+                            alert("Rascunho excluído.");
+                        } else {
+                            const data = await res.json();
+                            alert("Erro: " + (data.detail || "Não foi possível excluir."));
+                        }
+                    } catch (e) {
+                        alert("Erro ao excluir: " + e);
                     }
                 },
                 async uploadCover(event) {

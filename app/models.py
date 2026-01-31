@@ -20,6 +20,21 @@ class Book(Base):
     posts = relationship("Post", back_populates="book")
     sales = relationship("Sale", back_populates="book")
 
+
+class BookDraft(Base):
+    """Rascunhos da Fábrica de Livros: análise e estrutura antes da geração do PDF."""
+    __tablename__ = "book_drafts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, index=True)
+    author = Column(String, nullable=True)
+    metadata_json = Column(Text)  # JSON: title, author, subtitle, style, etc.
+    sections_json = Column(Text)  # JSON: pre_textual, textual, post_textual
+    cover_filename = Column(String, nullable=True)
+    manuscript_filename = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class Post(Base):
     __tablename__ = "posts"
 

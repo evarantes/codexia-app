@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.services.book_assembler import BookAssembler
 from app.services.ai_generator import AIContentGenerator
 from app.database import get_db
-from app.models import Book
+from app.models import Book, BookDraft
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from docx import Document
@@ -312,6 +312,139 @@ async def preview_book_pdf(request: BookGenerationRequest):
     except Exception as e:
         print(f"Error generating preview: {e}")
         return {"status": "error", "detail": str(e)}
+
+# ----- Rascunhos: salvar análise para editar depois e gerar ou excluir -----
+
+class SaveDraftRequest(BaseModel):
+    metadata: dict
+    sections: dict
+    cover_filename: Optional[str] = None
+    manuscript_filename: Optional[str] = None
+
+@router.post("/draft")
+async def save_draft(request: SaveDraftRequest, db: Session = Depends(get_db)):
+    """Salva a estrutura atual como rascunho para analisar/editar depois."""
+    try:
+        draft = BookDraft(
+            title=request.metadata.get("title", "Sem Título"),
+            author=request.metadata.get("author", ""),
+            metadata_json=json.dumps(request.metadata, ensure_ascii=False),
+            sections_json=json.dumps(request.sections, ensure_ascii=False),
+            cover_filename=request.cover_filename,
+            manuscript_filename=request.manuscript_filename,
+        )
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return {"id": draft.id, "title": draft.title, "message": "Rascunho salvo com sucesso."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/drafts")
+async def list_drafts(db: Session = Depends(get_db)):
+    """Lista todos os rascunhos (mais recentes primeiro)."""
+    drafts = db.query(BookDraft).order_by(BookDraft.updated_at.desc()).all()
+    return [
+        {
+            "id": d.id,
+            "title": d.title,
+            "author": d.author,
+            "cover_filename": d.cover_filename,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+            "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+        }
+        for d in drafts
+    ]
+
+@router.get("/drafts/{draft_id}")
+async def get_draft(draft_id: int, db: Session = Depends(get_db)):
+    """Retorna um rascunho no formato usado pelo editor (metadata, sections, cover_filename)."""
+    draft = db.query(BookDraft).filter(BookDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    metadata = json.loads(draft.metadata_json) if draft.metadata_json else {}
+    sections = json.loads(draft.sections_json) if draft.sections_json else {}
+    return {
+        "metadata": metadata,
+        "sections": sections,
+        "cover_filename": draft.cover_filename,
+        "manuscript_filename": draft.manuscript_filename,
+    }
+
+@router.put("/drafts/{draft_id}")
+async def update_draft(draft_id: int, request: SaveDraftRequest, db: Session = Depends(get_db)):
+    """Atualiza um rascunho existente."""
+    draft = db.query(BookDraft).filter(BookDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    try:
+        draft.title = request.metadata.get("title", draft.title)
+        draft.author = request.metadata.get("author", draft.author)
+        draft.metadata_json = json.dumps(request.metadata, ensure_ascii=False)
+        draft.sections_json = json.dumps(request.sections, ensure_ascii=False)
+        draft.cover_filename = request.cover_filename
+        draft.manuscript_filename = request.manuscript_filename
+        db.commit()
+        db.refresh(draft)
+        return {"id": draft.id, "title": draft.title, "message": "Rascunho atualizado."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/drafts/{draft_id}/generate")
+async def generate_from_draft(draft_id: int, db: Session = Depends(get_db)):
+    """Gera o PDF a partir do rascunho, salva em Meus Livros e remove o rascunho."""
+    draft = db.query(BookDraft).filter(BookDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    metadata = json.loads(draft.metadata_json) if draft.metadata_json else {}
+    sections = json.loads(draft.sections_json) if draft.sections_json else {}
+    cover_filename = draft.cover_filename
+
+    assembler = BookAssembler(output_path=os.path.join(OUTPUT_DIR, f"{metadata.get('title', 'book')}.pdf"))
+    book_data = {
+        "metadata": metadata,
+        "cover_image": resolve_cover_path(cover_filename),
+        "sections": sections,
+    }
+    try:
+        output_file = assembler.create_book(book_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar PDF: {e}")
+
+    try:
+        new_book = Book(
+            title=metadata.get("title", "Sem Título"),
+            author=metadata.get("author", "Autor"),
+            synopsis=sections.get("pre_textual", {}).get("synopsis", ""),
+            full_text=json.dumps(sections),
+            price=29.90,
+            payment_link="",
+            cover_image_url=resolve_cover_path(cover_filename),
+            file_path=f"/static/generated/{os.path.basename(output_file)}",
+        )
+        db.add(new_book)
+        db.commit()
+        db.refresh(new_book)
+    except Exception as e:
+        print(f"Erro ao salvar livro no banco: {e}")
+
+    db.delete(draft)
+    db.commit()
+
+    return {"status": "success", "pdf_url": f"/static/generated/{os.path.basename(output_file)}", "message": "Livro gerado e rascunho removido."}
+
+@router.delete("/drafts/{draft_id}")
+async def delete_draft(draft_id: int, db: Session = Depends(get_db)):
+    """Exclui um rascunho."""
+    draft = db.query(BookDraft).filter(BookDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    db.delete(draft)
+    db.commit()
+    return {"message": "Rascunho excluído."}
+
 
 @router.post("/generate-pdf")
 async def generate_book_pdf(request: BookGenerationRequest, db: Session = Depends(get_db)):
