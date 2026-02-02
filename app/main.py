@@ -14,8 +14,11 @@ from app.routers.auth import get_password_hash
 # Carregar variáveis de ambiente
 load_dotenv()
 
-# Create tables
-Base.metadata.create_all(bind=engine)
+# Create tables (não derrubar o processo se o banco estiver inacessível no startup, ex.: Render)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"AVISO: create_all falhou no startup: {e}. O app sobe mesmo assim; migrações rodam no lifespan.")
 
 def run_migrations(engine):
     try:
@@ -122,6 +125,9 @@ def run_migrations(engine):
                     if "hotmart_token_expires_at" not in settings_columns:
                         print("Migrating: Adding hotmart_token_expires_at to settings...")
                         conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_token_expires_at TIMESTAMP"))
+                    if "suno_api_key" not in settings_columns:
+                        print("Migrating: Adding suno_api_key to settings...")
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN suno_api_key TEXT"))
                     conn.commit()
 
             # Book drafts: cover_base64 para persistir capa em ambiente efêmero

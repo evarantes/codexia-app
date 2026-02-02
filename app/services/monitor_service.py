@@ -1,6 +1,4 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.services.youtube_service import YouTubeService
-from app.services.ai_generator import AIContentGenerator
 from app.services.video_processing import process_scheduled_video
 from app.database import SessionLocal
 from app.models import ChannelReport, ScheduledVideo
@@ -174,6 +172,7 @@ class MonitorService:
             ).all()
             
             if videos_to_upload:
+                from app.services.youtube_service import YouTubeService
                 yt_service = YouTubeService()
                 for video in videos_to_upload:
                     logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
@@ -264,6 +263,10 @@ class MonitorService:
             db.close()
 
     def check_channel_status(self):
+        # Lazy import para economizar memória no startup
+        from app.services.youtube_service import YouTubeService
+        from app.services.ai_generator import AIContentGenerator
+
         logger.info(f"[{datetime.datetime.now()}] Executando verificação de canal...")
         db = SessionLocal()
         try:

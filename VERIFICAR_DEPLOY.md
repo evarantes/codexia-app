@@ -63,6 +63,17 @@
 
 ---
 
+## 🔴 ERRO "DEPLOY FAILED" / "EXITED WITH STATUS 1"
+
+Se no Render aparecer **"Deploy failed"** com **"Exited with status 1 while running your code"**:
+
+1. **Veja os Logs do deploy:** Dashboard → codexia → **Logs** (ou clique no evento "Deploy failed" → **View logs**). A última linha costuma mostrar o erro real (ex.: `ModuleNotFoundError`, `ImportError`, falha de conexão com o banco).
+2. **O que foi feito no código:** O `Base.metadata.create_all(bind=engine)` no startup foi envolvido em `try/except` — se o banco estiver inacessível ao subir, o app não cai mais com status 1; as migrações rodam no lifespan.
+3. **Repositório:** Confirme que o push está indo para o **mesmo repositório** que o Render usa (ex.: `evarantes/codexia-app`). Se o Render estiver ligado a outro repo ou branch, as alterações não entram no deploy.
+4. **Depois de corrigir:** Faça commit e push e aguarde um novo deploy. Se ainda falhar, copie as últimas linhas dos **Logs** do deploy e use para depurar.
+
+---
+
 ## 🔴 ERRO "RAN OUT OF MEMORY" (512MB) NO RENDER
 
 Se no Render aparecer **"Instance failed: Ran out of memory (used over 512MB)"**:
