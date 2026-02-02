@@ -4,10 +4,12 @@ import gc
 import datetime
 from app.database import SessionLocal
 from app.models import ScheduledVideo
-from app.services.ai_generator import AIContentGenerator
-from app.services.video_generator import VideoGenerator
 
 def process_scheduled_video(video_id: int):
+    # Lazy import para reduzir uso de memória no startup (moviepy/PIL/numpy são pesados)
+    from app.services.ai_generator import AIContentGenerator
+    from app.services.video_generator import VideoGenerator
+
     # Re-instanciar DB session pois estamos em thread separada
     db = SessionLocal()
     video = None

@@ -577,15 +577,24 @@ class AIContentGenerator:
             content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
             prompts = json.loads(content).get("prompts", [])
             
+            # Título e autor devem aparecer exatamente como especificado na capa
+            title_display = title.strip() if title else "Livro"
+            author_display = author.strip() if author else ""
+            subtitle_display = subtitle.strip() if subtitle else ""
+            
             image_urls = []
             for p in prompts[:n]:
+                text_instruction = f'Text on the cover must read exactly: "{title_display}"'
+                if author_display:
+                    text_instruction += f' and "by {author_display}" or "{author_display}"'
+                if subtitle_display:
+                    text_instruction += f', subtitle: "{subtitle_display}"'
+                text_instruction += ". No typos, no variations."
+                
                 dalle_prompt = f"""
-                A professional book cover design.
-                Title: "{title}"
-                Author: "{author}"
-                Subtitle: "{subtitle}"
-                Visual Art: {p}
-                Layout: Title clearly visible, author legible, high quality, cinematic lighting, 8k resolution.
+                Professional book cover design. {text_instruction}
+                Visual style: {p}
+                Layout: Large bold title at top, author name below, high quality, cinematic lighting, 8k resolution.
                 """
                 try:
                     img_res = client.images.generate(

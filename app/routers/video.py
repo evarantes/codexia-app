@@ -4,8 +4,6 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Post
-from app.services.video_generator import VideoGenerator
-from app.services.ai_generator import AIContentGenerator
 import uuid
 
 router = APIRouter(prefix="/video", tags=["Video"])
@@ -28,6 +26,9 @@ class CreateVideoRequest(BaseModel):
 
 @router.post("/create")
 def create_video(request: CreateVideoRequest):
+    # Lazy import para reduzir memória no startup (moviepy/PIL/numpy)
+    from app.services.ai_generator import AIContentGenerator
+    from app.services.video_generator import VideoGenerator
     try:
         ai_service = AIContentGenerator()
         video_gen = VideoGenerator(ai_service=ai_service)
@@ -72,9 +73,9 @@ def create_video(request: CreateVideoRequest):
 
 @router.post("/generate")
 def generate_video(request: VideoRequest):
+    from app.services.video_generator import VideoGenerator
     try:
         filename = f"{uuid.uuid4()}.mp4"
-        # Instancia sob demanda para evitar problemas de startup
         local_video_gen = VideoGenerator()
         video_url = local_video_gen.generate_simple_video(request.title, request.script, filename)
         return {"video_url": video_url}
@@ -84,17 +85,15 @@ def generate_video(request: VideoRequest):
 
 @router.post("/generate-auto")
 def generate_auto_video(request: AutoVideoRequest, db: Session = Depends(get_db)):
+    from app.services.ai_generator import AIContentGenerator
+    from app.services.video_generator import VideoGenerator
     try:
         book = db.query(Book).filter(Book.id == request.book_id).first()
         if not book:
             raise HTTPException(status_code=404, detail="Book not found")
         
-        # 1. Gerar Roteiro com IA
         ai_service = AIContentGenerator()
         script_plan = ai_service.generate_video_script(book.title, book.synopsis, request.style)
-        
-        # 2. Gerar Vídeo
-        # Instancia VideoGenerator passando ai_service para gerar imagens
         video_gen = VideoGenerator(ai_service=ai_service)
         
         # Resolve caminho da capa se existir

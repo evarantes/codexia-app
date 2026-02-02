@@ -7,8 +7,6 @@ import uuid
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from app.services.ai_generator import AIContentGenerator
-from app.services.video_generator import VideoGenerator
 from app.services.suno_service import generate_song_with_vocals
 from app.routers.auth import get_current_user
 from app.models import User
@@ -56,6 +54,7 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
             raise HTTPException(status_code=503, detail=result.get("error", "Suno falhou."))
 
         # 2. Fallback: instrumental (MusicGen)
+        from app.services.ai_generator import AIContentGenerator
         ai = AIContentGenerator()
         music_prompt = ai.lyrics_to_music_prompt(request.lyrics, request.title, request.genre)
         raw_audio = ai.generate_music(music_prompt)
@@ -106,6 +105,8 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
     if not os.path.exists(music_path):
         raise HTTPException(status_code=404, detail="Arquivo de música não encontrado. Gere a música novamente.")
     try:
+        from app.services.ai_generator import AIContentGenerator
+        from app.services.video_generator import VideoGenerator
         ai = AIContentGenerator()
         video_gen = VideoGenerator(ai_service=ai)
         scenes = ai.lyrics_to_clip_scenes(request.lyrics, request.title)

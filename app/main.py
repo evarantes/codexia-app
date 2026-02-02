@@ -124,6 +124,15 @@ def run_migrations(engine):
                         conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_token_expires_at TIMESTAMP"))
                     conn.commit()
 
+            # Book drafts: cover_base64 para persistir capa em ambiente efêmero
+            if "book_drafts" in inspector.get_table_names():
+                bd_columns = [c["name"] for c in inspector.get_columns("book_drafts")]
+                if "cover_base64" not in bd_columns:
+                    print("Migrating: Adding cover_base64 to book_drafts...")
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE book_drafts ADD COLUMN cover_base64 TEXT"))
+                        conn.commit()
+
 
     except Exception as e:
         print(f"Migration warning: {e}")
@@ -152,20 +161,24 @@ def create_default_user():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup: cada passo em try/except para não derrubar o app no Render (502)
     print(f"Iniciando aplicação... DATABASE_URL: {os.getenv('DATABASE_URL', 'Not Set (Using SQLite)')}")
     
-    # Run auto-migrations
-    run_migrations(engine)
+    try:
+        run_migrations(engine)
+    except Exception as e:
+        print(f"Migration warning (app continua): {e}")
     
-    # Create default user
-    create_default_user()
+    try:
+        create_default_user()
+    except Exception as e:
+        print(f"Default user warning (app continua): {e}")
     
-    # Start Monitor Service
-    monitor_service.start()
+    try:
+        monitor_service.start()
+    except Exception as e:
+        print(f"MonitorService start warning (app continua): {e}")
     
-    # RECOVERY: Reset any stuck 'processing' videos to 'queued'
-    # This handles cases where the server crashed (OOM) during processing
     try:
         from app.models import ScheduledVideo
         db = SessionLocal()
@@ -175,7 +188,7 @@ async def lifespan(app: FastAPI):
                 print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
                 for vid in stuck_videos:
                     vid.status = "queued"
-                    vid.progress = 0 # Reset progress to avoid UI confusion
+                    vid.progress = 0
                 db.commit()
         finally:
             db.close()
@@ -185,7 +198,10 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     print("Desligando aplicação...")
-    monitor_service.stop()
+    try:
+        monitor_service.stop()
+    except Exception as e:
+        print(f"Monitor stop warning: {e}")
 
 app = FastAPI(
     title="Codexia API", 
@@ -195,6 +211,11 @@ app = FastAPI(
 
 # Montar arquivos estáticos
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+@app.get("/health")
+async def health():
+    """Resposta rápida sem DB — para Render e diagnóstico (evitar 502)."""
+    return {"status": "ok"}
 
 @app.get("/")
 async def read_root():

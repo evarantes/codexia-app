@@ -67,7 +67,8 @@ class MonitorService:
 
     def check_file_integrity(self):
         """Verifica se os arquivos de vídeos 'completos' realmente existem no disco.
-           Se não existirem (ex: Render reiniciou), marca como 'queued' para regenerar."""
+           Se não existirem (ex: Render reiniciou), marca como 'failed' — NUNCA reenfileira,
+           para não regenerar e gastar OpenAI; o usuário pode excluir ou agendar um novo."""
         logger.info("Verificando integridade dos arquivos de vídeo...")
         db = SessionLocal()
         try:
@@ -77,7 +78,7 @@ class MonitorService:
                 ScheduledVideo.uploaded_at == None
             ).all()
             
-            restored_count = 0
+            failed_count = 0
             for video in videos:
                 if not video.video_url:
                     continue
@@ -91,14 +92,17 @@ class MonitorService:
                 abs_path = os.path.join(os.getcwd(), rel_path)
                 
                 if not os.path.exists(abs_path):
-                    logger.warning(f"Arquivo sumiu para vídeo {video.id} ({video.title}). Reiniciando geração...")
-                    video.status = "queued"
+                    logger.warning(f"Arquivo sumiu para vídeo {video.id} ({video.title}). Marcando como falha (não reenfileirar).")
+                    video.status = "failed"
                     video.progress = 0
-                    restored_count += 1
+                    msg = "[SISTEMA]: Arquivo de vídeo não encontrado (possível reinício do servidor). Exclua este item ou agende um novo vídeo."
+                    if not (video.description and "[SISTEMA]" in video.description):
+                        video.description = (video.description or "") + "\n\n" + msg
+                    failed_count += 1
             
-            if restored_count > 0:
+            if failed_count > 0:
                 db.commit()
-                logger.info(f"Recuperação: {restored_count} vídeos retornados para a fila de geração.")
+                logger.info(f"Integridade: {failed_count} vídeos marcados como falha (arquivo ausente).")
             else:
                 logger.info("Integridade ok. Todos os vídeos completos possuem arquivos.")
                 
@@ -184,10 +188,12 @@ class MonitorService:
                         
                         if not os.path.exists(abs_video_path):
                             logger.error(f"Arquivo de vídeo não encontrado: {abs_video_path}")
-                            # Se o arquivo não existe, marcamos para regenerar (queued) em vez de ignorar
-                            logger.info(f"Tentando recuperar vídeo {video.id} reenviando para fila...")
-                            video.status = "queued"
+                            # NUNCA reenfileirar: vídeo em Aguardando Publicação só sai por publicar ou excluir
+                            video.status = "failed"
                             video.progress = 0
+                            msg = "[UPLOAD_ERRO]: Arquivo de vídeo não encontrado. Não foi possível publicar. Exclua este item ou agende um novo vídeo."
+                            if not (video.description and "[UPLOAD_ERRO]" in video.description):
+                                video.description = (video.description or "") + "\n\n" + msg
                             db.commit()
                             continue
 

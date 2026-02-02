@@ -3,7 +3,6 @@ import glob
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
-from app.services.video_generator import VideoGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db
 from app.models import ScheduledVideo, ChannelReport, Settings
@@ -71,20 +70,32 @@ def list_videos():
     return videos
 
 @router.get("/auth_url")
-def get_auth_url():
+def get_auth_url(db: Session = Depends(get_db)):
+    """Retorna sempre JSON. Verifica credenciais antes de instanciar YouTubeService."""
     try:
+        # Verificar se há credenciais no banco (evita exceção genérica ao instanciar o serviço)
+        settings = db.query(Settings).first()
+        has_db_creds = settings and (settings.youtube_client_id or "").strip() and (settings.youtube_client_secret or "").strip()
+        has_file = os.path.exists("client_secret.json")
+        if not has_db_creds and not has_file:
+            raise HTTPException(
+                status_code=503,
+                detail="Configure as credenciais do YouTube em Configurações: informe Client ID e Client Secret do Google Cloud (APIs & Services > Credentials). Ou coloque o arquivo client_secret.json na raiz do projeto no servidor."
+            )
         service = YouTubeService()
         auth_url = service.get_auth_url()
         if not auth_url:
             raise HTTPException(
                 status_code=503,
-                detail="Não foi possível gerar a URL de autorização. Verifique se o arquivo client_secret.json está configurado (Google Cloud Console) ou se as credenciais do YouTube estão em Configurações."
+                detail="Não foi possível gerar a URL de autorização. Verifique se Client ID e Client Secret em Configurações estão corretos (Google Cloud Console)."
             )
         return {"auth_url": auth_url}
-    except FileNotFoundError as e:
+    except HTTPException:
+        raise
+    except FileNotFoundError:
         raise HTTPException(
             status_code=503,
-            detail="Arquivo client_secret.json não encontrado. Faça o download no Google Cloud Console (APIs & Services > Credentials) e coloque na raiz do projeto, ou configure Client ID e Client Secret em Configurações."
+            detail="Arquivo client_secret.json não encontrado. Configure Client ID e Client Secret em Configurações (Google Cloud Console > APIs & Services > Credentials)."
         )
     except Exception as e:
         raise HTTPException(
@@ -443,6 +454,131 @@ def regenerate_scheduled_video(video_id: int, background_tasks: BackgroundTasks,
     """Mesma coisa que generate, mas semanticamente explícito"""
     return generate_scheduled_video(video_id, background_tasks, db)
 
+@router.post("/schedule/{video_id}/publish-now")
+def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
+    """Publica imediatamente um vídeo que está em Aguardando Publicação (status completed)."""
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+    if video.status not in ("completed", "ready"):
+        raise HTTPException(status_code=400, detail="Só é possível publicar vídeos prontos (status concluído).")
+    if video.uploaded_at:
+        raise HTTPException(status_code=400, detail="Este vídeo já foi publicado.")
+    if not video.video_url:
+        raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
+
+    rel_path = video.video_url.lstrip("/")
+    if rel_path.startswith("static"):
+        rel_path = os.path.join("app", rel_path)
+    abs_video_path = os.path.join(os.getcwd(), rel_path)
+    if not os.path.exists(abs_video_path):
+        raise HTTPException(
+            status_code=503,
+            detail="Arquivo de vídeo não encontrado no servidor. Exclua este item ou agende um novo."
+        )
+
+    tags = ["motivação", "sucesso"]
+    if video.script_data:
+        try:
+            script = json.loads(video.script_data)
+            if script.get("tags"):
+                tags = script["tags"]
+        except Exception:
+            pass
+
+    yt_service = YouTubeService()
+    upload_result = yt_service.upload_video(
+        abs_video_path,
+        title=video.title,
+        description=video.description or "Vídeo gerado automaticamente por Codexia.",
+        tags=tags,
+    )
+
+    is_error = False
+    video_id_value = None
+    if isinstance(upload_result, dict):
+        if upload_result.get("error"):
+            is_error = True
+        else:
+            video_id_value = upload_result.get("id") or str(upload_result)
+    else:
+        video_id_value = str(upload_result) if upload_result else None
+        if not video_id_value:
+            is_error = True
+
+    if is_error or not video_id_value:
+        video.status = "failed"
+        video.description = (video.description or "") + "\n\n[UPLOAD_ERRO]: falha ao enviar para o YouTube. Veja logs do servidor."
+        db.commit()
+        err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube. Verifique as credenciais em Configurações."
+        raise HTTPException(status_code=502, detail=err_msg)
+
+    video.uploaded_at = datetime.datetime.now()
+    video.youtube_video_id = video_id_value
+    video.status = "published"
+    db.commit()
+    return {"status": "published", "youtube_video_id": video_id_value, "message": "Vídeo publicado com sucesso!"}
+
+@router.post("/schedule/{video_id}/republish")
+def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
+    """Republica no YouTube um vídeo já publicado (re-envia o mesmo arquivo; gera novo ID no YouTube)."""
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+    if video.status not in ("completed", "ready", "published"):
+        raise HTTPException(status_code=400, detail="Só é possível republicar vídeos já produzidos ou publicados.")
+    if not video.video_url:
+        raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
+
+    rel_path = video.video_url.lstrip("/")
+    if rel_path.startswith("static"):
+        rel_path = os.path.join("app", rel_path)
+    abs_video_path = os.path.join(os.getcwd(), rel_path)
+    if not os.path.exists(abs_video_path):
+        raise HTTPException(
+            status_code=503,
+            detail="Arquivo de vídeo não encontrado no servidor. Não é possível republicar."
+        )
+
+    tags = ["motivação", "sucesso"]
+    if video.script_data:
+        try:
+            script = json.loads(video.script_data)
+            if script.get("tags"):
+                tags = script["tags"]
+        except Exception:
+            pass
+
+    yt_service = YouTubeService()
+    upload_result = yt_service.upload_video(
+        abs_video_path,
+        title=video.title,
+        description=video.description or "Vídeo gerado automaticamente por Codexia.",
+        tags=tags,
+    )
+
+    is_error = False
+    video_id_value = None
+    if isinstance(upload_result, dict):
+        if upload_result.get("error"):
+            is_error = True
+        else:
+            video_id_value = upload_result.get("id") or str(upload_result)
+    else:
+        video_id_value = str(upload_result) if upload_result else None
+        if not video_id_value:
+            is_error = True
+
+    if is_error or not video_id_value:
+        err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao republicar no YouTube."
+        raise HTTPException(status_code=502, detail=err_msg)
+
+    video.uploaded_at = datetime.datetime.now()
+    video.youtube_video_id = video_id_value
+    video.status = "published"
+    db.commit()
+    return {"status": "published", "youtube_video_id": video_id_value, "message": "Vídeo republicado com sucesso!"}
+
 @router.delete("/schedule/{video_id}")
 def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
@@ -526,6 +662,9 @@ def get_task_status(task_id: str):
     return task
 
 def process_video_generation(request: VideoRequest, task_id):
+    # Lazy import VideoGenerator (moviepy/PIL/numpy) para reduzir memória no startup
+    from app.services.video_generator import VideoGenerator
+
     try:
         topic_display = request.topic if request.mode == 'topic' else "História Personalizada"
         update_task(task_id, status="processing", progress=5, message=f"Iniciando geração sobre: {topic_display}")

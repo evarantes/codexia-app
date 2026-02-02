@@ -764,9 +764,10 @@
                                                 {{ translateStatus(video.status) }}
                                             </span>
                                         </td>
-                                        <td class="p-3 flex gap-2">
+                                        <td class="p-3 flex gap-2 flex-wrap">
                                             <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
                                             <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                            <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
                                             <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
                                             <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
                                         </td>
@@ -801,9 +802,11 @@
                                                 {{ translateStatus(video.status) }}
                                             </span>
                                         </td>
-                                        <td class="p-3">
-                                            <button @click="deleteScheduledVideo(video)" class="text-red-400 hover:text-red-600" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
-                                            <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                        <td class="p-3 flex gap-2 flex-wrap">
+                                            <button @click="viewPublishedVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
+                                            <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
+                                            <button @click="republishScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
+                                            <button @click="deleteScheduledVideo(video)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -2611,6 +2614,19 @@
                         }
                     } catch (e) { alert("Erro: " + e); }
                 },
+                async publishNowScheduledVideo(video) {
+                    if (!confirm("Publicar este vídeo agora no YouTube?")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}/publish-now`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok && data.status === 'published') {
+                            alert("Vídeo publicado com sucesso!");
+                            this.fetchScheduledVideos();
+                        } else {
+                            alert(data.detail || "Erro ao publicar. Verifique as credenciais do YouTube em Configurações.");
+                        }
+                    } catch (e) { alert("Erro: " + (e.message || e)); }
+                },
                 async deleteScheduledVideo(video) {
                     if (!confirm("Tem certeza que deseja excluir este agendamento?")) return;
                     try {
@@ -2628,6 +2644,28 @@
                      } else {
                          alert("URL do vídeo não disponível.");
                      }
+                },
+                viewPublishedVideo(video) {
+                    if (video.youtube_video_id) {
+                        window.open('https://www.youtube.com/watch?v=' + video.youtube_video_id, '_blank');
+                    } else if (video.video_url) {
+                        window.open(video.video_url, '_blank');
+                    } else {
+                        alert("Link do vídeo não disponível.");
+                    }
+                },
+                async republishScheduledVideo(video) {
+                    if (!confirm("Republicar este vídeo no YouTube? Será criado um novo vídeo no canal com o mesmo arquivo.")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}/republish`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok && data.status === 'published') {
+                            alert("Vídeo republicado com sucesso!");
+                            this.fetchScheduledVideos();
+                        } else {
+                            alert(data.detail || "Erro ao republicar. Verifique as credenciais do YouTube em Configurações.");
+                        }
+                    } catch (e) { alert("Erro: " + (e.message || e)); }
                 },
                 showError(video) {
                     alert("Detalhes do Erro:\n\n" + (video.description || "Erro desconhecido. Verifique os logs do servidor."));

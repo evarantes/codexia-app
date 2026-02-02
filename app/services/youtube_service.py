@@ -535,9 +535,7 @@ class YouTubeService:
         # Estimativa bem simplificada de horas de exibição:
         # assumindo ~3min de watch médio por view em vídeos longos.
         # horas ≈ (views * 3min) / 60
-        estimated_watch_hours = (total_views * 3) / 60.0
-
-        data = {
+        estimated_watch_hours = (total_views * 3) / 60.0        data = {
             "subscribers": subscribers,
             "subscribers_target": 1000,
             "total_views": total_views,

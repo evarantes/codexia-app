@@ -63,6 +63,41 @@
 
 ---
 
+## 🔴 ERRO "RAN OUT OF MEMORY" (512MB) NO RENDER
+
+Se no Render aparecer **"Instance failed: Ran out of memory (used over 512MB)"**:
+
+1. **O que foi feito no código:** Os módulos pesados (moviepy, PIL, numpy) passaram a ser carregados só quando necessário (lazy import). Isso reduz o uso de memória no **startup** e ajuda a subir dentro do limite de 512MB do plano Starter.
+
+2. **Se ainda falhar:** O plano **Starter** do Render tem **512MB de RAM**. Gerar vídeo com IA (MoviePy, imagens, áudio) consome bastante memória. Opções:
+   - **Recomendado:** Fazer **upgrade do plano** no Render (ex.: Standard com mais RAM) para o serviço **codexia**. Dashboard → codexia → **Settings** → **Instance Type**.
+   - Verificar em **Metrics** se o pico de memória ocorre no startup ou ao gerar vídeo; se for ao gerar, o upgrade de plano costuma resolver.
+
+3. **Depois de alterar o código:** Faça commit e push (incluindo as alterações de lazy import). O Render fará um novo deploy. Confira em **Logs** se o serviço sobe sem "Ran out of memory".
+
+---
+
+## 🔴 ERRO 502 BAD GATEWAY
+
+Se o site mostra **502 Bad Gateway** no Render:
+
+1. **Teste o health check:** Abra no navegador: `https://codexia-psh3.onrender.com/health`  
+   - Se responder `{"status":"ok"}` → o app está no ar; o 502 pode ser temporário (tente F5).  
+   - Se também der 502 → o processo não está subindo.
+
+2. **Veja os Logs no Render:**  
+   Dashboard → seu serviço Codexia → **Logs**.  
+   Procure por erros ao iniciar (ex.: `Error`, `Exception`, `DATABASE_URL`, `ModuleNotFoundError`).  
+   O startup foi tornado resiliente: migrações, usuário padrão e MonitorService não derrubam mais o app; erros são apenas logados.
+
+3. **Confirme o Procfile:** Deve ter:  
+   `web: gunicorn -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT app.main:app`  
+   (obrigatório `-b 0.0.0.0:$PORT` para o Render conseguir conectar.)
+
+4. **Force um novo deploy** (Manual Deploy) após alterações no código.
+
+---
+
 ## ⚠️ SE AINDA NÃO ESTIVER FUNCIONANDO
 
 ### Verificar Console do Navegador (para erros JavaScript):
