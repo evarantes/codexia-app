@@ -54,8 +54,26 @@ def process_scheduled_video(video_id: int):
         elif video.video_type == 'short':
              duration = 1
         
-        print(f"Gerando script para video {video_id}: {topic}")
-        final_script = ai_service.generate_motivational_script(f"{topic}. Conceito: {concept}", duration)
+        final_script = None
+        
+        # OTIMIZAÇÃO DE CUSTO: Verificar se já existe script gerado (recuperação de falha/crash)
+        if script_data.get("scenes") and isinstance(script_data.get("scenes"), list):
+             print(f"Usando script em cache (DB) para video {video_id}. Economizando chamada OpenAI.")
+             final_script = script_data
+        else:
+             print(f"Gerando script para video {video_id}: {topic}")
+             final_script = ai_service.generate_motivational_script(f"{topic}. Conceito: {concept}", duration)
+             
+             # Salvar script gerado no banco imediatamente para evitar regerar em caso de crash
+             if final_script and "scenes" in final_script:
+                 try:
+                     # Merge generated script into existing plan data
+                     script_data.update(final_script)
+                     video.script_data = json.dumps(script_data)
+                     db.commit()
+                     print(f"Script salvo em cache para video {video_id}")
+                 except Exception as e:
+                     print(f"Erro ao salvar cache do script: {e}")
         
         # Gerar vídeo
         def progress_callback(p, m):

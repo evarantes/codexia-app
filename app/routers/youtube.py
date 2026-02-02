@@ -441,6 +441,23 @@ def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, d
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     
+    # Limpar cache de script se existir, para forçar regeneração da IA (pois o usuário pediu explicitamente)
+    if video.script_data:
+        try:
+            data = json.loads(video.script_data)
+            changed = False
+            # Remove chaves geradas pela IA para garantir novo conteúdo
+            keys_to_remove = ["scenes", "audio_path", "background_music", "music_credit"]
+            for k in keys_to_remove:
+                if k in data:
+                    del data[k]
+                    changed = True
+            
+            if changed:
+                video.script_data = json.dumps(data)
+        except Exception as e:
+            print(f"Erro ao limpar cache do script: {e}")
+
     video.status = "queued"
     video.progress = 0 # Reset progress
     db.commit()

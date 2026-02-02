@@ -19,7 +19,7 @@ git add -A
 if ($LASTEXITCODE -ne 0) { Write-Host "ERRO no git add. Feche o Cursor e rode este script de novo no PowerShell." -ForegroundColor Red; exit 1 }
 
 Write-Host "2. Criando commit..." -ForegroundColor Yellow
-git commit -m "fix: create_all em try/except; suno_api_key; publicar/republicar; historico visualizar/regerar/republicar; fila nao reenfileira completed; lazy import VideoGenerator"
+git commit -m "fix: script cache (save openai costs); publish/republish buttons; monitor queue fix; lazy imports"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Nenhuma alteracao para commitar (ou commit ja feito). Tentando push..." -ForegroundColor Yellow
 }
