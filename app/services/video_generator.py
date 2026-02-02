@@ -5,11 +5,6 @@ import gc
 import threading
 import asyncio
 import re
-from gtts import gTTS
-from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
-import textwrap
-import numpy as np
 
 class VideoGenerator:
     def __init__(self, output_dir="app/static/videos", ai_service=None):
@@ -51,6 +46,9 @@ class VideoGenerator:
 
     def create_text_image(self, text, size=(1080, 1920), bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=None):
         """Cria uma imagem com texto centralizado usando Pillow, opcionalmente com imagem de fundo"""
+        from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+        import textwrap
+        import numpy as np
         
         if bg_image_path and os.path.exists(bg_image_path):
             try:
@@ -528,6 +526,8 @@ class VideoGenerator:
 
     def create_music_video(self, music_path, scenes, title="Música", aspect_ratio="9:16"):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
+        from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+        
         if not os.path.exists(music_path):
             raise FileNotFoundError(f"Arquivo de música não encontrado: {music_path}")
         video_size = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
