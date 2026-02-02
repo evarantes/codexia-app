@@ -2142,12 +2142,20 @@
                 async connectYoutube() {
                     try {
                         const res = await this.authFetch('/youtube/auth_url');
+                        const text = await res.text();
                         let data = {};
                         try {
-                            const text = await res.text();
                             data = text ? JSON.parse(text) : {};
                         } catch (_) {
-                            alert("Erro ao conectar ao YouTube: o servidor retornou uma resposta inválida. Verifique se as credenciais do YouTube (Client ID e Client Secret) estão em Configurações, ou se o arquivo client_secret.json está no servidor.");
+                            // Resposta não é JSON (ex.: página de erro 502/503 do servidor ou HTML de login)
+                            if (res.status === 401) {
+                                alert("Sessão expirada. Faça login novamente.");
+                                return;
+                            }
+                            const hint = res.status >= 500
+                                ? "Servidor temporariamente indisponível. Tente em instantes e verifique as credenciais do YouTube em Configurações (Client ID e Client Secret do Google Cloud)."
+                                : "Não foi possível conectar ao YouTube. Verifique as credenciais em Configurações (Client ID e Client Secret) e se o servidor está respondendo.";
+                            alert("Erro ao conectar ao YouTube: " + hint);
                             return;
                         }
                         if (res.ok && data.auth_url) {
