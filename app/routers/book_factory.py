@@ -7,7 +7,7 @@ import uuid
 import requests
 from pydantic import BaseModel
 from app.services.book_assembler import BookAssembler
-from app.services.ai_generator import AIContentGenerator
+# from app.services.ai_generator import AIContentGenerator
 from app.database import get_db
 from app.models import Book, BookDraft
 from sqlalchemy.orm import Session
@@ -68,6 +68,7 @@ async def upload_manuscript(
             text_content = f.read()
 
     # AI Analysis
+    from app.services.ai_generator import AIContentGenerator
     ai_service = AIContentGenerator()
     structure_analysis = ai_service.analyze_manuscript_structure(text_content)
     
@@ -184,6 +185,7 @@ async def generate_covers(request: GenerateCoverRequest):
     context_text = request.context or request.description or "Livro sem descrição"
     result = []  # [{ url, base64? }] para persistir capa mesmo em ambiente efêmero (Render)
     try:
+        from app.services.ai_generator import AIContentGenerator
         ai_service = AIContentGenerator()
         urls = ai_service.generate_cover_options(
             request.title, context_text,

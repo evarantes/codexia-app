@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db
 from app.models import Settings
-from app.services.ai_generator import AIContentGenerator
+# from app.services.ai_generator import AIContentGenerator
 import os
 import requests
 
@@ -11,6 +11,7 @@ router = APIRouter(prefix="/diagnostics", tags=["System Diagnostics"])
 
 @router.get("/run")
 def run_diagnostics(db: Session = Depends(get_db)):
+    from app.services.ai_generator import AIContentGenerator
     report = {
         "status": "healthy",
         "checks": []

@@ -2,7 +2,7 @@ import os
 import glob
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from app.services.youtube_service import YouTubeService
-from app.services.ai_generator import AIContentGenerator
+# from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db
 from app.models import ScheduledVideo, ChannelReport, Settings
@@ -123,6 +123,7 @@ def exchange_code(data: Dict[str, str]):
 
 @router.post("/optimize")
 def optimize_channel(execute: bool = False):
+    from app.services.ai_generator import AIContentGenerator
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
     
@@ -147,6 +148,7 @@ def optimize_channel(execute: bool = False):
 
 @router.post("/auto-analysis")
 def auto_analysis():
+    from app.services.ai_generator import AIContentGenerator
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
     
@@ -163,6 +165,7 @@ def auto_analysis():
 
 @router.post("/monetization-status")
 def monetization_status():
+    from app.services.ai_generator import AIContentGenerator
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
     
@@ -207,6 +210,7 @@ def monetization_status():
 @router.post("/optimize/execute")
 def execute_optimization(data: Dict[str, Any]):
     """Executa as melhorias sugeridas (título/descrição/banner)"""
+    from app.services.ai_generator import AIContentGenerator
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
     
@@ -306,6 +310,7 @@ def update_scheduled_video(video_id: int, data: Dict[str, Any], db: Session = De
 
 @router.post("/schedule/generate")
 def generate_schedule(request: ScheduleRequest):
+    from app.services.ai_generator import AIContentGenerator
     ai_service = AIContentGenerator()
     try:
         return ai_service.generate_content_plan(
@@ -628,6 +633,7 @@ def get_auto_insights():
     - Lê performance recente dos vídeos
     - Pede para a IA gerar resumo + novas ideias de vídeos/shorts
     """
+    from app.services.ai_generator import AIContentGenerator
     yt = YouTubeService()
     ai = AIContentGenerator()
 
@@ -648,6 +654,7 @@ def get_monetization_status():
     - Resume progresso estimado rumo à monetização
     - Pede para a IA gerar diagnóstico + plano de ação
     """
+    from app.services.ai_generator import AIContentGenerator
     yt = YouTubeService()
     ai = AIContentGenerator()
 
@@ -681,6 +688,7 @@ def get_task_status(task_id: str):
 def process_video_generation(request: VideoRequest, task_id):
     # Lazy import VideoGenerator (moviepy/PIL/numpy) para reduzir memória no startup
     from app.services.video_generator import VideoGenerator
+    from app.services.ai_generator import AIContentGenerator
 
     try:
         topic_display = request.topic if request.mode == 'topic' else "História Personalizada"

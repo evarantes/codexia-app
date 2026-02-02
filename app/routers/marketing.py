@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Post
-from app.services.ai_generator import AIContentGenerator
+# from app.services.ai_generator import AIContentGenerator
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/marketing", tags=["Marketing"])
@@ -13,6 +13,7 @@ class GenerateAdRequest(BaseModel):
 
 @router.post("/generate-ad")
 def generate_ad(request: GenerateAdRequest, db: Session = Depends(get_db)):
+    from app.services.ai_generator import AIContentGenerator
     book = db.query(Book).filter(Book.id == request.book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
