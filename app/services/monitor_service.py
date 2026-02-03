@@ -53,10 +53,34 @@ class MonitorService:
         try:
             stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
             if stuck_videos:
-                logger.warning(f"Encontrados {len(stuck_videos)} vídeos presos em 'processing'. Resetando para 'queued'.")
+                logger.warning(f"Encontrados {len(stuck_videos)} vídeos presos em 'processing'. Verificando retries...")
                 for video in stuck_videos:
-                    video.status = "queued"
-                    video.progress = 0
+                    # Lógica de Max Retries usando script_data (JSON)
+                    try:
+                        data = json.loads(video.script_data or "{}")
+                        retries = data.get("_crash_retries", 0)
+                        
+                        if retries >= 3:
+                            logger.error(f"Vídeo {video.id} falhou 3 vezes (possível crash recorrente). Marcando como falha.")
+                            video.status = "failed"
+                            video.progress = 0
+                            msg = "\n[ERRO DE SISTEMA]: O vídeo causou falhas repetidas (provavelmente memória insuficiente) e foi cancelado. Tente gerar um vídeo mais curto."
+                            if not video.description or "[ERRO DE SISTEMA]" not in video.description:
+                                video.description = (video.description or "") + msg
+                        else:
+                            # Incrementa retry e re-enfileira
+                            data["_crash_retries"] = retries + 1
+                            video.script_data = json.dumps(data)
+                            video.status = "queued"
+                            video.progress = 0
+                            logger.info(f"Vídeo {video.id} reenfileirado para nova tentativa (Crash #{retries + 1})")
+                            
+                    except Exception as e:
+                        logger.error(f"Erro ao processar retries do vídeo {video.id}: {e}")
+                        # Fallback seguro: apenas reseta
+                        video.status = "queued"
+                        video.progress = 0
+                        
                 db.commit()
         except Exception as e:
             logger.error(f"Erro ao resetar vídeos presos: {e}")
