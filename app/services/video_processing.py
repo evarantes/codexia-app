@@ -26,8 +26,14 @@ def process_scheduled_video(video_id: int):
         video.status = "processing"
         db.commit()
         
-        # Recuperar dados do script
-        script_data = json.loads(video.script_data)
+        # Recuperar dados do script (safe load)
+        script_data = {}
+        if video.script_data:
+            try:
+                script_data = json.loads(video.script_data)
+            except Exception as e:
+                print(f"Erro ao decodificar script_data: {e}")
+                script_data = {}
         
         ai_service = AIContentGenerator()
         video_service = VideoGenerator(ai_service=ai_service)

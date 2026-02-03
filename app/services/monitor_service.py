@@ -114,12 +114,29 @@ class MonitorService:
                 abs_path = os.path.join(os.getcwd(), rel_path)
                 
                 if not os.path.exists(abs_path):
-                    logger.warning(f"Arquivo sumiu para vídeo {video.id} ({video.title}). Marcando como falha (não reenfileirar).")
-                    video.status = "failed"
-                    video.progress = 0
-                    msg = "[SISTEMA]: Arquivo de vídeo não encontrado (possível reinício do servidor). Exclua este item ou agende um novo vídeo."
-                    if not (video.description and "[SISTEMA]" in video.description):
-                        video.description = (video.description or "") + "\n\n" + msg
+                    # Tentar recuperação inteligente (Auto-Heal) se houver script em cache
+                    has_script_cache = False
+                    try:
+                        if video.script_data:
+                            s_data = json.loads(video.script_data)
+                            if s_data.get("scenes") and isinstance(s_data.get("scenes"), list):
+                                has_script_cache = True
+                    except:
+                        pass
+
+                    if has_script_cache:
+                        logger.warning(f"Arquivo sumiu para vídeo {video.id}. Reenfileirando para recuperação GRATUITA (via cache).")
+                        video.status = "queued"
+                        video.progress = 0
+                        # Não adiciona msg de erro pois será recuperado automaticamente
+                    else:
+                        logger.warning(f"Arquivo sumiu para vídeo {video.id} e SEM cache. Marcando como falha.")
+                        video.status = "failed"
+                        video.progress = 0
+                        msg = "[SISTEMA]: Arquivo de vídeo não encontrado (possível reinício do servidor). Exclua este item ou agende um novo vídeo."
+                        if not (video.description and "[SISTEMA]" in video.description):
+                            video.description = (video.description or "") + "\n\n" + msg
+                    
                     failed_count += 1
             
             if failed_count > 0:
