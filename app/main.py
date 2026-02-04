@@ -167,39 +167,44 @@ def create_default_user():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: cada passo em try/except para não derrubar o app no Render (502)
+    # Startup: cada passo em try/except para não derrubar o app (Render/Coolify)
     print(f"Iniciando aplicação... DATABASE_URL: {os.getenv('DATABASE_URL', 'Not Set (Using SQLite)')}")
     
     try:
-        run_migrations(engine)
-    except Exception as e:
-        print(f"Migration warning (app continua): {e}")
-    
-    try:
-        create_default_user()
-    except Exception as e:
-        print(f"Default user warning (app continua): {e}")
-    
-    try:
-        monitor_service.start()
-    except Exception as e:
-        print(f"MonitorService start warning (app continua): {e}")
-    
-    try:
-        from app.models import ScheduledVideo
-        db = SessionLocal()
         try:
-            stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
-            if stuck_videos:
-                print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
-                for vid in stuck_videos:
-                    vid.status = "queued"
-                    vid.progress = 0
-                db.commit()
-        finally:
-            db.close()
+            run_migrations(engine)
+        except Exception as e:
+            print(f"Migration warning (app continua): {e}")
+        
+        try:
+            create_default_user()
+        except Exception as e:
+            print(f"Default user warning (app continua): {e}")
+        
+        try:
+            monitor_service.start()
+        except Exception as e:
+            print(f"MonitorService start warning (app continua): {e}")
+        
+        try:
+            from app.models import ScheduledVideo
+            db = SessionLocal()
+            try:
+                stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
+                if stuck_videos:
+                    print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
+                    for vid in stuck_videos:
+                        vid.status = "queued"
+                        vid.progress = 0
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"Startup Recovery Error: {e}")
+        
+        print("Codexia API startup concluído. Rotas: / (API), /app (interface), /health")
     except Exception as e:
-        print(f"Startup Recovery Error: {e}")
+        print(f"Startup error (app sobe mesmo assim): {e}")
     
     yield
     # Shutdown
@@ -224,8 +229,13 @@ async def health():
     return {"status": "ok"}
 
 @app.get("/")
-async def read_root():
-    return FileResponse('app/static/index.html')
+def root():
+    return {"message": "Codexia API is running"}
+
+@app.get("/app")
+async def serve_app():
+    """Interface web (SPA) — use /app quando a raiz (/) for a API."""
+    return FileResponse("app/static/index.html")
 
 @app.get("/login.html")
 async def read_login():

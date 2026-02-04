@@ -5,10 +5,11 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install system dependencies required for moviepy, imageio, and opencv
-# Added build-essential and python3-dev for compilation support
+# curl for HEALTHCHECK (Coolify/Docker); build-essential and python3-dev for compilation
 RUN apt-get update && apt-get install -y \
     build-essential \
     python3-dev \
+    curl \
     ffmpeg \
     imagemagick \
     libsm6 \
@@ -41,5 +42,10 @@ ENV VARIABLE_NAME="app"
 ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
 
-# Run the application with uvicorn directly (lighter for free tier)
-CMD sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+# Coolify/Render: set PORT in environment if your platform uses a different port
+# exec so uvicorn receives SIGTERM and can shut down cleanly
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+
+# Health check so the platform knows when the app is ready (avoids "Restarting" loop)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD sh -c "curl -f http://localhost:${PORT:-8000}/health || exit 1"

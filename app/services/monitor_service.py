@@ -33,12 +33,12 @@ class MonitorService:
                 minutes=1, 
                 max_instances=1
             )
-            # Run upload check every 5 minutes, starting immediately (catch up on missed uploads)
+            # Run upload check every 5 minutes; first run after 2 min to avoid overload at startup (Coolify/Render)
             self.upload_job = self.scheduler.add_job(
-                self.check_scheduled_uploads, 
-                'interval', 
+                self.check_scheduled_uploads,
+                'interval',
                 minutes=5,
-                next_run_time=datetime.datetime.now()
+                next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
             )
             
             # Executar verificação de integridade de arquivos (Self-Healing)

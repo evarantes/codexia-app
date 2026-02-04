@@ -73,7 +73,11 @@ class YouTubeService:
                     self.credentials = None
 
         if self.credentials:
-            self.service = build('youtube', 'v3', credentials=self.credentials)
+            try:
+                self.service = build('youtube', 'v3', credentials=self.credentials)
+            except Exception as e:
+                print(f"Erro ao construir cliente YouTube API: {e}. Serviço ficará desconectado.")
+                self.service = None
 
     def get_auth_url(self):
         """Gera URL para o usuário autorizar (Fluxo simplificado)"""
@@ -290,8 +294,10 @@ class YouTubeService:
         except Exception as e:
             return {"connected": False, "error": f"Erro ao buscar canal: {str(e)}"}
 
-    def upload_video(self, file_path, title, description, tags=[], category_id="27"): # 27 = Education
+    def upload_video(self, file_path, title, description, tags=None, category_id="27"):  # 27 = Education
         """Faz upload de um vídeo para o YouTube"""
+        if tags is None:
+            tags = []
         if not self.service:
             print("[MOCK] Upload de vídeo simulado (Sem credenciais)")
             return {"id": "mock_video_id", "status": "uploaded_mock"}
@@ -531,11 +537,11 @@ class YouTubeService:
             total_views = int(stats.get("views", 0) or 0)
         except Exception:
             total_views = 0
-
         # Estimativa bem simplificada de horas de exibição:
         # assumindo ~3min de watch médio por view em vídeos longos.
         # horas ≈ (views * 3min) / 60
-        estimated_watch_hours = (total_views * 3) / 60.0        data = {
+        estimated_watch_hours = (total_views * 3) / 60.0
+        data = {
             "subscribers": subscribers,
             "subscribers_target": 1000,
             "total_views": total_views,
