@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -13,6 +15,11 @@ from app.routers.auth import get_password_hash
 
 # Carregar variáveis de ambiente
 load_dotenv()
+
+# Caminho da pasta estática: no container é /app/app/static; localmente usa path do pacote
+_BASE_DIR = Path(__file__).resolve().parent
+_STATIC_DIR = _BASE_DIR / "static"
+_STATIC_SERVE = "/app/app/static" if os.path.isdir("/app/app/static") else str(_STATIC_DIR)
 
 # Create tables (não derrubar o processo se o banco estiver inacessível no startup, ex.: Render)
 try:
@@ -202,7 +209,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Startup Recovery Error: {e}")
         
-        print("Codexia API startup concluído. Rotas: / (API), /app (interface), /health")
+        print("Codexia API startup concluído. Rotas: / (frontend), /api/status, /health, /static")
+        # Aviso de segurança em produção
+        if os.getenv("SECRET_KEY", "").strip() in ("", "sua_secret_key_super_secreta_codexia_2025"):
+            print("AVISO: Defina SECRET_KEY no ambiente para produção (tokens JWT).")
     except Exception as e:
         print(f"Startup error (app sobe mesmo assim): {e}")
     
@@ -220,30 +230,36 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Montar arquivos estáticos
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+# Montar /static com a pasta que contém index.html (no container: /app/app/static)
+app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
 
 @app.get("/health")
 async def health():
-    """Resposta rápida sem DB — para Render e diagnóstico (evitar 502)."""
+    """Resposta rápida sem DB — para Render/Coolify e diagnóstico."""
     return {"status": "ok"}
 
-@app.get("/")
-def root():
+@app.get("/api/status")
+def api_status():
+    """Status da API (JSON) — para scripts ou checagem programática."""
     return {"message": "Codexia API is running"}
+
+@app.get("/")
+async def root():
+    """Serve o painel Vue (index.html) na raiz."""
+    return FileResponse(os.path.join(_STATIC_SERVE, "index.html"))
 
 @app.get("/app")
 async def serve_app():
-    """Interface web (SPA) — use /app quando a raiz (/) for a API."""
-    return FileResponse("app/static/index.html")
+    """Alias para a interface web (compatibilidade com links antigos)."""
+    return FileResponse(os.path.join(_STATIC_SERVE, "index.html"))
 
 @app.get("/login.html")
 async def read_login():
-    return FileResponse('app/static/login.html')
+    return FileResponse(os.path.join(_STATIC_SERVE, "login.html"))
 
 @app.get("/reset-password.html")
 async def read_reset_password():
-    return FileResponse('app/static/reset-password.html')
+    return FileResponse(os.path.join(_STATIC_SERVE, "reset-password.html"))
 
 # Routers
 app.include_router(auth.router)
@@ -273,16 +289,19 @@ def payment_pending():
 
 @app.get("/debug-reset-user")
 def debug_reset_user():
+    """Só disponível se ALLOW_DEBUG_ROUTES=true (não use em produção)."""
+    if os.getenv("ALLOW_DEBUG_ROUTES", "").lower() not in ("1", "true", "yes"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not Found")
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == "evarantes2@gmail.com").first()
         if user:
             db.delete(user)
             db.commit()
-        
         hashed_password = get_password_hash("123456")
         new_user = User(
-            email="evarantes2@gmail.com", 
+            email="evarantes2@gmail.com",
             hashed_password=hashed_password,
             must_change_password=True
         )
