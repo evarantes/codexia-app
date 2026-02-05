@@ -4,13 +4,18 @@
 
 - **Porta**: O container expõe a porta `8000`. No Coolify, configure o serviço para usar a porta **8000** (ou defina a variável de ambiente `PORT` com a porta que o Coolify mapear).
 - **Variáveis de ambiente**: Defina pelo menos:
-  - `DATABASE_URL` – URL do PostgreSQL (ex.: `postgresql://user:pass@host:5432/dbname`). Se o Coolify fornecer `postgres://`, o app converte para `postgresql://`.
+  - `DATABASE_URL` – Opcional. Se **não** definir, o app usa SQLite em **`/data/vibraface.db`**. Para persistir o banco no Docker, monte um volume em **`/data`** no Coolify (Storage/Volumes). Se definir, use PostgreSQL (ex.: `postgresql://user:pass@host:5432/dbname`); o app converte `postgres://` para `postgresql://`.
+  - `BASE_URL` – URL pública do app (ex.: `https://seu-dominio.sslip.io`). Usada em emails de recuperação de senha, callbacks do Mercado Pago e links de download.
+  - `SECRET_KEY` – Chave secreta para tokens JWT (em produção não use a padrão).
+  - Opcional: `ALLOW_DEBUG_ROUTES=true` só se precisar do endpoint `/debug-reset-user` (evitar em produção).
   - Outras chaves (API keys, etc.) conforme a aba Configurações da aplicação.
+- **SQLite (sem DATABASE_URL)**: O app cria a pasta `/data` se não existir e grava o banco em `/data/vibraface.db`. Na primeira execução, se existir `/app/vibraface.db` e não existir `/data/vibraface.db`, o arquivo é copiado para `/data` (migração). **Monte um volume em `/data`** no Coolify para persistir entre deploys.
 
 ## URLs após subir o app
 
-- **`/`** – API (JSON): `{"message": "Codexia API is running"}`
-- **`/app`** – Interface web (index.html)
+- **`/`** – Frontend Vue (painel Codexia)
+- **`/app`** – Mesmo que `/` (compatibilidade)
+- **`/api/status`** – Status da API em JSON: `{"message": "Codexia API is running"}`
 - **`/health`** – Health check (usado pelo HEALTHCHECK do Docker)
 - **`/login.html`** – Página de login
 
