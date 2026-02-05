@@ -4,6 +4,7 @@ from app.database import get_db
 from app.models import Sale, Customer, Book
 from app.services.email_service import EmailService
 from app.services.payment import PaymentService
+from app.config import BASE_URL
 from pydantic import BaseModel
 import datetime
 
@@ -63,11 +64,11 @@ async def mercadopago_webhook(payload: dict, db: Session = Depends(get_db)):
             # Disparar Entrega
             book = db.query(Book).filter(Book.id == book_id).first()
             if book and status == "approved":
-                # Gerar link de download
+                # Gerar link de download (BASE_URL em produção)
                 if book.file_path:
-                     download_link = f"http://localhost:8000{book.file_path}"
+                    download_link = f"{BASE_URL}{book.file_path}"
                 else:
-                     download_link = f"http://codexia.com/download/{book.id}/secure-token-123"
+                    download_link = f"{BASE_URL}/download/{book.id}"
                 
                 # Instancia serviço de email sob demanda
                 email_service = EmailService()
@@ -109,9 +110,10 @@ def simulate_sale(db: Session = Depends(get_db)):
 
     # Enviar email
     if book.file_path:
-         download_link = f"http://localhost:8000{book.file_path}"
+        download_link = f"{BASE_URL}{book.file_path}"
     else:
-         download_link = f"http://localhost:8000/download/{book.id}"
+        download_link = f"{BASE_URL}/download/{book.id}"
+    email_service = EmailService()
     email_service.send_delivery_email(customer.email, customer.name, book.title, download_link)
 
     return {"status": "Venda simulada com sucesso", "customer": customer.name, "book": book.title}

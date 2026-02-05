@@ -30,17 +30,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the current directory contents into the container at /app
 COPY . .
 
-# Create directory for static files if not exists
-RUN mkdir -p app/static/videos app/static/covers app/static/icons
+# Diretórios para arquivos estáticos e uploads em runtime (.dockerignore não copia conteúdo local)
+RUN mkdir -p app/static/videos app/static/covers app/static/icons app/static/generated app/static/temp_uploads app/static/music
 
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
 
-# Set environment variables
+# Set environment variables (otimizado para produção)
 ENV MODULE_NAME="app.main"
 ENV VARIABLE_NAME="app"
 ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # Coolify/Render: set PORT in environment if your platform uses a different port
 # exec so uvicorn receives SIGTERM and can shut down cleanly

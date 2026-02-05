@@ -1,16 +1,22 @@
-# Ignore git and local config
+# Git e config local
 .git
 .gitignore
 .env
+.env.*
+!.env.example
+
+# Python
 __pycache__
-*.pyc
+*.py[cod]
+*$py.class
 *.pyo
 *.pyd
 .Python
 env/
 venv/
-pip-log.txt
-pip-delete-this-directory.txt
+.venv/
+
+# Build e testes
 .tox/
 .coverage
 .coverage.*
@@ -20,8 +26,25 @@ coverage.xml
 *.cover
 *.log
 .pytest_cache/
+tests/
+
+# DB e uploads locais (container usa volume ou DATABASE_URL)
 vibraface.db
+*.db
 temp_uploads/
 generated_books/
+
+# Scripts de deploy local (não necessários na imagem)
+*.ps1
+DEPLOY*.ps1
+IMPLANTAR*.ps1
+CONFIGURAR*.md
+VERIFICAR*.md
+ATUALIZAR*.md
+check_imports.py
+debug_db.py
+debug_db_creds.py
+
+# Pastas geradas em runtime (criadas pelo app no container)
 app/static/generated/
 app/static/temp_uploads/

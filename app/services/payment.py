@@ -47,9 +47,9 @@ class PaymentService:
                 }
             ],
             "back_urls": {
-                "success": "http://localhost:8000/success",
-                "failure": "http://localhost:8000/failure",
-                "pending": "http://localhost:8000/pending"
+                "success": f"{os.getenv('BASE_URL', 'http://localhost:8000').rstrip('/')}/success",
+                "failure": f"{os.getenv('BASE_URL', 'http://localhost:8000').rstrip('/')}/failure",
+                "pending": f"{os.getenv('BASE_URL', 'http://localhost:8000').rstrip('/')}/pending"
             },
             "auto_return": "approved"
         }

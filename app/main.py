@@ -52,6 +52,25 @@ def run_migrations(engine):
                 with engine.connect() as conn:
                     conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0"))
                     conn.commit()
+            if "is_admin" not in user_columns:
+                print("Migrating: Adding is_admin to users table...")
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE"))
+                    conn.commit()
+
+            # Multi-tenant: user_id nas tabelas principais
+            for table, col in [
+                ("books", "user_id"), ("book_drafts", "user_id"), ("leads", "user_id"),
+                ("settings", "user_id"), ("customers", "user_id"), ("scheduled_videos", "user_id"),
+                ("channel_reports", "user_id"),
+            ]:
+                if table in inspector.get_table_names():
+                    tcols = [c["name"] for c in inspector.get_columns(table)]
+                    if col not in tcols:
+                        print(f"Migrating: Adding {col} to {table}...")
+                        with engine.connect() as conn:
+                            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER"))
+                            conn.commit()
 
             # Check for ScheduledVideo new columns
             if "scheduled_videos" in inspector.get_table_names():

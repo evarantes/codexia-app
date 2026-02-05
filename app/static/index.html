@@ -2667,9 +2667,6 @@
                         }
                     } catch (e) { alert("Erro: " + (e.message || e)); }
                 },
-                showError(video) {
-                    alert("Detalhes do Erro:\n\n" + (video.description || "Erro desconhecido. Verifique os logs do servidor."));
-                },
                 async saveSettings() {
                     try {
                         const res = await this.authFetch('/settings/', {
@@ -3194,12 +3191,14 @@
                     }
                 },
                 showError(video) {
-                    if (video.error_msg) {
-                        alert("Detalhes do Erro:\n\n" + video.error_msg);
-                    } else if (video.error) {
-                         alert("Detalhes do Erro:\n\n" + video.error);
+                    const msg = (video.error_msg || video.error || video.description || "").toString().trim();
+                    const isFailed = (video.status || "").toLowerCase() === "failed" || (video.status || "").toLowerCase().includes("falha");
+                    if (msg) {
+                        alert("Detalhes do Erro:\n\n" + msg);
+                    } else if (isFailed) {
+                        alert("Falha na geração deste vídeo.\n\nUse \"Regerar\" para tentar novamente ou exclua o item da fila.");
                     } else {
-                        alert("Erro desconhecido. Verifique o console do servidor.");
+                        alert("Falha na geração deste vídeo.\n\nUse \"Regerar\" para tentar novamente ou exclua o item da fila.");
                     }
                 },
                 async previewBook() {

@@ -7,6 +7,7 @@ class Book(Base):
     __tablename__ = "books"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     title = Column(String, index=True)
     author = Column(String, default="Você")
     synopsis = Column(Text)
@@ -26,6 +27,7 @@ class BookDraft(Base):
     __tablename__ = "book_drafts"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     title = Column(String, index=True)
     author = Column(String, nullable=True)
     metadata_json = Column(Text)  # JSON: title, author, subtitle, style, etc.
@@ -54,6 +56,7 @@ class Lead(Base):
     __tablename__ = "leads"
     
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String)
     contact_info = Column(String)
     interest_level = Column(String)
@@ -64,6 +67,7 @@ class Settings(Base):
     __tablename__ = "settings"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     openai_api_key = Column(String, nullable=True)
     gemini_api_key = Column(String, nullable=True)
     deepseek_api_key = Column(String, nullable=True)
@@ -92,6 +96,7 @@ class Customer(Base):
     __tablename__ = "customers"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String)
     email = Column(String, index=True)
     phone = Column(String, nullable=True)
@@ -117,6 +122,7 @@ class ScheduledVideo(Base):
     __tablename__ = "scheduled_videos"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     theme = Column(String)
     title = Column(String)
     description = Column(String)
@@ -147,6 +153,7 @@ class User(Base):
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
+    is_admin = Column(Boolean, default=False)
     reset_token = Column(String, nullable=True)
     reset_token_expire = Column(DateTime, nullable=True)
 
@@ -154,6 +161,7 @@ class ChannelReport(Base):
     __tablename__ = "channel_reports"
     
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Snapshot stats

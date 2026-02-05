@@ -69,9 +69,8 @@ class EmailService:
         Simula envio de email de recuperação de senha.
         """
         subject = "Recuperação de Senha - Codexia"
-        reset_link = f"http://codexia-psh3.onrender.com/reset-password.html?token={token}"
-        # Em desenvolvimento local, usar localhost
-        # reset_link = f"http://localhost:8000/reset-password.html?token={token}"
+        from app.config import BASE_URL
+        reset_link = f"{BASE_URL}/reset-password.html?token={token}"
         
         body = f"""
         Olá!

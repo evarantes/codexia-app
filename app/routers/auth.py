@@ -12,9 +12,9 @@ from app.database import get_db
 from app.models import User
 from app.services.email_service import EmailService
 
-# Configurações de Segurança
-# Em produção, usar env var
-SECRET_KEY = os.getenv("SECRET_KEY", "sua_secret_key_super_secreta_codexia_2025") 
+# Configurações de Segurança — em produção defina SECRET_KEY no ambiente
+_SECRET_DEFAULT = "sua_secret_key_super_secreta_codexia_2025"
+SECRET_KEY = os.getenv("SECRET_KEY", _SECRET_DEFAULT) 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 24 horas
 

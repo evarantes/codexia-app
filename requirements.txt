@@ -28,3 +28,4 @@ apscheduler
 passlib[bcrypt]
 python-jose[cryptography]
 bcrypt
+alembic

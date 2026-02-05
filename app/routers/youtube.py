@@ -231,10 +231,11 @@ def execute_optimization(data: Dict[str, Any]):
             if generated_image_url:
                 results["banner_generated"] = True
                 # 2. Upload to YouTube
-                # Convert relative path to absolute
+                # Convert relative path to absolute (compatível com Docker)
+                from app.config import absolute_path_for_static
                 banner_path = generated_image_url
                 if banner_path.startswith("/"):
-                    banner_path = "c:/dev/TRAE/codexia/app" + banner_path
+                    banner_path = absolute_path_for_static(banner_path)
                 
                 banner_url = yt_service.upload_channel_banner(banner_path)
                 if banner_url:
@@ -610,8 +611,8 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     # Opcional: deletar arquivo físico se existir
     if video.video_url:
         try:
-            # Caminho relativo para absoluto
-            abs_path = os.path.join("c:/dev/TRAE/codexia/app", video.video_url.lstrip('/'))
+            from app.config import absolute_path_for_static
+            abs_path = absolute_path_for_static(video.video_url)
             if os.path.exists(abs_path):
                 os.remove(abs_path)
         except Exception as e:
@@ -623,7 +624,27 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
 
 @router.get("/schedule")
 def get_schedule(db: Session = Depends(get_db)):
-    return db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).all()
+    """Lista vídeos agendados; inclui description para exibir erro na UI (Ver Erro)."""
+    videos = db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).all()
+    return [
+        {
+            "id": v.id,
+            "theme": v.theme,
+            "title": v.title,
+            "description": v.description or "",
+            "status": v.status,
+            "progress": v.progress or 0,
+            "scheduled_for": v.scheduled_for.isoformat() if v.scheduled_for else None,
+            "auto_post": getattr(v, "auto_post", False),
+            "video_type": v.video_type,
+            "video_url": v.video_url,
+            "youtube_video_id": v.youtube_video_id,
+            "uploaded_at": v.uploaded_at.isoformat() if getattr(v, "uploaded_at", None) else None,
+            "voice_style": getattr(v, "voice_style", "human"),
+            "voice_gender": getattr(v, "voice_gender", "female"),
+        }
+        for v in videos
+    ]
 
 @router.get("/auto_insights")
 def get_auto_insights():
@@ -721,8 +742,9 @@ def process_video_generation(request: VideoRequest, task_id):
         video_result = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback)
         video_path = video_result["video_url"]
         
-        # O path retornado é relativo para web (/static/...), precisamos do absoluto para upload
-        abs_video_path = "c:/dev/TRAE/codexia/app" + video_path 
+        # Path absoluto para upload (compatível com Docker)
+        from app.config import absolute_path_for_static
+        abs_video_path = absolute_path_for_static(video_path)
         print(f"Vídeo gerado em: {abs_video_path}")
         
         # 3. Upload (se solicitado)
