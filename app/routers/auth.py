@@ -91,6 +91,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
+
+async def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    """Requer usuário autenticado E is_admin=True."""
+    if not getattr(current_user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
+    return current_user
+
+
 # Endpoints
 @router.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):

@@ -1,10 +1,11 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from app.database import engine, Base, get_db, SessionLocal
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
 from dotenv import load_dotenv
 import os
 from contextlib import asynccontextmanager
@@ -15,6 +16,13 @@ from app.routers.auth import get_password_hash
 
 # Carregar variáveis de ambiente
 load_dotenv()
+
+APP_ENV = os.getenv("APP_ENV", "production").lower()
+IS_PRODUCTION = APP_ENV == "production"
+
+# CORS: lista separada por vírgula (ex: https://app.example.com,https://example.com)
+_cors_raw = os.getenv("CORS_ORIGINS", "*").strip()
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_raw else ["*"]
 
 # Caminho da pasta estática: no container é /app/app/static; localmente usa path do pacote
 _BASE_DIR = Path(__file__).resolve().parent
@@ -56,6 +64,11 @@ def run_migrations(engine):
                 print("Migrating: Adding is_admin to users table...")
                 with engine.connect() as conn:
                     conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE"))
+                    conn.commit()
+            if "name" not in user_columns:
+                print("Migrating: Adding name to users table...")
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN name TEXT"))
                     conn.commit()
 
             # Multi-tenant: user_id nas tabelas principais
@@ -169,32 +182,37 @@ def run_migrations(engine):
     except Exception as e:
         print(f"Migration warning: {e}")
 
-def create_default_user():
+def create_admin_master():
+    """Cria admin master a partir de ADMIN_EMAIL/ADMIN_PASSWORD. Não altera senha se já existir."""
+    admin_email = os.getenv("ADMIN_EMAIL", "").strip()
+    admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+    admin_name = os.getenv("ADMIN_NAME", "").strip() or None
+    if not admin_email or not admin_password:
+        return
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == "evarantes2@gmail.com").first()
-        if not user:
-            print("Creating default user: evarantes2@gmail.com")
-            hashed_password = get_password_hash("123456")
-            user = User(
-                email="evarantes2@gmail.com", 
-                hashed_password=hashed_password,
-                must_change_password=True
-            )
-            db.add(user)
-            db.commit()
-            print("Default user created.")
-        else:
-            print("Default user already exists.")
+        user = db.query(User).filter(User.email == admin_email).first()
+        if user:
+            return  # Usuário já existe — não alterar senha
+        user = User(
+            email=admin_email,
+            name=admin_name,
+            hashed_password=get_password_hash(admin_password),
+            is_admin=True,
+            must_change_password=False,
+        )
+        db.add(user)
+        db.commit()
+        print("Admin master criado com sucesso.")
     except Exception as e:
-        print(f"Error creating default user: {e}")
+        print(f"Erro ao criar admin master: {e}")
     finally:
         db.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: cada passo em try/except para não derrubar o app (Render/Coolify)
-    print(f"Iniciando aplicação... DATABASE_URL: {os.getenv('DATABASE_URL', 'Not Set (Using SQLite)')}")
+    print(f"Iniciando aplicação... APP_ENV={APP_ENV} | Banco: {DATABASE_DISPLAY}")
     
     try:
         try:
@@ -203,9 +221,9 @@ async def lifespan(app: FastAPI):
             print(f"Migration warning (app continua): {e}")
         
         try:
-            create_default_user()
+            create_admin_master()
         except Exception as e:
-            print(f"Default user warning (app continua): {e}")
+            print(f"Admin master warning (app continua): {e}")
         
         try:
             monitor_service.start()
@@ -244,10 +262,34 @@ async def lifespan(app: FastAPI):
         print(f"Monitor stop warning: {e}")
 
 app = FastAPI(
-    title="Codexia API", 
+    title="Codexia API",
     description="Sua fábrica de conteúdo movida a inteligência",
-    lifespan=lifespan
+    lifespan=lifespan,
+    debug=not IS_PRODUCTION,
 )
+
+# credentials=True incompatível com allow_origins=["*"]; usar False quando *
+_allow_creds = "*" not in CORS_ORIGINS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=_allow_creds,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Em production: retorna 500 genérico. Em development: detalhes do erro."""
+    from fastapi import HTTPException
+    from fastapi.exceptions import RequestValidationError
+    if isinstance(exc, (HTTPException, RequestValidationError)):
+        raise exc  # deixa o handler padrão do FastAPI tratar 4xx/422
+    if IS_PRODUCTION:
+        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
 
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
@@ -293,6 +335,7 @@ app.include_router(diagnostics.router)
 app.include_router(book_factory.router)
 app.include_router(hotmart.router)
 app.include_router(music.router)
+app.include_router(admin.router)
 
 @app.get("/success")
 def payment_success():

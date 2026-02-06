@@ -1,6 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.services.video_processing import process_scheduled_video
-from app.database import SessionLocal
+from app.database import SessionLocal, SQLALCHEMY_DATABASE_URL
 from app.models import ChannelReport, ScheduledVideo
 import datetime
 import logging
@@ -40,6 +40,11 @@ class MonitorService:
                 minutes=5,
                 next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
             )
+            # Backup SQLite 1x por dia (só quando banco é SQLite)
+            if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+                from app.services.backup_service import run_sqlite_backup
+                self.scheduler.add_job(run_sqlite_backup, "cron", hour=3, minute=0)
+                logger.info("Backup SQLite diário agendado (03:00).")
             
             # Executar verificação de integridade de arquivos (Self-Healing)
             self.check_file_integrity()
