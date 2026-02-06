@@ -80,6 +80,11 @@ def process_scheduled_video(video_id: int):
                      print(f"Script salvo em cache para video {video_id}")
                  except Exception as e:
                      print(f"Erro ao salvar cache do script: {e}")
+
+        if not final_script or not isinstance(final_script.get("scenes"), list) or len(final_script.get("scenes", [])) == 0:
+            raise ValueError(
+                "IA não retornou roteiro válido. Configure OPENAI_API_KEY ou GEMINI_API_KEY em Configurações."
+            )
         
         # Gerar vídeo
         def progress_callback(p, m):

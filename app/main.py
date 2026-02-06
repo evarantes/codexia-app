@@ -49,6 +49,18 @@ def run_migrations(engine):
                 print("Migration: Column cover_image_base64 already exists.")
         
         # Check if users table exists (create_all should handle, but just in case)
+        if "tenants" not in inspector.get_table_names():
+            print("Migration: Creating tenants table...")
+            Base.metadata.create_all(bind=engine)
+        # Garantir tenant Default existe
+        with engine.connect() as conn:
+            r = conn.execute(text("SELECT 1 FROM tenants WHERE slug = 'default' LIMIT 1"))
+            if r.fetchone() is None:
+                conn.execute(text(
+                    "INSERT INTO tenants (name, slug, created_at) VALUES ('Default', 'default', CURRENT_TIMESTAMP)"
+                ))
+                conn.commit()
+                print("Migration: Tenant 'Default' criado.")
         if "users" not in inspector.get_table_names():
              print("Migration: Creating users table...")
              Base.metadata.create_all(bind=engine)
@@ -70,6 +82,24 @@ def run_migrations(engine):
                 with engine.connect() as conn:
                     conn.execute(text("ALTER TABLE users ADD COLUMN name TEXT"))
                     conn.commit()
+            if "role" not in user_columns:
+                print("Migrating: Adding role to users table...")
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR DEFAULT 'cliente'"))
+                    conn.commit()
+                with engine.connect() as conn:
+                    conn.execute(text("UPDATE users SET role = 'admin' WHERE is_admin = 1"))
+                    conn.commit()
+            if "tenant_id" not in user_columns:
+                print("Migrating: Adding tenant_id to users table...")
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN tenant_id INTEGER"))
+                    conn.commit()
+                # Atribuir usuários existentes ao tenant Default (id=1)
+                with engine.connect() as conn:
+                    conn.execute(text("UPDATE users SET tenant_id = 1 WHERE tenant_id IS NULL"))
+                    conn.commit()
+                print("Migration: tenant_id adicionado; usuários existentes atribuídos a Default.")
 
             # Multi-tenant: user_id nas tabelas principais
             for table, col in [
@@ -183,7 +213,7 @@ def run_migrations(engine):
         print(f"Migration warning: {e}")
 
 def create_admin_master():
-    """Cria admin master a partir de ADMIN_EMAIL/ADMIN_PASSWORD. Não altera senha se já existir."""
+    """Cria admin master a partir de ADMIN_EMAIL/ADMIN_PASSWORD. Usa tenant Default."""
     admin_email = os.getenv("ADMIN_EMAIL", "").strip()
     admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
     admin_name = os.getenv("ADMIN_NAME", "").strip() or None
@@ -191,19 +221,28 @@ def create_admin_master():
         return
     db = SessionLocal()
     try:
+        from app.models import Tenant
+        tenant = db.query(Tenant).filter(Tenant.slug == "default").first()
+        if not tenant:
+            tenant = Tenant(name="Default", slug="default")
+            db.add(tenant)
+            db.commit()
+            db.refresh(tenant)
         user = db.query(User).filter(User.email == admin_email).first()
         if user:
             return  # Usuário já existe — não alterar senha
         user = User(
             email=admin_email,
             name=admin_name,
+            tenant_id=tenant.id,
             hashed_password=get_password_hash(admin_password),
             is_admin=True,
+            role="admin",
             must_change_password=False,
         )
         db.add(user)
         db.commit()
-        print("Admin master criado com sucesso.")
+        print("Admin master criado com sucesso (tenant Default).")
     except Exception as e:
         print(f"Erro ao criar admin master: {e}")
     finally:
@@ -293,6 +332,11 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
+# Montar /media para vídeos em /data (volume persistente no Coolify)
+if os.path.isdir("/data"):
+    os.makedirs("/data/media/videos", exist_ok=True)
+    if os.path.isdir("/data/media"):
+        app.mount("/media", StaticFiles(directory="/data/media"), name="media")
 
 @app.get("/health")
 async def health():

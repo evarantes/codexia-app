@@ -72,6 +72,16 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+
+def create_access_token_for_user(user, expires_delta: Optional[timedelta] = None):
+    """Cria JWT com sub, tenant_id e role para multi-tenant + RBAC."""
+    data = {
+        "sub": user.email,
+        "tenant_id": getattr(user, "tenant_id", None),
+        "role": getattr(user, "role", None) or ("admin" if getattr(user, "is_admin", False) else "cliente"),
+    }
+    return create_access_token(data, expires_delta)
+
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -110,9 +120,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
+    access_token = create_access_token_for_user(user, expires_delta=access_token_expires)
     return {
         "access_token": access_token, 
         "token_type": "bearer",
@@ -166,7 +174,9 @@ def change_password(request: PasswordChange, current_user: User = Depends(get_cu
 @router.get("/auth/me")
 def read_users_me(current_user: User = Depends(get_current_user)):
     return {
-        "email": current_user.email, 
+        "email": current_user.email,
         "id": current_user.id,
+        "tenant_id": getattr(current_user, "tenant_id", None),
+        "role": getattr(current_user, "role", None) or ("admin" if getattr(current_user, "is_admin", False) else "cliente"),
         "must_change_password": current_user.must_change_password
     }

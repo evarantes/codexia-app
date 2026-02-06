@@ -490,11 +490,9 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if not video.video_url:
         raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
 
-    rel_path = video.video_url.lstrip("/")
-    if rel_path.startswith("static"):
-        rel_path = os.path.join("app", rel_path)
-    abs_video_path = os.path.join(os.getcwd(), rel_path)
-    if not os.path.exists(abs_video_path):
+    from app.config import absolute_path_for_video
+    abs_video_path = absolute_path_for_video(video.video_url)
+    if not abs_video_path or not os.path.exists(abs_video_path):
         raise HTTPException(
             status_code=503,
             detail="Arquivo de vídeo não encontrado no servidor. Exclua este item ou agende um novo."
@@ -553,11 +551,9 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if not video.video_url:
         raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
 
-    rel_path = video.video_url.lstrip("/")
-    if rel_path.startswith("static"):
-        rel_path = os.path.join("app", rel_path)
-    abs_video_path = os.path.join(os.getcwd(), rel_path)
-    if not os.path.exists(abs_video_path):
+    from app.config import absolute_path_for_video
+    abs_video_path = absolute_path_for_video(video.video_url)
+    if not abs_video_path or not os.path.exists(abs_video_path):
         raise HTTPException(
             status_code=503,
             detail="Arquivo de vídeo não encontrado no servidor. Não é possível republicar."
@@ -611,8 +607,8 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     # Opcional: deletar arquivo físico se existir
     if video.video_url:
         try:
-            from app.config import absolute_path_for_static
-            abs_path = absolute_path_for_static(video.video_url)
+            from app.config import absolute_path_for_video
+            abs_path = absolute_path_for_video(video.video_url)
             if os.path.exists(abs_path):
                 os.remove(abs_path)
         except Exception as e:
@@ -624,14 +620,21 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
 
 @router.get("/schedule")
 def get_schedule(db: Session = Depends(get_db)):
-    """Lista vídeos agendados; inclui description para exibir erro na UI (Ver Erro)."""
+    """Lista vídeos agendados; inclui description e error_msg para exibir erro na UI (Ver Erro)."""
     videos = db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).all()
-    return [
-        {
+    result = []
+    for v in videos:
+        desc = v.description or ""
+        err = ""
+        if "[ERRO]" in desc:
+            idx = desc.find("[ERRO]")
+            err = desc[idx:].replace("[ERRO]:", "").strip()[:2000]
+        result.append({
             "id": v.id,
             "theme": v.theme,
             "title": v.title,
-            "description": v.description or "",
+            "description": desc,
+            "error_msg": err or (desc if v.status == "failed" else ""),
             "status": v.status,
             "progress": v.progress or 0,
             "scheduled_for": v.scheduled_for.isoformat() if v.scheduled_for else None,
@@ -642,9 +645,8 @@ def get_schedule(db: Session = Depends(get_db)):
             "uploaded_at": v.uploaded_at.isoformat() if getattr(v, "uploaded_at", None) else None,
             "voice_style": getattr(v, "voice_style", "human"),
             "voice_gender": getattr(v, "voice_gender", "female"),
-        }
-        for v in videos
-    ]
+        })
+    return result
 
 @router.get("/auto_insights")
 def get_auto_insights():
@@ -742,9 +744,9 @@ def process_video_generation(request: VideoRequest, task_id):
         video_result = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback)
         video_path = video_result["video_url"]
         
-        # Path absoluto para upload (compatível com Docker)
-        from app.config import absolute_path_for_static
-        abs_video_path = absolute_path_for_static(video_path)
+        # Path absoluto para upload (compatível com Docker e /data/media)
+        from app.config import absolute_path_for_video
+        abs_video_path = absolute_path_for_video(video_path)
         print(f"Vídeo gerado em: {abs_video_path}")
         
         # 3. Upload (se solicitado)

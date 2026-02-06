@@ -3,6 +3,17 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime
 
+
+class Tenant(Base):
+    """Tenant para multi-tenant SaaS."""
+    __tablename__ = "tenants"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Book(Base):
     __tablename__ = "books"
 
@@ -149,12 +160,14 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     email = Column(String, unique=True, index=True)
     name = Column(String, nullable=True)
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     is_admin = Column(Boolean, default=False)
+    role = Column(String, default="cliente")  # admin | cliente | colaborador
     reset_token = Column(String, nullable=True)
     reset_token_expire = Column(DateTime, nullable=True)
 

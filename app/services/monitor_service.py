@@ -110,13 +110,8 @@ class MonitorService:
                 if not video.video_url:
                     continue
                     
-                # Caminho relativo seguro (remove primeira barra se houver)
-                rel_path = video.video_url.lstrip('/')
-                if rel_path.startswith("static"):
-                     # Ajuste para estrutura do projeto: app/static/...
-                     rel_path = os.path.join("app", rel_path)
-                
-                abs_path = os.path.join(os.getcwd(), rel_path)
+                from app.config import absolute_path_for_video
+                abs_path = absolute_path_for_video(video.video_url)
                 
                 if not os.path.exists(abs_path):
                     # Tentar recuperação inteligente (Auto-Heal) se houver script em cache
@@ -223,13 +218,8 @@ class MonitorService:
                 for video in videos_to_upload:
                     logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
                     try:
-                        # Construct absolute path (Platform Independent)
-                        # video.video_url is usually "/static/videos/..."
-                        rel_path = video.video_url.lstrip('/')
-                        if rel_path.startswith("static"):
-                             rel_path = os.path.join("app", rel_path)
-                             
-                        abs_video_path = os.path.join(os.getcwd(), rel_path)
+                        from app.config import absolute_path_for_video
+                        abs_video_path = absolute_path_for_video(video.video_url)
                         
                         if not os.path.exists(abs_video_path):
                             logger.error(f"Arquivo de vídeo não encontrado: {abs_video_path}")

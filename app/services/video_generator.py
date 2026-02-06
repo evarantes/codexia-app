@@ -6,9 +6,12 @@ import threading
 import asyncio
 import re
 
+from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX
+
+
 class VideoGenerator:
-    def __init__(self, output_dir="app/static/videos", ai_service=None):
-        self.output_dir = output_dir
+    def __init__(self, output_dir=None, ai_service=None):
+        self.output_dir = output_dir or VIDEO_OUTPUT_DIR
         os.makedirs(self.output_dir, exist_ok=True)
         self.music_dir = "app/static/music"
         os.makedirs(self.music_dir, exist_ok=True)
@@ -248,6 +251,10 @@ class VideoGenerator:
 
     def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None):
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
+        # Lazy imports essenciais dentro do escopo da função para evitar erros de referência
+        from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+        import numpy as np
+
         if progress_callback:
             progress_callback(0, "Iniciando composição do vídeo...")
             
@@ -342,26 +349,29 @@ class VideoGenerator:
                 audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
                 
                 # Gerar Imagem
-                img = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
-                clip = ImageClip(img)
+                img_scene = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                
+                # Cria clip da cena
+                # ImageClip precisa estar disponível no escopo (garantido pelo import no início da função)
+                clip_scene = ImageClip(img_scene)
                 
                 if audio_path:
                     audio_clip_scene = AudioFileClip(audio_path)
-                    clip = clip.with_duration(audio_clip_scene.duration + 0.5)
-                    clip = clip.with_audio(audio_clip_scene)
+                    clip_scene = clip_scene.with_duration(audio_clip_scene.duration + 0.5)
+                    clip_scene = clip_scene.with_audio(audio_clip_scene)
                 else:
-                    clip = clip.with_duration(4)
+                    clip_scene = clip_scene.with_duration(5)
                     
-                clips.append(clip)
+                clips.append(clip_scene)
                 
-                # Limpar imagem temporária se foi baixada
+                # Limpeza de imagens temporárias
                 if bg_image_path and "temp_" in bg_image_path:
                     try:
                         os.remove(bg_image_path)
-                    except:
+                    except Exception:
                         pass
-                
-                # Forçar coleta de lixo a cada cena para evitar pico
+                        
+                # Memory Cleanup entre cenas
                 gc.collect()
                 
             # 3. Slide Final (CTA)
@@ -498,7 +508,7 @@ class VideoGenerator:
             if progress_callback:
                 progress_callback(100, "Vídeo renderizado com sucesso!")
             
-            return {"video_url": f"/static/videos/{filename}", "music_credit": used_music_credit}
+            return {"video_url": f"{VIDEO_URL_PREFIX}/{filename}", "music_credit": used_music_credit}
             
         except Exception as e:
             print(f"Erro na geração do vídeo: {e}")
@@ -572,7 +582,7 @@ class VideoGenerator:
                     pass
             final.close()
             audio_clip.close()
-            return {"video_url": f"/static/videos/{filename}"}
+            return {"video_url": f"{VIDEO_URL_PREFIX}/{filename}"}
         except Exception as e:
             for c in clips:
                 try:
