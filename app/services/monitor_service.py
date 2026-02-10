@@ -47,7 +47,10 @@ class MonitorService:
                 logger.info("Backup SQLite diário agendado (03:00).")
             
             # Executar verificação de integridade de arquivos (Self-Healing)
+            # Rodar imediatamente no startup
             self.check_file_integrity()
+            # E agendar para rodar a cada 30 minutos para pegar arquivos deletados (ephemeral storage)
+            self.scheduler.add_job(self.check_file_integrity, 'interval', minutes=30)
             
             self.scheduler.start()
             logger.info("Monitoramento do canal, processador de fila e agendador de uploads iniciados.")

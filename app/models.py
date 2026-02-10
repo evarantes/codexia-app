@@ -152,6 +152,7 @@ class ScheduledVideo(Base):
     auto_post = Column(Boolean, default=False)
     voice_style = Column(String, default="human")
     voice_gender = Column(String, default="female")
+    music_file_path = Column(String, nullable=True) # Caminho do arquivo de música para videoclipes
     youtube_video_id = Column(String, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

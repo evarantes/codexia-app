@@ -554,7 +554,46 @@
                 <!-- Content Planner -->
                 <div class="bg-white rounded-lg shadow p-6 mb-8">
                     <h2 class="text-xl font-bold mb-4">Planejamento Automático de Conteúdo</h2>
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                    
+                    <div class="mb-6">
+                        <label class="block font-bold mb-2">Modo de Geração</label>
+                        <div class="flex gap-4">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" v-model="scheduleMode" value="theme" class="w-4 h-4 text-indigo-600">
+                                <span>Baseado em Tema (IA)</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" v-model="scheduleMode" value="music" class="w-4 h-4 text-indigo-600">
+                                <span>Baseado em Música (Upload)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Music Upload Mode UI -->
+                    <div v-if="scheduleMode === 'music'" class="bg-indigo-50 p-6 rounded-lg border border-indigo-200 mb-6">
+                        <h3 class="font-bold text-indigo-900 mb-4"><i class="fas fa-music mr-2"></i>Configuração do Vídeo Musical</h3>
+                        
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Arquivo de Música (MP3/WAV)</label>
+                            <input type="file" @change="handleMusicUpload" accept="audio/*" class="w-full border p-2 rounded bg-white">
+                            <p v-if="uploadedMusicPath" class="text-green-600 text-sm font-bold mt-2">
+                                <i class="fas fa-check-circle"></i> Arquivo carregado: {{ musicFilename }}
+                            </p>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block font-bold mb-2">Título do Vídeo</label>
+                                <input v-model="musicTitle" class="w-full border p-2 rounded" placeholder="Título da música ou vídeo">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Data de Publicação</label>
+                                <input v-model="scheduleStartDate" type="date" class="w-full border p-2 rounded">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="scheduleMode === 'theme'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                         <div class="md:col-span-2">
                             <label class="block font-bold mb-2">Tema / Nicho</label>
                             <input v-model="scheduleTheme" placeholder="Ex: Dicas de Produtividade, Resumos de Livros..." class="w-full border p-2 rounded">
@@ -1763,6 +1802,9 @@
                     monetizationData: null,
                     
                     // Weekly Schedule
+                    scheduleMode: 'theme', // theme | music
+                    uploadedMusicPath: null,
+                    musicTitle: '',
                     scheduleTheme: '',
                     scheduleType: 'days',
                     scheduleQuantity: 7,
@@ -2512,7 +2554,67 @@
                     };
                     return map[status] || status;
                 },
+                async handleMusicUpload(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    this.musicUploadProgress = 0;
+
+                    try {
+                         const res = await this.authFetch('/youtube/upload-music', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.uploadedMusicPath = data.file_path;
+                            this.musicFilename = data.filename;
+                            this.musicUploadProgress = 100;
+                            if (!this.musicTitle) {
+                                this.musicTitle = data.filename.replace(/\.[^/.]+$/, "").replace(/_/g, " ");
+                            }
+                        } else {
+                            alert("Falha no upload da música.");
+                            this.uploadedMusicPath = null;
+                        }
+                    } catch (e) {
+                        console.error(e);
+                        alert("Erro no upload: " + e);
+                        this.uploadedMusicPath = null;
+                    }
+                },
                 async generateSchedule() {
+                    if (this.scheduleMode === 'music') {
+                        if (!this.uploadedMusicPath) return alert("Por favor, faça upload de uma música.");
+                        if (!this.musicTitle) return alert("Por favor, informe um título para o vídeo.");
+                        
+                        this.scheduleLoading = true;
+                        // Create manual plan for music video
+                        const today = this.scheduleStartDate || new Date().toISOString().split('T')[0];
+                        
+                        this.schedulePlan = [{
+                            date: today,
+                            theme_of_day: 'Music Video',
+                            videos: [{
+                                title: this.musicTitle,
+                                concept: 'Vídeo gerado a partir de música: ' + this.musicFilename,
+                                time: '12:00',
+                                type: 'video',
+                                auto_post: true,
+                                voice_style: this.voiceStyle,
+                                voice_gender: this.voiceGender,
+                                music_file_path: this.uploadedMusicPath,
+                                duration: 5 // Default, will be adjusted by music length in backend
+                            }]
+                        }];
+                        
+                        this.scheduleLoading = false;
+                        return;
+                    }
+
                     if (!this.scheduleTheme) return alert("Digite um tema!");
                     this.scheduleLoading = true;
                     this.schedulePlan = [];

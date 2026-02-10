@@ -9,6 +9,16 @@ import requests
 
 router = APIRouter(prefix="/diagnostics", tags=["System Diagnostics"])
 
+@router.post("/fix-videos")
+def fix_videos_integrity(db: Session = Depends(get_db)):
+    """Força a verificação de integridade dos arquivos de vídeo (Self-Healing)."""
+    from app.services.monitor_service import monitor_service
+    try:
+        monitor_service.check_file_integrity()
+        return {"status": "ok", "message": "Verificação de integridade iniciada. Verifique os logs."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @router.get("/run")
 def run_diagnostics(db: Session = Depends(get_db)):
     from app.services.ai_generator import AIContentGenerator

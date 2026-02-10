@@ -1,6 +1,8 @@
 import os
 import glob
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+import shutil
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from app.services.youtube_service import YouTubeService
 # from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
@@ -18,6 +20,22 @@ router = APIRouter(
     tags=["youtube"],
     responses={404: {"description": "Not found"}},
 )
+
+@router.post("/upload-music")
+async def upload_music(file: UploadFile = File(...)):
+    upload_dir = Path("app/static/music_uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Sanitize filename
+    safe_filename = "".join([c for c in file.filename if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
+    file_path = upload_dir / f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{safe_filename}"
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    # Return absolute path for internal usage or relative for client if needed
+    # Using absolute path for backend processing consistency
+    return {"file_path": str(file_path.absolute()), "filename": safe_filename}
 
 class VideoRequest(BaseModel):
     topic: Optional[str] = None
@@ -272,6 +290,8 @@ class ScheduleRequest(BaseModel):
     video_duration: int = 5
 
     script_data: Optional[str] = None
+    music_file_path: Optional[str] = None # Path to uploaded music file
+    music_mode: bool = False
 
 @router.put("/schedule/{video_id}")
 def update_scheduled_video(video_id: int, data: Dict[str, Any], db: Session = Depends(get_db)):
@@ -337,109 +357,64 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     # Added comprehensive check for all new columns
     missing_cols = [
         ("progress", "INTEGER DEFAULT 0"),
-        ("publish_at", "TIMESTAMP"),
-        ("auto_post", "BOOLEAN DEFAULT FALSE"),
-        ("youtube_video_id", "TEXT"),
-        ("uploaded_at", "TIMESTAMP"),
-        ("voice_style", "TEXT DEFAULT 'human'"),
-        ("voice_gender", "TEXT DEFAULT 'female'")
+        ("publish_at", "DATETIME"),
+        ("auto_post", "BOOLEAN DEFAULT 0"),
+        ("voice_style", "VARCHAR"),
+        ("voice_gender", "VARCHAR"),
+        ("music_file_path", "VARCHAR"),
+        ("youtube_video_id", "VARCHAR"),
+        ("uploaded_at", "DATETIME"),
+        ("updated_at", "DATETIME")
     ]
     
-    for col_name, col_type in missing_cols:
-        try:
-            db.execute(text(f"SELECT {col_name} FROM scheduled_videos LIMIT 1"))
-        except Exception:
-            print(f"Column {col_name} missing in save_schedule. Attempting to add...")
-            try:
-                db.rollback()
-                db.execute(text(f"ALTER TABLE scheduled_videos ADD COLUMN {col_name} {col_type}"))
-                db.commit()
-                print(f"Column {col_name} added successfully.")
-            except Exception as e:
-                print(f"Failed to auto-fix DB for {col_name}: {e}")
-                # Continue anyway, maybe it was a transient error
-
-    count = 0
-    saved_ids = []
+    # Simple migration check for SQLite
     try:
-        for day in plan:
-            theme_day = day.get('theme_of_day', 'Geral')
-            day_date_str = day.get('date') # YYYY-MM-DD
-            
-            # Processar lista unificada de vídeos e shorts
-            for vid in day.get('videos', []):
-                time_str = vid.get('time', '12:00')
-                # Prefer video-specific date, fallback to day date
-                date_str = vid.get('date', day_date_str)
-                
-                # Calcular data/hora do agendamento
-                scheduled_dt = datetime.now()
-                if date_str:
-                    try:
-                        # Tenta combinar data do plano com horário sugerido
-                        scheduled_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-                    except Exception as e:
-                        print(f"Erro ao parsear data {date_str} {time_str}: {e}")
-                        # Fallback se falhar parser
-                        pass
-
-                new_video = ScheduledVideo(
-                    theme=theme_day,
-                    title=vid.get('title'),
-                    description=vid.get('concept'),
-                    status="queued", # Já marcamos como na fila
-                    video_type=vid.get('type', 'video'),
-                    script_data=json.dumps(vid),
-                    scheduled_for=scheduled_dt,
-                    auto_post=vid.get('auto_post', False), # Support auto_post from plan
-                    voice_style=vid.get('voice_style', 'human'),
-                    voice_gender=vid.get('voice_gender', 'female')
-                )
-                db.add(new_video)
-                db.flush() # Para pegar o ID
-                saved_ids.append(new_video.id)
-                count += 1
-            
-            # Manter suporte legado caso a IA separe (opcional, mas seguro)
-            for vid in day.get('shorts', []):
-                 # Mesma lógica para shorts legados
-                 time_str = vid.get('time', '12:00')
-                 date_str = vid.get('date', day_date_str)
-                 
-                 scheduled_dt = datetime.now()
-                 if date_str:
-                     try:
-                         scheduled_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-                     except:
-                         pass
-
-                 new_video = ScheduledVideo(
-                    theme=theme_day,
-                    title=vid.get('title'),
-                    description=vid.get('concept'),
-                    status="queued",
-                    video_type='short',
-                    script_data=json.dumps(vid),
-                    scheduled_for=scheduled_dt,
-                    voice_style=vid.get('voice_style', 'human'),
-                    voice_gender=vid.get('voice_gender', 'female')
-                )
-                 db.add(new_video)
-                 db.flush()
-                 saved_ids.append(new_video.id)
-                 count += 1
-                 
-        db.commit()
+        inspector = inspect(db.get_bind())
+        columns = [c["name"] for c in inspector.get_columns("scheduled_videos")]
         
-        # OTIMIZAÇÃO DE MEMÓRIA: Não iniciar processamento em paralelo.
-        # Deixar o MonitorService pegar um por um a cada minuto.
-        # for vid_id in saved_ids:
-        #    background_tasks.add_task(process_scheduled_video, vid_id)
-            
-        return {"status": "success", "saved_items": count}
+        for col_name, col_type in missing_cols:
+            if col_name not in columns:
+                try:
+                    db.execute(text(f"ALTER TABLE scheduled_videos ADD COLUMN {col_name} {col_type}"))
+                    db.commit()
+                    print(f"Migration: Added column {col_name} to scheduled_videos")
+                except Exception as e:
+                    print(f"Migration error ({col_name}): {e}")
+                    db.rollback()
     except Exception as e:
-        print(f"Erro ao salvar agendamento: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Migration check failed: {e}")
+
+    saved_videos = []
+    
+    for item in plan:
+        # Extrair dados do item
+        # Se for music_mode, o item já deve vir com music_file_path
+        
+        video = ScheduledVideo(
+            theme=item.get("theme_of_day", "Geral"),
+            title=item.get("videos", [{}])[0].get("title", "Vídeo Agendado") if isinstance(item.get("videos"), list) else item.get("title", "Vídeo"),
+            description=item.get("videos", [{}])[0].get("concept", "") if isinstance(item.get("videos"), list) else item.get("concept", ""),
+            scheduled_for=datetime.strptime(f"{item.get('date')} {item.get('videos', [{}])[0].get('time', '12:00')}", "%Y-%m-%d %H:%M") if item.get("date") else datetime.now(),
+            video_type=item.get("videos", [{}])[0].get("type", "video") if isinstance(item.get("videos"), list) else item.get("type", "video"),
+            script_data=json.dumps(item.get("videos", [{}])[0]) if isinstance(item.get("videos"), list) else json.dumps(item),
+            status="queued", # Start as queued
+            auto_post=item.get("videos", [{}])[0].get("auto_post", True) if isinstance(item.get("videos"), list) else item.get("auto_post", True),
+            voice_style=item.get("videos", [{}])[0].get("voice_style", "human") if isinstance(item.get("videos"), list) else item.get("voice_style", "human"),
+            voice_gender=item.get("videos", [{}])[0].get("voice_gender", "female") if isinstance(item.get("videos"), list) else item.get("voice_gender", "female"),
+            music_file_path=item.get("videos", [{}])[0].get("music_file_path") if isinstance(item.get("videos"), list) else item.get("music_file_path")
+        )
+        db.add(video)
+        db.flush() # get ID
+        saved_videos.append(video)
+    
+    db.commit()
+    
+    # Iniciar processamento em background (apenas para os primeiros 2 para não sobrecarregar)
+    # Mas como usamos APScheduler agora, apenas deixamos como 'queued' e o scheduler pega.
+    # Se quiser forçar start imediato de 1:
+    # background_tasks.add_task(process_scheduled_video, saved_videos[0].id)
+    
+    return {"message": "Schedule saved", "count": len(saved_videos)}
 
 @router.post("/schedule/{video_id}/generate")
 def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):

@@ -5,7 +5,7 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-Write-Host "=== IMPLANTAR ATUALIZACOES NO RENDER ===" -ForegroundColor Cyan
+Write-Host "=== IMPLANTAR ATUALIZACOES (GITHUB / COOLIFY / RENDER) ===" -ForegroundColor Cyan
 Write-Host ""
 
 # Remover lock do Git se existir
@@ -19,12 +19,12 @@ git add -A
 if ($LASTEXITCODE -ne 0) { Write-Host "ERRO no git add. Feche o Cursor e rode este script de novo no PowerShell." -ForegroundColor Red; exit 1 }
 
 Write-Host "2. Criando commit..." -ForegroundColor Yellow
-git commit -m "fix: script cache (save openai costs); publish/republish buttons; monitor queue fix; lazy imports"
+git commit -m "fix: compatibility improvements for Coolify/Render; logging tweaks"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Nenhuma alteracao para commitar (ou commit ja feito). Tentando push..." -ForegroundColor Yellow
 }
 
-Write-Host "3. Enviando para o GitHub (Render fara deploy automatico)..." -ForegroundColor Yellow
+Write-Host "3. Enviando para o GitHub (Dispara Deploy no Coolify e Render)..." -ForegroundColor Yellow
 git push origin main
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERRO no push. Verifique: (1) Internet, (2) Login no GitHub, (3) Permissoes do repo." -ForegroundColor Red
@@ -33,10 +33,10 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "OK! Atualizacoes enviadas para https://github.com/evarantes/codexia-app" -ForegroundColor Green
-Write-Host "O Render deve iniciar o deploy em instantes." -ForegroundColor Green
+Write-Host "O deploy deve iniciar automaticamente no Coolify e Render." -ForegroundColor Green
 Write-Host ""
 Write-Host "Proximos passos:" -ForegroundColor Cyan
-Write-Host "  1. Acesse https://dashboard.render.com -> servico codexia" -ForegroundColor White
-Write-Host "  2. Aba Events ou Logs - aguarde o deploy terminar (alguns minutos)" -ForegroundColor White
-Write-Host "  3. Teste: https://codexia-psh3.onrender.com" -ForegroundColor White
+Write-Host "  1. Verifique os logs no seu painel do Coolify ou Render" -ForegroundColor White
+Write-Host "  2. Aguarde o deploy terminar (alguns minutos)" -ForegroundColor White
+Write-Host "  3. Teste na URL do seu novo ambiente" -ForegroundColor White
 Write-Host ""

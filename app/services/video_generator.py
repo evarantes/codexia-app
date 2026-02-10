@@ -155,14 +155,20 @@ class VideoGenerator:
 
     def generate_audio(self, text, lang='pt', voice_style=None, voice_gender=None):
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
-        if not text.strip(): return None
+        if not text or not text.strip(): 
+            print("Aviso: Texto vazio para generate_audio")
+            return None
         
         # Limpeza de segurança para evitar leitura de metadados
         clean_text = self._clean_text(text)
-        if not clean_text: return None
+        if not clean_text: 
+            print("Aviso: Texto ficou vazio após limpeza em generate_audio")
+            return None
 
         style = (voice_style or "human").lower()
         gender = (voice_gender or "female").lower()
+        
+        print(f"Gerando áudio para: '{clean_text[:30]}...' (Style: {style}, Gender: {gender})")
         
         openai_voice = "onyx"
         if style in ["human", "humana"]:
@@ -177,12 +183,14 @@ class VideoGenerator:
         # 1. Tentar OpenAI TTS (Qualidade Humana Premium)
         if openai_voice and self.ai_service and self.ai_service.api_key:
             try:
+                print(f"Tentando OpenAI TTS ({openai_voice})...")
                 audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice)
                 if audio_content:
                     filename = f"{uuid.uuid4()}.mp3"
                     path = os.path.join(self.output_dir, filename)
                     with open(path, "wb") as f:
                         f.write(audio_content)
+                    print(f"OpenAI TTS sucesso: {path}")
                     return path
             except Exception as e:
                 print(f"OpenAI TTS falhou, tentando fallback: {e}")
@@ -190,6 +198,7 @@ class VideoGenerator:
         # 2. Edge TTS (Qualidade Natural Gratuita - Microsoft)
         if style not in ["robotic", "robotica", "robótica"]:
             try:
+                print("Tentando Edge TTS...")
                 import edge_tts
                 import asyncio
                 import threading
@@ -214,45 +223,293 @@ class VideoGenerator:
                     
                 t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
                 t.start()
-                t.join()
+                t.join(timeout=15) # Aumentado timeout para 15s
 
-                if os.path.exists(path) and os.path.getsize(path) > 0:
+                if os.path.exists(path) and os.path.getsize(path) > 500: # Check > 500 bytes
+                    print(f"Edge TTS sucesso: {path}")
                     return path
                 else:
-                    print("Edge TTS gerou arquivo vazio ou falhou.")
+                    print(f"Edge TTS gerou arquivo vazio ou falhou (Size check failed). Path: {path}")
             except Exception as e:
                  print(f"Edge TTS falhou: {e}")
 
         # 3. Fallback gTTS (Robótico)
         try:
-            print("Usando Fallback gTTS (Robótico)...")
+            from gtts import gTTS
+            print("Tentando Fallback gTTS (Robótico)...")
             tts = gTTS(text=clean_text, lang=lang)
             filename = f"{uuid.uuid4()}.mp3"
             path = os.path.join(self.output_dir, filename)
             tts.save(path)
-            return path
+            
+            # Verificação de segurança
+            if os.path.exists(path) and os.path.getsize(path) > 100:
+                print(f"gTTS sucesso: {path}")
+                return path
+            else:
+                 print("gTTS gerou arquivo vazio.")
+                 return None
         except Exception as e:
-            print(f"Erro no TTS Final: {e}")
+            print(f"Erro no TTS Final (gTTS): {e}")
             return None
 
-    def download_image(self, url):
+    def download_image(self, url, retries=3):
+        import time
         try:
-            response = requests.get(url, stream=True)
-            if response.status_code == 200:
-                filename = f"temp_{uuid.uuid4()}.png"
-                filepath = os.path.join(self.output_dir, filename)
-                with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(1024):
-                        f.write(chunk)
-                return filepath
-        except Exception as e:
-            print(f"Erro ao baixar imagem: {e}")
+            import imghdr
+        except ImportError:
+            imghdr = None
+        
+        for attempt in range(retries):
+            try:
+                print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries})")
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                }
+                # Verify=False somente se absolutamente necessário (risco de segurança, mas útil para debug em alguns envs)
+                response = requests.get(url, headers=headers, stream=True, timeout=20)
+                
+                if response.status_code == 200:
+                    filename = f"temp_{uuid.uuid4()}.png"
+                    filepath = os.path.join(self.output_dir, filename)
+                    
+                    with open(filepath, 'wb') as f:
+                        for chunk in response.iter_content(4096):
+                            f.write(chunk)
+                
+                    # Verificação de tamanho
+                    file_size = os.path.getsize(filepath)
+                    if file_size < 1000: # 1KB mínimo
+                        print(f"AVISO: Imagem muito pequena ({file_size} bytes). Ignorando.")
+                        try: os.remove(filepath)
+                        except: pass
+                        continue
+                        
+                    # Verificação de tipo de arquivo (Header)
+                    try:
+                        img_type = None
+                        if imghdr:
+                            img_type = imghdr.what(filepath)
+                            
+                        if not img_type and not filepath.lower().endswith('.svg'):
+                            # Tenta abrir com PIL para confirmar
+                            from PIL import Image
+                            try:
+                                with Image.open(filepath) as img:
+                                    img.verify()
+                            except:
+                                print(f"AVISO: Arquivo baixado não é imagem válida. Ignorando.")
+                                try: os.remove(filepath)
+                                except: pass
+                                continue
+                    except:
+                        pass
+                    
+                    return filepath
+                elif response.status_code in [502, 503, 504, 429]:
+                    print(f"Erro temporário ({response.status_code}). Retentando em 2s...")
+                    time.sleep(2)
+                    continue
+                else:
+                    print(f"Falha ao baixar imagem. Status: {response.status_code}")
+                    # Se for 403/404, não adianta tentar muito
+                    if response.status_code in [403, 404]:
+                        break
+            except Exception as e:
+                print(f"Erro ao baixar imagem: {e}")
+                time.sleep(1)
+        
         return None
 
-    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None):
+    def _generate_fallback_background(self, size):
+        """Gera um fundo gradiente/texturizado localmente quando tudo falha"""
+        try:
+            from PIL import Image, ImageDraw
+            import random
+            
+            width, height = size
+            # Cria imagem base
+            img = Image.new('RGB', (width, height), color=(20, 20, 20))
+            draw = ImageDraw.Draw(img)
+            
+            # Cores aleatórias escuras e elegantes (Deep Blue/Purple/Teal)
+            color_top = (random.randint(20, 60), random.randint(20, 60), random.randint(40, 90))
+            color_bottom = (random.randint(5, 20), random.randint(5, 20), random.randint(10, 40))
+            
+            # Desenha gradiente vertical (linha por linha para simplicidade sem numpy)
+            # Para performance em 1080p, desenhamos em baixa resolução e redimensionamos
+            small_h = 256
+            small_w = int(width * (small_h / height))
+            small_img = Image.new('RGB', (small_w, small_h))
+            small_draw = ImageDraw.Draw(small_img)
+            
+            for y in range(small_h):
+                ratio = y / small_h
+                r = int(color_top[0] + (color_bottom[0] - color_top[0]) * ratio)
+                g = int(color_top[1] + (color_bottom[1] - color_top[1]) * ratio)
+                b = int(color_top[2] + (color_bottom[2] - color_top[2]) * ratio)
+                small_draw.line([(0, y), (small_w, y)], fill=(r, g, b))
+            
+            # Redimensiona para tamanho final com suavização
+            img = small_img.resize((width, height), Image.BICUBIC)
+            
+            filename = f"fallback_local_{uuid.uuid4()}.png"
+            filepath = os.path.join(self.output_dir, filename)
+            img.save(filepath)
+            return filepath
+        except Exception as e:
+            print(f"Erro ao gerar fundo local: {e}")
+            return None
+
+    def _extract_keywords(self, text, max_keywords=2):
+        """Extrai palavras-chave simples de um texto para busca de imagens"""
+        if not text: return "abstract"
+        
+        # Palavras comuns para ignorar (stop words simples)
+        ignore = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 
+                  'o', 'a', 'os', 'as', 'um', 'uma', 'e', 'ou', 'mas', 'em', 'no', 'na', 'de', 'do', 'da', 'com', 'por', 'que', 'é', 'são'}
+        
+        # Limpa e normaliza
+        words = re.sub(r'[^\w\s]', '', text.lower()).split()
+        keywords = [w for w in words if w not in ignore and len(w) > 3]
+        
+        if not keywords: return "abstract"
+        
+        # Pega as primeiras N palavras significativas
+        return ",".join(keywords[:max_keywords])
+
+    def _ensure_image_for_scene(self, prompt, text_fallback, aspect_ratio="9:16"):
+        """
+        Garante que uma imagem seja retornada, tentando múltiplas fontes em ordem de qualidade.
+        1. AI Service (DALL-E / Pollinations Flux)
+        2. Pollinations Simples (Prompt Otimizado)
+        3. Pollinations Genérico (Abstract)
+        4. LoremFlickr (Contextual Keywords) - NOVO
+        5. Picsum (Aleatória/Último Recurso Online)
+        6. Geração Local (Gradiente - Garantia Final)
+        """
+        
+        width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
+        
+        # Garante prompt
+        if not prompt and text_fallback:
+             # Se não tem prompt, cria um baseado no texto
+             prompt = f"Cinematic scene representing: {text_fallback[:100]}"
+        
+        # 1. Tentativa Principal (AI Service)
+        if self.ai_service and prompt:
+            try:
+                print(f"Tentativa 1 (IA Principal): {prompt[:30]}...")
+                suffix = f". Aspect ratio {aspect_ratio}."
+                url = self.ai_service.generate_image(prompt + suffix)
+                if url:
+                    path = self.download_image(url)
+                    if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
+            except Exception as e:
+                print(f"Erro Tentativa 1: {e}")
+
+        # 2. Tentativa Secundária (Pollinations Simples Direto)
+        print("Tentativa 2 (Fallback Pollinations Simples)...")
+        try:
+            # Simplifica prompt para aumentar chance de sucesso
+            import urllib.parse
+            # Adiciona keywords de qualidade artística e unicidade
+            artistic_style = "photorealistic, cinematic lighting, 8k, highly detailed, professional photography, real photo, no cartoon"
+            base_prompt = prompt if prompt else f"cinematic scene {text_fallback[:50]}"
+            simple_prompt = f"{base_prompt}, {artistic_style}"
+            
+            # Remove caracteres especiais que podem quebrar URL
+            simple_prompt = ''.join(e for e in simple_prompt if e.isalnum() or e.isspace() or e == ',')
+            safe_prompt = urllib.parse.quote(simple_prompt)
+            
+            # Tenta Flux primeiro
+            url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=flux&seed={uuid.uuid4()}"
+            path = self.download_image(url, retries=2) # Reduz retries aqui para tentar outro modelo rápido
+            
+            if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                return path
+            
+            # Se Flux falhar, tenta Turbo (mais rápido/estável as vezes)
+            print("Pollinations Flux falhou, tentando Turbo...")
+            url_turbo = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=turbo&seed={uuid.uuid4()}"
+            path = self.download_image(url_turbo, retries=2)
+            
+            if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                return path
+                
+        except Exception as e:
+            print(f"Erro Tentativa 2: {e}")
+
+        # 3. Tentativa Terciária (Abstrato Genérico)
+        print("Tentativa 3 (Fallback Abstrato)...")
+        try:
+            # Prompt abstrato mas artístico e profissional
+            abstract_prompt = "cinematic abstract art, professional lighting, 8k, highly detailed, photorealistic textures, no cartoon"
+            safe_prompt = urllib.parse.quote(abstract_prompt)
+            url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={uuid.uuid4()}"
+            path = self.download_image(url)
+            if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
+        except Exception as e:
+            print(f"Erro Tentativa 3: {e}")
+
+        # 4. Fallback Contextual (LoremFlickr) - Tenta buscar imagem relacionada ao texto
+        print("Tentativa 4 (Fallback Contextual - LoremFlickr)...")
+        try:
+            # Extrai keywords do prompt ou texto
+            source_text = prompt if prompt else text_fallback
+            keywords = self._extract_keywords(source_text)
+            print(f"Using keywords: {keywords}")
+            
+            # LoremFlickr URL format: https://loremflickr.com/{width}/{height}/{keywords}/all
+            # 'all' searches both tags and categories
+            url = f"https://loremflickr.com/{width}/{height}/{keywords}/all?random={uuid.uuid4()}"
+            path = self.download_image(url, retries=2)
+            if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
+        except Exception as e:
+            print(f"Erro Tentativa 4: {e}")
+
+        # 5. Último Recurso Online (Picsum Random)
+        print("Tentativa 5 (Último Recurso Online - Picsum)...")
+        try:
+            url = f"https://picsum.photos/{width}/{height}?random={uuid.uuid4()}"
+            # Aumentamos retries aqui pois é a nossa melhor chance de imagem real
+            path = self.download_image(url, retries=5)
+            if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
+        except Exception as e:
+            print(f"Erro Tentativa 5: {e}")
+            
+        # 6. Geração Local (Garantia Final - Offline)
+        print("Tentativa 6 (Geração Local - Gradiente)...")
+        return self._generate_fallback_background((width, height))
+
+    def _apply_ken_burns(self, clip, size, zoom_factor=1.15):
+        """
+        Aplica efeito suave de zoom (Ken Burns) em um ImageClip.
+        """
+        try:
+            w, h = size
+            # Função de transformação para zoom
+            def resize_func(t):
+                # Zoom linear de 1.0 até zoom_factor ao longo da duração do clip
+                current_zoom = 1 + (zoom_factor - 1) * (t / clip.duration)
+                return current_zoom
+
+            # Aplica o resize animado e centraliza
+            # Nota: Isso pode ser custoso para processar. Se der timeout, simplificar.
+            # Alternativa mais leve: Apenas um crop variável se a imagem for maior que o vídeo
+            return clip.resized(resize_func).with_position('center')
+        except Exception as e:
+            print(f"Erro ao aplicar Ken Burns: {e}")
+            return clip
+
+    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None):
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
-        # Lazy imports essenciais dentro do escopo da função para evitar erros de referência
-        from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+        # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
+        try:
+            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+        except ImportError:
+            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
         import numpy as np
 
         if progress_callback:
@@ -264,16 +521,56 @@ class VideoGenerator:
         
         try:
             title = plan.get('title', 'Vídeo Sem Título')
-            scenes = plan.get('scenes', [])
+            raw_scenes = plan.get('scenes', [])
             
             # Validação extra: Se 'scenes' não for lista, tenta corrigir ou usa lista vazia
-            if not isinstance(scenes, list):
-                print(f"ALERTA: 'scenes' não é lista. Tipo: {type(scenes)}. Valor: {scenes}")
-                if isinstance(scenes, str):
+            if not isinstance(raw_scenes, list):
+                print(f"ALERTA: 'scenes' não é lista. Tipo: {type(raw_scenes)}. Valor: {raw_scenes}")
+                if isinstance(raw_scenes, str):
                     # Pode ser que a IA retornou uma string única como cena
-                    scenes = [{"text": scenes, "image_prompt": ""}]
+                    raw_scenes = [{"text": raw_scenes, "image_prompt": ""}]
                 else:
-                    scenes = []
+                    raw_scenes = []
+
+            # PROCESSAMENTO DE CENAS LONGAS: Quebra automática de texto (Apenas se NÃO for modo música)
+            scenes = []
+            if not music_file_path:
+                for scene in raw_scenes:
+                    scene_text = ""
+                    scene_prompt = ""
+                    
+                    if isinstance(scene, str):
+                        scene_text = scene
+                    else:
+                        scene_text = scene.get('text', '')
+                        scene_prompt = scene.get('image_prompt', '')
+                    
+                    # Se o texto for muito longo (> 200 caracteres), quebra em múltiplas cenas
+                    if len(scene_text) > 200:
+                        import re
+                        # Quebra por pontuação final (. ! ?) mantendo a pontuação
+                        # Regex: split por (.+espaço, !+espaço, ?+espaço)
+                        parts = re.split(r'(?<=[.!?])\s+', scene_text)
+                        
+                        for part in parts:
+                            if part.strip():
+                                scenes.append({"text": part.strip(), "image_prompt": scene_prompt})
+                    else:
+                        # Adiciona como está (normalizando para dicionário)
+                        scenes.append({"text": scene_text, "image_prompt": scene_prompt})
+            else:
+                # No modo música, usamos as cenas como vieram (já quebradas por tempo)
+                scenes = raw_scenes
+
+            # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
+            # Skip enrichment if music mode (handled by generator)
+            if self.ai_service and scenes and not music_file_path:
+                try:
+                    enriched = self.ai_service.enrich_scenes_with_image_prompts({"title": title, "scenes": scenes})
+                    if enriched and enriched.get("scenes"):
+                        scenes = enriched["scenes"]
+                except Exception as e:
+                    print(f"Aviso: enriquecimento de image_prompts falhou, usando prompts existentes: {e}")
 
             # Otimização de memória: Reduzir resolução para 720p para evitar OOM em tiers gratuitos
             if aspect_ratio == "16:9":
@@ -281,6 +578,84 @@ class VideoGenerator:
             else:
                 video_size = (720, 1280) # Antes: 1080, 1920
 
+            # --- MODO MÚSICA ---
+            if music_file_path and os.path.exists(music_file_path):
+                if progress_callback:
+                    progress_callback(10, "Modo Música: Preparando áudio e imagens...")
+                
+                # Carregar áudio principal
+                main_audio = AudioFileClip(music_file_path)
+                
+                # Gerar clips visuais sincronizados
+                for i, scene in enumerate(scenes):
+                    if progress_callback:
+                        progress_callback(10 + int((i / len(scenes)) * 60), f"Gerando cena {i+1}/{len(scenes)}...")
+                    
+                    # Duration comes from the plan
+                    duration = scene.get('duration', 5)
+                    image_prompt = scene.get('image_prompt', '')
+                    if not image_prompt:
+                         image_prompt = f"Scene for {title}, photorealistic, cinematic"
+
+                    # Gerar imagem
+                    img_path = self.generate_image(image_prompt)
+                    
+                    if img_path and os.path.exists(img_path):
+                        # Criar clip
+                        clip = ImageClip(img_path).set_duration(duration)
+                        clip = self.apply_ken_burns(clip, width=video_size[0], height=video_size[1])
+                        clips.append(clip)
+                    else:
+                        # Fallback image
+                        color_clip = ImageClip(np.zeros((video_size[1], video_size[0], 3), dtype=np.uint8)).set_duration(duration)
+                        clips.append(color_clip)
+                
+                # Concatenar clips visuais
+                if clips:
+                    final_video = concatenate_videoclips(clips, method="compose")
+                    
+                    # Ajustar áudio: Se vídeo for menor que áudio, corta áudio. Se vídeo for maior, loop ou corta vídeo.
+                    # Vamos cortar o vídeo para bater com o áudio ou vice-versa.
+                    # Preferência: Vídeo segue o áudio (mas o plano visual já foi calculado para bater aprox.)
+                    
+                    if final_video.duration > main_audio.duration:
+                        final_video = final_video.subclip(0, main_audio.duration)
+                    else:
+                        # Se vídeo ficou menor (arredondamentos), corta o áudio
+                        main_audio = main_audio.subclip(0, final_video.duration)
+                        
+                    final_video = final_video.set_audio(main_audio)
+                    
+                    # Exportar
+                    output_filename = f"music_video_{uuid.uuid4().hex}.mp4"
+                    output_path = os.path.join(self.output_dir, output_filename)
+                    
+                    if progress_callback:
+                        progress_callback(80, "Renderizando vídeo final...")
+                        
+                    final_video.write_videofile(
+                        output_path,
+                        fps=24,
+                        codec='libx264',
+                        audio_codec='aac',
+                        threads=4,
+                        preset='ultrafast'
+                    )
+                    
+                    # Cleanup
+                    try:
+                        main_audio.close()
+                        final_video.close()
+                        for c in clips: c.close()
+                    except:
+                        pass
+                        
+                    return {"video_url": f"{VIDEO_URL_PREFIX}/{output_filename}", "file_path": output_path}
+                    
+                else:
+                    raise Exception("Nenhuma cena visual gerada para o clipe musical.")
+
+            # --- MODO NORMAL (NARRADO) ---
             # 1. Slide de Título (Com capa se disponível)
             if progress_callback:
                 progress_callback(5, "Criando slide de título...")
@@ -327,19 +702,24 @@ class VideoGenerator:
                 else:
                     text = scene.get('text', '')
                     image_prompt = scene.get('image_prompt', '')
+                    
+                    # Fallback: Se não houver prompt de imagem, cria um baseado no texto
+                    if not image_prompt and text:
+                        print(f"Aviso: Cena {i+1} sem image_prompt. Criando a partir do texto.")
+                        image_prompt = f"Cinematic digital art representing: {text[:100]}"
 
                 # Limpeza de segurança para evitar metadados no vídeo
                 clean_text = self._clean_text(text)
                 
-                # Tentar gerar imagem com IA
-                bg_image_path = None
-                if self.ai_service and image_prompt:
-                    print(f"Gerando imagem para cena {i+1}...")
-                    # Otimiza prompt para aspect ratio
-                    prompt_suffix = f". Aspect ratio {aspect_ratio}."
-                    image_url = self.ai_service.generate_image(image_prompt + prompt_suffix)
-                    if image_url:
-                        bg_image_path = self.download_image(image_url)
+                # GARANTIA DE IMAGEM (Substitui lógica antiga)
+                bg_image_path = self._ensure_image_for_scene(
+                    image_prompt, 
+                    text_fallback=clean_text, 
+                    aspect_ratio=aspect_ratio
+                )
+
+                if not bg_image_path:
+                    print(f"CRÍTICO: Falha total na imagem da cena {i+1}. Usando cor sólida.")
 
                 # Fallback colors
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
@@ -360,7 +740,14 @@ class VideoGenerator:
                     clip_scene = clip_scene.with_duration(audio_clip_scene.duration + 0.5)
                     clip_scene = clip_scene.with_audio(audio_clip_scene)
                 else:
+                    # FALLBACK DE ÁUDIO CRÍTICO
+                    print(f"AVISO: Cena {i+1} sem áudio gerado. Mantendo duração padrão.")
                     clip_scene = clip_scene.with_duration(5)
+                
+                # APLICAÇÃO DE EFEITOS VISUAIS (Ken Burns)
+                # Só aplica se tivermos uma imagem real de fundo (não cor sólida gerada por código)
+                if bg_image_path:
+                    clip_scene = self._apply_ken_burns(clip_scene, video_size)
                     
                 clips.append(clip_scene)
                 
@@ -536,7 +923,10 @@ class VideoGenerator:
 
     def create_music_video(self, music_path, scenes, title="Música", aspect_ratio="9:16"):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
-        from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+        try:
+            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+        except ImportError:
+            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
         
         if not os.path.exists(music_path):
             raise FileNotFoundError(f"Arquivo de música não encontrado: {music_path}")

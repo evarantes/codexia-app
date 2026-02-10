@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -330,13 +330,48 @@ async def generic_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
+# Servir vídeos: tenta VIDEO_OUTPUT_DIR e depois app/static/videos (Render e múltiplas instâncias)
+from app.config import VIDEO_OUTPUT_DIR, STATIC_DIR
+
+def _resolve_video_path(safe_name: str):
+    """Retorna o path absoluto do vídeo, procurando em VIDEO_OUTPUT_DIR e em app/static/videos."""
+    for directory in (VIDEO_OUTPUT_DIR, str(STATIC_DIR / "videos")):
+        if directory:
+            filepath = os.path.join(directory, safe_name)
+            if os.path.isfile(filepath):
+                return filepath
+    return None
+
+@app.get("/media/videos/{filename:path}", response_class=FileResponse)
+def serve_video_media(filename: str):
+    """Serve vídeo do diretório configurado ou fallback em app/static/videos."""
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_video_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(filepath, media_type="video/mp4")
+
+@app.get("/static/videos/{filename:path}", response_class=FileResponse)
+def serve_video_static(filename: str):
+    """Serve vídeo em URLs /static/videos/... (mesmo arquivo em VIDEO_OUTPUT_DIR ou fallback)."""
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_video_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(filepath, media_type="video/mp4")
+
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
-# Montar /media para vídeos em /data (volume persistente no Coolify)
+# Garantir que os diretórios de vídeos existem
 if os.path.isdir("/data"):
     os.makedirs("/data/media/videos", exist_ok=True)
-    if os.path.isdir("/data/media"):
-        app.mount("/media", StaticFiles(directory="/data/media"), name="media")
+os.makedirs(os.path.join(STATIC_DIR, "videos"), exist_ok=True)
+# NOTA: Não montamos /media como StaticFiles porque temos rotas específicas (/media/videos/{filename})
+# que servem vídeos de VIDEO_OUTPUT_DIR. O mount genérico interceptaria essas rotas.
 
 @app.get("/health")
 async def health():
@@ -348,10 +383,26 @@ def api_status():
     """Status da API (JSON) — para scripts ou checagem programática."""
     return {"message": "Codexia API is running"}
 
+@app.get("/ping")
+def ping():
+    """Simple ping for connectivity check."""
+    return "pong"
+
 @app.get("/")
 async def root():
     """Serve o painel Vue (index.html) na raiz."""
-    return FileResponse(os.path.join(_STATIC_SERVE, "index.html"))
+    index_path = os.path.join(_STATIC_SERVE, "index.html")
+    if not os.path.exists(index_path):
+        return JSONResponse(
+            status_code=404, 
+            content={
+                "error": "index.html not found", 
+                "path": str(index_path), 
+                "cwd": os.getcwd(),
+                "static_serve": _STATIC_SERVE
+            }
+        )
+    return FileResponse(index_path)
 
 @app.get("/app")
 async def serve_app():

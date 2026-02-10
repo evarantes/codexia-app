@@ -74,11 +74,39 @@ def create_video(request: CreateVideoRequest):
 @router.post("/generate")
 def generate_video(request: VideoRequest):
     from app.services.video_generator import VideoGenerator
+    from app.services.ai_generator import AIContentGenerator
     try:
         filename = f"{uuid.uuid4()}.mp4"
-        local_video_gen = VideoGenerator()
-        video_url = local_video_gen.generate_simple_video(request.title, request.script, filename)
-        return {"video_url": video_url}
+        # Tenta inicializar IA para melhores imagens/audio
+        try:
+            ai_service = AIContentGenerator()
+        except Exception as e:
+            print(f"Aviso: Não foi possível iniciar AI Service: {e}")
+            ai_service = None
+            
+        local_video_gen = VideoGenerator(ai_service=ai_service)
+        
+        # Se tiver IA, podemos tentar enriquecer o script ou usar create_video_from_plan
+        # Mas para manter compatibilidade com "simple video", passamos apenas o script
+        # O VideoGenerator internamente pode usar o ai_service se implementado em generate_simple_video
+        # Mas generate_simple_video (legacy) talvez não use. 
+        # Vamos verificar se podemos usar create_video_from_plan que é mais robusto.
+        
+        # Converte script simples para plano de cenas
+        script_plan = {
+            "title": request.title,
+            "scenes": [{"text": line} for line in request.script if line.strip()]
+        }
+        
+        # Usa o pipeline moderno (create_video_from_plan) em vez do legado
+        result = local_video_gen.create_video_from_plan(
+            script_plan,
+            aspect_ratio="16:9",
+            voice_style="human", # Default melhor
+            voice_gender="female"
+        )
+        
+        return {"video_url": result["video_url"]}
     except Exception as e:
         print(f"Erro ao gerar vídeo: {e}")
         raise HTTPException(status_code=500, detail=str(e))

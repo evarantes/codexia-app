@@ -855,6 +855,133 @@ class AIContentGenerator:
             print(f"Erro ao estruturar roteiro do texto: {e}")
             return self._mock_response("História do Usuário", "motivational_long", error=str(e))
 
+    def enrich_scenes_with_image_prompts(self, plan: dict) -> dict:
+        """
+        Gera image_prompt profissionais com base na narração de cada cena, para a IA
+        criar imagens próprias e montar o vídeo de forma profissional (YouTube Auto etc).
+        Atualiza apenas cenas que não têm image_prompt ou têm um muito curto/genérico.
+        """
+        self._load_config()
+        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.groq_key or self.openrouter_key):
+            return plan
+
+        scenes = plan.get("scenes") or []
+        if not scenes or not isinstance(scenes, list):
+            return plan
+
+        # Identifica cenas que precisam de image_prompt (vazio ou curto < 40 chars)
+        need_prompts = []
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            text = (scene.get("text") or "").strip()
+            current = (scene.get("image_prompt") or "").strip()
+            if text and (not current or len(current) < 40):
+                need_prompts.append((i, text[:500]))
+
+        if not need_prompts:
+            return plan
+
+        import json
+        # Uma única chamada: gera um image_prompt detalhado por cena a partir da narração
+        scenes_desc = "\n".join([f"Cena {idx+1} (narração): {text}" for idx, text in need_prompts])
+        title = plan.get("title") or "Vídeo"
+
+        prompt = f"""
+        Você é um diretor de arte para vídeos narrados (YouTube, Shorts). Seu trabalho é criar descrições visuais para gerar imagens com IA (DALL-E/Flux) que ilustrem exatamente o que está sendo dito.
+
+        Título do vídeo: {title}
+
+        Narrações por cena:
+        {scenes_desc}
+
+        Para CADA cena acima, crie UMA descrição visual (image_prompt) em INGLÊS com as regras:
+        - Representar fielmente a ideia e o clima da narração.
+        - Estilo: FOTOREALISTA, cinematográfico, 4k, fotografia profissional, live-action.
+        - Uma frase detalhada (30-80 palavras): cenário, iluminação, atmosfera, composição.
+        - PROIBIDO: cartoon, desenho, pixel art, ilustração, anime, 3d render artificial, text, watermark.
+        - Se a narração for abstrata, use metáforas visuais realistas (ex: "a realistic hourglass on a wooden table" em vez de "time concept").
+
+        Retorne APENAS um JSON válido com um array "image_prompts" na mesma ordem das cenas:
+        {{ "image_prompts": ["descrição visual cena 1...", "descrição visual cena 2...", ...] }}
+        """
+
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você gera apenas JSON com o array image_prompts. Cada item é uma descrição visual em inglês para gerar imagem com IA.",
+                temperature=0.6,
+                json_mode=True
+            )
+            if not content:
+                return plan
+            content = content.replace("```json", "").replace("```", "").strip()
+            data = json.loads(content)
+            prompts_list = data.get("image_prompts") or []
+            if not isinstance(prompts_list, list):
+                return plan
+            for k, (scene_idx, _) in enumerate(need_prompts):
+                if k < len(prompts_list) and scene_idx < len(scenes):
+                    prompt_text = (prompts_list[k] or "").strip()
+                    if prompt_text and isinstance(scenes[scene_idx], dict):
+                        scenes[scene_idx]["image_prompt"] = prompt_text[:500]
+            plan["scenes"] = scenes
+        except Exception as e:
+            print(f"Erro ao enriquecer image_prompts com IA: {e}")
+        return plan
+
+    def generate_visual_plan_for_music(self, title, concept, duration_seconds):
+        """Generates a visual-only script synchronized with music duration"""
+        self._load_config()
+        
+        # Calculate roughly how many scenes (approx 6-10 seconds per scene)
+        num_scenes = max(5, duration_seconds // 8)
+        
+        prompt = f"""
+        Create a visual script for a music video titled "{title}".
+        Concept/Theme: {concept}
+        Duration: {duration_seconds} seconds.
+        
+        Please generate {num_scenes} visual scenes that flow well with the music.
+        The scenes should be highly descriptive and photorealistic.
+        There is NO narration, just music.
+        
+        Rules for image_prompt:
+        - Photorealistic, cinematic, 4k, professional photography, live-action style.
+        - NO cartoon, illustration, or pixel art.
+        
+        Return valid JSON in this format:
+        {{
+            "scenes": [
+                {{
+                    "image_prompt": "Detailed description of the scene...",
+                    "duration": 8,
+                    "transition": "fade"
+                }},
+                ...
+            ]
+        }}
+        """
+        
+        try:
+            content = self._generate_text(prompt, system_prompt="You are a professional music video director. Return only JSON.", json_mode=True)
+            if not content: return {"scenes": []}
+            
+            content = content.replace("```json", "").replace("```", "").strip()
+            return json.loads(content)
+        except Exception as e:
+            print(f"Error generating visual plan for music: {e}")
+            # Fallback
+            return {
+                "scenes": [
+                    {
+                        "image_prompt": f"Cinematic shot representing {title} - {concept}, photorealistic, 4k",
+                        "duration": duration_seconds,
+                        "transition": "fade"
+                    }
+                ]
+            }
+
     def analyze_channel_strategy(self, stats, current_description):
         """Analisa estratégia do canal"""
         self._load_config()
@@ -1476,18 +1603,37 @@ class AIContentGenerator:
     def generate_image(self, prompt):
         self._load_config()
         
+        # PROMPT ENGINEERING AVANÇADO - PROFISSIONAL & ÚNICO
+        # Adiciona tokens para garantir estilo artístico único, profissional e livre de direitos autorais
+        quality_tokens = [
+            "masterpiece", "unique artistic composition", "copyright free style",
+            "cinematic lighting", "8k resolution", "highly detailed", "sharp focus",
+            "professional photography", "dramatic atmosphere", "unreal engine 5 render",
+            "award winning", "concept art", "digital painting"
+        ]
+        
+        # Garante que não estamos pedindo por marcas ou personagens específicos
+        negative_constraints = "no cartoon, no anime, no pixel art, no illustration, no drawing, no sketch, no 3d render, no text, no watermarks, no signatures, no distorted faces, no blur"
+        
+        enhanced_prompt = prompt
+        # Se o prompt for curto, enriquece. Se já for longo, assume que a IA já fez o trabalho.
+        if len(prompt) < 200 and not any(token in prompt.lower() for token in quality_tokens[:3]):
+            enhanced_prompt = f"{prompt}, {' '.join(quality_tokens[:6])}"
+        
         # 1. Tenta OpenAI DALL-E 3 se tiver chave
         if self.api_key:
             try:
+                print(f"Tentando gerar imagem com DALL-E 3: {enhanced_prompt[:50]}...")
                 # Enforcing original, artistic creation via prompt engineering
-                full_prompt = f"{prompt}. Vertical aspect ratio 9:16. Original digital art, unique composition, cinematic lighting, 8k resolution, highly detailed. No text, copyright free style."
+                full_prompt = f"{enhanced_prompt}. Vertical aspect ratio 9:16. {negative_constraints}. Photorealistic, cinematic 4k, highly detailed, professional photography style."
                 
                 response = openai.images.generate(
                     model="dall-e-3",
                     prompt=full_prompt,
                     size="1024x1792",
-                    quality="standard",
+                    quality="hd", # Mantém HD para qualidade máxima
                     n=1,
+                    style="natural" # Mudar para natural para evitar "artistic" bias do DALL-E
                 )
                 return response.data[0].url
             except Exception as e:
@@ -1495,14 +1641,22 @@ class AIContentGenerator:
         
         # 2. Fallback: Pollinations.ai (Gratuito, sem chave)
         try:
+            print(f"Tentando gerar imagem com Pollinations (Flux): {enhanced_prompt[:50]}...")
             import urllib.parse
             # Otimiza prompt para Pollinations
-            safe_prompt = urllib.parse.quote(f"{prompt} vertical 9:16 cinematic lighting high quality")
-            # Pollinations URL format
-            return f"https://image.pollinations.ai/prompt/{safe_prompt}?width=720&height=1280&model=flux&nologo=true"
+            # Força realismo
+            pollinations_prompt = f"{enhanced_prompt} vertical 9:16 photorealistic cinematic lighting 4k real photo award winning photography"
+            safe_prompt = urllib.parse.quote(pollinations_prompt)
+            
+            # Tenta modelo Flux primeiro (Melhor qualidade e consistência)
+            # Adiciona seed aleatório para garantir unicidade mesmo com prompts iguais
+            # Adiciona enhance=false se possível para evitar "embelezamento" artístico, mas Flux costuma ser bom.
+            url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=720&height=1280&model=flux&nologo=true&seed={uuid.uuid4()}&enhance=false"
+            return url
         except Exception as e:
             print(f"Erro no fallback Pollinations: {e}")
-            return None
+            
+        return None
 
     def generate_banner_image(self, prompt):
         self._load_config()

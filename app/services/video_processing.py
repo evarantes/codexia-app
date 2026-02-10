@@ -66,6 +66,33 @@ def process_scheduled_video(video_id: int):
         if script_data.get("scenes") and isinstance(script_data.get("scenes"), list):
              print(f"Usando script em cache (DB) para video {video_id}. Economizando chamada OpenAI.")
              final_script = script_data
+        
+        # MODO VIDEO CLIP MUSICAL
+        elif video.music_file_path and os.path.exists(video.music_file_path):
+             print(f"Gerando plano visual para música: {video.music_file_path}")
+             try:
+                 # Obter duração da música
+                 try:
+                    from moviepy.editor import AudioFileClip
+                 except ImportError:
+                    from moviepy import AudioFileClip
+                 
+                 audioclip = AudioFileClip(video.music_file_path)
+                 music_duration = int(audioclip.duration)
+                 audioclip.close()
+                 
+                 final_script = ai_service.generate_visual_plan_for_music(topic, concept, music_duration)
+                 final_script["title"] = topic # Ensure title is present
+                 
+                 # Salvar cache
+                 if final_script and "scenes" in final_script:
+                     script_data.update(final_script)
+                     video.script_data = json.dumps(script_data)
+                     db.commit()
+             except Exception as e:
+                 print(f"Erro ao processar modo música: {e}")
+                 raise e
+
         else:
              print(f"Gerando script para video {video_id}: {topic}")
              final_script = ai_service.generate_motivational_script(f"{topic}. Conceito: {concept}", duration)
@@ -85,6 +112,12 @@ def process_scheduled_video(video_id: int):
             raise ValueError(
                 "IA não retornou roteiro válido. Configure OPENAI_API_KEY ou GEMINI_API_KEY em Configurações."
             )
+
+        # ENRICHMENT: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
+        # Skip enrichment for music videos as they are already visual-focused
+        if not video.music_file_path:
+            print("Enriquecendo cenas com descrições visuais geradas pela IA (narração → imagem)...")
+            final_script = ai_service.enrich_scenes_with_image_prompts(final_script)
         
         # Gerar vídeo
         def progress_callback(p, m):
@@ -106,7 +139,8 @@ def process_scheduled_video(video_id: int):
             aspect_ratio=ratio, 
             progress_callback=progress_callback,
             voice_style=video.voice_style,
-            voice_gender=video.voice_gender
+            voice_gender=video.voice_gender,
+            music_file_path=video.music_file_path # Pass music file if exists
         )
         video_path = result["video_url"]
         
