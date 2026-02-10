@@ -23,6 +23,25 @@ def process_scheduled_video(video_id: int):
             print(f"Video {video_id} já está sendo processado.")
             return
 
+        # CRITICAL SAFETY: Prevent reprocessing of already completed videos (saves OpenAI cost)
+        if video.status in ("completed", "ready", "published"):
+             print(f"Video {video_id} já está concluído ({video.status}). Ignorando reprocessamento.")
+             return
+        
+        # Check if file exists to recover from "stuck" state without cost
+        if video.video_url:
+             try:
+                 from app.config import absolute_path_for_video
+                 abs_path = absolute_path_for_video(video.video_url)
+                 if os.path.exists(abs_path):
+                     print(f"Vídeo {video_id} já possui arquivo gerado em {abs_path}. Recuperando status para 'completed'.")
+                     video.status = "completed"
+                     video.progress = 100
+                     db.commit()
+                     return
+             except Exception as e:
+                 print(f"Erro ao verificar arquivo existente: {e}")
+
         video.status = "processing"
         db.commit()
         

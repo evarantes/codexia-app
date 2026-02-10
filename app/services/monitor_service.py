@@ -63,6 +63,23 @@ class MonitorService:
             if stuck_videos:
                 logger.warning(f"Encontrados {len(stuck_videos)} vídeos presos em 'processing'. Verificando retries...")
                 for video in stuck_videos:
+                    # Smart Recovery: Check if video file actually exists (maybe DB update failed)
+                    recovered = False
+                    if video.video_url:
+                        try:
+                            from app.config import absolute_path_for_video
+                            abs_path = absolute_path_for_video(video.video_url)
+                            if os.path.exists(abs_path):
+                                logger.info(f"Vídeo {video.id} recuperado! Arquivo existe. Marcando como 'completed'.")
+                                video.status = "completed"
+                                video.progress = 100
+                                recovered = True
+                        except Exception as e:
+                            logger.error(f"Erro ao verificar arquivo para recovery: {e}")
+                    
+                    if recovered:
+                        continue
+
                     # Lógica de Max Retries usando script_data (JSON)
                     try:
                         data = json.loads(video.script_data or "{}")
