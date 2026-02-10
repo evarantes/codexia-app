@@ -577,11 +577,25 @@
                             <label class="block font-bold mb-2">Arquivo de Música (MP3/WAV)</label>
                             <input type="file" @change="handleMusicUpload" accept="audio/*" class="w-full border p-2 rounded bg-white">
                             <p v-if="uploadedMusicPath" class="text-green-600 text-sm font-bold mt-2">
-                                <i class="fas fa-check-circle"></i> Arquivo carregado: {{ musicFilename }}
-                            </p>
-                        </div>
+                    <i class="fas fa-check-circle"></i> Arquivo carregado: {{ musicFilename }}
+                </p>
+            </div>
 
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="mb-4 bg-yellow-50 p-4 rounded border border-yellow-200">
+                <label class="flex items-center gap-2 font-bold cursor-pointer mb-2">
+                    <input type="checkbox" v-model="musicIsOriginal" class="w-4 h-4 text-indigo-600">
+                    <span>Música de Autoria Própria / Livre de Direitos</span>
+                </label>
+                <p class="text-sm text-gray-600 mb-2">
+                    Marque esta opção para adicionar automaticamente uma declaração de direitos autorais na descrição do vídeo, evitando problemas de monetização.
+                </p>
+                <div v-if="musicIsOriginal">
+                    <label class="block font-bold text-sm mb-1">Texto de Créditos (será adicionado à descrição)</label>
+                    <textarea v-model="musicCopyrightText" class="w-full border p-2 rounded text-sm h-20" placeholder="Ex: Música composta por [Seu Nome]. Todos os direitos reservados."></textarea>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block font-bold mb-2">Título do Vídeo</label>
                                 <input v-model="musicTitle" class="w-full border p-2 rounded" placeholder="Título da música ou vídeo">
@@ -1804,8 +1818,10 @@
                     // Weekly Schedule
                     scheduleMode: 'theme', // theme | music
                     uploadedMusicPath: null,
-                    musicTitle: '',
-                    scheduleTheme: '',
+                musicTitle: '',
+                musicIsOriginal: false,
+                musicCopyrightText: '',
+                scheduleTheme: '',
                     scheduleType: 'days',
                     scheduleQuantity: 7,
                     scheduleVideosPerDay: 1,
@@ -2576,6 +2592,10 @@
                             if (!this.musicTitle) {
                                 this.musicTitle = data.filename.replace(/\.[^/.]+$/, "").replace(/_/g, " ");
                             }
+                            // Auto-fill copyright text suggestion
+                            if (!this.musicCopyrightText) {
+                                this.musicCopyrightText = "Música: " + this.musicTitle + "\nComposição Original. Todos os direitos reservados.\nAutorizada para uso neste canal.";
+                            }
                         } else {
                             alert("Falha no upload da música.");
                             this.uploadedMusicPath = null;
@@ -2595,12 +2615,17 @@
                         // Create manual plan for music video
                         const today = this.scheduleStartDate || new Date().toISOString().split('T')[0];
                         
+                        let conceptText = 'Vídeo gerado a partir de música: ' + this.musicFilename;
+                        if (this.musicIsOriginal && this.musicCopyrightText) {
+                            conceptText += '\n\n' + this.musicCopyrightText;
+                        }
+
                         this.schedulePlan = [{
                             date: today,
                             theme_of_day: 'Music Video',
                             videos: [{
                                 title: this.musicTitle,
-                                concept: 'Vídeo gerado a partir de música: ' + this.musicFilename,
+                                concept: conceptText,
                                 time: '12:00',
                                 type: 'video',
                                 auto_post: true,
