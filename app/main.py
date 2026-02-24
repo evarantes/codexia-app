@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
 from dotenv import load_dotenv
