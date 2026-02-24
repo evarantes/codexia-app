@@ -375,11 +375,21 @@ async def generic_exception_handler(request: Request, exc: Exception):
     """Em production: retorna 500 genérico. Em development: detalhes do erro."""
     from fastapi import HTTPException
     from fastapi.exceptions import RequestValidationError
+    import traceback
+    
     if isinstance(exc, (HTTPException, RequestValidationError)):
         raise exc  # deixa o handler padrão do FastAPI tratar 4xx/422
-    if IS_PRODUCTION:
-        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    
+    # EMERGENCIAL: Mostrar erro real mesmo em produção para debug
+    error_details = str(exc)
+    # traceback_str = "".join(traceback.format_tb(exc.__traceback__))
+    # print(f"INTERNAL SERVER ERROR: {error_details}\n{traceback_str}")
+    
+    return JSONResponse(status_code=500, content={"detail": f"Erro Interno: {error_details}"})
+    
+    # if IS_PRODUCTION:
+    #     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+    # return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
 # Servir vídeos: tenta VIDEO_OUTPUT_DIR e depois app/static/videos (Render e múltiplas instâncias)
@@ -434,6 +444,32 @@ async def health():
 def api_status():
     """Status da API (JSON) — para scripts ou checagem programática."""
     return {"message": "Codexia API is running"}
+
+@app.get("/api/debug/db")
+def debug_db():
+    """Rota temporária para debug de schema do banco."""
+    try:
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        users_cols = [c["name"] for c in inspector.get_columns("users")] if "users" in tables else []
+        sv_cols = [c["name"] for c in inspector.get_columns("scheduled_videos")] if "scheduled_videos" in tables else []
+        
+        # Check admin user
+        with engine.connect() as conn:
+            r = conn.execute(text("SELECT id, email, role, is_admin FROM users WHERE email='evarantes2@gmail.com'"))
+            user = r.fetchone()
+            user_info = dict(user._mapping) if user else "Not Found"
+            
+        return {
+            "tables": tables,
+            "users_columns": users_cols,
+            "scheduled_videos_columns": sv_cols,
+            "admin_user": user_info,
+            "db_url_masked": str(engine.url).replace(":", "***").replace("@", "***")
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/ping")
 def ping():
