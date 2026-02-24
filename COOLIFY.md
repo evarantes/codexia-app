@@ -1,47 +1,71 @@
-# Codexia no Coolify
+# Guia de Deploy no Coolify (Migração do Render)
 
-## Configuração recomendada
+Este guia explica como colocar o Codexia para rodar no seu Coolify, substituindo o Render.
 
-- **Porta**: O container expõe a porta `8000`. No Coolify, configure o serviço para usar a porta **8000** (ou defina a variável de ambiente `PORT` com a porta que o Coolify mapear).
-- **Volumes**: Monte um volume em **`/data`** para persistir SQLite, backups e vídeos gerados (`/data/media/videos`).
-- **Variáveis de ambiente** (obrigatórias em produção):
+## 1. Criar o Projeto no Coolify
 
-  | Variável | Descrição |
-  |----------|-----------|
-  | `SECRET_KEY` | Chave para JWT (em produção não use a padrão) |
-  | `BASE_URL` | URL pública (ex.: `https://seu-dominio.sslip.io`) |
-  | `ADMIN_EMAIL` | Email do admin master (criado na 1ª inicialização) |
-  | `ADMIN_PASSWORD` | Senha do admin master |
+1.  No painel do Coolify, vá em **Projects** -> **New Project**.
+2.  Escolha o ambiente (ex: `production`).
+3.  Clique em **+ New Resource**.
+4.  Selecione **Public Repository** (ou Private se você conectou seu GitHub).
+5.  Em **Repository URL**, coloque:
+    `https://github.com/evarantes/codexia-app`
+6.  Clique em **Check Repository**.
+7.  Mantenha o **Build Pack** como `Dockerfile`.
+8.  Clique em **Continue**.
 
-  **Opcionais:**
-  - `DATABASE_URL` – Se não definir, usa SQLite em `/data/vibraface.db`. Para Postgres: `postgresql://user:pass@host:5432/dbname`
-  - `ADMIN_NAME` – Nome do admin (opcional)
-  - `APP_ENV` – `production` (padrão) ou `development`
-  - `CORS_ORIGINS` – Origens permitidas, separadas por vírgula (ex.: `https://app.exemplo.com`)
-  - `ALLOW_DEBUG_ROUTES=true` – Habilita `/debug-reset-user` (evitar em produção)
-- **SQLite (sem DATABASE_URL)**: O app cria a pasta `/data` se não existir e grava o banco em `/data/vibraface.db`. Na primeira execução, se existir `/app/vibraface.db` e não existir `/data/vibraface.db`, o arquivo é copiado para `/data` (migração). **Monte um volume em `/data`** no Coolify para persistir entre deploys.
+## 2. Configurações Importantes (Antes do Deploy)
 
-## URLs após subir o app
+Vá nas configurações do recurso que acabou de ser criado:
 
-- **`/`** – Frontend Vue (painel Codexia)
-- **`/app`** – Mesmo que `/` (compatibilidade)
-- **`/api/status`** – Status da API em JSON: `{"message": "Codexia API is running"}`
-- **`/health`** – Health check (usado pelo HEALTHCHECK do Docker)
-- **`/login.html`** – Página de login
+### General
+- **Name**: Codexia (ou o que preferir)
+- **Domains**: Configure o domínio que você quer usar (ex: `https://app.seudominio.com` ou use o domínio gratuito do Coolify se disponível).
 
-## Se o container ficar em "Restarting"
+### Build
+- **Dockerfile Path**: `/Dockerfile` (já deve estar correto)
 
-1. Abra **Logs** ou **Terminal** no Coolify e veja a saída do uvicorn e as mensagens de erro em Python.
-2. Confirme que a **porta** do serviço no Coolify é a mesma que o app usa (padrão 8000).
-3. Confirme que **DATABASE_URL** está definida e acessível a partir do container (rede do Postgres).
-4. O HEALTHCHECK dá 60s de `start-period` para o app subir; se o startup for mais lento (muitas migrações), pode ser necessário aumentar memória/CPU ou revisar migrações.
+### Services (Networking / Ports)
+- **Ports Exposes**: `8000`
+  *(O Coolify deve detectar isso automaticamente do Dockerfile, mas confirme).*
 
-## Build e deploy
+### Storages (Volumes) - **MUITO IMPORTANTE**
+Para não perder o banco de dados e os vídeos quando fizer deploy, você **precisa** configurar um volume persistente.
 
-O deploy usa o `Dockerfile` na raiz. Não é necessário usar o Procfile no Coolify quando o deploy for via Docker.
+1.  Vá na aba **Storage**.
+2.  Clique em **Add Storage** (ou Edit se já tiver um).
+3.  Preencha:
+    - **Volume Name**: `codexia-data` (ou deixe o automático)
+    - **Mount Path**: `/data`
+4.  Salve.
 
-## Backup do SQLite
+### Environment Variables (Variáveis de Ambiente)
+Vá na aba **Environment Variables** e adicione:
 
-- Backups automáticos em `/data/backups` (1x/dia, às 03:00). Mantém os últimos 7.
-- Listar: `GET /admin/backups` (requer token admin)
-- Baixar: `GET /admin/backups/{filename}` (requer token admin)
+| Chave | Valor (Exemplo) | Descrição |
+|-------|-----------------|-----------|
+| `SECRET_KEY` | `sua-chave-super-secreta-aleatoria` | Segurança do JWT. Use uma string longa. |
+| `BASE_URL` | `https://seu-app.coolify.dominio.com` | A URL final do seu app (sem a barra no final). |
+| `ADMIN_EMAIL` | `seu@email.com` | Email para o usuário admin inicial. |
+| `ADMIN_PASSWORD` | `sua-senha-forte` | Senha para o usuário admin inicial. |
+| `APP_ENV` | `production` | Define modo produção. |
+| `PORT` | `8000` | Garante que o uvicorn use a porta certa. |
+
+**Opcional (PostgreSQL):**
+Se você quiser usar um banco Postgres gerenciado pelo Coolify em vez do SQLite (arquivo):
+1. Crie um banco Postgres no Coolify.
+2. Pegue a "Internal Connection String".
+3. Adicione a variável `DATABASE_URL` no Codexia com esse valor.
+*Se não definir `DATABASE_URL`, o sistema usará automaticamente o SQLite salvo em `/data/vibraface.db`.*
+
+## 3. Fazer o Deploy
+
+1.  Clique no botão **Deploy** no canto superior direito.
+2.  Aguarde o build e o start.
+3.  Acompanhe os logs em **Deployments**.
+
+## 4. Verificar
+
+Acesse a URL que você configurou.
+- O login será o `ADMIN_EMAIL` e `ADMIN_PASSWORD` que você configurou.
+- Seus dados do Render **não** virão automaticamente. Este é um banco novo.
