@@ -12,9 +12,51 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         [v-cloak] { display: none !important; }
+        #loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #312e81;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-family: sans-serif;
+        }
     </style>
+    <script>
+        window.onerror = function(msg, url, line, col, error) {
+            // Ignorar erros de resize/observer comuns
+            if (msg.includes('ResizeObserver')) return false;
+            
+            const errorDetails = `Erro: ${msg}\nURL: ${url}\nLinha: ${line}`;
+            console.error(errorDetails);
+            
+            // Se o Vue não carregar, mostrar erro na tela
+            const loader = document.getElementById('loading-overlay');
+            if (loader) {
+                loader.innerHTML = `<div style="text-align:center; padding:20px;">
+                    <i class="fas fa-exclamation-triangle" style="font-size:3rem; margin-bottom:1rem; color:#fca5a5;"></i>
+                    <p>Ocorreu um erro ao carregar o aplicativo.</p>
+                    <pre style="text-align:left; background:#1e1b4b; padding:10px; margin-top:10px; border-radius:4px; overflow:auto; max-width:90vw; font-size:10px;">${errorDetails}</pre>
+                    <button onclick="window.location.reload()" style="margin-top:20px; padding:10px 20px; background:white; color:#312e81; border:none; border-radius:4px; font-weight:bold;">Recarregar</button>
+                </div>`;
+            }
+            return false;
+        };
+    </script>
 </head>
 <body class="bg-gray-100 font-sans">
+    <!-- Loading Overlay -->
+    <div id="loading-overlay">
+        <i class="fas fa-circle-notch fa-spin" style="font-size: 3rem; margin-bottom: 1rem;"></i>
+        <p>Carregando Codexia...</p>
+    </div>
+
     <div id="app" class="flex h-screen bg-gray-100" v-cloak>
         
         <!-- Mobile Overlay -->
@@ -2044,6 +2086,10 @@
                 }
             },
             async mounted() {
+                // Hide loading overlay
+                const loader = document.getElementById('loading-overlay');
+                if (loader) loader.style.display = 'none';
+
                 // Start polling for scheduled videos progress
                 setInterval(() => {
                     if (this.scheduledVideos.some(v => v.status === 'processing' || v.status === 'queued')) {

@@ -360,6 +360,9 @@ app = FastAPI(
     debug=not IS_PRODUCTION,
 )
 
+# TRUSTED_HOSTS para Coolify/Traefik (Importante para Mobile/Redirects incorretos)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["*"])
+
 # credentials=True incompatível com allow_origins=["*"]; usar False quando *
 _allow_creds = "*" not in CORS_ORIGINS
 app.add_middleware(
