@@ -1,10 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Book, Post
-import uuid
+from app.models import Book
 
 router = APIRouter(prefix="/video", tags=["Video"])
 
@@ -17,12 +16,15 @@ class AutoVideoRequest(BaseModel):
     style: str = "drama"
 
 class CreateVideoRequest(BaseModel):
-    mode: str = "manual" # manual, topic, story
+    mode: Literal["manual", "topic", "story", "short"] = "manual"
     title: str
     content: str # Script lines (manual), Topic (topic), or Story Prompt (story)
-    duration: int = 1
+    duration: int = Field(default=1, ge=1, le=15)
     voice_style: Optional[str] = "human"
     voice_gender: Optional[str] = "female"
+
+def _extract_script_lines(content: str) -> List[str]:
+    return [line.strip() for line in (content or "").split('\n') if line and line.strip()]
 
 @router.post("/create")
 def create_video(request: CreateVideoRequest):
@@ -34,28 +36,38 @@ def create_video(request: CreateVideoRequest):
         video_gen = VideoGenerator(ai_service=ai_service)
         
         script_plan = {}
+        content = (request.content or "").strip()
         
         if request.mode == "manual":
+            script_lines = _extract_script_lines(content)
+            if not script_lines:
+                raise HTTPException(status_code=400, detail="No modo manual, informe ao menos uma linha de roteiro.")
             script_plan = {
                 "title": request.title,
-                "scenes": [{"text": line} for line in request.content.split('\n') if line.strip()]
+                "scenes": [{"text": line} for line in script_lines]
             }
             aspect_ratio = "16:9"
         elif request.mode == "topic":
-            script_plan = ai_service.generate_motivational_script(request.content, request.duration)
+            if not content:
+                raise HTTPException(status_code=400, detail="Informe um tema para gerar o vídeo.")
+            script_plan = ai_service.generate_motivational_script(content, request.duration)
             script_plan["title"] = request.title
             aspect_ratio = "16:9"
         elif request.mode == "story":
-            script_plan = ai_service.generate_video_script(request.title, request.content, "story")
+            if not content:
+                raise HTTPException(status_code=400, detail="Informe o conteúdo da história para gerar o vídeo.")
+            script_plan = ai_service.generate_video_script(request.title, content, "story")
             aspect_ratio = "16:9"
         elif request.mode == "short":
             # YouTube Short por prompt: um único prompt → roteiro curto → vídeo vertical 9:16
-            script_plan = ai_service.generate_short_script_from_prompt(request.content)
+            if not content:
+                raise HTTPException(status_code=400, detail="Informe o prompt do Short para gerar o vídeo.")
+            script_plan = ai_service.generate_short_script_from_prompt(content)
             script_plan["title"] = request.title or script_plan.get("title", "Short")
             aspect_ratio = "9:16"
-        else:
-            script_plan = ai_service.generate_video_script(request.title, request.content, "drama")
-            aspect_ratio = "16:9"
+
+        if not script_plan.get("scenes"):
+            raise HTTPException(status_code=400, detail="Não foi possível gerar cenas para o vídeo. Ajuste o conteúdo e tente novamente.")
             
         # Generate Video (9:16 para Short, 16:9 para os demais)
         result = video_gen.create_video_from_plan(
@@ -67,6 +79,8 @@ def create_video(request: CreateVideoRequest):
         
         return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit")}
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Erro ao criar vídeo ({request.mode}): {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -76,7 +90,10 @@ def generate_video(request: VideoRequest):
     from app.services.video_generator import VideoGenerator
     from app.services.ai_generator import AIContentGenerator
     try:
-        filename = f"{uuid.uuid4()}.mp4"
+        script_lines = [line.strip() for line in request.script if line and line.strip()]
+        if not script_lines:
+            raise HTTPException(status_code=400, detail="Informe ao menos uma linha de roteiro para gerar o vídeo.")
+
         # Tenta inicializar IA para melhores imagens/audio
         try:
             ai_service = AIContentGenerator()
@@ -95,7 +112,7 @@ def generate_video(request: VideoRequest):
         # Converte script simples para plano de cenas
         script_plan = {
             "title": request.title,
-            "scenes": [{"text": line} for line in request.script if line.strip()]
+            "scenes": [{"text": line} for line in script_lines]
         }
         
         # Usa o pipeline moderno (create_video_from_plan) em vez do legado
@@ -107,6 +124,8 @@ def generate_video(request: VideoRequest):
         )
         
         return {"video_url": result["video_url"]}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Erro ao gerar vídeo: {e}")
         raise HTTPException(status_code=500, detail=str(e))

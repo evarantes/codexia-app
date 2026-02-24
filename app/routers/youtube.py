@@ -387,25 +387,55 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     saved_videos = []
     
     for item in plan:
-        # Extrair dados do item
-        # Se for music_mode, o item já deve vir com music_file_path
-        
-        video = ScheduledVideo(
-            theme=item.get("theme_of_day", "Geral"),
-            title=item.get("videos", [{}])[0].get("title", "Vídeo Agendado") if isinstance(item.get("videos"), list) else item.get("title", "Vídeo"),
-            description=item.get("videos", [{}])[0].get("concept", "") if isinstance(item.get("videos"), list) else item.get("concept", ""),
-            scheduled_for=datetime.strptime(f"{item.get('date')} {item.get('videos', [{}])[0].get('time', '12:00')}", "%Y-%m-%d %H:%M") if item.get("date") else datetime.now(),
-            video_type=item.get("videos", [{}])[0].get("type", "video") if isinstance(item.get("videos"), list) else item.get("type", "video"),
-            script_data=json.dumps(item.get("videos", [{}])[0]) if isinstance(item.get("videos"), list) else json.dumps(item),
-            status="queued", # Start as queued
-            auto_post=item.get("videos", [{}])[0].get("auto_post", True) if isinstance(item.get("videos"), list) else item.get("auto_post", True),
-            voice_style=item.get("videos", [{}])[0].get("voice_style", "human") if isinstance(item.get("videos"), list) else item.get("voice_style", "human"),
-            voice_gender=item.get("videos", [{}])[0].get("voice_gender", "female") if isinstance(item.get("videos"), list) else item.get("voice_gender", "female"),
-            music_file_path=item.get("videos", [{}])[0].get("music_file_path") if isinstance(item.get("videos"), list) else item.get("music_file_path")
-        )
-        db.add(video)
-        db.flush() # get ID
-        saved_videos.append(video)
+        # O plano pode vir "por dia" com lista de vídeos, ou "flat" (um item = um vídeo).
+        theme_of_day = item.get("theme_of_day", item.get("theme", "Geral"))
+        day_date = item.get("date")
+        videos = item.get("videos") if isinstance(item.get("videos"), list) else None
+        if not videos:
+            videos = [item]
+
+        for video_item in videos:
+            if not isinstance(video_item, dict):
+                continue
+
+            title = video_item.get("title") or item.get("title") or "Vídeo Agendado"
+            concept = video_item.get("concept") or item.get("concept", "")
+            time_value = str(video_item.get("time") or item.get("time") or "12:00").strip()
+            if len(time_value) >= 5:
+                time_value = time_value[:5]
+            else:
+                time_value = "12:00"
+
+            if day_date:
+                try:
+                    scheduled_for = datetime.strptime(f"{day_date} {time_value}", "%Y-%m-%d %H:%M")
+                except Exception:
+                    scheduled_for = datetime.now()
+            else:
+                scheduled_for = datetime.now()
+
+            script_payload = dict(video_item)
+            if "date" not in script_payload and day_date:
+                script_payload["date"] = day_date
+            if "theme_of_day" not in script_payload:
+                script_payload["theme_of_day"] = theme_of_day
+
+            video = ScheduledVideo(
+                theme=theme_of_day,
+                title=title,
+                description=concept,
+                scheduled_for=scheduled_for,
+                video_type=video_item.get("type", item.get("type", "video")),
+                script_data=json.dumps(script_payload),
+                status="queued",  # Start as queued
+                auto_post=bool(video_item.get("auto_post", item.get("auto_post", True))),
+                voice_style=video_item.get("voice_style", item.get("voice_style", "human")),
+                voice_gender=video_item.get("voice_gender", item.get("voice_gender", "female")),
+                music_file_path=video_item.get("music_file_path", item.get("music_file_path"))
+            )
+            db.add(video)
+            db.flush()  # get ID
+            saved_videos.append(video)
     
     db.commit()
     
@@ -509,7 +539,7 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
         err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube. Verifique as credenciais em Configurações."
         raise HTTPException(status_code=502, detail=err_msg)
 
-    video.uploaded_at = datetime.datetime.now()
+    video.uploaded_at = datetime.now()
     video.youtube_video_id = video_id_value
     video.status = "published"
     db.commit()
@@ -567,7 +597,7 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
         err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao republicar no YouTube."
         raise HTTPException(status_code=502, detail=err_msg)
 
-    video.uploaded_at = datetime.datetime.now()
+    video.uploaded_at = datetime.now()
     video.youtube_video_id = video_id_value
     video.status = "published"
     db.commit()
@@ -700,11 +730,11 @@ def process_video_generation(request: VideoRequest, task_id):
         # 1. Gerar Roteiro
         update_task(task_id, progress=10, message="Estruturando roteiro com IA...")
         
+        topic = request.topic or "Motivação Genérica"
         if request.mode == 'story' and request.story_content:
             script = ai_service.generate_script_from_text(request.story_content, request.duration)
         else:
             # Fallback to topic mode if no story content
-            topic = request.topic or "Motivação Genérica"
             script = ai_service.generate_motivational_script(topic, request.duration)
             
         print("Roteiro gerado/estruturado.")

@@ -16,6 +16,8 @@ class VideoGenerator:
         self.music_dir = "app/static/music"
         os.makedirs(self.music_dir, exist_ok=True)
         self.ai_service = ai_service
+        # Cache em memória para evitar regenerar áudio idêntico no mesmo processo.
+        self._audio_cache = {}
         self.MUSIC_CREDITS = {
             "drama": "Music: Impact Prelude by Kevin MacLeod\nFree download: https://filmmusic.io/song/3900-impact-prelude\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
             "epic": "Music: Impact Andante by Kevin MacLeod\nFree download: https://filmmusic.io/song/3898-impact-andante\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
@@ -153,6 +155,51 @@ class VideoGenerator:
 
         return text.strip()
 
+    def _split_scene_text(self, text, max_chars=200):
+        """Divide uma narração longa em blocos menores e narráveis."""
+        clean_text = self._clean_text(text)
+        if not clean_text:
+            return []
+
+        sentence_parts = re.split(r'(?<=[.!?])\s+', clean_text)
+        chunks = []
+
+        for part in sentence_parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            if len(part) <= max_chars:
+                chunks.append(part)
+                continue
+
+            # Fallback por palavras para frases muito longas sem pontuação adequada.
+            words = part.split()
+            current_words = []
+            current_len = 0
+            for word in words:
+                projected_len = current_len + len(word) + (1 if current_words else 0)
+                if current_words and projected_len > max_chars:
+                    chunks.append(" ".join(current_words))
+                    current_words = [word]
+                    current_len = len(word)
+                else:
+                    current_words.append(word)
+                    current_len = projected_len
+
+            if current_words:
+                chunks.append(" ".join(current_words))
+
+        return chunks or [clean_text]
+
+    def _estimate_duration_from_text(self, text, min_seconds=3, max_seconds=10):
+        """Estima duração de cena sem TTS baseado no tamanho do texto."""
+        words = len((text or "").split())
+        if words <= 0:
+            return 5
+        estimated = round(words / 2.6)  # ~2.6 palavras/segundo (narrado)
+        return max(min_seconds, min(max_seconds, estimated))
+
     def generate_audio(self, text, lang='pt', voice_style=None, voice_gender=None):
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text or not text.strip(): 
@@ -167,6 +214,11 @@ class VideoGenerator:
 
         style = (voice_style or "human").lower()
         gender = (voice_gender or "female").lower()
+        cache_key = (clean_text, lang, style, gender)
+        cached_path = self._audio_cache.get(cache_key)
+        if cached_path and os.path.exists(cached_path) and os.path.getsize(cached_path) > 100:
+            print(f"Reutilizando áudio em cache: {cached_path}")
+            return cached_path
         
         print(f"Gerando áudio para: '{clean_text[:30]}...' (Style: {style}, Gender: {gender})")
         
@@ -190,6 +242,7 @@ class VideoGenerator:
                     path = os.path.join(self.output_dir, filename)
                     with open(path, "wb") as f:
                         f.write(audio_content)
+                    self._audio_cache[cache_key] = path
                     print(f"OpenAI TTS sucesso: {path}")
                     return path
             except Exception as e:
@@ -226,6 +279,7 @@ class VideoGenerator:
                 t.join(timeout=15) # Aumentado timeout para 15s
 
                 if os.path.exists(path) and os.path.getsize(path) > 500: # Check > 500 bytes
+                    self._audio_cache[cache_key] = path
                     print(f"Edge TTS sucesso: {path}")
                     return path
                 else:
@@ -244,6 +298,7 @@ class VideoGenerator:
             
             # Verificação de segurança
             if os.path.exists(path) and os.path.getsize(path) > 100:
+                self._audio_cache[cache_key] = path
                 print(f"gTTS sucesso: {path}")
                 return path
             else:
@@ -503,6 +558,11 @@ class VideoGenerator:
             print(f"Erro ao aplicar Ken Burns: {e}")
             return clip
 
+    def apply_ken_burns(self, clip, width=None, height=None, zoom_factor=1.15):
+        """Compatibilidade com chamadas antigas que passam width/height."""
+        size = (width, height) if width and height else (getattr(clip, "w", 720), getattr(clip, "h", 1280))
+        return self._apply_ken_burns(clip, size, zoom_factor=zoom_factor)
+
     def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None):
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
         # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
@@ -532,35 +592,28 @@ class VideoGenerator:
                 else:
                     raw_scenes = []
 
-            # PROCESSAMENTO DE CENAS LONGAS: Quebra automática de texto (Apenas se NÃO for modo música)
+            # PROCESSAMENTO DE CENAS: normalização + quebra de blocos longos
             scenes = []
             if not music_file_path:
                 for scene in raw_scenes:
-                    scene_text = ""
-                    scene_prompt = ""
-                    
-                    if isinstance(scene, str):
-                        scene_text = scene
-                    else:
-                        scene_text = scene.get('text', '')
-                        scene_prompt = scene.get('image_prompt', '')
-                    
-                    # Se o texto for muito longo (> 200 caracteres), quebra em múltiplas cenas
-                    if len(scene_text) > 200:
-                        import re
-                        # Quebra por pontuação final (. ! ?) mantendo a pontuação
-                        # Regex: split por (.+espaço, !+espaço, ?+espaço)
-                        parts = re.split(r'(?<=[.!?])\s+', scene_text)
-                        
-                        for part in parts:
-                            if part.strip():
-                                scenes.append({"text": part.strip(), "image_prompt": scene_prompt})
-                    else:
-                        # Adiciona como está (normalizando para dicionário)
-                        scenes.append({"text": scene_text, "image_prompt": scene_prompt})
+                    scene_text = scene if isinstance(scene, str) else scene.get('text', '')
+                    scene_prompt = "" if isinstance(scene, str) else scene.get('image_prompt', '')
+                    for part in self._split_scene_text(scene_text, max_chars=200):
+                        scenes.append({"text": part, "image_prompt": scene_prompt})
             else:
-                # No modo música, usamos as cenas como vieram (já quebradas por tempo)
-                scenes = raw_scenes
+                # No modo música, aceitamos dicts completos ou strings de prompt.
+                for scene in raw_scenes:
+                    if isinstance(scene, dict):
+                        scenes.append(scene)
+                    elif isinstance(scene, str) and scene.strip():
+                        scenes.append({"image_prompt": scene.strip(), "duration": 5})
+
+            if not scenes:
+                fallback_text = self._clean_text(title) or "Conteúdo motivacional."
+                scenes = [{
+                    "text": fallback_text,
+                    "image_prompt": f"Cinematic scene inspired by: {fallback_text[:120]}"
+                }]
 
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
             # Skip enrichment if music mode (handled by generator)
@@ -591,14 +644,31 @@ class VideoGenerator:
                     if progress_callback:
                         progress_callback(10 + int((i / len(scenes)) * 60), f"Gerando cena {i+1}/{len(scenes)}...")
                     
-                    # Duration comes from the plan
-                    duration = scene.get('duration', 5)
-                    image_prompt = scene.get('image_prompt', '')
+                    if isinstance(scene, dict):
+                        duration_raw = scene.get('duration', 5)
+                        image_prompt = (scene.get('image_prompt') or "").strip()
+                        scene_text = (scene.get('text') or "").strip()
+                    else:
+                        duration_raw = 5
+                        image_prompt = ""
+                        scene_text = str(scene).strip()
+
+                    try:
+                        duration = float(duration_raw)
+                    except (TypeError, ValueError):
+                        duration = 5.0
+                    duration = max(1.5, min(20.0, duration))
+
                     if not image_prompt:
-                         image_prompt = f"Scene for {title}, photorealistic, cinematic"
+                        basis = scene_text or title
+                        image_prompt = f"Scene for {basis[:80]}, photorealistic, cinematic"
 
                     # Gerar imagem
-                    img_path = self.generate_image(image_prompt)
+                    img_path = self._ensure_image_for_scene(
+                        image_prompt,
+                        text_fallback=scene_text or title,
+                        aspect_ratio=aspect_ratio
+                    )
                     
                     if img_path and os.path.exists(img_path):
                         # Criar clip
@@ -609,6 +679,12 @@ class VideoGenerator:
                         # Fallback image
                         color_clip = ImageClip(np.zeros((video_size[1], video_size[0], 3), dtype=np.uint8)).set_duration(duration)
                         clips.append(color_clip)
+
+                    if img_path and "temp_" in img_path:
+                        try:
+                            os.remove(img_path)
+                        except Exception:
+                            pass
                 
                 # Concatenar clips visuais
                 if clips:
@@ -741,8 +817,9 @@ class VideoGenerator:
                     clip_scene = clip_scene.with_audio(audio_clip_scene)
                 else:
                     # FALLBACK DE ÁUDIO CRÍTICO
-                    print(f"AVISO: Cena {i+1} sem áudio gerado. Mantendo duração padrão.")
-                    clip_scene = clip_scene.with_duration(5)
+                    fallback_duration = self._estimate_duration_from_text(clean_text)
+                    print(f"AVISO: Cena {i+1} sem áudio gerado. Usando duração dinâmica de {fallback_duration}s.")
+                    clip_scene = clip_scene.with_duration(fallback_duration)
                 
                 # APLICAÇÃO DE EFEITOS VISUAIS (Ken Burns)
                 # Só aplica se tivermos uma imagem real de fundo (não cor sólida gerada por código)
