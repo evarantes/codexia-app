@@ -139,6 +139,10 @@ def run_migrations(engine):
                         print("Migrating: Adding updated_at to scheduled_videos...")
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN updated_at TIMESTAMP"))
 
+                    if "music_file_path" not in sv_columns:
+                        print("Migrating: Adding music_file_path to scheduled_videos...")
+                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN music_file_path VARCHAR"))
+
                     if "voice_style" not in sv_columns:
                         print("Migrating: Adding voice_style to scheduled_videos...")
                         conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_style VARCHAR DEFAULT 'human'"))
