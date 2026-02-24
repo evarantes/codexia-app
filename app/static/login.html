@@ -150,12 +150,21 @@
                             }
                             window.location.href = '/';
                         } else {
-                            const data = await res.json();
-                            this.message = data.detail || 'Falha no login';
+                            // Tenta ler como JSON, se falhar, lê como texto
+                            let errorMsg = 'Falha no login';
+                            try {
+                                const data = await res.json();
+                                errorMsg = data.detail || JSON.stringify(data);
+                            } catch (jsonErr) {
+                                const text = await res.text();
+                                errorMsg = `Erro ${res.status}: ${text.substring(0, 100)}`; // Mostra inicio do erro (HTML ou texto)
+                            }
+                            this.message = errorMsg;
                             this.messageType = 'error';
                         }
                     } catch (e) {
-                        this.message = 'Erro de conexão';
+                        console.error(e);
+                        this.message = 'Erro de conexão ou Servidor Indisponível. Tente novamente em instantes.';
                         this.messageType = 'error';
                     } finally {
                         this.loading = false;

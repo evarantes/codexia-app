@@ -38,183 +38,231 @@ except Exception as e:
 def run_migrations(engine):
     try:
         inspector = inspect(engine)
-        if "books" in inspector.get_table_names():
-            columns = [c["name"] for c in inspector.get_columns("books")]
-            if "cover_image_base64" not in columns:
-                print("Migrating: Adding missing column cover_image_base64 to books table...")
-                with engine.connect() as conn:
-                    conn.execute(text("ALTER TABLE books ADD COLUMN cover_image_base64 TEXT"))
-                    conn.commit()
-            else:
-                print("Migration: Column cover_image_base64 already exists.")
         
-        # Check if users table exists (create_all should handle, but just in case)
+        # Books table migration
+        if "books" in inspector.get_table_names():
+            try:
+                columns = [c["name"] for c in inspector.get_columns("books")]
+                if "cover_image_base64" not in columns:
+                    print("Migrating: Adding missing column cover_image_base64 to books table...")
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE books ADD COLUMN cover_image_base64 TEXT"))
+                        conn.commit()
+            except Exception as e:
+                print(f"Failed to migrate books table: {e}")
+
+        # Tenants table creation/verification
         if "tenants" not in inspector.get_table_names():
             print("Migration: Creating tenants table...")
-            Base.metadata.create_all(bind=engine)
-        # Garantir tenant Default existe
-        with engine.connect() as conn:
-            r = conn.execute(text("SELECT 1 FROM tenants WHERE slug = 'default' LIMIT 1"))
-            if r.fetchone() is None:
-                conn.execute(text(
-                    "INSERT INTO tenants (name, slug, created_at) VALUES ('Default', 'default', CURRENT_TIMESTAMP)"
-                ))
-                conn.commit()
-                print("Migration: Tenant 'Default' criado.")
+            try:
+                Base.metadata.create_all(bind=engine)
+            except Exception as e:
+                print(f"Failed to create tenants table: {e}")
+        
+        # Ensure Default Tenant exists
+        try:
+            with engine.connect() as conn:
+                # Check if tenants table exists first to avoid error if create_all failed
+                if "tenants" in inspector.get_table_names():
+                    r = conn.execute(text("SELECT 1 FROM tenants WHERE slug = 'default' LIMIT 1"))
+                    if r.fetchone() is None:
+                        conn.execute(text(
+                            "INSERT INTO tenants (name, slug, created_at) VALUES ('Default', 'default', CURRENT_TIMESTAMP)"
+                        ))
+                        conn.commit()
+                        print("Migration: Tenant 'Default' criado.")
+        except Exception as e:
+            print(f"Failed to create Default tenant: {e}")
+
+        # Users table migration
         if "users" not in inspector.get_table_names():
              print("Migration: Creating users table...")
-             Base.metadata.create_all(bind=engine)
+             try:
+                 Base.metadata.create_all(bind=engine)
+             except Exception as e:
+                 print(f"Failed to create users table: {e}")
         else:
-            # Check for must_change_password column
-            user_columns = [c["name"] for c in inspector.get_columns("users")]
-            if "must_change_password" not in user_columns:
-                print("Migrating: Adding missing column must_change_password to users table...")
+            try:
+                user_columns = [c["name"] for c in inspector.get_columns("users")]
                 with engine.connect() as conn:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0"))
-                    conn.commit()
-            if "is_admin" not in user_columns:
-                print("Migrating: Adding is_admin to users table...")
-                with engine.connect() as conn:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE"))
-                    conn.commit()
-            if "name" not in user_columns:
-                print("Migrating: Adding name to users table...")
-                with engine.connect() as conn:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN name TEXT"))
-                    conn.commit()
-            if "role" not in user_columns:
-                print("Migrating: Adding role to users table...")
-                with engine.connect() as conn:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR DEFAULT 'cliente'"))
-                    conn.commit()
-                with engine.connect() as conn:
-                    conn.execute(text("UPDATE users SET role = 'admin' WHERE is_admin = 1"))
-                    conn.commit()
-            if "tenant_id" not in user_columns:
-                print("Migrating: Adding tenant_id to users table...")
-                with engine.connect() as conn:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN tenant_id INTEGER"))
-                    conn.commit()
-                # Atribuir usuários existentes ao tenant Default (id=1)
-                with engine.connect() as conn:
-                    conn.execute(text("UPDATE users SET tenant_id = 1 WHERE tenant_id IS NULL"))
-                    conn.commit()
-                print("Migration: tenant_id adicionado; usuários existentes atribuídos a Default.")
+                    if "must_change_password" not in user_columns:
+                        print("Migrating: Adding missing column must_change_password to users table...")
+                        try:
+                            conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding must_change_password: {e}")
 
-            # Multi-tenant: user_id nas tabelas principais
-            for table, col in [
-                ("books", "user_id"), ("book_drafts", "user_id"), ("leads", "user_id"),
-                ("settings", "user_id"), ("customers", "user_id"), ("scheduled_videos", "user_id"),
-                ("channel_reports", "user_id"),
-            ]:
-                if table in inspector.get_table_names():
+                    if "is_admin" not in user_columns:
+                        print("Migrating: Adding is_admin to users table...")
+                        try:
+                            conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding is_admin: {e}")
+
+                    if "name" not in user_columns:
+                        print("Migrating: Adding name to users table...")
+                        try:
+                            conn.execute(text("ALTER TABLE users ADD COLUMN name TEXT"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding name: {e}")
+
+                    if "role" not in user_columns:
+                        print("Migrating: Adding role to users table...")
+                        try:
+                            conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR DEFAULT 'cliente'"))
+                            conn.commit()
+                            conn.execute(text("UPDATE users SET role = 'admin' WHERE is_admin = 1"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding role: {e}")
+
+                    if "tenant_id" not in user_columns:
+                        print("Migrating: Adding tenant_id to users table...")
+                        try:
+                            conn.execute(text("ALTER TABLE users ADD COLUMN tenant_id INTEGER"))
+                            conn.commit()
+                            # Atribuir usuários existentes ao tenant Default (id=1)
+                            conn.execute(text("UPDATE users SET tenant_id = 1 WHERE tenant_id IS NULL"))
+                            conn.commit()
+                            print("Migration: tenant_id adicionado; usuários existentes atribuídos a Default.")
+                        except Exception as e: print(f"Error adding tenant_id: {e}")
+            except Exception as e:
+                print(f"Error migrating users table: {e}")
+
+        # Multi-tenant: user_id nas tabelas principais
+        for table, col in [
+            ("books", "user_id"), ("book_drafts", "user_id"), ("leads", "user_id"),
+            ("settings", "user_id"), ("customers", "user_id"), ("scheduled_videos", "user_id"),
+            ("channel_reports", "user_id"),
+        ]:
+            if table in inspector.get_table_names():
+                try:
                     tcols = [c["name"] for c in inspector.get_columns(table)]
                     if col not in tcols:
                         print(f"Migrating: Adding {col} to {table}...")
                         with engine.connect() as conn:
                             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER"))
                             conn.commit()
+                except Exception as e:
+                    print(f"Failed to migrate {table} ({col}): {e}")
 
-            # Check for ScheduledVideo new columns
-            if "scheduled_videos" in inspector.get_table_names():
+        # ScheduledVideo migration
+        if "scheduled_videos" in inspector.get_table_names():
+            try:
                 sv_columns = [c["name"] for c in inspector.get_columns("scheduled_videos")]
                 with engine.connect() as conn:
                     if "progress" not in sv_columns:
-                        print("Migrating: Adding progress to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN progress INTEGER DEFAULT 0"))
+                        try:
+                            print("Migrating: Adding progress to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN progress INTEGER DEFAULT 0"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding progress: {e}")
+
                     if "publish_at" not in sv_columns:
-                        print("Migrating: Adding publish_at to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN publish_at TIMESTAMP"))
+                        try:
+                            print("Migrating: Adding publish_at to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN publish_at TIMESTAMP"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding publish_at: {e}")
+
                     if "auto_post" not in sv_columns:
-                        print("Migrating: Adding auto_post to scheduled_videos...")
-                        # Use FALSE for compatibility with both SQLite and PostgreSQL
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN auto_post BOOLEAN DEFAULT FALSE"))
+                        try:
+                            print("Migrating: Adding auto_post to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN auto_post BOOLEAN DEFAULT FALSE"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding auto_post: {e}")
+
                     if "youtube_video_id" not in sv_columns:
-                        print("Migrating: Adding youtube_video_id to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN youtube_video_id TEXT"))
+                        try:
+                            print("Migrating: Adding youtube_video_id to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN youtube_video_id TEXT"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding youtube_video_id: {e}")
+                    
                     if "uploaded_at" not in sv_columns:
-                        print("Migrating: Adding uploaded_at to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at TIMESTAMP"))
+                        try:
+                            print("Migrating: Adding uploaded_at to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN uploaded_at TIMESTAMP"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding uploaded_at: {e}")
+
                     if "updated_at" not in sv_columns:
-                        print("Migrating: Adding updated_at to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN updated_at TIMESTAMP"))
+                        try:
+                            print("Migrating: Adding updated_at to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN updated_at TIMESTAMP"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding updated_at: {e}")
 
                     if "music_file_path" not in sv_columns:
-                        print("Migrating: Adding music_file_path to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN music_file_path VARCHAR"))
+                        try:
+                            print("Migrating: Adding music_file_path to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN music_file_path VARCHAR"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding music_file_path: {e}")
 
                     if "voice_style" not in sv_columns:
-                        print("Migrating: Adding voice_style to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_style VARCHAR DEFAULT 'human'"))
+                        try:
+                            print("Migrating: Adding voice_style to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_style VARCHAR DEFAULT 'human'"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding voice_style: {e}")
                     
                     if "voice_gender" not in sv_columns:
-                        print("Migrating: Adding voice_gender to scheduled_videos...")
-                        conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_gender VARCHAR DEFAULT 'female'"))
-                        
-                    conn.commit()
+                        try:
+                            print("Migrating: Adding voice_gender to scheduled_videos...")
+                            conn.execute(text("ALTER TABLE scheduled_videos ADD COLUMN voice_gender VARCHAR DEFAULT 'female'"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding voice_gender: {e}")
+            except Exception as e:
+                print(f"Error migrating scheduled_videos table: {e}")
 
-            # Check for Settings new columns
-            if "settings" in inspector.get_table_names():
+        # Settings migration
+        if "settings" in inspector.get_table_names():
+            try:
                 settings_columns = [c["name"] for c in inspector.get_columns("settings")]
                 with engine.connect() as conn:
-                    if "gemini_api_key" not in settings_columns:
-                        print("Migrating: Adding gemini_api_key to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN gemini_api_key TEXT"))
-                
-                    if "deepseek_api_key" not in settings_columns:
-                        print("Migrating: Adding deepseek_api_key to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN deepseek_api_key TEXT"))
-                
-                    if "groq_api_key" not in settings_columns:
-                        print("Migrating: Adding groq_api_key to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN groq_api_key TEXT"))
-                    
-                    if "anthropic_api_key" not in settings_columns:
-                        print("Migrating: Adding anthropic_api_key to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN anthropic_api_key TEXT"))
-
-                    if "mistral_api_key" not in settings_columns:
-                        print("Migrating: Adding mistral_api_key to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN mistral_api_key TEXT"))
-
-                    if "openrouter_api_key" not in settings_columns:
-                        print("Migrating: Adding openrouter_api_key to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN openrouter_api_key TEXT"))
+                    for col in [
+                        "gemini_api_key", "deepseek_api_key", "groq_api_key", 
+                        "anthropic_api_key", "mistral_api_key", "openrouter_api_key",
+                        "hotmart_client_id", "hotmart_client_secret", 
+                        "hotmart_access_token", "suno_api_key"
+                    ]:
+                        if col not in settings_columns:
+                            try:
+                                print(f"Migrating: Adding {col} to settings...")
+                                conn.execute(text(f"ALTER TABLE settings ADD COLUMN {col} TEXT"))
+                                conn.commit()
+                            except Exception as e: print(f"Error adding {col}: {e}")
 
                     if "ai_provider" not in settings_columns:
-                        print("Migrating: Adding ai_provider to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN ai_provider TEXT DEFAULT 'openai'"))
-                    
-                    # Hotmart Integration
-                    if "hotmart_client_id" not in settings_columns:
-                        print("Migrating: Adding hotmart_client_id to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_client_id TEXT"))
-                    if "hotmart_client_secret" not in settings_columns:
-                        print("Migrating: Adding hotmart_client_secret to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_client_secret TEXT"))
-                    if "hotmart_access_token" not in settings_columns:
-                        print("Migrating: Adding hotmart_access_token to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_access_token TEXT"))
-                    if "hotmart_token_expires_at" not in settings_columns:
-                        print("Migrating: Adding hotmart_token_expires_at to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_token_expires_at TIMESTAMP"))
-                    if "suno_api_key" not in settings_columns:
-                        print("Migrating: Adding suno_api_key to settings...")
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN suno_api_key TEXT"))
-                    conn.commit()
+                        try:
+                            print("Migrating: Adding ai_provider to settings...")
+                            conn.execute(text("ALTER TABLE settings ADD COLUMN ai_provider TEXT DEFAULT 'openai'"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding ai_provider: {e}")
 
-            # Book drafts: cover_base64 para persistir capa em ambiente efêmero
-            if "book_drafts" in inspector.get_table_names():
+                    if "hotmart_token_expires_at" not in settings_columns:
+                        try:
+                            print("Migrating: Adding hotmart_token_expires_at to settings...")
+                            conn.execute(text("ALTER TABLE settings ADD COLUMN hotmart_token_expires_at TIMESTAMP"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding hotmart_token_expires_at: {e}")
+            except Exception as e:
+                print(f"Error migrating settings table: {e}")
+
+        # Book drafts migration
+        if "book_drafts" in inspector.get_table_names():
+            try:
                 bd_columns = [c["name"] for c in inspector.get_columns("book_drafts")]
                 if "cover_base64" not in bd_columns:
                     print("Migrating: Adding cover_base64 to book_drafts...")
                     with engine.connect() as conn:
                         conn.execute(text("ALTER TABLE book_drafts ADD COLUMN cover_base64 TEXT"))
                         conn.commit()
-
+            except Exception as e:
+                print(f"Error migrating book_drafts table: {e}")
 
     except Exception as e:
-        print(f"Migration warning: {e}")
+        print(f"Critical Migration Error: {e}")
 
 def create_admin_master():
     """Cria admin master a partir de ADMIN_EMAIL/ADMIN_PASSWORD. Usa tenant Default."""
