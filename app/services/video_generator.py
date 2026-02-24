@@ -362,32 +362,13 @@ class VideoGenerator:
             print(f"Erro ao gerar fundo local: {e}")
             return None
 
-    def _extract_keywords(self, text, max_keywords=2):
-        """Extrai palavras-chave simples de um texto para busca de imagens"""
-        if not text: return "abstract"
-        
-        # Palavras comuns para ignorar (stop words simples)
-        ignore = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 
-                  'o', 'a', 'os', 'as', 'um', 'uma', 'e', 'ou', 'mas', 'em', 'no', 'na', 'de', 'do', 'da', 'com', 'por', 'que', 'é', 'são'}
-        
-        # Limpa e normaliza
-        words = re.sub(r'[^\w\s]', '', text.lower()).split()
-        keywords = [w for w in words if w not in ignore and len(w) > 3]
-        
-        if not keywords: return "abstract"
-        
-        # Pega as primeiras N palavras significativas
-        return ",".join(keywords[:max_keywords])
-
     def _ensure_image_for_scene(self, prompt, text_fallback, aspect_ratio="9:16"):
         """
         Garante que uma imagem seja retornada, tentando múltiplas fontes em ordem de qualidade.
         1. AI Service (DALL-E / Pollinations Flux)
         2. Pollinations Simples (Prompt Otimizado)
-        3. Pollinations Genérico (Abstract)
-        4. LoremFlickr (Contextual Keywords) - NOVO
-        5. Picsum (Aleatória/Último Recurso Online)
-        6. Geração Local (Gradiente - Garantia Final)
+        3. Pollinations Genérico (Abstract Background)
+        4. Geração Local (Gradiente - Garantia Final)
         """
         
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
@@ -441,11 +422,11 @@ class VideoGenerator:
         except Exception as e:
             print(f"Erro Tentativa 2: {e}")
 
-        # 3. Tentativa Terciária (Abstrato Genérico)
+        # 3. Tentativa Terciária (Abstrato Genérico - Fundo Neutro)
         print("Tentativa 3 (Fallback Abstrato)...")
         try:
-            # Prompt abstrato mas artístico e profissional
-            abstract_prompt = "cinematic abstract art, professional lighting, 8k, highly detailed, photorealistic textures, no cartoon"
+            # Prompt abstrato focado em background neutro e profissional
+            abstract_prompt = "abstract background, cinematic lighting, soft colors, professional, 4k, no objects, no people, elegant wallpaper"
             safe_prompt = urllib.parse.quote(abstract_prompt)
             url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={uuid.uuid4()}"
             path = self.download_image(url)
@@ -453,34 +434,12 @@ class VideoGenerator:
         except Exception as e:
             print(f"Erro Tentativa 3: {e}")
 
-        # 4. Fallback Contextual (LoremFlickr) - Tenta buscar imagem relacionada ao texto
-        print("Tentativa 4 (Fallback Contextual - LoremFlickr)...")
-        try:
-            # Extrai keywords do prompt ou texto
-            source_text = prompt if prompt else text_fallback
-            keywords = self._extract_keywords(source_text)
-            print(f"Using keywords: {keywords}")
-            
-            # LoremFlickr URL format: https://loremflickr.com/{width}/{height}/{keywords}/all
-            # 'all' searches both tags and categories
-            url = f"https://loremflickr.com/{width}/{height}/{keywords}/all?random={uuid.uuid4()}"
-            path = self.download_image(url, retries=2)
-            if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
-        except Exception as e:
-            print(f"Erro Tentativa 4: {e}")
-
-        # 5. Último Recurso Online (Picsum Random)
-        print("Tentativa 5 (Último Recurso Online - Picsum)...")
-        try:
-            url = f"https://picsum.photos/{width}/{height}?random={uuid.uuid4()}"
-            # Aumentamos retries aqui pois é a nossa melhor chance de imagem real
-            path = self.download_image(url, retries=5)
-            if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
-        except Exception as e:
-            print(f"Erro Tentativa 5: {e}")
+        # REMOVIDO: Fallback Contextual (LoremFlickr) e Picsum (Aleatório)
+        # Motivo: Geravam imagens irrelevantes (gatos, etc) que confundiam o usuário.
+        # Se as IAs falharem, melhor ir direto para o Gradiente Local (Tentativa 6)
             
         # 6. Geração Local (Garantia Final - Offline)
-        print("Tentativa 6 (Geração Local - Gradiente)...")
+        print("Tentativa 4 (Geração Local - Gradiente)...")
         return self._generate_fallback_background((width, height))
 
     def _apply_ken_burns(self, clip, size, zoom_factor=1.15):

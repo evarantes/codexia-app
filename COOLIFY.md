@@ -36,7 +36,7 @@ Para não perder o banco de dados e os vídeos quando fizer deploy, você **prec
 2.  Clique em **Add Storage** (ou Edit se já tiver um).
 3.  Preencha:
     - **Volume Name**: `codexia-data` (ou deixe o automático)
-    - **Mount Path**: `/data`
+    - **Destination Path**: `/data` (NÃO use `/data/media` aqui, use apenas `/data`)
 4.  Salve.
 
 ### Environment Variables (Variáveis de Ambiente)
@@ -51,12 +51,12 @@ Vá na aba **Environment Variables** e adicione:
 | `APP_ENV` | `production` | Define modo produção. |
 | `PORT` | `8000` | Garante que o uvicorn use a porta certa. |
 
-**Opcional (PostgreSQL):**
-Se você quiser usar um banco Postgres gerenciado pelo Coolify em vez do SQLite (arquivo):
-1. Crie um banco Postgres no Coolify.
-2. Pegue a "Internal Connection String".
-3. Adicione a variável `DATABASE_URL` no Codexia com esse valor.
-*Se não definir `DATABASE_URL`, o sistema usará automaticamente o SQLite salvo em `/data/vibraface.db`.*
+### ⚠️ IMPORTANTE: ERRO DE LOGIN (DATABASE_URL)
+Se você estiver migrando do Render, é possível que você tenha copiado a variável `DATABASE_URL` antiga.
+**VOCÊ DEVE DELETAR A VARIÁVEL `DATABASE_URL` NO COOLIFY!**
+
+- Se `DATABASE_URL` estiver definida com um endereço do Render (`postgres://...`), o sistema tentará conectar no banco antigo que não existe mais, causando **Erro 500 no Login**.
+- **Solução:** Vá em Environment Variables, encontre `DATABASE_URL` e clique no ícone de lixeira para removê-la. O sistema usará automaticamente o banco local (SQLite) em `/data/vibraface.db`.
 
 ## 3. Fazer o Deploy
 
