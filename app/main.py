@@ -501,6 +501,21 @@ async def serve_app():
     """Alias para a interface web (compatibilidade com links antigos)."""
     return FileResponse(os.path.join(_STATIC_SERVE, "index.html"))
 
+@app.get("/acodexialista")
+async def serve_acodexialista():
+    """Serve o projeto Acodexialista."""
+    project_index = os.path.join(_STATIC_SERVE, "acodexialista", "index.html")
+    if not os.path.exists(project_index):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "acodexialista/index.html not found",
+                "path": str(project_index),
+                "static_serve": _STATIC_SERVE,
+            },
+        )
+    return FileResponse(project_index)
+
 @app.get("/login.html")
 async def read_login():
     return FileResponse(os.path.join(_STATIC_SERVE, "login.html"))

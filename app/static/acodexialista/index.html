@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Acodexialista | Lista de Mercado Inteligente</title>
+  <meta
+    name="description"
+    content="Acodexialista: lista de mercado inteligente, moderna e pratica para facilitar a rotina da dona de casa."
+  />
+  <link rel="stylesheet" href="/static/acodexialista/styles.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Projeto novo</p>
+        <h1>Acodexialista</h1>
+        <p class="subtitle">
+          Sua lista de mercado inteligente, moderna e feita para facilitar a vida no dia a dia.
+        </p>
+      </div>
+      <div class="hero-actions">
+        <button type="button" id="share-list-btn" class="btn secondary">Compartilhar lista</button>
+        <button type="button" id="reset-list-btn" class="btn danger">Nova lista</button>
+      </div>
+    </header>
+
+    <section class="stats-grid" aria-label="Resumo da lista">
+      <article class="stat-card">
+        <p class="stat-label">Itens na lista</p>
+        <p class="stat-value" id="stat-total">0</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Itens comprados</p>
+        <p class="stat-value" id="stat-done">0</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Previsao de gasto</p>
+        <p class="stat-value" id="stat-budget">R$ 0,00</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Progresso</p>
+        <p class="stat-value" id="stat-progress">0%</p>
+      </article>
+    </section>
+
+    <section class="workspace-grid">
+      <article class="panel">
+        <h2>Adicionar item</h2>
+        <p class="panel-description">Preencha os dados e deixe o Acodexialista organizar tudo para voce.</p>
+
+        <form id="item-form" class="item-form">
+          <label>
+            Nome do item
+            <input
+              id="item-name"
+              name="name"
+              placeholder="Ex: Arroz, sabao em po, banana"
+              autocomplete="off"
+              required
+            />
+          </label>
+
+          <div class="inline-fields">
+            <label>
+              Quantidade
+              <input id="item-quantity" name="quantity" type="number" min="1" value="1" required />
+            </label>
+
+            <label>
+              Unidade
+              <select id="item-unit" name="unit">
+                <option value="un">un</option>
+                <option value="kg">kg</option>
+                <option value="g">g</option>
+                <option value="l">l</option>
+                <option value="ml">ml</option>
+                <option value="pct">pct</option>
+                <option value="cx">cx</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="inline-fields">
+            <label>
+              Categoria
+              <select id="item-category" name="category">
+                <option value="">Auto (inteligente)</option>
+                <option value="Mercearia">Mercearia</option>
+                <option value="Hortifruti">Hortifruti</option>
+                <option value="Limpeza">Limpeza</option>
+                <option value="Higiene">Higiene</option>
+                <option value="Bebidas">Bebidas</option>
+                <option value="Congelados">Congelados</option>
+                <option value="Padaria">Padaria</option>
+                <option value="Outros">Outros</option>
+              </select>
+            </label>
+
+            <label>
+              Prioridade
+              <select id="item-priority" name="priority">
+                <option value="media">Media</option>
+                <option value="alta">Alta</option>
+                <option value="baixa">Baixa</option>
+              </select>
+            </label>
+          </div>
+
+          <label>
+            Preco estimado (R$)
+            <input id="item-price" name="price" type="number" min="0" step="0.01" placeholder="0,00" />
+          </label>
+
+          <label>
+            Observacoes
+            <textarea id="item-note" name="note" rows="2" placeholder="Marca preferida, detalhe da compra..."></textarea>
+          </label>
+
+          <p id="category-hint" class="hint" aria-live="polite"></p>
+
+          <button type="submit" class="btn primary full">Adicionar na lista</button>
+        </form>
+      </article>
+
+      <article class="panel">
+        <h2>Sugestoes inteligentes</h2>
+        <p class="panel-description">
+          Baseado no seu historico e nos itens essenciais para a rotina da casa.
+        </p>
+        <div id="smart-suggestions" class="chips" aria-live="polite"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title-row">
+        <h2>Lista organizada</h2>
+        <button type="button" id="remove-done-btn" class="btn secondary">Remover comprados</button>
+      </div>
+      <div class="filters">
+        <label>
+          Buscar item
+          <input id="search-input" placeholder="Digite para filtrar..." />
+        </label>
+
+        <label>
+          Categoria
+          <select id="filter-category">
+            <option value="all">Todas</option>
+            <option value="Mercearia">Mercearia</option>
+            <option value="Hortifruti">Hortifruti</option>
+            <option value="Limpeza">Limpeza</option>
+            <option value="Higiene">Higiene</option>
+            <option value="Bebidas">Bebidas</option>
+            <option value="Congelados">Congelados</option>
+            <option value="Padaria">Padaria</option>
+            <option value="Outros">Outros</option>
+          </select>
+        </label>
+
+        <label>
+          Status
+          <select id="filter-status">
+            <option value="all">Todos</option>
+            <option value="pending">Pendentes</option>
+            <option value="done">Comprados</option>
+          </select>
+        </label>
+      </div>
+      <div id="list-container" class="list-container"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/acodexialista/app.js" defer></script>
+</body>
+</html>
