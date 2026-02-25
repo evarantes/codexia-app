@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
-from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
+from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY, DB_IS_POSTGRES, DB_IS_SQLITE
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
 from dotenv import load_dotenv
 import os
@@ -606,9 +606,10 @@ def check_db_status():
         with engine.connect() as conn:
             result = conn.execute(text("SELECT 1"))
             return {
-                "status": "connected", 
-                "database_url_configured": "postgres" in os.getenv('DATABASE_URL', ''),
-                "url_prefix": os.getenv('DATABASE_URL', 'sqlite')[:10]
+                "status": "connected",
+                "database": DATABASE_DISPLAY,
+                "is_postgres": DB_IS_POSTGRES,
+                "is_sqlite": DB_IS_SQLITE,
             }
     except Exception as e:
         return {"status": "error", "detail": str(e)}

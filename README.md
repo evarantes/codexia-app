@@ -30,7 +30,8 @@ Use o `Dockerfile` do repositorio:
 
 1. Build pack: `Dockerfile`
 2. Porta exposta: `8000`
-3. Variaveis: `APP_ENV=production`, `PORT=8000`, `SECRET_KEY` (e demais necessarias)
-4. Deploy e acesso: `https://SEU_DOMINIO/acodexialista/`
+3. Banco recomendado: `DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DB`
+4. Variaveis: `APP_ENV=production`, `PORT=8000`, `SECRET_KEY` (e demais necessarias)
+5. Deploy e acesso: `https://SEU_DOMINIO/acodexialista/`
 
 Mais detalhes em `COOLIFY.md`.

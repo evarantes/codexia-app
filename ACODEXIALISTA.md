@@ -43,6 +43,7 @@ Foram adicionados workflows em `.github/workflows`:
 
 1. Conecte o repositorio no Coolify usando o `Dockerfile`.
 2. Exponha a porta `8000`.
-3. Configure variaveis de ambiente (`SECRET_KEY`, `APP_ENV`, `PORT=8000` e demais necessarias).
-4. Realize o deploy.
-5. Abra `https://SEU_DOMINIO/acodexialista/` para ver a previa.
+3. Configure PostgreSQL e defina `DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DB`.
+4. Configure variaveis de ambiente (`SECRET_KEY`, `APP_ENV`, `PORT=8000` e demais necessarias).
+5. Realize o deploy.
+6. Abra `https://SEU_DOMINIO/acodexialista/` para ver a previa.

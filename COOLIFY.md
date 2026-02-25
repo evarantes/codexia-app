@@ -1,72 +1,68 @@
-# Guia de Deploy no Coolify (Migração do Render)
+# Guia de Deploy no Coolify (com PostgreSQL)
 
-Este guia explica como colocar o Codexia para rodar no seu Coolify, substituindo o Render.
+Este guia coloca o sistema no Coolify usando a melhor opcao de banco para producao: **PostgreSQL**.
 
-## 1. Criar o Projeto no Coolify
+## 1) Criar o app no Coolify
 
-1.  No painel do Coolify, vá em **Projects** -> **New Project**.
-2.  Escolha o ambiente (ex: `production`).
-3.  Clique em **+ New Resource**.
-4.  Selecione **Public Repository** (ou Private se você conectou seu GitHub).
-5.  Em **Repository URL**, coloque:
-    `https://github.com/evarantes/codexia-app`
-6.  Clique em **Check Repository**.
-7.  Mantenha o **Build Pack** como `Dockerfile`.
-8.  Clique em **Continue**.
+1. No painel do Coolify, abra **Projects -> New Project**.
+2. Selecione o ambiente (ex: `production`).
+3. Clique em **+ New Resource**.
+4. Selecione o repositorio GitHub.
+5. Em build pack, mantenha **Dockerfile**.
+6. Confirme o caminho: `/Dockerfile`.
 
-## 2. Configurações Importantes (Antes do Deploy)
+## 2) Criar um banco PostgreSQL no Coolify
 
-Vá nas configurações do recurso que acabou de ser criado:
+1. No mesmo projeto, clique em **+ New Resource** novamente.
+2. Escolha **PostgreSQL**.
+3. Defina nome, usuario, senha e database.
+4. Salve e aguarde subir o servico.
 
-### General
-- **Name**: Codexia (ou o que preferir)
-- **Domains**: Configure o domínio que você quer usar (ex: `https://app.seudominio.com` ou use o domínio gratuito do Coolify se disponível).
+> Recomendacao: use PostgreSQL para estabilidade, concorrencia e escalabilidade.
 
-### Build
-- **Dockerfile Path**: `/Dockerfile` (já deve estar correto)
+## 3) Configurar variaveis do app
 
-### Services (Networking / Ports)
-- **Ports Exposes**: `8000`
-  *(O Coolify deve detectar isso automaticamente do Dockerfile, mas confirme).*
+No recurso da aplicacao (web), adicione:
 
-### Storages (Volumes) - **MUITO IMPORTANTE**
-Para não perder o banco de dados e os vídeos quando fizer deploy, você **precisa** configurar um volume persistente.
+| Chave | Exemplo | Descricao |
+|---|---|---|
+| `APP_ENV` | `production` | Modo producao |
+| `PORT` | `8000` | Porta do uvicorn |
+| `SECRET_KEY` | `sua-chave-secreta-forte` | JWT e seguranca |
+| `BASE_URL` | `https://app.seu-dominio.com` | URL publica final |
+| `ADMIN_EMAIL` | `admin@dominio.com` | Admin inicial |
+| `ADMIN_PASSWORD` | `senha-forte` | Senha do admin inicial |
+| `DATABASE_URL` | `postgresql://USER:PASSWORD@HOST:5432/DB` | Conexao com PostgreSQL |
 
-1.  Vá na aba **Storage**.
-2.  Clique em **Add Storage** (ou Edit se já tiver um).
-3.  Preencha:
-    - **Volume Name**: `codexia-data` (ou deixe o automático)
-    - **Destination Path**: `/data` (NÃO use `/data/media` aqui, use apenas `/data`)
-4.  Salve.
+Variaveis opcionais de pool para PostgreSQL:
 
-### Environment Variables (Variáveis de Ambiente)
-Vá na aba **Environment Variables** e adicione:
+| Chave | Padrao |
+|---|---|
+| `DB_POOL_SIZE` | `5` |
+| `DB_MAX_OVERFLOW` | `10` |
+| `DB_POOL_RECYCLE` | `1800` |
 
-| Chave | Valor (Exemplo) | Descrição |
-|-------|-----------------|-----------|
-| `SECRET_KEY` | `sua-chave-super-secreta-aleatoria` | Segurança do JWT. Use uma string longa. |
-| `BASE_URL` | `https://seu-app.coolify.dominio.com` | A URL final do seu app (sem a barra no final). |
-| `ADMIN_EMAIL` | `seu@email.com` | Email para o usuário admin inicial. |
-| `ADMIN_PASSWORD` | `sua-senha-forte` | Senha para o usuário admin inicial. |
-| `APP_ENV` | `production` | Define modo produção. |
-| `PORT` | `8000` | Garante que o uvicorn use a porta certa. |
+## 4) Storage/Volume
 
-### ⚠️ IMPORTANTE: ERRO DE LOGIN (DATABASE_URL)
-Se você estiver migrando do Render, é possível que você tenha copiado a variável `DATABASE_URL` antiga.
-**VOCÊ DEVE DELETAR A VARIÁVEL `DATABASE_URL` NO COOLIFY!**
+Se quiser persistir arquivos gerados (videos/capas), configure volume:
 
-- Se `DATABASE_URL` estiver definida com um endereço do Render (`postgres://...`), o sistema tentará conectar no banco antigo que não existe mais, causando **Erro 500 no Login**.
-- **Solução:** Vá em Environment Variables, encontre `DATABASE_URL` e clique no ícone de lixeira para removê-la. O sistema usará automaticamente o banco local (SQLite) em `/data/vibraface.db`.
+- **Destination Path**: `/data`
 
-## 3. Fazer o Deploy
+Com PostgreSQL, o volume nao e para banco; e apenas para arquivos gerados pela aplicacao.
 
-1.  Clique no botão **Deploy** no canto superior direito.
-2.  Aguarde o build e o start.
-3.  Acompanhe os logs em **Deployments**.
+## 5) Fazer deploy
 
-## 4. Verificar
+1. Clique em **Deploy**.
+2. Aguarde build e start.
+3. Acompanhe logs em **Deployments**.
 
-Acesse a URL que você configurou.
-- O login será o `ADMIN_EMAIL` e `ADMIN_PASSWORD` que você configurou.
-- Seus dados do Render **não** virão automaticamente. Este é um banco novo.
-- Para abrir o projeto Acodexialista, use: `https://seu-dominio/acodexialista/`
+## 6) Verificar
+
+- Health: `https://seu-dominio/health`
+- Health DB: `https://seu-dominio/health/db` (deve indicar PostgreSQL)
+- Acodexialista: `https://seu-dominio/acodexialista/`
+
+## Nota sobre migracao do Render
+
+Se a `DATABASE_URL` antiga do Render estiver invalida, atualize para a URL do PostgreSQL do Coolify.
+Nao apague sem substituir, para evitar fallback para SQLite em producao.
