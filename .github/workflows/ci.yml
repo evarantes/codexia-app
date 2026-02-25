@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validar backend e frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Validar sintaxe Python
+        run: python -m compileall -q app
+
+      - name: Validar sintaxe JavaScript
+        run: node --check app/static/acodexialista/app.js
+
+      - name: Verificar rotas principais
+        run: |
+          python - <<'PY'
+          from app.main import app
+
+          routes = {route.path for route in app.router.routes}
+          required = {"/health", "/acodexialista/", "/acodexialista/styles.css", "/acodexialista/app.js"}
+          missing = required - routes
+
+          if missing:
+              raise SystemExit(f"Rotas obrigatorias ausentes: {sorted(missing)}")
+
+          print("Rotas principais encontradas com sucesso.")
+          PY

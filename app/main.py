@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
@@ -502,9 +502,17 @@ async def serve_app():
     return FileResponse(os.path.join(_STATIC_SERVE, "index.html"))
 
 @app.get("/acodexialista")
+async def serve_acodexialista_redirect():
+    """Mantem compatibilidade e redireciona para a rota com barra final."""
+    return RedirectResponse(url="/acodexialista/", status_code=307)
+
+def _acodexialista_file(filename: str):
+    return os.path.join(_STATIC_SERVE, "acodexialista", filename)
+
+@app.get("/acodexialista/")
 async def serve_acodexialista():
-    """Serve o projeto Acodexialista."""
-    project_index = os.path.join(_STATIC_SERVE, "acodexialista", "index.html")
+    """Serve o projeto Acodexialista (preview principal)."""
+    project_index = _acodexialista_file("index.html")
     if not os.path.exists(project_index):
         return JSONResponse(
             status_code=404,
@@ -515,6 +523,20 @@ async def serve_acodexialista():
             },
         )
     return FileResponse(project_index)
+
+@app.get("/acodexialista/styles.css")
+async def serve_acodexialista_css():
+    css_path = _acodexialista_file("styles.css")
+    if not os.path.exists(css_path):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(css_path, media_type="text/css")
+
+@app.get("/acodexialista/app.js")
+async def serve_acodexialista_js():
+    js_path = _acodexialista_file("app.js")
+    if not os.path.exists(js_path):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(js_path, media_type="application/javascript")
 
 @app.get("/login.html")
 async def read_login():

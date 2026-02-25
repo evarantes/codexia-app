@@ -69,3 +69,4 @@ Se você estiver migrando do Render, é possível que você tenha copiado a vari
 Acesse a URL que você configurou.
 - O login será o `ADMIN_EMAIL` e `ADMIN_PASSWORD` que você configurou.
 - Seus dados do Render **não** virão automaticamente. Este é um banco novo.
+- Para abrir o projeto Acodexialista, use: `https://seu-dominio/acodexialista/`
