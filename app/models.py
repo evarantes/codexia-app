@@ -191,3 +191,88 @@ class ChannelReport(Base):
     # Status
     status = Column(String, default="generated")
 
+class ContentPlan(Base):
+    __tablename__ = "content_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    mode = Column(String) # theme, music
+    theme = Column(String, nullable=True)
+    start_date = Column(DateTime)
+    days = Column(Integer)
+    videos_per_day = Column(Integer)
+    shorts_per_day = Column(Integer)
+    duration_min = Column(Integer)
+    voice_style = Column(String)
+    voice_gender = Column(String)
+    music_file = Column(String, nullable=True) # Caminho do arquivo de música (Modo Música)
+    status = Column(String, default="draft") # draft, confirmed, processing, completed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    videos = relationship("Video", back_populates="plan")
+
+class Video(Base):
+    __tablename__ = "videos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("content_plans.id"), nullable=True)
+    type = Column(String) # LONG, SHORT, TIKTOK
+    title = Column(String)
+    description = Column(Text, nullable=True)
+    tags = Column(String, nullable=True)
+    hashtags = Column(String, nullable=True)
+    duration_sec = Column(Float, nullable=True)
+    status = Column(String, default="queued") # QUEUED, SCRIPT, TTS, VISUALS, RENDER, READY, PUBLISHED, ERROR
+    scheduled_at = Column(DateTime, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    youtube_video_id = Column(String, nullable=True)
+    parent_video_id = Column(Integer, ForeignKey("videos.id"), nullable=True) # For shorts derived from long
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    plan = relationship("ContentPlan", back_populates="videos")
+    scenes = relationship("Scene", back_populates="video", cascade="all, delete-orphan")
+    assets = relationship("Asset", back_populates="video", cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="video", cascade="all, delete-orphan")
+    
+    # Self-referential relationship for shorts
+    parent_video = relationship("Video", remote_side=[id], backref="derived_videos")
+
+class Scene(Base):
+    __tablename__ = "scenes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    video_id = Column(Integer, ForeignKey("videos.id"))
+    idx = Column(Integer)
+    narration_text = Column(Text)
+    visual_prompt = Column(Text)
+    keywords = Column(String)
+    duration_sec = Column(Float)
+    
+    video = relationship("Video", back_populates="scenes")
+
+class Asset(Base):
+    __tablename__ = "assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    video_id = Column(Integer, ForeignKey("videos.id"))
+    kind = Column(String) # AUDIO, IMAGE, CLIP, THUMB, SRT, FINAL
+    storage_key = Column(String) # Path or S3 key
+    meta_json = Column(Text, nullable=True) # JSON with details
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    video = relationship("Video", back_populates="assets")
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    video_id = Column(Integer, ForeignKey("videos.id"))
+    step = Column(String) # script, tts, visuals, render, shorts, metadata
+    status = Column(String, default="pending") # pending, processing, completed, failed
+    progress = Column(Integer, default=0)
+    logs = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    video = relationship("Video", back_populates="jobs")
+

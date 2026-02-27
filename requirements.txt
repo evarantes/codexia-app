@@ -29,3 +29,5 @@ passlib[bcrypt]
 python-jose[cryptography]
 bcrypt
 alembic
+redis
+rq

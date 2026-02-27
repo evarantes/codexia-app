@@ -798,47 +798,56 @@
                             <table class="w-full">
                                 <thead>
                                     <tr class="bg-yellow-50 text-yellow-900">
+                                        <th class="p-3 text-left">Data</th>
+                                        <th class="p-3 text-left">Tipo</th>
                                         <th class="p-3 text-left">Título</th>
-                                        <th class="p-3 text-left">Progresso</th>
-                                        <th class="p-3 text-left">Agendado Para</th>
-                                        <th class="p-3 text-center">Auto Post</th>
                                         <th class="p-3 text-left">Status</th>
+                                        <th class="p-3 text-left">Etapa Atual</th>
+                                        <th class="p-3 text-left">Progresso</th>
                                         <th class="p-3 text-left">Ações</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr v-for="video in productionVideos" :key="video.id" class="border-t border-yellow-100 hover:bg-yellow-50 transition">
-                                        <td class="p-3 font-medium">{{ video.title }}</td>
-                                        <td class="p-3 w-48">
-                                            <div class="w-full bg-gray-200 rounded-full h-2.5">
-                                                <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" :style="{width: (video.progress || 0) + '%'}"></div>
-                                            </div>
-                                            <div class="text-xs text-center mt-1 text-gray-500">{{ video.progress || 0 }}%</div>
-                                        </td>
+                                        <td class="p-3">{{ formatDate(video.created_at) }}</td>
                                         <td class="p-3">
-                                            <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-white">
-                                        </td>
-                                        <td class="p-3 text-center">
-                                             <input type="checkbox" v-model="video.auto_post" class="w-5 h-5 text-yellow-600 rounded focus:ring-yellow-500">
-                                        </td>
-                                        <td class="p-3">
-                                            <span :class="{'bg-yellow-100 text-yellow-800': video.status === 'pending' || video.status === 'queued', 'bg-blue-100 text-blue-800': video.status === 'processing', 'bg-red-100 text-red-800': video.status === 'failed'}" class="px-2 py-1 rounded text-xs font-bold uppercase block text-center">
-                                                {{ translateStatus(video.status) }}
+                                            <span :class="{'bg-blue-100 text-blue-800': video.type === 'LONG', 'bg-purple-100 text-purple-800': video.type === 'SHORT'}" class="px-2 py-1 rounded text-xs font-bold">
+                                                {{ video.type }}
                                             </span>
-                                            <button v-if="video.status === 'failed'" @click="showError(video)" class="block mx-auto mt-1 text-red-500 hover:text-red-700 text-xs underline" title="Clique para ver detalhes do erro">
-                                                Ver Erro
-                                            </button>
+                                        </td>
+                                        <td class="p-3 font-medium">{{ video.title || 'Gerando título...' }}</td>
+                                        <td class="p-3">
+                                            <span :class="getStatusClass(video.status)" class="px-2 py-1 rounded text-xs font-bold">
+                                                {{ video.status }}
+                                            </span>
+                                        </td>
+                                        <td class="p-3 text-sm text-gray-600">{{ video.current_step || '-' }}</td>
+                                        <td class="p-3">
+                                            <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                                                <div class="bg-blue-600 h-2.5 rounded-full" :style="{ width: (video.progress || 0) + '%' }"></div>
+                                            </div>
+                                            <span class="text-xs text-gray-500">{{ video.progress || 0 }}%</span>
                                         </td>
                                         <td class="p-3 flex gap-2">
-                                            <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
-                                            <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
-                                            <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Cancelar/Excluir"><i class="fas fa-trash"></i></button>
+                                            <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800" title="Ver Detalhes/Logs">
+                                                <i class="fas fa-info-circle"></i>
+                                            </button>
+                                            <button v-if="video.status === 'ERROR'" @click="retryVideoStep(video)" class="text-orange-600 hover:text-orange-800" title="Reprocessar">
+                                                <i class="fas fa-redo"></i>
+                                            </button>
+                                            <button v-if="video.status === 'READY'" @click="publishVideo(video)" class="text-red-600 hover:text-red-800" title="Publicar no YouTube">
+                                                <i class="fab fa-youtube"></i>
+                                            </button>
+                                            <button v-if="video.status === 'READY' || video.status === 'PUBLISHED'" @click="downloadVideo(video)" class="text-green-600 hover:text-green-800" title="Baixar Vídeo">
+                                                <i class="fas fa-download"></i>
+                                            </button>
                                         </td>
                                     </tr>
                                 </tbody>
                             </table>
                         </div>
                     </div>
+
 
                     <!-- 2. Ready to Publish (The "Other Field") -->
                     <div class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
@@ -1870,10 +1879,10 @@
                     // Weekly Schedule
                     scheduleMode: 'theme', // theme | music
                     uploadedMusicPath: null,
-                musicTitle: '',
-                musicIsOriginal: false,
-                musicCopyrightText: '',
-                scheduleTheme: '',
+                    musicTitle: '',
+                    musicIsOriginal: false,
+                    musicCopyrightText: '',
+                    scheduleTheme: '',
                     scheduleType: 'days',
                     scheduleQuantity: 7,
                     scheduleVideosPerDay: 1,
@@ -1883,6 +1892,7 @@
                     schedulePlan: [],
                     scheduleLoading: false,
                     scheduledVideos: [],
+                    productionVideos: [], // Moved from computed to data
 
                     // Book Factory Data
                     factoryStep: 1,
@@ -2047,9 +2057,6 @@
                 }
             },
             computed: {
-                productionVideos() {
-                    return this.scheduledVideos.filter(v => ['pending', 'queued', 'processing', 'failed'].includes(v.status));
-                },
                 readyVideos() {
                     return this.scheduledVideos.filter(v => ['completed', 'ready'].includes(v.status));
                 },
@@ -2103,6 +2110,7 @@
                 await this.fetchSettings();
                 await this.fetchCRMData();
                 await this.fetchScheduledVideos();
+                await this.fetchProductionQueue(); // Added
                 await this.fetchReports();
                 await this.fetchYoutubeStats(); // Check YouTube status on load
                 
@@ -2110,6 +2118,7 @@
                 setInterval(() => {
                     if (this.currentTab === 'youtube') {
                         this.fetchScheduledVideos();
+                        this.fetchProductionQueue(); // Added
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
                     }
@@ -2666,94 +2675,143 @@
                     if (this.scheduleMode === 'music') {
                         if (!this.uploadedMusicPath) return alert("Por favor, faça upload de uma música.");
                         if (!this.musicTitle) return alert("Por favor, informe um título para o vídeo.");
-                        
-                        this.scheduleLoading = true;
-                        // Create manual plan for music video
-                        const today = this.scheduleStartDate || new Date().toISOString().split('T')[0];
-                        
-                        let conceptText = 'Vídeo gerado a partir de música: ' + this.musicFilename;
-                        if (this.musicIsOriginal && this.musicCopyrightText) {
-                            conceptText += '\n\n' + this.musicCopyrightText;
-                        }
-
-                        this.schedulePlan = [{
-                            date: today,
-                            theme_of_day: 'Music Video',
-                            videos: [{
-                                title: this.musicTitle,
-                                concept: conceptText,
-                                time: '12:00',
-                                type: 'video',
-                                auto_post: true,
-                                voice_style: this.voiceStyle,
-                                voice_gender: this.voiceGender,
-                                music_file_path: this.uploadedMusicPath,
-                                duration: 5 // Default, will be adjusted by music length in backend
-                            }]
-                        }];
-                        
-                        this.scheduleLoading = false;
-                        return;
+                    } else {
+                        if (!this.scheduleTheme) return alert("Digite um tema!");
                     }
 
-                    if (!this.scheduleTheme) return alert("Digite um tema!");
                     this.scheduleLoading = true;
-                    this.schedulePlan = [];
-                    try {
-                        const res = await this.authFetch('/youtube/schedule/generate', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({
-                                theme: this.scheduleTheme,
-                                duration_type: this.scheduleType,
-                                duration_value: this.scheduleQuantity,
-                                start_date: this.scheduleStartDate || undefined,
-                                videos_per_day: this.scheduleVideosPerDay,
-                                shorts_per_day: this.scheduleShortsPerDay,
-                                video_duration: this.scheduleDuration
-                            })
-                        });
-                        if (res.ok) {
-                            const data = await res.json();
-                            // Corrigido: Mapear 'data.plan' ou 'data.schedule' ou fallback 'data'
-                            this.schedulePlan = data.plan || data.schedule || data;
-                            if (!Array.isArray(this.schedulePlan)) {
-                                 // Se por acaso vier encapsulado de outra forma, tenta achar um array
-                                 if (data.plan && Array.isArray(data.plan)) this.schedulePlan = data.plan;
-                                else if (data.schedule && Array.isArray(data.schedule)) this.schedulePlan = data.schedule;
-                            }
-                            
-                            // Inject default voice settings
-                            if (this.schedulePlan) {
-                                this.schedulePlan.forEach(day => {
-                                    if (day.videos) {
-                                        day.videos.forEach(v => {
-                                            v.voice_style = this.voiceStyle;
-                                            v.voice_gender = this.voiceGender;
-                                        });
-                                    }
-                                    // Fallback for flat structure
-                                    if (day.title && !day.videos) { 
-                                        day.voice_style = this.voiceStyle;
-                                        day.voice_gender = this.voiceGender;
-                                    }
-                                });
-                            }
+                    
+                    const payload = {
+                        mode: this.scheduleMode,
+                        theme: this.scheduleTheme,
+                        music_file: this.uploadedMusicPath,
+                        days: this.scheduleType === 'weeks' ? this.scheduleQuantity * 7 : this.scheduleQuantity,
+                        videos_per_day: this.scheduleVideosPerDay,
+                        shorts_per_day: this.scheduleShortsPerDay,
+                        duration_min: this.scheduleDuration,
+                        start_date: this.scheduleStartDate || new Date().toISOString().split('T')[0],
+                        voice_style: this.voiceStyle,
+                        voice_gender: this.voiceGender
+                    };
 
-                            console.log("Plano gerado:", this.schedulePlan);
-                            
-                            if (this.schedulePlan.length === 0) {
-                                alert("O sistema não gerou nenhum plano. Verifique se sua chave OpenAI está configurada e se os limites de tokens não foram excedidos.");
-                            }
+                    try {
+                        const token = localStorage.getItem('access_token');
+                        const response = await fetch('/api/youtube/auto/plans', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                            },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (response.ok) {
+                            const result = await response.json();
+                            alert(`Planejamento criado e enfileirado! ID: ${result.plan_id}\n\nO sistema está processando os vídeos em segundo plano.`);
+                            this.fetchProductionQueue();
+                            this.schedulePlan = []; 
                         } else {
-                            const errData = await res.json().catch(() => ({}));
-                            alert("Erro ao gerar planejamento: " + (errData.detail || "Erro desconhecido"));
+                            const err = await response.json();
+                            alert("Erro ao criar planejamento: " + (err.detail || err.message || "Erro desconhecido"));
                         }
                     } catch (e) {
-                        alert("Erro: " + e);
+                        console.error(e);
+                        alert("Erro de conexão: " + e.message);
                     } finally {
                         this.scheduleLoading = false;
                     }
+                },
+
+                async fetchProductionQueue() {
+                    try {
+                        const token = localStorage.getItem('token');
+                        const response = await fetch('/api/youtube/auto/queue', {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        if (response.ok) {
+                            const data = await response.json();
+                            this.productionVideos = data;
+                        }
+                    } catch (e) {
+                        console.error("Erro ao buscar fila:", e);
+                    }
+                },
+
+                getStatusClass(status) {
+                    const map = {
+                        'pending': 'bg-gray-100 text-gray-800',
+                        'queued': 'bg-yellow-100 text-yellow-800',
+                        'processing': 'bg-blue-100 text-blue-800',
+                        'completed': 'bg-green-100 text-green-800',
+                        'READY': 'bg-green-100 text-green-800',
+                        'PUBLISHED': 'bg-purple-100 text-purple-800',
+                        'failed': 'bg-red-100 text-red-800',
+                        'ERROR': 'bg-red-100 text-red-800'
+                    };
+                    return map[status] || 'bg-gray-100';
+                },
+
+                formatDate(dateStr) {
+                    if (!dateStr) return '-';
+                    return new Date(dateStr).toLocaleDateString('pt-BR') + ' ' + new Date(dateStr).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
+                },
+
+                async retryVideoStep(video) {
+                    if (!confirm(`Deseja reprocessar a etapa ${video.current_step || 'atual'} deste vídeo?`)) return;
+                    try {
+                        const token = localStorage.getItem('token');
+                        const step = video.current_step || 'script_generate'; 
+                        const response = await fetch(`/api/videos/${video.id}/retry?step=${step}`, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        if (response.ok) {
+                            alert("Reprocessamento iniciado.");
+                            this.fetchProductionQueue();
+                        } else {
+                            const err = await response.json();
+                            alert("Erro: " + err.detail);
+                        }
+                    } catch (e) {
+                        console.error(e);
+                        alert("Erro de conexão.");
+                    }
+                },
+
+                async publishVideo(video) {
+                    if (!confirm(`Publicar "${video.title}" no YouTube agora?`)) return;
+                    try {
+                        const token = localStorage.getItem('token');
+                        const response = await fetch(`/api/videos/${video.id}/publish`, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        const result = await response.json();
+                        if (response.ok) {
+                            alert(`Vídeo publicado com sucesso! ID: ${result.youtube_id}`);
+                            this.fetchProductionQueue();
+                        } else {
+                            alert("Erro ao publicar: " + result.detail);
+                        }
+                    } catch (e) {
+                        alert("Erro de conexão ao publicar.");
+                    }
+                },
+                
+                async downloadVideo(video) {
+                   const token = localStorage.getItem('token');
+                   window.open(`/api/videos/${video.id}/download?token=${token}`, '_blank');
+                },
+                
+                showVideoDetails(video) {
+                    const token = localStorage.getItem('token');
+                    fetch(`/api/videos/${video.id}`, { headers: { 'Authorization': `Bearer ${token}` } })
+                        .then(res => res.json())
+                        .then(data => {
+                             const logs = data.jobs ? data.jobs.map(j => `[${j.step}] ${j.status}: ${j.logs}`).join('\n') : 'Sem logs.';
+                             alert(`Detalhes do Vídeo ${video.id}\nStatus: ${video.status}\n\nLogs:\n${logs}`);
+                        })
+                        .catch(e => alert("Erro ao carregar detalhes: " + e));
                 },
                 async confirmSchedule() {
                     if (!confirm("Isso agendará a produção de " + this.schedulePlan.length + " itens. Continuar?")) return;

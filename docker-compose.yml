@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: codexia-api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://codexia:codexia_password@db:5432/codexia
+      - REDIS_URL=redis://redis:6379/0
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=codexia-assets
+      - YOUTUBE_CLIENT_ID=${YOUTUBE_CLIENT_ID}
+      - YOUTUBE_CLIENT_SECRET=${YOUTUBE_CLIENT_SECRET}
+      - YOUTUBE_REFRESH_TOKEN=${YOUTUBE_REFRESH_TOKEN}
+    depends_on:
+      - db
+      - redis
+      - minio
+    volumes:
+      - codexia_media:/app/app/static
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: codexia-worker
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://codexia:codexia_password@db:5432/codexia
+      - REDIS_URL=redis://redis:6379/0
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=codexia-assets
+      - YOUTUBE_CLIENT_ID=${YOUTUBE_CLIENT_ID}
+      - YOUTUBE_CLIENT_SECRET=${YOUTUBE_CLIENT_SECRET}
+      - YOUTUBE_REFRESH_TOKEN=${YOUTUBE_REFRESH_TOKEN}
+    depends_on:
+      - db
+      - redis
+      - minio
+    volumes:
+      - codexia_media:/app/app/static
+
+  db:
+    image: postgres:15-alpine
+    container_name: codexia-db
+    restart: always
+    environment:
+      - POSTGRES_USER=codexia
+      - POSTGRES_PASSWORD=codexia_password
+      - POSTGRES_DB=codexia
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:alpine
+    container_name: codexia-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: minio/minio
+    container_name: codexia-minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  codexia_media:

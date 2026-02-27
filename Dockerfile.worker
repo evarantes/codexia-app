@@ -1,0 +1,39 @@
+# Use the same base image as the API to ensure compatibility
+FROM python:3.12-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies required for moviepy, imageio, and opencv
+# Added build-essential and python3-dev for compilation support
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3-dev \
+    ffmpeg \
+    imagemagick \
+    libsm6 \
+    libxext6 \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Fix ImageMagick policy to allow PDF/Text operations
+RUN sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml || true
+
+# Copy the requirements file into the container
+COPY requirements.txt .
+
+# Install any needed packages specified in requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the current directory contents into the container at /app
+COPY . .
+
+# Create directory for static files and temp storage
+RUN mkdir -p app/static/videos app/static/covers app/static/icons app/static/temp
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# Run the worker script
+CMD ["python", "app/worker.py"]

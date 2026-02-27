@@ -283,7 +283,15 @@ def create_admin_master():
             db.refresh(tenant)
         user = db.query(User).filter(User.email == admin_email).first()
         if user:
-            return  # Usuário já existe — não alterar senha
+            # Force update password to ensure access recovery
+            print(f"Admin master encontrado. Atualizando senha de {admin_email}...")
+            user.hashed_password = get_password_hash(admin_password)
+            if admin_name:
+                user.name = admin_name
+            user.is_admin = True
+            user.role = "admin"
+            db.commit()
+            return
         user = User(
             email=admin_email,
             name=admin_name,

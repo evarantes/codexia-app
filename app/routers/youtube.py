@@ -7,19 +7,137 @@ from app.services.youtube_service import YouTubeService
 # from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db
-from app.models import ScheduledVideo, ChannelReport, Settings
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-import json
-from datetime import datetime
-from app.services.video_processing import process_scheduled_video
+from app.services.video_factory import VideoFactory
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset
 
 router = APIRouter(
     prefix="/youtube",
     tags=["youtube"],
     responses={404: {"description": "Not found"}},
 )
+
+# --- Video Factory Models & Endpoints ---
+
+class PlanRequest(BaseModel):
+    mode: str = "theme" # theme | music
+    theme: Optional[str] = None
+    days: int = 7
+    videos_per_day: int = 1
+    shorts_per_day: int = 1
+    duration_min: int = 8
+    voice_style: str = "human"
+    voice_gender: str = "female"
+    start_date: str # YYYY-MM-DD
+
+@router.post("/auto/plans")
+def create_content_plan(plan: PlanRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Cria um novo plano de conteúdo e enfileira a geração."""
+    # TODO: Get user_id from auth (using 1 for now as placeholder if no auth)
+    user_id = 1 
+    
+    factory = VideoFactory(db)
+    new_plan = factory.create_plan(plan.dict(), user_id=user_id)
+    
+    # Trigger processing in background (MVP without Redis for now)
+    background_tasks.add_task(process_jobs_background, db)
+    
+    return {"status": "Plan created", "plan_id": new_plan.id, "message": "Vídeos enfileirados para produção."}
+
+@router.get("/auto/plans/{plan_id}")
+def get_content_plan(plan_id: int, db: Session = Depends(get_db)):
+    plan = db.query(ContentPlan).filter(ContentPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan
+
+@router.get("/auto/queue")
+def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
+    """Retorna a fila de produção (vídeos e jobs)."""
+    query = db.query(Video).order_by(Video.scheduled_at.asc())
+    
+    if status:
+        query = query.filter(Video.status == status)
+        
+    videos = query.limit(limit).all()
+    
+    result = []
+    for v in videos:
+        # Get active job
+        active_job = db.query(Job).filter(Job.video_id == v.id).order_by(Job.created_at.desc()).first()
+        result.append({
+            "id": v.id,
+            "title": v.title,
+            "type": v.type,
+            "status": v.status,
+            "scheduled_at": v.scheduled_at,
+            "progress": active_job.progress if active_job else 0,
+            "current_step": active_job.step if active_job else "queued",
+            "logs": active_job.logs if active_job else "",
+            "youtube_id": v.youtube_video_id
+        })
+    
+    return result
+
+@router.post("/videos/{video_id}/retry")
+def retry_video_step(video_id: int, step: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Reinicia uma etapa específica para um vídeo."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+        
+    factory = VideoFactory(db)
+    factory._add_job(video.id, step)
+    
+    background_tasks.add_task(process_jobs_background, db)
+    
+    return {"status": "Job added", "step": step}
+
+@router.post("/videos/{video_id}/publish")
+def publish_video(video_id: int, db: Session = Depends(get_db)):
+    """Publica o vídeo no YouTube (Integração real)."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+        
+    # Check if video is ready
+    if video.status != "READY":
+        raise HTTPException(status_code=400, detail="Video is not ready for publication")
+        
+    # Get Final Asset
+    asset = db.query(Asset).filter(Asset.video_id == video.id, Asset.kind == "FINAL").first()
+    if not asset or not os.path.exists(asset.storage_key):
+        raise HTTPException(status_code=500, detail="Video file not found")
+        
+    # Call YouTube Service
+    try:
+        service = YouTubeService() # Assumes auth is set up
+        # This is a placeholder for the actual upload call
+        # youtube_id = service.upload_video(...)
+        
+        # Simulating upload for now
+        youtube_id = f"yt_{uuid.uuid4().hex[:8]}"
+        
+        video.status = "PUBLISHED"
+        video.published_at = datetime.now()
+        video.youtube_video_id = youtube_id
+        db.commit()
+        
+        return {"status": "Published", "youtube_id": youtube_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/auto/process-job")
+def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Manually trigger job processing (for testing/worker simulation)."""
+    background_tasks.add_task(process_jobs_background, db)
+    return {"status": "Processing triggered"}
+
+def process_jobs_background(db: Session):
+    """Background task to process jobs sequentially."""
+    factory = VideoFactory(db)
+    # Process a few jobs
+    for _ in range(5):
+        factory.process_next_job()
 
 @router.post("/upload-music")
 async def upload_music(file: UploadFile = File(...)):
