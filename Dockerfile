@@ -30,7 +30,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create directory for static files if not exists
-RUN mkdir -p app/static/videos app/static/covers app/static/icons
+RUN mkdir -p app/static/videos app/static/covers app/static/icons && \
+    chmod -R 755 /app && \
+    ls -la /app/app/static
 
 # Make port 8000 available to the world outside this container
 EXPOSE 8000

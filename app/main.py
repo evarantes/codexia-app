@@ -30,6 +30,14 @@ _BASE_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _BASE_DIR / "static"
 _STATIC_SERVE = "/app/app/static" if os.path.isdir("/app/app/static") else str(_STATIC_DIR)
 
+print(f"STARTUP DEBUG: _BASE_DIR={_BASE_DIR}")
+print(f"STARTUP DEBUG: _STATIC_DIR={_STATIC_DIR}")
+print(f"STARTUP DEBUG: _STATIC_SERVE={_STATIC_SERVE}")
+if os.path.exists(_STATIC_SERVE):
+    print(f"STARTUP DEBUG: listing {_STATIC_SERVE}: {os.listdir(_STATIC_SERVE)}")
+else:
+    print(f"STARTUP DEBUG: {_STATIC_SERVE} does not exist!")
+
 # Create tables (não derrubar o processo se o banco estiver inacessível no startup, ex.: Render)
 try:
     Base.metadata.create_all(bind=engine)
@@ -494,13 +502,20 @@ async def root():
     """Serve o painel Vue (index.html) na raiz."""
     index_path = os.path.join(_STATIC_SERVE, "index.html")
     if not os.path.exists(index_path):
+        # Debugging info for 404
+        cwd = os.getcwd()
+        listdir_cwd = os.listdir(cwd) if os.path.exists(cwd) else "cwd not found"
+        listdir_static = os.listdir(_STATIC_SERVE) if os.path.exists(_STATIC_SERVE) else "static_serve not found"
+        
         return JSONResponse(
             status_code=404, 
             content={
                 "error": "index.html not found", 
                 "path": str(index_path), 
-                "cwd": os.getcwd(),
-                "static_serve": _STATIC_SERVE
+                "cwd": cwd,
+                "static_serve": _STATIC_SERVE,
+                "listdir_cwd": listdir_cwd,
+                "listdir_static": listdir_static
             }
         )
     return FileResponse(index_path)
