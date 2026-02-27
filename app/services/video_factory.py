@@ -102,8 +102,9 @@ class VideoFactory:
         """Pega o próximo job pendente e executa. Chamado pelo Worker/Cron (Legado/MVP)."""
         job = self.db.query(Job).filter(Job.status == "pending").order_by(Job.created_at.asc()).first()
         if not job:
-            return None
+            return False
         self.process_job(job)
+        return True
 
     def process_job(self, job: Job):
         """Executa um job específico."""

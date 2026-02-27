@@ -2,13 +2,30 @@ import os
 import glob
 import shutil
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from app.services.youtube_service import YouTubeService
 # from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
-from app.database import get_db
+from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset
+
+def process_jobs_background():
+    """Background task to process video generation jobs."""
+    db = SessionLocal()
+    try:
+        factory = VideoFactory(db)
+        # Process up to 5 jobs per request trigger
+        for _ in range(5):
+            if not factory.process_next_job():
+                break
+    except Exception as e:
+        print(f"Error processing background job: {e}")
+    finally:
+        db.close()
 
 router = APIRouter(
     prefix="/youtube",
@@ -39,7 +56,7 @@ def create_content_plan(plan: PlanRequest, background_tasks: BackgroundTasks, db
     new_plan = factory.create_plan(plan.dict(), user_id=user_id)
     
     # Trigger processing in background (MVP without Redis for now)
-    background_tasks.add_task(process_jobs_background, db)
+    background_tasks.add_task(process_jobs_background)
     
     return {"status": "Plan created", "plan_id": new_plan.id, "message": "Vídeos enfileirados para produção."}
 
@@ -88,7 +105,7 @@ def retry_video_step(video_id: int, step: str, background_tasks: BackgroundTasks
     factory = VideoFactory(db)
     factory._add_job(video.id, step)
     
-    background_tasks.add_task(process_jobs_background, db)
+    background_tasks.add_task(process_jobs_background)
     
     return {"status": "Job added", "step": step}
 
