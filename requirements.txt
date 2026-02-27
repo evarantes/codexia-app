@@ -31,3 +31,5 @@ bcrypt
 alembic
 redis
 rq
+boto3
+minio

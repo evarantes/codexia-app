@@ -24,6 +24,10 @@ class SettingsUpdate(BaseModel):
     youtube_refresh_token: Optional[str] = None
     hotmart_client_id: Optional[str] = None
     hotmart_client_secret: Optional[str] = None
+    # Stock Media & TTS
+    pexels_api_key: Optional[str] = None
+    pixabay_api_key: Optional[str] = None
+    elevenlabs_api_key: Optional[str] = None
 
 @router.get("/")
 def get_settings(db: Session = Depends(get_db)):
@@ -75,6 +79,13 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         settings.hotmart_client_id = settings_update.hotmart_client_id
     if settings_update.hotmart_client_secret is not None:
         settings.hotmart_client_secret = settings_update.hotmart_client_secret
+    
+    if settings_update.pexels_api_key is not None:
+        settings.pexels_api_key = settings_update.pexels_api_key
+    if settings_update.pixabay_api_key is not None:
+        settings.pixabay_api_key = settings_update.pixabay_api_key
+    if settings_update.elevenlabs_api_key is not None:
+        settings.elevenlabs_api_key = settings_update.elevenlabs_api_key
     
     db.commit()
     db.refresh(settings)

@@ -25,6 +25,7 @@ class AIContentGenerator:
         self.anthropic_key = None
         self.mistral_key = None
         self.openrouter_key = None
+        self.elevenlabs_key = None
         self.provider = "openai"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN") # Para MusicGen
 
@@ -33,9 +34,10 @@ class AIContentGenerator:
             self.gemini_key = settings.gemini_api_key
             self.deepseek_key = settings.deepseek_api_key
             self.groq_key = settings.groq_api_key
-            self.anthropic_key = settings.anthropic_api_key
+            self.anthropic_api_key = settings.anthropic_api_key
             self.mistral_key = settings.mistral_api_key
             self.openrouter_key = settings.openrouter_api_key
+            self.elevenlabs_key = settings.elevenlabs_api_key
             self.provider = settings.ai_provider or "openai"
         
         # Fallback to env vars
@@ -46,6 +48,7 @@ class AIContentGenerator:
         if not self.anthropic_key: self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if not self.mistral_key: self.mistral_key = os.getenv("MISTRAL_API_KEY")
         if not self.openrouter_key: self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if not self.elevenlabs_key: self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
 
         # Configure Gemini
         if self.gemini_key:

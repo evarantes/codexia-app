@@ -101,6 +101,11 @@ class Settings(Base):
     hotmart_token_expires_at = Column(DateTime, nullable=True)
     # Suno (música com voz)
     suno_api_key = Column(String, nullable=True)
+    # Stock Media & TTS
+    pexels_api_key = Column(String, nullable=True)
+    pixabay_api_key = Column(String, nullable=True)
+    elevenlabs_api_key = Column(String, nullable=True)
+    
     is_active = Column(Boolean, default=True)
 
 class Customer(Base):

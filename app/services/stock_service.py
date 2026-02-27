@@ -1,11 +1,25 @@
 import os
 import requests
 import random
+from app.database import SessionLocal
+from app.models import Settings
 
 class StockService:
     def __init__(self):
-        self.pexels_api_key = os.getenv('PEXELS_API_KEY')
-        self.pixabay_api_key = os.getenv('PIXABAY_API_KEY')
+        db = SessionLocal()
+        settings = db.query(Settings).first()
+        db.close()
+        
+        self.pexels_api_key = None
+        self.pixabay_api_key = None
+        
+        if settings:
+            self.pexels_api_key = settings.pexels_api_key
+            self.pixabay_api_key = settings.pixabay_api_key
+            
+        # Fallback to env vars
+        if not self.pexels_api_key: self.pexels_api_key = os.getenv('PEXELS_API_KEY')
+        if not self.pixabay_api_key: self.pixabay_api_key = os.getenv('PIXABAY_API_KEY')
 
     def search_image(self, query: str, orientation: str = "landscape"):
         """Search for stock images based on query"""

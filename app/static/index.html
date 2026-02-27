@@ -1666,6 +1666,29 @@
                         <label class="block font-bold mb-2">OpenAI API Key</label>
                         <input v-model="settings.openai_api_key" type="password" class="w-full border p-2 rounded">
                     </div>
+
+                    <!-- Stock Media & TTS Configuration -->
+                    <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4 text-indigo-700">Mídias e Voz (Stock & TTS)</h3>
+                        
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Pexels API Key (Essencial para Visuais)</label>
+                            <input v-model="settings.pexels_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="Sua chave da API do Pexels">
+                            <p class="text-xs text-gray-500 mt-1">Garante vídeos e imagens de alta qualidade. Obtenha em <a href="https://www.pexels.com/api/" target="_blank" class="text-blue-600 underline">Pexels API</a></p>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Pixabay API Key (Backup)</label>
+                            <input v-model="settings.pixabay_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="Sua chave da API do Pixabay">
+                            <p class="text-xs text-gray-500 mt-1">Backup caso o Pexels falhe. Obtenha em <a href="https://pixabay.com/api/docs/" target="_blank" class="text-blue-600 underline">Pixabay API</a></p>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">ElevenLabs API Key (Vozes Ultra-Realistas)</label>
+                            <input v-model="settings.elevenlabs_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
+                            <p class="text-xs text-gray-500 mt-1">Opcional. Se vazio, o sistema usa Edge-TTS (Grátis). Obtenha em <a href="https://elevenlabs.io/" target="_blank" class="text-blue-600 underline">ElevenLabs</a></p>
+                        </div>
+                    </div>
                     <div class="mb-4">
                         <label class="block font-bold mb-2">Mercado Pago Access Token</label>
                         <input v-model="settings.mercadopago_access_token" type="password" class="w-full border p-2 rounded">
@@ -2015,7 +2038,10 @@
                         mercadopago_access_token: '',
                         hotmart_client_id: '',
                         hotmart_client_secret: '',
-                        suno_api_key: ''
+                        suno_api_key: '',
+                        pexels_api_key: '',
+                        pixabay_api_key: '',
+                        elevenlabs_api_key: ''
                     },
                     
                     // Hotmart Auto
