@@ -1,6 +1,8 @@
 import os
 import glob
 import shutil
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
@@ -146,15 +148,8 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
 @router.post("/auto/process-job")
 def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Manually trigger job processing (for testing/worker simulation)."""
-    background_tasks.add_task(process_jobs_background, db)
+    background_tasks.add_task(process_jobs_background)
     return {"status": "Processing triggered"}
-
-def process_jobs_background(db: Session):
-    """Background task to process jobs sequentially."""
-    factory = VideoFactory(db)
-    # Process a few jobs
-    for _ in range(5):
-        factory.process_next_job()
 
 @router.post("/upload-music")
 async def upload_music(file: UploadFile = File(...)):
