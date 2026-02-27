@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
@@ -502,22 +502,34 @@ async def root():
     """Serve o painel Vue (index.html) na raiz."""
     index_path = os.path.join(_STATIC_SERVE, "index.html")
     if not os.path.exists(index_path):
-        # Debugging info for 404
+        # Debugging info for 404 - Return 200 OK to pass health checks and show debug info
         cwd = os.getcwd()
         listdir_cwd = os.listdir(cwd) if os.path.exists(cwd) else "cwd not found"
         listdir_static = os.listdir(_STATIC_SERVE) if os.path.exists(_STATIC_SERVE) else "static_serve not found"
         
-        return JSONResponse(
-            status_code=404, 
-            content={
-                "error": "index.html not found", 
-                "path": str(index_path), 
-                "cwd": cwd,
-                "static_serve": _STATIC_SERVE,
-                "listdir_cwd": listdir_cwd,
-                "listdir_static": listdir_static
-            }
-        )
+        html_content = f"""
+        <html>
+            <body style="font-family: monospace; padding: 20px;">
+                <h1>Codexia System Error</h1>
+                <p>O arquivo <strong>index.html</strong> não foi encontrado.</p>
+                <p>Isso geralmente ocorre se um Volume persistente sobrepôs a pasta estática.</p>
+                <hr>
+                <h3>Debug Info:</h3>
+                <ul>
+                    <li>Base Dir: {_BASE_DIR}</li>
+                    <li>Static Serve Path: {_STATIC_SERVE}</li>
+                    <li>Index Path: {index_path}</li>
+                    <li>CWD: {cwd}</li>
+                </ul>
+                <h3>Conteúdo de {_STATIC_SERVE}:</h3>
+                <pre>{listdir_static}</pre>
+                <h3>Conteúdo de {cwd}:</h3>
+                <pre>{listdir_cwd}</pre>
+            </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content, status_code=200)
+
     return FileResponse(index_path)
 
 @app.get("/app")
