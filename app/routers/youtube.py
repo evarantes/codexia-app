@@ -5,7 +5,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.services.youtube_service import YouTubeService
@@ -40,13 +41,14 @@ router = APIRouter(
 class PlanRequest(BaseModel):
     mode: str = "theme" # theme | music
     theme: Optional[str] = None
+    music_file: Optional[str] = None
     days: int = 7
     videos_per_day: int = 1
     shorts_per_day: int = 1
     duration_min: int = 8
     voice_style: str = "human"
     voice_gender: str = "female"
-    start_date: str # YYYY-MM-DD
+    start_date: str  # YYYY-MM-DD
 
 @router.post("/auto/plans")
 def create_content_plan(plan: PlanRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -144,6 +146,31 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         return {"status": "Published", "youtube_id": youtube_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/videos/{video_id}")
+def get_video_details(video_id: int, db: Session = Depends(get_db)):
+    """Retorna detalhes do vídeo e jobs para a fila de produção."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    jobs = db.query(Job).filter(Job.video_id == video_id).order_by(Job.created_at.desc()).all()
+    return {
+        "id": video.id,
+        "title": video.title,
+        "status": video.status,
+        "jobs": [{"step": j.step, "status": j.status, "logs": j.logs or ""} for j in jobs]
+    }
+
+@router.get("/videos/{video_id}/download")
+def download_video(video_id: int, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """Download do arquivo de vídeo final (para fila de produção)."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    asset = db.query(Asset).filter(Asset.video_id == video.id, Asset.kind == "FINAL").first()
+    if not asset or not os.path.exists(asset.storage_key):
+        raise HTTPException(status_code=404, detail="Video file not found")
+    return FileResponse(asset.storage_key, media_type="video/mp4", filename=os.path.basename(asset.storage_key))
 
 @router.post("/auto/process-job")
 def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):

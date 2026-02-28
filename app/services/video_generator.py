@@ -179,8 +179,8 @@ class VideoGenerator:
             openai_voice = "fable"
         elif style in ["robotic", "robotica", "robótica"]:
             openai_voice = None
-        
-        # 1. Tentar OpenAI TTS (Qualidade Humana Premium)
+
+        # 1. ElevenLabs/OpenAI TTS (ai_service tenta ElevenLabs primeiro, depois OpenAI - quando configurado em Mídias e Voz)
         if openai_voice and self.ai_service and self.ai_service.api_key:
             try:
                 print(f"Tentando OpenAI TTS ({openai_voice})...")
@@ -195,7 +195,7 @@ class VideoGenerator:
             except Exception as e:
                 print(f"OpenAI TTS falhou, tentando fallback: {e}")
 
-        # 2. Edge TTS (Qualidade Natural Gratuita - Microsoft)
+        # 3. Edge TTS (Qualidade Natural Gratuita - Microsoft)
         if style not in ["robotic", "robotica", "robótica"]:
             try:
                 print("Tentando Edge TTS...")
@@ -233,7 +233,7 @@ class VideoGenerator:
             except Exception as e:
                  print(f"Edge TTS falhou: {e}")
 
-        # 3. Fallback gTTS (Robótico)
+        # 4. Fallback gTTS (Robótico)
         try:
             from gtts import gTTS
             print("Tentando Fallback gTTS (Robótico)...")
@@ -365,20 +365,35 @@ class VideoGenerator:
     def _ensure_image_for_scene(self, prompt, text_fallback, aspect_ratio="9:16"):
         """
         Garante que uma imagem seja retornada, tentando múltiplas fontes em ordem de qualidade.
-        1. AI Service (DALL-E / Pollinations Flux)
-        2. Pollinations Simples (Prompt Otimizado)
-        3. Pollinations Genérico (Abstract Background)
-        4. Geração Local (Gradiente - Garantia Final)
+        1. Pexels/Pixabay (Mídias e Voz - conteúdo profissional)
+        2. AI Service (DALL-E / Pollinations Flux)
+        3. Pollinations Simples (Prompt Otimizado)
+        4. Pollinations Genérico (Abstract Background)
+        5. Geração Local (Gradiente - Garantia Final)
         """
-        
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
-        
+
         # Garante prompt
         if not prompt and text_fallback:
-             # Se não tem prompt, cria um baseado no texto
              prompt = f"Cinematic scene representing: {text_fallback[:100]}"
-        
-        # 1. Tentativa Principal (AI Service)
+
+        # 1. Pexels/Pixabay (quando configurado em Mídias e Voz - prioridade para conteúdo profissional)
+        if prompt:
+            try:
+                from app.services.stock_service import StockService
+                stock = StockService()
+                orient = "portrait" if aspect_ratio == "9:16" else "landscape"
+                query = prompt[:80].strip()
+                stock_url = stock.search_image(query, orientation=orient)
+                if stock_url:
+                    path = self.download_image(stock_url)
+                    if path and os.path.exists(path) and os.path.getsize(path) > 1000:
+                        print(f"Stock (Pexels/Pixabay) usado para cena: {query[:30]}...")
+                        return path
+            except Exception as e:
+                print(f"Stock fallback: {e}")
+
+        # 2. Tentativa Principal (AI Service)
         if self.ai_service and prompt:
             try:
                 print(f"Tentativa 1 (IA Principal): {prompt[:30]}...")
@@ -556,8 +571,8 @@ class VideoGenerator:
                     if not image_prompt:
                          image_prompt = f"Scene for {title}, photorealistic, cinematic"
 
-                    # Gerar imagem
-                    img_path = self.generate_image(image_prompt)
+                    # Gerar imagem (usa Pexels/Pixabay primeiro, depois IA)
+                    img_path = self._ensure_image_for_scene(image_prompt, text_fallback=title, aspect_ratio=aspect_ratio)
                     
                     if img_path and os.path.exists(img_path):
                         # Criar clip
@@ -899,15 +914,10 @@ class VideoGenerator:
             for i, scene in enumerate(scenes):
                 text = scene.get("text", "") if isinstance(scene, dict) else str(scene)
                 image_prompt = scene.get("image_prompt", "") if isinstance(scene, dict) else ""
-                bg_image_path = None
-                if self.ai_service and image_prompt:
-                    try:
-                        prompt_suffix = f". Aspect ratio {aspect_ratio}."
-                        image_url = self.ai_service.generate_image(image_prompt + prompt_suffix)
-                        if image_url:
-                            bg_image_path = self.download_image(image_url)
-                    except Exception as e:
-                        print(f"Erro ao gerar imagem cena {i+1}: {e}")
+                # Usa Pexels/Pixabay primeiro, depois IA (Música e Clipe)
+                bg_image_path = self._ensure_image_for_scene(
+                    image_prompt, text_fallback=text[:80], aspect_ratio=aspect_ratio
+                ) if image_prompt else None
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
                 bg_color = bg_colors[i % len(bg_colors)]
                 img = self.create_text_image(self._clean_text(text), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)

@@ -2721,23 +2721,19 @@
                     };
 
                     try {
-                        const token = localStorage.getItem('access_token');
-                        const response = await fetch('/api/youtube/auto/plans', {
+                        const res = await this.authFetch('/youtube/auto/plans', {
                             method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${token}`
-                            },
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(payload)
                         });
 
-                        if (response.ok) {
-                            const result = await response.json();
+                        if (res.ok) {
+                            const result = await res.json();
                             alert(`Planejamento criado e enfileirado! ID: ${result.plan_id}\n\nO sistema está processando os vídeos em segundo plano.`);
                             this.fetchProductionQueue();
                             this.schedulePlan = []; 
                         } else {
-                            const err = await response.json();
+                            const err = await res.json().catch(() => ({}));
                             alert("Erro ao criar planejamento: " + (err.detail || err.message || "Erro desconhecido"));
                         }
                     } catch (e) {
@@ -2750,12 +2746,9 @@
 
                 async fetchProductionQueue() {
                     try {
-                        const token = localStorage.getItem('token');
-                        const response = await fetch('/api/youtube/auto/queue', {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-                        if (response.ok) {
-                            const data = await response.json();
+                        const res = await this.authFetch('/youtube/auto/queue');
+                        if (res.ok) {
+                            const data = await res.json();
                             this.productionVideos = data;
                         }
                     } catch (e) {
@@ -2785,18 +2778,14 @@
                 async retryVideoStep(video) {
                     if (!confirm(`Deseja reprocessar a etapa ${video.current_step || 'atual'} deste vídeo?`)) return;
                     try {
-                        const token = localStorage.getItem('token');
                         const step = video.current_step || 'script_generate'; 
-                        const response = await fetch(`/api/videos/${video.id}/retry?step=${step}`, {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-                        if (response.ok) {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/retry?step=${step}`, { method: 'POST' });
+                        if (res.ok) {
                             alert("Reprocessamento iniciado.");
                             this.fetchProductionQueue();
                         } else {
-                            const err = await response.json();
-                            alert("Erro: " + err.detail);
+                            const err = await res.json().catch(() => ({}));
+                            alert("Erro: " + (err.detail || "Falha ao reprocessar"));
                         }
                     } catch (e) {
                         console.error(e);
@@ -2807,17 +2796,13 @@
                 async publishVideo(video) {
                     if (!confirm(`Publicar "${video.title}" no YouTube agora?`)) return;
                     try {
-                        const token = localStorage.getItem('token');
-                        const response = await fetch(`/api/videos/${video.id}/publish`, {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-                        const result = await response.json();
-                        if (response.ok) {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/publish`, { method: 'POST' });
+                        const result = await res.json().catch(() => ({}));
+                        if (res.ok) {
                             alert(`Vídeo publicado com sucesso! ID: ${result.youtube_id}`);
                             this.fetchProductionQueue();
                         } else {
-                            alert("Erro ao publicar: " + result.detail);
+                            alert("Erro ao publicar: " + (result.detail || "Falha"));
                         }
                     } catch (e) {
                         alert("Erro de conexão ao publicar.");
@@ -2825,13 +2810,12 @@
                 },
                 
                 async downloadVideo(video) {
-                   const token = localStorage.getItem('token');
-                   window.open(`/api/videos/${video.id}/download?token=${token}`, '_blank');
+                   const token = localStorage.getItem('access_token');
+                   window.open(`/youtube/videos/${video.id}/download?token=${token || ''}`, '_blank');
                 },
                 
                 showVideoDetails(video) {
-                    const token = localStorage.getItem('token');
-                    fetch(`/api/videos/${video.id}`, { headers: { 'Authorization': `Bearer ${token}` } })
+                    this.authFetch(`/youtube/videos/${video.id}`)
                         .then(res => res.json())
                         .then(data => {
                              const logs = data.jobs ? data.jobs.map(j => `[${j.step}] ${j.status}: ${j.logs}`).join('\n') : 'Sem logs.';

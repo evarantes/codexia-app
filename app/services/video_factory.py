@@ -245,10 +245,11 @@ class VideoFactory:
             filepath = None
             source_type = "TEXT_PLACEHOLDER"
             
-            # 1. Tentar Stock (se houver keywords)
-            if scene.keywords:
-                job.logs += f"Buscando stock para cena {scene.idx}: {scene.keywords}\n"
-                stock_url = self.stock.search_image(scene.keywords)
+            # 1. Tentar Stock (Pexels/Pixabay) - keywords ou visual_prompt
+            query = (scene.keywords or scene.visual_prompt or "").strip()
+            if query:
+                job.logs += f"Buscando stock (Pexels/Pixabay) para cena {scene.idx}: {query[:50]}...\n"
+                stock_url = self.stock.search_image(query)
                 if stock_url:
                     try:
                         # Download image

@@ -552,7 +552,23 @@ class AIContentGenerator:
 
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
         self._load_config()
-        
+
+        # Prioridade: Pexels/Pixabay (Mídias e Voz) para capas profissionais
+        try:
+            from app.services.stock_service import StockService
+            stock = StockService()
+            query = f"{title} {context[:100]}".strip()
+            if query:
+                urls = []
+                for _ in range(n):
+                    url = stock.search_image(query, orientation="portrait")
+                    if url and url not in urls:
+                        urls.append(url)
+                if urls:
+                    return urls[:n]
+        except Exception as e:
+            print(f"Stock covers fallback: {e}")
+
         # Mock response if no API key (usa chave do banco ou env)
         if not self.api_key:
             colors = ["1e293b", "4f46e5", "059669"]
@@ -1682,21 +1698,48 @@ class AIContentGenerator:
             return None
 
     def generate_audio(self, text, voice="onyx"):
-        """Gera áudio usando OpenAI TTS (Human-like)"""
+        """Gera áudio usando ElevenLabs (prioridade), OpenAI TTS ou fallback."""
         self._load_config()
-        if not self.api_key:
+
+        # 1. ElevenLabs (vozes ultra-realistas) - prioridade quando configurado
+        if self.elevenlabs_key:
+            audio_content = self._generate_audio_elevenlabs(text, voice)
+            if audio_content:
+                return audio_content
+
+        # 2. OpenAI TTS (Human-like)
+        if self.api_key:
+            try:
+                response = openai.audio.speech.create(
+                    model="tts-1",
+                    voice=voice,
+                    input=text
+                )
+                return response.content
+            except Exception as e:
+                print(f"Erro ao gerar áudio OpenAI: {e}")
+
+        return None
+
+    def _generate_audio_elevenlabs(self, text: str, voice_hint: str = "onyx"):
+        """Gera áudio usando ElevenLabs API (vozes ultra-realistas)."""
+        if not self.elevenlabs_key or not text or not text.strip():
             return None
-            
         try:
-            response = openai.audio.speech.create(
-                model="tts-1",
-                voice=voice,
-                input=text
-            )
-            return response.content
+            # Mapeia hints para voice_id do ElevenLabs (Rachel = feminina, Josh = masculino)
+            voice_map = {"nova": "EXAVITQu4vr4xnSDxMaL", "shimmer": "EXAVITQu4vr4xnSDxMaL",
+                         "onyx": "VR6AewLTigWG4xSOukaG", "echo": "VR6AewLTigWG4xSOukaG",
+                         "fable": "EXAVITQu4vr4xnSDxMaL"}
+            voice_id = voice_map.get(voice_hint, "EXAVITQu4vr4xnSDxMaL")
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+            headers = {"xi-api-key": self.elevenlabs_key, "Content-Type": "application/json"}
+            payload = {"text": text[:5000], "model_id": "eleven_multilingual_v2"}
+            r = requests.post(url, json=payload, headers=headers, timeout=30)
+            if r.status_code == 200:
+                return r.content
         except Exception as e:
-            print(f"Erro ao gerar áudio OpenAI: {e}")
-            return None
+            print(f"ElevenLabs TTS error: {e}")
+        return None
 
     def lyrics_to_music_prompt(self, lyrics: str, title: str = "", genre: str = ""):
         """Converte letra em prompt para geração de música instrumental (MusicGen)."""
