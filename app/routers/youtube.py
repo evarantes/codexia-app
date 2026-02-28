@@ -101,17 +101,27 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
 
 @router.post("/videos/{video_id}/retry")
 def retry_video_step(video_id: int, step: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Reinicia uma etapa específica para um vídeo."""
+    """Reinicia uma etapa específica para um vídeo com erro."""
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-        
+
+    # Reset status e progresso para permitir reprocessamento (vídeos em ERROR ficam travados)
+    if video.status == "ERROR":
+        video.status = "queued"
+        video.progress = 0
+
+    # Mapeia nomes do frontend para steps do VideoFactory
+    step_map = {"script_generate": "script"}
+    factory_step = step_map.get(step, step)
+
     factory = VideoFactory(db)
-    factory._add_job(video.id, step)
-    
+    factory._add_job(video.id, factory_step)
+    db.commit()
+
     background_tasks.add_task(process_jobs_background)
-    
-    return {"status": "Job added", "step": step}
+
+    return {"status": "Job added", "step": factory_step}
 
 @router.post("/videos/{video_id}/publish")
 def publish_video(video_id: int, db: Session = Depends(get_db)):

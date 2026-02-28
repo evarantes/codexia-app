@@ -2781,7 +2781,7 @@
                         const step = video.current_step || 'script_generate'; 
                         const res = await this.authFetch(`/youtube/videos/${video.id}/retry?step=${step}`, { method: 'POST' });
                         if (res.ok) {
-                            alert("Reprocessamento iniciado.");
+                            alert("Reprocessamento iniciado. O processamento pode levar alguns minutos. Atualize a fila para ver o progresso.");
                             this.fetchProductionQueue();
                         } else {
                             const err = await res.json().catch(() => ({}));

@@ -24,6 +24,7 @@ class SettingsUpdate(BaseModel):
     youtube_refresh_token: Optional[str] = None
     hotmart_client_id: Optional[str] = None
     hotmart_client_secret: Optional[str] = None
+    suno_api_key: Optional[str] = None
     # Stock Media & TTS
     pexels_api_key: Optional[str] = None
     pixabay_api_key: Optional[str] = None
@@ -79,7 +80,9 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         settings.hotmart_client_id = settings_update.hotmart_client_id
     if settings_update.hotmart_client_secret is not None:
         settings.hotmart_client_secret = settings_update.hotmart_client_secret
-    
+    if settings_update.suno_api_key is not None:
+        settings.suno_api_key = settings_update.suno_api_key
+
     if settings_update.pexels_api_key is not None:
         settings.pexels_api_key = settings_update.pexels_api_key
     if settings_update.pixabay_api_key is not None:
