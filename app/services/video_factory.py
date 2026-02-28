@@ -305,9 +305,11 @@ class VideoFactory:
         # Melhor usar moviepy para MVP ou comando complexo filter_complex
         
         # MVP Rápido: Usar MoviePy (já que o usuário permitiu e está instalado)
-        # É mais seguro para garantir sincronia do que construir comando raw ffmpeg sem testar muito
-        
-        from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
+        # moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
+        try:
+            from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
+        except ImportError:
+            from moviepy import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
         
         clips = []
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
@@ -361,8 +363,11 @@ class VideoFactory:
         # Crop 9:16 e pega 60s aleatórios ou baseados em cenas
         # MVP: Pega 0-60s e corta o centro
         
-        from moviepy.editor import VideoFileClip
-        
+        try:
+            from moviepy.editor import VideoFileClip
+        except ImportError:
+            from moviepy import VideoFileClip
+
         clip = VideoFileClip(parent_asset.storage_key)
         # Corta centro 1080x1920 (ou redimensiona)
         # Se for 1920x1080 (landscape), crop center 607x1080 then resize or just crop
