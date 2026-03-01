@@ -336,6 +336,7 @@ class VideoFactory:
 
             if result and "file_path" in result:
                 output_path = result["file_path"]
+                video_url = result.get("video_url")
                 
                 # Salvar Asset FINAL
                 asset = Asset(
@@ -346,7 +347,10 @@ class VideoFactory:
                 self.db.add(asset)
                 
                 # Atualizar Video
-                video.youtube_video_id = output_path
+                # youtube_video_id deve ser nulo até a publicação real
+                video.youtube_video_id = None 
+                # Salvar a URL para visualização no frontend
+                video.description = (video.description or "") + f"\n\nURL_VIDEO: {video_url}"
                 video.status = "READY"
                 self.db.commit()
                 job.logs += f"Render concluído com sucesso: {output_path}\n"

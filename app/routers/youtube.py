@@ -142,11 +142,32 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
     # Call YouTube Service
     try:
         service = YouTubeService() # Assumes auth is set up
-        # This is a placeholder for the actual upload call
-        # youtube_id = service.upload_video(...)
         
-        # Simulating upload for now
-        youtube_id = f"yt_{uuid.uuid4().hex[:8]}"
+        # Tags e descrição do script se disponível
+        tags = ["motivação", "sucesso"]
+        description = video.description or "Vídeo gerado automaticamente por Codexia."
+        
+        # Tentar extrair tags reais do plano se existirem
+        if video.plan and video.plan.content:
+            try:
+                import json
+                plan_data = json.loads(video.plan.content)
+                if plan_data.get("tags"):
+                    tags = plan_data["tags"]
+            except: pass
+
+        # Upload real
+        upload_result = service.upload_video(
+            asset.storage_key,
+            title=video.title,
+            description=description,
+            tags=tags
+        )
+        
+        if isinstance(upload_result, dict) and upload_result.get("error"):
+            raise Exception(upload_result["error"])
+            
+        youtube_id = upload_result.get("id") if isinstance(upload_result, dict) else str(upload_result)
         
         video.status = "PUBLISHED"
         video.published_at = datetime.now()
@@ -155,7 +176,9 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         
         return {"status": "Published", "youtube_id": youtube_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        video.status = "ERROR"
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Erro no upload: {str(e)}")
 
 @router.get("/videos/{video_id}")
 def get_video_details(video_id: int, db: Session = Depends(get_db)):
