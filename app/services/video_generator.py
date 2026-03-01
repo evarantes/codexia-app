@@ -457,6 +457,26 @@ class VideoGenerator:
         print("Tentativa 4 (Geração Local - Gradiente)...")
         return self._generate_fallback_background((width, height))
 
+    def _set_clip_duration(self, clip, duration):
+        """Compatível com MoviePy 1.x (set_duration) e 2.x (with_duration)."""
+        if hasattr(clip, "with_duration"):
+            return clip.with_duration(duration)
+        return clip.set_duration(duration)
+
+    def _set_clip_audio(self, clip, audio_clip):
+        """Compatível com MoviePy 1.x (set_audio) e 2.x (with_audio)."""
+        if hasattr(clip, "with_audio"):
+            return clip.with_audio(audio_clip)
+        return clip.set_audio(audio_clip)
+
+    def _subclip(self, clip, start_t, end_t):
+        """Compatível com MoviePy 1.x (subclip) e 2.x (subclipped)."""
+        if hasattr(clip, "subclip"):
+            return clip.subclip(start_t, end_t)
+        if hasattr(clip, "subclipped"):
+            return clip.subclipped(start_t, end_t)
+        raise AttributeError("Objeto de clip sem subclip/subclipped")
+
     def _apply_ken_burns(self, clip, size, zoom_factor=1.15):
         """
         Aplica efeito suave de zoom (Ken Burns) em um ImageClip.
@@ -472,7 +492,10 @@ class VideoGenerator:
             # Aplica o resize animado e centraliza
             # Nota: Isso pode ser custoso para processar. Se der timeout, simplificar.
             # Alternativa mais leve: Apenas um crop variável se a imagem for maior que o vídeo
-            return clip.resized(resize_func).with_position('center')
+            zoomed = clip.resized(resize_func) if hasattr(clip, "resized") else clip.resize(resize_func)
+            if hasattr(zoomed, "with_position"):
+                return zoomed.with_position('center')
+            return zoomed.set_position('center')
         except Exception as e:
             print(f"Erro ao aplicar Ken Burns: {e}")
             return clip
@@ -576,12 +599,15 @@ class VideoGenerator:
                     
                     if img_path and os.path.exists(img_path):
                         # Criar clip
-                        clip = ImageClip(img_path).set_duration(duration)
-                        clip = self.apply_ken_burns(clip, width=video_size[0], height=video_size[1])
+                        clip = self._set_clip_duration(ImageClip(img_path), duration)
+                        clip = self._apply_ken_burns(clip, video_size)
                         clips.append(clip)
                     else:
                         # Fallback image
-                        color_clip = ImageClip(np.zeros((video_size[1], video_size[0], 3), dtype=np.uint8)).set_duration(duration)
+                        color_clip = self._set_clip_duration(
+                            ImageClip(np.zeros((video_size[1], video_size[0], 3), dtype=np.uint8)),
+                            duration
+                        )
                         clips.append(color_clip)
                 
                 # Concatenar clips visuais
@@ -593,12 +619,12 @@ class VideoGenerator:
                     # Preferência: Vídeo segue o áudio (mas o plano visual já foi calculado para bater aprox.)
                     
                     if final_video.duration > main_audio.duration:
-                        final_video = final_video.subclip(0, main_audio.duration)
+                        final_video = self._subclip(final_video, 0, main_audio.duration)
                     else:
                         # Se vídeo ficou menor (arredondamentos), corta o áudio
-                        main_audio = main_audio.subclip(0, final_video.duration)
+                        main_audio = self._subclip(main_audio, 0, final_video.duration)
                         
-                    final_video = final_video.set_audio(main_audio)
+                    final_video = self._set_clip_audio(final_video, main_audio)
                     
                     # Exportar
                     output_filename = f"music_video_{uuid.uuid4().hex}.mp4"

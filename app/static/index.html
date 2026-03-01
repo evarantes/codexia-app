@@ -832,13 +832,13 @@
                                             <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800" title="Ver Detalhes/Logs">
                                                 <i class="fas fa-info-circle"></i>
                                             </button>
-                                            <button v-if="video.status === 'ERROR'" @click="retryVideoStep(video)" class="text-orange-600 hover:text-orange-800" title="Reprocessar">
+                                            <button v-if="['ERROR', 'FAILED', 'failed'].includes(video.status)" @click="retryVideoStep(video)" class="text-orange-600 hover:text-orange-800" title="Reprocessar">
                                                 <i class="fas fa-redo"></i>
                                             </button>
-                                            <button v-if="video.status === 'READY'" @click="publishVideo(video)" class="text-red-600 hover:text-red-800" title="Publicar no YouTube">
+                                            <button v-if="video.status === 'READY' || video.status === 'ready'" @click="publishVideo(video)" class="text-red-600 hover:text-red-800" title="Publicar no YouTube">
                                                 <i class="fab fa-youtube"></i>
                                             </button>
-                                            <button v-if="video.status === 'READY' || video.status === 'PUBLISHED'" @click="downloadVideo(video)" class="text-green-600 hover:text-green-800" title="Baixar Vídeo">
+                                            <button v-if="['READY', 'ready', 'PUBLISHED', 'published'].includes(video.status)" @click="downloadVideo(video)" class="text-green-600 hover:text-green-800" title="Baixar Vídeo">
                                                 <i class="fas fa-download"></i>
                                             </button>
                                         </td>
@@ -2778,8 +2778,10 @@
                 async retryVideoStep(video) {
                     if (!confirm(`Deseja reprocessar a etapa ${video.current_step || 'atual'} deste vídeo?`)) return;
                     try {
-                        const step = video.current_step || 'script_generate'; 
-                        const res = await this.authFetch(`/youtube/videos/${video.id}/retry?step=${step}`, { method: 'POST' });
+                        const rawStep = (video.current_step || '').toLowerCase().trim();
+                        const validSteps = ['script', 'script_generate', 'tts', 'visuals', 'render', 'shorts_extract'];
+                        const step = validSteps.includes(rawStep) ? rawStep : 'script_generate';
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/retry?step=${encodeURIComponent(step)}`, { method: 'POST' });
                         if (res.ok) {
                             alert("Reprocessamento iniciado. O processamento pode levar alguns minutos. Atualize a fila para ver o progresso.");
                             this.fetchProductionQueue();

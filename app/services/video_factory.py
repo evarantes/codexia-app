@@ -98,6 +98,42 @@ class VideoFactory:
             except Exception as e:
                 print(f"Erro ao enfileirar job {job.id}: {e}")
 
+    def _clip_with_duration(self, clip, duration):
+        """Compatibilidade MoviePy 1.x/2.x."""
+        if hasattr(clip, "with_duration"):
+            return clip.with_duration(duration)
+        return clip.set_duration(duration)
+
+    def _clip_with_audio(self, clip, audio_clip):
+        """Compatibilidade MoviePy 1.x/2.x."""
+        if hasattr(clip, "with_audio"):
+            return clip.with_audio(audio_clip)
+        return clip.set_audio(audio_clip)
+
+    def _clip_subclip(self, clip, start_t, end_t):
+        """Compatibilidade MoviePy 1.x/2.x."""
+        if hasattr(clip, "subclip"):
+            return clip.subclip(start_t, end_t)
+        if hasattr(clip, "subclipped"):
+            return clip.subclipped(start_t, end_t)
+        raise AttributeError("Clip sem subclip/subclipped")
+
+    def _clip_crop(self, clip, **kwargs):
+        """Compatibilidade MoviePy 1.x/2.x para crop."""
+        if hasattr(clip, "crop"):
+            return clip.crop(**kwargs)
+        if hasattr(clip, "cropped"):
+            return clip.cropped(**kwargs)
+        raise AttributeError("Clip sem crop/cropped")
+
+    def _clip_resize(self, clip, size):
+        """Compatibilidade MoviePy 1.x/2.x para resize."""
+        if hasattr(clip, "resized"):
+            return clip.resized(size)
+        if hasattr(clip, "resize"):
+            return clip.resize(size)
+        raise AttributeError("Clip sem resize/resized")
+
     def process_next_job(self):
         """Pega o próximo job pendente e executa. Chamado pelo Worker/Cron (Legado/MVP)."""
         job = self.db.query(Job).filter(Job.status == "pending").order_by(Job.created_at.asc()).first()
@@ -218,12 +254,15 @@ class VideoFactory:
     def _step_tts(self, video: Video, job: Job):
         plan = video.plan
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
-        
+        if not scenes:
+            raise Exception("Nenhuma cena encontrada para gerar áudio.")
+
+        generated_audio = 0
         for scene in scenes:
             audio_path = self.video_gen.generate_audio(
                 scene.narration_text, 
-                voice_style=plan.voice_style, 
-                voice_gender=plan.voice_gender
+                voice_style=(plan.voice_style if plan else "human"),
+                voice_gender=(plan.voice_gender if plan else "female")
             )
             if audio_path:
                 asset = Asset(
@@ -233,9 +272,12 @@ class VideoFactory:
                     meta_json=json.dumps({"scene_idx": scene.idx})
                 )
                 self.db.add(asset)
+                generated_audio += 1
         
         self.db.commit()
-        job.logs += f"{len(scenes)} áudios gerados.\n"
+        if generated_audio == 0:
+            raise Exception("Falha ao gerar narração: nenhum áudio foi criado.")
+        job.logs += f"{generated_audio}/{len(scenes)} áudios gerados.\n"
 
     def _step_visuals(self, video: Video, job: Job):
         job.logs += "Iniciando geração de visuais...\n"
@@ -312,21 +354,25 @@ class VideoFactory:
             from moviepy import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
         
         clips = []
+        final_video = None
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         
-        for scene in scenes:
-            audio_asset = audio_assets.get(scene.idx)
-            image_asset = image_assets.get(scene.idx)
-            
-            if audio_asset and image_asset:
-                audio_clip = AudioFileClip(audio_asset.storage_key)
-                duration = audio_clip.duration
+        try:
+            for scene in scenes:
+                audio_asset = audio_assets.get(scene.idx)
+                image_asset = image_assets.get(scene.idx)
                 
-                img_clip = ImageClip(image_asset.storage_key).set_duration(duration)
-                img_clip = img_clip.set_audio(audio_clip)
-                clips.append(img_clip)
-        
-        if clips:
+                if audio_asset and image_asset:
+                    audio_clip = AudioFileClip(audio_asset.storage_key)
+                    duration = audio_clip.duration
+                    
+                    img_clip = self._clip_with_duration(ImageClip(image_asset.storage_key), duration)
+                    img_clip = self._clip_with_audio(img_clip, audio_clip)
+                    clips.append(img_clip)
+
+            if not clips:
+                raise Exception("Sem clips para renderizar (áudio/imagem ausentes).")
+
             final_video = concatenate_videoclips(clips, method="compose")
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
@@ -345,8 +391,19 @@ class VideoFactory:
             video.youtube_video_id = output_path # Temporário: guarda o path
             self.db.commit()
             job.logs += f"Render concluído: {output_path}\n"
-        else:
-            job.logs += "Sem clips para renderizar.\n"
+        finally:
+            try:
+                if final_video:
+                    final_video.close()
+            except Exception:
+                pass
+            for c in clips:
+                try:
+                    if getattr(c, "audio", None):
+                        c.audio.close()
+                    c.close()
+                except Exception:
+                    pass
 
     def _step_shorts_extract(self, video: Video, job: Job):
         # Pega o vídeo pai
@@ -368,41 +425,52 @@ class VideoFactory:
         except ImportError:
             from moviepy import VideoFileClip
 
-        clip = VideoFileClip(parent_asset.storage_key)
-        # Corta centro 1080x1920 (ou redimensiona)
-        # Se for 1920x1080 (landscape), crop center 607x1080 then resize or just crop
-        
-        # Crop para 9:16
-        w, h = clip.size
-        target_ratio = 9/16
-        
-        # Se for landscape, a altura é o limitante se quisermos preencher tudo, mas perderemos laterais
-        # Melhor estratégia simples: Cortar um quadrado central ou retângulo vertical
-        
-        new_w = h * target_ratio # 1080 * 9/16 = 607.5
-        if new_w > w:
-            new_w = w
+        clip = None
+        cropped = None
+        resized = None
+        final_short = None
+        try:
+            clip = VideoFileClip(parent_asset.storage_key)
+            # Corta centro 1080x1920 (ou redimensiona)
+            # Se for 1920x1080 (landscape), crop center 607x1080 then resize or just crop
             
-        x_center = w / 2
-        y_center = h / 2
-        
-        cropped = clip.crop(x1=x_center - new_w/2, y1=0, width=new_w, height=h)
-        resized = cropped.resize((1080, 1920))
-        
-        # Pega subclip de 60s
-        duration = min(clip.duration, 60)
-        final_short = resized.subclip(0, duration)
-        
-        output_filename = f"short_{video.id}.mp4"
-        output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
-        
-        final_short.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
-        
-        asset = Asset(
-            video_id=video.id,
-            kind="FINAL",
-            storage_key=output_path
-        )
-        self.db.add(asset)
-        self.db.commit()
-        job.logs += f"Short renderizado: {output_path}\n"
+            # Crop para 9:16
+            w, h = clip.size
+            target_ratio = 9/16
+            
+            # Se for landscape, a altura é o limitante se quisermos preencher tudo, mas perderemos laterais
+            # Melhor estratégia simples: Cortar um quadrado central ou retângulo vertical
+            
+            new_w = h * target_ratio # 1080 * 9/16 = 607.5
+            if new_w > w:
+                new_w = w
+                
+            x_center = w / 2
+            
+            cropped = self._clip_crop(clip, x1=x_center - new_w/2, y1=0, width=new_w, height=h)
+            resized = self._clip_resize(cropped, (1080, 1920))
+            
+            # Pega subclip de 60s
+            duration = min(clip.duration, 60)
+            final_short = self._clip_subclip(resized, 0, duration)
+            
+            output_filename = f"short_{video.id}.mp4"
+            output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
+            
+            final_short.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+            
+            asset = Asset(
+                video_id=video.id,
+                kind="FINAL",
+                storage_key=output_path
+            )
+            self.db.add(asset)
+            self.db.commit()
+            job.logs += f"Short renderizado: {output_path}\n"
+        finally:
+            for c in (final_short, resized, cropped, clip):
+                try:
+                    if c:
+                        c.close()
+                except Exception:
+                    pass

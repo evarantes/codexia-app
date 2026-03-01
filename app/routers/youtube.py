@@ -106,14 +106,21 @@ def retry_video_step(video_id: int, step: str, background_tasks: BackgroundTasks
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Reset status e progresso para permitir reprocessamento (vídeos em ERROR ficam travados)
-    if video.status == "ERROR":
+    # Reset status para permitir reprocessamento (vídeos em erro ficam travados)
+    if (video.status or "").upper() in {"ERROR", "FAILED"}:
         video.status = "queued"
-        video.progress = 0
 
     # Mapeia nomes do frontend para steps do VideoFactory
-    step_map = {"script_generate": "script"}
-    factory_step = step_map.get(step, step)
+    raw_step = (step or "").strip().lower()
+    step_map = {
+        "script_generate": "script",
+        "queued": "script",
+        "error": "script",
+    }
+    factory_step = step_map.get(raw_step, raw_step)
+    valid_steps = {"script", "tts", "visuals", "render", "shorts_extract"}
+    if factory_step not in valid_steps:
+        factory_step = "script"
 
     factory = VideoFactory(db)
     factory._add_job(video.id, factory_step)
@@ -576,10 +583,16 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     
     db.commit()
     
-    # Iniciar processamento em background (apenas para os primeiros 2 para não sobrecarregar)
-    # Mas como usamos APScheduler agora, apenas deixamos como 'queued' e o scheduler pega.
-    # Se quiser forçar start imediato de 1:
-    # background_tasks.add_task(process_scheduled_video, saved_videos[0].id)
+    # Kickoff imediato do primeiro item para não depender exclusivamente do scheduler
+    # (evita sensação de "não está gerando").
+    if saved_videos:
+        try:
+            processing = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").first()
+            if not processing:
+                from app.services.video_processing import process_scheduled_video
+                background_tasks.add_task(process_scheduled_video, saved_videos[0].id)
+        except Exception as e:
+            print(f"Erro ao iniciar geração imediata: {e}")
     
     return {"message": "Schedule saved", "count": len(saved_videos)}
 
@@ -606,12 +619,46 @@ def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, d
         except Exception as e:
             print(f"Erro ao limpar cache do script: {e}")
 
+    # IMPORTANTE: força regeneração real.
+    # Sem limpar video_url, o processador interpreta como "já pronto" e só recupera status.
+    old_video_url = (video.video_url or "").strip()
+    if old_video_url:
+        try:
+            from app.config import absolute_path_for_video
+            old_abs_path = absolute_path_for_video(old_video_url)
+            if old_abs_path and os.path.exists(old_abs_path):
+                os.remove(old_abs_path)
+        except Exception as e:
+            print(f"Erro ao remover vídeo antigo ({old_video_url}): {e}")
+
+    # Limpar metadados de publicação/arquivo para que "Regerar" não reutilize artefatos antigos
+    video.video_url = None
+    video.youtube_video_id = None
+    video.uploaded_at = None
+
+    # Limpa marcadores de erro sistêmico antigos para não poluir UI após retry
+    if video.description:
+        markers = ("[ERRO]", "[SISTEMA]", "[UPLOAD_ERRO]")
+        cleaned_lines = [ln for ln in video.description.splitlines() if not any(m in ln for m in markers)]
+        video.description = "\n".join(cleaned_lines).strip()
+
     video.status = "queued"
     video.progress = 0 # Reset progress
     db.commit()
     
-    # background_tasks.add_task(process_scheduled_video, video_id)
-    # Não iniciar imediatamente para respeitar a fila sequencial
+    # Dispara tentativa imediata quando a fila está livre.
+    # Se já houver um item processando, o scheduler assume o próximo ciclo.
+    try:
+        processing = db.query(ScheduledVideo).filter(
+            ScheduledVideo.status == "processing",
+            ScheduledVideo.id != video.id
+        ).first()
+        if not processing:
+            from app.services.video_processing import process_scheduled_video
+            background_tasks.add_task(process_scheduled_video, video_id)
+    except Exception as e:
+        print(f"Erro ao iniciar regeneração imediata do vídeo {video_id}: {e}")
+
     return {"status": "queued"}
 
 @router.post("/schedule/{video_id}/regenerate")
