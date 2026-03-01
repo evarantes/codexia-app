@@ -88,9 +88,23 @@ class VideoGenerator:
         
         # Tenta carregar uma fonte padrão, senão usa padrão
         try:
-            # Tenta arial ou outra fonte do sistema se possível
-            # Reduzido tamanho para 40 para ser mais elegante
-            font = ImageFont.truetype("arial.ttf", 40)
+            # Tenta fontes comuns no Linux se arial falhar
+            font_paths = [
+                "arial.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+                "DejaVuSans.ttf"
+            ]
+            font = None
+            for path in font_paths:
+                try:
+                    font = ImageFont.truetype(path, 40)
+                    break
+                except:
+                    continue
+            if not font:
+                font = ImageFont.load_default()
         except:
             font = ImageFont.load_default()
 
@@ -574,7 +588,7 @@ class VideoGenerator:
                     # Gerar imagem (usa Pexels/Pixabay primeiro, depois IA)
                     img_path = self._ensure_image_for_scene(image_prompt, text_fallback=title, aspect_ratio=aspect_ratio)
                     
-                    if img_path and os.path.exists(img_path):
+                    if img_path and os.path.exists(img_path) and os.path.getsize(img_path) > 0:
                         # Criar clip
                         clip = ImageClip(img_path).set_duration(duration)
                         clip = self.apply_ken_burns(clip, width=video_size[0], height=video_size[1])
@@ -703,11 +717,10 @@ class VideoGenerator:
                 audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
                 
                 # Gerar Imagem
-                img_scene = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                img_array = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
                 
                 # Cria clip da cena
-                # ImageClip precisa estar disponível no escopo (garantido pelo import no início da função)
-                clip_scene = ImageClip(img_scene)
+                clip_scene = ImageClip(img_array)
                 
                 if audio_path:
                     audio_clip_scene = AudioFileClip(audio_path)
@@ -859,7 +872,7 @@ class VideoGenerator:
             print(f"Renderizando vídeo para: {output_path}")
             final_clip.write_videofile(
                 output_path, fps=24, codec="libx264", audio_codec="aac", threads=1,
-                ffmpeg_params=["-preset", "ultrafast"],
+                preset="ultrafast",
                 **logger_kw
             )
             
