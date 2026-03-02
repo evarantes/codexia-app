@@ -868,8 +868,7 @@
                                     <tr v-for="video in readyVideos" :key="`${video._source || 'scheduled'}-${video.id}`" class="border-t border-green-100 hover:bg-green-50 transition">
                                         <td class="p-3 font-medium">{{ video.title }}</td>
                                         <td class="p-3">
-                                            <input v-if="(video._source || 'scheduled') === 'scheduled'" type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-white">
-                                            <span v-else class="text-sm text-gray-500">Produzido agora</span>
+                                            <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-white">
                                         </td>
                                         <td class="p-3 text-center">
                                              <input v-if="(video._source || 'scheduled') === 'scheduled'" type="checkbox" v-model="video.auto_post" class="w-5 h-5 text-green-600 rounded focus:ring-green-500">
@@ -882,16 +881,18 @@
                                         </td>
                                         <td class="p-3 flex gap-2 flex-wrap">
                                             <template v-if="(video._source || 'scheduled') === 'production'">
-                                                <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800 p-2" title="Ver Detalhes/Logs"><i class="fas fa-info-circle"></i></button>
+                                                <button @click="watchProductionVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-play"></i> Visualizar</button>
+                                                <button @click="saveProductionVideoSchedule(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Agendar publicação"><i class="fas fa-calendar-check"></i> Agendar</button>
                                                 <button @click="publishVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
-                                                <button @click="downloadVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Baixar"><i class="fas fa-download"></i></button>
+                                                <button @click="regenerateProductionVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Refazer vídeo"><i class="fas fa-sync"></i> Refazer</button>
+                                                <button @click="deleteProductionVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir vídeo"><i class="fas fa-trash"></i> Excluir</button>
                                             </template>
                                             <template v-else>
-                                                <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
-                                                <button v-if="['completed', 'ready', 'READY', 'COMPLETED'].includes(video.status)" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                                <button @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-play"></i> Visualizar</button>
+                                                <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Agendar publicação"><i class="fas fa-calendar-check"></i> Agendar</button>
                                                 <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
-                                                <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
-                                                <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
+                                                <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Refazer vídeo"><i class="fas fa-sync"></i> Refazer</button>
+                                                <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir vídeo"><i class="fas fa-trash"></i> Excluir</button>
                                             </template>
                                         </td>
                                     </tr>
@@ -2093,17 +2094,10 @@
             },
             computed: {
                 productionQueueVideos() {
-                    return this.productionVideos.filter(v => !['ready'].includes((v.status || '').toLowerCase()));
+                    return this.productionVideos.filter(v => !['ready', 'published'].includes((v.status || '').toLowerCase()));
                 },
                 productionReadyVideos() {
-                    return this.productionVideos
-                        .filter(v => ['ready'].includes((v.status || '').toLowerCase()))
-                        .map(v => ({
-                            ...v,
-                            _source: 'production',
-                            scheduled_for_local: '',
-                            auto_post: false
-                        }));
+                    return this.productionVideos.filter(v => ['ready'].includes((v.status || '').toLowerCase()));
                 },
                 readyVideos() {
                     const scheduledReady = this.scheduledVideos
@@ -2776,13 +2770,28 @@
 
                 async fetchProductionQueue() {
                     try {
-                        const res = await this.authFetch('/youtube/auto/queue');
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.productionVideos = data;
+                        const [queueRes, readyRes] = await Promise.all([
+                            this.authFetch('/youtube/auto/queue?limit=500'),
+                            this.authFetch('/youtube/auto/queue?status=READY&limit=500')
+                        ]);
+                        if (queueRes.ok) {
+                            const queueData = await queueRes.json();
+                            const readyData = readyRes.ok ? await readyRes.json() : [];
+                            const merged = [...queueData, ...readyData];
+                            const byId = new Map();
+                            for (const item of merged) byId.set(item.id, item);
+                            this.productionVideos = Array.from(byId.values()).map(v => ({
+                                ...v,
+                                _source: 'production',
+                                scheduled_for_local: v.scheduled_at ? String(v.scheduled_at).slice(0, 16) : '',
+                                auto_post: false
+                            }));
+                        } else {
+                            this.productionVideos = [];
                         }
                     } catch (e) {
                         console.error("Erro ao buscar fila:", e);
+                        this.productionVideos = [];
                     }
                 },
 
@@ -2833,6 +2842,70 @@
                 },
                 buildScheduledDownloadUrl(videoId) {
                     return this.appendTokenToInternalUrl(`/youtube/schedule/${videoId}/download`);
+                },
+                buildProductionWatchUrl(videoId) {
+                    return this.appendTokenToInternalUrl(`/youtube/videos/${videoId}/watch`);
+                },
+                watchProductionVideo(video) {
+                    if (!video || !video.id) {
+                        alert("Vídeo inválido para visualização.");
+                        return;
+                    }
+                    window.open(this.buildProductionWatchUrl(video.id), '_blank');
+                },
+                async saveProductionVideoSchedule(video) {
+                    if (!video || !video.id) return;
+                    if (!video.scheduled_for_local) {
+                        alert("Defina data e hora para agendar a publicação.");
+                        return;
+                    }
+                    try {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/schedule`, {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ scheduled_at: video.scheduled_for_local })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert("Agendamento salvo com sucesso!");
+                            this.fetchProductionQueue();
+                        } else {
+                            alert(data.detail || "Erro ao salvar agendamento.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao salvar agendamento: " + (e.message || e));
+                    }
+                },
+                async regenerateProductionVideo(video) {
+                    if (!video || !video.id) return;
+                    if (!confirm("Deseja refazer este vídeo? O material atual será substituído.")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/regenerate`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Vídeo reenfileirado para regeneração.");
+                            this.fetchProductionQueue();
+                        } else {
+                            alert(data.detail || "Erro ao refazer vídeo.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao refazer vídeo: " + (e.message || e));
+                    }
+                },
+                async deleteProductionVideo(video) {
+                    if (!video || !video.id) return;
+                    if (!confirm("Tem certeza que deseja excluir este vídeo?")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}`, { method: 'DELETE' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            this.fetchProductionQueue();
+                        } else {
+                            alert(data.detail || "Erro ao excluir vídeo.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao excluir vídeo: " + (e.message || e));
+                    }
                 },
 
                 async retryVideoStep(video) {

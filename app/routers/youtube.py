@@ -13,7 +13,7 @@ from app.services.youtube_service import YouTubeService
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene
 
 def process_jobs_background():
     """Background task to process video generation jobs."""
@@ -277,6 +277,104 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
             raise
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.put("/videos/{video_id}/schedule")
+def schedule_production_video(video_id: int, data: Dict[str, Any], db: Session = Depends(get_db)):
+    """Atualiza data/hora agendada de publicação para vídeo da fila de produção."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    dt_raw = (data.get("scheduled_at") or data.get("scheduled_for") or "").strip()
+    if not dt_raw:
+        raise HTTPException(status_code=400, detail="Data de agendamento não informada.")
+
+    try:
+        try:
+            scheduled_at = datetime.fromisoformat(dt_raw)
+        except Exception:
+            scheduled_at = datetime.strptime(dt_raw, "%Y-%m-%dT%H:%M")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Formato de data inválido.")
+
+    video.scheduled_at = scheduled_at
+    db.commit()
+    return {
+        "status": "scheduled",
+        "id": video.id,
+        "scheduled_at": video.scheduled_at.isoformat() if video.scheduled_at else None,
+    }
+
+@router.post("/videos/{video_id}/regenerate")
+def regenerate_production_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Refaz um vídeo da fila de produção desde a etapa de script."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Remove vídeos derivados (shorts) para refazer pipeline limpo
+    children = db.query(Video).filter(Video.parent_video_id == video.id).all()
+    for child in children:
+        child_assets = db.query(Asset).filter(Asset.video_id == child.id).all()
+        for asset in child_assets:
+            path = _resolve_video_file_path(asset.storage_key)
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception as e:
+                    print(f"Erro ao remover asset do derivado {path}: {e}")
+        db.delete(child)
+
+    # Remove arquivos físicos já gerados do vídeo principal
+    assets = db.query(Asset).filter(Asset.video_id == video.id).all()
+    for asset in assets:
+        path = _resolve_video_file_path(asset.storage_key)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception as e:
+                print(f"Erro ao remover asset antigo {path}: {e}")
+
+    # Limpa entidades derivadas do pipeline para recomeçar do zero
+    db.query(Job).filter(Job.video_id == video.id).delete(synchronize_session=False)
+    db.query(Scene).filter(Scene.video_id == video.id).delete(synchronize_session=False)
+    db.query(Asset).filter(Asset.video_id == video.id).delete(synchronize_session=False)
+
+    video.status = "queued"
+    video.youtube_video_id = None
+    video.published_at = None
+    db.commit()
+
+    factory = VideoFactory(db)
+    factory._add_job(video.id, "script")
+    background_tasks.add_task(process_jobs_background)
+    return {"status": "queued", "message": "Vídeo reenfileirado para regeneração."}
+
+@router.delete("/videos/{video_id}")
+def delete_production_video(video_id: int, db: Session = Depends(get_db)):
+    """Exclui um vídeo da fila de produção, removendo assets e derivados."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Remove arquivos físicos dos assets
+    assets = db.query(Asset).filter(Asset.video_id == video.id).all()
+    for asset in assets:
+        path = _resolve_video_file_path(asset.storage_key)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception as e:
+                print(f"Erro ao remover arquivo de asset {path}: {e}")
+
+    # Remove vídeos derivados (shorts) para evitar órfãos
+    children = db.query(Video).filter(Video.parent_video_id == video.id).all()
+    for child in children:
+        db.delete(child)
+
+    db.delete(video)
+    db.commit()
+    return {"status": "deleted"}
+
 @router.get("/videos/{video_id}")
 def get_video_details(video_id: int, db: Session = Depends(get_db)):
     """Retorna detalhes do vídeo e jobs para a fila de produção."""
@@ -305,6 +403,21 @@ def download_video(video_id: int, token: Optional[str] = Query(None), db: Sessio
     if not final_path:
         raise HTTPException(status_code=404, detail="Video file not found")
     return FileResponse(final_path, media_type="video/mp4", filename=os.path.basename(final_path))
+
+@router.get("/videos/{video_id}/watch")
+def watch_video(video_id: int, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """Abre/streama o vídeo final da fila de produção no navegador."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    final_path = _latest_final_asset_path(db, video.id)
+    if not final_path:
+        final_path = _resolve_video_file_path(video.youtube_video_id)
+    if not final_path:
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    return FileResponse(final_path, media_type="video/mp4")
 
 @router.post("/auto/process-job")
 def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
