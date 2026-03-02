@@ -2774,6 +2774,23 @@
                     if (!dateStr) return '-';
                     return new Date(dateStr).toLocaleDateString('pt-BR') + ' ' + new Date(dateStr).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
                 },
+                normalizePlayableVideoUrl(url) {
+                    const raw = (url || '').toString().trim();
+                    if (!raw) return '';
+                    if (
+                        raw.startsWith('http://') ||
+                        raw.startsWith('https://') ||
+                        raw.startsWith('/media/videos/') ||
+                        raw.startsWith('/static/videos/')
+                    ) {
+                        return raw;
+                    }
+                    const cleanName = raw.split('/').pop();
+                    if (cleanName && cleanName.toLowerCase().endsWith('.mp4')) {
+                        return `/media/videos/${encodeURIComponent(cleanName)}`;
+                    }
+                    return raw;
+                },
 
                 async retryVideoStep(video) {
                     if (!confirm(`Deseja reprocessar a etapa ${video.current_step || 'atual'} deste vídeo?`)) return;
@@ -2893,7 +2910,8 @@
                 },
                 watchScheduledVideo(video) {
                      if (video.video_url) {
-                        window.open(video.video_url, '_blank');
+                        const playableUrl = this.normalizePlayableVideoUrl(video.video_url);
+                        window.open(playableUrl, '_blank');
                      } else {
                          alert("URL do vídeo não disponível.");
                      }
@@ -2902,7 +2920,8 @@
                     if (video.youtube_video_id) {
                         window.open('https://www.youtube.com/watch?v=' + video.youtube_video_id, '_blank');
                     } else if (video.video_url) {
-                        window.open(video.video_url, '_blank');
+                        const playableUrl = this.normalizePlayableVideoUrl(video.video_url);
+                        window.open(playableUrl, '_blank');
                     } else {
                         alert("Link do vídeo não disponível.");
                     }

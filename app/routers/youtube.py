@@ -1,7 +1,6 @@
 import os
 import glob
 import shutil
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -29,6 +28,81 @@ def process_jobs_background():
         print(f"Error processing background job: {e}")
     finally:
         db.close()
+
+def _resolve_video_file_path(raw_path: Optional[str]) -> str:
+    """
+    Resolve path robusto para arquivos de vídeo, cobrindo:
+    - path absoluto salvo no banco
+    - path relativo legado
+    - URL /media/videos/... ou /static/videos/...
+    """
+    if not raw_path:
+        return ""
+
+    value = str(raw_path).strip()
+    if not value:
+        return ""
+
+    candidates: List[str] = []
+    if os.path.isabs(value):
+        candidates.append(value)
+
+    # Relativo ao cwd atual (legado)
+    candidates.append(os.path.abspath(value))
+
+    try:
+        from app.config import absolute_path_for_video, STATIC_DIR
+        candidates.append(absolute_path_for_video(value))
+        name = os.path.basename(value)
+        if name:
+            candidates.append(os.path.join("/data", "media", "videos", name))
+            candidates.append(str(STATIC_DIR / "videos" / name))
+    except Exception:
+        pass
+
+    checked = set()
+    for path in candidates:
+        if not path or path in checked:
+            continue
+        checked.add(path)
+        if os.path.exists(path) and os.path.isfile(path):
+            return path
+    return ""
+
+def _normalize_video_url_for_client(raw_url: Optional[str]) -> Optional[str]:
+    """Normaliza URLs legadas/paths absolutos para URL pública reproduzível no browser."""
+    if not raw_url:
+        return raw_url
+
+    value = str(raw_url).strip()
+    if value.startswith(("http://", "https://")):
+        return value
+    if value.startswith("/media/videos/") or value.startswith("/static/videos/"):
+        return value
+
+    try:
+        from app.config import VIDEO_URL_PREFIX
+        resolved = _resolve_video_file_path(value)
+        name = os.path.basename(resolved) if resolved else os.path.basename(value)
+        if name:
+            return f"{VIDEO_URL_PREFIX}/{name}"
+    except Exception:
+        pass
+    return value
+
+def _latest_final_asset_path(db: Session, video_id: int) -> str:
+    """Retorna o caminho existente do asset FINAL mais recente do vídeo."""
+    assets = (
+        db.query(Asset)
+        .filter(Asset.video_id == video_id, Asset.kind == "FINAL")
+        .order_by(Asset.created_at.desc(), Asset.id.desc())
+        .all()
+    )
+    for asset in assets:
+        resolved = _resolve_video_file_path(asset.storage_key)
+        if resolved:
+            return resolved
+    return ""
 
 router = APIRouter(
     prefix="/youtube",
@@ -90,6 +164,7 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
             "title": v.title,
             "type": v.type,
             "status": v.status,
+            "created_at": v.created_at,
             "scheduled_at": v.scheduled_at,
             "progress": active_job.progress if active_job else 0,
             "current_step": active_job.step if active_job else "queued",
@@ -138,22 +213,48 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Video not found")
         
     # Check if video is ready
-    if video.status != "READY":
+    if (video.status or "").upper() != "READY":
         raise HTTPException(status_code=400, detail="Video is not ready for publication")
         
     # Get Final Asset
-    asset = db.query(Asset).filter(Asset.video_id == video.id, Asset.kind == "FINAL").first()
-    if not asset or not os.path.exists(asset.storage_key):
+    final_path = _latest_final_asset_path(db, video.id)
+    if not final_path:
+        # Compatibilidade com registros legados que salvaram path em youtube_video_id
+        final_path = _resolve_video_file_path(video.youtube_video_id)
+    if not final_path:
         raise HTTPException(status_code=500, detail="Video file not found")
         
-    # Call YouTube Service
+    # Call YouTube Service (real; quando não conectado, service retorna mock id)
     try:
-        service = YouTubeService() # Assumes auth is set up
-        # This is a placeholder for the actual upload call
-        # youtube_id = service.upload_video(...)
-        
-        # Simulating upload for now
-        youtube_id = f"yt_{uuid.uuid4().hex[:8]}"
+        tags: List[str] = []
+        if video.tags:
+            tags = [t.strip() for t in str(video.tags).split(",") if t.strip()]
+
+        service = YouTubeService()
+        upload_result = service.upload_video(
+            final_path,
+            title=video.title or f"Vídeo {video.id}",
+            description=video.description or "Vídeo gerado automaticamente por Codexia.",
+            tags=tags
+        )
+
+        is_error = False
+        youtube_id = None
+        if isinstance(upload_result, dict):
+            if upload_result.get("error"):
+                is_error = True
+            else:
+                youtube_id = upload_result.get("id") or str(upload_result)
+        else:
+            youtube_id = str(upload_result) if upload_result else None
+            if not youtube_id:
+                is_error = True
+
+        if is_error or not youtube_id:
+            video.status = "ERROR"
+            db.commit()
+            err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube."
+            raise HTTPException(status_code=502, detail=err_msg)
         
         video.status = "PUBLISHED"
         video.published_at = datetime.now()
@@ -184,10 +285,14 @@ def download_video(video_id: int, token: Optional[str] = Query(None), db: Sessio
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    asset = db.query(Asset).filter(Asset.video_id == video.id, Asset.kind == "FINAL").first()
-    if not asset or not os.path.exists(asset.storage_key):
+
+    final_path = _latest_final_asset_path(db, video.id)
+    if not final_path:
+        # Compatibilidade com registros legados que salvaram path em youtube_video_id
+        final_path = _resolve_video_file_path(video.youtube_video_id)
+    if not final_path:
         raise HTTPException(status_code=404, detail="Video file not found")
-    return FileResponse(asset.storage_key, media_type="video/mp4", filename=os.path.basename(asset.storage_key))
+    return FileResponse(final_path, media_type="video/mp4", filename=os.path.basename(final_path))
 
 @router.post("/auto/process-job")
 def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -679,8 +784,7 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if not video.video_url:
         raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
 
-    from app.config import absolute_path_for_video
-    abs_video_path = absolute_path_for_video(video.video_url)
+    abs_video_path = _resolve_video_file_path(video.video_url)
     if not abs_video_path or not os.path.exists(abs_video_path):
         raise HTTPException(
             status_code=503,
@@ -723,7 +827,7 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
         err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube. Verifique as credenciais em Configurações."
         raise HTTPException(status_code=502, detail=err_msg)
 
-    video.uploaded_at = datetime.datetime.now()
+    video.uploaded_at = datetime.now()
     video.youtube_video_id = video_id_value
     video.status = "published"
     db.commit()
@@ -740,8 +844,7 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if not video.video_url:
         raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
 
-    from app.config import absolute_path_for_video
-    abs_video_path = absolute_path_for_video(video.video_url)
+    abs_video_path = _resolve_video_file_path(video.video_url)
     if not abs_video_path or not os.path.exists(abs_video_path):
         raise HTTPException(
             status_code=503,
@@ -781,7 +884,7 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
         err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao republicar no YouTube."
         raise HTTPException(status_code=502, detail=err_msg)
 
-    video.uploaded_at = datetime.datetime.now()
+    video.uploaded_at = datetime.now()
     video.youtube_video_id = video_id_value
     video.status = "published"
     db.commit()
@@ -796,8 +899,7 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     # Opcional: deletar arquivo físico se existir
     if video.video_url:
         try:
-            from app.config import absolute_path_for_video
-            abs_path = absolute_path_for_video(video.video_url)
+            abs_path = _resolve_video_file_path(video.video_url)
             if os.path.exists(abs_path):
                 os.remove(abs_path)
         except Exception as e:
@@ -829,7 +931,7 @@ def get_schedule(db: Session = Depends(get_db)):
             "scheduled_for": v.scheduled_for.isoformat() if v.scheduled_for else None,
             "auto_post": getattr(v, "auto_post", False),
             "video_type": v.video_type,
-            "video_url": v.video_url,
+            "video_url": _normalize_video_url_for_client(v.video_url),
             "youtube_video_id": v.youtube_video_id,
             "uploaded_at": v.uploaded_at.isoformat() if getattr(v, "uploaded_at", None) else None,
             "voice_style": getattr(v, "voice_style", "human"),
