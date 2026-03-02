@@ -288,6 +288,8 @@ class MonitorService:
                         if isinstance(upload_result, dict):
                             if upload_result.get("error"):
                                 is_error = True
+                            elif upload_result.get("status") == "uploaded_mock":
+                                is_error = True
                             else:
                                 video_id_value = upload_result.get("id") or str(upload_result)
                         else:

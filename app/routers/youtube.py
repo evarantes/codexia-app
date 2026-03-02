@@ -61,6 +61,7 @@ def _resolve_video_file_path(raw_path: Optional[str]) -> str:
         if name:
             candidates.append(os.path.join("/data", "media", "videos", name))
             candidates.append(str(STATIC_DIR / "videos" / name))
+            candidates.append(os.path.join("/app", "static", "videos", name))  # legado em alguns deploys
     except Exception:
         pass
 
@@ -247,6 +248,8 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         if isinstance(upload_result, dict):
             if upload_result.get("error"):
                 is_error = True
+            elif upload_result.get("status") == "uploaded_mock":
+                is_error = True
             else:
                 youtube_id = upload_result.get("id") or str(upload_result)
         else:
@@ -257,7 +260,10 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         if is_error or not youtube_id:
             video.status = "ERROR"
             db.commit()
-            err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube."
+            if isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock":
+                err_msg = "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de publicar."
+            else:
+                err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube."
             raise HTTPException(status_code=502, detail=err_msg)
         
         video.status = "PUBLISHED"
@@ -267,6 +273,8 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         
         return {"status": "Published", "youtube_id": youtube_id}
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/videos/{video_id}")
@@ -818,6 +826,8 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if isinstance(upload_result, dict):
         if upload_result.get("error"):
             is_error = True
+        elif upload_result.get("status") == "uploaded_mock":
+            is_error = True
         else:
             video_id_value = upload_result.get("id") or str(upload_result)
     else:
@@ -829,7 +839,10 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
         video.status = "failed"
         video.description = (video.description or "") + "\n\n[UPLOAD_ERRO]: falha ao enviar para o YouTube. Veja logs do servidor."
         db.commit()
-        err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube. Verifique as credenciais em Configurações."
+        if isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock":
+            err_msg = "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de publicar."
+        else:
+            err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube. Verifique as credenciais em Configurações."
         raise HTTPException(status_code=502, detail=err_msg)
 
     video.uploaded_at = datetime.now()
@@ -879,6 +892,8 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if isinstance(upload_result, dict):
         if upload_result.get("error"):
             is_error = True
+        elif upload_result.get("status") == "uploaded_mock":
+            is_error = True
         else:
             video_id_value = upload_result.get("id") or str(upload_result)
     else:
@@ -887,7 +902,10 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
             is_error = True
 
     if is_error or not video_id_value:
-        err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao republicar no YouTube."
+        if isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock":
+            err_msg = "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de republicar."
+        else:
+            err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao republicar no YouTube."
         raise HTTPException(status_code=502, detail=err_msg)
 
     video.uploaded_at = datetime.now()
@@ -914,6 +932,19 @@ def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     db.delete(video)
     db.commit()
     return {"status": "deleted"}
+
+@router.get("/schedule/{video_id}/download")
+def download_scheduled_video(video_id: int, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """Download do arquivo de vídeo de um item agendado."""
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    path = _resolve_video_file_path(video.video_url)
+    if not path:
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    return FileResponse(path, media_type="video/mp4", filename=os.path.basename(path))
 
 @router.get("/schedule")
 def get_schedule(db: Session = Depends(get_db)):

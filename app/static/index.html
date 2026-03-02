@@ -880,7 +880,7 @@
                                         </td>
                                         <td class="p-3 flex gap-2 flex-wrap">
                                             <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
-                                            <button v-if="['completed', 'ready', 'READY'].includes(video.status)" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                            <button v-if="['completed', 'ready', 'READY', 'COMPLETED'].includes(video.status)" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
                                             <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
                                             <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
                                             <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
@@ -2084,10 +2084,10 @@
             },
             computed: {
                 readyVideos() {
-                    return this.scheduledVideos.filter(v => ['completed', 'ready'].includes(v.status));
+                    return this.scheduledVideos.filter(v => ['completed', 'ready'].includes((v.status || '').toLowerCase()));
                 },
                 publishedVideos() {
-                    return this.scheduledVideos.filter(v => ['published'].includes(v.status));
+                    return this.scheduledVideos.filter(v => ['published'].includes((v.status || '').toLowerCase()));
                 },
                 totalSales() {
                     return this.sales.reduce((sum, sale) => sum + sale.amount, 0);
@@ -2801,6 +2801,9 @@
                     const sep = raw.includes('?') ? '&' : '?';
                     return `${raw}${sep}token=${encodeURIComponent(token)}`;
                 },
+                buildScheduledDownloadUrl(videoId) {
+                    return this.appendTokenToInternalUrl(`/youtube/schedule/${videoId}/download`);
+                },
 
                 async retryVideoStep(video) {
                     if (!confirm(`Deseja reprocessar a etapa ${video.current_step || 'atual'} deste vídeo?`)) return;
@@ -2938,19 +2941,18 @@
                     } catch (e) { alert("Erro: " + e); }
                 },
                 watchScheduledVideo(video) {
-                     if (video.video_url) {
-                        const playableUrl = this.appendTokenToInternalUrl(this.normalizePlayableVideoUrl(video.video_url));
-                        window.open(playableUrl, '_blank');
+                     if (video && video.id) {
+                        window.open(this.buildScheduledDownloadUrl(video.id), '_blank');
                      } else {
                          alert("URL do vídeo não disponível.");
                      }
                 },
                 viewPublishedVideo(video) {
-                    if (video.youtube_video_id) {
+                    const ytId = (video.youtube_video_id || '').toString();
+                    if (ytId && !ytId.startsWith('mock_')) {
                         window.open('https://www.youtube.com/watch?v=' + video.youtube_video_id, '_blank');
-                    } else if (video.video_url) {
-                        const playableUrl = this.appendTokenToInternalUrl(this.normalizePlayableVideoUrl(video.video_url));
-                        window.open(playableUrl, '_blank');
+                    } else if (video && video.id) {
+                        window.open(this.buildScheduledDownloadUrl(video.id), '_blank');
                     } else {
                         alert("Link do vídeo não disponível.");
                     }
