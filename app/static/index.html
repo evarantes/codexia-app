@@ -793,7 +793,7 @@
                     <!-- 1. Production Queue -->
                     <div class="bg-white rounded-lg shadow p-6 border-l-4 border-yellow-400">
                         <h2 class="text-xl font-bold mb-4 text-yellow-800"><i class="fas fa-industry"></i> Fila de Produção</h2>
-                        <div v-if="productionVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo em produção no momento.</div>
+                        <div v-if="productionQueueVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo em produção no momento.</div>
                         <div v-else class="overflow-x-auto">
                             <table class="w-full">
                                 <thead>
@@ -808,7 +808,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="video in productionVideos" :key="video.id" class="border-t border-yellow-100 hover:bg-yellow-50 transition">
+                                    <tr v-for="video in productionQueueVideos" :key="video.id" class="border-t border-yellow-100 hover:bg-yellow-50 transition">
                                         <td class="p-3">{{ formatDate(video.created_at) }}</td>
                                         <td class="p-3">
                                             <span :class="{'bg-blue-100 text-blue-800': video.type === 'LONG', 'bg-purple-100 text-purple-800': video.type === 'SHORT'}" class="px-2 py-1 rounded text-xs font-bold">
@@ -865,13 +865,15 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="video in readyVideos" :key="video.id" class="border-t border-green-100 hover:bg-green-50 transition">
+                                    <tr v-for="video in readyVideos" :key="`${video._source || 'scheduled'}-${video.id}`" class="border-t border-green-100 hover:bg-green-50 transition">
                                         <td class="p-3 font-medium">{{ video.title }}</td>
                                         <td class="p-3">
-                                            <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-white">
+                                            <input v-if="(video._source || 'scheduled') === 'scheduled'" type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-white">
+                                            <span v-else class="text-sm text-gray-500">Produzido agora</span>
                                         </td>
                                         <td class="p-3 text-center">
-                                             <input type="checkbox" v-model="video.auto_post" class="w-5 h-5 text-green-600 rounded focus:ring-green-500">
+                                             <input v-if="(video._source || 'scheduled') === 'scheduled'" type="checkbox" v-model="video.auto_post" class="w-5 h-5 text-green-600 rounded focus:ring-green-500">
+                                             <span v-else class="text-sm text-gray-500">-</span>
                                         </td>
                                         <td class="p-3">
                                             <span class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-bold uppercase block text-center">
@@ -879,11 +881,18 @@
                                             </span>
                                         </td>
                                         <td class="p-3 flex gap-2 flex-wrap">
-                                            <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
-                                            <button v-if="['completed', 'ready', 'READY', 'COMPLETED'].includes(video.status)" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
-                                            <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
-                                            <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
-                                            <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
+                                            <template v-if="(video._source || 'scheduled') === 'production'">
+                                                <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800 p-2" title="Ver Detalhes/Logs"><i class="fas fa-info-circle"></i></button>
+                                                <button @click="publishVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
+                                                <button @click="downloadVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Baixar"><i class="fas fa-download"></i></button>
+                                            </template>
+                                            <template v-else>
+                                                <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
+                                                <button v-if="['completed', 'ready', 'READY', 'COMPLETED'].includes(video.status)" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                                <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
+                                                <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
+                                                <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
+                                            </template>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -2083,8 +2092,24 @@
                 }
             },
             computed: {
+                productionQueueVideos() {
+                    return this.productionVideos.filter(v => !['ready'].includes((v.status || '').toLowerCase()));
+                },
+                productionReadyVideos() {
+                    return this.productionVideos
+                        .filter(v => ['ready'].includes((v.status || '').toLowerCase()))
+                        .map(v => ({
+                            ...v,
+                            _source: 'production',
+                            scheduled_for_local: '',
+                            auto_post: false
+                        }));
+                },
                 readyVideos() {
-                    return this.scheduledVideos.filter(v => ['completed', 'ready'].includes((v.status || '').toLowerCase()));
+                    const scheduledReady = this.scheduledVideos
+                        .filter(v => ['completed', 'ready'].includes((v.status || '').toLowerCase()))
+                        .map(v => ({ ...v, _source: 'scheduled' }));
+                    return [...this.productionReadyVideos, ...scheduledReady];
                 },
                 publishedVideos() {
                     return this.scheduledVideos.filter(v => ['published'].includes((v.status || '').toLowerCase()));
@@ -2657,7 +2682,12 @@
                         'queued': 'Na Fila',
                         'processing': 'Processando',
                         'completed': 'Pronto',
-                        'failed': 'Falha'
+                        'ready': 'Pronto para publicar',
+                        'READY': 'Pronto para publicar',
+                        'published': 'Publicado',
+                        'PUBLISHED': 'Publicado',
+                        'failed': 'Falha',
+                        'ERROR': 'Falha'
                     };
                     return map[status] || status;
                 },
