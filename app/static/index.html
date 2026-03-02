@@ -832,13 +832,13 @@
                                             <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800" title="Ver Detalhes/Logs">
                                                 <i class="fas fa-info-circle"></i>
                                             </button>
-                                            <button v-if="['ERROR', 'FAILED', 'failed'].includes(video.status)" @click="retryVideoStep(video)" class="text-orange-600 hover:text-orange-800" title="Reprocessar">
+                                            <button v-if="isFailedStatus(video.status)" @click="retryVideoStep(video)" class="text-orange-600 hover:text-orange-800" title="Reprocessar">
                                                 <i class="fas fa-redo"></i>
                                             </button>
-                                            <button v-if="video.status === 'READY' || video.status === 'ready'" @click="publishVideo(video)" class="text-red-600 hover:text-red-800" title="Publicar no YouTube">
+                                            <button v-if="isReadyStatus(video.status)" @click="publishVideo(video)" class="text-red-600 hover:text-red-800" title="Publicar no YouTube">
                                                 <i class="fab fa-youtube"></i>
                                             </button>
-                                            <button v-if="['READY', 'ready', 'PUBLISHED', 'published'].includes(video.status)" @click="downloadVideo(video)" class="text-green-600 hover:text-green-800" title="Baixar Vídeo">
+                                            <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="downloadVideo(video)" class="text-green-600 hover:text-green-800" title="Baixar Vídeo">
                                                 <i class="fas fa-download"></i>
                                             </button>
                                         </td>
@@ -2094,19 +2094,19 @@
             },
             computed: {
                 productionQueueVideos() {
-                    return this.productionVideos.filter(v => !['ready', 'published'].includes((v.status || '').toLowerCase()));
+                    return this.productionVideos.filter(v => !(this.isReadyStatus(v.status) || this.isPublishedStatus(v.status)));
                 },
                 productionReadyVideos() {
-                    return this.productionVideos.filter(v => ['ready'].includes((v.status || '').toLowerCase()));
+                    return this.productionVideos.filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status));
                 },
                 readyVideos() {
                     const scheduledReady = this.scheduledVideos
-                        .filter(v => ['completed', 'ready'].includes((v.status || '').toLowerCase()))
+                        .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
                         .map(v => ({ ...v, _source: 'scheduled' }));
                     return [...this.productionReadyVideos, ...scheduledReady];
                 },
                 publishedVideos() {
-                    return this.scheduledVideos.filter(v => ['published'].includes((v.status || '').toLowerCase()));
+                    return this.scheduledVideos.filter(v => this.isPublishedStatus(v.status));
                 },
                 totalSales() {
                     return this.sales.reduce((sum, sale) => sum + sale.amount, 0);
@@ -2671,19 +2671,18 @@
                     }
                 },
                 translateStatus(status) {
+                    const s = this.normalizedStatus(status);
                     const map = {
                         'pending': 'Pendente',
                         'queued': 'Na Fila',
                         'processing': 'Processando',
                         'completed': 'Pronto',
                         'ready': 'Pronto para publicar',
-                        'READY': 'Pronto para publicar',
                         'published': 'Publicado',
-                        'PUBLISHED': 'Publicado',
                         'failed': 'Falha',
-                        'ERROR': 'Falha'
+                        'error': 'Falha'
                     };
-                    return map[status] || status;
+                    return map[s] || status;
                 },
                 async handleMusicUpload(event) {
                     const file = event.target.files[0];
@@ -2796,17 +2795,13 @@
                 },
 
                 getStatusClass(status) {
-                    const map = {
-                        'pending': 'bg-gray-100 text-gray-800',
-                        'queued': 'bg-yellow-100 text-yellow-800',
-                        'processing': 'bg-blue-100 text-blue-800',
-                        'completed': 'bg-green-100 text-green-800',
-                        'READY': 'bg-green-100 text-green-800',
-                        'PUBLISHED': 'bg-purple-100 text-purple-800',
-                        'failed': 'bg-red-100 text-red-800',
-                        'ERROR': 'bg-red-100 text-red-800'
-                    };
-                    return map[status] || 'bg-gray-100';
+                    const s = this.normalizedStatus(status);
+                    if (s === 'queued') return 'bg-yellow-100 text-yellow-800';
+                    if (s === 'processing') return 'bg-blue-100 text-blue-800';
+                    if (this.isReadyStatus(s)) return 'bg-green-100 text-green-800';
+                    if (this.isPublishedStatus(s)) return 'bg-purple-100 text-purple-800';
+                    if (this.isFailedStatus(s)) return 'bg-red-100 text-red-800';
+                    return 'bg-gray-100 text-gray-800';
                 },
 
                 formatDate(dateStr) {
@@ -2829,6 +2824,21 @@
                         return `/media/videos/${encodeURIComponent(cleanName)}`;
                     }
                     return raw;
+                },
+                normalizedStatus(status) {
+                    return (status || '').toString().trim().toLowerCase();
+                },
+                isReadyStatus(status) {
+                    const s = this.normalizedStatus(status);
+                    return s === 'ready' || s === 'completed' || s.includes('ready') || s.includes('completed');
+                },
+                isPublishedStatus(status) {
+                    const s = this.normalizedStatus(status);
+                    return s === 'published' || s.includes('published');
+                },
+                isFailedStatus(status) {
+                    const s = this.normalizedStatus(status);
+                    return s === 'error' || s === 'failed' || s.includes('error') || s.includes('falha');
                 },
                 appendTokenToInternalUrl(url) {
                     const raw = (url || '').toString().trim();

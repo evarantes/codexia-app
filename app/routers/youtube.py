@@ -109,6 +109,18 @@ def _latest_final_asset_path(db: Session, video_id: int) -> str:
             return resolved
     return ""
 
+def _normalize_video_status(value: Optional[str]) -> str:
+    """Normaliza status de vídeo para evitar divergência de caixa/espaços/legado."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    upper = raw.upper()
+    aliases = {
+        "COMPLETED": "READY",
+        "FAILED": "ERROR",
+    }
+    return aliases.get(upper, upper)
+
 router = APIRouter(
     prefix="/youtube",
     tags=["youtube"],
@@ -156,7 +168,9 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
     query = db.query(Video).order_by(Video.scheduled_at.asc())
     
     if status:
-        query = query.filter(Video.status == status)
+        from sqlalchemy import func
+        normalized_status = (status or "").strip().upper()
+        query = query.filter(func.upper(func.trim(Video.status)) == normalized_status)
         
     videos = query.limit(limit).all()
     
@@ -168,7 +182,7 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
             "id": v.id,
             "title": v.title,
             "type": v.type,
-            "status": v.status,
+            "status": _normalize_video_status(v.status),
             "created_at": v.created_at,
             "scheduled_at": v.scheduled_at,
             "progress": active_job.progress if active_job else 0,
