@@ -138,7 +138,7 @@ class VideoFactory:
             
             elif job.step == "render":
                 self._step_render(video, job)
-                video.status = "READY"
+                video.status = "AWAITING_PUBLISH"
                 # Trigger Shorts generation
                 shorts = self.db.query(Video).filter(Video.parent_video_id == video.id).all()
                 for short in shorts:
@@ -146,7 +146,7 @@ class VideoFactory:
             
             elif job.step == "shorts_extract":
                 self._step_shorts_extract(video, job)
-                video.status = "READY"
+                video.status = "AWAITING_PUBLISH"
 
             job.status = "completed"
             job.progress = 100

@@ -171,7 +171,7 @@ def process_scheduled_video(video_id: int):
             if credit not in video.description:
                 video.description += credit
         
-        video.status = "completed"
+        video.status = "AWAITING_PUBLISH"
         video.progress = 100
         video.video_url = video_path # path relativo /static/videos/...
         db.commit()

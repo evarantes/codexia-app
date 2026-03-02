@@ -849,8 +849,8 @@
                     </div>
 
 
-                    <!-- 2. Ready to Publish (The "Other Field") -->
-                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
+                    <!-- 2. Ready to Publish (Aguardando Publicação) -->
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500 mb-8">
                         <h2 class="text-xl font-bold mb-4 text-green-800"><i class="fas fa-clock"></i> Aguardando Publicação</h2>
                         <div v-if="readyVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo aguardando publicação.</div>
                         <div v-else class="overflow-x-auto">
@@ -858,32 +858,43 @@
                                 <thead>
                                     <tr class="bg-green-50 text-green-900">
                                         <th class="p-3 text-left">Título</th>
-                                        <th class="p-3 text-left">Agendado Para</th>
-                                        <th class="p-3 text-center">Auto Post</th>
+                                        <th class="p-3 text-left">Agendar Publicação</th>
                                         <th class="p-3 text-left">Status</th>
                                         <th class="p-3 text-left">Ações</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr v-for="video in readyVideos" :key="video.id" class="border-t border-green-100 hover:bg-green-50 transition">
-                                        <td class="p-3 font-medium">{{ video.title }}</td>
-                                        <td class="p-3">
-                                            <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-white">
-                                        </td>
-                                        <td class="p-3 text-center">
-                                             <input type="checkbox" v-model="video.auto_post" class="w-5 h-5 text-green-600 rounded focus:ring-green-500">
+                                        <td class="p-3 font-medium">
+                                            {{ video.title }}
+                                            <div class="text-xs text-gray-500">{{ video.type }}</div>
                                         </td>
                                         <td class="p-3">
-                                            <span class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-bold uppercase block text-center">
-                                                {{ translateStatus(video.status) }}
+                                            <div class="flex items-center gap-2">
+                                                <input type="datetime-local" v-model="video.publish_at_local" class="border rounded p-1 text-sm bg-white">
+                                                <button @click="schedulePublish(video)" class="bg-indigo-600 text-white px-2 py-1 rounded text-xs hover:bg-indigo-700">Agendar</button>
+                                            </div>
+                                            <div v-if="video.publish_at" class="text-xs text-indigo-600 mt-1">
+                                                Agendado para: {{ formatDate(video.publish_at) }}
+                                            </div>
+                                        </td>
+                                        <td class="p-3">
+                                            <span class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-bold uppercase">
+                                                PRONTO
                                             </span>
                                         </td>
-                                        <td class="p-3 flex gap-2 flex-wrap">
-                                            <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
-                                            <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
-                                            <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
-                                            <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
-                                            <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
+                                        <td class="p-3">
+                                            <div class="flex gap-2">
+                                                <button @click="watchScheduledVideo(video)" class="bg-blue-100 text-blue-700 px-3 py-1.5 rounded text-sm font-medium hover:bg-blue-200 flex items-center gap-1" title="Visualizar">
+                                                    <i class="fas fa-play"></i> Visualizar
+                                                </button>
+                                                <button @click="regenerateScheduledVideo(video)" class="bg-orange-100 text-orange-700 px-3 py-1.5 rounded text-sm font-medium hover:bg-orange-200 flex items-center gap-1" title="Refazer">
+                                                    <i class="fas fa-sync"></i> Refazer
+                                                </button>
+                                                <button @click="cancelVideo(video)" class="bg-red-100 text-red-700 px-3 py-1.5 rounded text-sm font-medium hover:bg-red-200 flex items-center gap-1" title="Cancelar">
+                                                    <i class="fas fa-times"></i> Cancelar
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -2084,7 +2095,7 @@
             },
             computed: {
                 readyVideos() {
-                    return this.scheduledVideos.filter(v => ['completed', 'ready'].includes(v.status));
+                    return this.scheduledVideos.filter(v => ['completed', 'ready', 'AWAITING_PUBLISH'].includes(v.status));
                 },
                 publishedVideos() {
                     return this.scheduledVideos.filter(v => ['published'].includes(v.status));
@@ -2938,6 +2949,37 @@
                             alert(data.detail || "Erro ao republicar. Verifique as credenciais do YouTube em Configurações.");
                         }
                     } catch (e) { alert("Erro: " + (e.message || e)); }
+                },
+                async schedulePublish(video) {
+                    if (!video.publish_at_local) {
+                        alert("Selecione uma data e hora para agendar.");
+                        return;
+                    }
+                    try {
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}/schedule-publish?publish_at=${video.publish_at_local}`, { 
+                            method: 'POST'
+                        });
+                        if (res.ok) {
+                            alert("Publicação agendada com sucesso!");
+                            this.fetchScheduledVideos();
+                        } else {
+                            const err = await res.json();
+                            alert("Erro ao agendar: " + (err.detail || "Erro desconhecido"));
+                        }
+                    } catch (e) { alert("Erro: " + e); }
+                },
+                async cancelVideo(video) {
+                    if (!confirm("Tem certeza que deseja cancelar este vídeo? Ele será removido da fila de publicação.")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}/cancel`, { method: 'POST' });
+                        if (res.ok) {
+                            alert("Vídeo cancelado com sucesso!");
+                            this.fetchScheduledVideos();
+                        } else {
+                            const err = await res.json();
+                            alert("Erro ao cancelar: " + (err.detail || "Erro desconhecido"));
+                        }
+                    } catch (e) { alert("Erro: " + e); }
                 },
                 async saveSettings() {
                     try {

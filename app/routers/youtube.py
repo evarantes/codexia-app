@@ -131,7 +131,7 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Video not found")
         
     # Check if video is ready
-    if video.status != "READY":
+    if video.status not in ("READY", "AWAITING_PUBLISH"):
         raise HTTPException(status_code=400, detail="Video is not ready for publication")
         
     # Get Final Asset
@@ -538,6 +538,40 @@ def generate_schedule(request: ScheduleRequest):
 
 from sqlalchemy import text, inspect
 
+@router.post("/schedule/{video_id}/cancel")
+def cancel_scheduled_video(video_id: int, db: Session = Depends(get_db)):
+    """Cancela um vídeo agendado ou pronto."""
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        # Tenta na tabela Video se não achar na ScheduledVideo
+        video = db.query(Video).filter(Video.id == video_id).first()
+        if not video:
+            raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+    
+    # Se já estiver publicado, não cancela, apenas remove do sistema se quiser
+    # Mas aqui vamos apenas mudar o status para 'cancelled'
+    video.status = "cancelled"
+    db.commit()
+    return {"message": "Vídeo cancelado com sucesso."}
+
+@router.post("/schedule/{video_id}/schedule-publish")
+def schedule_publish_video(video_id: int, publish_at: str, db: Session = Depends(get_db)):
+    """Agenda a publicação de um vídeo pronto."""
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        if not video:
+            raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+            
+    try:
+        dt = datetime.fromisoformat(publish_at.replace('Z', '+00:00'))
+        video.publish_at = dt
+        video.auto_post = True
+        db.commit()
+        return {"message": f"Publicação agendada para {dt.strftime('%d/%m/%Y %H:%M')}"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Formato de data inválido: {str(e)}")
+
 @router.post("/schedule/save")
 def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Salva o plano no banco de dados e inicia geração"""
@@ -648,7 +682,7 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
-    if video.status not in ("completed", "ready"):
+    if video.status not in ("completed", "ready", "AWAITING_PUBLISH"):
         raise HTTPException(status_code=400, detail="Só é possível publicar vídeos prontos (status concluído).")
     if video.uploaded_at:
         raise HTTPException(status_code=400, detail="Este vídeo já foi publicado.")
@@ -711,7 +745,7 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
-    if video.status not in ("completed", "ready", "published"):
+    if video.status not in ("completed", "ready", "published", "AWAITING_PUBLISH"):
         raise HTTPException(status_code=400, detail="Só é possível republicar vídeos já produzidos ou publicados.")
     if not video.video_url:
         raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
