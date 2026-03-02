@@ -383,10 +383,7 @@ class VideoFactory:
         # Crop 9:16 e pega 60s aleatórios ou baseados em cenas
         # MVP: Pega 0-60s e corta o centro
         
-        try:
-            from moviepy.editor import VideoFileClip
-        except ImportError:
-            from moviepy import VideoFileClip
+        from moviepy import VideoFileClip
 
         clip = VideoFileClip(parent_asset.storage_key)
         # Corta centro 1080x1920 (ou redimensiona)

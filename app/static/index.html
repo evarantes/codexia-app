@@ -2894,22 +2894,33 @@
                     if (video.description && video.description.includes('URL_VIDEO:')) {
                         url = video.description.split('URL_VIDEO:')[1].trim().split('\n')[0];
                     }
+                    
                     if (url) {
+                        // Se a URL for um path relativo, adiciona o domínio atual
+                        if (url.startsWith('/')) {
+                            url = window.location.origin + url;
+                        }
                         window.open(url, '_blank');
                     } else {
                         alert("O vídeo ainda não está pronto para visualização.");
                     }
                 },
                 viewPublishedVideo(video) {
-                    if (video.youtube_video_id && !video.youtube_video_id.startsWith('yt_') && !video.youtube_video_id.includes('/')) {
+                    // Se já tem ID do YouTube real, abre o link do YouTube
+                    if (video.youtube_video_id && !video.youtube_video_id.startsWith('yt_') && !video.youtube_video_id.includes('/') && !video.youtube_video_id.includes('\\')) {
                         window.open('https://www.youtube.com/watch?v=' + video.youtube_video_id, '_blank');
                         return;
                     }
+                    
                     let url = video.video_url;
                     if (video.description && video.description.includes('URL_VIDEO:')) {
                         url = video.description.split('URL_VIDEO:')[1].trim().split('\n')[0];
                     }
+                    
                     if (url) {
+                        if (url.startsWith('/')) {
+                            url = window.location.origin + url;
+                        }
                         window.open(url, '_blank');
                     } else {
                         alert("Link de visualização não disponível para este vídeo.");

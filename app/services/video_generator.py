@@ -493,11 +493,8 @@ class VideoGenerator:
 
     def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None):
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
-        # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
-        try:
-            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
-        except ImportError:
-            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+        # MoviePy v2 imports
+        from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
         import numpy as np
 
         if progress_callback:
@@ -590,12 +587,12 @@ class VideoGenerator:
                     
                     if img_path and os.path.exists(img_path) and os.path.getsize(img_path) > 0:
                         # Criar clip
-                        clip = ImageClip(img_path).set_duration(duration)
+                        clip = ImageClip(img_path, duration=duration)
                         clip = self.apply_ken_burns(clip, width=video_size[0], height=video_size[1])
                         clips.append(clip)
                     else:
                         # Fallback image
-                        color_clip = ImageClip(np.zeros((video_size[1], video_size[0], 3), dtype=np.uint8)).set_duration(duration)
+                        color_clip = ImageClip(np.zeros((video_size[1], video_size[0], 3), dtype=np.uint8), duration=duration)
                         clips.append(color_clip)
                 
                 # Concatenar clips visuais
@@ -612,7 +609,7 @@ class VideoGenerator:
                         # Se vídeo ficou menor (arredondamentos), corta o áudio
                         main_audio = main_audio.subclip(0, final_video.duration)
                         
-                    final_video = final_video.set_audio(main_audio)
+                    final_video = final_video.with_audio(main_audio)
                     
                     # Exportar
                     output_filename = f"music_video_{uuid.uuid4().hex}.mp4"
