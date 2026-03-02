@@ -880,7 +880,7 @@
                                         </td>
                                         <td class="p-3 flex gap-2 flex-wrap">
                                             <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Salvar Agendamento"><i class="fas fa-save"></i></button>
-                                            <button v-if="video.status === 'completed'" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
+                                            <button v-if="['completed', 'ready', 'READY'].includes(video.status)" @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Assistir"><i class="fas fa-play"></i></button>
                                             <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
                                             <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i></button>
                                             <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir"><i class="fas fa-trash"></i></button>
@@ -2791,6 +2791,16 @@
                     }
                     return raw;
                 },
+                appendTokenToInternalUrl(url) {
+                    const raw = (url || '').toString().trim();
+                    if (!raw) return raw;
+                    const isInternal = raw.startsWith('/') && !raw.startsWith('//');
+                    if (!isInternal) return raw;
+                    const token = localStorage.getItem('access_token');
+                    if (!token) return raw;
+                    const sep = raw.includes('?') ? '&' : '?';
+                    return `${raw}${sep}token=${encodeURIComponent(token)}`;
+                },
 
                 async retryVideoStep(video) {
                     if (!confirm(`Deseja reprocessar a etapa ${video.current_step || 'atual'} deste vídeo?`)) return;
@@ -2829,8 +2839,27 @@
                 },
                 
                 async downloadVideo(video) {
-                   const token = localStorage.getItem('access_token');
-                   window.open(`/youtube/videos/${video.id}/download?token=${token || ''}`, '_blank');
+                   try {
+                       const res = await this.authFetch(`/youtube/videos/${video.id}/download`, { method: 'GET' });
+                       if (!res.ok) {
+                           const err = await res.json().catch(() => ({}));
+                           alert(err.detail || "Não foi possível baixar o vídeo.");
+                           return;
+                       }
+                       const blob = await res.blob();
+                       const tempUrl = URL.createObjectURL(blob);
+                       const a = document.createElement('a');
+                       const safeTitle = (video.title || `video_${video.id}`).replace(/[^\w\-]+/g, '_');
+                       a.href = tempUrl;
+                       a.download = `${safeTitle}.mp4`;
+                       document.body.appendChild(a);
+                       a.click();
+                       a.remove();
+                       URL.revokeObjectURL(tempUrl);
+                   } catch (e) {
+                       console.error(e);
+                       alert("Erro ao baixar vídeo: " + (e.message || e));
+                   }
                 },
                 
                 showVideoDetails(video) {
@@ -2910,7 +2939,7 @@
                 },
                 watchScheduledVideo(video) {
                      if (video.video_url) {
-                        const playableUrl = this.normalizePlayableVideoUrl(video.video_url);
+                        const playableUrl = this.appendTokenToInternalUrl(this.normalizePlayableVideoUrl(video.video_url));
                         window.open(playableUrl, '_blank');
                      } else {
                          alert("URL do vídeo não disponível.");
@@ -2920,7 +2949,7 @@
                     if (video.youtube_video_id) {
                         window.open('https://www.youtube.com/watch?v=' + video.youtube_video_id, '_blank');
                     } else if (video.video_url) {
-                        const playableUrl = this.normalizePlayableVideoUrl(video.video_url);
+                        const playableUrl = this.appendTokenToInternalUrl(this.normalizePlayableVideoUrl(video.video_url));
                         window.open(playableUrl, '_blank');
                     } else {
                         alert("Link do vídeo não disponível.");

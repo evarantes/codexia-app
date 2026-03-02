@@ -42,6 +42,10 @@ def _resolve_video_file_path(raw_path: Optional[str]) -> str:
     value = str(raw_path).strip()
     if not value:
         return ""
+    # Normaliza separador e remove query/hash legados
+    value = value.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip()
+    if not value:
+        return ""
 
     candidates: List[str] = []
     if os.path.isabs(value):
@@ -777,7 +781,8 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
-    if video.status not in ("completed", "ready"):
+    normalized_status = (video.status or "").lower().strip()
+    if normalized_status not in ("completed", "ready"):
         raise HTTPException(status_code=400, detail="Só é possível publicar vídeos prontos (status concluído).")
     if video.uploaded_at:
         raise HTTPException(status_code=400, detail="Este vídeo já foi publicado.")
@@ -839,7 +844,8 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
-    if video.status not in ("completed", "ready", "published"):
+    normalized_status = (video.status or "").lower().strip()
+    if normalized_status not in ("completed", "ready", "published"):
         raise HTTPException(status_code=400, detail="Só é possível republicar vídeos já produzidos ou publicados.")
     if not video.video_url:
         raise HTTPException(status_code=400, detail="Vídeo sem arquivo. Regenere o vídeo.")
@@ -925,7 +931,7 @@ def get_schedule(db: Session = Depends(get_db)):
             "theme": v.theme,
             "title": v.title,
             "description": desc,
-            "error_msg": err or (desc if v.status == "failed" else ""),
+            "error_msg": err or (desc if (v.status or "").lower() == "failed" else ""),
             "status": v.status,
             "progress": v.progress or 0,
             "scheduled_for": v.scheduled_for.isoformat() if v.scheduled_for else None,
