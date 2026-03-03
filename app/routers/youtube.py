@@ -8,25 +8,60 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFi
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from rq import Worker
 from app.services.youtube_service import YouTubeService
 # from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene
+from app.redis_client import conn
+
+FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+
+def _rq_workers_online() -> bool:
+    """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
+    if not conn:
+        return False
+    try:
+        return Worker.count(conn) > 0
+    except Exception:
+        return False
 
 def process_jobs_background():
     """Background task to process video generation jobs."""
     db = SessionLocal()
+    lock = None
     try:
+        if conn:
+            try:
+                lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
+                if not lock.acquire(blocking=False):
+                    # Outro worker/processo já está processando.
+                    return
+            except Exception as e:
+                print(f"Error acquiring background factory lock: {e}")
+                lock = None
+
+        # Se existe worker RQ ativo, não compete com ele.
+        # Isso evita execução duplicada/paralela entre web e worker.
+        if _rq_workers_online():
+            return
+
         factory = VideoFactory(db)
-        # Process up to 5 jobs per request trigger
-        for _ in range(5):
+        # Fallback sem worker: drena fila localmente de forma sequencial.
+        # Safety guard evita loop infinito em caso de dados corrompidos.
+        for _ in range(200):
             if not factory.process_next_job():
                 break
     except Exception as e:
         print(f"Error processing background job: {e}")
     finally:
+        if lock:
+            try:
+                lock.release()
+            except Exception:
+                pass
         db.close()
 
 def _resolve_video_file_path(raw_path: Optional[str]) -> str:

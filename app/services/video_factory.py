@@ -49,7 +49,6 @@ class VideoFactory:
         self.db.refresh(plan)
 
         current_date = plan.start_date
-        first_long_video_id = None
         for day in range(plan.days):
             # Long Videos
             for v_idx in range(plan.videos_per_day):
@@ -64,11 +63,6 @@ class VideoFactory:
                 self.db.add(video)
                 self.db.commit()
                 self.db.refresh(video)
-                
-                # Processamento sequencial: só o primeiro LONG inicia imediatamente.
-                # Os demais entram quando o anterior concluir render.
-                if first_long_video_id is None:
-                    first_long_video_id = video.id
 
                 # Shorts (Placeholder - serão ativados após o vídeo longo ficar pronto)
                 for s_idx in range(plan.shorts_per_day):
@@ -85,21 +79,48 @@ class VideoFactory:
             current_date += timedelta(days=1)
         
         self.db.commit()
-        if first_long_video_id is not None:
-            self._add_job(first_long_video_id, "script")
+        # Dispara no máximo 1 pipeline LONG global.
+        # Se já houver LONG pendente/processando, os novos ficam em queued e serão
+        # liberados quando o atual finalizar render.
+        has_active_long = (
+            self.db.query(Job)
+            .join(Video, Video.id == Job.video_id)
+            .filter(
+                Job.status.in_(["pending", "processing"]),
+                Video.type == "LONG",
+                Video.parent_video_id == None,
+            )
+            .first()
+        )
+        if not has_active_long:
+            self._enqueue_next_long_video()
         return plan
 
     def _add_job(self, video_id: int, step: str):
-        job = Job(video_id=video_id, step=step, status="pending", progress=0)
-        self.db.add(job)
-        self.db.commit()
+        # Evita jobs duplicados da mesma etapa para o mesmo vídeo.
+        existing = (
+            self.db.query(Job)
+            .filter(
+                Job.video_id == video_id,
+                Job.step == step,
+                Job.status.in_(["pending", "processing"])
+            )
+            .order_by(Job.id.desc())
+            .first()
+        )
+        if existing:
+            job = existing
+        else:
+            job = Job(video_id=video_id, step=step, status="pending", progress=0)
+            self.db.add(job)
+            self.db.commit()
         
         # Enfileirar no Redis se disponível
         if queue:
             try:
                 # Import local para evitar ciclo
                 from app.tasks import process_job_task
-                queue.enqueue(process_job_task, job.id)
+                queue.enqueue(process_job_task, job.id, job_id=f"video_job_{job.id}")
                 print(f"Job {job.id} enfileirado no Redis.")
             except Exception as e:
                 print(f"Erro ao enfileirar job {job.id}: {e}")
@@ -177,32 +198,28 @@ class VideoFactory:
         self.process_job(job)
         return True
 
-    def _enqueue_next_long_video(self, current_video: Video):
-        """Enfileira o próximo vídeo LONG do plano para manter processamento um-a-um."""
-        if not current_video or not current_video.plan_id:
-            return
-
+    def _enqueue_next_long_video(self):
+        """Enfileira o próximo LONG queued globalmente (um pipeline por vez)."""
+        active_job_exists = (
+            self.db.query(Job.id)
+            .filter(
+                Job.video_id == Video.id,
+                Job.status.in_(["pending", "processing"])
+            )
+            .exists()
+        )
         next_video = (
             self.db.query(Video)
             .filter(
-                Video.plan_id == current_video.plan_id,
                 Video.parent_video_id == None,
                 Video.type == "LONG",
                 Video.status == "queued",
-                Video.id > current_video.id
+                ~active_job_exists,
             )
             .order_by(Video.id.asc())
             .first()
         )
         if not next_video:
-            return
-
-        existing_job = (
-            self.db.query(Job)
-            .filter(Job.video_id == next_video.id, Job.status.in_(["pending", "processing"]))
-            .first()
-        )
-        if existing_job:
             return
 
         self._add_job(next_video.id, "script")
@@ -215,6 +232,7 @@ class VideoFactory:
         job.logs = f"Iniciado em {datetime.now()}\n"
         self.db.commit()
 
+        enqueue_next_long = False
         try:
             video = self.db.query(Video).get(job.video_id)
             if not video:
@@ -249,8 +267,8 @@ class VideoFactory:
                 shorts = self.db.query(Video).filter(Video.parent_video_id == video.id).all()
                 for short in shorts:
                     self._add_job(short.id, "shorts_extract")
-                # Após concluir o LONG atual, libera o próximo LONG do plano.
-                self._enqueue_next_long_video(video)
+                # Após concluir o LONG atual, libera o próximo LONG globalmente.
+                enqueue_next_long = ((video.type or "").upper() == "LONG")
             
             elif job.step == "shorts_extract":
                 self._set_job_progress(job, 85, "Gerando short derivado...")
@@ -261,6 +279,11 @@ class VideoFactory:
             job.progress = 100
             job.logs += f"Concluído em {datetime.now()}\n"
             self.db.commit()
+            if enqueue_next_long:
+                try:
+                    self._enqueue_next_long_video()
+                except Exception as e:
+                    print(f"[Factory] Aviso ao liberar próximo LONG: {e}")
 
         except Exception as e:
             print(f"[Factory] Erro no Job {job.id}: {e}")
