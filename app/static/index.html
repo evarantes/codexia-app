@@ -2176,7 +2176,7 @@
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
                     }
-                }, 10000);
+                }, 5000); // 5s para atualizar fila e manter processamento em andamento
             },
             methods: {
                 async runDiagnostics() {

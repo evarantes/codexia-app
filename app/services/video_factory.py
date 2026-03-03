@@ -570,8 +570,32 @@ class VideoFactory:
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
-            self._set_job_progress(job, 90, "Escrevendo arquivo de vídeo...")
-            final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+            self._set_job_progress(job, 75, "Escrevendo arquivo de vídeo...")
+            write_logger = None
+            try:
+                import proglog
+                def _up(percent):
+                    self._set_job_progress(job, percent, "Escrevendo arquivo de vídeo...")
+                class RenderLogger(proglog.ProgressBarLogger):
+                    def bars_callback(self, bar, attr, value, old_value=None):
+                        super().bars_callback(bar, attr, value, old_value)
+                        if bar not in self.bars or not self.bars[bar].get("total"):
+                            return
+                        total = self.bars[bar]["total"]
+                        if total and value is not None:
+                            pct = 75 + int(24 * (value / total))
+                            try:
+                                _up(min(99, pct))
+                            except Exception:
+                                pass
+                write_logger = RenderLogger()
+            except Exception:
+                pass
+            kw = {"logger": write_logger} if write_logger else {}
+            final_video.write_videofile(
+                output_path, fps=24, codec="libx264", audio_codec="aac",
+                threads=1, ffmpeg_params=["-preset", "ultrafast"], **kw
+            )
             
             # Save Asset
             asset = Asset(

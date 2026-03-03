@@ -49,11 +49,8 @@ def process_jobs_background():
             return
 
         factory = VideoFactory(db)
-        # Fallback sem worker: drena fila localmente de forma sequencial.
-        # Safety guard evita loop infinito em caso de dados corrompidos.
-        for _ in range(200):
-            if not factory.process_next_job():
-                break
+        # Processa 1 job por chamada para evitar travamentos e processar vídeos um por vez
+        factory.process_next_job()
     except Exception as e:
         print(f"Error processing background job: {e}")
     finally:
@@ -388,8 +385,12 @@ def get_content_plan(plan_id: int, db: Session = Depends(get_db)):
     return plan
 
 @router.get("/auto/queue")
-def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
-    """Retorna a fila de produção (vídeos e jobs)."""
+def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
+    """Retorna a fila de produção (vídeos e jobs). Dispara processamento se houver jobs pendentes."""
+    pending = db.query(Job).filter(Job.status == "pending").first()
+    processing = db.query(Job).filter(Job.status == "processing").first()
+    if pending and not processing:
+        background_tasks.add_task(process_jobs_background)
     query = db.query(Video).order_by(Video.scheduled_at.asc())
     
     if status:
