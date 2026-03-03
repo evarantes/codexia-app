@@ -121,6 +121,144 @@ def _normalize_video_status(value: Optional[str]) -> str:
     }
     return aliases.get(upper, upper)
 
+def _build_public_video_url_from_path(resolved_path: Optional[str]) -> Optional[str]:
+    """Converte path físico do vídeo para URL pública servida pela API."""
+    if not resolved_path:
+        return None
+    name = os.path.basename(str(resolved_path).strip())
+    if not name:
+        return None
+    try:
+        from app.config import VIDEO_URL_PREFIX
+        return f"{VIDEO_URL_PREFIX}/{name}"
+    except Exception:
+        return f"/media/videos/{name}"
+
+def _find_scheduled_mirror_by_source(db: Session, production_video_id: int) -> Optional[ScheduledVideo]:
+    """Encontra item em scheduled_videos criado a partir do vídeo de produção."""
+    candidates = (
+        db.query(ScheduledVideo)
+        .filter(ScheduledVideo.script_data.isnot(None))
+        .filter(ScheduledVideo.script_data.contains("source_production_video_id"))
+        .all()
+    )
+    for item in candidates:
+        try:
+            data = json.loads(item.script_data or "{}")
+            if str(data.get("source_production_video_id")) == str(production_video_id):
+                return item
+        except Exception:
+            continue
+    return None
+
+def _build_scheduled_mirror_index(db: Session) -> Dict[str, ScheduledVideo]:
+    """Indexa scheduled_videos espelhados por source_production_video_id."""
+    index: Dict[str, ScheduledVideo] = {}
+    candidates = (
+        db.query(ScheduledVideo)
+        .filter(ScheduledVideo.script_data.isnot(None))
+        .filter(ScheduledVideo.script_data.contains("source_production_video_id"))
+        .all()
+    )
+    for item in candidates:
+        try:
+            data = json.loads(item.script_data or "{}")
+            source_id = data.get("source_production_video_id")
+            if source_id is not None:
+                index[str(source_id)] = item
+        except Exception:
+            continue
+    return index
+
+def _upsert_scheduled_from_production(db: Session, video: Video, mirror_index: Optional[Dict[str, ScheduledVideo]] = None):
+    """Garante que vídeo READY/PUBLISHED da produção apareça na fila de aguardando publicação."""
+    norm_status = _normalize_video_status(video.status)
+    if norm_status not in {"READY", "PUBLISHED"}:
+        return
+
+    plan = video.plan
+    final_path = _latest_final_asset_path(db, video.id) or _resolve_video_file_path(video.youtube_video_id)
+    public_video_url = _normalize_video_url_for_client(_build_public_video_url_from_path(final_path)) if final_path else None
+
+    if mirror_index is not None:
+        mirror = mirror_index.get(str(video.id))
+    else:
+        mirror = _find_scheduled_mirror_by_source(db, video.id)
+    payload = {}
+    if mirror and mirror.script_data:
+        try:
+            payload = json.loads(mirror.script_data)
+        except Exception:
+            payload = {}
+    payload.update({
+        "source": "production_queue",
+        "source_production_video_id": video.id,
+        "production_status": norm_status,
+    })
+
+    target_status = "published" if norm_status == "PUBLISHED" else "completed"
+    target_type = "short" if (video.type or "").upper() == "SHORT" else "video"
+    target_scheduled_for = video.scheduled_at or (mirror.scheduled_for if mirror else None) or datetime.now()
+
+    if mirror:
+        mirror.theme = (plan.theme if plan and getattr(plan, "theme", None) else mirror.theme) or "Produção"
+        mirror.title = video.title or mirror.title or f"Vídeo {video.id}"
+        mirror.description = video.description or mirror.description or ""
+        mirror.scheduled_for = target_scheduled_for
+        mirror.status = target_status
+        mirror.progress = 100
+        mirror.video_type = target_type
+        mirror.voice_style = getattr(plan, "voice_style", None) or mirror.voice_style or "human"
+        mirror.voice_gender = getattr(plan, "voice_gender", None) or mirror.voice_gender or "female"
+        if public_video_url:
+            mirror.video_url = public_video_url
+        if norm_status == "PUBLISHED" and video.youtube_video_id:
+            mirror.youtube_video_id = video.youtube_video_id
+            mirror.uploaded_at = mirror.uploaded_at or datetime.now()
+        mirror.script_data = json.dumps(payload)
+    else:
+        mirror = ScheduledVideo(
+            theme=(plan.theme if plan and getattr(plan, "theme", None) else "Produção"),
+            title=video.title or f"Vídeo {video.id}",
+            description=video.description or "",
+            scheduled_for=target_scheduled_for,
+            status=target_status,
+            video_type=target_type,
+            script_data=json.dumps(payload),
+            video_url=public_video_url,
+            progress=100,
+            auto_post=False,
+            voice_style=getattr(plan, "voice_style", "human") if plan else "human",
+            voice_gender=getattr(plan, "voice_gender", "female") if plan else "female",
+            music_file_path=getattr(plan, "music_file", None) if plan else None,
+            youtube_video_id=(video.youtube_video_id if norm_status == "PUBLISHED" else None),
+            uploaded_at=(datetime.now() if norm_status == "PUBLISHED" else None),
+        )
+        db.add(mirror)
+        if mirror_index is not None:
+            mirror_index[str(video.id)] = mirror
+
+def _sync_ready_production_to_scheduled(db: Session, limit: int = 200):
+    """Sincroniza vídeos READY/PUBLISHED da produção para a fila de aguardando publicação."""
+    from sqlalchemy import func
+    candidates = (
+        db.query(Video)
+        .filter(func.upper(func.trim(Video.status)).in_(["READY", "PUBLISHED", "COMPLETED"]))
+        .order_by(Video.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    mirror_index = _build_scheduled_mirror_index(db)
+    for video in candidates:
+        _upsert_scheduled_from_production(db, video, mirror_index=mirror_index)
+    db.commit()
+
+def _delete_scheduled_mirror(db: Session, production_video_id: int):
+    """Remove item espelho em scheduled_videos de um vídeo de produção."""
+    mirror = _find_scheduled_mirror_by_source(db, production_video_id)
+    if mirror:
+        db.delete(mirror)
+
 router = APIRouter(
     prefix="/youtube",
     tags=["youtube"],
@@ -165,6 +303,9 @@ def get_content_plan(plan_id: int, db: Session = Depends(get_db)):
 @router.get("/auto/queue")
 def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
     """Retorna a fila de produção (vídeos e jobs)."""
+    # Garante que vídeos prontos de produção apareçam no bloco "Aguardando Publicação"
+    _sync_ready_production_to_scheduled(db, limit=max(200, limit * 4))
+
     query = db.query(Video).order_by(Video.scheduled_at.asc())
     
     if status:
@@ -283,6 +424,7 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         video.status = "PUBLISHED"
         video.published_at = datetime.now()
         video.youtube_video_id = youtube_id
+        _upsert_scheduled_from_production(db, video)
         db.commit()
         
         return {"status": "Published", "youtube_id": youtube_id}
@@ -311,6 +453,7 @@ def schedule_production_video(video_id: int, data: Dict[str, Any], db: Session =
         raise HTTPException(status_code=400, detail="Formato de data inválido.")
 
     video.scheduled_at = scheduled_at
+    _upsert_scheduled_from_production(db, video)
     db.commit()
     return {
         "status": "scheduled",
@@ -356,6 +499,7 @@ def regenerate_production_video(video_id: int, background_tasks: BackgroundTasks
     video.status = "queued"
     video.youtube_video_id = None
     video.published_at = None
+    _delete_scheduled_mirror(db, video.id)
     db.commit()
 
     factory = VideoFactory(db)
@@ -383,8 +527,10 @@ def delete_production_video(video_id: int, db: Session = Depends(get_db)):
     # Remove vídeos derivados (shorts) para evitar órfãos
     children = db.query(Video).filter(Video.parent_video_id == video.id).all()
     for child in children:
+        _delete_scheduled_mirror(db, child.id)
         db.delete(child)
 
+    _delete_scheduled_mirror(db, video.id)
     db.delete(video)
     db.commit()
     return {"status": "deleted"}
@@ -1076,6 +1222,7 @@ def download_scheduled_video(video_id: int, token: Optional[str] = Query(None), 
 @router.get("/schedule")
 def get_schedule(db: Session = Depends(get_db)):
     """Lista vídeos agendados; inclui description e error_msg para exibir erro na UI (Ver Erro)."""
+    _sync_ready_production_to_scheduled(db)
     videos = db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).all()
     result = []
     for v in videos:

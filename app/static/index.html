@@ -2103,7 +2103,7 @@
                     const scheduledReady = this.scheduledVideos
                         .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
                         .map(v => ({ ...v, _source: 'scheduled' }));
-                    return [...this.productionReadyVideos, ...scheduledReady];
+                    return scheduledReady;
                 },
                 publishedVideos() {
                     return this.scheduledVideos.filter(v => this.isPublishedStatus(v.status));
