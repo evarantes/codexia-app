@@ -832,6 +832,15 @@
                                             <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800" title="Ver Detalhes/Logs">
                                                 <i class="fas fa-info-circle"></i>
                                             </button>
+                                            <button v-if="canPauseProduction(video)" @click="pauseProductionVideo(video)" class="text-yellow-600 hover:text-yellow-800" title="Pausar produção">
+                                                <i class="fas fa-pause-circle"></i>
+                                            </button>
+                                            <button v-if="canResumeProduction(video)" @click="resumeProductionVideo(video)" class="text-emerald-600 hover:text-emerald-800" title="Continuar produção">
+                                                <i class="fas fa-play-circle"></i>
+                                            </button>
+                                            <button v-if="canCancelProduction(video)" @click="cancelProductionVideo(video)" class="text-gray-600 hover:text-gray-800" title="Cancelar produção">
+                                                <i class="fas fa-stop-circle"></i>
+                                            </button>
                                             <button v-if="isFailedStatus(video.status)" @click="retryVideoStep(video)" class="text-orange-600 hover:text-orange-800" title="Reprocessar">
                                                 <i class="fas fa-redo"></i>
                                             </button>
@@ -2094,7 +2103,7 @@
             },
             computed: {
                 productionQueueVideos() {
-                    return this.productionVideos.filter(v => !(this.isReadyStatus(v.status) || this.isPublishedStatus(v.status)));
+                    return this.productionVideos.filter(v => !(this.isReadyStatus(v.status) || this.isPublishedStatus(v.status) || this.isCancelledStatus(v.status)));
                 },
                 productionReadyVideos() {
                     return this.productionVideos.filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status));
@@ -2675,7 +2684,14 @@
                     const map = {
                         'pending': 'Pendente',
                         'queued': 'Na Fila',
+                        'script': 'Roteiro',
+                        'tts': 'Narração',
+                        'visuals': 'Visuais',
+                        'render': 'Renderização',
                         'processing': 'Processando',
+                        'paused': 'Pausado',
+                        'cancelled': 'Cancelado',
+                        'canceled': 'Cancelado',
                         'completed': 'Pronto',
                         'ready': 'Pronto para publicar',
                         'published': 'Publicado',
@@ -2795,7 +2811,9 @@
                 getStatusClass(status) {
                     const s = this.normalizedStatus(status);
                     if (s === 'queued') return 'bg-yellow-100 text-yellow-800';
-                    if (s === 'processing') return 'bg-blue-100 text-blue-800';
+                    if (s === 'processing' || s === 'script' || s === 'tts' || s === 'visuals' || s === 'render') return 'bg-blue-100 text-blue-800';
+                    if (this.isPausedStatus(s)) return 'bg-orange-100 text-orange-800';
+                    if (this.isCancelledStatus(s)) return 'bg-gray-200 text-gray-700';
                     if (this.isReadyStatus(s)) return 'bg-green-100 text-green-800';
                     if (this.isPublishedStatus(s)) return 'bg-purple-100 text-purple-800';
                     if (this.isFailedStatus(s)) return 'bg-red-100 text-red-800';
@@ -2838,6 +2856,27 @@
                     const s = this.normalizedStatus(status);
                     return s === 'error' || s === 'failed' || s.includes('error') || s.includes('falha');
                 },
+                isPausedStatus(status) {
+                    const s = this.normalizedStatus(status);
+                    return s === 'paused' || s.startsWith('paused');
+                },
+                isCancelledStatus(status) {
+                    const s = this.normalizedStatus(status);
+                    return s === 'cancelled' || s === 'canceled' || s.startsWith('cancelled') || s.startsWith('canceled');
+                },
+                isActiveProductionStatus(status) {
+                    const s = this.normalizedStatus(status);
+                    return ['queued', 'processing', 'script', 'tts', 'visuals', 'render'].includes(s);
+                },
+                canPauseProduction(video) {
+                    return video && this.isActiveProductionStatus(video.status);
+                },
+                canResumeProduction(video) {
+                    return video && this.isPausedStatus(video.status);
+                },
+                canCancelProduction(video) {
+                    return video && (this.isActiveProductionStatus(video.status) || this.isPausedStatus(video.status));
+                },
                 appendTokenToInternalUrl(url) {
                     const raw = (url || '').toString().trim();
                     if (!raw) return raw;
@@ -2860,6 +2899,54 @@
                         return;
                     }
                     window.open(this.buildProductionWatchUrl(video.id), '_blank');
+                },
+                async pauseProductionVideo(video) {
+                    if (!video || !video.id) return;
+                    if (!confirm("Deseja pausar a produção deste vídeo?")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/pause`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Produção pausada.");
+                            this.fetchProductionQueue();
+                        } else {
+                            alert(data.detail || "Erro ao pausar produção.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao pausar produção: " + (e.message || e));
+                    }
+                },
+                async resumeProductionVideo(video) {
+                    if (!video || !video.id) return;
+                    if (!confirm("Deseja continuar a produção deste vídeo?")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/resume`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Produção retomada.");
+                            this.fetchProductionQueue();
+                        } else {
+                            alert(data.detail || "Erro ao continuar produção.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao continuar produção: " + (e.message || e));
+                    }
+                },
+                async cancelProductionVideo(video) {
+                    if (!video || !video.id) return;
+                    if (!confirm("Deseja cancelar a produção deste vídeo? Esta ação interrompe as próximas etapas.")) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/videos/${video.id}/cancel`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Produção cancelada.");
+                            this.fetchProductionQueue();
+                        } else {
+                            alert(data.detail || "Erro ao cancelar produção.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao cancelar produção: " + (e.message || e));
+                    }
                 },
                 async saveProductionVideoSchedule(video) {
                     if (!video || !video.id) return;

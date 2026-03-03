@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlalchemy.orm import Session
-from sqlalchemy import case
+from sqlalchemy import case, func
 from app.models import ContentPlan, Video, Scene, Job, Asset
 from app.services.ai_generator import AIContentGenerator
 from app.services.video_generator import VideoGenerator
@@ -174,6 +174,18 @@ class VideoFactory:
             job.logs = (job.logs or "") + f"{log_line}\n"
         self.db.commit()
 
+    def _video_control_state(self, video_id: int) -> str:
+        """Retorna estado de controle do vídeo: PAUSE, CANCEL ou vazio."""
+        video = self.db.query(Video).get(video_id)
+        if not video:
+            return "CANCEL"
+        status = (video.status or "").strip().upper()
+        if status.startswith("CANCELLED") or status.startswith("CANCELED"):
+            return "CANCEL"
+        if status.startswith("PAUSED"):
+            return "PAUSE"
+        return ""
+
     def process_next_job(self):
         """Pega o próximo job pendente e executa. Chamado pelo Worker/Cron (Legado/MVP)."""
         # Prioriza concluir um vídeo antes de iniciar outro:
@@ -189,7 +201,13 @@ class VideoFactory:
         )
         job = (
             self.db.query(Job)
-            .filter(Job.status == "pending")
+            .join(Video, Video.id == Job.video_id)
+            .filter(
+                Job.status == "pending",
+                ~func.upper(func.trim(Video.status)).like("PAUSED%"),
+                ~func.upper(func.trim(Video.status)).like("CANCELLED%"),
+                ~func.upper(func.trim(Video.status)).like("CANCELED%"),
+            )
             .order_by(Job.video_id.asc(), step_priority.asc(), Job.created_at.asc())
             .first()
         )
@@ -213,7 +231,7 @@ class VideoFactory:
             .filter(
                 Video.parent_video_id == None,
                 Video.type == "LONG",
-                Video.status == "queued",
+                func.upper(func.trim(Video.status)) == "QUEUED",
                 ~active_job_exists,
             )
             .order_by(Video.id.asc())
@@ -227,6 +245,19 @@ class VideoFactory:
     def process_job(self, job: Job):
         """Executa um job específico."""
         print(f"[Factory] Processando Job {job.id} - Step: {job.step} para Video {job.video_id}")
+        # Se o vídeo foi pausado/cancelado antes do worker iniciar, não executa.
+        pre_control = self._video_control_state(job.video_id)
+        if pre_control == "CANCEL":
+            job.status = "cancelled"
+            job.logs = (job.logs or "") + "Cancelado antes de iniciar execução.\n"
+            self.db.commit()
+            return
+        if pre_control == "PAUSE":
+            job.status = "paused"
+            job.logs = (job.logs or "") + "Pausado antes de iniciar execução.\n"
+            self.db.commit()
+            return
+
         job.status = "processing"
         job.progress = max(int(job.progress or 0), 5)
         job.logs = f"Iniciado em {datetime.now()}\n"
@@ -241,43 +272,79 @@ class VideoFactory:
             if job.step == "script":
                 self._set_job_progress(job, 10, "Gerando roteiro...")
                 self._step_script(video, job)
-                # Next: TTS
-                self._add_job(video.id, "tts")
-                video.status = "SCRIPT"
+                control = self._video_control_state(video.id)
+                if control == "CANCEL":
+                    video.status = "CANCELLED"
+                elif control == "PAUSE":
+                    video.status = "PAUSED"
+                else:
+                    # Next: TTS
+                    self._add_job(video.id, "tts")
+                    video.status = "SCRIPT"
             
             elif job.step == "tts":
                 self._set_job_progress(job, 35, "Gerando narração (TTS)...")
                 self._step_tts(video, job)
-                # Next: Visuals
-                self._add_job(video.id, "visuals")
-                video.status = "TTS"
+                control = self._video_control_state(video.id)
+                if control == "CANCEL":
+                    video.status = "CANCELLED"
+                elif control == "PAUSE":
+                    video.status = "PAUSED"
+                else:
+                    # Next: Visuals
+                    self._add_job(video.id, "visuals")
+                    video.status = "TTS"
             
             elif job.step == "visuals":
                 self._set_job_progress(job, 55, "Gerando visuais...")
                 self._step_visuals(video, job)
-                # Next: Render
-                self._add_job(video.id, "render")
-                video.status = "VISUALS"
+                control = self._video_control_state(video.id)
+                if control == "CANCEL":
+                    video.status = "CANCELLED"
+                elif control == "PAUSE":
+                    video.status = "PAUSED"
+                else:
+                    # Next: Render
+                    self._add_job(video.id, "render")
+                    video.status = "VISUALS"
             
             elif job.step == "render":
                 self._set_job_progress(job, 75, "Renderizando vídeo final...")
                 self._step_render(video, job)
-                video.status = "READY"
-                # Trigger Shorts generation
-                shorts = self.db.query(Video).filter(Video.parent_video_id == video.id).all()
-                for short in shorts:
-                    self._add_job(short.id, "shorts_extract")
-                # Após concluir o LONG atual, libera o próximo LONG globalmente.
-                enqueue_next_long = ((video.type or "").upper() == "LONG")
+                control = self._video_control_state(video.id)
+                if control == "CANCEL":
+                    video.status = "CANCELLED"
+                elif control == "PAUSE":
+                    video.status = "PAUSED"
+                else:
+                    video.status = "READY"
+                    # Trigger Shorts generation
+                    shorts = self.db.query(Video).filter(Video.parent_video_id == video.id).all()
+                    for short in shorts:
+                        self._add_job(short.id, "shorts_extract")
+                    # Após concluir o LONG atual, libera o próximo LONG globalmente.
+                    enqueue_next_long = ((video.type or "").upper() == "LONG")
             
             elif job.step == "shorts_extract":
                 self._set_job_progress(job, 85, "Gerando short derivado...")
                 self._step_shorts_extract(video, job)
-                video.status = "READY"
+                control = self._video_control_state(video.id)
+                if control == "CANCEL":
+                    video.status = "CANCELLED"
+                elif control == "PAUSE":
+                    video.status = "PAUSED"
+                else:
+                    video.status = "READY"
 
+            final_video_status = (video.status or "").strip().upper()
             job.status = "completed"
-            job.progress = 100
-            job.logs += f"Concluído em {datetime.now()}\n"
+            if final_video_status.startswith("PAUSED"):
+                job.logs += f"Etapa concluída e produção pausada em {datetime.now()}\n"
+            elif final_video_status.startswith("CANCELLED") or final_video_status.startswith("CANCELED"):
+                job.logs += f"Etapa finalizada e produção cancelada em {datetime.now()}\n"
+            else:
+                job.progress = 100
+                job.logs += f"Concluído em {datetime.now()}\n"
             self.db.commit()
             if enqueue_next_long:
                 try:

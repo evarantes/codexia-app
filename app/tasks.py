@@ -19,7 +19,7 @@ def process_job_task(job_id: int):
             return
 
         # Evita reprocessar jobs já finalizados (pode acontecer por retries/dup no Redis).
-        if job.status in ("completed", "failed"):
+        if job.status in ("completed", "failed", "paused", "cancelled"):
             return
 
         # Se outro worker já está com este job em execução, ignora duplicata.

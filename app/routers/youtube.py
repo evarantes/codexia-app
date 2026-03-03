@@ -167,9 +167,46 @@ def _progress_from_video_status(status: Optional[str]) -> int:
         "RENDER": 85,
         "READY": 100,
         "PUBLISHED": 100,
+        "PAUSED": 0,
+        "CANCELLED": 0,
         "ERROR": 0,
     }
     return mapping.get(s, 0)
+
+def _infer_resume_step(db: Session, video: Video) -> Optional[str]:
+    """Infere próxima etapa para retomar produção após pausa."""
+    paused_or_pending = (
+        db.query(Job)
+        .filter(Job.video_id == video.id, Job.status.in_(["paused", "pending"]))
+        .order_by(Job.created_at.asc(), Job.id.asc())
+        .first()
+    )
+    if paused_or_pending:
+        return (paused_or_pending.step or "").strip().lower() or "script"
+
+    latest_completed = (
+        db.query(Job)
+        .filter(Job.video_id == video.id, Job.status == "completed")
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .first()
+    )
+    if latest_completed:
+        step = (latest_completed.step or "").strip().lower()
+        next_map = {
+            "script": "tts",
+            "tts": "visuals",
+            "visuals": "render",
+        }
+        return next_map.get(step)
+
+    status = _normalize_video_status(video.status)
+    from_status = {
+        "QUEUED": "script",
+        "SCRIPT": "tts",
+        "TTS": "visuals",
+        "VISUALS": "render",
+    }
+    return from_status.get(status, "script")
 
 def _build_public_video_url_from_path(resolved_path: Optional[str]) -> Optional[str]:
     """Converte path físico do vídeo para URL pública servida pela API."""
@@ -364,6 +401,7 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
     
     result = []
     for v in videos:
+        normalized_video_status = _normalize_video_status(v.status)
         # Prioridade: job em processamento > pendente > último job
         processing_job = (
             db.query(Job)
@@ -385,11 +423,15 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
         )
         active_job = processing_job or pending_job or latest_job
 
-        fallback_progress = _progress_from_video_status(v.status)
+        fallback_progress = _progress_from_video_status(normalized_video_status)
         job_progress = int(active_job.progress or 0) if active_job else 0
         progress = max(job_progress, fallback_progress)
 
-        if active_job:
+        if normalized_video_status == "PAUSED":
+            current_step = "paused"
+        elif normalized_video_status == "CANCELLED":
+            current_step = "cancelled"
+        elif active_job:
             if active_job.status == "processing":
                 current_step = active_job.step or "processing"
             elif active_job.status == "pending":
@@ -403,7 +445,7 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
             "id": v.id,
             "title": v.title,
             "type": v.type,
-            "status": _normalize_video_status(v.status),
+            "status": normalized_video_status,
             "created_at": v.created_at,
             "scheduled_at": v.scheduled_at,
             "progress": progress,
@@ -540,6 +582,126 @@ def schedule_production_video(video_id: int, data: Dict[str, Any], db: Session =
         "id": video.id,
         "scheduled_at": video.scheduled_at.isoformat() if video.scheduled_at else None,
     }
+
+@router.post("/videos/{video_id}/pause")
+def pause_production_video(video_id: int, db: Session = Depends(get_db)):
+    """Pausa a produção de um vídeo (cooperativo entre etapas)."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    status = _normalize_video_status(video.status)
+    if status in {"READY", "PUBLISHED"}:
+        raise HTTPException(status_code=400, detail="Vídeo já concluído/publicado; não há produção para pausar.")
+    if status == "CANCELLED":
+        raise HTTPException(status_code=400, detail="Vídeo cancelado não pode ser pausado.")
+    if status == "PAUSED":
+        return {"status": "paused", "message": "Produção já está pausada."}
+
+    pending_jobs = db.query(Job).filter(Job.video_id == video.id, Job.status == "pending").all()
+    for j in pending_jobs:
+        j.status = "paused"
+        j.logs = (j.logs or "") + "Pausa solicitada pelo usuário.\n"
+
+    processing_job = (
+        db.query(Job)
+        .filter(Job.video_id == video.id, Job.status == "processing")
+        .order_by(Job.created_at.desc())
+        .first()
+    )
+    if processing_job:
+        processing_job.logs = (processing_job.logs or "") + "Pausa solicitada pelo usuário (aplicada após a etapa atual).\n"
+
+    video.status = "PAUSED"
+    db.commit()
+    return {"status": "paused", "message": "Produção pausada com sucesso."}
+
+@router.post("/videos/{video_id}/resume")
+def resume_production_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Retoma a produção de um vídeo pausado."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    status = _normalize_video_status(video.status)
+    if status == "CANCELLED":
+        raise HTTPException(status_code=400, detail="Vídeo cancelado não pode ser retomado.")
+    if status != "PAUSED":
+        raise HTTPException(status_code=400, detail="Apenas vídeos pausados podem ser retomados.")
+
+    processing_job = (
+        db.query(Job)
+        .filter(Job.video_id == video.id, Job.status == "processing")
+        .order_by(Job.created_at.desc())
+        .first()
+    )
+    if processing_job:
+        # Caso raro: pausa solicitada e retomada quase simultânea.
+        video.status = (processing_job.step or "processing").upper()
+        db.commit()
+        return {"status": "processing", "message": "Vídeo já estava em processamento."}
+
+    paused_jobs = (
+        db.query(Job)
+        .filter(Job.video_id == video.id, Job.status == "paused")
+        .order_by(Job.created_at.asc(), Job.id.asc())
+        .all()
+    )
+    if paused_jobs:
+        for j in paused_jobs:
+            j.status = "pending"
+            j.logs = (j.logs or "") + "Produção retomada pelo usuário.\n"
+
+    next_step = _infer_resume_step(db, video)
+    if not next_step:
+        # Não há etapa restante: marca como pronto.
+        video.status = "READY"
+        _upsert_scheduled_from_production(db, video)
+        db.commit()
+        return {"status": "ready", "message": "Vídeo já estava concluído."}
+
+    video.status = "queued"
+    db.commit()
+
+    factory = VideoFactory(db)
+    factory._add_job(video.id, next_step)
+    background_tasks.add_task(process_jobs_background)
+    return {"status": "queued", "step": next_step, "message": "Produção retomada com sucesso."}
+
+@router.post("/videos/{video_id}/cancel")
+def cancel_production_video(video_id: int, db: Session = Depends(get_db)):
+    """Cancela a produção de um vídeo."""
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    status = _normalize_video_status(video.status)
+    if status in {"READY", "PUBLISHED"}:
+        raise HTTPException(status_code=400, detail="Vídeo já concluído/publicado; não é possível cancelar produção.")
+    if status == "CANCELLED":
+        return {"status": "cancelled", "message": "Produção já estava cancelada."}
+
+    queued_jobs = (
+        db.query(Job)
+        .filter(Job.video_id == video.id, Job.status.in_(["pending", "paused"]))
+        .all()
+    )
+    for j in queued_jobs:
+        j.status = "cancelled"
+        j.logs = (j.logs or "") + "Produção cancelada pelo usuário.\n"
+
+    processing_job = (
+        db.query(Job)
+        .filter(Job.video_id == video.id, Job.status == "processing")
+        .order_by(Job.created_at.desc())
+        .first()
+    )
+    if processing_job:
+        processing_job.logs = (processing_job.logs or "") + "Cancelamento solicitado pelo usuário (aplicado após a etapa atual).\n"
+
+    video.status = "CANCELLED"
+    db.commit()
+    return {"status": "cancelled", "message": "Produção cancelada com sucesso."}
 
 @router.post("/videos/{video_id}/regenerate")
 def regenerate_production_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
