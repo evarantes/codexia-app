@@ -798,7 +798,12 @@
                                 <i class="fas fa-unlock"></i> Desbloquear fila
                             </button>
                         </div>
-                        <div v-if="productionQueueVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo em produção no momento.</div>
+                        <div v-if="productionQueueVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">
+                            Nenhum vídeo em produção no momento.
+                            <span v-if="productionVideos.length === 0 && readyVideos.length === 0" class="block mt-2">
+                                <button @click="checkProductionStats" class="text-sm text-blue-600 hover:underline">Verificar se há vídeos no banco</button>
+                            </span>
+                        </div>
                         <div v-else class="overflow-x-auto">
                             <table class="w-full">
                                 <thead>
@@ -2117,7 +2122,14 @@
                     const scheduledReady = this.scheduledVideos
                         .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
                         .map(v => ({ ...v, _source: 'scheduled' }));
-                    return scheduledReady;
+                    const productionReady = this.productionVideos
+                        .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
+                        .map(v => ({
+                            ...v,
+                            _source: 'production',
+                            scheduled_for_local: v.scheduled_at ? String(v.scheduled_at).slice(0, 16) : ''
+                        }));
+                    return [...scheduledReady, ...productionReady];
                 },
                 publishedVideos() {
                     return this.scheduledVideos.filter(v => this.isPublishedStatus(v.status));
@@ -2813,6 +2825,20 @@
                     }
                 },
 
+                async checkProductionStats() {
+                    try {
+                        const res = await this.authFetch('/youtube/auto/stats');
+                        const data = await res.json();
+                        if (res.ok) {
+                            const msg = `Vídeos no banco: ${data.total_videos || 0}\nPlanos: ${data.total_plans || 0}\nPor status: ${JSON.stringify(data.videos_by_status || {})}\n\nSe total_videos=0, o banco pode ter sido reiniciado (deploy sem volume /data persistente).`;
+                            alert(msg);
+                        } else {
+                            alert('Erro ao verificar: ' + (data.detail || res.status));
+                        }
+                    } catch (e) {
+                        alert('Erro de conexão: ' + (e.message || e));
+                    }
+                },
                 async unblockQueue() {
                     if (!confirm("Desbloquear fila? Isso reiniciará jobs travados e disparará o processamento.")) return;
                     try {

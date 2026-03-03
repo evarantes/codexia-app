@@ -400,6 +400,23 @@ def get_content_plan(plan_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Plan not found")
     return plan
 
+@router.get("/auto/stats")
+def get_production_stats(db: Session = Depends(get_db)):
+    """Retorna contagem de vídeos/plans para diagnóstico (ex: vídeos sumiram após deploy)."""
+    from sqlalchemy import func
+    total_videos = db.query(Video).count()
+    total_plans = db.query(ContentPlan).count()
+    by_status = (
+        db.query(func.upper(func.trim(Video.status)).label("s"), func.count(Video.id))
+        .group_by(func.upper(func.trim(Video.status)))
+        .all()
+    )
+    return {
+        "total_videos": total_videos,
+        "total_plans": total_plans,
+        "videos_by_status": {s or "null": c for s, c in by_status},
+    }
+
 def _reset_stuck_jobs(db: Session, timeout_minutes: int = 10):
     """Reseta Jobs travados em 'processing' há muito tempo (ex: servidor reiniciou)."""
     from datetime import timedelta

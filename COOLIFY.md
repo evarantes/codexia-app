@@ -113,3 +113,11 @@ Configure a GitHub App do Coolify (documentação oficial do Coolify) para integ
 | Branch configurada = `main`? | Coolify → Build / Source |
 | Repositório = `evarantes/codexia-app`? | Coolify → General |
 | Cache do navegador? | Abra em aba anônima ou Ctrl+Shift+R para forçar recarga sem cache |
+
+### Vídeos sumiram / não aparecem em lugar nenhum
+
+Se vídeos produzidos desapareceram após um deploy:
+
+1. **Volume /data não persistente:** Sem o volume em `/data`, o SQLite é recriado a cada deploy e os dados se perdem. Verifique em Coolify → Storage se há volume com Destination Path = `/data`.
+2. **Verificar no app:** Na aba YouTube Auto, se Fila de Produção e Aguardando Publicação estiverem vazios, clique em **"Verificar se há vídeos no banco"**. Se mostrar `total_videos: 0`, o banco foi resetado (novo container sem persistência).
+3. **Solução:** Configure o volume `/data` e faça um novo planejamento. Os dados antigos não podem ser recuperados se o banco foi perdido.
