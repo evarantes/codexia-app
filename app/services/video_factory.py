@@ -6,6 +6,7 @@ import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlalchemy.orm import Session
+from sqlalchemy import case
 from app.models import ContentPlan, Video, Scene, Job, Asset
 from app.services.ai_generator import AIContentGenerator
 from app.services.video_generator import VideoGenerator
@@ -48,6 +49,7 @@ class VideoFactory:
         self.db.refresh(plan)
 
         current_date = plan.start_date
+        first_long_video_id = None
         for day in range(plan.days):
             # Long Videos
             for v_idx in range(plan.videos_per_day):
@@ -63,8 +65,10 @@ class VideoFactory:
                 self.db.commit()
                 self.db.refresh(video)
                 
-                # Enfileira Job de Script
-                self._add_job(video.id, "script")
+                # Processamento sequencial: só o primeiro LONG inicia imediatamente.
+                # Os demais entram quando o anterior concluir render.
+                if first_long_video_id is None:
+                    first_long_video_id = video.id
 
                 # Shorts (Placeholder - serão ativados após o vídeo longo ficar pronto)
                 for s_idx in range(plan.shorts_per_day):
@@ -81,6 +85,8 @@ class VideoFactory:
             current_date += timedelta(days=1)
         
         self.db.commit()
+        if first_long_video_id is not None:
+            self._add_job(first_long_video_id, "script")
         return plan
 
     def _add_job(self, video_id: int, step: str):
@@ -149,11 +155,57 @@ class VideoFactory:
 
     def process_next_job(self):
         """Pega o próximo job pendente e executa. Chamado pelo Worker/Cron (Legado/MVP)."""
-        job = self.db.query(Job).filter(Job.status == "pending").order_by(Job.created_at.asc()).first()
+        # Prioriza concluir um vídeo antes de iniciar outro:
+        # 1) menor video_id
+        # 2) ordem natural das etapas
+        step_priority = case(
+            (Job.step == "script", 1),
+            (Job.step == "tts", 2),
+            (Job.step == "visuals", 3),
+            (Job.step == "render", 4),
+            (Job.step == "shorts_extract", 5),
+            else_=99
+        )
+        job = (
+            self.db.query(Job)
+            .filter(Job.status == "pending")
+            .order_by(Job.video_id.asc(), step_priority.asc(), Job.created_at.asc())
+            .first()
+        )
         if not job:
             return False
         self.process_job(job)
         return True
+
+    def _enqueue_next_long_video(self, current_video: Video):
+        """Enfileira o próximo vídeo LONG do plano para manter processamento um-a-um."""
+        if not current_video or not current_video.plan_id:
+            return
+
+        next_video = (
+            self.db.query(Video)
+            .filter(
+                Video.plan_id == current_video.plan_id,
+                Video.parent_video_id == None,
+                Video.type == "LONG",
+                Video.status == "queued",
+                Video.id > current_video.id
+            )
+            .order_by(Video.id.asc())
+            .first()
+        )
+        if not next_video:
+            return
+
+        existing_job = (
+            self.db.query(Job)
+            .filter(Job.video_id == next_video.id, Job.status.in_(["pending", "processing"]))
+            .first()
+        )
+        if existing_job:
+            return
+
+        self._add_job(next_video.id, "script")
 
     def process_job(self, job: Job):
         """Executa um job específico."""
@@ -197,6 +249,8 @@ class VideoFactory:
                 shorts = self.db.query(Video).filter(Video.parent_video_id == video.id).all()
                 for short in shorts:
                     self._add_job(short.id, "shorts_extract")
+                # Após concluir o LONG atual, libera o próximo LONG do plano.
+                self._enqueue_next_long_video(video)
             
             elif job.step == "shorts_extract":
                 self._set_job_progress(job, 85, "Gerando short derivado...")
