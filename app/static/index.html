@@ -792,7 +792,12 @@
                     
                     <!-- 1. Production Queue -->
                     <div class="bg-white rounded-lg shadow p-6 border-l-4 border-yellow-400">
-                        <h2 class="text-xl font-bold mb-4 text-yellow-800"><i class="fas fa-industry"></i> Fila de Produção</h2>
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-yellow-800"><i class="fas fa-industry"></i> Fila de Produção</h2>
+                            <button v-if="productionQueueVideos.length > 0" @click="unblockQueue" class="text-sm px-3 py-1.5 bg-amber-100 text-amber-800 hover:bg-amber-200 rounded border border-amber-300" title="Reseta jobs travados e dispara processamento">
+                                <i class="fas fa-unlock"></i> Desbloquear fila
+                            </button>
+                        </div>
                         <div v-if="productionQueueVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo em produção no momento.</div>
                         <div v-else class="overflow-x-auto">
                             <table class="w-full">
@@ -2805,6 +2810,22 @@
                     } catch (e) {
                         console.error("Erro ao buscar fila:", e);
                         this.productionVideos = [];
+                    }
+                },
+
+                async unblockQueue() {
+                    if (!confirm("Desbloquear fila? Isso reiniciará jobs travados e disparará o processamento.")) return;
+                    try {
+                        const res = await this.authFetch('/youtube/auto/unblock', { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Fila desbloqueada.");
+                            this.fetchProductionQueue();
+                        } else {
+                            alert("Erro: " + (data.detail || "Falha ao desbloquear"));
+                        }
+                    } catch (e) {
+                        alert("Erro de conexão.");
                     }
                 },
 

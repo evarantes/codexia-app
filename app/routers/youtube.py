@@ -400,9 +400,32 @@ def get_content_plan(plan_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Plan not found")
     return plan
 
+def _reset_stuck_jobs(db: Session, timeout_minutes: int = 10):
+    """Reseta Jobs travados em 'processing' há muito tempo (ex: servidor reiniciou)."""
+    from datetime import timedelta
+    from sqlalchemy import func
+    cutoff = datetime.now() - timedelta(minutes=timeout_minutes)
+    stuck = (
+        db.query(Job)
+        .filter(Job.status == "processing")
+        .filter(func.coalesce(Job.updated_at, Job.created_at) < cutoff)
+        .all()
+    )
+    for j in stuck:
+        j.status = "pending"
+        j.progress = 0
+        j.logs = (j.logs or "") + f"\n[Recovery] Job travado por {timeout_minutes}+ min. Reenfileirado em {datetime.now()}."
+        v = db.query(Video).get(j.video_id)
+        if v and (v.status or "").upper() not in ("PAUSED", "CANCELLED", "CANCELED"):
+            v.status = "queued"
+        print(f"[Factory] Recovery: Job {j.id} (video {j.video_id}) reenfileirado.")
+    if stuck:
+        db.commit()
+
 @router.get("/auto/queue")
 def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
     """Retorna a fila de produção (vídeos e jobs). Dispara processamento se houver jobs pendentes."""
+    _reset_stuck_jobs(db)
     pending = db.query(Job).filter(Job.status == "pending").first()
     processing = db.query(Job).filter(Job.status == "processing").first()
     if pending and not processing:
@@ -847,6 +870,13 @@ def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends
     """Manually trigger job processing (for testing/worker simulation)."""
     background_tasks.add_task(process_jobs_background)
     return {"status": "Processing triggered"}
+
+@router.post("/auto/unblock")
+def unblock_production_queue(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Reseta jobs travados em processing (5+ min) e dispara processamento. Use quando a fila travar."""
+    _reset_stuck_jobs(db, timeout_minutes=5)
+    background_tasks.add_task(process_jobs_background)
+    return {"status": "ok", "message": "Fila desbloqueada. Processamento disparado."}
 
 @router.post("/upload-music")
 async def upload_music(file: UploadFile = File(...)):
