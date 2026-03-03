@@ -134,6 +134,19 @@ class VideoFactory:
             return clip.resize(size)
         raise AttributeError("Clip sem resize/resized")
 
+    def _set_job_progress(self, job: Job, progress: int, log_line: str = None):
+        """Atualiza progresso do job sem permitir regressão visual."""
+        try:
+            p = max(0, min(100, int(progress)))
+        except Exception:
+            p = 0
+        current = int(job.progress or 0)
+        if p > current:
+            job.progress = p
+        if log_line:
+            job.logs = (job.logs or "") + f"{log_line}\n"
+        self.db.commit()
+
     def process_next_job(self):
         """Pega o próximo job pendente e executa. Chamado pelo Worker/Cron (Legado/MVP)."""
         job = self.db.query(Job).filter(Job.status == "pending").order_by(Job.created_at.asc()).first()
@@ -146,6 +159,7 @@ class VideoFactory:
         """Executa um job específico."""
         print(f"[Factory] Processando Job {job.id} - Step: {job.step} para Video {job.video_id}")
         job.status = "processing"
+        job.progress = max(int(job.progress or 0), 5)
         job.logs = f"Iniciado em {datetime.now()}\n"
         self.db.commit()
 
@@ -155,24 +169,28 @@ class VideoFactory:
                 raise Exception("Vídeo não encontrado")
 
             if job.step == "script":
+                self._set_job_progress(job, 10, "Gerando roteiro...")
                 self._step_script(video, job)
                 # Next: TTS
                 self._add_job(video.id, "tts")
                 video.status = "SCRIPT"
             
             elif job.step == "tts":
+                self._set_job_progress(job, 35, "Gerando narração (TTS)...")
                 self._step_tts(video, job)
                 # Next: Visuals
                 self._add_job(video.id, "visuals")
                 video.status = "TTS"
             
             elif job.step == "visuals":
+                self._set_job_progress(job, 55, "Gerando visuais...")
                 self._step_visuals(video, job)
                 # Next: Render
                 self._add_job(video.id, "render")
                 video.status = "VISUALS"
             
             elif job.step == "render":
+                self._set_job_progress(job, 75, "Renderizando vídeo final...")
                 self._step_render(video, job)
                 video.status = "READY"
                 # Trigger Shorts generation
@@ -181,6 +199,7 @@ class VideoFactory:
                     self._add_job(short.id, "shorts_extract")
             
             elif job.step == "shorts_extract":
+                self._set_job_progress(job, 85, "Gerando short derivado...")
                 self._step_shorts_extract(video, job)
                 video.status = "READY"
 
@@ -200,10 +219,13 @@ class VideoFactory:
 
     def _step_script(self, video: Video, job: Job):
         plan = video.plan
+        theme = plan.theme if plan and getattr(plan, "theme", None) else (video.title or "Tema")
+        duration_min = plan.duration_min if plan and getattr(plan, "duration_min", None) else 3
+        voice_style = plan.voice_style if plan and getattr(plan, "voice_style", None) else "human"
         prompt = f"""
-        Crie um roteiro detalhado para um vídeo de YouTube sobre '{plan.theme}'.
-        Duração estimada: {plan.duration_min} minutos.
-        Estilo: {plan.voice_style}.
+        Crie um roteiro detalhado para um vídeo de YouTube sobre '{theme}'.
+        Duração estimada: {duration_min} minutos.
+        Estilo: {voice_style}.
         Estrutura:
         1. Gancho (0-30s)
         2. Introdução
@@ -226,18 +248,39 @@ class VideoFactory:
             ]
         }}
         """
-        
-        response = self.ai._generate_text(prompt, json_mode=True)
-        # Limpeza básica do JSON
-        response = response.replace("```json", "").replace("```", "").strip()
-        data = json.loads(response)
+
+        data = None
+        try:
+            response = self.ai._generate_text(prompt, json_mode=True)
+            if response and isinstance(response, str):
+                # Limpeza básica do JSON
+                clean = response.replace("```json", "").replace("```", "").strip()
+                data = json.loads(clean)
+        except Exception as e:
+            job.logs += f"Aviso: IA indisponível/retorno inválido no script ({e}). Usando fallback.\n"
+
+        if not data or not isinstance(data, dict):
+            data = {
+                "title": video.title or f"{theme} - Vídeo",
+                "description": f"Vídeo sobre {theme}",
+                "tags": "youtube, conteúdo, automação",
+                "scenes": [
+                    {"idx": 1, "narration": f"Bem-vindo ao conteúdo sobre {theme}.", "visual_prompt": f"Cena introdutória sobre {theme}", "keywords": theme, "duration_sec": 6},
+                    {"idx": 2, "narration": f"Vamos explorar pontos importantes sobre {theme}.", "visual_prompt": f"Cena principal explicativa sobre {theme}", "keywords": theme, "duration_sec": 8},
+                    {"idx": 3, "narration": "Se gostou, curta e acompanhe os próximos vídeos.", "visual_prompt": "Chamada final para ação em estúdio", "keywords": "call to action", "duration_sec": 5},
+                ],
+            }
         
         video.title = data.get("title", video.title)
         video.description = data.get("description", "")
         video.tags = data.get("tags", "")
         
         # Save Scenes
-        for s in data.get("scenes", []):
+        scenes_data = data.get("scenes", [])
+        if not isinstance(scenes_data, list) or not scenes_data:
+            scenes_data = [{"idx": 1, "narration": f"Conteúdo sobre {theme}.", "visual_prompt": f"Cena sobre {theme}", "keywords": theme, "duration_sec": 6}]
+
+        for s in scenes_data:
             scene = Scene(
                 video_id=video.id,
                 idx=s.get("idx"),
@@ -249,7 +292,7 @@ class VideoFactory:
             self.db.add(scene)
         
         self.db.commit()
-        job.logs += "Roteiro gerado e cenas salvas.\n"
+        job.logs += f"Roteiro gerado e {len(scenes_data)} cenas salvas.\n"
 
     def _step_tts(self, video: Video, job: Job):
         plan = video.plan
@@ -258,7 +301,8 @@ class VideoFactory:
             raise Exception("Nenhuma cena encontrada para gerar áudio.")
 
         generated_audio = 0
-        for scene in scenes:
+        total = max(1, len(scenes))
+        for idx, scene in enumerate(scenes, start=1):
             audio_path = self.video_gen.generate_audio(
                 scene.narration_text, 
                 voice_style=(plan.voice_style if plan else "human"),
@@ -273,6 +317,8 @@ class VideoFactory:
                 )
                 self.db.add(asset)
                 generated_audio += 1
+            # 35% -> 70% durante TTS
+            self._set_job_progress(job, 35 + int((idx / total) * 35))
         
         self.db.commit()
         if generated_audio == 0:
@@ -283,7 +329,8 @@ class VideoFactory:
         job.logs += "Iniciando geração de visuais...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         
-        for scene in scenes:
+        total = max(1, len(scenes))
+        for idx, scene in enumerate(scenes, start=1):
             filepath = None
             source_type = "TEXT_PLACEHOLDER"
             
@@ -332,6 +379,8 @@ class VideoFactory:
                 meta_json=json.dumps({"scene_idx": scene.idx, "source": source_type, "s3_url": s3_key})
             )
             self.db.add(asset)
+            # 55% -> 80% durante visuais
+            self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
         job.logs += "Visuais gerados.\n"
@@ -377,6 +426,7 @@ class VideoFactory:
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
+            self._set_job_progress(job, 90, "Escrevendo arquivo de vídeo...")
             final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
             
             # Save Asset
@@ -431,6 +481,7 @@ class VideoFactory:
         final_short = None
         try:
             clip = VideoFileClip(parent_asset.storage_key)
+            self._set_job_progress(job, 90, "Processando corte para short...")
             # Corta centro 1080x1920 (ou redimensiona)
             # Se for 1920x1080 (landscape), crop center 607x1080 then resize or just crop
             

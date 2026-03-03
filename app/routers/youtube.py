@@ -121,6 +121,21 @@ def _normalize_video_status(value: Optional[str]) -> str:
     }
     return aliases.get(upper, upper)
 
+def _progress_from_video_status(status: Optional[str]) -> int:
+    """Fallback de progresso quando o job ativo não reportou progresso ainda."""
+    s = _normalize_video_status(status)
+    mapping = {
+        "QUEUED": 5,
+        "SCRIPT": 25,
+        "TTS": 45,
+        "VISUALS": 65,
+        "RENDER": 85,
+        "READY": 100,
+        "PUBLISHED": 100,
+        "ERROR": 0,
+    }
+    return mapping.get(s, 0)
+
 def _build_public_video_url_from_path(resolved_path: Optional[str]) -> Optional[str]:
     """Converte path físico do vídeo para URL pública servida pela API."""
     if not resolved_path:
@@ -314,8 +329,41 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
     
     result = []
     for v in videos:
-        # Get active job
-        active_job = db.query(Job).filter(Job.video_id == v.id).order_by(Job.created_at.desc()).first()
+        # Prioridade: job em processamento > pendente > último job
+        processing_job = (
+            db.query(Job)
+            .filter(Job.video_id == v.id, Job.status == "processing")
+            .order_by(Job.created_at.desc())
+            .first()
+        )
+        pending_job = (
+            db.query(Job)
+            .filter(Job.video_id == v.id, Job.status == "pending")
+            .order_by(Job.created_at.desc())
+            .first()
+        )
+        latest_job = (
+            db.query(Job)
+            .filter(Job.video_id == v.id)
+            .order_by(Job.created_at.desc())
+            .first()
+        )
+        active_job = processing_job or pending_job or latest_job
+
+        fallback_progress = _progress_from_video_status(v.status)
+        job_progress = int(active_job.progress or 0) if active_job else 0
+        progress = max(job_progress, fallback_progress)
+
+        if active_job:
+            if active_job.status == "processing":
+                current_step = active_job.step or "processing"
+            elif active_job.status == "pending":
+                current_step = active_job.step or "queued"
+            else:
+                current_step = active_job.step or "queued"
+        else:
+            current_step = "queued"
+
         result.append({
             "id": v.id,
             "title": v.title,
@@ -323,8 +371,8 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
             "status": _normalize_video_status(v.status),
             "created_at": v.created_at,
             "scheduled_at": v.scheduled_at,
-            "progress": active_job.progress if active_job else 0,
-            "current_step": active_job.step if active_job else "queued",
+            "progress": progress,
+            "current_step": current_step,
             "logs": active_job.logs if active_job else "",
             "youtube_id": v.youtube_video_id
         })
