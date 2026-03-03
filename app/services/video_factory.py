@@ -4,6 +4,7 @@ import subprocess
 import uuid
 import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlalchemy.orm import Session
@@ -477,50 +478,53 @@ class VideoFactory:
     def _step_visuals(self, video: Video, job: Job):
         job.logs += "Iniciando geração de visuais...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
-        
         total = max(1, len(scenes))
-        for idx, scene in enumerate(scenes, start=1):
-            filepath = None
-            source_type = "TEXT_PLACEHOLDER"
-            
-            # 1. Tentar Stock (Pexels/Pixabay) - keywords ou visual_prompt
+        
+        def fetch_stock(scene):
+            """Busca e baixa imagem stock para uma cena. Retorna (scene.idx, filepath) ou (scene.idx, None)."""
             query = (scene.keywords or scene.visual_prompt or "").strip()
-            if query:
-                job.logs += f"Buscando stock (Pexels/Pixabay) para cena {scene.idx}: {query[:50]}...\n"
+            if not query:
+                return (scene.idx, None)
+            try:
                 stock_url = self.stock.search_image(query)
                 if stock_url:
-                    try:
-                        # Download image
-                        response = requests.get(stock_url, timeout=10)
-                        if response.status_code == 200:
-                            filename = f"scene_{video.id}_{scene.idx}_{uuid.uuid4().hex[:6]}.jpg"
-                            filepath = os.path.join(VIDEO_OUTPUT_DIR, filename)
-                            with open(filepath, 'wb') as f:
-                                f.write(response.content)
-                            source_type = "STOCK"
-                            job.logs += f"Stock encontrado para cena {scene.idx}.\n"
-                    except Exception as e:
-                        job.logs += f"Erro ao baixar stock: {e}\n"
+                    r = requests.get(stock_url, timeout=10)
+                    if r.status_code == 200:
+                        fn = f"scene_{video.id}_{scene.idx}_{uuid.uuid4().hex[:6]}.jpg"
+                        fp = os.path.join(VIDEO_OUTPUT_DIR, fn)
+                        with open(fp, 'wb') as f:
+                            f.write(r.content)
+                        return (scene.idx, fp)
+            except Exception:
+                pass
+            return (scene.idx, None)
+        
+        # Buscar stocks em paralelo (bem mais rápido)
+        stock_results = {}
+        with ThreadPoolExecutor(max_workers=min(6, total)) as ex:
+            futures = {ex.submit(fetch_stock, s): s for s in scenes}
+            for future in as_completed(futures):
+                idx, fp = future.result()
+                stock_results[idx] = fp
+        
+        for idx, scene in enumerate(scenes, start=1):
+            filepath = stock_results.get(scene.idx)
+            source_type = "STOCK" if filepath else "TEXT_PLACEHOLDER"
             
-            # 2. Fallback: Gerar Imagem com Texto
             if not filepath:
                 job.logs += f"Gerando imagem fallback para cena {scene.idx}\n"
-                # Usando o create_text_image do VideoGenerator
                 img_array = self.video_gen.create_text_image(
-                    scene.narration_text[:100], # Preview do texto
-                    size=(1920, 1080)
+                    scene.narration_text[:100], size=(1280, 720)
                 )
-                
-                # Salvar imagem
                 from PIL import Image
                 filename = f"scene_{video.id}_{scene.idx}.png"
                 filepath = os.path.join(VIDEO_OUTPUT_DIR, filename)
                 Image.fromarray(img_array).save(filepath)
                 source_type = "TEXT_GEN"
+            else:
+                job.logs += f"Stock encontrado para cena {scene.idx}.\n"
 
-            # 3. Upload to S3 (optional backup)
             s3_key = self.storage.upload_file(filepath)
-            
             asset = Asset(
                 video_id=video.id,
                 kind="IMAGE",
@@ -528,7 +532,6 @@ class VideoFactory:
                 meta_json=json.dumps({"scene_idx": scene.idx, "source": source_type, "s3_url": s3_key})
             )
             self.db.add(asset)
-            # 55% -> 80% durante visuais
             self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
@@ -564,7 +567,9 @@ class VideoFactory:
                     audio_clip = AudioFileClip(audio_asset.storage_key)
                     duration = audio_clip.duration
                     
-                    img_clip = self._clip_with_duration(ImageClip(image_asset.storage_key), duration)
+                    img_clip = ImageClip(image_asset.storage_key)
+                    img_clip = self._clip_resize(img_clip, (1280, 720))  # 720p = render ~2x mais rápido
+                    img_clip = self._clip_with_duration(img_clip, duration)
                     img_clip = self._clip_with_audio(img_clip, audio_clip)
                     clips.append(img_clip)
 
@@ -628,8 +633,8 @@ class VideoFactory:
             try:
                 kw = {"logger": write_logger} if write_logger else {}
                 final_video.write_videofile(
-                    output_path, fps=24, codec="libx264", audio_codec="aac",
-                    threads=1, ffmpeg_params=["-preset", "ultrafast"], **kw
+                    output_path, fps=20, codec="libx264", audio_codec="aac",
+                    threads=4, ffmpeg_params=["-preset", "ultrafast", "-crf", "28"], **kw
                 )
             finally:
                 stop_event.set()
@@ -713,7 +718,10 @@ class VideoFactory:
             output_filename = f"short_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
-            final_short.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+            final_short.write_videofile(
+                output_path, fps=20, codec="libx264", audio_codec="aac",
+                threads=4, ffmpeg_params=["-preset", "ultrafast", "-crf", "28"]
+            )
             
             asset = Asset(
                 video_id=video.id,
