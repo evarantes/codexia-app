@@ -2,6 +2,7 @@ import os
 import glob
 import shutil
 from datetime import datetime
+from filelock import FileLock, Timeout
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query
@@ -18,6 +19,9 @@ from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Vid
 from app.redis_client import conn
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+# Lock file para quando Redis não está disponível (garante 1 job por vez)
+_lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
+_FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
 
 def _rq_workers_online() -> bool:
     """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
@@ -29,34 +33,46 @@ def _rq_workers_online() -> bool:
         return False
 
 def process_jobs_background():
-    """Background task to process video generation jobs."""
+    """Background task to process video generation jobs. Um vídeo por vez."""
     db = SessionLocal()
-    lock = None
+    redis_lock = None
+    file_lock = None
     try:
         if conn:
             try:
-                lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
-                if not lock.acquire(blocking=False):
-                    # Outro worker/processo já está processando.
-                    return
+                redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
+                if not redis_lock.acquire(blocking=False):
+                    return  # Outro worker já está processando
             except Exception as e:
-                print(f"Error acquiring background factory lock: {e}")
-                lock = None
+                print(f"Error acquiring Redis factory lock: {e}")
+                redis_lock = None
 
-        # Se existe worker RQ ativo, não compete com ele.
-        # Isso evita execução duplicada/paralela entre web e worker.
+        # Sem Redis: usar file lock para garantir 1 job por vez (evita múltiplos processando)
+        if not conn or not redis_lock:
+            try:
+                file_lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
+                file_lock.acquire()
+            except Timeout:
+                return  # Outro processo já está processando
+            except Exception as e:
+                print(f"Error acquiring file factory lock: {e}")
+
         if _rq_workers_online():
             return
 
         factory = VideoFactory(db)
-        # Processa 1 job por chamada para evitar travamentos e processar vídeos um por vez
         factory.process_next_job()
     except Exception as e:
         print(f"Error processing background job: {e}")
     finally:
-        if lock:
+        if redis_lock:
             try:
-                lock.release()
+                redis_lock.release()
+            except Exception:
+                pass
+        if file_lock:
+            try:
+                file_lock.release()
             except Exception:
                 pass
         db.close()
@@ -426,7 +442,11 @@ def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str
 
         fallback_progress = _progress_from_video_status(normalized_video_status)
         job_progress = int(active_job.progress or 0) if active_job else 0
-        progress = max(job_progress, fallback_progress)
+        # Quando há job em processamento, usar progresso real (evita travar em 85% do fallback RENDER)
+        if active_job and active_job.status == "processing" and job_progress > 0:
+            progress = job_progress
+        else:
+            progress = max(job_progress, fallback_progress)
 
         if normalized_video_status == "PAUSED":
             current_step = "paused"

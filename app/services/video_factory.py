@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import uuid
+import threading
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from app.services.stock_service import StockService
 from app.services.storage import StorageService
 from app.config import VIDEO_OUTPUT_DIR
 from app.redis_client import queue
+from app.database import SessionLocal
 
 class VideoFactory:
     def __init__(self, db: Session):
@@ -187,7 +189,10 @@ class VideoFactory:
         return ""
 
     def process_next_job(self):
-        """Pega o próximo job pendente e executa. Chamado pelo Worker/Cron (Legado/MVP)."""
+        """Pega o próximo job pendente e executa. Um vídeo por vez."""
+        # Não iniciar se já existe job em processamento (defesa extra além do lock)
+        if self.db.query(Job).filter(Job.status == "processing").first():
+            return False
         # Prioriza concluir um vídeo antes de iniciar outro:
         # 1) menor video_id
         # 2) ordem natural das etapas
@@ -591,12 +596,44 @@ class VideoFactory:
                 write_logger = RenderLogger()
             except Exception:
                 pass
-            kw = {"logger": write_logger} if write_logger else {}
-            final_video.write_videofile(
-                output_path, fps=24, codec="libx264", audio_codec="aac",
-                threads=1, ffmpeg_params=["-preset", "ultrafast"], **kw
-            )
-            
+
+            # Heartbeat: atualiza progresso 75->95 a cada 15s caso proglog não dispare (ex: MoviePy 2.x)
+            stop_event = threading.Event()
+            job_id = job.id
+
+            def _progress_heartbeat():
+                db = None
+                try:
+                    db = SessionLocal()
+                    interval = 15
+                    while not stop_event.wait(interval):
+                        try:
+                            j = db.query(Job).get(job_id)
+                            if not j or (j.status or "").lower() != "processing":
+                                return
+                            current = int(j.progress or 75)
+                            p = min(95, current + 5)
+                            if p > current:
+                                j.progress = p
+                                db.commit()
+                        except Exception:
+                            if db:
+                                db.rollback()
+                finally:
+                    if db:
+                        db.close()
+
+            heartbeat = threading.Thread(target=_progress_heartbeat, daemon=True)
+            heartbeat.start()
+            try:
+                kw = {"logger": write_logger} if write_logger else {}
+                final_video.write_videofile(
+                    output_path, fps=24, codec="libx264", audio_codec="aac",
+                    threads=1, ffmpeg_params=["-preset", "ultrafast"], **kw
+                )
+            finally:
+                stop_event.set()
+
             # Save Asset
             asset = Asset(
                 video_id=video.id,
