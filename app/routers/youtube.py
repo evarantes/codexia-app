@@ -303,9 +303,6 @@ def get_content_plan(plan_id: int, db: Session = Depends(get_db)):
 @router.get("/auto/queue")
 def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
     """Retorna a fila de produção (vídeos e jobs)."""
-    # Garante que vídeos prontos de produção apareçam no bloco "Aguardando Publicação"
-    _sync_ready_production_to_scheduled(db, limit=max(200, limit * 4))
-
     query = db.query(Video).order_by(Video.scheduled_at.asc())
     
     if status:

@@ -2769,14 +2769,10 @@
 
                 async fetchProductionQueue() {
                     try {
-                        const [queueRes, readyRes] = await Promise.all([
-                            this.authFetch('/youtube/auto/queue?limit=500'),
-                            this.authFetch('/youtube/auto/queue?status=READY&limit=500')
-                        ]);
+                        const queueRes = await this.authFetch('/youtube/auto/queue?limit=500');
                         if (queueRes.ok) {
                             const queueData = await queueRes.json();
-                            const readyData = readyRes.ok ? await readyRes.json() : [];
-                            const merged = [...queueData, ...readyData];
+                            const merged = Array.isArray(queueData) ? queueData : [];
                             const byId = new Map();
                             for (const item of merged) byId.set(item.id, item);
                             this.productionVideos = Array.from(byId.values()).map(v => ({
@@ -2787,6 +2783,8 @@
                             }));
                         } else {
                             this.productionVideos = [];
+                            const err = await queueRes.json().catch(() => ({}));
+                            console.error("Falha ao buscar produção:", err.detail || queueRes.status);
                         }
                     } catch (e) {
                         console.error("Erro ao buscar fila:", e);
