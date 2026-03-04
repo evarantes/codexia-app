@@ -1,4 +1,5 @@
 import os
+import uuid
 import openai
 import requests
 import google.generativeai as genai
@@ -916,10 +917,10 @@ class AIContentGenerator:
 
         Para CADA cena acima, crie UMA descrição visual (image_prompt) em INGLÊS com as regras:
         - Representar fielmente a ideia e o clima da narração.
-        - Estilo: FOTOREALISTA, cinematográfico, 4k, fotografia profissional, live-action.
+        - Estilo: ilustração digital autoral, concept art cinematográfica, composição artística exclusiva, alta definição.
         - Uma frase detalhada (30-80 palavras): cenário, iluminação, atmosfera, composição.
-        - PROIBIDO: cartoon, desenho, pixel art, ilustração, anime, 3d render artificial, text, watermark.
-        - Se a narração for abstrata, use metáforas visuais realistas (ex: "a realistic hourglass on a wooden table" em vez de "time concept").
+        - PROIBIDO: foto de banco de imagens, logos, marcas, text, watermark, personagens famosos.
+        - Se a narração for abstrata, use metáforas visuais claras que expressem o sentido da mensagem.
 
         Retorne APENAS um JSON válido com um array "image_prompts" na mesma ordem das cenas:
         {{ "image_prompts": ["descrição visual cena 1...", "descrição visual cena 2...", ...] }}
@@ -1622,17 +1623,16 @@ class AIContentGenerator:
     def generate_image(self, prompt):
         self._load_config()
         
-        # PROMPT ENGINEERING AVANÇADO - PROFISSIONAL & ÚNICO
-        # Adiciona tokens para garantir estilo artístico único, profissional e livre de direitos autorais
+        # Prompt engineering focado em imagem autoral/exclusiva gerada por IA.
         quality_tokens = [
             "masterpiece", "unique artistic composition", "copyright free style",
-            "cinematic lighting", "8k resolution", "highly detailed", "sharp focus",
-            "professional photography", "dramatic atmosphere", "unreal engine 5 render",
-            "award winning", "concept art", "digital painting"
+            "cinematic lighting", "highly detailed", "sharp focus",
+            "dramatic atmosphere", "award winning concept art", "digital painting",
+            "hand-drawn illustration", "original artwork"
         ]
         
-        # Garante que não estamos pedindo por marcas ou personagens específicos
-        negative_constraints = "no cartoon, no anime, no pixel art, no illustration, no drawing, no sketch, no 3d render, no text, no watermarks, no signatures, no distorted faces, no blur"
+        # Restrições para evitar artefatos/itens indevidos.
+        negative_constraints = "no text, no watermarks, no signatures, no logos, no branded characters, no distorted faces, no blur"
         
         enhanced_prompt = prompt
         # Se o prompt for curto, enriquece. Se já for longo, assume que a IA já fez o trabalho.
@@ -1643,8 +1643,7 @@ class AIContentGenerator:
         if self.api_key:
             try:
                 print(f"Tentando gerar imagem com DALL-E 3: {enhanced_prompt[:50]}...")
-                # Enforcing original, artistic creation via prompt engineering
-                full_prompt = f"{enhanced_prompt}. Vertical aspect ratio 9:16. {negative_constraints}. Photorealistic, cinematic 4k, highly detailed, professional photography style."
+                full_prompt = f"{enhanced_prompt}. Vertical aspect ratio 9:16. {negative_constraints}. Original AI-generated illustration, cinematic concept art, highly detailed."
                 
                 response = openai.images.generate(
                     model="dall-e-3",
@@ -1662,9 +1661,7 @@ class AIContentGenerator:
         try:
             print(f"Tentando gerar imagem com Pollinations (Flux): {enhanced_prompt[:50]}...")
             import urllib.parse
-            # Otimiza prompt para Pollinations
-            # Força realismo
-            pollinations_prompt = f"{enhanced_prompt} vertical 9:16 photorealistic cinematic lighting 4k real photo award winning photography"
+            pollinations_prompt = f"{enhanced_prompt} vertical 9:16 original ai illustration cinematic concept art highly detailed digital painting no text no watermark"
             safe_prompt = urllib.parse.quote(pollinations_prompt)
             
             # Tenta modelo Flux primeiro (Melhor qualidade e consistência)

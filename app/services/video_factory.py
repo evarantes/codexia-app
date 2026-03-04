@@ -1,8 +1,6 @@
 import json
 import os
 import subprocess
-import uuid
-import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlalchemy.orm import Session
@@ -10,7 +8,6 @@ from sqlalchemy import case, func
 from app.models import ContentPlan, Video, Scene, Job, Asset
 from app.services.ai_generator import AIContentGenerator
 from app.services.video_generator import VideoGenerator
-from app.services.stock_service import StockService
 from app.services.storage import StorageService
 from app.config import VIDEO_OUTPUT_DIR
 from app.redis_client import queue
@@ -20,7 +17,6 @@ class VideoFactory:
         self.db = db
         self.ai = AIContentGenerator()
         self.video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
-        self.stock = StockService()
         self.storage = StorageService()
 
     def create_plan(self, plan_data: dict, user_id: int):
@@ -424,7 +420,40 @@ class VideoFactory:
         if not isinstance(scenes_data, list) or not scenes_data:
             scenes_data = [{"idx": 1, "narration": f"Conteúdo sobre {theme}.", "visual_prompt": f"Cena sobre {theme}", "keywords": theme, "duration_sec": 6}]
 
-        for s in scenes_data:
+        normalized_scenes = []
+        for i, s in enumerate(scenes_data, start=1):
+            if not isinstance(s, dict):
+                s = {"narration": str(s)}
+            normalized_scenes.append({
+                "idx": int(s.get("idx") or i),
+                "narration": (s.get("narration") or "").strip() or f"Cena {i} sobre {theme}.",
+                "visual_prompt": (s.get("visual_prompt") or "").strip(),
+                "keywords": (s.get("keywords") or "").strip(),
+                "duration_sec": s.get("duration_sec", 5),
+            })
+
+        # Garante coerência visual com a narração por cena (prompts exclusivos da IA).
+        try:
+            enrich_payload = {
+                "title": video.title or f"{theme} - Vídeo",
+                "scenes": [
+                    {"text": s["narration"], "image_prompt": s["visual_prompt"]}
+                    for s in normalized_scenes
+                ],
+            }
+            enriched = self.ai.enrich_scenes_with_image_prompts(enrich_payload) or {}
+            enriched_scenes = enriched.get("scenes") or []
+            if isinstance(enriched_scenes, list):
+                for i, item in enumerate(enriched_scenes):
+                    if i >= len(normalized_scenes) or not isinstance(item, dict):
+                        continue
+                    prompt = (item.get("image_prompt") or "").strip()
+                    if prompt:
+                        normalized_scenes[i]["visual_prompt"] = prompt[:500]
+        except Exception as e:
+            job.logs += f"Aviso: não foi possível enriquecer prompts visuais ({e}).\n"
+
+        for s in normalized_scenes:
             scene = Scene(
                 video_id=video.id,
                 idx=s.get("idx"),
@@ -436,7 +465,7 @@ class VideoFactory:
             self.db.add(scene)
         
         self.db.commit()
-        job.logs += f"Roteiro gerado e {len(scenes_data)} cenas salvas.\n"
+        job.logs += f"Roteiro gerado e {len(normalized_scenes)} cenas salvas.\n"
 
     def _step_tts(self, video: Video, job: Job):
         plan = video.plan
@@ -470,48 +499,37 @@ class VideoFactory:
         job.logs += f"{generated_audio}/{len(scenes)} áudios gerados.\n"
 
     def _step_visuals(self, video: Video, job: Job):
-        job.logs += "Iniciando geração de visuais...\n"
+        job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         
         total = max(1, len(scenes))
         for idx, scene in enumerate(scenes, start=1):
-            filepath = None
-            source_type = "TEXT_PLACEHOLDER"
-            
-            # 1. Tentar Stock (Pexels/Pixabay) - keywords ou visual_prompt
-            query = (scene.keywords or scene.visual_prompt or "").strip()
-            if query:
-                job.logs += f"Buscando stock (Pexels/Pixabay) para cena {scene.idx}: {query[:50]}...\n"
-                stock_url = self.stock.search_image(query)
-                if stock_url:
-                    try:
-                        # Download image
-                        response = requests.get(stock_url, timeout=10)
-                        if response.status_code == 200:
-                            filename = f"scene_{video.id}_{scene.idx}_{uuid.uuid4().hex[:6]}.jpg"
-                            filepath = os.path.join(VIDEO_OUTPUT_DIR, filename)
-                            with open(filepath, 'wb') as f:
-                                f.write(response.content)
-                            source_type = "STOCK"
-                            job.logs += f"Stock encontrado para cena {scene.idx}.\n"
-                    except Exception as e:
-                        job.logs += f"Erro ao baixar stock: {e}\n"
-            
-            # 2. Fallback: Gerar Imagem com Texto
-            if not filepath:
-                job.logs += f"Gerando imagem fallback para cena {scene.idx}\n"
-                # Usando o create_text_image do VideoGenerator
-                img_array = self.video_gen.create_text_image(
-                    scene.narration_text[:100], # Preview do texto
-                    size=(1920, 1080)
+            narration = (scene.narration_text or "").strip()
+            visual_prompt = (scene.visual_prompt or "").strip()
+            if not visual_prompt:
+                visual_prompt = f"Illustrate the meaning of this narration: {narration[:220]}"
+            prompt = (
+                f"{visual_prompt}. "
+                f"This image must clearly match the narrated message: \"{narration[:260]}\". "
+                "Original AI-generated artwork, exclusive composition, no stock photo, no text, no watermark."
+            )
+
+            job.logs += f"Gerando arte IA para cena {scene.idx}...\n"
+            filepath = self.video_gen._ensure_image_for_scene(
+                prompt,
+                text_fallback=narration[:120] if narration else (scene.keywords or ""),
+                aspect_ratio="16:9"
+            )
+            if (
+                not filepath
+                or not os.path.exists(filepath)
+                or os.path.getsize(filepath) < 1000
+                or os.path.basename(filepath).startswith("fallback_local_")
+            ):
+                raise Exception(
+                    f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
+                    "Verifique as credenciais da IA e tente novamente."
                 )
-                
-                # Salvar imagem
-                from PIL import Image
-                filename = f"scene_{video.id}_{scene.idx}.png"
-                filepath = os.path.join(VIDEO_OUTPUT_DIR, filename)
-                Image.fromarray(img_array).save(filepath)
-                source_type = "TEXT_GEN"
 
             # 3. Upload to S3 (optional backup)
             s3_key = self.storage.upload_file(filepath)
@@ -520,14 +538,14 @@ class VideoFactory:
                 video_id=video.id,
                 kind="IMAGE",
                 storage_key=filepath,
-                meta_json=json.dumps({"scene_idx": scene.idx, "source": source_type, "s3_url": s3_key})
+                meta_json=json.dumps({"scene_idx": scene.idx, "source": "AI_EXCLUSIVE", "s3_url": s3_key})
             )
             self.db.add(asset)
             # 55% -> 80% durante visuais
             self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
-        job.logs += "Visuais gerados.\n"
+        job.logs += "Visuais gerados por IA com coerência de narração.\n"
 
     def _step_render(self, video: Video, job: Job):
         # Montar FFmpeg command
