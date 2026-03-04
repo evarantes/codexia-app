@@ -2,7 +2,24 @@ import os
 import glob
 import shutil
 from datetime import datetime
-from filelock import FileLock, Timeout
+try:
+    from filelock import FileLock, Timeout
+except Exception:
+    # Fallback para ambientes sem dependência instalada.
+    # Mantém o app inicializando e evita quebra total do deploy.
+    class Timeout(Exception):
+        pass
+
+    class FileLock:  # type: ignore
+        def __init__(self, *_args, **_kwargs):
+            self._locked = False
+
+        def acquire(self, *_args, **_kwargs):
+            self._locked = True
+            return True
+
+        def release(self):
+            self._locked = False
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query

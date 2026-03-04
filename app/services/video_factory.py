@@ -14,6 +14,9 @@ from app.config import VIDEO_OUTPUT_DIR
 from app.redis_client import queue
 from app.database import SessionLocal
 
+def _is_truthy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
 class VideoFactory:
     def __init__(self, db: Session):
         self.db = db
@@ -507,6 +510,7 @@ class VideoFactory:
         job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
+        strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
             visual_prompt = (scene.visual_prompt or "").strip()
@@ -524,15 +528,40 @@ class VideoFactory:
                 text_fallback=narration[:120] if narration else (scene.keywords or ""),
                 aspect_ratio="16:9"
             )
-            if (
-                not filepath
-                or not os.path.exists(filepath)
-                or os.path.getsize(filepath) < 1000
-                or os.path.basename(filepath).startswith("fallback_local_")
-            ):
-                raise Exception(
-                    f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
-                    "Verifique as credenciais da IA e tente novamente."
+            source_type = "AI_EXCLUSIVE"
+            invalid_path = (not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) < 1000)
+            local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
+
+            if invalid_path or local_fallback:
+                if strict_ai_only:
+                    raise Exception(
+                        f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
+                        "Verifique as credenciais/serviço de IA e tente novamente."
+                    )
+
+                # Fallback resiliente: evita travar produção quando provedor de imagem está indisponível.
+                # Mantém coerência com a narração exibindo um quadro contextual em vez de quebrar o pipeline.
+                from PIL import Image
+                fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
+                img_array = self.video_gen.create_text_image(
+                    fallback_text,
+                    size=(1280, 720),
+                    bg_color=(35, 35, 45),
+                    text_color=(245, 245, 245),
+                )
+                filename = f"scene_{video.id}_{scene.idx}_fallback_text.png"
+                fallback_path = os.path.join(VIDEO_OUTPUT_DIR, filename)
+                Image.fromarray(img_array).save(fallback_path)
+                if filepath and os.path.exists(filepath) and os.path.basename(filepath).startswith("fallback_local_"):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                filepath = fallback_path
+                source_type = "TEXT_FALLBACK"
+                job.logs += (
+                    f"Aviso: IA indisponível para cena {scene.idx}; "
+                    "usando fallback contextual sem interromper produção.\n"
                 )
 
             s3_key = self.storage.upload_file(filepath)
@@ -540,13 +569,16 @@ class VideoFactory:
                 video_id=video.id,
                 kind="IMAGE",
                 storage_key=filepath,
-                meta_json=json.dumps({"scene_idx": scene.idx, "source": "AI_EXCLUSIVE", "s3_url": s3_key})
+                meta_json=json.dumps({"scene_idx": scene.idx, "source": source_type, "s3_url": s3_key})
             )
             self.db.add(asset)
             self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
-        job.logs += "Visuais gerados por IA com coerência de narração.\n"
+        if strict_ai_only:
+            job.logs += "Visuais gerados por IA (modo estrito).\n"
+        else:
+            job.logs += "Visuais gerados por IA com fallback resiliente quando necessário.\n"
 
     def _step_render(self, video: Video, job: Job):
         # Montar FFmpeg command
