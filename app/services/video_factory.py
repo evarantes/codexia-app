@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlalchemy.orm import Session
@@ -11,6 +12,7 @@ from app.services.video_generator import VideoGenerator
 from app.services.storage import StorageService
 from app.config import VIDEO_OUTPUT_DIR
 from app.redis_client import queue
+from app.database import SessionLocal
 
 class VideoFactory:
     def __init__(self, db: Session):
@@ -183,7 +185,10 @@ class VideoFactory:
         return ""
 
     def process_next_job(self):
-        """Pega o próximo job pendente e executa. Chamado pelo Worker/Cron (Legado/MVP)."""
+        """Pega o próximo job pendente e executa. Um vídeo por vez."""
+        # Não iniciar se já existe job em processamento (defesa extra além do lock)
+        if self.db.query(Job).filter(Job.status == "processing").first():
+            return False
         # Prioriza concluir um vídeo antes de iniciar outro:
         # 1) menor video_id
         # 2) ordem natural das etapas
@@ -501,7 +506,6 @@ class VideoFactory:
     def _step_visuals(self, video: Video, job: Job):
         job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
-        
         total = max(1, len(scenes))
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
@@ -531,9 +535,7 @@ class VideoFactory:
                     "Verifique as credenciais da IA e tente novamente."
                 )
 
-            # 3. Upload to S3 (optional backup)
             s3_key = self.storage.upload_file(filepath)
-            
             asset = Asset(
                 video_id=video.id,
                 kind="IMAGE",
@@ -541,7 +543,6 @@ class VideoFactory:
                 meta_json=json.dumps({"scene_idx": scene.idx, "source": "AI_EXCLUSIVE", "s3_url": s3_key})
             )
             self.db.add(asset)
-            # 55% -> 80% durante visuais
             self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
@@ -577,7 +578,9 @@ class VideoFactory:
                     audio_clip = AudioFileClip(audio_asset.storage_key)
                     duration = audio_clip.duration
                     
-                    img_clip = self._clip_with_duration(ImageClip(image_asset.storage_key), duration)
+                    img_clip = ImageClip(image_asset.storage_key)
+                    img_clip = self._clip_resize(img_clip, (1280, 720))  # 720p = render ~2x mais rápido
+                    img_clip = self._clip_with_duration(img_clip, duration)
                     img_clip = self._clip_with_audio(img_clip, audio_clip)
                     clips.append(img_clip)
 
@@ -588,9 +591,65 @@ class VideoFactory:
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
-            self._set_job_progress(job, 90, "Escrevendo arquivo de vídeo...")
-            final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
-            
+            self._set_job_progress(job, 75, "Escrevendo arquivo de vídeo...")
+            write_logger = None
+            try:
+                import proglog
+                def _up(percent):
+                    self._set_job_progress(job, percent, "Escrevendo arquivo de vídeo...")
+                class RenderLogger(proglog.ProgressBarLogger):
+                    def bars_callback(self, bar, attr, value, old_value=None):
+                        super().bars_callback(bar, attr, value, old_value)
+                        if bar not in self.bars or not self.bars[bar].get("total"):
+                            return
+                        total = self.bars[bar]["total"]
+                        if total and value is not None:
+                            pct = 75 + int(24 * (value / total))
+                            try:
+                                _up(min(99, pct))
+                            except Exception:
+                                pass
+                write_logger = RenderLogger()
+            except Exception:
+                pass
+
+            # Heartbeat: atualiza progresso 75->95 a cada 15s caso proglog não dispare (ex: MoviePy 2.x)
+            stop_event = threading.Event()
+            job_id = job.id
+
+            def _progress_heartbeat():
+                db = None
+                try:
+                    db = SessionLocal()
+                    interval = 15
+                    while not stop_event.wait(interval):
+                        try:
+                            j = db.query(Job).get(job_id)
+                            if not j or (j.status or "").lower() != "processing":
+                                return
+                            current = int(j.progress or 75)
+                            p = min(95, current + 5)
+                            if p > current:
+                                j.progress = p
+                                db.commit()
+                        except Exception:
+                            if db:
+                                db.rollback()
+                finally:
+                    if db:
+                        db.close()
+
+            heartbeat = threading.Thread(target=_progress_heartbeat, daemon=True)
+            heartbeat.start()
+            try:
+                kw = {"logger": write_logger} if write_logger else {}
+                final_video.write_videofile(
+                    output_path, fps=20, codec="libx264", audio_codec="aac",
+                    threads=4, ffmpeg_params=["-preset", "ultrafast", "-crf", "28"], **kw
+                )
+            finally:
+                stop_event.set()
+
             # Save Asset
             asset = Asset(
                 video_id=video.id,
@@ -670,7 +729,10 @@ class VideoFactory:
             output_filename = f"short_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
-            final_short.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+            final_short.write_videofile(
+                output_path, fps=20, codec="libx264", audio_codec="aac",
+                threads=4, ffmpeg_params=["-preset", "ultrafast", "-crf", "28"]
+            )
             
             asset = Asset(
                 video_id=video.id,

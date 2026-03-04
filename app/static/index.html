@@ -792,8 +792,18 @@
                     
                     <!-- 1. Production Queue -->
                     <div class="bg-white rounded-lg shadow p-6 border-l-4 border-yellow-400">
-                        <h2 class="text-xl font-bold mb-4 text-yellow-800"><i class="fas fa-industry"></i> Fila de Produção</h2>
-                        <div v-if="productionQueueVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo em produção no momento.</div>
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-yellow-800"><i class="fas fa-industry"></i> Fila de Produção</h2>
+                            <button v-if="productionQueueVideos.length > 0" @click="unblockQueue" class="text-sm px-3 py-1.5 bg-amber-100 text-amber-800 hover:bg-amber-200 rounded border border-amber-300" title="Reseta jobs travados e dispara processamento">
+                                <i class="fas fa-unlock"></i> Desbloquear fila
+                            </button>
+                        </div>
+                        <div v-if="productionQueueVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">
+                            Nenhum vídeo em produção no momento.
+                            <span v-if="productionVideos.length === 0 && readyVideos.length === 0" class="block mt-2">
+                                <button @click="checkProductionStats" class="text-sm text-blue-600 hover:underline">Verificar se há vídeos no banco</button>
+                            </span>
+                        </div>
                         <div v-else class="overflow-x-auto">
                             <table class="w-full">
                                 <thead>
@@ -2112,7 +2122,14 @@
                     const scheduledReady = this.scheduledVideos
                         .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
                         .map(v => ({ ...v, _source: 'scheduled' }));
-                    return scheduledReady;
+                    const productionReady = this.productionVideos
+                        .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
+                        .map(v => ({
+                            ...v,
+                            _source: 'production',
+                            scheduled_for_local: v.scheduled_at ? String(v.scheduled_at).slice(0, 16) : ''
+                        }));
+                    return [...scheduledReady, ...productionReady];
                 },
                 publishedVideos() {
                     return this.scheduledVideos.filter(v => this.isPublishedStatus(v.status));
@@ -2176,7 +2193,7 @@
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
                     }
-                }, 10000);
+                }, 5000); // 5s para atualizar fila e manter processamento em andamento
             },
             methods: {
                 async runDiagnostics() {
@@ -2805,6 +2822,36 @@
                     } catch (e) {
                         console.error("Erro ao buscar fila:", e);
                         this.productionVideos = [];
+                    }
+                },
+
+                async checkProductionStats() {
+                    try {
+                        const res = await this.authFetch('/youtube/auto/stats');
+                        const data = await res.json();
+                        if (res.ok) {
+                            const msg = `Vídeos no banco: ${data.total_videos || 0}\nPlanos: ${data.total_plans || 0}\nPor status: ${JSON.stringify(data.videos_by_status || {})}\n\nSe total_videos=0, o banco pode ter sido reiniciado (deploy sem volume /data persistente).`;
+                            alert(msg);
+                        } else {
+                            alert('Erro ao verificar: ' + (data.detail || res.status));
+                        }
+                    } catch (e) {
+                        alert('Erro de conexão: ' + (e.message || e));
+                    }
+                },
+                async unblockQueue() {
+                    if (!confirm("Desbloquear fila? Isso reiniciará jobs travados e disparará o processamento.")) return;
+                    try {
+                        const res = await this.authFetch('/youtube/auto/unblock', { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Fila desbloqueada.");
+                            this.fetchProductionQueue();
+                        } else {
+                            alert("Erro: " + (data.detail || "Falha ao desbloquear"));
+                        }
+                    } catch (e) {
+                        alert("Erro de conexão.");
                     }
                 },
 

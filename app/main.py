@@ -340,15 +340,31 @@ async def lifespan(app: FastAPI):
             print(f"MonitorService start warning (app continua): {e}")
         
         try:
-            from app.models import ScheduledVideo
+            from app.models import ScheduledVideo, Job, Video
+            from sqlalchemy import func
+            from datetime import datetime as dt, timedelta
             db = SessionLocal()
             try:
                 stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
                 if stuck_videos:
-                    print(f"Startup Recovery: Found {len(stuck_videos)} stuck videos. Resetting to 'queued'.")
+                    print(f"Startup Recovery: Found {len(stuck_videos)} stuck ScheduledVideos. Resetting to 'queued'.")
                     for vid in stuck_videos:
                         vid.status = "queued"
                         vid.progress = 0
+                    db.commit()
+                # Jobs da Fila de Produção (YouTube Auto) - resetar travados em processing
+                cutoff = dt.now() - timedelta(minutes=1)
+                stuck_jobs = db.query(Job).filter(Job.status == "processing").filter(
+                    func.coalesce(Job.updated_at, Job.created_at) < cutoff
+                ).all()
+                if stuck_jobs:
+                    print(f"Startup Recovery: Found {len(stuck_jobs)} stuck Jobs. Resetting to 'pending'.")
+                    for j in stuck_jobs:
+                        j.status = "pending"
+                        j.progress = 0
+                        v = db.query(Video).get(j.video_id)
+                        if v and (v.status or "").upper() not in ("PAUSED", "CANCELLED", "CANCELED"):
+                            v.status = "queued"
                     db.commit()
             finally:
                 db.close()

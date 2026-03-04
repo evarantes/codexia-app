@@ -31,5 +31,6 @@ bcrypt
 alembic
 redis
 rq
+filelock
 boto3
 minio

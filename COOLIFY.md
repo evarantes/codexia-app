@@ -69,3 +69,55 @@ Se você estiver migrando do Render, é possível que você tenha copiado a vari
 Acesse a URL que você configurou.
 - O login será o `ADMIN_EMAIL` e `ADMIN_PASSWORD` que você configurou.
 - Seus dados do Render **não** virão automaticamente. Este é um banco novo.
+
+---
+
+## ⚠️ Atualizações não estão sendo implantadas?
+
+O Coolify **não faz deploy automático por padrão**. Cada vez que você faz `git push`, é necessário **iniciar o deploy manualmente** no painel. Para que as mudanças sejam implantadas automaticamente após cada push, configure uma das opções abaixo.
+
+### Opção A: Deploy manual (solução imediata)
+
+1. No painel do Coolify, abra o recurso **Codexia**.
+2. Clique em **Deploy** (canto superior direito).
+3. Selecione **Deploy latest commit**.
+4. Aguarde o build terminar.
+
+Faça isso sempre que fizer `git push` e quiser que a nova versão suba.
+
+### Opção B: Deploy automático via Webhook
+
+1. No Coolify, abra o recurso Codexia.
+2. Em **General**, ative **Auto Deploy**.
+3. Em **Advanced** (ou configuração avançada), copie a **Webhook URL** e o **Secret**.
+4. No GitHub:
+   - Repositório `evarantes/codexia-app` → **Settings** → **Webhooks** → **Add webhook**
+   - **Payload URL**: cole a URL do webhook do Coolify.
+   - **Secret**: cole o secret configurado no Coolify.
+   - **Event**: selecione "Just the `push` event".
+   - Marque "Active" e salve.
+
+Depois disso, todo `git push origin main` dispara o deploy automaticamente.
+
+### Opção C: Deploy automático via GitHub App
+
+Configure a GitHub App do Coolify (documentação oficial do Coolify) para integração completa; o Auto Deploy será habilitado automaticamente.
+
+---
+
+### Checklist rápido (atualizações não aparecem)
+
+| Item | Onde verificar |
+|------|----------------|
+| Deploy manual feito após o push? | Coolify → Deployments (deve ter deploy recente e bem-sucedido) |
+| Branch configurada = `main`? | Coolify → Build / Source |
+| Repositório = `evarantes/codexia-app`? | Coolify → General |
+| Cache do navegador? | Abra em aba anônima ou Ctrl+Shift+R para forçar recarga sem cache |
+
+### Vídeos sumiram / não aparecem em lugar nenhum
+
+Se vídeos produzidos desapareceram após um deploy:
+
+1. **Volume /data não persistente:** Sem o volume em `/data`, o SQLite é recriado a cada deploy e os dados se perdem. Verifique em Coolify → Storage se há volume com Destination Path = `/data`.
+2. **Verificar no app:** Na aba YouTube Auto, se Fila de Produção e Aguardando Publicação estiverem vazios, clique em **"Verificar se há vídeos no banco"**. Se mostrar `total_videos: 0`, o banco foi resetado (novo container sem persistência).
+3. **Solução:** Configure o volume `/data` e faça um novo planejamento. Os dados antigos não podem ser recuperados se o banco foi perdido.

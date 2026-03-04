@@ -2,6 +2,7 @@ import os
 import glob
 import shutil
 from datetime import datetime
+from filelock import FileLock, Timeout
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query
@@ -18,6 +19,9 @@ from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Vid
 from app.redis_client import conn
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+# Lock file para quando Redis não está disponível (garante 1 job por vez)
+_lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
+_FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
 
 def _rq_workers_online() -> bool:
     """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
@@ -29,37 +33,46 @@ def _rq_workers_online() -> bool:
         return False
 
 def process_jobs_background():
-    """Background task to process video generation jobs."""
+    """Background task to process video generation jobs. Um vídeo por vez."""
     db = SessionLocal()
-    lock = None
+    redis_lock = None
+    file_lock = None
     try:
         if conn:
             try:
-                lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
-                if not lock.acquire(blocking=False):
-                    # Outro worker/processo já está processando.
-                    return
+                redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
+                if not redis_lock.acquire(blocking=False):
+                    return  # Outro worker já está processando
             except Exception as e:
-                print(f"Error acquiring background factory lock: {e}")
-                lock = None
+                print(f"Error acquiring Redis factory lock: {e}")
+                redis_lock = None
 
-        # Se existe worker RQ ativo, não compete com ele.
-        # Isso evita execução duplicada/paralela entre web e worker.
+        # Sem Redis: usar file lock para garantir 1 job por vez (evita múltiplos processando)
+        if not conn or not redis_lock:
+            try:
+                file_lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
+                file_lock.acquire()
+            except Timeout:
+                return  # Outro processo já está processando
+            except Exception as e:
+                print(f"Error acquiring file factory lock: {e}")
+
         if _rq_workers_online():
             return
 
         factory = VideoFactory(db)
-        # Fallback sem worker: drena fila localmente de forma sequencial.
-        # Safety guard evita loop infinito em caso de dados corrompidos.
-        for _ in range(200):
-            if not factory.process_next_job():
-                break
+        factory.process_next_job()
     except Exception as e:
         print(f"Error processing background job: {e}")
     finally:
-        if lock:
+        if redis_lock:
             try:
-                lock.release()
+                redis_lock.release()
+            except Exception:
+                pass
+        if file_lock:
+            try:
+                file_lock.release()
             except Exception:
                 pass
         db.close()
@@ -387,9 +400,53 @@ def get_content_plan(plan_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Plan not found")
     return plan
 
+@router.get("/auto/stats")
+def get_production_stats(db: Session = Depends(get_db)):
+    """Retorna contagem de vídeos/plans para diagnóstico (ex: vídeos sumiram após deploy)."""
+    from sqlalchemy import func
+    total_videos = db.query(Video).count()
+    total_plans = db.query(ContentPlan).count()
+    by_status = (
+        db.query(func.upper(func.trim(Video.status)).label("s"), func.count(Video.id))
+        .group_by(func.upper(func.trim(Video.status)))
+        .all()
+    )
+    return {
+        "total_videos": total_videos,
+        "total_plans": total_plans,
+        "videos_by_status": {s or "null": c for s, c in by_status},
+    }
+
+def _reset_stuck_jobs(db: Session, timeout_minutes: int = 10):
+    """Reseta Jobs travados em 'processing' há muito tempo (ex: servidor reiniciou)."""
+    from datetime import timedelta
+    from sqlalchemy import func
+    cutoff = datetime.now() - timedelta(minutes=timeout_minutes)
+    stuck = (
+        db.query(Job)
+        .filter(Job.status == "processing")
+        .filter(func.coalesce(Job.updated_at, Job.created_at) < cutoff)
+        .all()
+    )
+    for j in stuck:
+        j.status = "pending"
+        j.progress = 0
+        j.logs = (j.logs or "") + f"\n[Recovery] Job travado por {timeout_minutes}+ min. Reenfileirado em {datetime.now()}."
+        v = db.query(Video).get(j.video_id)
+        if v and (v.status or "").upper() not in ("PAUSED", "CANCELLED", "CANCELED"):
+            v.status = "queued"
+        print(f"[Factory] Recovery: Job {j.id} (video {j.video_id}) reenfileirado.")
+    if stuck:
+        db.commit()
+
 @router.get("/auto/queue")
-def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
-    """Retorna a fila de produção (vídeos e jobs)."""
+def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
+    """Retorna a fila de produção (vídeos e jobs). Dispara processamento se houver jobs pendentes."""
+    _reset_stuck_jobs(db)
+    pending = db.query(Job).filter(Job.status == "pending").first()
+    processing = db.query(Job).filter(Job.status == "processing").first()
+    if pending and not processing:
+        background_tasks.add_task(process_jobs_background)
     query = db.query(Video).order_by(Video.scheduled_at.asc())
     
     if status:
@@ -425,7 +482,11 @@ def get_production_queue(status: Optional[str] = None, limit: int = 50, db: Sess
 
         fallback_progress = _progress_from_video_status(normalized_video_status)
         job_progress = int(active_job.progress or 0) if active_job else 0
-        progress = max(job_progress, fallback_progress)
+        # Quando há job em processamento, usar progresso real (evita travar em 85% do fallback RENDER)
+        if active_job and active_job.status == "processing" and job_progress > 0:
+            progress = job_progress
+        else:
+            progress = max(job_progress, fallback_progress)
 
         if normalized_video_status == "PAUSED":
             current_step = "paused"
@@ -826,6 +887,13 @@ def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends
     """Manually trigger job processing (for testing/worker simulation)."""
     background_tasks.add_task(process_jobs_background)
     return {"status": "Processing triggered"}
+
+@router.post("/auto/unblock")
+def unblock_production_queue(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Reseta jobs travados em processing (5+ min) e dispara processamento. Use quando a fila travar."""
+    _reset_stuck_jobs(db, timeout_minutes=5)
+    background_tasks.add_task(process_jobs_background)
+    return {"status": "ok", "message": "Fila desbloqueada. Processamento disparado."}
 
 @router.post("/upload-music")
 async def upload_music(file: UploadFile = File(...)):
