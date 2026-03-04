@@ -837,6 +837,9 @@
                                                 <div class="bg-blue-600 h-2.5 rounded-full" :style="{ width: (video.progress || 0) + '%' }"></div>
                                             </div>
                                             <span class="text-xs text-gray-500">{{ video.progress || 0 }}%</span>
+                                            <div v-if="video.status_message" class="text-[11px] text-gray-600 mt-1 leading-tight max-w-[320px]" :title="video.status_message">
+                                                <i class="fas fa-info-circle mr-1 text-gray-400"></i>{{ video.status_message }}
+                                            </div>
                                         </td>
                                         <td class="p-3 flex gap-2">
                                             <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800" title="Ver Detalhes/Logs">

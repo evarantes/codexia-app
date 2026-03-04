@@ -274,6 +274,7 @@ class VideoFactory:
                 raise Exception("Vídeo não encontrado")
 
             if job.step == "script":
+                video.status = "SCRIPT"
                 self._set_job_progress(job, 10, "Gerando roteiro...")
                 self._step_script(video, job)
                 control = self._video_control_state(video.id)
@@ -284,9 +285,9 @@ class VideoFactory:
                 else:
                     # Next: TTS
                     self._add_job(video.id, "tts")
-                    video.status = "SCRIPT"
             
             elif job.step == "tts":
+                video.status = "TTS"
                 self._set_job_progress(job, 35, "Gerando narração (TTS)...")
                 self._step_tts(video, job)
                 control = self._video_control_state(video.id)
@@ -297,9 +298,9 @@ class VideoFactory:
                 else:
                     # Next: Visuals
                     self._add_job(video.id, "visuals")
-                    video.status = "TTS"
             
             elif job.step == "visuals":
+                video.status = "VISUALS"
                 self._set_job_progress(job, 55, "Gerando visuais...")
                 self._step_visuals(video, job)
                 control = self._video_control_state(video.id)
@@ -310,9 +311,9 @@ class VideoFactory:
                 else:
                     # Next: Render
                     self._add_job(video.id, "render")
-                    video.status = "VISUALS"
             
             elif job.step == "render":
+                video.status = "RENDER"
                 self._set_job_progress(job, 75, "Renderizando vídeo final...")
                 self._step_render(video, job)
                 control = self._video_control_state(video.id)
@@ -510,7 +511,15 @@ class VideoFactory:
         job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
-        strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
+        # Por padrão, exige imagem de IA (sem fundo de cor/local).
+        # Para permitir fallback local explicitamente: ALLOW_NON_AI_IMAGE_FALLBACK=true
+        allow_non_ai_fallback = _is_truthy(os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK"))
+        strict_ai_only = not allow_non_ai_fallback
+        try:
+            max_rounds = max(1, min(12, int(os.getenv("AI_IMAGE_MAX_ROUNDS", "4"))))
+        except Exception:
+            max_rounds = 4
+
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
             visual_prompt = (scene.visual_prompt or "").strip()
@@ -522,47 +531,32 @@ class VideoFactory:
                 "Original AI-generated artwork, exclusive composition, no stock photo, no text, no watermark."
             )
 
-            job.logs += f"Gerando arte IA para cena {scene.idx}...\n"
+            base_progress = 55 + int(((idx - 1) / total) * 25)
+            def scene_status(message: str):
+                self._set_job_progress(job, base_progress, f"Cena {idx}/{total}: {message}")
+
+            scene_status(f"Iniciando geração da imagem (cena {scene.idx}).")
             filepath = self.video_gen._ensure_image_for_scene(
                 prompt,
                 text_fallback=narration[:120] if narration else (scene.keywords or ""),
-                aspect_ratio="16:9"
+                aspect_ratio="16:9",
+                status_callback=scene_status,
+                max_rounds=max_rounds,
+                allow_non_ai_fallback=allow_non_ai_fallback
             )
             source_type = "AI_EXCLUSIVE"
             invalid_path = (not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) < 1000)
             local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
 
-            if invalid_path or local_fallback:
-                if strict_ai_only:
-                    raise Exception(
-                        f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
-                        "Verifique as credenciais/serviço de IA e tente novamente."
-                    )
-
-                # Fallback resiliente: evita travar produção quando provedor de imagem está indisponível.
-                # Mantém coerência com a narração exibindo um quadro contextual em vez de quebrar o pipeline.
-                from PIL import Image
-                fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
-                img_array = self.video_gen.create_text_image(
-                    fallback_text,
-                    size=(1280, 720),
-                    bg_color=(35, 35, 45),
-                    text_color=(245, 245, 245),
+            if invalid_path or (strict_ai_only and local_fallback):
+                mode = "estrito (sem fallback local)" if strict_ai_only else "com fallback local permitido"
+                raise Exception(
+                    f"Falha ao gerar imagem personalizada para cena {scene.idx} ({mode}). "
+                    "A produção foi interrompida para evitar vídeo com fundo genérico."
                 )
-                filename = f"scene_{video.id}_{scene.idx}_fallback_text.png"
-                fallback_path = os.path.join(VIDEO_OUTPUT_DIR, filename)
-                Image.fromarray(img_array).save(fallback_path)
-                if filepath and os.path.exists(filepath) and os.path.basename(filepath).startswith("fallback_local_"):
-                    try:
-                        os.remove(filepath)
-                    except Exception:
-                        pass
-                filepath = fallback_path
-                source_type = "TEXT_FALLBACK"
-                job.logs += (
-                    f"Aviso: IA indisponível para cena {scene.idx}; "
-                    "usando fallback contextual sem interromper produção.\n"
-                )
+            if local_fallback:
+                source_type = "LOCAL_FALLBACK"
+            scene_status(f"Imagem da cena {scene.idx} pronta.")
 
             s3_key = self.storage.upload_file(filepath)
             asset = Asset(

@@ -1620,58 +1620,99 @@ class AIContentGenerator:
         else:
             return base_msg + f"🎬 [Simulação] Roteiro para '{title}'..."
 
-    def generate_image(self, prompt):
+    def generate_image(self, prompt, aspect_ratio: str = "9:16", providers: list = None, status_callback=None):
+        """
+        Gera URL de imagem por cadeia de provedores de IA.
+        Retorna URL quando algum provedor aceita a solicitação.
+        """
         self._load_config()
-        
-        # Prompt engineering focado em imagem autoral/exclusiva gerada por IA.
+        raw_prompt = (prompt or "").strip()
+        if not raw_prompt:
+            return None
+
+        width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
+        dalle_size = "1024x1792" if aspect_ratio == "9:16" else "1792x1024"
+
         quality_tokens = [
             "masterpiece", "unique artistic composition", "copyright free style",
             "cinematic lighting", "highly detailed", "sharp focus",
             "dramatic atmosphere", "award winning concept art", "digital painting",
-            "hand-drawn illustration", "original artwork"
+            "hand-drawn illustration", "original artwork",
         ]
-        
-        # Restrições para evitar artefatos/itens indevidos.
         negative_constraints = "no text, no watermarks, no signatures, no logos, no branded characters, no distorted faces, no blur"
-        
-        enhanced_prompt = prompt
-        # Se o prompt for curto, enriquece. Se já for longo, assume que a IA já fez o trabalho.
-        if len(prompt) < 200 and not any(token in prompt.lower() for token in quality_tokens[:3]):
-            enhanced_prompt = f"{prompt}, {' '.join(quality_tokens[:6])}"
-        
-        # 1. Tenta OpenAI DALL-E 3 se tiver chave
-        if self.api_key:
+        enhanced_prompt = raw_prompt
+        if len(raw_prompt) < 240 and not any(token in raw_prompt.lower() for token in quality_tokens[:3]):
+            enhanced_prompt = f"{raw_prompt}, {' '.join(quality_tokens[:7])}"
+
+        provider_order = providers or ["openai_dalle3", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        provider_labels = {
+            "openai_dalle3": "OpenAI DALL-E 3",
+            "pollinations_flux": "Pollinations Flux",
+            "pollinations_turbo": "Pollinations Turbo",
+            "pollinations": "Pollinations Base",
+        }
+
+        def notify(message: str):
+            if status_callback:
+                try:
+                    status_callback(message)
+                except Exception:
+                    pass
+
+        for provider in provider_order:
+            label = provider_labels.get(provider, provider)
             try:
-                print(f"Tentando gerar imagem com DALL-E 3: {enhanced_prompt[:50]}...")
-                full_prompt = f"{enhanced_prompt}. Vertical aspect ratio 9:16. {negative_constraints}. Original AI-generated illustration, cinematic concept art, highly detailed."
-                
-                response = openai.images.generate(
-                    model="dall-e-3",
-                    prompt=full_prompt,
-                    size="1024x1792",
-                    quality="hd", # Mantém HD para qualidade máxima
-                    n=1,
-                    style="natural" # Mudar para natural para evitar "artistic" bias do DALL-E
-                )
-                return response.data[0].url
+                if provider == "openai_dalle3":
+                    if not self.api_key:
+                        notify(f"{label} sem chave configurada; tentando próximo provedor.")
+                        continue
+                    notify(f"Tentando {label}...")
+                    full_prompt = (
+                        f"{enhanced_prompt}. {negative_constraints}. "
+                        "Original AI-generated illustration, cinematic concept art, highly detailed."
+                    )
+                    client = openai.OpenAI(api_key=self.api_key)
+                    response = client.images.generate(
+                        model="dall-e-3",
+                        prompt=full_prompt,
+                        size=dalle_size,
+                        quality="hd",
+                        n=1,
+                        style="natural",
+                    )
+                    url = None
+                    if getattr(response, "data", None):
+                        item = response.data[0]
+                        url = getattr(item, "url", None)
+                    if url:
+                        notify(f"{label} respondeu com sucesso.")
+                        return url
+                    notify(f"{label} não retornou URL válida; tentando próximo.")
+                    continue
+
+                if provider in {"pollinations_flux", "pollinations_turbo", "pollinations"}:
+                    import urllib.parse
+                    model = "flux" if provider == "pollinations_flux" else ("turbo" if provider == "pollinations_turbo" else "")
+                    notify(f"Tentando {label}...")
+                    pollinations_prompt = (
+                        f"{enhanced_prompt} original ai illustration cinematic concept art "
+                        "highly detailed digital painting no text no watermark"
+                    )
+                    safe_prompt = urllib.parse.quote(pollinations_prompt)
+                    query = (
+                        f"width={width}&height={height}&nologo=true&seed={uuid.uuid4()}&enhance=false"
+                    )
+                    if model:
+                        query += f"&model={model}"
+                    return f"https://image.pollinations.ai/prompt/{safe_prompt}?{query}"
             except Exception as e:
-                print(f"Erro ao gerar imagem OpenAI (fallback para Pollinations): {e}")
-        
-        # 2. Fallback: Pollinations.ai (Gratuito, sem chave)
-        try:
-            print(f"Tentando gerar imagem com Pollinations (Flux): {enhanced_prompt[:50]}...")
-            import urllib.parse
-            pollinations_prompt = f"{enhanced_prompt} vertical 9:16 original ai illustration cinematic concept art highly detailed digital painting no text no watermark"
-            safe_prompt = urllib.parse.quote(pollinations_prompt)
-            
-            # Tenta modelo Flux primeiro (Melhor qualidade e consistência)
-            # Adiciona seed aleatório para garantir unicidade mesmo com prompts iguais
-            # Adiciona enhance=false se possível para evitar "embelezamento" artístico, mas Flux costuma ser bom.
-            url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=720&height=1280&model=flux&nologo=true&seed={uuid.uuid4()}&enhance=false"
-            return url
-        except Exception as e:
-            print(f"Erro no fallback Pollinations: {e}")
-            
+                reason = str(e).strip().replace("\n", " ")
+                if len(reason) > 180:
+                    reason = reason[:177] + "..."
+                notify(f"{label} falhou ({reason}); tentando próximo provedor.")
+                continue
+
+        notify("Todos os provedores de imagem falharam nesta rodada.")
         return None
 
     def generate_banner_image(self, prompt):

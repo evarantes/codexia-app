@@ -203,6 +203,19 @@ def _progress_from_video_status(status: Optional[str]) -> int:
     }
     return mapping.get(s, 0)
 
+def _last_log_line(logs: Optional[str], max_len: int = 220) -> str:
+    """Extrai a última linha útil dos logs para exibir status curto na UI."""
+    text = (logs or "").strip()
+    if not text:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    msg = lines[-1]
+    if len(msg) > max_len:
+        msg = msg[: max_len - 3] + "..."
+    return msg
+
 def _infer_resume_step(db: Session, video: Video) -> Optional[str]:
     """Infere próxima etapa para retomar produção após pausa."""
     paused_or_pending = (
@@ -519,6 +532,19 @@ def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str
         else:
             current_step = "queued"
 
+        status_message = _last_log_line(active_job.logs if active_job else "")
+        if not status_message:
+            if active_job and active_job.status == "processing":
+                status_message = f"Processando etapa: {active_job.step or 'produção'}..."
+            elif active_job and active_job.status == "pending":
+                status_message = f"Aguardando início da etapa: {active_job.step or 'produção'}."
+            elif normalized_video_status == "QUEUED":
+                status_message = "Aguardando vez na fila de produção."
+            elif normalized_video_status == "PAUSED":
+                status_message = "Produção pausada pelo usuário."
+            elif normalized_video_status == "CANCELLED":
+                status_message = "Produção cancelada pelo usuário."
+
         result.append({
             "id": v.id,
             "title": v.title,
@@ -528,6 +554,7 @@ def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str
             "scheduled_at": v.scheduled_at,
             "progress": progress,
             "current_step": current_step,
+            "status_message": status_message,
             "logs": active_job.logs if active_job else "",
             "youtube_id": v.youtube_video_id
         })

@@ -5,6 +5,7 @@ import gc
 import threading
 import asyncio
 import re
+import time
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX
 
@@ -362,83 +363,85 @@ class VideoGenerator:
             print(f"Erro ao gerar fundo local: {e}")
             return None
 
-    def _ensure_image_for_scene(self, prompt, text_fallback, aspect_ratio="9:16"):
+    def _ensure_image_for_scene(
+        self,
+        prompt,
+        text_fallback,
+        aspect_ratio="9:16",
+        status_callback=None,
+        max_rounds=4,
+        allow_non_ai_fallback=False
+    ):
         """
-        Garante que uma imagem seja retornada, tentando múltiplas fontes em ordem de qualidade.
-        1. AI Service (DALL-E / Pollinations Flux)
-        2. Pollinations Simples (Prompt Otimizado)
-        3. Pollinations Genérico (Abstract Background)
-        4. Geração Local (Gradiente - Garantia Final)
+        Garante imagem por IA com múltiplas tentativas/provedores.
+        Se allow_non_ai_fallback=False, retorna None ao esgotar tentativas.
         """
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
+        rounds = max(1, min(12, int(max_rounds or 4)))
+
+        def notify(msg):
+            if status_callback:
+                try:
+                    status_callback(msg)
+                except Exception:
+                    pass
 
         # Garante prompt
         if not prompt and text_fallback:
-             prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:140]}"
+             prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:220]}"
 
-        # 1. Tentativa Principal (AI Service)
-        if self.ai_service and prompt:
-            try:
-                print(f"Tentativa 1 (IA Principal): {prompt[:30]}...")
-                suffix = f". Aspect ratio {aspect_ratio}. Original AI-generated illustration, no stock photo, sem texto."
-                url = self.ai_service.generate_image(prompt + suffix)
-                if url:
-                    path = self.download_image(url)
-                    if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
-            except Exception as e:
-                print(f"Erro Tentativa 1: {e}")
+        base_prompt = (prompt or "").strip()
+        if not base_prompt:
+            notify("Sem prompt de imagem válido para esta cena.")
+            return None
 
-        # 2. Tentativa Secundária (Pollinations Simples Direto)
-        print("Tentativa 2 (Fallback Pollinations Simples)...")
-        try:
-            # Simplifica prompt para aumentar chance de sucesso
-            import urllib.parse
-            # Adiciona keywords de qualidade artística e unicidade
-            artistic_style = "exclusive ai illustration, digital painting, cinematic concept art, highly detailed, no stock photo, no text, no watermark"
-            base_prompt = prompt if prompt else f"cinematic scene {text_fallback[:50]}"
-            simple_prompt = f"{base_prompt}, {artistic_style}"
-            
-            # Remove caracteres especiais que podem quebrar URL
-            simple_prompt = ''.join(e for e in simple_prompt if e.isalnum() or e.isspace() or e == ',')
-            safe_prompt = urllib.parse.quote(simple_prompt)
-            
-            # Tenta Flux primeiro
-            url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=flux&seed={uuid.uuid4()}"
-            path = self.download_image(url, retries=2) # Reduz retries aqui para tentar outro modelo rápido
-            
-            if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
-                return path
-            
-            # Se Flux falhar, tenta Turbo (mais rápido/estável as vezes)
-            print("Pollinations Flux falhou, tentando Turbo...")
-            url_turbo = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=turbo&seed={uuid.uuid4()}"
-            path = self.download_image(url_turbo, retries=2)
-            
-            if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
-                return path
-                
-        except Exception as e:
-            print(f"Erro Tentativa 2: {e}")
+        providers = ["openai_dalle3", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        final_prompt = (
+            f"{base_prompt}. Must align with the narration context. "
+            "Exclusive original artwork, no stock photo, no text, no watermark."
+        )
 
-        # 3. Tentativa Terciária (Abstrato Genérico - Fundo Neutro)
-        print("Tentativa 3 (Fallback Abstrato)...")
-        try:
-            # Prompt abstrato focado em background neutro e profissional
-            abstract_prompt = "abstract background, cinematic lighting, soft colors, professional, 4k, no objects, no people, elegant wallpaper"
-            safe_prompt = urllib.parse.quote(abstract_prompt)
-            url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={uuid.uuid4()}"
-            path = self.download_image(url)
-            if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
-        except Exception as e:
-            print(f"Erro Tentativa 3: {e}")
+        for round_idx in range(1, rounds + 1):
+            notify(f"Tentativa de imagem {round_idx}/{rounds} em múltiplas IAs...")
+            last_provider = None
+            for provider in providers:
+                last_provider = provider
+                url = None
+                if self.ai_service:
+                    try:
+                        url = self.ai_service.generate_image(
+                            final_prompt,
+                            aspect_ratio=aspect_ratio,
+                            providers=[provider],
+                            status_callback=notify
+                        )
+                    except Exception as e:
+                        notify(f"Falha no provedor {provider}: {str(e)[:120]}")
+                        url = None
 
-        # REMOVIDO: Fallback Contextual (LoremFlickr) e Picsum (Aleatório)
-        # Motivo: Geravam imagens irrelevantes (gatos, etc) que confundiam o usuário.
-        # Se as IAs falharem, melhor ir direto para o Gradiente Local (Tentativa 6)
-            
-        # 6. Geração Local (Garantia Final - Offline)
-        print("Tentativa 4 (Geração Local - Gradiente)...")
-        return self._generate_fallback_background((width, height))
+                if not url:
+                    continue
+
+                path = self.download_image(url, retries=2)
+                if path and os.path.exists(path) and os.path.getsize(path) > 1000:
+                    notify(f"Imagem gerada com sucesso ({provider}).")
+                    return path
+
+                notify(f"Resposta inválida de {provider}; tentando próximo provedor.")
+
+            if round_idx < rounds:
+                wait_s = min(10, 2 + round_idx * 2)
+                why = "provedores ocupados/instáveis"
+                if last_provider:
+                    why = f"última tentativa ({last_provider}) sem imagem válida"
+                notify(f"Aguardando {wait_s}s para nova rodada ({why}).")
+                time.sleep(wait_s)
+
+        notify("Não foi possível gerar imagem personalizada após todas as tentativas.")
+        if allow_non_ai_fallback:
+            notify("Aplicando fallback local por configuração do ambiente.")
+            return self._generate_fallback_background((width, height))
+        return None
 
     def _set_clip_duration(self, clip, duration):
         """Compatível com MoviePy 1.x (set_duration) e 2.x (with_duration)."""
@@ -498,6 +501,7 @@ class VideoGenerator:
         clips = []
         final_clip = None
         bg_music = None
+        allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
         
         try:
             title = plan.get('title', 'Vídeo Sem Título')
@@ -577,8 +581,20 @@ class VideoGenerator:
                     if not image_prompt:
                          image_prompt = f"Scene for {title}, photorealistic, cinematic"
 
-                    # Gerar imagem (usa Pexels/Pixabay primeiro, depois IA)
-                    img_path = self._ensure_image_for_scene(image_prompt, text_fallback=title, aspect_ratio=aspect_ratio)
+                    def _music_status(message, scene_idx=i, total=len(scenes)):
+                        if progress_callback:
+                            progress_callback(
+                                10 + int((scene_idx / max(1, total)) * 60),
+                                f"Cena {scene_idx+1}/{total}: {message}"
+                            )
+
+                    img_path = self._ensure_image_for_scene(
+                        image_prompt,
+                        text_fallback=title,
+                        aspect_ratio=aspect_ratio,
+                        status_callback=_music_status,
+                        allow_non_ai_fallback=allow_non_ai_fallback
+                    )
                     
                     if img_path and os.path.exists(img_path):
                         # Criar clip
@@ -586,12 +602,10 @@ class VideoGenerator:
                         clip = self._apply_ken_burns(clip, video_size)
                         clips.append(clip)
                     else:
-                        # Fallback image
-                        color_clip = self._set_clip_duration(
-                            ImageClip(np.zeros((video_size[1], video_size[0], 3), dtype=np.uint8)),
-                            duration
+                        raise Exception(
+                            "Falha ao gerar imagem por IA para cena musical. "
+                            "Ative ALLOW_NON_AI_IMAGE_FALLBACK=true se quiser permitir fallback local."
                         )
-                        clips.append(color_clip)
                 
                 # Concatenar clips visuais
                 if clips:
@@ -695,14 +709,23 @@ class VideoGenerator:
                 clean_text = self._clean_text(text)
                 
                 # GARANTIA DE IMAGEM (Substitui lógica antiga)
+                def _scene_status(message, scene_idx=i, total=total_scenes, pct=scene_progress):
+                    if progress_callback:
+                        progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
+
                 bg_image_path = self._ensure_image_for_scene(
-                    image_prompt, 
-                    text_fallback=clean_text, 
-                    aspect_ratio=aspect_ratio
+                    image_prompt,
+                    text_fallback=clean_text,
+                    aspect_ratio=aspect_ratio,
+                    status_callback=_scene_status,
+                    allow_non_ai_fallback=allow_non_ai_fallback
                 )
 
                 if not bg_image_path:
-                    print(f"CRÍTICO: Falha total na imagem da cena {i+1}. Usando cor sólida.")
+                    raise Exception(
+                        f"Falha ao gerar imagem por IA na cena {i+1}. "
+                        "A renderização foi interrompida para evitar fundo de cor."
+                    )
 
                 # Fallback colors
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
@@ -924,9 +947,22 @@ class VideoGenerator:
                 text = scene.get("text", "") if isinstance(scene, dict) else str(scene)
                 image_prompt = scene.get("image_prompt", "") if isinstance(scene, dict) else ""
                 # Usa Pexels/Pixabay primeiro, depois IA (Música e Clipe)
+                def _clip_status(message, scene_idx=i, total=n):
+                    # progresso local simples para dar feedback no log da API
+                    print(f"[Clip][Cena {scene_idx+1}/{total}] {message}")
+
                 bg_image_path = self._ensure_image_for_scene(
-                    image_prompt, text_fallback=text[:80], aspect_ratio=aspect_ratio
+                    image_prompt,
+                    text_fallback=text[:80],
+                    aspect_ratio=aspect_ratio,
+                    status_callback=_clip_status,
+                    allow_non_ai_fallback=allow_non_ai_fallback
                 ) if image_prompt else None
+                if image_prompt and not bg_image_path:
+                    raise Exception(
+                        f"Falha ao gerar imagem por IA para cena {i+1}. "
+                        "A geração do clipe foi interrompida para evitar fundo genérico."
+                    )
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
                 bg_color = bg_colors[i % len(bg_colors)]
                 img = self.create_text_image(self._clean_text(text), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
