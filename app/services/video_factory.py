@@ -372,17 +372,17 @@ class VideoFactory:
         theme = plan.theme if plan and getattr(plan, "theme", None) else (video.title or "Tema")
         duration_min = plan.duration_min if plan and getattr(plan, "duration_min", None) else 3
         voice_style = plan.voice_style if plan and getattr(plan, "voice_style", None) else "human"
+        target_sec = duration_min * 60
+        min_scenes = max(6, duration_min * 2)  # pelo menos 2 cenas por minuto
         prompt = f"""
         Crie um roteiro detalhado para um vídeo de YouTube sobre '{theme}'.
-        Duração estimada: {duration_min} minutos.
+        OBRIGATÓRIO: O vídeo deve ter aproximadamente {duration_min} MINUTOS quando narrado em voz alta (~{target_sec} segundos no total).
+        Use entre {min_scenes} e {min_scenes + 6} cenas. Cada cena deve ter "narration" com 1 a 3 frases (ao ler em voz alta, ~30-90 segundos por cena).
         Estilo: {voice_style}.
-        Estrutura:
-        1. Gancho (0-30s)
-        2. Introdução
-        3. Conteúdo Principal (dividido em tópicos)
-        4. Conclusão e CTA
+        Estrutura: Gancho (primeiras cenas) → Introdução → Conteúdo Principal (várias cenas) → Conclusão e CTA.
+        Para cada cena, "keywords" e "visual_prompt" devem descrever uma CENA ou IMAGEM concreta (ex: "pessoa orando", "Bíblia aberta", "natureza") para buscar foto de banco.
         
-        Saída ESTRITAMENTE em JSON no formato:
+        Saída ESTRITAMENTE em JSON:
         {{
             "title": "Título chamativo",
             "description": "Descrição para YouTube com hashtags",
@@ -390,13 +390,14 @@ class VideoFactory:
             "scenes": [
                 {{
                     "idx": 1,
-                    "narration": "Texto exato para narrar...",
-                    "visual_prompt": "Descrição da imagem/cena para IA...",
-                    "keywords": "keyword1, keyword2",
-                    "duration_sec": 5
+                    "narration": "Texto exato para narrar nesta cena (1-3 frases).",
+                    "visual_prompt": "Descrição visual da cena para buscar imagem (ex: pastor pregando, paisagem)",
+                    "keywords": "palavras para busca de foto stock em inglês",
+                    "duration_sec": 45
                 }}
             ]
         }}
+        A soma de duration_sec de todas as cenas deve ser aproximadamente {target_sec}.
         """
 
         data = None
@@ -410,14 +411,14 @@ class VideoFactory:
             job.logs += f"Aviso: IA indisponível/retorno inválido no script ({e}). Usando fallback.\n"
 
         if not data or not isinstance(data, dict):
+            sec_per_scene = max(30, target_sec // min_scenes)
             data = {
                 "title": video.title or f"{theme} - Vídeo",
                 "description": f"Vídeo sobre {theme}",
                 "tags": "youtube, conteúdo, automação",
                 "scenes": [
-                    {"idx": 1, "narration": f"Bem-vindo ao conteúdo sobre {theme}.", "visual_prompt": f"Cena introdutória sobre {theme}", "keywords": theme, "duration_sec": 6},
-                    {"idx": 2, "narration": f"Vamos explorar pontos importantes sobre {theme}.", "visual_prompt": f"Cena principal explicativa sobre {theme}", "keywords": theme, "duration_sec": 8},
-                    {"idx": 3, "narration": "Se gostou, curta e acompanhe os próximos vídeos.", "visual_prompt": "Chamada final para ação em estúdio", "keywords": "call to action", "duration_sec": 5},
+                    {"idx": i, "narration": f"Cena {i} sobre {theme}.", "visual_prompt": f"Cena sobre {theme}", "keywords": theme, "duration_sec": sec_per_scene}
+                    for i in range(1, min_scenes + 1)
                 ],
             }
         
@@ -428,7 +429,8 @@ class VideoFactory:
         # Save Scenes
         scenes_data = data.get("scenes", [])
         if not isinstance(scenes_data, list) or not scenes_data:
-            scenes_data = [{"idx": 1, "narration": f"Conteúdo sobre {theme}.", "visual_prompt": f"Cena sobre {theme}", "keywords": theme, "duration_sec": 6}]
+            sec_per = max(30, target_sec // 6)
+            scenes_data = [{"idx": i, "narration": f"Conteúdo sobre {theme} (parte {i}).", "visual_prompt": f"Cena sobre {theme}", "keywords": theme, "duration_sec": sec_per} for i in range(1, 7)]
 
         for s in scenes_data:
             scene = Scene(
@@ -480,23 +482,36 @@ class VideoFactory:
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
         
+        plan = video.plan
+        theme = (plan.theme if plan and getattr(plan, "theme", None) else None) or (video.title or "").split(" - ")[0].strip() or "story"
+        has_stock_keys = bool(getattr(self.stock, "pexels_api_key", None) or getattr(self.stock, "pixabay_api_key", None))
+        if not has_stock_keys:
+            job.logs += "Aviso: Pexels/Pixabay não configurados em Configurações. Serão usadas apenas imagens com texto.\n"
+
         def fetch_stock(scene):
-            """Busca e baixa imagem stock para uma cena. Retorna (scene.idx, filepath) ou (scene.idx, None)."""
-            query = (scene.keywords or scene.visual_prompt or "").strip()
-            if not query:
-                return (scene.idx, None)
-            try:
-                stock_url = self.stock.search_image(query)
-                if stock_url:
-                    r = requests.get(stock_url, timeout=10)
-                    if r.status_code == 200:
-                        fn = f"scene_{video.id}_{scene.idx}_{uuid.uuid4().hex[:6]}.jpg"
-                        fp = os.path.join(VIDEO_OUTPUT_DIR, fn)
-                        with open(fp, 'wb') as f:
-                            f.write(r.content)
-                        return (scene.idx, fp)
-            except Exception:
-                pass
+            """Busca e baixa imagem stock. Tenta keywords, visual_prompt e tema."""
+            queries = [
+                (scene.keywords or "").strip(),
+                (scene.visual_prompt or "").strip(),
+                theme,
+            ]
+            for query in queries:
+                if not query or len(query) < 2:
+                    continue
+                # Limitar tamanho da query (APIs costumam aceitar melhor termos curtos)
+                search_term = query[:80].strip() if len(query) > 80 else query
+                try:
+                    stock_url = self.stock.search_image(search_term)
+                    if stock_url:
+                        r = requests.get(stock_url, timeout=10)
+                        if r.status_code == 200:
+                            fn = f"scene_{video.id}_{scene.idx}_{uuid.uuid4().hex[:6]}.jpg"
+                            fp = os.path.join(VIDEO_OUTPUT_DIR, fn)
+                            with open(fp, 'wb') as f:
+                                f.write(r.content)
+                            return (scene.idx, fp)
+                except Exception:
+                    pass
             return (scene.idx, None)
         
         # Buscar stocks em paralelo (bem mais rápido)
