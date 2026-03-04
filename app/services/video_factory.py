@@ -1,10 +1,7 @@
 import json
 import os
 import subprocess
-import uuid
 import threading
-import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlalchemy.orm import Session
@@ -12,18 +9,19 @@ from sqlalchemy import case, func
 from app.models import ContentPlan, Video, Scene, Job, Asset
 from app.services.ai_generator import AIContentGenerator
 from app.services.video_generator import VideoGenerator
-from app.services.stock_service import StockService
 from app.services.storage import StorageService
 from app.config import VIDEO_OUTPUT_DIR
 from app.redis_client import queue
 from app.database import SessionLocal
+
+def _is_truthy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 class VideoFactory:
     def __init__(self, db: Session):
         self.db = db
         self.ai = AIContentGenerator()
         self.video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
-        self.stock = StockService()
         self.storage = StorageService()
 
     def create_plan(self, plan_data: dict, user_id: int):
@@ -432,7 +430,40 @@ class VideoFactory:
             sec_per = max(30, target_sec // 6)
             scenes_data = [{"idx": i, "narration": f"Conteúdo sobre {theme} (parte {i}).", "visual_prompt": f"Cena sobre {theme}", "keywords": theme, "duration_sec": sec_per} for i in range(1, 7)]
 
-        for s in scenes_data:
+        normalized_scenes = []
+        for i, s in enumerate(scenes_data, start=1):
+            if not isinstance(s, dict):
+                s = {"narration": str(s)}
+            normalized_scenes.append({
+                "idx": int(s.get("idx") or i),
+                "narration": (s.get("narration") or "").strip() or f"Cena {i} sobre {theme}.",
+                "visual_prompt": (s.get("visual_prompt") or "").strip(),
+                "keywords": (s.get("keywords") or "").strip(),
+                "duration_sec": s.get("duration_sec", 5),
+            })
+
+        # Garante coerência visual com a narração por cena (prompts exclusivos da IA).
+        try:
+            enrich_payload = {
+                "title": video.title or f"{theme} - Vídeo",
+                "scenes": [
+                    {"text": s["narration"], "image_prompt": s["visual_prompt"]}
+                    for s in normalized_scenes
+                ],
+            }
+            enriched = self.ai.enrich_scenes_with_image_prompts(enrich_payload) or {}
+            enriched_scenes = enriched.get("scenes") or []
+            if isinstance(enriched_scenes, list):
+                for i, item in enumerate(enriched_scenes):
+                    if i >= len(normalized_scenes) or not isinstance(item, dict):
+                        continue
+                    prompt = (item.get("image_prompt") or "").strip()
+                    if prompt:
+                        normalized_scenes[i]["visual_prompt"] = prompt[:500]
+        except Exception as e:
+            job.logs += f"Aviso: não foi possível enriquecer prompts visuais ({e}).\n"
+
+        for s in normalized_scenes:
             scene = Scene(
                 video_id=video.id,
                 idx=s.get("idx"),
@@ -444,7 +475,7 @@ class VideoFactory:
             self.db.add(scene)
         
         self.db.commit()
-        job.logs += f"Roteiro gerado e {len(scenes_data)} cenas salvas.\n"
+        job.logs += f"Roteiro gerado e {len(normalized_scenes)} cenas salvas.\n"
 
     def _step_tts(self, video: Video, job: Job):
         plan = video.plan
@@ -478,66 +509,78 @@ class VideoFactory:
         job.logs += f"{generated_audio}/{len(scenes)} áudios gerados.\n"
 
     def _step_visuals(self, video: Video, job: Job):
-        job.logs += "Iniciando geração de visuais...\n"
+        job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
-        
-        plan = video.plan
-        theme = (plan.theme if plan and getattr(plan, "theme", None) else None) or (video.title or "").split(" - ")[0].strip() or "story"
-        has_stock_keys = bool(getattr(self.stock, "pexels_api_key", None) or getattr(self.stock, "pixabay_api_key", None))
-        if not has_stock_keys:
-            job.logs += "Aviso: Pexels/Pixabay não configurados em Configurações. Serão usadas apenas imagens com texto.\n"
-
-        def fetch_stock(scene):
-            """Busca e baixa imagem stock. Tenta keywords, visual_prompt e tema."""
-            queries = [
-                (scene.keywords or "").strip(),
-                (scene.visual_prompt or "").strip(),
-                theme,
-            ]
-            for query in queries:
-                if not query or len(query) < 2:
-                    continue
-                # Limitar tamanho da query (APIs costumam aceitar melhor termos curtos)
-                search_term = query[:80].strip() if len(query) > 80 else query
-                try:
-                    stock_url = self.stock.search_image(search_term)
-                    if stock_url:
-                        r = requests.get(stock_url, timeout=10)
-                        if r.status_code == 200:
-                            fn = f"scene_{video.id}_{scene.idx}_{uuid.uuid4().hex[:6]}.jpg"
-                            fp = os.path.join(VIDEO_OUTPUT_DIR, fn)
-                            with open(fp, 'wb') as f:
-                                f.write(r.content)
-                            return (scene.idx, fp)
-                except Exception:
-                    pass
-            return (scene.idx, None)
-        
-        # Buscar stocks em paralelo (bem mais rápido)
-        stock_results = {}
-        with ThreadPoolExecutor(max_workers=min(6, total)) as ex:
-            futures = {ex.submit(fetch_stock, s): s for s in scenes}
-            for future in as_completed(futures):
-                idx, fp = future.result()
-                stock_results[idx] = fp
-        
+        strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
         for idx, scene in enumerate(scenes, start=1):
-            filepath = stock_results.get(scene.idx)
-            source_type = "STOCK" if filepath else "TEXT_PLACEHOLDER"
-            
-            if not filepath:
-                job.logs += f"Gerando imagem fallback para cena {scene.idx}\n"
-                img_array = self.video_gen.create_text_image(
-                    scene.narration_text[:100], size=(1280, 720)
-                )
-                from PIL import Image
-                filename = f"scene_{video.id}_{scene.idx}.png"
-                filepath = os.path.join(VIDEO_OUTPUT_DIR, filename)
-                Image.fromarray(img_array).save(filepath)
-                source_type = "TEXT_GEN"
-            else:
-                job.logs += f"Stock encontrado para cena {scene.idx}.\n"
+            narration = (scene.narration_text or "").strip()
+            visual_prompt = (scene.visual_prompt or "").strip()
+            if not visual_prompt:
+                visual_prompt = f"Illustrate the meaning of this narration: {narration[:220]}"
+            prompt = (
+                f"{visual_prompt}. "
+                f"This image must clearly match the narrated message: \"{narration[:260]}\". "
+                "Original AI-generated artwork, exclusive composition, no stock photo, no text, no watermark."
+            )
+
+            job.logs += f"Gerando arte IA para cena {scene.idx}...\n"
+            filepath = self.video_gen._ensure_image_for_scene(
+                prompt,
+                text_fallback=narration[:120] if narration else (scene.keywords or ""),
+                aspect_ratio="16:9"
+            )
+            source_type = "AI_EXCLUSIVE"
+            invalid_path = (not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) < 1000)
+            local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
+
+            if invalid_path or local_fallback:
+                if strict_ai_only:
+                    raise Exception(
+                        f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
+                        "Verifique as credenciais/serviço de IA e tente novamente."
+                    )
+
+                # Fallback 1: tentar Pexels/Pixabay (fotos reais) antes de texto
+                filepath = None
+                plan = video.plan
+                theme = (plan.theme if plan and getattr(plan, "theme", None) else None) or (video.title or "").split(" - ")[0].strip() or "story"
+                for query in [(scene.keywords or "").strip(), (scene.visual_prompt or "").strip(), theme]:
+                    if query and len(query) >= 2:
+                        try:
+                            stock_url = self.stock.search_image(query[:80] if len(query) > 80 else query)
+                            if stock_url:
+                                r = requests.get(stock_url, timeout=10)
+                                if r.status_code == 200:
+                                    fn = f"scene_{video.id}_{scene.idx}_{uuid.uuid4().hex[:6]}.jpg"
+                                    filepath = os.path.join(VIDEO_OUTPUT_DIR, fn)
+                                    with open(filepath, 'wb') as f:
+                                        f.write(r.content)
+                                    source_type = "STOCK"
+                                    job.logs += f"Stock (Pexels/Pixabay) para cena {scene.idx}.\n"
+                                    break
+                        except Exception:
+                            pass
+
+                # Fallback 2: resiliente com texto em fundo colorido (quando stock não encontrou)
+                if not filepath:
+                    from PIL import Image
+                    fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
+                    img_array = self.video_gen.create_text_image(
+                        fallback_text,
+                        size=(1280, 720),
+                        bg_color=(35, 35, 45),
+                        text_color=(245, 245, 245),
+                    )
+                    filename = f"scene_{video.id}_{scene.idx}_fallback_text.png"
+                    fallback_path = os.path.join(VIDEO_OUTPUT_DIR, filename)
+                    Image.fromarray(img_array).save(fallback_path)
+                    filepath = fallback_path
+                    source_type = "TEXT_FALLBACK"
+                    job.logs += (
+                        f"Aviso: IA e stock indisponíveis para cena {scene.idx}; "
+                        "usando fallback contextual.\n"
+                    )
 
             s3_key = self.storage.upload_file(filepath)
             asset = Asset(
@@ -550,7 +593,10 @@ class VideoFactory:
             self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
-        job.logs += "Visuais gerados.\n"
+        if strict_ai_only:
+            job.logs += "Visuais gerados por IA (modo estrito).\n"
+        else:
+            job.logs += "Visuais gerados por IA com fallback resiliente quando necessário.\n"
 
     def _step_render(self, video: Video, job: Job):
         # Montar FFmpeg command

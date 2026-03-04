@@ -365,39 +365,22 @@ class VideoGenerator:
     def _ensure_image_for_scene(self, prompt, text_fallback, aspect_ratio="9:16"):
         """
         Garante que uma imagem seja retornada, tentando múltiplas fontes em ordem de qualidade.
-        1. Pexels/Pixabay (Mídias e Voz - conteúdo profissional)
-        2. AI Service (DALL-E / Pollinations Flux)
-        3. Pollinations Simples (Prompt Otimizado)
-        4. Pollinations Genérico (Abstract Background)
-        5. Geração Local (Gradiente - Garantia Final)
+        1. AI Service (DALL-E / Pollinations Flux)
+        2. Pollinations Simples (Prompt Otimizado)
+        3. Pollinations Genérico (Abstract Background)
+        4. Geração Local (Gradiente - Garantia Final)
         """
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
 
         # Garante prompt
         if not prompt and text_fallback:
-             prompt = f"Cinematic scene representing: {text_fallback[:100]}"
+             prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:140]}"
 
-        # 1. Pexels/Pixabay (quando configurado em Mídias e Voz - prioridade para conteúdo profissional)
-        if prompt:
-            try:
-                from app.services.stock_service import StockService
-                stock = StockService()
-                orient = "portrait" if aspect_ratio == "9:16" else "landscape"
-                query = prompt[:80].strip()
-                stock_url = stock.search_image(query, orientation=orient)
-                if stock_url:
-                    path = self.download_image(stock_url)
-                    if path and os.path.exists(path) and os.path.getsize(path) > 1000:
-                        print(f"Stock (Pexels/Pixabay) usado para cena: {query[:30]}...")
-                        return path
-            except Exception as e:
-                print(f"Stock fallback: {e}")
-
-        # 2. Tentativa Principal (AI Service)
+        # 1. Tentativa Principal (AI Service)
         if self.ai_service and prompt:
             try:
                 print(f"Tentativa 1 (IA Principal): {prompt[:30]}...")
-                suffix = f". Aspect ratio {aspect_ratio}."
+                suffix = f". Aspect ratio {aspect_ratio}. Original AI-generated illustration, no stock photo, sem texto."
                 url = self.ai_service.generate_image(prompt + suffix)
                 if url:
                     path = self.download_image(url)
@@ -411,7 +394,7 @@ class VideoGenerator:
             # Simplifica prompt para aumentar chance de sucesso
             import urllib.parse
             # Adiciona keywords de qualidade artística e unicidade
-            artistic_style = "photorealistic, cinematic lighting, 8k, highly detailed, professional photography, real photo, no cartoon"
+            artistic_style = "exclusive ai illustration, digital painting, cinematic concept art, highly detailed, no stock photo, no text, no watermark"
             base_prompt = prompt if prompt else f"cinematic scene {text_fallback[:50]}"
             simple_prompt = f"{base_prompt}, {artistic_style}"
             
