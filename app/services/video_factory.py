@@ -571,14 +571,16 @@ class VideoFactory:
                         except Exception:
                             pass
 
-                # Fallback 2: resiliente com texto em fundo colorido (quando stock não encontrou)
+                # Fallback 2: resiliente com texto em fundo (quando stock não encontrou)
                 if not filepath:
                     from PIL import Image
                     fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
+                    # Tenta gerar um fundo local (gradiente) para não ficar cor sólida
+                    bg_path = self.video_gen._generate_fallback_background((1280, 720))
                     img_array = self.video_gen.create_text_image(
                         fallback_text,
                         size=(1280, 720),
-                        bg_color=(35, 35, 45),
+                        bg_image_path=bg_path,
                         text_color=(245, 245, 245),
                     )
                     filename = f"scene_{video.id}_{scene.idx}_fallback_text.png"
@@ -587,9 +589,19 @@ class VideoFactory:
                     filepath = fallback_path
                     source_type = "TEXT_FALLBACK"
                     job.logs += (
-                        f"Cena {scene.idx}: Usando fundo colorido (IA e Stock falharam).\n"
+                        f"Cena {scene.idx}: Usando fundo gradiente (IA e Stock falharam).\n"
                     )
             else:
+                # SUCESSO IA: Agora desenha o texto da narração sobre a imagem gerada para ficar profissional
+                from PIL import Image
+                img_array = self.video_gen.create_text_image(
+                    narration,
+                    size=(1280, 720),
+                    bg_image_path=filepath,
+                    text_color=(255, 255, 255),
+                )
+                # Sobrescreve o arquivo original com a versão com texto
+                Image.fromarray(img_array).save(filepath)
                 job.logs += f"Resultado final: Imagem única gerada com sucesso por IA.\n"
 
             s3_key = self.storage.upload_file(filepath)

@@ -53,6 +53,11 @@ class VideoGenerator:
         import textwrap
         import numpy as np
         
+        # OBRIGATÓRIO: Se não houver imagem de fundo, gera uma localmente para evitar fundo de cor única
+        if not bg_image_path or not os.path.exists(bg_image_path):
+            print(f"Aviso: bg_image_path ausente em create_text_image. Gerando fundo local...")
+            bg_image_path = self._generate_fallback_background(size)
+
         if bg_image_path and os.path.exists(bg_image_path):
             try:
                 img = Image.open(bg_image_path).convert('RGB')
