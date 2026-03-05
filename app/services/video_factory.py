@@ -578,9 +578,10 @@ class VideoFactory:
                     filepath = fallback_path
                     source_type = "TEXT_FALLBACK"
                     job.logs += (
-                        f"Aviso: IA e stock indisponíveis para cena {scene.idx}; "
-                        "usando fallback contextual.\n"
+                        f"Cena {scene.idx}: Usando fundo colorido (IA e Stock falharam).\n"
                     )
+            else:
+                job.logs += f"Cena {scene.idx}: Imagem única gerada com sucesso por IA.\n"
 
             s3_key = self.storage.upload_file(filepath)
             asset = Asset(

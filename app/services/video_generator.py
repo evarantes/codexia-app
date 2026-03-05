@@ -380,11 +380,14 @@ class VideoGenerator:
         if self.ai_service and prompt:
             try:
                 print(f"Tentativa 1 (IA Principal): {prompt[:30]}...")
-                suffix = f". Aspect ratio {aspect_ratio}. Original AI-generated illustration, no stock photo, sem texto."
+                # Adiciona instruções extras para garantir unicidade e base na narração
+                suffix = f". Aspect ratio {aspect_ratio}. Original AI-generated illustration, cinematic concept art, highly detailed, unique composition, no stock photo, no text, no watermark."
                 url = self.ai_service.generate_image(prompt + suffix)
                 if url:
                     path = self.download_image(url)
-                    if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
+                    if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                        print(f"Sucesso na Tentativa 1 (IA Principal): {path}")
+                        return path
             except Exception as e:
                 print(f"Erro Tentativa 1: {e}")
 
@@ -402,19 +405,21 @@ class VideoGenerator:
             simple_prompt = ''.join(e for e in simple_prompt if e.isalnum() or e.isspace() or e == ',')
             safe_prompt = urllib.parse.quote(simple_prompt)
             
-            # Tenta Flux primeiro
+            # Tenta Flux primeiro (Melhor qualidade)
             url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=flux&seed={uuid.uuid4()}"
-            path = self.download_image(url, retries=2) # Reduz retries aqui para tentar outro modelo rápido
+            path = self.download_image(url, retries=3)
             
             if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                print(f"Sucesso na Tentativa 2 (Pollinations Flux): {path}")
                 return path
             
             # Se Flux falhar, tenta Turbo (mais rápido/estável as vezes)
             print("Pollinations Flux falhou, tentando Turbo...")
             url_turbo = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=turbo&seed={uuid.uuid4()}"
-            path = self.download_image(url_turbo, retries=2)
+            path = self.download_image(url_turbo, retries=3)
             
             if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                print(f"Sucesso na Tentativa 2 (Pollinations Turbo): {path}")
                 return path
                 
         except Exception as e:
