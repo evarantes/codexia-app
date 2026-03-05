@@ -53,6 +53,11 @@ class VideoGenerator:
         import textwrap
         import numpy as np
         
+        # OBRIGATÓRIO: Se não houver imagem de fundo, gera uma localmente para evitar fundo de cor única
+        if not bg_image_path or not os.path.exists(bg_image_path):
+            print(f"Aviso: bg_image_path ausente em create_text_image. Gerando fundo local...")
+            bg_image_path = self._generate_fallback_background(size)
+
         if bg_image_path and os.path.exists(bg_image_path):
             try:
                 img = Image.open(bg_image_path).convert('RGB')
@@ -265,26 +270,34 @@ class VideoGenerator:
                 print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries})")
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                    'Connection': 'close'
                 }
-                # Verify=False somente se absolutamente necessário (risco de segurança, mas útil para debug em alguns envs)
-                response = requests.get(url, headers=headers, stream=True, timeout=20)
+                response = requests.get(url, headers=headers, stream=True, timeout=30, allow_redirects=True)
                 
                 if response.status_code == 200:
                     filename = f"temp_{uuid.uuid4()}.png"
                     filepath = os.path.join(self.output_dir, filename)
                     
+                    max_size = 50 * 1024 * 1024
+                    downloaded_size = 0
                     with open(filepath, 'wb') as f:
                         for chunk in response.iter_content(4096):
+                            downloaded_size += len(chunk)
+                            if downloaded_size > max_size:
+                                print(f"Arquivo muito grande ({downloaded_size} bytes). Cancelando.")
+                                try: os.remove(filepath)
+                                except: pass
+                                raise Exception("Arquivo excede tamanho máximo")
                             f.write(chunk)
                 
-                    # Verificação de tamanho
                     file_size = os.path.getsize(filepath)
-                    if file_size < 1000: # 1KB mínimo
+                    if file_size < 1000:
                         print(f"AVISO: Imagem muito pequena ({file_size} bytes). Ignorando.")
                         try: os.remove(filepath)
                         except: pass
                         continue
+                    print(f"Imagem baixada com sucesso: {filepath} ({file_size} bytes)")
                         
                     # Verificação de tipo de arquivo (Header)
                     try:
@@ -308,14 +321,19 @@ class VideoGenerator:
                     
                     return filepath
                 elif response.status_code in [502, 503, 504, 429]:
-                    print(f"Erro temporário ({response.status_code}). Retentando em 2s...")
-                    time.sleep(2)
+                    print(f"Erro temporário ({response.status_code}). Retentando em 3s...")
+                    time.sleep(3)
                     continue
                 else:
                     print(f"Falha ao baixar imagem. Status: {response.status_code}")
-                    # Se for 403/404, não adianta tentar muito
                     if response.status_code in [403, 404]:
                         break
+            except requests.exceptions.Timeout:
+                print(f"Timeout ao baixar imagem (tentativa {attempt+1}/{retries}). Retentando...")
+                time.sleep(2)
+            except requests.exceptions.ConnectionError as e:
+                print(f"Erro de conexão ao baixar imagem: {e}. Retentando...")
+                time.sleep(2)
             except Exception as e:
                 print(f"Erro ao baixar imagem: {e}")
                 time.sleep(1)
@@ -380,11 +398,17 @@ class VideoGenerator:
         if self.ai_service and prompt:
             try:
                 print(f"Tentativa 1 (IA Principal): {prompt[:30]}...")
-                suffix = f". Aspect ratio {aspect_ratio}. Original AI-generated illustration, no stock photo, sem texto."
+                # Adiciona instruções extras para garantir unicidade e base na narração
+                suffix = f". Aspect ratio {aspect_ratio}. Original AI-generated illustration, cinematic concept art, highly detailed, unique composition, no stock photo, no text, no watermark."
                 url = self.ai_service.generate_image(prompt + suffix)
                 if url:
-                    path = self.download_image(url)
-                    if path and os.path.exists(path) and os.path.getsize(path) > 1000: return path
+                    print(f"URL da IA gerada: {url[:80]}...")
+                    path = self.download_image(url, retries=5)
+                    if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                        print(f"Sucesso na Tentativa 1 (IA Principal): {path}")
+                        return path
+                    else:
+                        print(f"Imagem da IA inválida ou muito pequena. Tentando Pollinations...")
             except Exception as e:
                 print(f"Erro Tentativa 1: {e}")
 
@@ -402,19 +426,23 @@ class VideoGenerator:
             simple_prompt = ''.join(e for e in simple_prompt if e.isalnum() or e.isspace() or e == ',')
             safe_prompt = urllib.parse.quote(simple_prompt)
             
-            # Tenta Flux primeiro
+            # Tenta Flux primeiro (Melhor qualidade)
             url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=flux&seed={uuid.uuid4()}"
-            path = self.download_image(url, retries=2) # Reduz retries aqui para tentar outro modelo rápido
+            print(f"Tentando Pollinations Flux: {url[:80]}...")
+            path = self.download_image(url, retries=5)
             
             if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                print(f"Sucesso na Tentativa 2 (Pollinations Flux): {path}")
                 return path
             
             # Se Flux falhar, tenta Turbo (mais rápido/estável as vezes)
             print("Pollinations Flux falhou, tentando Turbo...")
             url_turbo = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=turbo&seed={uuid.uuid4()}"
-            path = self.download_image(url_turbo, retries=2)
+            print(f"Tentando Pollinations Turbo: {url_turbo[:80]}...")
+            path = self.download_image(url_turbo, retries=5)
             
             if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
+                print(f"Sucesso na Tentativa 2 (Pollinations Turbo): {path}")
                 return path
                 
         except Exception as e:

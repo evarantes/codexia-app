@@ -1628,7 +1628,7 @@ class AIContentGenerator:
             "masterpiece", "unique artistic composition", "copyright free style",
             "cinematic lighting", "highly detailed", "sharp focus",
             "dramatic atmosphere", "award winning concept art", "digital painting",
-            "hand-drawn illustration", "original artwork"
+            "hand-drawn illustration", "original artwork", "exclusive composition"
         ]
         
         # Restrições para evitar artefatos/itens indevidos.
@@ -1643,17 +1643,19 @@ class AIContentGenerator:
         if self.api_key:
             try:
                 print(f"Tentando gerar imagem com DALL-E 3: {enhanced_prompt[:50]}...")
-                full_prompt = f"{enhanced_prompt}. Vertical aspect ratio 9:16. {negative_constraints}. Original AI-generated illustration, cinematic concept art, highly detailed."
+                full_prompt = f"{enhanced_prompt}. Vertical aspect ratio 9:16. {negative_constraints}. Original AI-generated illustration, cinematic concept art, highly detailed, unique composition."
                 
                 response = openai.images.generate(
                     model="dall-e-3",
                     prompt=full_prompt,
                     size="1024x1792",
-                    quality="hd", # Mantém HD para qualidade máxima
+                    quality="hd",
                     n=1,
-                    style="natural" # Mudar para natural para evitar "artistic" bias do DALL-E
+                    style="natural"
                 )
-                return response.data[0].url
+                url = response.data[0].url
+                print(f"Sucesso DALL-E 3: {url[:50]}...")
+                return url
             except Exception as e:
                 print(f"Erro ao gerar imagem OpenAI (fallback para Pollinations): {e}")
         
@@ -1661,13 +1663,13 @@ class AIContentGenerator:
         try:
             print(f"Tentando gerar imagem com Pollinations (Flux): {enhanced_prompt[:50]}...")
             import urllib.parse
-            pollinations_prompt = f"{enhanced_prompt} vertical 9:16 original ai illustration cinematic concept art highly detailed digital painting no text no watermark"
-            safe_prompt = urllib.parse.quote(pollinations_prompt)
             
             # Tenta modelo Flux primeiro (Melhor qualidade e consistência)
             # Adiciona seed aleatório para garantir unicidade mesmo com prompts iguais
-            # Adiciona enhance=false se possível para evitar "embelezamento" artístico, mas Flux costuma ser bom.
+            pollinations_prompt = f"{enhanced_prompt} vertical 9:16 original ai illustration cinematic concept art highly detailed digital painting exclusive composition no text no watermark"
+            safe_prompt = urllib.parse.quote(pollinations_prompt)
             url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=720&height=1280&model=flux&nologo=true&seed={uuid.uuid4()}&enhance=false"
+            print(f"Tentando Pollinations Flux: {url[:80]}...")
             return url
         except Exception as e:
             print(f"Erro no fallback Pollinations: {e}")

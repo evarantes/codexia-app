@@ -513,6 +513,7 @@ class VideoFactory:
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
         strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
+        job.logs += f"Total de cenas a processar: {total}\n"
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
             visual_prompt = (scene.visual_prompt or "").strip()
@@ -524,7 +525,10 @@ class VideoFactory:
                 "Original AI-generated artwork, exclusive composition, no stock photo, no text, no watermark."
             )
 
-            job.logs += f"Gerando arte IA para cena {scene.idx}...\n"
+            job.logs += f"\n=== CENA {idx}/{total} ===\n"
+            job.logs += f"Narração: {narration[:100]}...\n"
+            job.logs += f"Prompt visual: {visual_prompt[:80]}...\n"
+            job.logs += f"Gerando imagem única por IA...\n"
             filepath = self.video_gen._ensure_image_for_scene(
                 prompt,
                 text_fallback=narration[:120] if narration else (scene.keywords or ""),
@@ -535,6 +539,11 @@ class VideoFactory:
             local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
 
             if invalid_path or local_fallback:
+                if local_fallback:
+                    job.logs += f"Resultado: Fundo gradiente gerado. Tentando buscar imagem real de qualidade...\n"
+                else:
+                    job.logs += f"Resultado: Falha na geração por IA. Tentando buscar imagem real...\n"
+                
                 if strict_ai_only:
                     raise Exception(
                         f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
@@ -562,14 +571,16 @@ class VideoFactory:
                         except Exception:
                             pass
 
-                # Fallback 2: resiliente com texto em fundo colorido (quando stock não encontrou)
+                # Fallback 2: resiliente com texto em fundo (quando stock não encontrou)
                 if not filepath:
                     from PIL import Image
                     fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
+                    # Tenta gerar um fundo local (gradiente) para não ficar cor sólida
+                    bg_path = self.video_gen._generate_fallback_background((1280, 720))
                     img_array = self.video_gen.create_text_image(
                         fallback_text,
                         size=(1280, 720),
-                        bg_color=(35, 35, 45),
+                        bg_image_path=bg_path,
                         text_color=(245, 245, 245),
                     )
                     filename = f"scene_{video.id}_{scene.idx}_fallback_text.png"
@@ -578,9 +589,20 @@ class VideoFactory:
                     filepath = fallback_path
                     source_type = "TEXT_FALLBACK"
                     job.logs += (
-                        f"Aviso: IA e stock indisponíveis para cena {scene.idx}; "
-                        "usando fallback contextual.\n"
+                        f"Cena {scene.idx}: Usando fundo gradiente (IA e Stock falharam).\n"
                     )
+            else:
+                # SUCESSO IA: Agora desenha o texto da narração sobre a imagem gerada para ficar profissional
+                from PIL import Image
+                img_array = self.video_gen.create_text_image(
+                    narration,
+                    size=(1280, 720),
+                    bg_image_path=filepath,
+                    text_color=(255, 255, 255),
+                )
+                # Sobrescreve o arquivo original com a versão com texto
+                Image.fromarray(img_array).save(filepath)
+                job.logs += f"Resultado final: Imagem única gerada com sucesso por IA.\n"
 
             s3_key = self.storage.upload_file(filepath)
             asset = Asset(
@@ -620,27 +642,39 @@ class VideoFactory:
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         
         try:
-            for scene in scenes:
+            job.logs += f"Renderizando {len(scenes)} cenas...\n"
+            for idx, scene in enumerate(scenes, start=1):
                 audio_asset = audio_assets.get(scene.idx)
                 image_asset = image_assets.get(scene.idx)
                 
                 if audio_asset and image_asset:
+                    job.logs += f"Cena {idx}: Carregando áudio e imagem...\n"
                     audio_clip = AudioFileClip(audio_asset.storage_key)
                     duration = audio_clip.duration
                     
-                    img_clip = ImageClip(image_asset.storage_key)
-                    img_clip = self._clip_resize(img_clip, (1280, 720))  # 720p = render ~2x mais rápido
+                    img_path = image_asset.storage_key
+                    if not os.path.exists(img_path):
+                        job.logs += f"ERRO: Imagem não encontrada em {img_path}\n"
+                        raise Exception(f"Imagem da cena {scene.idx} não encontrada")
+                    
+                    img_clip = ImageClip(img_path)
+                    img_clip = self._clip_resize(img_clip, (1280, 720))
                     img_clip = self._clip_with_duration(img_clip, duration)
                     img_clip = self._clip_with_audio(img_clip, audio_clip)
                     clips.append(img_clip)
+                    job.logs += f"Cena {idx}: Clip criado com sucesso ({duration:.1f}s)\n"
+                else:
+                    job.logs += f"AVISO: Cena {scene.idx} sem áudio ou imagem. Pulando...\n"
 
             if not clips:
-                raise Exception("Sem clips para renderizar (áudio/imagem ausentes).")
+                raise Exception(f"Sem clips para renderizar. Total de cenas: {len(scenes)}, Clips criados: {len(clips)}.")
 
+            job.logs += f"Concatenando {len(clips)} clips em vídeo final...\n"
             final_video = concatenate_videoclips(clips, method="compose")
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
+            job.logs += f"Escrevendo vídeo final para: {output_path}\n"
             self._set_job_progress(job, 75, "Escrevendo arquivo de vídeo...")
             write_logger = None
             try:
