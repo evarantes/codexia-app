@@ -4,6 +4,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Post
+from app.services.ai_generator import AIContentGenerator
 import uuid
 
 router = APIRouter(prefix="/video", tags=["Video"])
@@ -27,7 +28,6 @@ class CreateVideoRequest(BaseModel):
 @router.post("/create")
 def create_video(request: CreateVideoRequest):
     # Lazy import para reduzir memória no startup (moviepy/PIL/numpy)
-    from app.services.ai_generator import AIContentGenerator
     from app.services.video_generator import VideoGenerator
     try:
         ai_service = AIContentGenerator()
@@ -74,7 +74,6 @@ def create_video(request: CreateVideoRequest):
 @router.post("/generate")
 def generate_video(request: VideoRequest):
     from app.services.video_generator import VideoGenerator
-    from app.services.ai_generator import AIContentGenerator
     try:
         filename = f"{uuid.uuid4()}.mp4"
         # Tenta inicializar IA para melhores imagens/audio
@@ -113,7 +112,6 @@ def generate_video(request: VideoRequest):
 
 @router.post("/generate-auto")
 def generate_auto_video(request: AutoVideoRequest, db: Session = Depends(get_db)):
-    from app.services.ai_generator import AIContentGenerator
     from app.services.video_generator import VideoGenerator
     try:
         book = db.query(Book).filter(Book.id == request.book_id).first()

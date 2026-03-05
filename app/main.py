@@ -17,6 +17,7 @@ from app.routers.auth import get_password_hash
 
 # Carregar variáveis de ambiente
 load_dotenv()
+# Trigger reload: 1
 
 APP_ENV = os.getenv("APP_ENV", "production").lower()
 IS_PRODUCTION = APP_ENV == "production"
