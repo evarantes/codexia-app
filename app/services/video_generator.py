@@ -265,26 +265,34 @@ class VideoGenerator:
                 print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries})")
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                    'Connection': 'close'
                 }
-                # Verify=False somente se absolutamente necessário (risco de segurança, mas útil para debug em alguns envs)
-                response = requests.get(url, headers=headers, stream=True, timeout=20)
+                response = requests.get(url, headers=headers, stream=True, timeout=30, allow_redirects=True)
                 
                 if response.status_code == 200:
                     filename = f"temp_{uuid.uuid4()}.png"
                     filepath = os.path.join(self.output_dir, filename)
                     
+                    max_size = 50 * 1024 * 1024
+                    downloaded_size = 0
                     with open(filepath, 'wb') as f:
                         for chunk in response.iter_content(4096):
+                            downloaded_size += len(chunk)
+                            if downloaded_size > max_size:
+                                print(f"Arquivo muito grande ({downloaded_size} bytes). Cancelando.")
+                                try: os.remove(filepath)
+                                except: pass
+                                raise Exception("Arquivo excede tamanho máximo")
                             f.write(chunk)
                 
-                    # Verificação de tamanho
                     file_size = os.path.getsize(filepath)
-                    if file_size < 1000: # 1KB mínimo
+                    if file_size < 1000:
                         print(f"AVISO: Imagem muito pequena ({file_size} bytes). Ignorando.")
                         try: os.remove(filepath)
                         except: pass
                         continue
+                    print(f"Imagem baixada com sucesso: {filepath} ({file_size} bytes)")
                         
                     # Verificação de tipo de arquivo (Header)
                     try:
@@ -308,14 +316,19 @@ class VideoGenerator:
                     
                     return filepath
                 elif response.status_code in [502, 503, 504, 429]:
-                    print(f"Erro temporário ({response.status_code}). Retentando em 2s...")
-                    time.sleep(2)
+                    print(f"Erro temporário ({response.status_code}). Retentando em 3s...")
+                    time.sleep(3)
                     continue
                 else:
                     print(f"Falha ao baixar imagem. Status: {response.status_code}")
-                    # Se for 403/404, não adianta tentar muito
                     if response.status_code in [403, 404]:
                         break
+            except requests.exceptions.Timeout:
+                print(f"Timeout ao baixar imagem (tentativa {attempt+1}/{retries}). Retentando...")
+                time.sleep(2)
+            except requests.exceptions.ConnectionError as e:
+                print(f"Erro de conexão ao baixar imagem: {e}. Retentando...")
+                time.sleep(2)
             except Exception as e:
                 print(f"Erro ao baixar imagem: {e}")
                 time.sleep(1)

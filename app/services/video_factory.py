@@ -513,6 +513,7 @@ class VideoFactory:
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
         strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
+        job.logs += f"Total de cenas a processar: {total}\n"
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
             visual_prompt = (scene.visual_prompt or "").strip()
@@ -524,7 +525,10 @@ class VideoFactory:
                 "Original AI-generated artwork, exclusive composition, no stock photo, no text, no watermark."
             )
 
-            job.logs += f"Gerando arte IA para cena {scene.idx}...\n"
+            job.logs += f"\n=== CENA {idx}/{total} ===\n"
+            job.logs += f"Narração: {narration[:100]}...\n"
+            job.logs += f"Prompt visual: {visual_prompt[:80]}...\n"
+            job.logs += f"Gerando imagem única por IA...\n"
             filepath = self.video_gen._ensure_image_for_scene(
                 prompt,
                 text_fallback=narration[:120] if narration else (scene.keywords or ""),
@@ -535,6 +539,11 @@ class VideoFactory:
             local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
 
             if invalid_path or local_fallback:
+                if local_fallback:
+                    job.logs += f"Resultado: Fundo gradiente gerado. Tentando buscar imagem real de qualidade...\n"
+                else:
+                    job.logs += f"Resultado: Falha na geração por IA. Tentando buscar imagem real...\n"
+                
                 if strict_ai_only:
                     raise Exception(
                         f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
@@ -581,7 +590,7 @@ class VideoFactory:
                         f"Cena {scene.idx}: Usando fundo colorido (IA e Stock falharam).\n"
                     )
             else:
-                job.logs += f"Cena {scene.idx}: Imagem única gerada com sucesso por IA.\n"
+                job.logs += f"Resultado final: Imagem única gerada com sucesso por IA.\n"
 
             s3_key = self.storage.upload_file(filepath)
             asset = Asset(
