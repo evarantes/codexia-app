@@ -402,10 +402,13 @@ class VideoGenerator:
                 suffix = f". Aspect ratio {aspect_ratio}. Original AI-generated illustration, cinematic concept art, highly detailed, unique composition, no stock photo, no text, no watermark."
                 url = self.ai_service.generate_image(prompt + suffix)
                 if url:
-                    path = self.download_image(url)
+                    print(f"URL da IA gerada: {url[:80]}...")
+                    path = self.download_image(url, retries=5)
                     if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
                         print(f"Sucesso na Tentativa 1 (IA Principal): {path}")
                         return path
+                    else:
+                        print(f"Imagem da IA inválida ou muito pequena. Tentando Pollinations...")
             except Exception as e:
                 print(f"Erro Tentativa 1: {e}")
 
@@ -425,7 +428,8 @@ class VideoGenerator:
             
             # Tenta Flux primeiro (Melhor qualidade)
             url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=flux&seed={uuid.uuid4()}"
-            path = self.download_image(url, retries=3)
+            print(f"Tentando Pollinations Flux: {url[:80]}...")
+            path = self.download_image(url, retries=5)
             
             if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
                 print(f"Sucesso na Tentativa 2 (Pollinations Flux): {path}")
@@ -434,7 +438,8 @@ class VideoGenerator:
             # Se Flux falhar, tenta Turbo (mais rápido/estável as vezes)
             print("Pollinations Flux falhou, tentando Turbo...")
             url_turbo = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&model=turbo&seed={uuid.uuid4()}"
-            path = self.download_image(url_turbo, retries=3)
+            print(f"Tentando Pollinations Turbo: {url_turbo[:80]}...")
+            path = self.download_image(url_turbo, retries=5)
             
             if path and os.path.exists(path) and os.path.getsize(path) > 1000: 
                 print(f"Sucesso na Tentativa 2 (Pollinations Turbo): {path}")

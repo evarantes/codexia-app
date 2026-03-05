@@ -642,27 +642,39 @@ class VideoFactory:
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         
         try:
-            for scene in scenes:
+            job.logs += f"Renderizando {len(scenes)} cenas...\n"
+            for idx, scene in enumerate(scenes, start=1):
                 audio_asset = audio_assets.get(scene.idx)
                 image_asset = image_assets.get(scene.idx)
                 
                 if audio_asset and image_asset:
+                    job.logs += f"Cena {idx}: Carregando áudio e imagem...\n"
                     audio_clip = AudioFileClip(audio_asset.storage_key)
                     duration = audio_clip.duration
                     
-                    img_clip = ImageClip(image_asset.storage_key)
-                    img_clip = self._clip_resize(img_clip, (1280, 720))  # 720p = render ~2x mais rápido
+                    img_path = image_asset.storage_key
+                    if not os.path.exists(img_path):
+                        job.logs += f"ERRO: Imagem não encontrada em {img_path}\n"
+                        raise Exception(f"Imagem da cena {scene.idx} não encontrada")
+                    
+                    img_clip = ImageClip(img_path)
+                    img_clip = self._clip_resize(img_clip, (1280, 720))
                     img_clip = self._clip_with_duration(img_clip, duration)
                     img_clip = self._clip_with_audio(img_clip, audio_clip)
                     clips.append(img_clip)
+                    job.logs += f"Cena {idx}: Clip criado com sucesso ({duration:.1f}s)\n"
+                else:
+                    job.logs += f"AVISO: Cena {scene.idx} sem áudio ou imagem. Pulando...\n"
 
             if not clips:
-                raise Exception("Sem clips para renderizar (áudio/imagem ausentes).")
+                raise Exception(f"Sem clips para renderizar. Total de cenas: {len(scenes)}, Clips criados: {len(clips)}.")
 
+            job.logs += f"Concatenando {len(clips)} clips em vídeo final...\n"
             final_video = concatenate_videoclips(clips, method="compose")
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
+            job.logs += f"Escrevendo vídeo final para: {output_path}\n"
             self._set_job_progress(job, 75, "Escrevendo arquivo de vídeo...")
             write_logger = None
             try:
