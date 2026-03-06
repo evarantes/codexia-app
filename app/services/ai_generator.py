@@ -554,6 +554,8 @@ class AIContentGenerator:
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
         self._load_config()
 
+        print(f"DEBUG: Generating covers for '{title}' with context: {context[:100]}...")
+
         # [REMOVED] StockService priority removed to ensure AI generation with custom text (Title/Author) as requested.
         # Previously, stock images were returned without any text overlay.
         
