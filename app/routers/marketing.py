@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Post
-from app.services.ai_generator import AIContentGenerator
+# from app.services.ai_generator import AIContentGenerator  # Moved to local import
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/marketing", tags=["Marketing"])
@@ -19,6 +19,8 @@ def generate_ad(request: GenerateAdRequest, db: Session = Depends(get_db)):
     
     # Gerar conteúdo usando a IA
     # Instanciar aqui para evitar problemas de inicialização do DB no import
+    # Lazy import para evitar ciclo
+    from app.services.ai_generator import AIContentGenerator
     ai_service = AIContentGenerator()
     ad_content = ai_service.generate_ad_copy(book.title, book.synopsis, request.style)
     

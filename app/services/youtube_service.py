@@ -111,7 +111,7 @@ class YouTubeService:
         return auth_url
 
     def exchange_code_for_token(self, code):
-        """Troca o código de autorização por tokens e salva no banco"""
+        """Troca o código de autorização por tokens e salva no banco. Retorna (success, message)."""
         try:
             # 1. Tentar configurar Flow via Banco de Dados
             db = SessionLocal()
@@ -119,6 +119,7 @@ class YouTubeService:
             db.close()
 
             flow = None
+            used_json_file = False
             
             if settings and settings.youtube_client_id and settings.youtube_client_secret:
                 try:
@@ -139,21 +140,36 @@ class YouTubeService:
             if not flow:
                 if os.path.exists('client_secret.json'):
                     flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
+                    used_json_file = True
                 else:
-                    raise FileNotFoundError("Credenciais não encontradas (Banco ou arquivo json)")
+                    return False, "Credenciais não encontradas (Banco ou arquivo json)"
 
             flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
             flow.fetch_token(code=code)
             self.credentials = flow.credentials
             
+            # Se usou JSON, extrair client_id/secret para salvar no banco
+            client_id_override = None
+            client_secret_override = None
+            
+            if used_json_file:
+                try:
+                    with open('client_secret.json', 'r') as f:
+                        data = json.load(f)
+                        installed = data.get('installed', data.get('web', {}))
+                        client_id_override = installed.get('client_id')
+                        client_secret_override = installed.get('client_secret')
+                except Exception as e:
+                    print(f"Erro ao ler client_secret.json para persistência: {e}")
+
             # Salvar no banco
-            self._save_credentials_to_db()
-            return True
+            self._save_credentials_to_db(client_id_override, client_secret_override)
+            return True, "Autenticação realizada com sucesso!"
         except Exception as e:
             print(f"Erro ao trocar código por token: {e}")
-            return False
+            return False, str(e)
 
-    def _save_credentials_to_db(self):
+    def _save_credentials_to_db(self, client_id=None, client_secret=None):
         """Salva as credenciais atuais no banco de dados"""
         if not self.credentials:
             return
@@ -171,17 +187,15 @@ class YouTubeService:
             else:
                 settings.youtube_refresh_token = self.credentials.refresh_token.strip()
             
-            # client_id e client_secret: usar do credentials ou preservar do settings
-            # (flow.credentials às vezes não inclui esses campos após fetch_token)
-            if getattr(self.credentials, 'client_id', None):
-                settings.youtube_client_id = self.credentials.client_id.strip()
-            elif not settings.youtube_client_id:
-                print("AVISO: client_id não encontrado. Configure em Configurações.")
-            if getattr(self.credentials, 'client_secret', None):
-                settings.youtube_client_secret = self.credentials.client_secret.strip()
-            elif not settings.youtube_client_secret:
-                print("AVISO: client_secret não encontrado. Configure em Configurações.")
-                
+            # Atualizar client_id/secret se fornecidos ou presentes nas credenciais
+            current_client_id = getattr(self.credentials, 'client_id', None) or client_id
+            if current_client_id:
+                settings.youtube_client_id = current_client_id.strip()
+            
+            current_client_secret = getattr(self.credentials, 'client_secret', None) or client_secret
+            if current_client_secret:
+                settings.youtube_client_secret = current_client_secret.strip()
+
             db.commit()
             print("Credenciais do YouTube salvas no banco com sucesso.")
         except Exception as e:

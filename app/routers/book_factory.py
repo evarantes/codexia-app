@@ -120,12 +120,9 @@ async def create_draft(request: CreateDraftRequest):
     """
     Generates a full book structure from scratch using AI.
     """
-    print(f"DEBUG: create_draft called. Importing AIContentGenerator...")
     try:
         from app.services.ai_generator import AIContentGenerator
-        print(f"DEBUG: AIContentGenerator imported: {AIContentGenerator}")
         ai_service = AIContentGenerator()
-        print(f"DEBUG: AIContentGenerator instantiated.")
     except Exception as e:
         print(f"DEBUG: Failed to import/instantiate AIContentGenerator: {e}")
         raise HTTPException(status_code=500, detail=f"Erro crítico de importação: {e}")
