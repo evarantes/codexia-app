@@ -99,6 +99,15 @@ class YouTubeService:
                 flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
                 flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
                 auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
+                
+                # Persist code_verifier for PKCE (required by Google for OOB/Desktop)
+                if getattr(flow, "code_verifier", None):
+                    try:
+                        with open("youtube_pkce.txt", "w") as f:
+                            f.write(flow.code_verifier)
+                    except Exception as e:
+                        print(f"Warning: Failed to save PKCE verifier: {e}")
+
                 return auth_url
             except Exception as e:
                 raise RuntimeError(f"Credenciais do YouTube no banco inválidas: {e}")
@@ -108,6 +117,15 @@ class YouTubeService:
         flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
         flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
         auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
+        
+        # Persist code_verifier for PKCE (fallback flow)
+        if getattr(flow, "code_verifier", None):
+            try:
+                with open("youtube_pkce.txt", "w") as f:
+                    f.write(flow.code_verifier)
+            except Exception as e:
+                print(f"Warning: Failed to save PKCE verifier (file): {e}")
+
         return auth_url
 
     def exchange_code_for_token(self, code):
@@ -145,6 +163,22 @@ class YouTubeService:
                     return False, "Credenciais não encontradas (Banco ou arquivo json)"
 
             flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+            
+            # Restore PKCE verifier if available
+            if os.path.exists("youtube_pkce.txt"):
+                try:
+                    with open("youtube_pkce.txt", "r") as f:
+                        verifier = f.read().strip()
+                        if verifier:
+                            flow.code_verifier = verifier
+                    # Cleanup
+                    try:
+                        os.remove("youtube_pkce.txt")
+                    except:
+                        pass
+                except Exception as e:
+                    print(f"Warning: Failed to load PKCE verifier: {e}")
+
             flow.fetch_token(code=code)
             self.credentials = flow.credentials
             
