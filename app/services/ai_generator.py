@@ -605,7 +605,7 @@ class AIContentGenerator:
             for p in prompts[:n]:
                 # Construct a very specific prompt for DALL-E 3 to handle text
                 dalle_prompt = f"""
-                Create a high-quality BOOK COVER.
+                Create a high-quality BOOK COVER DESIGN (Flat 2D Art).
 
                 MANDATORY TEXT ELEMENTS (MUST BE WRITTEN ON THE IMAGE):
                 - TITLE: "{title_display}"
@@ -623,11 +623,19 @@ class AIContentGenerator:
                 {p}
                 
                 DESIGN RULES:
-                1. The TITLE "{title_display}" must be the largest and most prominent text, centered or at the top.
-                2. The AUTHOR name must be visible at the bottom.
-                3. The typography must be legible, professional, and integrated with the artwork.
-                4. Do NOT add any other text or gibberish. Only the Title, Subtitle (if any), and Author.
-                5. The art style should be consistent with the book's theme described above.
+                1. FORMAT: This must be a FLAT 2D book cover art file. 
+                   - NO 3D renders.
+                   - NO book sitting on a table.
+                   - NO angled views.
+                   - NO spines visible.
+                   - JUST the front cover artwork.
+                2. TEXT PLACEMENT:
+                   - The TITLE "{title_display}" must be large, legible, and prominent (top or center).
+                   - The SUBTITLE (if any) should be smaller and below the title.
+                   - The AUTHOR NAME "{author_display}" must be clearly visible at the bottom.
+                3. TYPOGRAPHY: Use professional fonts that match the genre. Ensure high contrast against the background.
+                4. EXCLUSIVITY: Create a unique, artistic composition based on the visual description.
+                5. Do NOT add any extra text, buttons, or 'bestseller' stickers. Only the Title, Subtitle, and Author.
                 """
                 
                 try:
