@@ -520,6 +520,7 @@ class VideoFactory:
             max_rounds = max(1, min(12, int(os.getenv("AI_IMAGE_MAX_ROUNDS", "4"))))
         except Exception:
             max_rounds = 4
+        fallback_used = False
 
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
@@ -550,11 +551,8 @@ class VideoFactory:
             local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
 
             if invalid_path or local_fallback:
-                if strict_ai_only:
-                    raise Exception(
-                        f"Falha ao gerar imagem exclusiva por IA para cena {scene.idx}. "
-                        "Verifique credenciais/conectividade dos provedores e tente novamente."
-                    )
+                # Mesmo em modo estrito, evitamos interrupção total do pipeline.
+                # O fallback contextual mantém produção ativa e evita "tela preta".
                 from PIL import Image
                 fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
                 fallback_bg = self.video_gen._generate_fallback_background((1280, 720))
@@ -582,7 +580,11 @@ class VideoFactory:
 
                 filepath = fallback_path
                 source_type = "TEXT_FALLBACK"
-                scene_status("IA indisponível no momento; usando arte contextual para não travar.")
+                fallback_used = True
+                if strict_ai_only:
+                    scene_status("IA indisponível no modo estrito; aplicando fallback contextual para evitar falha.")
+                else:
+                    scene_status("IA indisponível no momento; usando arte contextual para não travar.")
             scene_status(f"Imagem da cena {scene.idx} pronta.")
 
             s3_key = self.storage.upload_file(filepath)
@@ -596,7 +598,9 @@ class VideoFactory:
             self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
-        if strict_ai_only:
+        if fallback_used:
+            job.logs += "Visuais concluídos com fallback contextual em cenas sem resposta de IA.\n"
+        elif strict_ai_only:
             job.logs += "Visuais gerados por IA (modo estrito).\n"
         else:
             job.logs += "Visuais gerados por IA com fallback resiliente quando necessário.\n"
