@@ -191,38 +191,66 @@ class GenerateCoverRequest(BaseModel):
 async def generate_covers(request: GenerateCoverRequest):
     context_text = request.context or request.description or "Livro sem descrição"
     result = []  # [{ url, base64? }] para persistir capa mesmo em ambiente efêmero (Render)
+    
+    # IMPORTANTE: Definir diretório de capas persistente e garantir que existe
+    COVERS_DIR = os.path.join("app", "static", "covers")
+    os.makedirs(COVERS_DIR, exist_ok=True)
+    
     try:
         from app.services.ai_generator import AIContentGenerator
         ai_service = AIContentGenerator()
+        
+        # 1. Gera URLs (DALL-E)
         urls = ai_service.generate_cover_options(
             request.title, context_text,
             request.author or "", request.subtitle or ""
         )
-        COVERS_DIR = os.path.join("app", "static", "covers")
-        os.makedirs(COVERS_DIR, exist_ok=True)
+        
         import base64
-        for url in (urls or []):
+        import requests
+        
+        for i, url in enumerate(urls or []):
             if url and str(url).startswith("http"):
                 try:
+                    # 2. Download da imagem gerada
                     response = requests.get(url, stream=True, timeout=60)
                     if response.status_code == 200:
                         img_bytes = response.content
+                        
+                        # 3. Salvar localmente com nome único
                         filename = f"cover_{uuid.uuid4().hex}.png"
                         file_path = os.path.join(COVERS_DIR, filename)
+                        
                         with open(file_path, "wb") as out_file:
                             out_file.write(img_bytes)
+                            
+                        # 4. Preparar Base64 para backup/preview imediato
                         b64 = base64.b64encode(img_bytes).decode("utf-8")
-                        result.append({"url": f"/static/covers/{filename}", "base64": b64})
+                        
+                        # 5. URL Relativa correta para o frontend
+                        # O frontend espera /static/covers/nome.png
+                        relative_url = f"/static/covers/{filename}"
+                        
+                        result.append({
+                            "url": relative_url,
+                            "base64": b64
+                        })
+                        print(f"Cover saved: {file_path} -> {relative_url}")
                     else:
+                        print(f"Failed to download image {url}: status {response.status_code}")
                         result.append({"url": url, "base64": None})
                 except Exception as e:
-                    print(f"Failed to download cover: {e}")
+                    print(f"Exception downloading cover: {e}")
                     result.append({"url": url, "base64": None})
             elif url:
                 result.append({"url": url, "base64": None})
+                
     except Exception as e:
-        print(f"generate-covers error: {e}")
-    return {"covers": result}
+        print(f"generate-covers critical error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    return result # Retorna lista direta, frontend espera array ou {covers: []} - vamos ajustar frontend se precisar
 
 def resolve_cover_path(filename: str) -> Optional[str]:
     if not filename:

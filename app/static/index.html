@@ -1485,7 +1485,8 @@
                                         class="relative cursor-pointer border-4 rounded-lg overflow-hidden group shadow-md transition transform hover:scale-105"
                                         :class="{'border-purple-600 ring-2 ring-purple-300': selectedCoverIndex === idx, 'border-white': selectedCoverIndex !== idx}"
                                         @click="selectCover(idx)">
-                                        <img :src="cover" class="w-full h-64 object-cover">
+                                        <!-- Fix: Use cover directly if string, or cover.url if object -->
+                                        <img :src="cover.url || cover" class="w-full h-64 object-cover" @error="handleCoverError($event)">
                                         <div v-if="selectedCoverIndex === idx" class="absolute inset-0 bg-purple-600 bg-opacity-30 flex items-center justify-center">
                                             <i class="fas fa-check-circle text-white text-4xl drop-shadow-lg"></i>
                                         </div>
