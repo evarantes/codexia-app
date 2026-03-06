@@ -3922,8 +3922,21 @@
                     this.generatedCovers = [];
                     this.generatedCoversData = [];
                     try {
-                        const desc = (this.factoryData.sections?.textual || []).map(c => c.content).join(" ").substring(0, 500)
-                            || (this.factoryData.metadata?.title || "Livro");
+                        // Priority for context: Idea > Synopsis > Textual Content > Title
+                        let desc = this.aiBook.idea || "";
+                        if (this.factoryData.sections?.pre_textual?.synopsis) {
+                            desc += " " + this.factoryData.sections.pre_textual.synopsis;
+                        }
+                        if (!desc && this.factoryData.sections?.textual?.length > 0) {
+                             desc = this.factoryData.sections.textual.map(c => c.content).join(" ").substring(0, 500);
+                        }
+                        if (!desc) {
+                            desc = this.factoryData.metadata?.title || "Livro";
+                        }
+                        
+                        // Limit description length to avoid prompt overflow but keep enough context
+                        desc = desc.substring(0, 800);
+
                         const res = await this.authFetch('/factory/generate-covers', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},

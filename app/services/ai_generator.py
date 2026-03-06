@@ -554,22 +554,9 @@ class AIContentGenerator:
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
         self._load_config()
 
-        # Prioridade: Pexels/Pixabay (Mídias e Voz) para capas profissionais
-        try:
-            from app.services.stock_service import StockService
-            stock = StockService()
-            query = f"{title} {context[:100]}".strip()
-            if query:
-                urls = []
-                for _ in range(n):
-                    url = stock.search_image(query, orientation="portrait")
-                    if url and url not in urls:
-                        urls.append(url)
-                if urls:
-                    return urls[:n]
-        except Exception as e:
-            print(f"Stock covers fallback: {e}")
-
+        # [REMOVED] StockService priority removed to ensure AI generation with custom text (Title/Author) as requested.
+        # Previously, stock images were returned without any text overlay.
+        
         # Mock response if no API key (usa chave do banco ou env)
         if not self.api_key:
             colors = ["1e293b", "4f46e5", "059669"]
@@ -578,25 +565,35 @@ class AIContentGenerator:
         import json
         try:
             client = openai.OpenAI(api_key=self.api_key)
-            # 1. Get Prompts from GPT to ensure variety
+            # 1. Get Prompts from GPT to ensure variety and relevance to the central message
             prompt_gen_prompt = f"""
-            Crie {n} descrições visuais artísticas e detalhadas para a capa do livro '{title}'.
-            Contexto/Sinopse: {context[:500]}
+            Crie {n} descrições visuais artísticas e EXCLUSIVAS para a capa do livro '{title}'.
+            Contexto/Mensagem Central: {context[:500]}
             Gênero/Estilo: Identifique pelo contexto.
             
-            FOCO: Apenas a descrição da imagem (cenário, elementos, cores, estilo artístico). NÃO descreva onde o texto fica.
+            OBJETIVO: Despertar o desejo de leitura através de uma imagem impactante e simbólica.
+            FOCO: Apenas a descrição da imagem (cenário, elementos, cores, estilo artístico). NÃO mencione texto ou tipografia aqui.
             
             Retorne apenas um JSON: {{ "prompts": ["descrição visual 1...", "descrição visual 2...", "descrição visual 3..."] }}
             """
             
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt_gen_prompt}],
-                temperature=0.7
-            )
-            content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
-            prompts = json.loads(content).get("prompts", [])
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt_gen_prompt}],
+                    temperature=0.8
+                )
+                content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+                prompts_data = json.loads(content)
+                prompts = prompts_data.get("prompts", []) if isinstance(prompts_data, dict) else []
+            except Exception as e_prompt:
+                print(f"Error generating cover prompts: {e_prompt}")
+                prompts = [f"A conceptual artistic cover representing {context[:50]}"] * n
             
+            # Ensure we have enough prompts
+            while len(prompts) < n:
+                prompts.append(prompts[0] if prompts else f"Artistic cover for {title}")
+
             # Título e autor devem aparecer exatamente como especificado na capa
             title_display = title.strip() if title else "Livro"
             author_display = author.strip() if author else ""
@@ -604,24 +601,39 @@ class AIContentGenerator:
             
             image_urls = []
             for p in prompts[:n]:
-                text_instruction = f'Text on the cover must read exactly: "{title_display}"'
-                if author_display:
-                    text_instruction += f' and "by {author_display}" or "{author_display}"'
-                if subtitle_display:
-                    text_instruction += f', subtitle: "{subtitle_display}"'
-                text_instruction += ". No typos, no variations."
-                
+                # Construct a very specific prompt for DALL-E 3 to handle text
                 dalle_prompt = f"""
-                Professional book cover design. {text_instruction}
-                Visual style: {p}
-                Layout: Large bold title at top, author name below, high quality, cinematic lighting, 8k resolution.
+                Create a high-quality BOOK COVER.
+
+                MANDATORY TEXT ELEMENTS (MUST BE WRITTEN ON THE IMAGE):
+                - TITLE: "{title_display}"
                 """
+                
+                if subtitle_display:
+                    dalle_prompt += f'- SUBTITLE: "{subtitle_display}"\n'
+                
+                if author_display:
+                    dalle_prompt += f'- AUTHOR: "{author_display}"\n'
+                
+                dalle_prompt += f"""
+                
+                VISUAL DESCRIPTION:
+                {p}
+                
+                DESIGN RULES:
+                1. The TITLE "{title_display}" must be the largest and most prominent text, centered or at the top.
+                2. The AUTHOR name must be visible at the bottom.
+                3. The typography must be legible, professional, and integrated with the artwork.
+                4. Do NOT add any other text or gibberish. Only the Title, Subtitle (if any), and Author.
+                5. The art style should be consistent with the book's theme described above.
+                """
+                
                 try:
                     img_res = client.images.generate(
                         model="dall-e-3",
-                        prompt=dalle_prompt.strip(),
+                        prompt=dalle_prompt.strip()[:4000], # Ensure within limit
                         n=1,
-                        size="1024x1792",
+                        size="1024x1792", # Vertical aspect ratio for books
                         quality="standard",
                         style="vivid"
                     )
@@ -629,8 +641,11 @@ class AIContentGenerator:
                 except Exception as e_img:
                     print(f"Error generating single image: {e_img}")
             
+            # Fallback if DALL-E fails completely
             while len(image_urls) < n:
-                image_urls.append(f"https://placehold.co/400x600?text=Falha+na+Geracao")
+                fallback_color = "4f46e5"
+                image_urls.append(f"https://placehold.co/400x600/{fallback_color}/ffffff?text={title_display}+Fail")
+                
             return image_urls
 
         except Exception as e:
