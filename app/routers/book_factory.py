@@ -293,13 +293,43 @@ def resolve_cover_from_base64(cover_base64: Optional[str]) -> Optional[str]:
 @router.post("/revise")
 async def revise_book(request: BookGenerationRequest):
     """
-    Analyzes the current book structure and content, filling in missing parts
-    (empty chapters, epilogues) without overwriting existing content.
+    Analyzes the current book structure and content.
+    - If parts are missing, fills them.
+    - If ai_instructions are present, REWRITES/REFINES existing content based on instructions.
     """
     from app.services.ai_generator import AIContentGenerator
     ai_service = AIContentGenerator()
     
-    # 1. Revise Textual Chapters
+    book_title = request.metadata.get('title', 'Livro')
+    base_context = f"Livro: {book_title}. "
+    if request.sections.get('pre_textual', {}).get('synopsis'):
+         base_context += f"Sinopse: {request.sections['pre_textual']['synopsis']}"
+    
+    # Add user AI instructions
+    if request.ai_instructions:
+        base_context += f"\n\nINSTRUÇÕES DO USUÁRIO PARA REVISÃO/GERAÇÃO: {request.ai_instructions}"
+
+    # 1. Revise Pre-Textual (Introduction, Preface, etc.)
+    # Only if instructions are present or content is missing
+    pre_textual = request.sections.get('pre_textual', {})
+    for section_key in ['introduction', 'preface', 'dedication', 'epigraph']:
+        if section_key in pre_textual:
+            content = pre_textual[section_key]
+            # Condition: Empty OR (Instructions present AND content exists)
+            should_generate = len(content.strip()) < 50
+            should_rewrite = request.ai_instructions and len(content.strip()) >= 50
+            
+            if should_generate or should_rewrite:
+                print(f"Revising: {'Rewriting' if should_rewrite else 'Generating'} {section_key}...")
+                new_content = ai_service.generate_book_section(
+                    section_type=section_key,
+                    context_text=base_context,
+                    title=book_title,
+                    existing_content=content if should_rewrite else None
+                )
+                pre_textual[section_key] = new_content
+
+    # 2. Revise Textual Chapters
     chapters = request.sections.get('textual', [])
     updated_chapters = []
     
@@ -307,23 +337,19 @@ async def revise_book(request: BookGenerationRequest):
         content = chapter.get('content', '')
         title = chapter.get('title', f'Capítulo {i+1}')
         
-        # If content is missing or too short (placeholder), generate it
-        if len(content.strip()) < 50:
-            print(f"Revising: Generating content for chapter '{title}'...")
-            # Use the book title and idea/synopsis as context
-            book_title = request.metadata.get('title', 'Livro')
-            context = f"Livro: {book_title}. "
-            if request.sections.get('pre_textual', {}).get('synopsis'):
-                 context += f"Sinopse: {request.sections['pre_textual']['synopsis']}"
+        # Condition: Empty OR (Instructions present AND content exists)
+        should_generate = len(content.strip()) < 50
+        should_rewrite = request.ai_instructions and len(content.strip()) >= 50
+        
+        if should_generate or should_rewrite:
+            print(f"Revising: {'Rewriting' if should_rewrite else 'Generating'} chapter '{title}'...")
             
-            # Generate chapter content
-            # We reuse generate_book_section but we might need a more specific prompt for a chapter
-            # Let's use a specialized method or reuse generate_book_section with clear instructions
-            new_content = ai_service.generate_chapter_content(
-                chapter_title=title,
-                book_title=book_title,
-                context=context,
-                style=request.metadata.get('style', 'didático') # We might need to pass style in metadata
+            # For chapters, we reuse generate_book_section logic which now supports rewriting
+            new_content = ai_service.generate_book_section(
+                section_type="chapter",
+                context_text=base_context,
+                title=title,
+                existing_content=content if should_rewrite else None
             )
             chapter['content'] = new_content
         
@@ -331,21 +357,27 @@ async def revise_book(request: BookGenerationRequest):
     
     request.sections['textual'] = updated_chapters
     
-    # 2. Revise Post-Textual (Epilogue)
+    # 3. Revise Post-Textual (Epilogue)
     post_textual = request.sections.get('post_textual', {})
     if 'epilogue' in post_textual:
-        # If epilogue is requested (present in keys) but empty
-        if len(post_textual['epilogue'].strip()) < 50:
-             print("Revising: Generating Epilogue...")
-             book_title = request.metadata.get('title', 'Livro')
-             context = f"Livro: {book_title}."
-             new_epilogue = ai_service.generate_book_section("epilogue", context, book_title)
+        content = post_textual['epilogue']
+        should_generate = len(content.strip()) < 50
+        should_rewrite = request.ai_instructions and len(content.strip()) >= 50
+
+        if should_generate or should_rewrite:
+             print(f"Revising: {'Rewriting' if should_rewrite else 'Generating'} Epilogue...")
+             new_epilogue = ai_service.generate_book_section(
+                 section_type="epilogue", 
+                 context_text=base_context, 
+                 title=book_title,
+                 existing_content=content if should_rewrite else None
+             )
              post_textual['epilogue'] = new_epilogue
 
     return {
         "status": "success", 
         "sections": request.sections,
-        "message": "Livro revisado e completado com sucesso!"
+        "message": "Livro revisado e atualizado com sucesso seguindo as instruções!"
     }
 
 @router.post("/generate-preview")

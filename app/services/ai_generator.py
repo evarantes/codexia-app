@@ -281,12 +281,31 @@ class AIContentGenerator:
             raise Exception("Todas as IAs configuradas estão indisponíveis ou sem saldo. Verifique suas chaves de API e tente novamente.")
         return None
 
-    def generate_book_section(self, section_type, context_text, title):
-        """Generates specific book sections like synopsis, epigraph, preface"""
+    def generate_book_section(self, section_type, context_text, title, existing_content=None):
+        """Generates specific book sections like synopsis, epigraph, preface. Can rewrite existing content."""
         self._load_config()
         # Verify if any key is available
         if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.mistral_key or self.groq_key or self.openrouter_key):
              return "Conteúdo gerado por IA (Simulação - Sem Chave)"
+
+        base_prompt = f"Escreva um texto para {section_type} do livro '{title}'. Contexto: {context_text}..."
+        
+        if existing_content and len(existing_content.strip()) > 50:
+            # Rewrite mode
+            base_prompt = f"""
+            ATUE COMO UM EDITOR E REESCREVA a seção '{section_type}' do livro '{title}'.
+            
+            CONTEXTO E INSTRUÇÕES:
+            {context_text}
+            
+            CONTEÚDO ORIGINAL (Use como base, mas aplique as instruções acima):
+            {existing_content}
+            
+            IMPORTANTE:
+            1. Mantenha a essência do conteúdo original, mas adapte conforme as novas instruções.
+            2. Se as instruções pedirem para corrigir algo (ex: número de páginas, referências), FAÇA A CORREÇÃO.
+            3. Retorne APENAS o novo texto reescrito.
+            """
 
         prompts = {
             "synopsis": f"Escreva uma sinopse instigante para a quarta capa do livro '{title}'. Baseado neste contexto: {context_text}...",
@@ -299,7 +318,11 @@ class AIContentGenerator:
             "chapter": f"Escreva o conteúdo completo para o capítulo '{title}'. Mantenha o estilo do livro. Contexto: {context_text}..."
         }
         
-        prompt = prompts.get(section_type, f"Escreva um texto para {section_type} do livro '{title}'. Contexto: {context_text}...")
+        # If rewriting, use base_prompt constructed above. Otherwise use specific prompt from dict or fallback.
+        if existing_content and len(existing_content.strip()) > 50:
+            prompt = base_prompt
+        else:
+            prompt = prompts.get(section_type, base_prompt)
 
         try:
             content = self._generate_text(prompt)
