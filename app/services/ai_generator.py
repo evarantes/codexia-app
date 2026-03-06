@@ -605,37 +605,32 @@ class AIContentGenerator:
             for p in prompts[:n]:
                 # Construct a very specific prompt for DALL-E 3 to handle text
                 dalle_prompt = f"""
-                Create a high-quality BOOK COVER DESIGN (Flat 2D Art).
+                Create a rectangular, flat 2D digital artwork for a book cover.
 
-                MANDATORY TEXT ELEMENTS (MUST BE WRITTEN ON THE IMAGE):
-                - TITLE: "{title_display}"
+                MANDATORY TEXT TO WRITE ON IMAGE:
+                Title: "{title_display}"
                 """
                 
                 if subtitle_display:
-                    dalle_prompt += f'- SUBTITLE: "{subtitle_display}"\n'
+                    dalle_prompt += f'Subtitle: "{subtitle_display}"\n'
                 
                 if author_display:
-                    dalle_prompt += f'- AUTHOR: "{author_display}"\n'
+                    dalle_prompt += f'Author Name: "{author_display}"\n'
                 
                 dalle_prompt += f"""
                 
-                VISUAL DESCRIPTION:
+                VISUAL ART DESCRIPTION:
                 {p}
                 
-                DESIGN RULES:
-                1. FORMAT: This must be a FLAT 2D book cover art file. 
-                   - NO 3D renders.
-                   - NO book sitting on a table.
-                   - NO angled views.
-                   - NO spines visible.
-                   - JUST the front cover artwork.
-                2. TEXT PLACEMENT:
-                   - The TITLE "{title_display}" must be large, legible, and prominent (top or center).
-                   - The SUBTITLE (if any) should be smaller and below the title.
-                   - The AUTHOR NAME "{author_display}" must be clearly visible at the bottom.
-                3. TYPOGRAPHY: Use professional fonts that match the genre. Ensure high contrast against the background.
-                4. EXCLUSIVITY: Create a unique, artistic composition based on the visual description.
-                5. Do NOT add any extra text, buttons, or 'bestseller' stickers. Only the Title, Subtitle, and Author.
+                STRICT LAYOUT RULES:
+                1. FORMAT: A flat digital image file. NO 3D MOCKUPS. NO SPINES. NO BACKGROUND SURFACE. NO TABLE.
+                2. TEXT: Write the Title, Subtitle, and Author Name EXACTLY as provided above.
+                3. HIERARCHY:
+                   - Title: Big, bold, centered.
+                   - Subtitle: Smaller, below the title.
+                   - Author: Small, at the very bottom center.
+                4. STYLE: High-quality illustration or graphic design. 
+                5. Do NOT include any other text.
                 """
                 
                 try:
