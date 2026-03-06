@@ -26,9 +26,15 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFi
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from rq import Worker
+try:
+    from rq import Worker
+    RQ_AVAILABLE = True
+except Exception:
+    # No Windows, RQ pode falhar devido ao fork()
+    RQ_AVAILABLE = False
+    Worker = None
 from app.services.youtube_service import YouTubeService
-# from app.services.ai_generator import AIContentGenerator
+from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
@@ -42,7 +48,7 @@ _FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
 
 def _rq_workers_online() -> bool:
     """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
-    if not conn:
+    if not conn or not RQ_AVAILABLE or Worker is None:
         return False
     try:
         return Worker.count(conn) > 0
@@ -1059,7 +1065,6 @@ def exchange_code(data: Dict[str, str]):
 
 @router.post("/optimize")
 def optimize_channel(execute: bool = False):
-    from app.services.ai_generator import AIContentGenerator
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
     
@@ -1084,7 +1089,6 @@ def optimize_channel(execute: bool = False):
 
 @router.post("/auto-analysis")
 def auto_analysis():
-    from app.services.ai_generator import AIContentGenerator
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
     
@@ -1101,7 +1105,6 @@ def auto_analysis():
 
 @router.post("/monetization-status")
 def monetization_status():
-    from app.services.ai_generator import AIContentGenerator
     yt_service = YouTubeService()
     ai_service = AIContentGenerator()
     
@@ -1612,7 +1615,6 @@ def get_auto_insights():
     - Lê performance recente dos vídeos
     - Pede para a IA gerar resumo + novas ideias de vídeos/shorts
     """
-    from app.services.ai_generator import AIContentGenerator
     yt = YouTubeService()
     ai = AIContentGenerator()
 
@@ -1667,7 +1669,6 @@ def get_task_status(task_id: str):
 def process_video_generation(request: VideoRequest, task_id):
     # Lazy import VideoGenerator (moviepy/PIL/numpy) para reduzir memória no startup
     from app.services.video_generator import VideoGenerator
-    from app.services.ai_generator import AIContentGenerator
 
     try:
         topic_display = request.topic if request.mode == 'topic' else "História Personalizada"

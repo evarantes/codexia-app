@@ -7,7 +7,7 @@ import uuid
 import requests
 from pydantic import BaseModel
 from app.services.book_assembler import BookAssembler
-# from app.services.ai_generator import AIContentGenerator
+# from app.services.ai_generator import AIContentGenerator (Movido para importação local para evitar dependência circular)
 from app.database import get_db
 from app.models import Book, BookDraft
 from sqlalchemy.orm import Session
@@ -79,7 +79,7 @@ async def upload_manuscript(
         detected = structure_analysis.get(key)
         if detected and len(detected) > 10: # Simple check to avoid noise
             return detected
-        return ai_service.generate_book_section(prompt_type, text_content, "Meu Livro")
+        return ai_service.generate_book_section(prompt_type, text_content, os.path.splitext(file.filename)[0])
 
     # Generate suggestions or use detected parts
     synopsis_suggestion = ai_service.generate_book_section("synopsis", text_content, "Meu Livro")
@@ -120,7 +120,16 @@ async def create_draft(request: CreateDraftRequest):
     """
     Generates a full book structure from scratch using AI.
     """
-    ai_service = AIContentGenerator()
+    print(f"DEBUG: create_draft called. Importing AIContentGenerator...")
+    try:
+        from app.services.ai_generator import AIContentGenerator
+        print(f"DEBUG: AIContentGenerator imported: {AIContentGenerator}")
+        ai_service = AIContentGenerator()
+        print(f"DEBUG: AIContentGenerator instantiated.")
+    except Exception as e:
+        print(f"DEBUG: Failed to import/instantiate AIContentGenerator: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro crítico de importação: {e}")
+
     try:
         structure = ai_service.generate_full_book_draft(
             title=request.title,
@@ -169,6 +178,7 @@ async def regenerate_section(request: RegenerationRequest):
     """
     Regenerates a specific section (epigraph, synopsis, preface) using AI.
     """
+    from app.services.ai_generator import AIContentGenerator
     ai_service = AIContentGenerator()
     content = ai_service.generate_book_section(request.section_type, request.context, request.title)
     return {"content": content}
@@ -260,6 +270,7 @@ async def revise_book(request: BookGenerationRequest):
     Analyzes the current book structure and content, filling in missing parts
     (empty chapters, epilogues) without overwriting existing content.
     """
+    from app.services.ai_generator import AIContentGenerator
     ai_service = AIContentGenerator()
     
     # 1. Revise Textual Chapters

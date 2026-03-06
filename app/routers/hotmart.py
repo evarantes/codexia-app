@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Settings
 from app.services.hotmart_service import HotmartService
-# from app.services.ai_generator import AIContentGenerator
+from app.services.ai_generator import AIContentGenerator
 from pydantic import BaseModel
 from typing import Optional
 import json
@@ -44,7 +44,6 @@ def analyze_book_for_hotmart(book_id: int, db: Session = Depends(get_db)):
     Analisa um livro e gera sugestões de configuração para publicação na Hotmart
     usando IA para otimizar título, descrição, preço, categoria, tags, etc.
     """
-    from app.services.ai_generator import AIContentGenerator
     book = db.query(Book).filter(Book.id == book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="Livro não encontrado")
