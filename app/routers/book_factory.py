@@ -33,6 +33,7 @@ class BookGenerationRequest(BaseModel):
     sections: dict
     cover_filename: Optional[str] = None
     cover_base64: Optional[str] = None  # Imagem em base64 para persistir (ex: Render sem disco)
+    ai_instructions: Optional[str] = None # Instruções customizadas do usuário
 
 @router.post("/upload-manuscript")
 async def upload_manuscript(
