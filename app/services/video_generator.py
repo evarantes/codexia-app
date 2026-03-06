@@ -76,9 +76,9 @@ class VideoGenerator:
                     top = (new_height - size[1]) / 2
                     img = img.crop((0, top, size[0], top + size[1]))
                 
-                # Escurecer a imagem para legibilidade do texto
+                # Escurecer moderadamente a imagem para legibilidade do texto
                 enhancer = ImageEnhance.Brightness(img)
-                img = enhancer.enhance(0.4) # 40% de brilho original
+                img = enhancer.enhance(0.8) # mantém legibilidade sem escurecer demais
             except Exception as e:
                 print(f"Erro ao carregar imagem de fundo: {e}")
                 img = Image.new('RGB', size, color=bg_color)
@@ -87,12 +87,25 @@ class VideoGenerator:
 
         d = ImageDraw.Draw(img)
         
-        # Tenta carregar uma fonte padrão, senão usa padrão
+        # Tenta carregar fonte com tamanho adequado para evitar texto minúsculo.
         try:
-            # Tenta arial ou outra fonte do sistema se possível
-            # Reduzido tamanho para 40 para ser mais elegante
-            font = ImageFont.truetype("arial.ttf", 40)
-        except:
+            font_size = max(34, min(72, int(size[0] * 0.055)))
+            font_candidates = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "DejaVuSans-Bold.ttf",
+                "arial.ttf",
+            ]
+            font = None
+            for font_path in font_candidates:
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                    break
+                except Exception:
+                    continue
+            if font is None:
+                raise OSError("no truetype font found")
+        except Exception:
             font = ImageFont.load_default()
 
         # Quebra o texto
@@ -100,7 +113,7 @@ class VideoGenerator:
         lines = textwrap.wrap(text, width=40) 
         
         # Calcula altura total do bloco de texto
-        line_height = 50 # Reduzido line height
+        line_height = max(42, int(getattr(font, "size", 40) * 1.25))
         text_block_height = len(lines) * line_height
         
         # Posiciona no terço inferior (Subtitle style), mas com limite
@@ -334,9 +347,9 @@ class VideoGenerator:
             img = Image.new('RGB', (width, height), color=(20, 20, 20))
             draw = ImageDraw.Draw(img)
             
-            # Cores aleatórias escuras e elegantes (Deep Blue/Purple/Teal)
-            color_top = (random.randint(20, 60), random.randint(20, 60), random.randint(40, 90))
-            color_bottom = (random.randint(5, 20), random.randint(5, 20), random.randint(10, 40))
+            # Cores com contraste e luminosidade média para evitar aspecto de tela preta.
+            color_top = (random.randint(90, 150), random.randint(90, 160), random.randint(120, 210))
+            color_bottom = (random.randint(30, 90), random.randint(30, 90), random.randint(60, 130))
             
             # Desenha gradiente vertical (linha por linha para simplicidade sem numpy)
             # Para performance em 1080p, desenhamos em baixa resolução e redimensionamos
