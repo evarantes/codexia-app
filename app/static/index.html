@@ -99,6 +99,9 @@
                 <a href="#" @click="currentTab = 'book_factory'; fetchFactoryDrafts()" :class="{'bg-indigo-700': currentTab === 'book_factory'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-industry"></i> Fábrica de Livros
                 </a>
+                <a href="/static/pages/ai-factory/index.html" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-robot"></i> AI Factory
+                </a>
                 <a href="#" @click="currentTab = 'customers'" :class="{'bg-indigo-700': currentTab === 'customers'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-users"></i> Clientes (CRM)
                 </a>
@@ -1485,7 +1488,8 @@
                                         class="relative cursor-pointer border-4 rounded-lg overflow-hidden group shadow-md transition transform hover:scale-105"
                                         :class="{'border-purple-600 ring-2 ring-purple-300': selectedCoverIndex === idx, 'border-white': selectedCoverIndex !== idx}"
                                         @click="selectCover(idx)">
-                                        <img :src="cover" class="w-full h-64 object-cover">
+                                        <!-- Fix: Use cover directly if string, or cover.url if object -->
+                                        <img :src="cover.url || cover" class="w-full h-64 object-cover" @error="handleCoverError($event)">
                                         <div v-if="selectedCoverIndex === idx" class="absolute inset-0 bg-purple-600 bg-opacity-30 flex items-center justify-center">
                                             <i class="fas fa-check-circle text-white text-4xl drop-shadow-lg"></i>
                                         </div>
@@ -1556,6 +1560,15 @@
                         <!-- Editor Area -->
                         <div class="lg:col-span-2 bg-gray-50 p-6 rounded border">
                             <h3 class="font-bold mb-4 text-indigo-900">Editor de Conteúdo</h3>
+
+                            <!-- AI Instructions -->
+                            <div class="mb-6 bg-purple-50 p-4 rounded border border-purple-200">
+                                <label class="block font-bold text-sm mb-1 text-purple-900">
+                                    <i class="fas fa-robot mr-1"></i> Instruções para a IA (Revisão e Geração)
+                                </label>
+                                <textarea v-model="factoryData.ai_instructions" class="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none" rows="3" placeholder="Ex: 'Inclua referências bíblicas', 'Use um tom mais formal', 'Foque em exemplos práticos'..."></textarea>
+                                <p class="text-xs text-purple-700 mt-1"><i class="fas fa-info-circle"></i> Essas instruções serão usadas ao clicar em "Revisar / Completar" ou regenerar seções.</p>
+                            </div>
                             
                             <!-- Dedication -->
                             <div v-if="factoryConfig.hasDedication" class="mb-6">
@@ -1981,6 +1994,7 @@
                     },
                     factoryData: {
                         metadata: { title: '', author: '', subtitle: '' },
+                        ai_instructions: '', // Instruções customizadas para a IA
                         cover_filename: null,
                         cover_base64: null,
                         raw_text_preview: '',
@@ -3928,8 +3942,27 @@
                     this.generatedCovers = [];
                     this.generatedCoversData = [];
                     try {
-                        const desc = (this.factoryData.sections?.textual || []).map(c => c.content).join(" ").substring(0, 500)
-                            || (this.factoryData.metadata?.title || "Livro");
+                        // Priority for context: Idea > Synopsis > Textual Content > Title
+                        let desc = this.aiBook.idea || "";
+                        if (this.factoryData.sections?.pre_textual?.synopsis) {
+                            desc += " " + this.factoryData.sections.pre_textual.synopsis;
+                        }
+                        if (!desc && this.factoryData.sections?.textual?.length > 0) {
+                             desc = this.factoryData.sections.textual.map(c => c.content).join(" ").substring(0, 500);
+                        }
+                        if (!desc) {
+                            desc = this.factoryData.metadata?.title || "Livro";
+                        }
+                        
+                        // Append AI Instructions if present
+                        if (this.factoryData.ai_instructions) {
+                            desc += "\n\nInstruções Adicionais: " + this.factoryData.ai_instructions;
+                        }
+                        
+                        // Limit description length to avoid prompt overflow but keep enough context
+                        // Increased limit to accommodate instructions
+                        desc = desc.substring(0, 1500);
+
                         const res = await this.authFetch('/factory/generate-covers', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
@@ -3941,7 +3974,9 @@
                             })
                         });
                         const data = await res.json().catch(() => ({}));
-                        const raw = Array.isArray(data.covers) ? data.covers : [];
+                        // Handle both array format (new) and object format (legacy/fallback)
+                        const raw = Array.isArray(data) ? data : (Array.isArray(data.covers) ? data.covers : []);
+                        
                         this.generatedCoversData = raw.map(c => typeof c === 'string' ? { url: c, base64: null } : (c || {}));
                         this.generatedCovers = this.generatedCoversData.map(c => (c.url != null ? c.url : (typeof c === 'string' ? c : '')));
                         if (!res.ok) {

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Settings
 from app.services.hotmart_service import HotmartService
-from app.services.ai_generator import AIContentGenerator
+# from app.services.ai_generator import AIContentGenerator # Movido para local import
 from pydantic import BaseModel
 from typing import Optional
 import json
@@ -49,6 +49,7 @@ def analyze_book_for_hotmart(book_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Livro não encontrado")
     
     try:
+        from app.services.ai_generator import AIContentGenerator
         ai = AIContentGenerator()
         
         # Prepara dados do livro para análise

@@ -281,25 +281,48 @@ class AIContentGenerator:
             raise Exception("Todas as IAs configuradas estão indisponíveis ou sem saldo. Verifique suas chaves de API e tente novamente.")
         return None
 
-    def generate_book_section(self, section_type, context_text, title):
-        """Generates specific book sections like synopsis, epigraph, preface"""
+    def generate_book_section(self, section_type, context_text, title, existing_content=None):
+        """Generates specific book sections like synopsis, epigraph, preface. Can rewrite existing content."""
         self._load_config()
         # Verify if any key is available
         if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.mistral_key or self.groq_key or self.openrouter_key):
              return "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
+        base_prompt = f"Escreva um texto para {section_type} do livro '{title}'. Contexto: {context_text}..."
+        
+        if existing_content and len(existing_content.strip()) > 50:
+            # Rewrite mode
+            base_prompt = f"""
+            ATUE COMO UM EDITOR E REESCREVA a seção '{section_type}' do livro '{title}'.
+            
+            CONTEXTO E INSTRUÇÕES:
+            {context_text}
+            
+            CONTEÚDO ORIGINAL (Use como base, mas aplique as instruções acima):
+            {existing_content}
+            
+            IMPORTANTE:
+            1. Mantenha a essência do conteúdo original, mas adapte conforme as novas instruções.
+            2. Se as instruções pedirem para corrigir algo (ex: número de páginas, referências), FAÇA A CORREÇÃO.
+            3. Retorne APENAS o novo texto reescrito.
+            """
+
         prompts = {
-            "synopsis": f"Escreva uma sinopse instigante para a quarta capa do livro '{title}'. Baseado neste contexto: {context_text[:1000]}...",
-            "epigraph": f"Sugira uma epígrafe (citação curta e profunda) que combine com o tema do livro '{title}'. Contexto: {context_text[:500]}...",
-            "preface": f"Escreva um prefácio curto para o livro '{title}', introduzindo o tema e preparando o leitor. Contexto: {context_text[:1000]}...",
+            "synopsis": f"Escreva uma sinopse instigante para a quarta capa do livro '{title}'. Baseado neste contexto: {context_text}...",
+            "epigraph": f"Sugira uma epígrafe (citação curta e profunda) que combine com o tema do livro '{title}'. Contexto: {context_text}...",
+            "preface": f"Escreva um prefácio curto para o livro '{title}', introduzindo o tema e preparando o leitor. Contexto: {context_text}...",
             "dedication": f"Sugira uma dedicatória genérica e emocionante para o livro '{title}'.",
-            "introduction": f"Escreva uma introdução envolvente para o livro '{title}', apresentando os conceitos principais. Contexto: {context_text[:1000]}...",
-            "epilogue": f"Escreva um epílogo conclusivo para o livro '{title}', amarrando as pontas soltas e oferecendo uma reflexão final. Contexto: {context_text[:1000]}...",
-            "conclusion": f"Escreva uma conclusão resumida para o livro '{title}', recapitulando os pontos principais. Contexto: {context_text[:1000]}...",
-            "chapter": f"Escreva o conteúdo completo para o capítulo '{title}'. Mantenha o estilo do livro. Contexto: {context_text[:1000]}..."
+            "introduction": f"Escreva uma introdução envolvente para o livro '{title}', apresentando os conceitos principais. Contexto: {context_text}...",
+            "epilogue": f"Escreva um epílogo conclusivo para o livro '{title}', amarrando as pontas soltas e oferecendo uma reflexão final. Contexto: {context_text}...",
+            "conclusion": f"Escreva uma conclusão resumida para o livro '{title}', recapitulando os pontos principais. Contexto: {context_text}...",
+            "chapter": f"Escreva o conteúdo completo para o capítulo '{title}'. Mantenha o estilo do livro. Contexto: {context_text}..."
         }
         
-        prompt = prompts.get(section_type, f"Escreva um texto para {section_type} do livro '{title}'. Contexto: {context_text[:500]}...")
+        # If rewriting, use base_prompt constructed above. Otherwise use specific prompt from dict or fallback.
+        if existing_content and len(existing_content.strip()) > 50:
+            prompt = base_prompt
+        else:
+            prompt = prompts.get(section_type, base_prompt)
 
         try:
             content = self._generate_text(prompt)
@@ -554,22 +577,11 @@ class AIContentGenerator:
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
         self._load_config()
 
-        # Prioridade: Pexels/Pixabay (Mídias e Voz) para capas profissionais
-        try:
-            from app.services.stock_service import StockService
-            stock = StockService()
-            query = f"{title} {context[:100]}".strip()
-            if query:
-                urls = []
-                for _ in range(n):
-                    url = stock.search_image(query, orientation="portrait")
-                    if url and url not in urls:
-                        urls.append(url)
-                if urls:
-                    return urls[:n]
-        except Exception as e:
-            print(f"Stock covers fallback: {e}")
+        print(f"DEBUG: Generating covers for '{title}' with context: {context[:100]}...")
 
+        # [REMOVED] StockService priority removed to ensure AI generation with custom text (Title/Author) as requested.
+        # Previously, stock images were returned without any text overlay.
+        
         # Mock response if no API key (usa chave do banco ou env)
         if not self.api_key:
             colors = ["1e293b", "4f46e5", "059669"]
@@ -578,25 +590,35 @@ class AIContentGenerator:
         import json
         try:
             client = openai.OpenAI(api_key=self.api_key)
-            # 1. Get Prompts from GPT to ensure variety
+            # 1. Get Prompts from GPT to ensure variety and relevance to the central message
             prompt_gen_prompt = f"""
-            Crie {n} descrições visuais artísticas e detalhadas para a capa do livro '{title}'.
-            Contexto/Sinopse: {context[:500]}
+            Crie {n} descrições visuais artísticas e EXCLUSIVAS para a capa do livro '{title}'.
+            Contexto/Mensagem Central: {context[:500]}
             Gênero/Estilo: Identifique pelo contexto.
             
-            FOCO: Apenas a descrição da imagem (cenário, elementos, cores, estilo artístico). NÃO descreva onde o texto fica.
+            OBJETIVO: Despertar o desejo de leitura através de uma imagem impactante e simbólica.
+            FOCO: Apenas a descrição da imagem (cenário, elementos, cores, estilo artístico). NÃO mencione texto ou tipografia aqui.
             
             Retorne apenas um JSON: {{ "prompts": ["descrição visual 1...", "descrição visual 2...", "descrição visual 3..."] }}
             """
             
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt_gen_prompt}],
-                temperature=0.7
-            )
-            content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
-            prompts = json.loads(content).get("prompts", [])
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt_gen_prompt}],
+                    temperature=0.8
+                )
+                content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+                prompts_data = json.loads(content)
+                prompts = prompts_data.get("prompts", []) if isinstance(prompts_data, dict) else []
+            except Exception as e_prompt:
+                print(f"Error generating cover prompts: {e_prompt}")
+                prompts = [f"A conceptual artistic cover representing {context[:50]}"] * n
             
+            # Ensure we have enough prompts
+            while len(prompts) < n:
+                prompts.append(prompts[0] if prompts else f"Artistic cover for {title}")
+
             # Título e autor devem aparecer exatamente como especificado na capa
             title_display = title.strip() if title else "Livro"
             author_display = author.strip() if author else ""
@@ -604,24 +626,42 @@ class AIContentGenerator:
             
             image_urls = []
             for p in prompts[:n]:
-                text_instruction = f'Text on the cover must read exactly: "{title_display}"'
-                if author_display:
-                    text_instruction += f' and "by {author_display}" or "{author_display}"'
-                if subtitle_display:
-                    text_instruction += f', subtitle: "{subtitle_display}"'
-                text_instruction += ". No typos, no variations."
-                
+                # Construct a very specific prompt for DALL-E 3 to handle text
                 dalle_prompt = f"""
-                Professional book cover design. {text_instruction}
-                Visual style: {p}
-                Layout: Large bold title at top, author name below, high quality, cinematic lighting, 8k resolution.
+                Create a rectangular, flat 2D digital artwork for a book cover.
+
+                MANDATORY TEXT TO WRITE ON IMAGE:
+                Title: "{title_display}"
                 """
+                
+                if subtitle_display:
+                    dalle_prompt += f'Subtitle: "{subtitle_display}"\n'
+                
+                if author_display:
+                    dalle_prompt += f'Author Name: "{author_display}"\n'
+                
+                dalle_prompt += f"""
+                
+                VISUAL ART DESCRIPTION:
+                {p}
+                
+                STRICT LAYOUT RULES:
+                1. FORMAT: A flat digital image file. NO 3D MOCKUPS. NO SPINES. NO BACKGROUND SURFACE. NO TABLE.
+                2. TEXT: Write the Title, Subtitle, and Author Name EXACTLY as provided above.
+                3. HIERARCHY:
+                   - Title: Big, bold, centered.
+                   - Subtitle: Smaller, below the title.
+                   - Author: Small, at the very bottom center.
+                4. STYLE: High-quality illustration or graphic design. 
+                5. Do NOT include any other text.
+                """
+                
                 try:
                     img_res = client.images.generate(
                         model="dall-e-3",
-                        prompt=dalle_prompt.strip(),
+                        prompt=dalle_prompt.strip()[:4000], # Ensure within limit
                         n=1,
-                        size="1024x1792",
+                        size="1024x1792", # Vertical aspect ratio for books
                         quality="standard",
                         style="vivid"
                     )
@@ -629,8 +669,11 @@ class AIContentGenerator:
                 except Exception as e_img:
                     print(f"Error generating single image: {e_img}")
             
+            # Fallback if DALL-E fails completely
             while len(image_urls) < n:
-                image_urls.append(f"https://placehold.co/400x600?text=Falha+na+Geracao")
+                fallback_color = "4f46e5"
+                image_urls.append(f"https://placehold.co/400x600/{fallback_color}/ffffff?text={title_display}+Fail")
+                
             return image_urls
 
         except Exception as e:

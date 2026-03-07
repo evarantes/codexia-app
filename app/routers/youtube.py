@@ -1077,15 +1077,27 @@ def exchange_code(data: Dict[str, str]):
         raise HTTPException(status_code=400, detail="Código não fornecido")
     
     # Sanitizar código: espaços e quebras de linha ao copiar do Google quebram a troca
+    original_code = code
     code = str(code).strip().replace(" ", "").replace("\n", "").replace("\r", "")
+    print(f"Exchange code: original length {len(original_code)}, sanitized length {len(code)}")
     
     service = YouTubeService()
-    success = service.exchange_code_for_token(code)
+    success, message = service.exchange_code_for_token(code)
     
     if success:
-        return {"message": "Autenticação realizada com sucesso!"}
+        return {"message": message}
     else:
-        raise HTTPException(status_code=400, detail="Falha ao autenticar com o YouTube. Verifique o código.")
+        print(f"Erro detalhado na troca de código: {message}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Falha ao autenticar: {message}\n\n"
+                   "Verifique:\n"
+                   "1. O código foi copiado corretamente (sem espaços, quebras de linha)\n"
+                   "2. O código não expirou (códigos de autorização expiram em ~10 minutos)\n"
+                   "3. O Client ID e Client Secret estão configurados corretamente\n"
+                   "4. A API 'YouTube Data API v3' está ativada no Google Cloud Console\n"
+                   "5. O tipo de aplicativo é 'Desktop' ou 'Web' com redirect URI 'urn:ietf:wg:oauth:2.0:oob'"
+        )
 
 
 @router.post("/optimize")

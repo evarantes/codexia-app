@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Factory - Codexia</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        [v-cloak] { display: none; }
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.5s; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="app" class="flex h-screen" v-cloak>
+        <!-- Sidebar (Replicated for consistency) -->
+        <aside class="bg-indigo-900 text-white flex flex-col w-64 fixed inset-y-0 left-0 z-30 md:relative">
+            <div class="p-6 text-2xl font-bold flex items-center gap-2">
+                <i class="fas fa-robot"></i> AI Factory
+            </div>
+            <nav class="flex-1 px-4 space-y-2">
+                <a href="/" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition opacity-75">
+                    <i class="fas fa-arrow-left"></i> Voltar ao Codexia
+                </a>
+                <div class="border-t border-indigo-700 my-2"></div>
+                <a href="#" @click="currentTab = 'story'" :class="{'bg-indigo-700': currentTab === 'story'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-book-open"></i> Gerar História
+                </a>
+                <a href="#" @click="currentTab = 'cover'" :class="{'bg-indigo-700': currentTab === 'cover'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-image"></i> Gerar Capas
+                </a>
+                <a href="#" @click="currentTab = 'image'" :class="{'bg-indigo-700': currentTab === 'image'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-images"></i> Gerar Imagens
+                </a>
+                <a href="#" @click="currentTab = 'script'" :class="{'bg-indigo-700': currentTab === 'script'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-video"></i> Gerar Roteiro
+                </a>
+                <a href="#" @click="currentTab = 'shorts'" :class="{'bg-indigo-700': currentTab === 'shorts'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-mobile-alt"></i> Gerar Shorts
+                </a>
+                <a href="#" @click="currentTab = 'library'; fetchLibrary()" :class="{'bg-indigo-700': currentTab === 'library'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-archive"></i> Biblioteca
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 overflow-y-auto p-8">
+            
+            <!-- Story Generator -->
+            <div v-if="currentTab === 'story'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Histórias</h2>
+                <div class="bg-white p-6 rounded shadow mb-6">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block font-bold mb-1">Tema</label>
+                            <input v-model="story.theme" class="w-full border p-2 rounded" placeholder="Ex: Ficção Científica em Marte">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Estilo</label>
+                            <input v-model="story.style" class="w-full border p-2 rounded" placeholder="Ex: Cyberpunk, Dark">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Público</label>
+                            <input v-model="story.audience" class="w-full border p-2 rounded" placeholder="Ex: Jovem Adulto">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Tamanho</label>
+                            <select v-model="story.length" class="w-full border p-2 rounded">
+                                <option>Curto</option>
+                                <option>Médio</option>
+                                <option>Longo</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button @click="generateStory" :disabled="loading" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 w-full">
+                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar História
+                    </button>
+                </div>
+                
+                <div v-if="storyResult" class="bg-white p-6 rounded shadow animate-fade-in">
+                    <h3 class="text-2xl font-bold mb-2">{{ storyResult.title }}</h3>
+                    <p class="italic text-gray-600 mb-4">{{ storyResult.synopsis }}</p>
+                    
+                    <div class="mb-4">
+                        <h4 class="font-bold border-b pb-2 mb-2">Estrutura</h4>
+                        <ul class="list-disc pl-5">
+                            <li v-for="chap in storyResult.chapters_structure" :key="chap.chapter">
+                                <strong>Cap {{ chap.chapter }}: {{ chap.title }}</strong> - {{ chap.summary }}
+                            </li>
+                        </ul>
+                    </div>
+                    
+                    <div>
+                        <h4 class="font-bold border-b pb-2 mb-2">Primeiro Capítulo</h4>
+                        <div class="whitespace-pre-wrap text-gray-700">{{ storyResult.first_chapter_content }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cover Generator -->
+            <div v-if="currentTab === 'cover'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Capas</h2>
+                <div class="bg-white p-6 rounded shadow mb-6">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block font-bold mb-1">Título</label>
+                            <input v-model="cover.title" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Subtítulo</label>
+                            <input v-model="cover.subtitle" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Autor</label>
+                            <input v-model="cover.author" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Estilo Visual</label>
+                            <input v-model="cover.style" class="w-full border p-2 rounded" placeholder="Ex: Minimalista, Pintura a óleo">
+                        </div>
+                    </div>
+                    <button @click="generateCover" :disabled="loading" class="bg-pink-600 text-white px-6 py-2 rounded hover:bg-pink-700 w-full">
+                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar Capa
+                    </button>
+                </div>
+
+                <div v-if="coverResult" class="bg-white p-6 rounded shadow text-center">
+                    <img :src="coverResult.image_url" class="max-w-md mx-auto rounded shadow-lg mb-4">
+                    <p class="text-gray-500 text-sm">Prompt utilizado: {{ coverResult.prompt }}</p>
+                </div>
+            </div>
+
+            <!-- Image Generator -->
+            <div v-if="currentTab === 'image'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Imagens</h2>
+                <div class="bg-white p-6 rounded shadow mb-6">
+                    <div class="mb-4">
+                        <label class="block font-bold mb-1">Tema / Descrição</label>
+                        <textarea v-model="image.theme" class="w-full border p-2 rounded" rows="3"></textarea>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block font-bold mb-1">Estilo</label>
+                            <input v-model="image.style" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Quantidade</label>
+                            <input v-model="image.quantity" type="number" min="1" max="4" class="w-full border p-2 rounded">
+                        </div>
+                    </div>
+                    <button @click="generateImage" :disabled="loading" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 w-full">
+                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar Imagens
+                    </button>
+                </div>
+
+                <div v-if="imageResults.length" class="grid grid-cols-2 gap-4">
+                    <div v-for="img in imageResults" :key="img.id" class="bg-white p-2 rounded shadow">
+                        <img :src="img.image_url" class="w-full rounded">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Script Generator -->
+            <div v-if="currentTab === 'script'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Roteiro</h2>
+                <div class="bg-white p-6 rounded shadow mb-6">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div class="col-span-2">
+                            <label class="block font-bold mb-1">Tema do Vídeo</label>
+                            <input v-model="script.theme" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Duração</label>
+                            <input v-model="script.duration" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">Narrativa</label>
+                            <select v-model="script.narrative_type" class="w-full border p-2 rounded">
+                                <option>Documentário</option>
+                                <option>Vlog</option>
+                                <option>Tutorial</option>
+                                <option>Drama</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button @click="generateScript" :disabled="loading" class="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 w-full">
+                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar Roteiro
+                    </button>
+                </div>
+
+                <div v-if="scriptResult" class="bg-white p-6 rounded shadow">
+                    <h3 class="text-xl font-bold mb-4">Roteiro Gerado</h3>
+                    <div class="whitespace-pre-wrap bg-gray-50 p-4 rounded border">{{ scriptResult.script_content }}</div>
+                    
+                    <div class="mt-6 text-center">
+                        <button @click="generateShorts(scriptResult.id)" :disabled="loading" class="bg-purple-600 text-white px-6 py-2 rounded hover:bg-purple-700">
+                            <i class="fas fa-cut mr-2"></i> Gerar Shorts deste Roteiro
+                        </button>
+                    </div>
+
+                    <div v-if="scriptResult.shorts" class="mt-6">
+                        <h4 class="font-bold text-lg mb-4">Shorts Derivados</h4>
+                        <div v-for="short in scriptResult.shorts" class="mb-4 bg-purple-50 p-4 rounded border border-purple-200">
+                            <h5 class="font-bold text-purple-900">{{ short.title }}</h5>
+                            <p class="text-sm text-gray-700">{{ short.content }}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Library -->
+            <div v-if="currentTab === 'library'" class="max-w-6xl mx-auto">
+                <h2 class="text-3xl font-bold mb-6 text-gray-800">Biblioteca de Conteúdo</h2>
+                
+                <div v-if="libraryData" class="space-y-8">
+                    <!-- Stories -->
+                    <div v-if="libraryData.stories && libraryData.stories.length">
+                        <h3 class="text-xl font-bold border-b pb-2 mb-4">Histórias</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div v-for="item in libraryData.stories" class="bg-white p-4 rounded shadow">
+                                <h4 class="font-bold">{{ item.title || item.theme }}</h4>
+                                <p class="text-sm text-gray-500">{{ item.style }} | {{ new Date(item.created_at).toLocaleDateString() }}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Covers -->
+                    <div v-if="libraryData.covers && libraryData.covers.length">
+                        <h3 class="text-xl font-bold border-b pb-2 mb-4">Capas</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div v-for="item in libraryData.covers" class="bg-white p-2 rounded shadow">
+                                <img :src="item.image_url" class="w-full h-48 object-cover rounded mb-2">
+                                <p class="font-bold text-xs truncate">{{ item.title }}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref } = Vue;
+
+        createApp({
+            setup() {
+                const currentTab = ref('story');
+                const loading = ref(false);
+                
+                // Forms
+                const story = ref({ theme: '', style: '', audience: '', length: 'Curto' });
+                const cover = ref({ title: '', subtitle: '', author: '', style: '' });
+                const image = ref({ theme: '', style: '', quantity: 1 });
+                const script = ref({ theme: '', duration: '', narrative_type: 'Documentário' });
+                
+                // Results
+                const storyResult = ref(null);
+                const coverResult = ref(null);
+                const imageResults = ref([]);
+                const scriptResult = ref(null);
+                const libraryData = ref({});
+
+                const generateStory = async () => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/story', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(story.value)
+                        });
+                        storyResult.value = await res.json();
+                        storyResult.value = storyResult.value.content; // Unpack content
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                };
+
+                const generateCover = async () => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/cover', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(cover.value)
+                        });
+                        coverResult.value = await res.json();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                };
+
+                const generateImage = async () => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/image', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(image.value)
+                        });
+                        imageResults.value = await res.json();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                };
+
+                const generateScript = async () => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/script', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(script.value)
+                        });
+                        scriptResult.value = await res.json();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                };
+
+                const generateShorts = async (scriptId) => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/shorts', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ script_id: scriptId })
+                        });
+                        const updatedScript = await res.json();
+                        scriptResult.value.shorts = updatedScript.shorts;
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                };
+
+                const fetchLibrary = async () => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/library');
+                        libraryData.value = await res.json();
+                    } catch (e) { console.error(e); }
+                    loading.value = false;
+                };
+
+                return {
+                    currentTab, loading,
+                    story, cover, image, script,
+                    storyResult, coverResult, imageResults, scriptResult, libraryData,
+                    generateStory, generateCover, generateImage, generateScript, generateShorts, fetchLibrary
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

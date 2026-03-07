@@ -33,6 +33,7 @@ class BookGenerationRequest(BaseModel):
     sections: dict
     cover_filename: Optional[str] = None
     cover_base64: Optional[str] = None  # Imagem em base64 para persistir (ex: Render sem disco)
+    ai_instructions: Optional[str] = None # Instruções customizadas do usuário
 
 @router.post("/upload-manuscript")
 async def upload_manuscript(
@@ -120,12 +121,9 @@ async def create_draft(request: CreateDraftRequest):
     """
     Generates a full book structure from scratch using AI.
     """
-    print(f"DEBUG: create_draft called. Importing AIContentGenerator...")
     try:
         from app.services.ai_generator import AIContentGenerator
-        print(f"DEBUG: AIContentGenerator imported: {AIContentGenerator}")
         ai_service = AIContentGenerator()
-        print(f"DEBUG: AIContentGenerator instantiated.")
     except Exception as e:
         print(f"DEBUG: Failed to import/instantiate AIContentGenerator: {e}")
         raise HTTPException(status_code=500, detail=f"Erro crítico de importação: {e}")
@@ -194,38 +192,66 @@ class GenerateCoverRequest(BaseModel):
 async def generate_covers(request: GenerateCoverRequest):
     context_text = request.context or request.description or "Livro sem descrição"
     result = []  # [{ url, base64? }] para persistir capa mesmo em ambiente efêmero (Render)
+    
+    # IMPORTANTE: Definir diretório de capas persistente e garantir que existe
+    COVERS_DIR = os.path.join("app", "static", "covers")
+    os.makedirs(COVERS_DIR, exist_ok=True)
+    
     try:
         from app.services.ai_generator import AIContentGenerator
         ai_service = AIContentGenerator()
+        
+        # 1. Gera URLs (DALL-E)
         urls = ai_service.generate_cover_options(
             request.title, context_text,
             request.author or "", request.subtitle or ""
         )
-        COVERS_DIR = os.path.join("app", "static", "covers")
-        os.makedirs(COVERS_DIR, exist_ok=True)
+        
         import base64
-        for url in (urls or []):
+        import requests
+        
+        for i, url in enumerate(urls or []):
             if url and str(url).startswith("http"):
                 try:
+                    # 2. Download da imagem gerada
                     response = requests.get(url, stream=True, timeout=60)
                     if response.status_code == 200:
                         img_bytes = response.content
+                        
+                        # 3. Salvar localmente com nome único
                         filename = f"cover_{uuid.uuid4().hex}.png"
                         file_path = os.path.join(COVERS_DIR, filename)
+                        
                         with open(file_path, "wb") as out_file:
                             out_file.write(img_bytes)
+                            
+                        # 4. Preparar Base64 para backup/preview imediato
                         b64 = base64.b64encode(img_bytes).decode("utf-8")
-                        result.append({"url": f"/static/covers/{filename}", "base64": b64})
+                        
+                        # 5. URL Relativa correta para o frontend
+                        # O frontend espera /static/covers/nome.png
+                        relative_url = f"/static/covers/{filename}"
+                        
+                        result.append({
+                            "url": relative_url,
+                            "base64": b64
+                        })
+                        print(f"Cover saved: {file_path} -> {relative_url}")
                     else:
+                        print(f"Failed to download image {url}: status {response.status_code}")
                         result.append({"url": url, "base64": None})
                 except Exception as e:
-                    print(f"Failed to download cover: {e}")
+                    print(f"Exception downloading cover: {e}")
                     result.append({"url": url, "base64": None})
             elif url:
                 result.append({"url": url, "base64": None})
+                
     except Exception as e:
-        print(f"generate-covers error: {e}")
-    return {"covers": result}
+        print(f"generate-covers critical error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    return result # Retorna lista direta, frontend espera array ou {covers: []} - vamos ajustar frontend se precisar
 
 def resolve_cover_path(filename: str) -> Optional[str]:
     if not filename:
@@ -267,13 +293,43 @@ def resolve_cover_from_base64(cover_base64: Optional[str]) -> Optional[str]:
 @router.post("/revise")
 async def revise_book(request: BookGenerationRequest):
     """
-    Analyzes the current book structure and content, filling in missing parts
-    (empty chapters, epilogues) without overwriting existing content.
+    Analyzes the current book structure and content.
+    - If parts are missing, fills them.
+    - If ai_instructions are present, REWRITES/REFINES existing content based on instructions.
     """
     from app.services.ai_generator import AIContentGenerator
     ai_service = AIContentGenerator()
     
-    # 1. Revise Textual Chapters
+    book_title = request.metadata.get('title', 'Livro')
+    base_context = f"Livro: {book_title}. "
+    if request.sections.get('pre_textual', {}).get('synopsis'):
+         base_context += f"Sinopse: {request.sections['pre_textual']['synopsis']}"
+    
+    # Add user AI instructions
+    if request.ai_instructions:
+        base_context += f"\n\nINSTRUÇÕES DO USUÁRIO PARA REVISÃO/GERAÇÃO: {request.ai_instructions}"
+
+    # 1. Revise Pre-Textual (Introduction, Preface, etc.)
+    # Only if instructions are present or content is missing
+    pre_textual = request.sections.get('pre_textual', {})
+    for section_key in ['introduction', 'preface', 'dedication', 'epigraph']:
+        if section_key in pre_textual:
+            content = pre_textual[section_key]
+            # Condition: Empty OR (Instructions present AND content exists)
+            should_generate = len(content.strip()) < 50
+            should_rewrite = request.ai_instructions and len(content.strip()) >= 50
+            
+            if should_generate or should_rewrite:
+                print(f"Revising: {'Rewriting' if should_rewrite else 'Generating'} {section_key}...")
+                new_content = ai_service.generate_book_section(
+                    section_type=section_key,
+                    context_text=base_context,
+                    title=book_title,
+                    existing_content=content if should_rewrite else None
+                )
+                pre_textual[section_key] = new_content
+
+    # 2. Revise Textual Chapters
     chapters = request.sections.get('textual', [])
     updated_chapters = []
     
@@ -281,23 +337,19 @@ async def revise_book(request: BookGenerationRequest):
         content = chapter.get('content', '')
         title = chapter.get('title', f'Capítulo {i+1}')
         
-        # If content is missing or too short (placeholder), generate it
-        if len(content.strip()) < 50:
-            print(f"Revising: Generating content for chapter '{title}'...")
-            # Use the book title and idea/synopsis as context
-            book_title = request.metadata.get('title', 'Livro')
-            context = f"Livro: {book_title}. "
-            if request.sections.get('pre_textual', {}).get('synopsis'):
-                 context += f"Sinopse: {request.sections['pre_textual']['synopsis']}"
+        # Condition: Empty OR (Instructions present AND content exists)
+        should_generate = len(content.strip()) < 50
+        should_rewrite = request.ai_instructions and len(content.strip()) >= 50
+        
+        if should_generate or should_rewrite:
+            print(f"Revising: {'Rewriting' if should_rewrite else 'Generating'} chapter '{title}'...")
             
-            # Generate chapter content
-            # We reuse generate_book_section but we might need a more specific prompt for a chapter
-            # Let's use a specialized method or reuse generate_book_section with clear instructions
-            new_content = ai_service.generate_chapter_content(
-                chapter_title=title,
-                book_title=book_title,
-                context=context,
-                style=request.metadata.get('style', 'didático') # We might need to pass style in metadata
+            # For chapters, we reuse generate_book_section logic which now supports rewriting
+            new_content = ai_service.generate_book_section(
+                section_type="chapter",
+                context_text=base_context,
+                title=title,
+                existing_content=content if should_rewrite else None
             )
             chapter['content'] = new_content
         
@@ -305,21 +357,27 @@ async def revise_book(request: BookGenerationRequest):
     
     request.sections['textual'] = updated_chapters
     
-    # 2. Revise Post-Textual (Epilogue)
+    # 3. Revise Post-Textual (Epilogue)
     post_textual = request.sections.get('post_textual', {})
     if 'epilogue' in post_textual:
-        # If epilogue is requested (present in keys) but empty
-        if len(post_textual['epilogue'].strip()) < 50:
-             print("Revising: Generating Epilogue...")
-             book_title = request.metadata.get('title', 'Livro')
-             context = f"Livro: {book_title}."
-             new_epilogue = ai_service.generate_book_section("epilogue", context, book_title)
+        content = post_textual['epilogue']
+        should_generate = len(content.strip()) < 50
+        should_rewrite = request.ai_instructions and len(content.strip()) >= 50
+
+        if should_generate or should_rewrite:
+             print(f"Revising: {'Rewriting' if should_rewrite else 'Generating'} Epilogue...")
+             new_epilogue = ai_service.generate_book_section(
+                 section_type="epilogue", 
+                 context_text=base_context, 
+                 title=book_title,
+                 existing_content=content if should_rewrite else None
+             )
              post_textual['epilogue'] = new_epilogue
 
     return {
         "status": "success", 
         "sections": request.sections,
-        "message": "Livro revisado e completado com sucesso!"
+        "message": "Livro revisado e atualizado com sucesso seguindo as instruções!"
     }
 
 @router.post("/generate-preview")
