@@ -3083,6 +3083,8 @@
                             this.fetchProductionQueue();
                         } else {
                             alert("Erro ao publicar: " + (result.detail || "Falha"));
+                            this.fetchProductionQueue();
+                            this.fetchScheduledVideos();
                         }
                     } catch (e) {
                         alert("Erro de conexão ao publicar.");
@@ -3174,6 +3176,8 @@
                             this.fetchScheduledVideos();
                         } else {
                             alert(data.detail || "Erro ao publicar. Verifique as credenciais do YouTube em Configurações.");
+                            this.fetchScheduledVideos();
+                            this.fetchProductionQueue();
                         }
                     } catch (e) { alert("Erro: " + (e.message || e)); }
                 },
@@ -3215,6 +3219,8 @@
                             this.fetchScheduledVideos();
                         } else {
                             alert(data.detail || "Erro ao republicar. Verifique as credenciais do YouTube em Configurações.");
+                            this.fetchScheduledVideos();
+                            this.fetchProductionQueue();
                         }
                     } catch (e) { alert("Erro: " + (e.message || e)); }
                 },

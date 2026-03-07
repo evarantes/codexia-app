@@ -301,9 +301,17 @@ class MonitorService:
 
                         if is_error or not video_id_value:
                             logger.error(f"Falha no upload do vídeo {video.id}: {upload_result}")
-                            # Marcar como falha para não ficar em loop infinito de re-upload
-                            video.status = "failed"
-                            video.description = (video.description or "") + "\n\n[UPLOAD_ERRO]: falha ao enviar para o YouTube. Veja logs do servidor."
+                            # Evita loop infinito de auto-post e mantém item pronto para tentativa manual.
+                            video.auto_post = False
+                            if (video.status or "").lower() not in {"completed", "ready"}:
+                                video.status = "completed"
+                            if isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock":
+                                msg = "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de publicar."
+                            else:
+                                msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao enviar para o YouTube."
+                            note = f"[UPLOAD_ERRO]: {msg}"
+                            if note not in (video.description or ""):
+                                video.description = ((video.description or "").strip() + "\n\n" + note).strip()
                         else:
                             video.uploaded_at = datetime.datetime.now()
                             video.youtube_video_id = video_id_value

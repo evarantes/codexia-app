@@ -222,6 +222,31 @@ def _last_log_line(logs: Optional[str], max_len: int = 220) -> str:
         msg = msg[: max_len - 3] + "..."
     return msg
 
+def _is_mock_upload(upload_result: Any) -> bool:
+    return isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock"
+
+def _publish_error_message(upload_result: Any, action_label: str = "publicar") -> str:
+    """Mensagem amigável e consistente para falhas de upload no YouTube."""
+    if _is_mock_upload(upload_result):
+        return "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de publicar."
+    if isinstance(upload_result, dict):
+        raw = (upload_result.get("error") or "").strip()
+        if raw:
+            return raw
+    raw = str(upload_result or "").strip()
+    if raw and raw not in {"{}", "None"}:
+        return raw
+    return f"Falha ao {action_label} no YouTube. Verifique as credenciais em Configurações."
+
+def _append_upload_error_note(description: Optional[str], message: str) -> str:
+    note = f"[UPLOAD_ERRO]: {message}"
+    current = (description or "").strip()
+    if note in current:
+        return current
+    if current:
+        return f"{current}\n\n{note}"
+    return note
+
 def _infer_resume_step(db: Session, video: Video) -> Optional[str]:
     """Infere próxima etapa para retomar produção após pausa."""
     paused_or_pending = (
@@ -636,7 +661,7 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
         if isinstance(upload_result, dict):
             if upload_result.get("error"):
                 is_error = True
-            elif upload_result.get("status") == "uploaded_mock":
+            elif _is_mock_upload(upload_result):
                 is_error = True
             else:
                 youtube_id = upload_result.get("id") or str(upload_result)
@@ -646,12 +671,12 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
                 is_error = True
 
         if is_error or not youtube_id:
-            video.status = "ERROR"
+            # Falha de publicação não deve destruir estado READY do vídeo gerado.
+            # Isso permite corrigir credenciais e tentar publicar novamente sem reprocessar.
+            video.status = "READY"
+            err_msg = _publish_error_message(upload_result, action_label="publicar")
+            video.description = _append_upload_error_note(video.description, err_msg)
             db.commit()
-            if isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock":
-                err_msg = "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de publicar."
-            else:
-                err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube."
             raise HTTPException(status_code=502, detail=err_msg)
         
         video.status = "PUBLISHED"
@@ -1456,7 +1481,7 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if isinstance(upload_result, dict):
         if upload_result.get("error"):
             is_error = True
-        elif upload_result.get("status") == "uploaded_mock":
+        elif _is_mock_upload(upload_result):
             is_error = True
         else:
             video_id_value = upload_result.get("id") or str(upload_result)
@@ -1466,13 +1491,12 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
             is_error = True
 
     if is_error or not video_id_value:
-        video.status = "failed"
-        video.description = (video.description or "") + "\n\n[UPLOAD_ERRO]: falha ao enviar para o YouTube. Veja logs do servidor."
+        # Mantém vídeo pronto para nova tentativa manual após configurar credenciais.
+        if normalized_status in ("ready", "completed"):
+            video.status = normalized_status
+        err_msg = _publish_error_message(upload_result, action_label="publicar")
+        video.description = _append_upload_error_note(video.description, err_msg)
         db.commit()
-        if isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock":
-            err_msg = "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de publicar."
-        else:
-            err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao publicar no YouTube. Verifique as credenciais em Configurações."
         raise HTTPException(status_code=502, detail=err_msg)
 
     video.uploaded_at = datetime.now()
@@ -1522,7 +1546,7 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     if isinstance(upload_result, dict):
         if upload_result.get("error"):
             is_error = True
-        elif upload_result.get("status") == "uploaded_mock":
+        elif _is_mock_upload(upload_result):
             is_error = True
         else:
             video_id_value = upload_result.get("id") or str(upload_result)
@@ -1532,10 +1556,9 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
             is_error = True
 
     if is_error or not video_id_value:
-        if isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock":
-            err_msg = "Canal não conectado ao YouTube. Configure as credenciais em Configurações antes de republicar."
-        else:
-            err_msg = (upload_result.get("error") if isinstance(upload_result, dict) else str(upload_result)) or "Falha ao republicar no YouTube."
+        err_msg = _publish_error_message(upload_result, action_label="republicar")
+        video.description = _append_upload_error_note(video.description, err_msg)
+        db.commit()
         raise HTTPException(status_code=502, detail=err_msg)
 
     video.uploaded_at = datetime.now()
