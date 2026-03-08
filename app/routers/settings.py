@@ -70,12 +70,19 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         settings.facebook_access_token = settings_update.facebook_access_token
     if settings_update.mercadopago_access_token is not None:
         settings.mercadopago_access_token = settings_update.mercadopago_access_token
+    # Evita apagar credenciais do YouTube por engano quando o frontend envia string vazia.
     if settings_update.youtube_client_id is not None:
-        settings.youtube_client_id = settings_update.youtube_client_id
+        v = str(settings_update.youtube_client_id).strip()
+        if v:
+            settings.youtube_client_id = v
     if settings_update.youtube_client_secret is not None:
-        settings.youtube_client_secret = settings_update.youtube_client_secret
+        v = str(settings_update.youtube_client_secret).strip()
+        if v:
+            settings.youtube_client_secret = v
     if settings_update.youtube_refresh_token is not None:
-        settings.youtube_refresh_token = settings_update.youtube_refresh_token
+        v = str(settings_update.youtube_refresh_token).strip()
+        if v:
+            settings.youtube_refresh_token = v
     if settings_update.hotmart_client_id is not None:
         settings.hotmart_client_id = settings_update.hotmart_client_id
     if settings_update.hotmart_client_secret is not None:

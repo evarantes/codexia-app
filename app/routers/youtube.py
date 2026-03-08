@@ -236,7 +236,10 @@ def _publish_error_message(upload_result: Any, action_label: str = "publicar") -
     raw = str(upload_result or "").strip()
     if raw and raw not in {"{}", "None"}:
         return raw
-    return f"Falha ao {action_label} no YouTube. Verifique as credenciais em Configurações."
+    return (
+        f"Falha ao {action_label} no YouTube. Verifique as credenciais em Configurações "
+        f"ou variáveis YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET / YOUTUBE_REFRESH_TOKEN."
+    )
 
 def _append_upload_error_note(description: Optional[str], message: str) -> str:
     note = f"[UPLOAD_ERRO]: {message}"
@@ -1002,16 +1005,23 @@ def get_reports(db: Session = Depends(get_db)):
 def debug_auth(db: Session = Depends(get_db)):
     """Debug endpoint to check DB credentials state"""
     settings = db.query(Settings).first()
-    if not settings:
-        return {"status": "No settings found"}
-    
+    service = YouTubeService()
+    env_client_id = bool((os.getenv("YOUTUBE_CLIENT_ID") or "").strip())
+    env_client_secret = bool((os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip())
+    env_refresh = bool((os.getenv("YOUTUBE_REFRESH_TOKEN") or "").strip())
     return {
-        "status": "Settings found",
-        "has_client_id": bool(settings.youtube_client_id),
-        "client_id_prefix": settings.youtube_client_id[:5] + "..." if settings.youtube_client_id else None,
-        "has_client_secret": bool(settings.youtube_client_secret),
-        "has_refresh_token": bool(settings.youtube_refresh_token),
-        "refresh_token_prefix": settings.youtube_refresh_token[:5] + "..." if settings.youtube_refresh_token else None
+        "status": "Settings found" if settings else "No settings found",
+        "db_has_client_id": bool(settings and settings.youtube_client_id),
+        "db_client_id_prefix": (settings.youtube_client_id[:5] + "...") if (settings and settings.youtube_client_id) else None,
+        "db_has_client_secret": bool(settings and settings.youtube_client_secret),
+        "db_has_refresh_token": bool(settings and settings.youtube_refresh_token),
+        "db_refresh_token_prefix": (settings.youtube_refresh_token[:5] + "...") if (settings and settings.youtube_refresh_token) else None,
+        "env_has_client_id": env_client_id,
+        "env_has_client_secret": env_client_secret,
+        "env_has_refresh_token": env_refresh,
+        "service_connected": bool(service.service),
+        "service_auth_source": getattr(service, "auth_source", None),
+        "service_auth_error": getattr(service, "auth_error", None),
     }
 
 @router.get("/stats")

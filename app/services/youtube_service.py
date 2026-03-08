@@ -20,11 +20,27 @@ class YouTubeService:
     def __init__(self):
         self.credentials = None
         self.service = None
+        self.auth_source = None
+        self.auth_error = None
         self._load_credentials()
+
+    def _read_env_youtube_creds(self):
+        client_id = (os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
+        client_secret = (os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
+        refresh_token = (os.getenv("YOUTUBE_REFRESH_TOKEN") or "").strip()
+        if client_id and client_secret and refresh_token:
+            return {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        return None
 
     def _load_credentials(self):
         """Carrega credenciais do banco ou arquivo"""
-        
+        settings = None
+
         # 1. Tentar carregar do Banco de Dados
         try:
             db = SessionLocal()
@@ -41,20 +57,36 @@ class YouTubeService:
                     }
                     # Não passar SCOPES aqui para evitar erro de invalid_scope se o token tiver escopos diferentes
                     self.credentials = Credentials.from_authorized_user_info(info, scopes=None)
+                    self.auth_source = "database"
                 except Exception as e:
                     print(f"Erro ao carregar credenciais do YouTube do banco: {e}")
+                    self.auth_error = f"Erro ao ler credenciais do banco: {e}"
         except Exception as e:
             print(f"Erro ao acessar banco de dados para credenciais: {e}")
+            self.auth_error = f"Erro ao acessar banco para credenciais: {e}"
             settings = None
 
-        # 2. Fallback para arquivo local (Desenvolvimento)
+        # 2. Fallback para variáveis de ambiente (produção)
+        if not self.credentials:
+            env_info = self._read_env_youtube_creds()
+            if env_info:
+                try:
+                    self.credentials = Credentials.from_authorized_user_info(env_info, scopes=None)
+                    self.auth_source = "environment"
+                except Exception as e:
+                    print(f"Erro ao carregar credenciais do YouTube via ENV: {e}")
+                    self.auth_error = f"Erro ao ler credenciais por ENV: {e}"
+
+        # 3. Fallback para arquivo local (Desenvolvimento)
         if not self.credentials and os.path.exists('token.json'):
             try:
                 self.credentials = Credentials.from_authorized_user_file('token.json', SCOPES)
+                self.auth_source = "token_file"
             except Exception as e:
                 print(f"Erro ao carregar token.json: {e}")
+                self.auth_error = f"Erro ao carregar token.json: {e}"
             
-        # 3. Atualizar token se expirado
+        # 4. Atualizar token se expirado
         if self.credentials and self.credentials.expired and self.credentials.refresh_token:
             print("Token expirado. Tentando atualizar...")
             try:
@@ -70,6 +102,7 @@ class YouTubeService:
                     print("Token atualizado com sucesso na tentativa 2.")
                 except Exception as e2:
                     print(f"ERRO FATAL ao atualizar token (tentativa 2): {e2}. Desconectando.")
+                    self.auth_error = f"Refresh token inválido/expirado: {e2}"
                     self.credentials = None
 
         if self.credentials:
@@ -77,7 +110,10 @@ class YouTubeService:
                 self.service = build('youtube', 'v3', credentials=self.credentials)
             except Exception as e:
                 print(f"Erro ao construir cliente YouTube API: {e}. Serviço ficará desconectado.")
+                self.auth_error = f"Erro ao construir cliente YouTube: {e}"
                 self.service = None
+        elif not self.auth_error:
+            self.auth_error = "Credenciais do YouTube ausentes (banco/ENV/token.json)."
 
     def get_auth_url(self):
         """Gera URL para o usuário autorizar (Fluxo simplificado)"""
@@ -347,8 +383,9 @@ class YouTubeService:
         if tags is None:
             tags = []
         if not self.service:
-            print("[MOCK] Upload de vídeo simulado (Sem credenciais)")
-            return {"id": "mock_video_id", "status": "uploaded_mock"}
+            reason = self.auth_error or "Canal não conectado ao YouTube."
+            print(f"[YOUTUBE_DISCONNECTED] Upload não iniciado: {reason}")
+            return {"error": reason, "status": "not_connected"}
             
         try:
             body = {
