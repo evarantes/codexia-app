@@ -1053,11 +1053,12 @@ def get_auth_url(db: Session = Depends(get_db)):
         # Verificar se há credenciais no banco (evita exceção genérica ao instanciar o serviço)
         settings = db.query(Settings).first()
         has_db_creds = settings and (settings.youtube_client_id or "").strip() and (settings.youtube_client_secret or "").strip()
+        has_env_creds = (os.getenv("YOUTUBE_CLIENT_ID") or "").strip() and (os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
         has_file = os.path.exists("client_secret.json")
-        if not has_db_creds and not has_file:
+        if not has_db_creds and not has_env_creds and not has_file:
             raise HTTPException(
                 status_code=503,
-                detail="Configure as credenciais do YouTube em Configurações: informe Client ID e Client Secret do Google Cloud (APIs & Services > Credentials). Ou coloque o arquivo client_secret.json na raiz do projeto no servidor."
+                detail="Configure as credenciais do YouTube em Configurações (Client ID e Client Secret), ou nas variáveis YOUTUBE_CLIENT_ID/YOUTUBE_CLIENT_SECRET, ou use client_secret.json no servidor."
             )
         service = YouTubeService()
         auth_url = service.get_auth_url()

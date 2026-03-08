@@ -28,14 +28,36 @@ class YouTubeService:
         client_id = (os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
         client_secret = (os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
         refresh_token = (os.getenv("YOUTUBE_REFRESH_TOKEN") or "").strip()
-        if client_id and client_secret and refresh_token:
-            return {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": refresh_token,
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }
-        return None
+        return {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        }
+
+    def _read_db_youtube_creds(self, settings):
+        return {
+            "client_id": (getattr(settings, "youtube_client_id", None) or "").strip() if settings else "",
+            "client_secret": (getattr(settings, "youtube_client_secret", None) or "").strip() if settings else "",
+            "refresh_token": (getattr(settings, "youtube_refresh_token", None) or "").strip() if settings else "",
+        }
+
+    def _compose_info(self, base):
+        return {
+            "client_id": base.get("client_id"),
+            "client_secret": base.get("client_secret"),
+            "refresh_token": base.get("refresh_token"),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+
+    def _has_full_creds(self, data):
+        return bool((data.get("client_id") or "").strip() and (data.get("client_secret") or "").strip() and (data.get("refresh_token") or "").strip())
+
+    def _oauth_client_id_secret(self, settings=None):
+        db_creds = self._read_db_youtube_creds(settings)
+        env_creds = self._read_env_youtube_creds()
+        client_id = db_creds.get("client_id") or env_creds.get("client_id")
+        client_secret = db_creds.get("client_secret") or env_creds.get("client_secret")
+        return (client_id or "").strip(), (client_secret or "").strip()
 
     def _load_credentials(self):
         """Carrega credenciais do banco ou arquivo"""
@@ -66,67 +88,77 @@ class YouTubeService:
             self.auth_error = f"Erro ao acessar banco para credenciais: {e}"
             settings = None
 
-        # 2. Fallback para variáveis de ambiente (produção)
-        if not self.credentials:
-            env_info = self._read_env_youtube_creds()
-            if env_info:
-                try:
-                    self.credentials = Credentials.from_authorized_user_info(env_info, scopes=None)
-                    self.auth_source = "environment"
-                except Exception as e:
-                    print(f"Erro ao carregar credenciais do YouTube via ENV: {e}")
-                    self.auth_error = f"Erro ao ler credenciais por ENV: {e}"
+        db_creds = self._read_db_youtube_creds(settings)
+        env_creds = self._read_env_youtube_creds()
+        mixed_db_env = {
+            "client_id": db_creds.get("client_id") or env_creds.get("client_id"),
+            "client_secret": db_creds.get("client_secret") or env_creds.get("client_secret"),
+            "refresh_token": db_creds.get("refresh_token") or env_creds.get("refresh_token"),
+        }
+        mixed_env_db = {
+            "client_id": env_creds.get("client_id") or db_creds.get("client_id"),
+            "client_secret": env_creds.get("client_secret") or db_creds.get("client_secret"),
+            "refresh_token": env_creds.get("refresh_token") or db_creds.get("refresh_token"),
+        }
 
-        # 3. Fallback para arquivo local (Desenvolvimento)
-        if not self.credentials and os.path.exists('token.json'):
+        candidates = []
+        if self._has_full_creds(db_creds):
+            candidates.append(("database", db_creds))
+        if self._has_full_creds(env_creds):
+            candidates.append(("environment", env_creds))
+        if self._has_full_creds(mixed_db_env):
+            candidates.append(("mixed_db_env", mixed_db_env))
+        if self._has_full_creds(mixed_env_db):
+            candidates.append(("mixed_env_db", mixed_env_db))
+
+        last_error = None
+        for source, raw in candidates:
             try:
-                self.credentials = Credentials.from_authorized_user_file('token.json', SCOPES)
+                creds = Credentials.from_authorized_user_info(self._compose_info(raw), scopes=SCOPES)
+                if creds.refresh_token and (not creds.valid or creds.expired):
+                    creds.refresh(Request())
+                service = build('youtube', 'v3', credentials=creds)
+                self.credentials = creds
+                self.service = service
+                self.auth_source = source
+                self.auth_error = None
+                return
+            except Exception as e:
+                last_error = f"{source}: {e}"
+                print(f"Erro ao validar credenciais YouTube ({source}): {e}")
+
+        # Fallback para arquivo local (desenvolvimento)
+        if os.path.exists('token.json'):
+            try:
+                creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+                if creds.refresh_token and (not creds.valid or creds.expired):
+                    creds.refresh(Request())
+                self.credentials = creds
+                self.service = build('youtube', 'v3', credentials=creds)
                 self.auth_source = "token_file"
+                self.auth_error = None
+                return
             except Exception as e:
                 print(f"Erro ao carregar token.json: {e}")
-                self.auth_error = f"Erro ao carregar token.json: {e}"
-            
-        # 4. Atualizar token se expirado
-        if self.credentials and self.credentials.expired and self.credentials.refresh_token:
-            print("Token expirado. Tentando atualizar...")
-            try:
-                self.credentials.refresh(Request())
-                print("Token atualizado com sucesso.")
-            except Exception as e:
-                print(f"Erro ao atualizar token (tentativa 1): {e}")
-                # Retry once
-                try:
-                    import time
-                    time.sleep(1)
-                    self.credentials.refresh(Request())
-                    print("Token atualizado com sucesso na tentativa 2.")
-                except Exception as e2:
-                    print(f"ERRO FATAL ao atualizar token (tentativa 2): {e2}. Desconectando.")
-                    self.auth_error = f"Refresh token inválido/expirado: {e2}"
-                    self.credentials = None
+                last_error = f"token_file: {e}"
 
-        if self.credentials:
-            try:
-                self.service = build('youtube', 'v3', credentials=self.credentials)
-            except Exception as e:
-                print(f"Erro ao construir cliente YouTube API: {e}. Serviço ficará desconectado.")
-                self.auth_error = f"Erro ao construir cliente YouTube: {e}"
-                self.service = None
-        elif not self.auth_error:
-            self.auth_error = "Credenciais do YouTube ausentes (banco/ENV/token.json)."
+        self.credentials = None
+        self.service = None
+        self.auth_error = last_error or "Credenciais do YouTube ausentes (banco/ENV/token.json)."
 
     def get_auth_url(self):
         """Gera URL para o usuário autorizar (Fluxo simplificado)"""
-        # 1. Tentar credenciais do banco (Client ID + Secret) para montar client_config
+        # 1. Tentar credenciais do banco/ENV (Client ID + Secret) para montar client_config
         db = SessionLocal()
         settings = db.query(Settings).first()
         db.close()
-        if settings and settings.youtube_client_id and settings.youtube_client_secret:
+        client_id, client_secret = self._oauth_client_id_secret(settings)
+        if client_id and client_secret:
             try:
                 client_config = {
                     "installed": {
-                        "client_id": settings.youtube_client_id.strip(),
-                        "client_secret": settings.youtube_client_secret.strip(),
+                        "client_id": client_id,
+                        "client_secret": client_secret,
                         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                         "token_uri": "https://oauth2.googleapis.com/token",
                         "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"]
@@ -146,10 +178,10 @@ class YouTubeService:
 
                 return auth_url
             except Exception as e:
-                raise RuntimeError(f"Credenciais do YouTube no banco inválidas: {e}")
+                raise RuntimeError(f"Credenciais do YouTube (banco/ENV) inválidas: {e}")
         # 2. Fallback: arquivo client_secret.json (desenvolvimento)
         if not os.path.exists('client_secret.json'):
-            raise FileNotFoundError("client_secret.json não encontrado e credenciais do YouTube não configuradas em Configurações.")
+            raise FileNotFoundError("client_secret.json não encontrado e credenciais do YouTube não configuradas (Configurações/ENV).")
         flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
         flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
         auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
@@ -167,7 +199,7 @@ class YouTubeService:
     def exchange_code_for_token(self, code):
         """Troca o código de autorização por tokens e salva no banco. Retorna (success, message)."""
         try:
-            # 1. Tentar configurar Flow via Banco de Dados
+            # 1. Tentar configurar Flow via Banco/ENV
             db = SessionLocal()
             settings = db.query(Settings).first()
             db.close()
@@ -175,12 +207,13 @@ class YouTubeService:
             flow = None
             used_json_file = False
             
-            if settings and settings.youtube_client_id and settings.youtube_client_secret:
+            client_id, client_secret = self._oauth_client_id_secret(settings)
+            if client_id and client_secret:
                 try:
                     client_config = {
                         "installed": {
-                            "client_id": settings.youtube_client_id.strip(),
-                            "client_secret": settings.youtube_client_secret.strip(),
+                            "client_id": client_id,
+                            "client_secret": client_secret,
                             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                             "token_uri": "https://oauth2.googleapis.com/token",
                             "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"]
