@@ -29,6 +29,10 @@ class HumorProject(Base):
     joke_source = Column(String, nullable=False, default="ai")  # ai | manual | mixed
     manual_jokes_text = Column(Text, nullable=True)
     jokes_json = Column(Text, nullable=True)  # JSON array
+    avatar_override_path = Column(String, nullable=True)
+    opening_message = Column(Text, nullable=True)
+    catchphrase_message = Column(Text, nullable=True)
+    closing_message = Column(Text, nullable=True)
 
     target_minutes = Column(Integer, nullable=False, default=10)
     auto_publish_after_review = Column(Boolean, nullable=False, default=False)

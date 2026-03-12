@@ -276,6 +276,28 @@ def run_migrations(engine):
             except Exception as e:
                 print(f"Error migrating book_drafts table: {e}")
 
+        # Humor Factory migration
+        if "codexia_humor_projects" in inspector.get_table_names():
+            try:
+                hp_columns = [c["name"] for c in inspector.get_columns("codexia_humor_projects")]
+                extra_cols = {
+                    "avatar_override_path": "TEXT",
+                    "opening_message": "TEXT",
+                    "catchphrase_message": "TEXT",
+                    "closing_message": "TEXT",
+                }
+                with engine.connect() as conn:
+                    for col_name, col_type in extra_cols.items():
+                        if col_name not in hp_columns:
+                            try:
+                                print(f"Migrating: Adding {col_name} to codexia_humor_projects...")
+                                conn.execute(text(f"ALTER TABLE codexia_humor_projects ADD COLUMN {col_name} {col_type}"))
+                                conn.commit()
+                            except Exception as e:
+                                print(f"Error adding {col_name} in codexia_humor_projects: {e}")
+            except Exception as e:
+                print(f"Error migrating codexia_humor_projects table: {e}")
+
     except Exception as e:
         print(f"Critical Migration Error: {e}")
 

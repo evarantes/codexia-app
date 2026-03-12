@@ -34,6 +34,10 @@ class HumorProjectRequest(BaseModel):
     themes: List[str] = Field(default_factory=list)
     joke_source: str = Field(default="ai")  # ai | manual | mixed
     manual_jokes_text: Optional[str] = None
+    avatar_override_path: Optional[str] = None
+    opening_message: Optional[str] = None
+    catchphrase_message: Optional[str] = None
+    closing_message: Optional[str] = None
     target_minutes: int = Field(default=10, ge=1, le=60)
     auto_publish_after_review: bool = False
     start_immediately: bool = True
@@ -67,6 +71,10 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         "themes": themes,
         "joke_source": p.joke_source,
         "manual_jokes_text": p.manual_jokes_text,
+        "avatar_override_path": p.avatar_override_path,
+        "opening_message": p.opening_message,
+        "catchphrase_message": p.catchphrase_message,
+        "closing_message": p.closing_message,
         "jokes_count": len(jokes),
         "target_minutes": p.target_minutes,
         "auto_publish_after_review": bool(p.auto_publish_after_review),
@@ -153,6 +161,21 @@ async def upload_channel_avatar(file: UploadFile = File(...)):
     return {"avatar_path": str(target_path.absolute()), "public_url": f"/static/generated/humor_avatars/{filename}"}
 
 
+@router.post("/projects/avatar")
+async def upload_project_avatar(file: UploadFile = File(...)):
+    target_dir = Path("app/static/generated/humor_project_avatars")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = "".join(ch for ch in (file.filename or "avatar.png") if ch.isalnum() or ch in {".", "_", "-"}).strip()
+    if not safe_name:
+        safe_name = "avatar.png"
+    filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{safe_name}"
+    target_path = target_dir / filename
+    content = await file.read()
+    with open(target_path, "wb") as f:
+        f.write(content)
+    return {"avatar_path": str(target_path.absolute()), "public_url": f"/static/generated/humor_project_avatars/{filename}"}
+
+
 @router.post("/projects")
 def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     source = (payload.joke_source or "ai").strip().lower()
@@ -178,6 +201,10 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
         theme=" | ".join(themes),
         joke_source=source,
         manual_jokes_text=payload.manual_jokes_text or "",
+        avatar_override_path=(payload.avatar_override_path or "").strip() or None,
+        opening_message=(payload.opening_message or "").strip() or None,
+        catchphrase_message=(payload.catchphrase_message or "").strip() or None,
+        closing_message=(payload.closing_message or "").strip() or None,
         target_minutes=target_minutes,
         auto_publish_after_review=bool(payload.auto_publish_after_review),
         status="queued",

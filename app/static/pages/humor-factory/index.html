@@ -84,6 +84,14 @@
                     <input v-model="newProject.title" class="w-full border rounded p-2 mt-1" placeholder="Ex: 10 minutos de piadas gospel">
                 </div>
                 <div>
+                    <label class="text-sm font-semibold text-gray-700">Imagem fixa do personagem (opcional por vídeo)</label>
+                    <div class="mt-2 flex flex-wrap items-center gap-2">
+                        <input type="file" accept="image/*" @change="uploadProjectAvatar">
+                        <button type="button" @click="newProject.avatar_override_path = ''" class="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded hover:bg-gray-200">Usar avatar do canal</button>
+                    </div>
+                    <p v-if="newProject.avatar_override_path" class="text-xs text-gray-500 mt-1 break-all">{{ newProject.avatar_override_path }}</p>
+                </div>
+                <div>
                     <label class="text-sm font-semibold text-gray-700">Temas de piadas (marque vários para vídeo variado)</label>
                     <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
                         <label v-for="t in themeOptions" :key="t" class="inline-flex items-center gap-2 bg-gray-50 border rounded px-2 py-1">
@@ -95,6 +103,18 @@
                         <label class="text-xs font-semibold text-gray-600">Tema personalizado (opcional)</label>
                         <input v-model="customTheme" class="w-full border rounded p-2 mt-1" placeholder="Ex: Piadas de fila de banco">
                     </div>
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Mensagem de abertura (marca do personagem)</label>
+                    <textarea v-model="newProject.opening_message" rows="2" class="w-full border rounded p-2 mt-1" placeholder="Ex: Fala minha turma, aqui é o Humor Codexia!"></textarea>
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Bordão do personagem (usado ao longo do vídeo)</label>
+                    <input v-model="newProject.catchphrase_message" class="w-full border rounded p-2 mt-1" placeholder="Ex: Segura essa que é benção e risada!">
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Mensagem de fechamento (fixa em todos os vídeos)</label>
+                    <textarea v-model="newProject.closing_message" rows="2" class="w-full border rounded p-2 mt-1" placeholder="Ex: Curta, compartilhe e até a próxima piada!"></textarea>
                 </div>
                 <div>
                     <label class="text-sm font-semibold text-gray-700">Fonte das piadas</label>
@@ -205,6 +225,10 @@ createApp({
                 themes: ["Piadas de Português"],
                 joke_source: "ai",
                 manual_jokes_text: "",
+                avatar_override_path: "",
+                opening_message: "",
+                catchphrase_message: "",
+                closing_message: "",
                 target_minutes: 10,
                 auto_publish_after_review: false,
                 start_immediately: true,
@@ -330,6 +354,20 @@ createApp({
                 this.channel.avatar_path = data.avatar_path;
             } catch (e) {
                 alert("Erro ao enviar avatar: " + (e.message || e));
+            }
+        },
+        async uploadProjectAvatar(ev) {
+            const file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            try {
+                const form = new FormData();
+                form.append("file", file);
+                const res = await this.authFetch("/humor-factory/projects/avatar", { method: "POST", body: form });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha no upload da imagem do personagem.");
+                this.newProject.avatar_override_path = data.avatar_path;
+            } catch (e) {
+                alert("Erro ao enviar imagem fixa: " + (e.message || e));
             }
         },
         async createProject() {

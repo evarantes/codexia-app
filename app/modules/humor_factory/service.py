@@ -100,7 +100,13 @@ class HumorFactoryService:
                 return None
         return None
 
-    def _generate_ai_jokes(self, theme: str, count: int) -> List[str]:
+    def _generate_ai_jokes(self, theme: str, count: int, catchphrase: str = "") -> List[str]:
+        catchphrase_line = ""
+        if (catchphrase or "").strip():
+            catchphrase_line = (
+                f'- Bordão do personagem: "{catchphrase.strip()}". '
+                "Use de forma natural em parte das piadas, sem repetir em todas."
+            )
         prompt = f"""
 Você é roteirista de humor limpo para YouTube.
 Crie {count} piadas curtas e inéditas sobre o tema: "{theme}".
@@ -111,6 +117,7 @@ Regras obrigatórias:
 - Cada piada em 1 ou 2 frases curtas.
 - Variar o gancho para manter retenção.
 - Evitar repetição de estrutura.
+{catchphrase_line}
 
 Retorne APENAS JSON válido:
 {{"jokes": ["piada 1", "piada 2", "..."]}}
@@ -124,17 +131,17 @@ Retorne APENAS JSON válido:
             pass
         return self._fallback_jokes(theme, count)
 
-    def _generate_ai_jokes_by_themes(self, themes: List[str], count: int) -> List[str]:
+    def _generate_ai_jokes_by_themes(self, themes: List[str], count: int, catchphrase: str = "") -> List[str]:
         clean = [t.strip() for t in (themes or []) if t and t.strip()]
         if not clean:
             return self._fallback_jokes("humor geral", count)
         if len(clean) == 1:
-            return self._generate_ai_jokes(clean[0], count)
+            return self._generate_ai_jokes(clean[0], count, catchphrase=catchphrase)
 
         per_theme = max(4, math.ceil(count / len(clean)))
         buckets: List[List[str]] = []
         for t in clean:
-            jokes = self._generate_ai_jokes(t, per_theme)
+            jokes = self._generate_ai_jokes(t, per_theme, catchphrase=catchphrase)
             if not jokes:
                 jokes = self._fallback_jokes(t, per_theme)
             buckets.append(jokes)
@@ -159,7 +166,17 @@ Retorne APENAS JSON válido:
             mixed.extend(extra)
         return mixed[:count]
 
-    def _resolve_avatar_path(self, channel: Optional[HumorChannel], video_gen: VideoGenerator) -> Optional[str]:
+    def _resolve_avatar_path(self, channel: Optional[HumorChannel], video_gen: VideoGenerator, override_path: str = "") -> Optional[str]:
+        ov = (override_path or "").strip()
+        if ov:
+            if os.path.exists(ov):
+                return ov
+            if ov.startswith("/static/"):
+                from app.config import absolute_path_for_static
+
+                abs_p = absolute_path_for_static(ov)
+                if abs_p and os.path.exists(abs_p):
+                    return abs_p
         if channel and channel.avatar_path:
             p = str(channel.avatar_path).strip()
             if p and os.path.exists(p):
@@ -244,6 +261,9 @@ Retorne APENAS JSON válido:
             needed_jokes = max(20, math.ceil(target_seconds / estimated_secs_per_joke))
             selected_themes = self._theme_list(project.theme)
             themes_label = ", ".join(selected_themes) if selected_themes else "humor geral"
+            opening_message = (project.opening_message or "").strip()
+            catchphrase_message = (project.catchphrase_message or "").strip()
+            closing_message = (project.closing_message or "").strip()
 
             manual = self._parse_manual_jokes(project.manual_jokes_text)
             source = (project.joke_source or "ai").strip().lower()
@@ -254,9 +274,9 @@ Retorne APENAS JSON válido:
                 jokes = manual[:]
                 missing = max(0, needed_jokes - len(jokes))
                 if missing > 0:
-                    jokes.extend(self._generate_ai_jokes_by_themes(selected_themes, missing))
+                    jokes.extend(self._generate_ai_jokes_by_themes(selected_themes, missing, catchphrase=catchphrase_message))
             else:
-                jokes = self._generate_ai_jokes_by_themes(selected_themes, needed_jokes)
+                jokes = self._generate_ai_jokes_by_themes(selected_themes, needed_jokes, catchphrase=catchphrase_message)
 
             if len(jokes) < needed_jokes:
                 # Completa ciclando sem baixar qualidade do ritmo
@@ -270,7 +290,7 @@ Retorne APENAS JSON válido:
             self._set_progress(db, project, 12, f"{len(jokes)} piadas preparadas (temas: {themes_label}).")
 
             video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
-            avatar_path = self._resolve_avatar_path(channel, video_gen)
+            avatar_path = self._resolve_avatar_path(channel, video_gen, override_path=(project.avatar_override_path or ""))
             if avatar_path and os.path.basename(avatar_path).startswith("fallback_local_"):
                 temporary_avatar = avatar_path
 
@@ -279,26 +299,28 @@ Retorne APENAS JSON válido:
             except Exception:
                 from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
 
-            for idx, joke in enumerate(jokes, start=1):
-                narration = f"Piada {idx}. {joke} ... e já vem a próxima."
+            total_scenes = len(jokes) + (1 if opening_message else 0) + (1 if closing_message else 0)
+            scene_counter = 0
+
+            def add_talking_scene(text_on_screen: str, narration_text: str, label: str) -> bool:
+                nonlocal scene_counter
                 audio_path = video_gen.generate_audio(
-                    narration,
+                    narration_text,
                     voice_style="human",
                     voice_gender=(channel.default_voice_gender if channel else "male"),
                 )
                 if not audio_path or not os.path.exists(audio_path):
-                    self._append_log(project, f"Aviso: sem áudio para piada {idx}, pulando.")
+                    self._append_log(project, f"Aviso: sem áudio para {label}, pulando.")
                     db.commit()
-                    continue
+                    return False
 
                 temp_files.append(audio_path)
                 audio_clip = AudioFileClip(audio_path)
                 audio_clips.append(audio_clip)
                 duration = max(4.0, float(audio_clip.duration or 0) + 0.35)
 
-                text = f"Piada {idx}/{len(jokes)}\n{joke}"
                 base_frame = video_gen.create_text_image(
-                    text=text[:260],
+                    text=(text_on_screen or "")[:280],
                     size=(1280, 720),
                     bg_color=(35, 45, 70),
                     text_color=(248, 248, 248),
@@ -315,8 +337,40 @@ Retorne APENAS JSON válido:
                 clip = self._clip_with_fps(clip, 24)
                 clips.append(clip)
 
-                pct = 12 + int((idx / max(1, len(jokes))) * 70)
-                self._set_progress(db, project, pct, f"Gerando cena de humor {idx}/{len(jokes)}...")
+                scene_counter += 1
+                pct = 12 + int((scene_counter / max(1, total_scenes)) * 70)
+                self._set_progress(db, project, pct, f"Gerando cena {scene_counter}/{total_scenes}: {label}")
+                return True
+
+            if opening_message:
+                intro_narration = opening_message
+                if catchphrase_message and catchphrase_message.lower() not in intro_narration.lower():
+                    intro_narration = f"{intro_narration} {catchphrase_message}"
+                add_talking_scene(
+                    text_on_screen=f"Abertura\n{opening_message}",
+                    narration_text=intro_narration,
+                    label="abertura",
+                )
+
+            for idx, joke in enumerate(jokes, start=1):
+                narration = f"Piada {idx}. {joke} ... e já vem a próxima."
+                if catchphrase_message and idx % 3 == 1:
+                    narration = f"{catchphrase_message} {narration}"
+                add_talking_scene(
+                    text_on_screen=f"Piada {idx}/{len(jokes)}\n{joke}",
+                    narration_text=narration,
+                    label=f"piada {idx}",
+                )
+
+            if closing_message:
+                outro_narration = closing_message
+                if catchphrase_message and catchphrase_message.lower() not in outro_narration.lower():
+                    outro_narration = f"{outro_narration} {catchphrase_message}"
+                add_talking_scene(
+                    text_on_screen=f"Encerramento\n{closing_message}",
+                    narration_text=outro_narration,
+                    label="fechamento",
+                )
 
             if not clips:
                 raise RuntimeError("Não foi possível gerar áudio/cenas para as piadas.")
@@ -343,6 +397,7 @@ Retorne APENAS JSON válido:
                 description=(
                     f"Projeto Fábrica de Humor - temas: {themes_label}. "
                     "Conteúdo limpo e familiar, sem baixaria."
+                    + (f" Bordão: {catchphrase_message}" if catchphrase_message else "")
                 ),
                 scheduled_for=datetime.now(),
                 status="completed",
@@ -351,6 +406,9 @@ Retorne APENAS JSON válido:
                     {
                         "source": "humor_factory",
                         "humor_project_id": project.id,
+                        "opening_message": opening_message,
+                        "catchphrase_message": catchphrase_message,
+                        "closing_message": closing_message,
                         "jokes": jokes,
                     },
                     ensure_ascii=False,
