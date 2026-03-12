@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fábrica de Humor - Codexia</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>[v-cloak] { display: none; }</style>
+</head>
+<body class="bg-gray-100">
+<div id="app" v-cloak class="min-h-screen p-6">
+    <div class="max-w-7xl mx-auto space-y-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <h1 class="text-3xl font-bold text-gray-800"><i class="fas fa-laugh-squint mr-2 text-yellow-500"></i> Fábrica de Humor</h1>
+                <p class="text-gray-600">Canal de piadas limpas com avatar fixo, produção longa e revisão antes da publicação.</p>
+            </div>
+            <a href="/" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700"><i class="fas fa-arrow-left mr-2"></i> Voltar ao painel</a>
+        </div>
+
+        <div class="grid lg:grid-cols-2 gap-6">
+            <section class="bg-white rounded-lg shadow p-6 space-y-4">
+                <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-tv mr-2"></i> Canal de Humor</h2>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Nome do canal</label>
+                    <input v-model="channel.name" class="w-full border rounded p-2 mt-1" placeholder="Ex: Piadas do Pastor Zé">
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Descrição do estilo</label>
+                    <textarea v-model="channel.description" class="w-full border rounded p-2 mt-1" rows="3" placeholder="Humor leve, sem baixaria, familiar..."></textarea>
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Avatar fixo</label>
+                    <div class="mt-2 flex flex-wrap items-center gap-3">
+                        <input type="file" accept="image/*" @change="uploadAvatar">
+                        <span v-if="channel.avatar_path" class="text-xs text-gray-500 break-all">{{ channel.avatar_path }}</span>
+                    </div>
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Temas permitidos (separados por vírgula)</label>
+                    <input v-model="allowedThemesText" class="w-full border rounded p-2 mt-1" placeholder="português, religiosa, gospel, cotidiano...">
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Voz padrão</label>
+                    <select v-model="channel.default_voice_gender" class="w-full border rounded p-2 mt-1">
+                        <option value="male">Masculina</option>
+                        <option value="female">Feminina</option>
+                    </select>
+                </div>
+                <button @click="saveChannel" :disabled="savingChannel" class="bg-emerald-600 text-white px-4 py-2 rounded hover:bg-emerald-700 disabled:opacity-50">
+                    <i v-if="savingChannel" class="fas fa-spinner fa-spin mr-2"></i> Salvar canal
+                </button>
+            </section>
+
+            <section class="bg-white rounded-lg shadow p-6 space-y-4">
+                <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-magic mr-2"></i> Nova Produção de Humor</h2>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Título do vídeo (opcional)</label>
+                    <input v-model="newProject.title" class="w-full border rounded p-2 mt-1" placeholder="Ex: 10 minutos de piadas gospel">
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Tema principal</label>
+                    <select v-model="newProject.theme" class="w-full border rounded p-2 mt-1">
+                        <option>Piadas de Português</option>
+                        <option>Piadas Religiosas</option>
+                        <option>Piadas Gospel</option>
+                        <option>Piadas de Escola</option>
+                        <option>Piadas de Casal</option>
+                        <option>Piadas de Trabalho</option>
+                        <option value="Tema Personalizado">Tema Personalizado</option>
+                    </select>
+                </div>
+                <div v-if="newProject.theme === 'Tema Personalizado'">
+                    <label class="text-sm font-semibold text-gray-700">Digite o tema</label>
+                    <input v-model="customTheme" class="w-full border rounded p-2 mt-1" placeholder="Ex: Piadas de fila de banco">
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Fonte das piadas</label>
+                    <select v-model="newProject.joke_source" class="w-full border rounded p-2 mt-1">
+                        <option value="ai">IA cria piadas exclusivas</option>
+                        <option value="manual">Inserir piadas já existentes</option>
+                        <option value="mixed">Misturar minhas piadas + IA</option>
+                    </select>
+                </div>
+                <div v-if="newProject.joke_source !== 'ai'">
+                    <label class="text-sm font-semibold text-gray-700">Piadas (uma por linha)</label>
+                    <textarea v-model="newProject.manual_jokes_text" class="w-full border rounded p-2 mt-1" rows="5" placeholder="Digite as piadas aqui, uma em cada linha."></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="text-sm font-semibold text-gray-700">Duração mínima (min)</label>
+                        <input v-model.number="newProject.target_minutes" type="number" min="10" class="w-full border rounded p-2 mt-1">
+                    </div>
+                    <div class="flex items-end">
+                        <label class="inline-flex items-center gap-2">
+                            <input type="checkbox" v-model="newProject.auto_publish_after_review">
+                            <span class="text-sm text-gray-700">Publicar automaticamente após aprovação</span>
+                        </label>
+                    </div>
+                </div>
+                <button @click="createProject" :disabled="creatingProject" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50">
+                    <i v-if="creatingProject" class="fas fa-spinner fa-spin mr-2"></i> Gerar vídeo de humor
+                </button>
+            </section>
+        </div>
+
+        <section class="bg-white rounded-lg shadow p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-list-check mr-2"></i> Produção e Revisão</h2>
+                <button @click="fetchProjects" class="text-sm bg-gray-100 px-3 py-2 rounded hover:bg-gray-200"><i class="fas fa-rotate mr-1"></i> Atualizar</button>
+            </div>
+
+            <div v-if="projects.length === 0" class="text-gray-500 italic">Nenhum projeto de humor ainda.</div>
+            <div v-else class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-gray-50">
+                            <th class="p-3 text-left">ID</th>
+                            <th class="p-3 text-left">Tema</th>
+                            <th class="p-3 text-left">Status</th>
+                            <th class="p-3 text-left">Progresso</th>
+                            <th class="p-3 text-left">Mensagem</th>
+                            <th class="p-3 text-left">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="p in projects" :key="p.id" class="border-t">
+                            <td class="p-3">#{{ p.id }}</td>
+                            <td class="p-3">
+                                <div class="font-semibold">{{ p.title || p.theme }}</div>
+                                <div class="text-xs text-gray-500">{{ p.jokes_count }} piadas | {{ p.target_minutes }} min</div>
+                            </td>
+                            <td class="p-3">
+                                <span class="px-2 py-1 rounded text-xs font-bold" :class="statusClass(p.status)">{{ p.status }}</span>
+                            </td>
+                            <td class="p-3">
+                                <div class="w-36 bg-gray-200 rounded h-2">
+                                    <div class="bg-indigo-600 h-2 rounded" :style="{ width: (p.progress || 0) + '%' }"></div>
+                                </div>
+                                <div class="text-xs text-gray-500 mt-1">{{ p.progress || 0 }}%</div>
+                            </td>
+                            <td class="p-3 text-xs text-gray-600 max-w-xs">{{ p.status_message || '-' }}</td>
+                            <td class="p-3">
+                                <div class="flex flex-wrap gap-2">
+                                    <button v-if="p.scheduled_video_id" @click="watchProject(p)" class="px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200">Ver</button>
+                                    <button v-if="p.status === 'review'" @click="approveProject(p, false)" class="px-2 py-1 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200">Aprovar</button>
+                                    <button v-if="p.status === 'review' || p.status === 'approved'" @click="approveProject(p, true)" class="px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200">Aprovar + Publicar</button>
+                                    <button v-if="p.status === 'approved' || p.status === 'review'" @click="publishProject(p)" class="px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">Publicar agora</button>
+                                    <button v-if="p.status === 'failed' || p.status === 'rejected'" @click="regenerateProject(p)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">Refazer</button>
+                                    <button v-if="p.status === 'review' || p.status === 'approved'" @click="rejectProject(p)" class="px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">Rejeitar</button>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+createApp({
+    data() {
+        return {
+            channel: { name: "Canal de Humor", description: "", avatar_path: "", default_voice_gender: "male", allowed_themes: [] },
+            allowedThemesText: "",
+            savingChannel: false,
+            creatingProject: false,
+            customTheme: "",
+            newProject: {
+                title: "",
+                theme: "Piadas de Português",
+                joke_source: "ai",
+                manual_jokes_text: "",
+                target_minutes: 10,
+                auto_publish_after_review: false,
+                start_immediately: true,
+            },
+            projects: [],
+            pollTimer: null,
+        };
+    },
+    mounted() {
+        this.fetchChannel();
+        this.fetchProjects();
+        this.pollTimer = setInterval(() => this.fetchProjects(), 8000);
+    },
+    beforeUnmount() {
+        if (this.pollTimer) clearInterval(this.pollTimer);
+    },
+    methods: {
+        getAuthHeaders() {
+            const token = localStorage.getItem("access_token");
+            return token ? { "Authorization": `Bearer ${token}` } : {};
+        },
+        async authFetch(url, options = {}) {
+            const headers = { ...options.headers, ...this.getAuthHeaders() };
+            return fetch(url, { ...options, headers });
+        },
+        statusClass(s) {
+            const v = String(s || "").toLowerCase();
+            if (v === "published") return "bg-green-100 text-green-700";
+            if (v === "review" || v === "approved") return "bg-blue-100 text-blue-700";
+            if (v === "failed" || v === "rejected") return "bg-red-100 text-red-700";
+            if (v === "generating" || v === "publishing") return "bg-yellow-100 text-yellow-700";
+            return "bg-gray-100 text-gray-700";
+        },
+        async fetchChannel() {
+            try {
+                const res = await this.authFetch("/humor-factory/channel");
+                const data = await res.json();
+                if (data && data.id) {
+                    this.channel = data;
+                    this.allowedThemesText = (data.allowed_themes || []).join(", ");
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        },
+        async saveChannel() {
+            this.savingChannel = true;
+            try {
+                const themes = this.allowedThemesText.split(",").map(x => x.trim()).filter(Boolean);
+                const payload = { ...this.channel, allowed_themes: themes };
+                const res = await this.authFetch("/humor-factory/channel", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha ao salvar canal.");
+                this.channel = data;
+                alert("Canal de humor salvo com sucesso.");
+            } catch (e) {
+                alert("Erro ao salvar canal: " + (e.message || e));
+            } finally {
+                this.savingChannel = false;
+            }
+        },
+        async uploadAvatar(ev) {
+            const file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            try {
+                const form = new FormData();
+                form.append("file", file);
+                const res = await this.authFetch("/humor-factory/channel/avatar", { method: "POST", body: form });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha no upload do avatar.");
+                this.channel.avatar_path = data.avatar_path;
+            } catch (e) {
+                alert("Erro ao enviar avatar: " + (e.message || e));
+            }
+        },
+        async createProject() {
+            this.creatingProject = true;
+            try {
+                const theme = this.newProject.theme === "Tema Personalizado" ? (this.customTheme || "").trim() : this.newProject.theme;
+                if (!theme) throw new Error("Informe o tema do projeto.");
+                const payload = { ...this.newProject, theme, channel_id: this.channel.id || null };
+                const res = await this.authFetch("/humor-factory/projects", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha ao criar projeto.");
+                alert("Projeto criado! A produção foi iniciada e ficará na fila de revisão.");
+                this.fetchProjects();
+            } catch (e) {
+                alert("Erro ao criar projeto: " + (e.message || e));
+            } finally {
+                this.creatingProject = false;
+            }
+        },
+        async fetchProjects() {
+            try {
+                const res = await this.authFetch("/humor-factory/projects?limit=200");
+                const data = await res.json();
+                if (res.ok) this.projects = Array.isArray(data) ? data : [];
+            } catch (e) {
+                console.error(e);
+            }
+        },
+        watchProject(p) {
+            if (p.scheduled_video_id) {
+                window.open(`/youtube/schedule/${p.scheduled_video_id}/download`, "_blank");
+            } else if (p.video_path) {
+                window.open(p.video_path, "_blank");
+            } else {
+                alert("Vídeo ainda não disponível.");
+            }
+        },
+        async approveProject(p, publishNow) {
+            try {
+                const notes = prompt("Observação da revisão (opcional):", p.review_notes || "") || "";
+                const res = await this.authFetch(`/humor-factory/projects/${p.id}/approve`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ notes, publish_now: !!publishNow })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha ao aprovar projeto.");
+                alert(publishNow ? "Projeto aprovado e enviado para publicação." : "Projeto aprovado.");
+                this.fetchProjects();
+            } catch (e) {
+                alert("Erro: " + (e.message || e));
+            }
+        },
+        async rejectProject(p) {
+            try {
+                const notes = prompt("Motivo da reprovação:", p.review_notes || "");
+                if (notes === null) return;
+                const res = await this.authFetch(`/humor-factory/projects/${p.id}/reject`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ notes, publish_now: false })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha ao rejeitar projeto.");
+                this.fetchProjects();
+            } catch (e) {
+                alert("Erro: " + (e.message || e));
+            }
+        },
+        async publishProject(p) {
+            if (!confirm("Publicar este projeto de humor no YouTube agora?")) return;
+            try {
+                const res = await this.authFetch(`/humor-factory/projects/${p.id}/publish`, { method: "POST" });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha ao publicar.");
+                alert("Projeto publicado com sucesso!");
+                this.fetchProjects();
+            } catch (e) {
+                alert("Erro ao publicar: " + (e.message || e));
+            }
+        },
+        async regenerateProject(p) {
+            if (!confirm("Refazer este projeto de humor?")) return;
+            try {
+                const res = await this.authFetch(`/humor-factory/projects/${p.id}/generate`, { method: "POST" });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Falha ao refazer projeto.");
+                alert(data.message || "Regeneração iniciada.");
+                this.fetchProjects();
+            } catch (e) {
+                alert("Erro: " + (e.message || e));
+            }
+        }
+    }
+}).mount("#app");
+</script>
+</body>
+</html>

@@ -9,6 +9,8 @@ from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
+from app.modules.humor_factory import router as humor_factory
+from app.modules.humor_factory import models as humor_models
 from dotenv import load_dotenv
 import os
 from contextlib import asynccontextmanager
@@ -579,6 +581,7 @@ app.include_router(hotmart.router)
 app.include_router(music.router)
 app.include_router(admin.router)
 app.include_router(ai_factory.router)
+app.include_router(humor_factory.router)
 
 @app.get("/success")
 def payment_success():
