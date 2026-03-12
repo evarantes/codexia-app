@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canal de Piadas - Codexia</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        [v-cloak] { display: none !important; }
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+        .joke-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.15); }
+        .joke-card { transition: all 0.2s ease; }
+        .theme-btn.active { ring: 2px; transform: scale(1.05); }
+        .progress-bar { transition: width 0.5s ease; }
+        .status-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600; text-transform: uppercase; }
+        .mobile-overlay { background: rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="app" class="flex h-screen" v-cloak>
+
+        <!-- Mobile Overlay -->
+        <div v-if="mobileMenu" @click="mobileMenu = false" class="fixed inset-0 mobile-overlay z-20 md:hidden"></div>
+
+        <!-- Sidebar -->
+        <aside class="bg-amber-900 text-white flex flex-col fixed inset-y-0 left-0 z-30 w-64 transform transition-transform duration-300 md:relative md:translate-x-0"
+               :class="mobileMenu ? 'translate-x-0' : '-translate-x-full md:translate-x-0'">
+            <div class="p-6 text-xl font-bold flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <i class="fas fa-laugh-squint text-yellow-300"></i> Canal de Piadas
+                </div>
+                <button @click="mobileMenu = false" class="md:hidden text-white hover:text-gray-300">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <nav class="flex-1 px-4 space-y-1 overflow-y-auto">
+                <a href="/" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-800 transition opacity-75">
+                    <i class="fas fa-arrow-left"></i> Voltar ao Codexia
+                </a>
+                <div class="border-t border-amber-700 my-2"></div>
+                <a href="#" @click.prevent="currentTab = 'dashboard'; mobileMenu = false" :class="{'bg-amber-700': currentTab === 'dashboard'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition">
+                    <i class="fas fa-chart-bar"></i> Painel
+                </a>
+                <a href="#" @click.prevent="currentTab = 'avatar'; mobileMenu = false" :class="{'bg-amber-700': currentTab === 'avatar'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition">
+                    <i class="fas fa-user-circle"></i> Avatar
+                </a>
+                <a href="#" @click.prevent="currentTab = 'themes'; mobileMenu = false" :class="{'bg-amber-700': currentTab === 'themes'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition">
+                    <i class="fas fa-tags"></i> Temas
+                </a>
+                <a href="#" @click.prevent="currentTab = 'generate'; mobileMenu = false" :class="{'bg-amber-700': currentTab === 'generate'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition">
+                    <i class="fas fa-magic"></i> Gerar Piadas
+                </a>
+                <a href="#" @click.prevent="currentTab = 'jokes'; loadJokes(); mobileMenu = false" :class="{'bg-amber-700': currentTab === 'jokes'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition">
+                    <i class="fas fa-list"></i> Minhas Piadas
+                </a>
+                <a href="#" @click.prevent="currentTab = 'compile'; mobileMenu = false" :class="{'bg-amber-700': currentTab === 'compile'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition">
+                    <i class="fas fa-film"></i> Criar Vídeo
+                </a>
+                <a href="#" @click.prevent="currentTab = 'review'; loadCompilations(); mobileMenu = false" :class="{'bg-amber-700': currentTab === 'review'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition relative">
+                    <i class="fas fa-clipboard-check"></i> Revisão
+                    <span v-if="stats.pending_review > 0" class="absolute right-3 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">{{ stats.pending_review }}</span>
+                </a>
+                <a href="#" @click.prevent="currentTab = 'published'; loadCompilations('published'); mobileMenu = false" :class="{'bg-amber-700': currentTab === 'published'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-amber-700 transition">
+                    <i class="fab fa-youtube"></i> Publicados
+                </a>
+            </nav>
+            <div class="p-4 bg-amber-950 text-xs text-center text-amber-300">
+                Canal de Piadas v1.0
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col overflow-hidden w-full">
+            <!-- Mobile Header -->
+            <header class="bg-amber-900 text-white p-4 flex justify-between items-center md:hidden shrink-0">
+                <div class="font-bold flex items-center gap-2">
+                    <i class="fas fa-laugh-squint text-yellow-300"></i> Canal de Piadas
+                </div>
+                <button @click="mobileMenu = true" class="text-white hover:text-gray-300">
+                    <i class="fas fa-bars text-2xl"></i>
+                </button>
+            </header>
+
+            <main class="flex-1 overflow-y-auto p-4 md:p-8">
+
+            <!-- ═══════════ PAINEL ═══════════ -->
+            <div v-if="currentTab === 'dashboard'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                    <i class="fas fa-laugh-squint text-amber-500"></i> Painel do Canal de Piadas
+                </h1>
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                    <div class="bg-white p-5 rounded-lg shadow border-l-4 border-amber-500">
+                        <div class="text-gray-500 text-sm">Total de Piadas</div>
+                        <div class="text-3xl font-bold text-amber-700">{{ stats.total_jokes || 0 }}</div>
+                    </div>
+                    <div class="bg-white p-5 rounded-lg shadow border-l-4 border-blue-500">
+                        <div class="text-gray-500 text-sm">Rascunhos</div>
+                        <div class="text-3xl font-bold text-blue-700">{{ stats.draft_jokes || 0 }}</div>
+                    </div>
+                    <div class="bg-white p-5 rounded-lg shadow border-l-4 border-green-500">
+                        <div class="text-gray-500 text-sm">Aprovadas</div>
+                        <div class="text-3xl font-bold text-green-700">{{ stats.approved_jokes || 0 }}</div>
+                    </div>
+                    <div class="bg-white p-5 rounded-lg shadow border-l-4 border-purple-500">
+                        <div class="text-gray-500 text-sm">Vídeos Publicados</div>
+                        <div class="text-3xl font-bold text-purple-700">{{ stats.published || 0 }}</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h3 class="font-bold text-lg mb-4 flex items-center gap-2"><i class="fas fa-rocket text-amber-500"></i> Ações Rápidas</h3>
+                        <div class="space-y-3">
+                            <button @click="currentTab = 'generate'" class="w-full bg-amber-500 text-white py-3 rounded-lg hover:bg-amber-600 transition font-semibold">
+                                <i class="fas fa-magic mr-2"></i> Gerar Piadas com IA
+                            </button>
+                            <button @click="currentTab = 'compile'" class="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 transition font-semibold">
+                                <i class="fas fa-film mr-2"></i> Criar Vídeo Compilação
+                            </button>
+                            <button @click="currentTab = 'review'; loadCompilations()" class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 transition font-semibold">
+                                <i class="fas fa-clipboard-check mr-2"></i> Revisar Vídeos ({{ stats.pending_review || 0 }})
+                            </button>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h3 class="font-bold text-lg mb-4 flex items-center gap-2"><i class="fas fa-info-circle text-blue-500"></i> Como Funciona</h3>
+                        <ol class="list-decimal pl-5 space-y-2 text-gray-600">
+                            <li><strong>Configure o Avatar</strong> - Personagem que conta as piadas</li>
+                            <li><strong>Escolha um Tema</strong> - Português, gospel, trocadilho...</li>
+                            <li><strong>Gere ou Insira Piadas</strong> - IA cria ou você digita</li>
+                            <li><strong>Crie o Vídeo</strong> - Compilação de 10+ min com avatar</li>
+                            <li><strong>Revise e Publique</strong> - Aprove e envie ao YouTube</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════ AVATAR ═══════════ -->
+            <div v-if="currentTab === 'avatar'" class="max-w-3xl mx-auto">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                    <i class="fas fa-user-circle text-amber-500"></i> Configurar Avatar
+                </h2>
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <div class="flex flex-col md:flex-row gap-6">
+                        <div class="flex-shrink-0 text-center">
+                            <div class="w-48 h-48 bg-gray-200 rounded-xl flex items-center justify-center overflow-hidden mx-auto border-4 border-amber-300">
+                                <img v-if="avatar.image_url || avatar.has_image" :src="avatar.image_url" class="w-full h-full object-cover">
+                                <i v-else class="fas fa-user-circle text-6xl text-gray-400"></i>
+                            </div>
+                            <div class="mt-3 space-y-2">
+                                <button @click="generateAvatarImage" :disabled="loading" class="w-full bg-amber-500 text-white px-4 py-2 rounded hover:bg-amber-600 text-sm">
+                                    <i :class="loading ? 'fas fa-spinner fa-spin' : 'fas fa-magic'" class="mr-1"></i> Gerar com IA
+                                </button>
+                                <label class="block w-full bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 text-sm text-center cursor-pointer">
+                                    <i class="fas fa-upload mr-1"></i> Enviar Imagem
+                                    <input type="file" accept="image/*" @change="uploadAvatarImage" class="hidden">
+                                </label>
+                            </div>
+                        </div>
+                        <div class="flex-1 space-y-4">
+                            <div>
+                                <label class="block font-bold mb-1 text-gray-700">Nome do Personagem</label>
+                                <input v-model="avatarForm.name" class="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-transparent" placeholder="Ex: Risadão, Zé Piada, Dona Risada...">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 text-gray-700">Descrição Visual (para IA gerar)</label>
+                                <textarea v-model="avatarForm.description" rows="3" class="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-transparent" placeholder="Ex: um palhaço simpático com nariz vermelho, cabelo encaracolado..."></textarea>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 text-gray-700">Voz</label>
+                                <select v-model="avatarForm.voice_gender" class="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-transparent">
+                                    <option value="male">Masculina</option>
+                                    <option value="female">Feminina</option>
+                                </select>
+                            </div>
+                            <button @click="saveAvatar" :disabled="loading" class="w-full bg-amber-600 text-white py-3 rounded-lg hover:bg-amber-700 font-semibold">
+                                <i :class="loading ? 'fas fa-spinner fa-spin' : 'fas fa-save'" class="mr-2"></i> Salvar Avatar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════ TEMAS ═══════════ -->
+            <div v-if="currentTab === 'themes'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                    <i class="fas fa-tags text-amber-500"></i> Temas de Piadas
+                </h2>
+
+                <div v-if="themes.length === 0" class="bg-white p-8 rounded-lg shadow text-center">
+                    <i class="fas fa-tags text-5xl text-gray-300 mb-4"></i>
+                    <p class="text-gray-500 mb-4">Nenhum tema cadastrado. Clique abaixo para carregar os temas padrão.</p>
+                    <button @click="seedThemes" :disabled="loading" class="bg-amber-500 text-white px-6 py-3 rounded-lg hover:bg-amber-600 font-semibold">
+                        <i :class="loading ? 'fas fa-spinner fa-spin' : 'fas fa-seedling'" class="mr-2"></i> Carregar Temas Padrão
+                    </button>
+                </div>
+
+                <div v-else>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 mb-6">
+                        <div v-for="t in themes" :key="t.id" class="bg-white p-4 rounded-lg shadow text-center hover:shadow-md transition cursor-pointer group">
+                            <i :class="'fas ' + (t.icon || 'fa-laugh')" class="text-2xl text-amber-500 mb-2"></i>
+                            <div class="font-semibold text-sm">{{ t.name }}</div>
+                            <div class="text-xs text-gray-400 mt-1">{{ t.description }}</div>
+                            <button @click="deleteTheme(t.id)" class="mt-2 text-red-400 hover:text-red-600 text-xs opacity-0 group-hover:opacity-100 transition">
+                                <i class="fas fa-trash"></i> remover
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-4 rounded-lg shadow">
+                        <h4 class="font-bold mb-3">Adicionar Novo Tema</h4>
+                        <div class="flex gap-3">
+                            <input v-model="newTheme.name" class="flex-1 border p-2 rounded-lg" placeholder="Nome do tema">
+                            <input v-model="newTheme.description" class="flex-1 border p-2 rounded-lg" placeholder="Descrição (opcional)">
+                            <button @click="addTheme" class="bg-amber-500 text-white px-4 py-2 rounded-lg hover:bg-amber-600">
+                                <i class="fas fa-plus"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════ GERAR PIADAS ═══════════ -->
+            <div v-if="currentTab === 'generate'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                    <i class="fas fa-magic text-amber-500"></i> Gerar Piadas
+                </h2>
+
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <div class="mb-4">
+                        <label class="block font-bold mb-2 text-gray-700">Escolha o Tema</label>
+                        <div v-if="themes.length" class="flex flex-wrap gap-2 mb-4">
+                            <button v-for="t in themes" :key="t.id"
+                                @click="genForm.theme = t.name; genForm.theme_id = t.id"
+                                :class="genForm.theme === t.name ? 'bg-amber-500 text-white ring-2 ring-amber-300' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
+                                class="px-4 py-2 rounded-full text-sm font-medium transition flex items-center gap-2">
+                                <i :class="'fas ' + (t.icon || 'fa-laugh')"></i> {{ t.name }}
+                            </button>
+                        </div>
+                        <input v-model="genForm.theme" class="w-full border border-gray-300 p-3 rounded-lg" placeholder="Ou digite um tema personalizado...">
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="block font-bold mb-1 text-gray-700">Quantidade de Piadas</label>
+                        <div class="flex items-center gap-4">
+                            <input v-model.number="genForm.quantity" type="range" min="3" max="30" class="flex-1">
+                            <span class="text-xl font-bold text-amber-600 w-10 text-center">{{ genForm.quantity }}</span>
+                        </div>
+                    </div>
+
+                    <button @click="generateJokes" :disabled="loading || !genForm.theme" class="w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-lg hover:from-amber-600 hover:to-orange-600 font-bold text-lg transition disabled:opacity-50">
+                        <i :class="loading ? 'fas fa-spinner fa-spin' : 'fas fa-magic'" class="mr-2"></i>
+                        {{ loading ? 'Gerando piadas...' : 'Gerar Piadas com IA' }}
+                    </button>
+                </div>
+
+                <!-- Piada Manual -->
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <h3 class="font-bold text-lg mb-4 flex items-center gap-2"><i class="fas fa-pen text-blue-500"></i> Inserir Piada Manualmente</h3>
+                    <div class="space-y-3">
+                        <input v-model="manualJoke.title" class="w-full border p-3 rounded-lg" placeholder="Título (opcional)">
+                        <textarea v-model="manualJoke.content" rows="4" class="w-full border p-3 rounded-lg" placeholder="Digite a piada aqui..."></textarea>
+                        <button @click="addManualJoke" :disabled="!manualJoke.content" class="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 font-semibold disabled:opacity-50">
+                            <i class="fas fa-plus mr-2"></i> Adicionar Piada
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Resultado da Geração -->
+                <div v-if="generatedJokes.length > 0" class="space-y-3">
+                    <div class="flex justify-between items-center">
+                        <h3 class="font-bold text-lg text-gray-700">{{ generatedJokes.length }} piadas geradas</h3>
+                        <button @click="approveAllDrafts" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 text-sm">
+                            <i class="fas fa-check-double mr-1"></i> Aprovar Todas
+                        </button>
+                    </div>
+                    <div v-for="(j, idx) in generatedJokes" :key="j.id || idx" class="bg-white p-4 rounded-lg shadow joke-card">
+                        <div class="flex justify-between items-start">
+                            <div class="flex-1">
+                                <div v-if="j.title" class="font-bold text-amber-700 mb-1">{{ j.title }}</div>
+                                <p class="text-gray-700 whitespace-pre-line">{{ j.content }}</p>
+                            </div>
+                            <div class="flex gap-2 ml-4 flex-shrink-0">
+                                <button @click="approveJoke(j.id)" class="text-green-500 hover:text-green-700" title="Aprovar">
+                                    <i class="fas fa-check-circle text-xl"></i>
+                                </button>
+                                <button @click="rejectJoke(j.id)" class="text-red-400 hover:text-red-600" title="Rejeitar">
+                                    <i class="fas fa-times-circle text-xl"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════ MINHAS PIADAS ═══════════ -->
+            <div v-if="currentTab === 'jokes'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold text-gray-800 mb-4 flex items-center gap-3">
+                    <i class="fas fa-list text-amber-500"></i> Minhas Piadas
+                </h2>
+
+                <div class="flex flex-wrap gap-2 mb-4">
+                    <button @click="jokeFilter = null; loadJokes()" :class="!jokeFilter ? 'bg-amber-500 text-white' : 'bg-white text-gray-700'" class="px-4 py-2 rounded-lg text-sm font-medium shadow">Todas</button>
+                    <button @click="jokeFilter = 'draft'; loadJokes()" :class="jokeFilter === 'draft' ? 'bg-blue-500 text-white' : 'bg-white text-gray-700'" class="px-4 py-2 rounded-lg text-sm font-medium shadow">Rascunho</button>
+                    <button @click="jokeFilter = 'approved'; loadJokes()" :class="jokeFilter === 'approved' ? 'bg-green-500 text-white' : 'bg-white text-gray-700'" class="px-4 py-2 rounded-lg text-sm font-medium shadow">Aprovadas</button>
+                    <button @click="jokeFilter = 'used'; loadJokes()" :class="jokeFilter === 'used' ? 'bg-purple-500 text-white' : 'bg-white text-gray-700'" class="px-4 py-2 rounded-lg text-sm font-medium shadow">Usadas</button>
+                    <button @click="jokeFilter = 'rejected'; loadJokes()" :class="jokeFilter === 'rejected' ? 'bg-red-500 text-white' : 'bg-white text-gray-700'" class="px-4 py-2 rounded-lg text-sm font-medium shadow">Rejeitadas</button>
+                </div>
+
+                <div class="flex justify-between items-center mb-4">
+                    <span class="text-gray-500 text-sm">{{ jokesData.total || 0 }} piadas encontradas</span>
+                    <button v-if="jokeFilter === 'draft' || !jokeFilter" @click="approveAllDrafts" class="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600">
+                        <i class="fas fa-check-double mr-1"></i> Aprovar Todos os Rascunhos
+                    </button>
+                </div>
+
+                <div v-if="jokesData.jokes && jokesData.jokes.length" class="space-y-3">
+                    <div v-for="j in jokesData.jokes" :key="j.id" class="bg-white p-4 rounded-lg shadow joke-card">
+                        <div class="flex justify-between items-start">
+                            <div class="flex-1">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span v-if="j.title" class="font-bold text-amber-700">{{ j.title }}</span>
+                                    <span :class="{
+                                        'bg-blue-100 text-blue-700': j.status === 'draft',
+                                        'bg-green-100 text-green-700': j.status === 'approved',
+                                        'bg-purple-100 text-purple-700': j.status === 'used',
+                                        'bg-red-100 text-red-700': j.status === 'rejected'
+                                    }" class="status-badge">{{ j.status }}</span>
+                                    <span class="text-xs text-gray-400"><i :class="j.source === 'ai' ? 'fas fa-robot' : 'fas fa-pen'" class="mr-1"></i>{{ j.source }}</span>
+                                    <span v-if="j.theme" class="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded">{{ j.theme.name }}</span>
+                                </div>
+                                <p class="text-gray-700 whitespace-pre-line text-sm">{{ j.content }}</p>
+                            </div>
+                            <div class="flex gap-1 ml-3 flex-shrink-0">
+                                <button v-if="j.status !== 'approved'" @click="approveJoke(j.id)" class="text-green-500 hover:text-green-700 p-1" title="Aprovar"><i class="fas fa-check"></i></button>
+                                <button v-if="j.status !== 'rejected'" @click="rejectJoke(j.id)" class="text-red-400 hover:text-red-600 p-1" title="Rejeitar"><i class="fas fa-times"></i></button>
+                                <button @click="deleteJoke(j.id)" class="text-gray-400 hover:text-gray-600 p-1" title="Excluir"><i class="fas fa-trash"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div v-else class="bg-white p-8 rounded-lg shadow text-center text-gray-400">
+                    <i class="fas fa-laugh text-5xl mb-4"></i>
+                    <p>Nenhuma piada encontrada. Gere piadas na aba "Gerar Piadas"!</p>
+                </div>
+            </div>
+
+            <!-- ═══════════ CRIAR VÍDEO ═══════════ -->
+            <div v-if="currentTab === 'compile'" class="max-w-4xl mx-auto">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                    <i class="fas fa-film text-amber-500"></i> Criar Vídeo Compilação
+                </h2>
+
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block font-bold mb-1 text-gray-700">Título do Vídeo</label>
+                                <input v-model="compForm.title" class="w-full border p-3 rounded-lg" placeholder="Deixe vazio para gerar automaticamente">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 text-gray-700">Duração Alvo (minutos)</label>
+                                <select v-model.number="compForm.target_duration_min" class="w-full border p-3 rounded-lg">
+                                    <option :value="5">5 minutos</option>
+                                    <option :value="10">10 minutos</option>
+                                    <option :value="15">15 minutos</option>
+                                    <option :value="20">20 minutos</option>
+                                    <option :value="30">30 minutos</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block font-bold mb-1 text-gray-700">Tema (opcional)</label>
+                            <select v-model="compForm.theme_id" class="w-full border p-3 rounded-lg">
+                                <option :value="null">Todos os temas</option>
+                                <option v-for="t in themes" :key="t.id" :value="t.id">{{ t.name }}</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="block font-bold mb-1 text-gray-700">Descrição</label>
+                            <textarea v-model="compForm.description" rows="2" class="w-full border p-3 rounded-lg" placeholder="Descrição do vídeo para o YouTube"></textarea>
+                        </div>
+
+                        <div class="bg-amber-50 p-4 rounded-lg border border-amber-200">
+                            <div class="flex items-center gap-2 text-amber-700">
+                                <i class="fas fa-info-circle"></i>
+                                <span class="font-semibold">{{ stats.approved_jokes || 0 }} piadas aprovadas disponíveis</span>
+                            </div>
+                            <p class="text-sm text-amber-600 mt-1">O sistema selecionará automaticamente as piadas aprovadas para a compilação.</p>
+                        </div>
+
+                        <button @click="createCompilation" :disabled="loading || (stats.approved_jokes || 0) < 3"
+                            class="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-4 rounded-lg hover:from-blue-600 hover:to-purple-700 font-bold text-lg transition disabled:opacity-50">
+                            <i :class="loading ? 'fas fa-spinner fa-spin' : 'fas fa-video'" class="mr-2"></i>
+                            {{ loading ? 'Criando...' : 'Criar Vídeo Compilação' }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════ REVISÃO ═══════════ -->
+            <div v-if="currentTab === 'review'" class="max-w-5xl mx-auto">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                    <i class="fas fa-clipboard-check text-amber-500"></i> Fila de Revisão
+                </h2>
+
+                <div v-if="compilations.length === 0" class="bg-white p-8 rounded-lg shadow text-center text-gray-400">
+                    <i class="fas fa-clipboard text-5xl mb-4"></i>
+                    <p>Nenhum vídeo para revisar no momento.</p>
+                </div>
+
+                <div v-for="c in compilations" :key="c.id" class="bg-white p-6 rounded-lg shadow mb-4 joke-card">
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <!-- Vídeo Player -->
+                        <div v-if="c.video_url" class="flex-shrink-0 w-full md:w-80">
+                            <video :src="c.video_url" controls class="w-full rounded-lg bg-black" style="max-height: 200px;"></video>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex items-center gap-2 mb-2">
+                                <h3 class="font-bold text-lg">{{ c.title }}</h3>
+                                <span :class="{
+                                    'bg-yellow-100 text-yellow-700': c.status === 'generating',
+                                    'bg-blue-100 text-blue-700': c.status === 'review',
+                                    'bg-green-100 text-green-700': c.status === 'approved',
+                                    'bg-purple-100 text-purple-700': c.status === 'published',
+                                    'bg-red-100 text-red-700': c.status === 'failed' || c.status === 'rejected'
+                                }" class="status-badge">{{ c.status }}</span>
+                            </div>
+                            <p class="text-gray-500 text-sm mb-2">{{ c.description }}</p>
+                            <div class="flex flex-wrap gap-3 text-sm text-gray-500 mb-3">
+                                <span><i class="fas fa-laugh mr-1"></i> {{ c.total_jokes }} piadas</span>
+                                <span v-if="c.actual_duration_sec"><i class="fas fa-clock mr-1"></i> {{ Math.floor(c.actual_duration_sec / 60) }}:{{ String(Math.floor(c.actual_duration_sec % 60)).padStart(2, '0') }}</span>
+                                <span v-if="c.theme"><i class="fas fa-tag mr-1"></i> {{ c.theme.name }}</span>
+                                <span><i class="fas fa-calendar mr-1"></i> {{ c.created_at ? new Date(c.created_at).toLocaleDateString() : '' }}</span>
+                            </div>
+
+                            <!-- Progress Bar -->
+                            <div v-if="c.status === 'generating'" class="mb-3">
+                                <div class="w-full bg-gray-200 rounded-full h-3">
+                                    <div class="bg-amber-500 h-3 rounded-full progress-bar" :style="{width: c.progress + '%'}"></div>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-1">Gerando vídeo... {{ c.progress }}%</p>
+                            </div>
+
+                            <div v-if="c.error_message" class="bg-red-50 border border-red-200 text-red-700 p-2 rounded text-sm mb-3">
+                                <i class="fas fa-exclamation-triangle mr-1"></i> {{ c.error_message }}
+                            </div>
+
+                            <!-- Actions -->
+                            <div class="flex flex-wrap gap-2">
+                                <button v-if="c.status === 'review'" @click="reviewCompilation(c.id, 'approve')" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 text-sm font-semibold">
+                                    <i class="fas fa-check mr-1"></i> Aprovar
+                                </button>
+                                <button v-if="c.status === 'review'" @click="reviewCompilation(c.id, 'reject')" class="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 text-sm font-semibold">
+                                    <i class="fas fa-times mr-1"></i> Rejeitar
+                                </button>
+                                <button v-if="c.status === 'approved'" @click="publishCompilation(c.id)" :disabled="loading" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 text-sm font-semibold">
+                                    <i :class="loading ? 'fas fa-spinner fa-spin' : 'fab fa-youtube'" class="mr-1"></i> Publicar no YouTube
+                                </button>
+                                <button v-if="c.status === 'failed' || c.status === 'rejected'" @click="retryCompilation(c.id)" class="bg-amber-500 text-white px-4 py-2 rounded-lg hover:bg-amber-600 text-sm font-semibold">
+                                    <i class="fas fa-redo mr-1"></i> Tentar Novamente
+                                </button>
+                                <button @click="deleteCompilation(c.id)" class="bg-gray-200 text-gray-600 px-4 py-2 rounded-lg hover:bg-gray-300 text-sm">
+                                    <i class="fas fa-trash mr-1"></i> Excluir
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════ PUBLICADOS ═══════════ -->
+            <div v-if="currentTab === 'published'" class="max-w-5xl mx-auto">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-3">
+                    <i class="fab fa-youtube text-red-500"></i> Vídeos Publicados
+                </h2>
+
+                <div v-if="compilations.length === 0" class="bg-white p-8 rounded-lg shadow text-center text-gray-400">
+                    <i class="fab fa-youtube text-5xl mb-4"></i>
+                    <p>Nenhum vídeo publicado ainda.</p>
+                </div>
+
+                <div v-for="c in compilations" :key="c.id" class="bg-white p-6 rounded-lg shadow mb-4 joke-card">
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div v-if="c.video_url" class="flex-shrink-0 w-full md:w-80">
+                            <video :src="c.video_url" controls class="w-full rounded-lg bg-black" style="max-height: 200px;"></video>
+                        </div>
+                        <div class="flex-1">
+                            <h3 class="font-bold text-lg mb-1">{{ c.title }}</h3>
+                            <div class="flex flex-wrap gap-3 text-sm text-gray-500 mb-2">
+                                <span><i class="fas fa-laugh mr-1"></i> {{ c.total_jokes }} piadas</span>
+                                <span v-if="c.actual_duration_sec"><i class="fas fa-clock mr-1"></i> {{ Math.floor(c.actual_duration_sec / 60) }}min</span>
+                                <span v-if="c.published_at"><i class="fas fa-calendar-check mr-1"></i> {{ new Date(c.published_at).toLocaleDateString() }}</span>
+                            </div>
+                            <a v-if="c.youtube_video_id" :href="'https://youtube.com/watch?v=' + c.youtube_video_id" target="_blank"
+                                class="inline-flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2 rounded-lg hover:bg-red-100 text-sm font-semibold">
+                                <i class="fab fa-youtube"></i> Ver no YouTube
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            </main>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, onMounted, watch } = Vue;
+
+        createApp({
+            setup() {
+                const currentTab = ref('dashboard');
+                const loading = ref(false);
+                const mobileMenu = ref(false);
+
+                const stats = ref({});
+                const themes = ref([]);
+                const avatar = ref({});
+                const jokesData = ref({ total: 0, jokes: [] });
+                const jokeFilter = ref(null);
+                const generatedJokes = ref([]);
+                const compilations = ref([]);
+
+                const avatarForm = reactive({ name: 'Risadão', description: '', voice_gender: 'male' });
+                const genForm = reactive({ theme: '', theme_id: null, quantity: 10 });
+                const manualJoke = reactive({ title: '', content: '' });
+                const compForm = reactive({ title: '', description: '', theme_id: null, target_duration_min: 10 });
+                const newTheme = reactive({ name: '', description: '' });
+
+                const token = localStorage.getItem('token');
+                const authHeaders = { 'Content-Type': 'application/json' };
+                if (token) authHeaders['Authorization'] = `Bearer ${token}`;
+
+                async function apiFetch(url, opts = {}) {
+                    const headers = { ...authHeaders, ...(opts.headers || {}) };
+                    if (opts.body instanceof FormData) delete headers['Content-Type'];
+                    const res = await fetch(url, { ...opts, headers });
+                    return res;
+                }
+
+                async function loadStats() {
+                    try {
+                        const res = await apiFetch('/jokes/stats');
+                        if (res.ok) stats.value = await res.json();
+                    } catch (e) { console.error(e); }
+                }
+
+                async function loadThemes() {
+                    try {
+                        const res = await apiFetch('/jokes/themes');
+                        if (res.ok) themes.value = await res.json();
+                    } catch (e) { console.error(e); }
+                }
+
+                async function loadAvatar() {
+                    try {
+                        const res = await apiFetch('/jokes/avatar');
+                        if (res.ok) {
+                            avatar.value = await res.json();
+                            if (avatar.value.name) avatarForm.name = avatar.value.name;
+                            if (avatar.value.description) avatarForm.description = avatar.value.description;
+                            if (avatar.value.voice_gender) avatarForm.voice_gender = avatar.value.voice_gender;
+                        }
+                    } catch (e) { console.error(e); }
+                }
+
+                async function loadJokes() {
+                    try {
+                        let url = '/jokes/list?limit=50';
+                        if (jokeFilter.value) url += `&status=${jokeFilter.value}`;
+                        const res = await apiFetch(url);
+                        if (res.ok) jokesData.value = await res.json();
+                    } catch (e) { console.error(e); }
+                }
+
+                async function loadCompilations(status) {
+                    try {
+                        let url = '/jokes/compilations';
+                        if (status) url += `?status=${status}`;
+                        const res = await apiFetch(url);
+                        if (res.ok) compilations.value = await res.json();
+                    } catch (e) { console.error(e); }
+                }
+
+                async function seedThemes() {
+                    loading.value = true;
+                    try {
+                        const res = await apiFetch('/jokes/themes/seed', { method: 'POST' });
+                        const data = await res.json();
+                        alert(data.message);
+                        await loadThemes();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function addTheme() {
+                    if (!newTheme.name) return;
+                    try {
+                        await apiFetch('/jokes/themes', {
+                            method: 'POST',
+                            body: JSON.stringify(newTheme)
+                        });
+                        newTheme.name = '';
+                        newTheme.description = '';
+                        await loadThemes();
+                    } catch (e) { alert('Erro: ' + e); }
+                }
+
+                async function deleteTheme(id) {
+                    if (!confirm('Desativar este tema?')) return;
+                    await apiFetch(`/jokes/themes/${id}`, { method: 'DELETE' });
+                    await loadThemes();
+                }
+
+                async function saveAvatar() {
+                    loading.value = true;
+                    try {
+                        const res = await apiFetch('/jokes/avatar', {
+                            method: 'POST',
+                            body: JSON.stringify(avatarForm)
+                        });
+                        const data = await res.json();
+                        alert(data.message || 'Avatar salvo!');
+                        await loadAvatar();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function generateAvatarImage() {
+                    loading.value = true;
+                    try {
+                        const res = await apiFetch('/jokes/avatar/generate-image', { method: 'POST' });
+                        const data = await res.json();
+                        if (data.image_url) {
+                            avatar.value.image_url = data.image_url;
+                            alert('Imagem do avatar gerada com sucesso!');
+                        } else {
+                            alert(data.error || 'Erro ao gerar imagem.');
+                        }
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function uploadAvatarImage(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    loading.value = true;
+                    try {
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        const res = await apiFetch('/jokes/avatar/upload-image', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await res.json();
+                        if (data.image_url) {
+                            avatar.value.image_url = data.image_url;
+                            alert('Imagem enviada com sucesso!');
+                        }
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function generateJokes() {
+                    loading.value = true;
+                    try {
+                        const res = await apiFetch('/jokes/generate', {
+                            method: 'POST',
+                            body: JSON.stringify({ theme: genForm.theme, quantity: genForm.quantity })
+                        });
+                        const data = await res.json();
+                        generatedJokes.value = data.jokes || [];
+                        await loadStats();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function addManualJoke() {
+                    if (!manualJoke.content) return;
+                    try {
+                        const res = await apiFetch('/jokes/manual', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                title: manualJoke.title,
+                                content: manualJoke.content,
+                                theme_id: genForm.theme_id
+                            })
+                        });
+                        const data = await res.json();
+                        alert(data.message || 'Piada adicionada!');
+                        manualJoke.title = '';
+                        manualJoke.content = '';
+                        await loadStats();
+                    } catch (e) { alert('Erro: ' + e); }
+                }
+
+                async function approveJoke(id) {
+                    await apiFetch(`/jokes/joke/${id}/approve`, { method: 'POST' });
+                    generatedJokes.value = generatedJokes.value.filter(j => j.id !== id);
+                    await loadJokes();
+                    await loadStats();
+                }
+
+                async function rejectJoke(id) {
+                    await apiFetch(`/jokes/joke/${id}/reject`, { method: 'POST' });
+                    generatedJokes.value = generatedJokes.value.filter(j => j.id !== id);
+                    await loadJokes();
+                    await loadStats();
+                }
+
+                async function deleteJoke(id) {
+                    if (!confirm('Excluir esta piada?')) return;
+                    await apiFetch(`/jokes/joke/${id}`, { method: 'DELETE' });
+                    await loadJokes();
+                    await loadStats();
+                }
+
+                async function approveAllDrafts() {
+                    loading.value = true;
+                    try {
+                        const res = await apiFetch('/jokes/approve-all', { method: 'POST' });
+                        const data = await res.json();
+                        alert(data.message);
+                        generatedJokes.value = [];
+                        await loadJokes();
+                        await loadStats();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function createCompilation() {
+                    loading.value = true;
+                    try {
+                        const res = await apiFetch('/jokes/compilation/create', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                title: compForm.title || null,
+                                description: compForm.description || null,
+                                theme_id: compForm.theme_id,
+                                avatar_id: avatar.value.id || null,
+                                target_duration_min: compForm.target_duration_min
+                            })
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            alert(data.message || 'Compilação criada!');
+                            currentTab.value = 'review';
+                            await loadCompilations();
+                            pollCompilations();
+                        } else {
+                            alert(data.detail || 'Erro ao criar compilação.');
+                        }
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function reviewCompilation(id, action) {
+                    try {
+                        const res = await apiFetch(`/jokes/compilation/${id}/review`, {
+                            method: 'POST',
+                            body: JSON.stringify({ action })
+                        });
+                        const data = await res.json();
+                        alert(data.message);
+                        await loadCompilations();
+                        await loadStats();
+                    } catch (e) { alert('Erro: ' + e); }
+                }
+
+                async function publishCompilation(id) {
+                    if (!confirm('Publicar este vídeo no YouTube?')) return;
+                    loading.value = true;
+                    try {
+                        const res = await apiFetch(`/jokes/compilation/${id}/publish`, { method: 'POST' });
+                        const data = await res.json();
+                        if (res.ok) {
+                            alert(data.message);
+                        } else {
+                            alert(data.detail || 'Erro ao publicar.');
+                        }
+                        await loadCompilations();
+                        await loadStats();
+                    } catch (e) { alert('Erro: ' + e); }
+                    loading.value = false;
+                }
+
+                async function retryCompilation(id) {
+                    try {
+                        const res = await apiFetch(`/jokes/compilation/${id}/retry`, { method: 'POST' });
+                        const data = await res.json();
+                        alert(data.message);
+                        await loadCompilations();
+                        pollCompilations();
+                    } catch (e) { alert('Erro: ' + e); }
+                }
+
+                async function deleteCompilation(id) {
+                    if (!confirm('Excluir esta compilação?')) return;
+                    await apiFetch(`/jokes/compilation/${id}`, { method: 'DELETE' });
+                    await loadCompilations();
+                    await loadStats();
+                }
+
+                let pollInterval = null;
+                function pollCompilations() {
+                    if (pollInterval) clearInterval(pollInterval);
+                    pollInterval = setInterval(async () => {
+                        await loadCompilations();
+                        const hasGenerating = compilations.value.some(c => c.status === 'generating');
+                        if (!hasGenerating) {
+                            clearInterval(pollInterval);
+                            pollInterval = null;
+                            await loadStats();
+                        }
+                    }, 5000);
+                }
+
+                onMounted(async () => {
+                    await Promise.all([loadStats(), loadThemes(), loadAvatar()]);
+                    const hasGenerating = compilations.value.some(c => c.status === 'generating');
+                    if (hasGenerating) pollCompilations();
+                });
+
+                return {
+                    currentTab, loading, mobileMenu,
+                    stats, themes, avatar, jokesData, jokeFilter, generatedJokes, compilations,
+                    avatarForm, genForm, manualJoke, compForm, newTheme,
+                    loadStats, loadThemes, loadAvatar, loadJokes, loadCompilations,
+                    seedThemes, addTheme, deleteTheme,
+                    saveAvatar, generateAvatarImage, uploadAvatarImage,
+                    generateJokes, addManualJoke, approveJoke, rejectJoke, deleteJoke, approveAllDrafts,
+                    createCompilation, reviewCompilation, publishCompilation, retryCompilation, deleteCompilation,
+                    pollCompilations
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

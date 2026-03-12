@@ -9,6 +9,8 @@ from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
+from app.modules.jokes_channel import router as jokes_channel
+from app.modules.jokes_channel import models as jokes_models
 from dotenv import load_dotenv
 import os
 from contextlib import asynccontextmanager
@@ -273,6 +275,17 @@ def run_migrations(engine):
                         conn.commit()
             except Exception as e:
                 print(f"Error migrating book_drafts table: {e}")
+
+        # Canal de Piadas: criar tabelas se não existirem
+        jokes_tables = ["joke_avatars", "joke_themes", "jokes", "joke_compilations"]
+        existing_tables = inspector.get_table_names()
+        missing_jokes = [t for t in jokes_tables if t not in existing_tables]
+        if missing_jokes:
+            print(f"Migration: Creating Canal de Piadas tables: {missing_jokes}")
+            try:
+                Base.metadata.create_all(bind=engine)
+            except Exception as e:
+                print(f"Error creating Canal de Piadas tables: {e}")
 
     except Exception as e:
         print(f"Critical Migration Error: {e}")
@@ -579,6 +592,7 @@ app.include_router(hotmart.router)
 app.include_router(music.router)
 app.include_router(admin.router)
 app.include_router(ai_factory.router)
+app.include_router(jokes_channel.router)
 
 @app.get("/success")
 def payment_success():
