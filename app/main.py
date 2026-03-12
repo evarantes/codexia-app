@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, jokes_channel
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
 from dotenv import load_dotenv
@@ -274,6 +274,15 @@ def run_migrations(engine):
             except Exception as e:
                 print(f"Error migrating book_drafts table: {e}")
 
+        # Canal de Piadas: garante criação das tabelas (create_all já cuida, mas reforça aqui)
+        for jokes_table in ["jokes_channels", "joke_items", "jokes_episodes"]:
+            if jokes_table not in inspector.get_table_names():
+                print(f"Migration: Creating {jokes_table} table...")
+                try:
+                    Base.metadata.create_all(bind=engine)
+                except Exception as e:
+                    print(f"Failed to create {jokes_table}: {e}")
+
     except Exception as e:
         print(f"Critical Migration Error: {e}")
 
@@ -468,10 +477,11 @@ def serve_video_static(filename: str):
 
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
-# Garantir que os diretórios de vídeos existem
+# Garantir que os diretórios de vídeos e avatares de piadas existem
 if os.path.isdir("/data"):
     os.makedirs("/data/media/videos", exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "videos"), exist_ok=True)
+os.makedirs(os.path.join(STATIC_DIR, "jokes_avatars"), exist_ok=True)
 # NOTA: Não montamos /media como StaticFiles porque temos rotas específicas (/media/videos/{filename})
 # que servem vídeos de VIDEO_OUTPUT_DIR. O mount genérico interceptaria essas rotas.
 
@@ -579,6 +589,7 @@ app.include_router(hotmart.router)
 app.include_router(music.router)
 app.include_router(admin.router)
 app.include_router(ai_factory.router)
+app.include_router(jokes_channel.router)
 
 @app.get("/success")
 def payment_success():

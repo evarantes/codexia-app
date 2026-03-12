@@ -281,3 +281,69 @@ class Job(Base):
 
     video = relationship("Video", back_populates="jobs")
 
+
+# ─── Canal de Piadas ──────────────────────────────────────────────────────────
+
+class JokesChannel(Base):
+    """Configurações do canal de piadas do usuário."""
+    __tablename__ = "jokes_channels"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    name = Column(String, nullable=False, default="Canal de Piadas")
+    description = Column(Text, nullable=True)
+    default_theme = Column(String, default="geral")
+    voice_gender = Column(String, default="male")
+    avatar_url = Column(String, nullable=True)
+    avatar_base64 = Column(Text, nullable=True)
+    avatar_prompt = Column(Text, nullable=True)
+    background_music = Column(String, default="comedy")
+    youtube_channel_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    jokes = relationship("JokeItem", back_populates="channel", cascade="all, delete-orphan")
+    episodes = relationship("JokesEpisode", back_populates="channel", cascade="all, delete-orphan")
+
+
+class JokeItem(Base):
+    """Piada individual do banco de piadas."""
+    __tablename__ = "joke_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    channel_id = Column(Integer, ForeignKey("jokes_channels.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    theme = Column(String, default="geral")  # geral, portugues, religioso, gospel, crianca, animais, trabalho, escola, casal, politico
+    title = Column(String, nullable=True)
+    text = Column(Text, nullable=False)
+    punchline = Column(Text, nullable=True)
+    source = Column(String, default="manual")  # manual | ai
+    status = Column(String, default="draft")  # draft | approved | used | rejected
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    channel = relationship("JokesChannel", back_populates="jokes")
+
+
+class JokesEpisode(Base):
+    """Episódio de vídeo com múltiplas piadas."""
+    __tablename__ = "jokes_episodes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    channel_id = Column(Integer, ForeignKey("jokes_channels.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    title = Column(String, nullable=False)
+    theme = Column(String, default="geral")
+    jokes_json = Column(Text, nullable=True)  # JSON com lista de piadas incluídas
+    video_url = Column(String, nullable=True)
+    thumbnail_url = Column(String, nullable=True)
+    duration_sec = Column(Float, nullable=True)
+    status = Column(String, default="draft")  # draft | generating | review | approved | published | failed
+    progress = Column(Integer, default=0)
+    error_log = Column(Text, nullable=True)
+    youtube_video_id = Column(String, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    channel = relationship("JokesChannel", back_populates="episodes")
+
