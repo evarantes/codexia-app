@@ -991,7 +991,7 @@ class VideoGenerator:
             final = final.with_audio(audio_clip)
             filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
             output_path = os.path.join(self.output_dir, filename)
-            final.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
+            final.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
             for c in clips:
                 try:
                     c.close()

@@ -248,6 +248,28 @@ Retorne APENAS JSON válido:
         except TypeError:
             return VideoClipClass(make_frame_fn)
 
+    def _write_videofile_compat(self, clip, output_path: str, **kwargs):
+        """
+        Compatibilidade de parâmetros do write_videofile entre MoviePy 1.x/2.x.
+        Algumas builds rejeitam kwargs como `verbose`, `preset` ou `threads`.
+        """
+        attempts = [
+            dict(kwargs),
+            {k: v for k, v in kwargs.items() if k != "verbose"},
+            {k: v for k, v in kwargs.items() if k not in {"verbose", "preset", "threads"}},
+            {k: v for k, v in kwargs.items() if k not in {"verbose", "preset", "threads", "logger"}},
+        ]
+        last_exc = None
+        for opts in attempts:
+            try:
+                return clip.write_videofile(output_path, **opts)
+            except TypeError as exc:
+                last_exc = exc
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+        if last_exc:
+            raise last_exc
+
     def _build_title(self, project: HumorProject) -> str:
         if (project.title or "").strip():
             return project.title.strip()
@@ -431,7 +453,8 @@ Retorne APENAS JSON válido:
             filename = f"humor_project_{project.id}_{uuid.uuid4().hex[:8]}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, filename)
             self._set_progress(db, project, 90, "Renderizando vídeo final de humor...")
-            final_clip.write_videofile(
+            self._write_videofile_compat(
+                final_clip,
                 output_path,
                 fps=24,
                 codec="libx264",
