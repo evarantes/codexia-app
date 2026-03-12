@@ -281,3 +281,78 @@ class Job(Base):
 
     video = relationship("Video", back_populates="jobs")
 
+
+# --- Canal de Piadas (bloco livre, sem baixaria, avatar fixo) ---
+
+JOKES_THEMES = [
+    ("portugues", "Português / Gramática"),
+    ("religiosa", "Religiosa"),
+    ("gospel", "Gospel"),
+    ("familia", "Família"),
+    ("trabalho", "Trabalho"),
+    ("medico", "Médico"),
+    ("professor", "Professor"),
+    ("geral", "Geral (Livre)"),
+]
+
+
+class JokesChannel(Base):
+    """Canal de piadas com avatar fixo."""
+    __tablename__ = "jokes_channels"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    avatar_image_path = Column(String, nullable=True)  # Imagem fixa do avatar (personagem)
+    voice_style = Column(String, default="human")
+    voice_gender = Column(String, default="male")
+    use_lip_sync = Column(Boolean, default=False)  # Futuro: SadTalker/Wav2Lip
+    auto_publish_after_approval = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    videos = relationship("JokesVideo", back_populates="channel")
+
+
+class JokesVideo(Base):
+    """Vídeo de piadas (10+ min, várias piadas curtas)."""
+    __tablename__ = "jokes_videos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    channel_id = Column(Integer, ForeignKey("jokes_channels.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    title = Column(String, nullable=True)
+    theme = Column(String, nullable=True)  # português, religiosa, gospel, etc.
+    duration_min = Column(Integer, default=10)
+    status = Column(String, default="draft")  # draft, generating, pending_review, approved, rejected, published
+    video_path = Column(String, nullable=True)
+    youtube_video_id = Column(String, nullable=True)
+    scheduled_for = Column(DateTime, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    review_notes = Column(Text, nullable=True)
+
+    channel = relationship("JokesChannel", back_populates="videos")
+    jokes = relationship("Joke", back_populates="video", cascade="all, delete-orphan")
+
+
+class Joke(Base):
+    """Piada individual dentro do vídeo."""
+    __tablename__ = "jokes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    video_id = Column(Integer, ForeignKey("jokes_videos.id"), nullable=False)
+    idx = Column(Integer)
+
+    # Conteúdo: texto da piada (pergunta ou setup + punchline)
+    punchline = Column(Text, nullable=False)  # Texto completo para narrar
+    setup = Column(Text, nullable=True)  # Opcional: setup separado se quiser pausa
+
+    # Metadados
+    source = Column(String, default="ai")  # ai | manual
+    theme = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    video = relationship("JokesVideo", back_populates="jokes")
+

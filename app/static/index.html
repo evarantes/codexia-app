@@ -93,6 +93,9 @@
                 <a href="#" @click="currentTab = 'youtube'; fetchYoutubeStats()" :class="{'bg-indigo-700': currentTab === 'youtube'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fab fa-youtube"></i> YouTube Auto
                 </a>
+                <a href="#" @click="currentTab = 'jokes'; fetchJokesData()" :class="{'bg-indigo-700': currentTab === 'jokes'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-smile"></i> Canal de Piadas
+                </a>
                 <a href="#" @click="currentTab = 'hotmart'; fetchBooks()" :class="{'bg-indigo-700': currentTab === 'hotmart'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-shopping-cart"></i> Hotmart Auto
                 </a>
@@ -1077,6 +1080,131 @@
                 </div>
             </div>
 
+            <!-- Canal de Piadas Tab -->
+            <div v-if="currentTab === 'jokes'" class="space-y-6">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">
+                    <i class="fas fa-smile text-amber-500 mr-2"></i> Canal de Piadas
+                </h1>
+                <p class="text-gray-600 mb-6">Vídeos de piadas livres (sem baixaria) com avatar fixo. Escolha o tema, gere ou insira piadas, revise e publique.</p>
+
+                <!-- Canal / Avatar -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">1. Canal e Avatar</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Nome do canal</label>
+                            <input v-model="jokesChannel.name" class="w-full border p-2 rounded" placeholder="Ex: Piadas do Zé">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Voz (gênero)</label>
+                            <select v-model="jokesChannel.voice_gender" class="w-full border p-2 rounded">
+                                <option value="male">Masculina</option>
+                                <option value="female">Feminina</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Avatar (imagem fixa)</label>
+                        <input type="file" @change="onJokesAvatarChange" accept="image/*" class="w-full border p-2 rounded">
+                        <p class="text-xs text-gray-500 mt-1">Imagem do personagem que contará as piadas. PNG ou JPG.</p>
+                    </div>
+                    <button @click="saveJokesChannel" :disabled="jokesSaving" class="mt-4 bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">
+                        <i v-if="jokesSaving" class="fas fa-spinner fa-spin mr-2"></i> Salvar Canal
+                    </button>
+                </div>
+
+                <!-- Criar Vídeo -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">2. Criar Vídeo de Piadas</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Tema</label>
+                            <select v-model="jokesForm.theme" class="w-full border p-2 rounded">
+                                <option v-for="t in jokesThemes" :key="t.id" :value="t.id">{{ t.label }}</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Duração (min)</label>
+                            <input v-model.number="jokesForm.duration_min" type="number" min="10" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Quantidade de piadas</label>
+                            <input v-model.number="jokesForm.quantity" type="number" min="5" max="50" class="w-full border p-2 rounded">
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap gap-2 mb-4">
+                        <button @click="generateJokesByAI" :disabled="jokesGenerating" class="bg-amber-600 text-white px-4 py-2 rounded hover:bg-amber-700">
+                            <i v-if="jokesGenerating" class="fas fa-spinner fa-spin mr-2"></i> IA Gerar Piadas
+                        </button>
+                        <button @click="showManualJokes = true" class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700">Inserir Piadas Manuais</button>
+                    </div>
+
+                    <!-- Piadas manuais -->
+                    <div v-if="showManualJokes" class="mt-4 p-4 bg-gray-50 rounded border">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Cole as piadas (uma por linha ou separadas por ---)</label>
+                        <textarea v-model="manualJokesText" rows="8" class="w-full border p-2 rounded" placeholder="Piada 1&#10;Piada 2&#10;---&#10;Piada 3"></textarea>
+                        <div class="flex gap-2 mt-2">
+                            <button @click="parseManualJokes" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Aplicar</button>
+                            <button @click="showManualJokes = false" class="bg-gray-400 text-white px-4 py-2 rounded">Cancelar</button>
+                        </div>
+                    </div>
+
+                    <!-- Lista de piadas -->
+                    <div v-if="jokesForm.jokes.length" class="mt-4">
+                        <h3 class="font-bold mb-2">Piadas ({{ jokesForm.jokes.length }})</h3>
+                        <div class="max-h-64 overflow-y-auto space-y-2">
+                            <div v-for="(j, i) in jokesForm.jokes" :key="i" class="flex items-start gap-2 p-2 bg-gray-50 rounded">
+                                <span class="text-gray-500 font-mono text-sm">{{ i+1 }}.</span>
+                                <div class="flex-1 text-sm">{{ j.punchline }}</div>
+                                <button @click="jokesForm.jokes.splice(i, 1)" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button>
+                            </div>
+                        </div>
+                        <button @click="createJokesVideo" :disabled="jokesForm.jokes.length < 3 || jokesCreating" class="mt-4 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+                            <i v-if="jokesCreating" class="fas fa-spinner fa-spin mr-2"></i> Criar Vídeo e Gerar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Fila de Vídeos / Revisão -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">3. Revisão e Publicação</h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead>
+                                <tr class="border-b">
+                                    <th class="text-left p-3">Título</th>
+                                    <th class="text-left p-3">Tema</th>
+                                    <th class="text-left p-3">Status</th>
+                                    <th class="text-left p-3">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="v in jokesVideos" :key="v.id" class="border-b hover:bg-gray-50">
+                                    <td class="p-3">{{ v.title }}</td>
+                                    <td class="p-3">{{ v.theme }}</td>
+                                    <td class="p-3">
+                                        <span :class="{
+                                            'bg-yellow-100 text-yellow-800': v.status === 'draft' || v.status === 'generating',
+                                            'bg-blue-100 text-blue-800': v.status === 'pending_review',
+                                            'bg-green-100 text-green-800': v.status === 'approved' || v.status === 'published',
+                                            'bg-red-100 text-red-800': v.status === 'rejected'
+                                        }" class="px-2 py-1 rounded text-sm">{{ { draft: 'Rascunho', generating: 'Gerando...', pending_review: 'Revisão', approved: 'Aprovado', published: 'Publicado', rejected: 'Rejeitado' }[v.status] || v.status }}</span>
+                                    </td>
+                                    <td class="p-3 flex flex-wrap gap-2">
+                                        <button v-if="v.status === 'draft'" @click="startJokesVideoGeneration(v.id)" class="text-indigo-600 hover:text-indigo-800 text-sm"><i class="fas fa-play"></i> Gerar</button>
+                                        <button v-if="v.status === 'pending_review'" @click="approveJokesVideo(v.id)" class="text-green-600 hover:text-green-800 text-sm"><i class="fas fa-check"></i> Aprovar</button>
+                                        <button v-if="v.status === 'pending_review'" @click="rejectJokesVideo(v.id)" class="text-red-600 hover:text-red-800 text-sm"><i class="fas fa-times"></i> Rejeitar</button>
+                                        <a v-if="v.video_path && (v.status === 'pending_review' || v.status === 'approved')" :href="`/jokes/videos/${v.id}/download`" target="_blank" class="text-blue-600 hover:text-blue-800 text-sm"><i class="fas fa-download"></i> Baixar</a>
+                                        <button v-if="v.status === 'approved' || v.status === 'pending_review'" @click="publishJokesVideo(v.id)" class="text-green-700 bg-green-100 hover:bg-green-200 px-2 py-1 rounded text-sm font-medium"><i class="fas fa-upload"></i> Publicar YouTube</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <p v-if="!jokesVideos.length" class="text-gray-500 p-4 text-center">Nenhum vídeo ainda.</p>
+                    </div>
+                </div>
+            </div>
+
             <!-- Hotmart Auto Tab -->
             <div v-if="currentTab === 'hotmart'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Hotmart Auto</h1>
@@ -2017,6 +2145,17 @@
                     },
                     factoryDrafts: [],
                     factoryDraftId: null,
+
+                    // Canal de Piadas
+                    jokesChannel: { name: 'Canal de Piadas', voice_style: 'human', voice_gender: 'male' },
+                    jokesThemes: [],
+                    jokesForm: { theme: 'geral', duration_min: 10, quantity: 15, jokes: [] },
+                    jokesVideos: [],
+                    jokesSaving: false,
+                    jokesGenerating: false,
+                    jokesCreating: false,
+                    showManualJokes: false,
+                    manualJokesText: '',
                     
                     // Task Tracking
                     currentTaskId: null,
@@ -2210,6 +2349,9 @@
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
                     }
+                    if (this.currentTab === 'jokes') {
+                        this.fetchJokesData();
+                    }
                 }, 5000); // 5s para atualizar fila e manter processamento em andamento
             },
             methods: {
@@ -2352,6 +2494,134 @@
                     } finally {
                         this.checkingYoutube = false;
                     }
+                },
+                async fetchJokesData() {
+                    try {
+                        const [tRes, cRes, vRes] = await Promise.all([
+                            this.authFetch('/jokes/themes'),
+                            this.authFetch('/jokes/channels'),
+                            this.authFetch('/jokes/videos')
+                        ]);
+                        if (tRes.ok) this.jokesThemes = await tRes.json();
+                        if (cRes.ok) {
+                            const chs = await cRes.json();
+                            if (chs.length) {
+                                const ch = await (await this.authFetch(`/jokes/channels/${chs[0].id}`)).json();
+                                this.jokesChannel = { ...this.jokesChannel, ...ch };
+                            }
+                        }
+                        if (vRes.ok) this.jokesVideos = await vRes.json();
+                    } catch (e) { console.error('Erro ao carregar Canal de Piadas:', e); }
+                },
+                async saveJokesChannel() {
+                    this.jokesSaving = true;
+                    try {
+                        const body = { name: this.jokesChannel.name, voice_style: this.jokesChannel.voice_style, voice_gender: this.jokesChannel.voice_gender };
+                        const res = this.jokesChannel.id
+                            ? await this.authFetch(`/jokes/channels/${this.jokesChannel.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+                            : await this.authFetch('/jokes/channels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data.id) this.jokesChannel.id = data.id;
+                            alert('Canal salvo!');
+                        }
+                    } catch (e) { alert('Erro: ' + e); }
+                    finally { this.jokesSaving = false; }
+                },
+                async onJokesAvatarChange(e) {
+                    const file = e.target.files?.[0];
+                    if (!file || !this.jokesChannel.id) return;
+                    const fd = new FormData();
+                    fd.append('file', file);
+                    try {
+                        const res = await this.authFetch(`/jokes/channels/${this.jokesChannel.id}/upload-avatar`, { method: 'POST', body: fd });
+                        if (res.ok) alert('Avatar enviado!');
+                    } catch (e) { alert('Erro: ' + e); }
+                },
+                async generateJokesByAI() {
+                    this.jokesGenerating = true;
+                    try {
+                        const res = await this.authFetch('/jokes/generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.jokesForm)
+                        });
+                        const data = await res.json();
+                        if (data.jokes) this.jokesForm.jokes = data.jokes;
+                    } catch (e) { alert('Erro: ' + e); }
+                    finally { this.jokesGenerating = false; }
+                },
+                async parseManualJokes() {
+                    try {
+                        const res = await this.authFetch('/jokes/parse', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: this.manualJokesText, theme: this.jokesForm.theme })
+                        });
+                        const data = await res.json();
+                        if (data.jokes) this.jokesForm.jokes = data.jokes;
+                        this.showManualJokes = false;
+                    } catch (e) { alert('Erro: ' + e); }
+                },
+                async createJokesVideo() {
+                    let chId = this.jokesChannel.id;
+                    if (!chId) {
+                        await this.saveJokesChannel();
+                        chId = this.jokesChannel.id;
+                    }
+                    if (!chId) { alert('Salve o canal primeiro.'); return; }
+                    this.jokesCreating = true;
+                    try {
+                        const res = await this.authFetch('/jokes/videos', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                channel_id: chId,
+                                theme: this.jokesForm.theme,
+                                duration_min: this.jokesForm.duration_min,
+                                jokes: this.jokesForm.jokes
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.id) {
+                            this.jokesForm.jokes = [];
+                            await this.fetchJokesData();
+                            this.startJokesVideoGeneration(data.id);
+                        }
+                    } catch (e) { alert('Erro: ' + e); }
+                    finally { this.jokesCreating = false; }
+                },
+                async startJokesVideoGeneration(videoId) {
+                    try {
+                        await this.authFetch(`/jokes/videos/${videoId}/generate`, { method: 'POST' });
+                        await this.fetchJokesData();
+                    } catch (e) { alert('Erro: ' + e); }
+                },
+                async approveJokesVideo(videoId) {
+                    try {
+                        await this.authFetch(`/jokes/videos/${videoId}/approve`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ auto_publish: true })
+                        });
+                        await this.fetchJokesData();
+                    } catch (e) { alert('Erro: ' + e); }
+                },
+                async rejectJokesVideo(videoId) {
+                    if (!confirm('Rejeitar este vídeo?')) return;
+                    try {
+                        await this.authFetch(`/jokes/videos/${videoId}/reject`, { method: 'POST' });
+                        await this.fetchJokesData();
+                    } catch (e) { alert('Erro: ' + e); }
+                },
+                async publishJokesVideo(videoId) {
+                    if (!confirm('Publicar no YouTube agora?')) return;
+                    try {
+                        const res = await this.authFetch(`/jokes/videos/${videoId}/publish`, { method: 'POST' });
+                        const data = await res.json();
+                        if (data.status === 'published') alert('Publicado com sucesso!');
+                        await this.fetchJokesData();
+                    } catch (e) { alert('Erro: ' + e); }
                 },
                 async connectYoutube() {
                     try {
