@@ -869,6 +869,159 @@ class AIContentGenerator:
             print(f"Erro ao gerar roteiro motivacional: {e}")
             return self._mock_response(topic, "motivational_long", error=str(e), duration=duration_minutes)
 
+    def generate_clean_jokes_batch(self, theme: str, count: int = 40, style: str = "limpo e familiar"):
+        """Gera uma lista de piadas curtas sem baixaria para vídeos longos."""
+        self._load_config()
+        target_count = max(10, min(120, int(count or 40)))
+        safe_theme = (theme or "Humor Brasileiro").strip()
+
+        if not (
+            self.api_key
+            or self.gemini_key
+            or self.deepseek_key
+            or self.anthropic_key
+            or self.mistral_key
+            or self.groq_key
+            or self.openrouter_key
+        ):
+            fallback = [
+                "Fui no mercado comprar coragem... mas tava em falta no setor de ofertas.",
+                "Meu amigo disse que ia começar dieta segunda. Só não falou de qual ano.",
+                "Perguntei pro café se ele tava forte hoje. Ele respondeu: só depois da segunda xícara.",
+                "Tentei guardar dinheiro, mas ele gosta tanto de passear que some todo mês.",
+                "Meu celular descarrega rápido porque ele também trabalha em escala 6x1.",
+                "Acordei cedo pra ser produtivo... e fui produtivo dormindo de novo.",
+                "Na minha casa o wi-fi é democrático: cai pra todo mundo igualmente.",
+                "Disseram pra seguir meus sonhos. Dormi o dia inteiro pra não desobedecer.",
+                "Fui fazer exercício de memória e esqueci onde tinha anotado.",
+                "Meu relógio tá adiantado. Ele acredita mais no meu potencial do que eu.",
+            ]
+            jokes = []
+            while len(jokes) < target_count:
+                jokes.extend(fallback)
+            return jokes[:target_count]
+
+        prompt = f"""
+        Você é um roteirista de humor limpo para YouTube.
+        Crie {target_count} piadas curtas e EXCLUSIVAS sobre o tema "{safe_theme}".
+        Estilo: {style}.
+
+        REGRAS OBRIGATÓRIAS:
+        - Português do Brasil.
+        - Humor SEM baixaria, SEM palavrão, SEM conteúdo sexual.
+        - Evite ataques a grupos, discriminação, violência e política agressiva.
+        - Cada piada deve ter no máximo 2 frases curtas.
+        - Piadas diferentes entre si (evitar repetição de estrutura).
+        - Saída em JSON válido.
+
+        Retorne APENAS:
+        {{
+            "jokes": [
+                "piada 1...",
+                "piada 2..."
+            ]
+        }}
+        """
+
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você gera apenas JSON válido com piadas limpas e familiares.",
+                temperature=0.9,
+                json_mode=True,
+            )
+            if not content:
+                raise Exception("Resposta vazia da IA")
+
+            import json
+
+            clean = content.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(clean)
+            jokes = parsed.get("jokes", []) if isinstance(parsed, dict) else []
+            jokes = [str(j).strip() for j in jokes if str(j).strip()]
+            # Dedupe mantendo ordem
+            dedup = []
+            seen = set()
+            for joke in jokes:
+                key = joke.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                dedup.append(joke)
+
+            if not dedup:
+                raise Exception("IA não retornou piadas válidas")
+
+            while len(dedup) < target_count:
+                dedup.extend(dedup[: max(1, min(len(dedup), target_count - len(dedup)))])
+            return dedup[:target_count]
+        except Exception as e:
+            print(f"Erro ao gerar piadas limpas: {e}")
+            fallback = [
+                f"Piada curta sobre {safe_theme} #{i+1}: hoje eu ri de mim mesmo, porque era o único com senso de humor disponível."
+                for i in range(max(12, target_count))
+            ]
+            return fallback[:target_count]
+
+    def build_jokes_video_plan(
+        self,
+        theme: str,
+        jokes: list,
+        avatar_name: str = "Tio da Risada",
+        avatar_prompt: str = "",
+        channel_name: str = "Canal de Piadas Livres",
+        duration_minutes: int = 10,
+    ):
+        """Monta plano de vídeo de piadas com avatar fixo."""
+        clean_theme = (theme or "Humor Brasileiro").strip()
+        clean_avatar = (avatar_name or "Tio da Risada").strip()
+        clean_channel = (channel_name or "Canal de Piadas Livres").strip()
+        target_minutes = max(10, int(duration_minutes or 10))
+        avatar_prompt_final = (
+            (avatar_prompt or "").strip()
+            or "friendly brazilian comedy host avatar, medium shot, clean humor, no text, no watermark"
+        )
+
+        clean_jokes = [str(j).strip() for j in (jokes or []) if str(j).strip()]
+        if not clean_jokes:
+            clean_jokes = [
+                "Hoje eu tentei ser fitness. Levantei do sofá em duas séries.",
+                "Fui organizar minha vida e achei um carregador de celular de 2009.",
+                "Meu plano era economizar. O cartão não concordou com o planejamento.",
+            ]
+
+        scenes = [
+            {
+                "text": (
+                    f"Olá! Eu sou o {clean_avatar}. "
+                    f"Hoje temos um especial de piadas sobre {clean_theme}, sem baixaria, para toda a família."
+                )
+            }
+        ]
+        for i, joke in enumerate(clean_jokes, start=1):
+            scenes.append({"text": f"Piada {i}. {joke}"})
+        scenes.append(
+            {
+                "text": (
+                    "Se você curtiu, já se inscreve no canal e comenta qual foi a sua piada favorita. "
+                    "No próximo episódio tem mais."
+                )
+            }
+        )
+
+        return {
+            "title": f"{clean_channel} | {clean_theme} | {len(clean_jokes)} piadas limpas",
+            "description": (
+                f"Especial com {len(clean_jokes)} piadas curtas sobre {clean_theme}, "
+                f"com humor leve e sem baixaria. Episódio com duração alvo de {target_minutes}+ minutos."
+            ),
+            "tags": ["piadas", "humor limpo", "sem baixaria", clean_theme.lower()],
+            "scenes": scenes,
+            "music_mood": "happy",
+            "fixed_avatar_image_prompt": avatar_prompt_final,
+            "target_duration_minutes": target_minutes,
+        }
+
     def generate_script_from_text(self, text, duration_minutes=5):
         """Estrutura um texto existente em formato de roteiro de vídeo"""
         self._load_config()

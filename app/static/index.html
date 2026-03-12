@@ -93,6 +93,9 @@
                 <a href="#" @click="currentTab = 'youtube'; fetchYoutubeStats()" :class="{'bg-indigo-700': currentTab === 'youtube'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fab fa-youtube"></i> YouTube Auto
                 </a>
+                <a href="#" @click="currentTab = 'jokes_channel'; fetchJokesReviewQueue(); fetchJokesThemes()" :class="{'bg-indigo-700': currentTab === 'jokes_channel'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-laugh-beam"></i> Canal de Piadas
+                </a>
                 <a href="#" @click="currentTab = 'hotmart'; fetchBooks()" :class="{'bg-indigo-700': currentTab === 'hotmart'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-shopping-cart"></i> Hotmart Auto
                 </a>
@@ -1077,6 +1080,182 @@
                 </div>
             </div>
 
+            <!-- Canal de Piadas -->
+            <div v-if="currentTab === 'jokes_channel'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">Canal de Piadas Livres</h1>
+                <p class="text-gray-600 mb-6">
+                    Crie vídeos longos (10+ minutos) com piadas curtas sem baixaria, usando um avatar fixo como apresentador.
+                    Após gerar, os vídeos entram em revisão para você aprovar antes da publicação automática.
+                </p>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-xl font-bold mb-4 text-indigo-900">
+                            <i class="fas fa-sliders-h mr-2"></i>Configuração do Episódio
+                        </h2>
+
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block font-bold mb-2">Nome do Canal/Projeto</label>
+                                <input v-model="jokesForm.channel_name" class="w-full border p-2 rounded" placeholder="Ex: Piadas do Tio Zé">
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-2">Tema</label>
+                                    <select v-model="jokesForm.theme" class="w-full border p-2 rounded">
+                                        <option v-for="theme in jokesThemes" :key="theme" :value="theme">{{ theme }}</option>
+                                        <option value="Outro">Outro</option>
+                                    </select>
+                                </div>
+                                <div v-if="jokesForm.theme === 'Outro'">
+                                    <label class="block font-bold mb-2">Tema personalizado</label>
+                                    <input v-model="jokesForm.custom_theme" class="w-full border p-2 rounded" placeholder="Ex: humor de escritório">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block font-bold mb-2">Fonte das Piadas</label>
+                                <div class="flex gap-4">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" value="ai" v-model="jokesForm.source">
+                                        <span>IA exclusiva</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" value="manual" v-model="jokesForm.source">
+                                        <span>Piadas já existentes</span>
+                                    </label>
+                                </div>
+                                <textarea
+                                    v-if="jokesForm.source === 'manual'"
+                                    v-model="jokesForm.manual_jokes_text"
+                                    class="w-full border p-2 rounded mt-2"
+                                    rows="5"
+                                    placeholder="Uma piada por linha"
+                                ></textarea>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-2">Nome do Avatar</label>
+                                    <input v-model="jokesForm.avatar_name" class="w-full border p-2 rounded" placeholder="Ex: Tio da Risada">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Duração mínima (min)</label>
+                                    <input v-model.number="jokesForm.video_minutes" type="number" min="10" class="w-full border p-2 rounded">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block font-bold mb-2">Prompt do Avatar (fixo em todo vídeo)</label>
+                                <textarea
+                                    v-model="jokesForm.avatar_prompt"
+                                    rows="3"
+                                    class="w-full border p-2 rounded"
+                                    placeholder="Descreva o visual do avatar fixo"
+                                ></textarea>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-2">Qtd. de vídeos</label>
+                                    <input v-model.number="jokesForm.videos_count" type="number" min="1" max="30" class="w-full border p-2 rounded">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Piadas por vídeo</label>
+                                    <input v-model.number="jokesForm.jokes_per_video" type="number" min="10" class="w-full border p-2 rounded">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Intervalo (min)</label>
+                                    <input v-model.number="jokesForm.interval_minutes" type="number" min="1" class="w-full border p-2 rounded">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block font-bold mb-2">Início da agenda</label>
+                                <input v-model="jokesForm.start_at" type="datetime-local" class="w-full border p-2 rounded">
+                            </div>
+
+                            <div class="bg-indigo-50 border border-indigo-100 rounded p-3 text-sm text-indigo-800">
+                                O sistema usa o mesmo canal conectado no módulo YouTube Auto. A revisão é obrigatória antes do auto-post.
+                            </div>
+
+                            <button
+                                @click="createJokesQueue"
+                                :disabled="jokesLoading"
+                                class="w-full bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 font-bold flex items-center justify-center gap-2"
+                            >
+                                <i v-if="jokesLoading" class="fas fa-spinner fa-spin"></i>
+                                <i v-else class="fas fa-magic"></i>
+                                Criar e Enfileirar Episódios
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-xl font-bold mb-4 text-green-800">
+                            <i class="fas fa-clipboard-check mr-2"></i>Fila de Revisão
+                        </h2>
+                        <p class="text-sm text-gray-600 mb-4">
+                            Após gerar, revise os vídeos e aprove para publicação automática.
+                        </p>
+                        <button @click="fetchJokesReviewQueue" class="mb-4 text-sm bg-gray-100 px-3 py-1.5 rounded hover:bg-gray-200">
+                            <i class="fas fa-sync mr-1"></i>Atualizar fila
+                        </button>
+
+                        <div v-if="jokesReviewVideos.length === 0" class="text-gray-500 italic bg-gray-50 rounded p-4 text-center">
+                            Nenhum item de piadas na fila.
+                        </div>
+                        <div v-else class="space-y-3 max-h-[640px] overflow-y-auto pr-1">
+                            <div v-for="video in jokesReviewVideos" :key="video.id" class="border rounded p-3 bg-gray-50">
+                                <div class="flex justify-between items-start gap-2">
+                                    <div>
+                                        <div class="font-bold text-gray-900">{{ video.title }}</div>
+                                        <div class="text-xs text-gray-500 mt-1">Tema: {{ video.theme }} | Status: {{ translateStatus(video.status) }}</div>
+                                    </div>
+                                    <span :class="getStatusClass(video.status)" class="px-2 py-1 rounded text-xs font-bold uppercase">
+                                        {{ translateStatus(video.status) }}
+                                    </span>
+                                </div>
+
+                                <div class="mt-2 text-sm text-gray-700">{{ video.description }}</div>
+
+                                <div class="mt-3">
+                                    <label class="block text-xs text-gray-500 mb-1">Agendar publicação automática</label>
+                                    <input type="datetime-local" v-model="video.scheduled_for_local" class="w-full border rounded p-2 text-sm bg-white">
+                                </div>
+
+                                <div class="mt-3 flex flex-wrap gap-2">
+                                    <button @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 bg-white border px-3 py-1.5 rounded text-sm">
+                                        <i class="fas fa-play mr-1"></i>Visualizar
+                                    </button>
+                                    <button
+                                        @click="approveJokesVideo(video, false)"
+                                        class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 px-3 py-1.5 rounded text-sm font-semibold"
+                                        :disabled="!isReadyStatus(video.status)"
+                                    >
+                                        <i class="fas fa-check mr-1"></i>Aprovar Auto-Post
+                                    </button>
+                                    <button
+                                        @click="approveJokesVideo(video, true)"
+                                        class="text-emerald-700 hover:text-emerald-900 bg-emerald-100 hover:bg-emerald-200 px-3 py-1.5 rounded text-sm font-semibold"
+                                        :disabled="!isReadyStatus(video.status)"
+                                    >
+                                        <i class="fas fa-upload mr-1"></i>Aprovar e Publicar Agora
+                                    </button>
+                                    <button @click="regenerateJokesVideo(video)" class="text-orange-700 hover:text-orange-900 bg-orange-100 hover:bg-orange-200 px-3 py-1.5 rounded text-sm">
+                                        <i class="fas fa-sync mr-1"></i>Regenerar
+                                    </button>
+                                    <button @click="deleteScheduledVideo(video)" class="text-red-700 hover:text-red-900 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded text-sm">
+                                        <i class="fas fa-trash mr-1"></i>Excluir
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Hotmart Auto Tab -->
             <div v-if="currentTab === 'hotmart'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Hotmart Auto</h1>
@@ -1961,6 +2140,23 @@
                     scheduleLoading: false,
                     scheduledVideos: [],
                     productionVideos: [], // Moved from computed to data
+                    jokesLoading: false,
+                    jokesThemes: [],
+                    jokesReviewVideos: [],
+                    jokesForm: {
+                        channel_name: 'Canal de Piadas Livres',
+                        theme: 'Português',
+                        custom_theme: '',
+                        source: 'ai',
+                        manual_jokes_text: '',
+                        avatar_name: 'Tio da Risada',
+                        avatar_prompt: 'Friendly Brazilian comedy host avatar, clean humor style, medium shot, warm studio lights, expressive face, slight mouth movement, family friendly, no text, no watermark',
+                        video_minutes: 10,
+                        videos_count: 1,
+                        jokes_per_video: 40,
+                        start_at: '',
+                        interval_minutes: 1440
+                    },
 
                     // Book Factory Data
                     factoryStep: 1,
@@ -2198,6 +2394,8 @@
                 await this.fetchSettings();
                 await this.fetchCRMData();
                 await this.fetchScheduledVideos();
+                await this.fetchJokesThemes();
+                await this.fetchJokesReviewQueue();
                 await this.fetchProductionQueue(); // Added
                 await this.fetchReports();
                 await this.fetchYoutubeStats(); // Check YouTube status on load
@@ -2209,6 +2407,8 @@
                         this.fetchProductionQueue(); // Added
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
+                    } else if (this.currentTab === 'jokes_channel') {
+                        this.fetchJokesReviewQueue();
                     }
                 }, 5000); // 5s para atualizar fila e manter processamento em andamento
             },
@@ -2616,6 +2816,123 @@
                         this.sales = await salesRes.json();
                     } catch (e) { console.error(e); }
                 },
+                async fetchJokesThemes() {
+                    try {
+                        const res = await this.authFetch('/jokes/themes');
+                        if (!res.ok) return;
+                        const data = await res.json();
+                        if (Array.isArray(data.themes) && data.themes.length) {
+                            this.jokesThemes = data.themes;
+                            if (!this.jokesForm.theme || !this.jokesThemes.includes(this.jokesForm.theme)) {
+                                this.jokesForm.theme = this.jokesThemes[0];
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Erro ao carregar temas de piadas:", e);
+                    }
+                },
+                async fetchJokesReviewQueue() {
+                    try {
+                        const res = await this.authFetch('/jokes/review-queue');
+                        if (!res.ok) return;
+                        const data = await res.json();
+                        this.jokesReviewVideos = (Array.isArray(data) ? data : []).map(v => ({
+                            ...v,
+                            scheduled_for_local: v.scheduled_for ? String(v.scheduled_for).slice(0, 16) : ''
+                        }));
+                    } catch (e) {
+                        console.error("Erro ao carregar fila de revisão de piadas:", e);
+                    }
+                },
+                async createJokesQueue() {
+                    const finalTheme = this.jokesForm.theme === 'Outro'
+                        ? (this.jokesForm.custom_theme || '').trim()
+                        : this.jokesForm.theme;
+                    if (!finalTheme) {
+                        alert("Informe um tema para as piadas.");
+                        return;
+                    }
+                    if (this.jokesForm.source === 'manual' && !(this.jokesForm.manual_jokes_text || '').trim()) {
+                        alert("No modo manual, informe ao menos uma piada.");
+                        return;
+                    }
+                    this.jokesLoading = true;
+                    try {
+                        const payload = {
+                            channel_name: this.jokesForm.channel_name,
+                            theme: finalTheme,
+                            source: this.jokesForm.source,
+                            manual_jokes_text: this.jokesForm.manual_jokes_text,
+                            avatar_name: this.jokesForm.avatar_name,
+                            avatar_prompt: this.jokesForm.avatar_prompt,
+                            video_minutes: this.jokesForm.video_minutes,
+                            videos_count: this.jokesForm.videos_count,
+                            jokes_per_video: this.jokesForm.jokes_per_video,
+                            start_at: this.jokesForm.start_at || null,
+                            interval_minutes: this.jokesForm.interval_minutes
+                        };
+                        const res = await this.authFetch('/jokes/queue', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Episódios enfileirados com sucesso!");
+                            await this.fetchJokesReviewQueue();
+                            await this.fetchScheduledVideos();
+                        } else {
+                            alert(data.detail || "Erro ao enfileirar episódios de piadas.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao criar fila de piadas: " + (e.message || e));
+                    } finally {
+                        this.jokesLoading = false;
+                    }
+                },
+                async approveJokesVideo(video, publishNow = false) {
+                    if (!video || !video.id) return;
+                    if (!confirm(publishNow ? "Aprovar e publicar agora?" : "Aprovar para publicação automática?")) return;
+                    try {
+                        const res = await this.authFetch(`/jokes/review/${video.id}/approve`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                publish_now: !!publishNow,
+                                publish_at: publishNow ? null : (video.scheduled_for_local || null)
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Aprovado com sucesso.");
+                            await this.fetchJokesReviewQueue();
+                            await this.fetchScheduledVideos();
+                        } else {
+                            alert(data.detail || "Erro ao aprovar vídeo.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao aprovar vídeo: " + (e.message || e));
+                    }
+                },
+                async regenerateJokesVideo(video) {
+                    if (!video || !video.id) return;
+                    if (!confirm("Regenerar este episódio de piadas?")) return;
+                    try {
+                        const res = await this.authFetch(`/jokes/review/${video.id}/regenerate`, {
+                            method: 'POST'
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                            alert(data.message || "Vídeo reenfileirado.");
+                            await this.fetchJokesReviewQueue();
+                            await this.fetchScheduledVideos();
+                        } else {
+                            alert(data.detail || "Erro ao regenerar vídeo.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao regenerar vídeo: " + (e.message || e));
+                    }
+                },
                 // Scheduled Videos Methods
                 async fetchScheduledVideos() {
                     try {
@@ -2726,6 +3043,7 @@
                         'paused': 'Pausado',
                         'cancelled': 'Cancelado',
                         'canceled': 'Cancelado',
+                        'awaiting_publish': 'Aguardando revisão',
                         'completed': 'Pronto',
                         'ready': 'Pronto para publicar',
                         'published': 'Publicado',
@@ -2910,7 +3228,7 @@
                 },
                 isReadyStatus(status) {
                     const s = this.normalizedStatus(status);
-                    return s === 'ready' || s === 'completed' || s.includes('ready') || s.includes('completed');
+                    return s === 'ready' || s === 'completed' || s === 'awaiting_publish' || s.includes('ready') || s.includes('completed');
                 },
                 isPublishedStatus(status) {
                     const s = this.normalizedStatus(status);

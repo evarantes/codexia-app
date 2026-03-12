@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, jokes
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
 from dotenv import load_dotenv
@@ -579,6 +579,7 @@ app.include_router(hotmart.router)
 app.include_router(music.router)
 app.include_router(admin.router)
 app.include_router(ai_factory.router)
+app.include_router(jokes.router)
 
 @app.get("/success")
 def payment_success():

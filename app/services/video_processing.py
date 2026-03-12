@@ -80,12 +80,52 @@ def process_scheduled_video(video_id: int):
              duration = 1
         
         final_script = None
+        joke_mode = (script_data.get("mode") or "").strip().lower() == "jokes_channel"
         
         # OTIMIZAÇÃO DE CUSTO: Verificar se já existe script gerado (recuperação de falha/crash)
         if script_data.get("scenes") and isinstance(script_data.get("scenes"), list):
              print(f"Usando script em cache (DB) para video {video_id}. Economizando chamada OpenAI.")
              final_script = script_data
         
+        # MODO CANAL DE PIADAS
+        elif joke_mode:
+             print(f"Gerando roteiro de piadas para video {video_id}: {topic}")
+             joke_theme = script_data.get("joke_theme") or video.theme or "Humor Brasileiro"
+             target_minutes = max(10, int(script_data.get("video_duration_minutes") or duration or 10))
+             jokes_per_video = max(10, int(script_data.get("jokes_per_video") or int((target_minutes * 60) / 15)))
+             jokes_source = (script_data.get("jokes_source") or "ai").strip().lower()
+
+             manual_jokes = script_data.get("manual_jokes") or []
+             if not isinstance(manual_jokes, list):
+                 manual_jokes = []
+             clean_manual_jokes = [str(j).strip() for j in manual_jokes if str(j).strip()]
+
+             jokes = []
+             if jokes_source == "manual" and clean_manual_jokes:
+                 jokes = clean_manual_jokes
+             else:
+                 jokes = ai_service.generate_clean_jokes_batch(joke_theme, count=jokes_per_video)
+
+             final_script = ai_service.build_jokes_video_plan(
+                 theme=joke_theme,
+                 jokes=jokes,
+                 avatar_name=script_data.get("avatar_name") or "Tio da Risada",
+                 avatar_prompt=script_data.get("avatar_prompt") or "",
+                 channel_name=script_data.get("channel_name") or "Canal de Piadas Livres",
+                 duration_minutes=target_minutes
+             )
+
+             if final_script:
+                 script_data.update(final_script)
+                 # Persistimos as piadas base para futuras regenerações/revisões.
+                 script_data["generated_jokes"] = jokes
+                 video.script_data = json.dumps(script_data, ensure_ascii=False)
+                 if final_script.get("title"):
+                     video.title = final_script.get("title")
+                 if final_script.get("description"):
+                     video.description = final_script.get("description")
+                 db.commit()
+
         # MODO VIDEO CLIP MUSICAL
         elif video.music_file_path and os.path.exists(video.music_file_path):
              print(f"Gerando plano visual para música: {video.music_file_path}")
@@ -134,7 +174,7 @@ def process_scheduled_video(video_id: int):
 
         # ENRICHMENT: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
         # Skip enrichment for music videos as they are already visual-focused
-        if not video.music_file_path:
+        if not video.music_file_path and not joke_mode:
             print("Enriquecendo cenas com descrições visuais geradas pela IA (narração → imagem)...")
             final_script = ai_service.enrich_scenes_with_image_prompts(final_script)
         
@@ -171,7 +211,7 @@ def process_scheduled_video(video_id: int):
             if credit not in video.description:
                 video.description += credit
         
-        video.status = "AWAITING_PUBLISH"
+        video.status = "completed" if joke_mode else "AWAITING_PUBLISH"
         video.progress = 100
         video.video_url = video_path # path relativo /static/videos/...
         db.commit()

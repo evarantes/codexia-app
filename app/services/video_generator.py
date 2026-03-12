@@ -515,6 +515,8 @@ class VideoGenerator:
         final_clip = None
         bg_music = None
         allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
+        fixed_avatar_path = None
+        fixed_avatar_prompt = (plan.get("fixed_avatar_image_prompt") or "").strip() if isinstance(plan, dict) else ""
         
         try:
             title = plan.get('title', 'Vídeo Sem Título')
@@ -561,13 +563,34 @@ class VideoGenerator:
 
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
             # Skip enrichment if music mode (handled by generator)
-            if self.ai_service and scenes and not music_file_path:
+            if self.ai_service and scenes and not music_file_path and not fixed_avatar_prompt:
                 try:
                     enriched = self.ai_service.enrich_scenes_with_image_prompts({"title": title, "scenes": scenes})
                     if enriched and enriched.get("scenes"):
                         scenes = enriched["scenes"]
                 except Exception as e:
                     print(f"Aviso: enriquecimento de image_prompts falhou, usando prompts existentes: {e}")
+
+            if fixed_avatar_prompt and not music_file_path:
+                if progress_callback:
+                    progress_callback(8, "Gerando avatar fixo do apresentador...")
+
+                def _avatar_status(message):
+                    if progress_callback:
+                        progress_callback(8, f"Avatar: {message}")
+
+                fixed_avatar_path = self._ensure_image_for_scene(
+                    fixed_avatar_prompt,
+                    text_fallback=title,
+                    aspect_ratio=aspect_ratio,
+                    status_callback=_avatar_status,
+                    allow_non_ai_fallback=allow_non_ai_fallback
+                )
+                if not fixed_avatar_path:
+                    raise Exception(
+                        "Falha ao gerar avatar fixo por IA. "
+                        "Verifique o prompt do avatar ou habilite ALLOW_NON_AI_IMAGE_FALLBACK."
+                    )
 
             # Otimização de memória: Reduzir resolução para 720p para evitar OOM em tiers gratuitos
             if aspect_ratio == "16:9":
@@ -722,23 +745,26 @@ class VideoGenerator:
                 clean_text = self._clean_text(text)
                 
                 # GARANTIA DE IMAGEM (Substitui lógica antiga)
-                def _scene_status(message, scene_idx=i, total=total_scenes, pct=scene_progress):
-                    if progress_callback:
-                        progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
+                if fixed_avatar_path:
+                    bg_image_path = fixed_avatar_path
+                else:
+                    def _scene_status(message, scene_idx=i, total=total_scenes, pct=scene_progress):
+                        if progress_callback:
+                            progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
 
-                bg_image_path = self._ensure_image_for_scene(
-                    image_prompt,
-                    text_fallback=clean_text,
-                    aspect_ratio=aspect_ratio,
-                    status_callback=_scene_status,
-                    allow_non_ai_fallback=allow_non_ai_fallback
-                )
-
-                if not bg_image_path:
-                    raise Exception(
-                        f"Falha ao gerar imagem por IA na cena {i+1}. "
-                        "A renderização foi interrompida para evitar fundo de cor."
+                    bg_image_path = self._ensure_image_for_scene(
+                        image_prompt,
+                        text_fallback=clean_text,
+                        aspect_ratio=aspect_ratio,
+                        status_callback=_scene_status,
+                        allow_non_ai_fallback=allow_non_ai_fallback
                     )
+
+                    if not bg_image_path:
+                        raise Exception(
+                            f"Falha ao gerar imagem por IA na cena {i+1}. "
+                            "A renderização foi interrompida para evitar fundo de cor."
+                        )
 
                 # Fallback colors
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
@@ -771,7 +797,7 @@ class VideoGenerator:
                 clips.append(clip_scene)
                 
                 # Limpeza de imagens temporárias
-                if bg_image_path and "temp_" in bg_image_path:
+                if bg_image_path and "temp_" in bg_image_path and bg_image_path != fixed_avatar_path:
                     try:
                         os.remove(bg_image_path)
                     except Exception:
@@ -923,6 +949,9 @@ class VideoGenerator:
             # Resource Cleanup
             print("Limpando recursos de memória...")
             try:
+                if fixed_avatar_path and os.path.exists(fixed_avatar_path):
+                    if "temp_" in fixed_avatar_path or "fallback_local_" in fixed_avatar_path:
+                        os.remove(fixed_avatar_path)
                 if final_clip:
                     final_clip.close()
                 if bg_music:
