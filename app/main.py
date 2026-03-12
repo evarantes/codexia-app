@@ -284,6 +284,7 @@ def run_migrations(engine):
                     "avatar_override_path": "TEXT",
                     "opening_message": "TEXT",
                     "catchphrase_message": "TEXT",
+                    "catchphrases_json": "TEXT",
                     "closing_message": "TEXT",
                 }
                 with engine.connect() as conn:
@@ -297,6 +298,20 @@ def run_migrations(engine):
                                 print(f"Error adding {col_name} in codexia_humor_projects: {e}")
             except Exception as e:
                 print(f"Error migrating codexia_humor_projects table: {e}")
+
+        if "codexia_humor_channels" in inspector.get_table_names():
+            try:
+                hc_columns = [c["name"] for c in inspector.get_columns("codexia_humor_channels")]
+                if "catchphrases_json" not in hc_columns:
+                    with engine.connect() as conn:
+                        try:
+                            print("Migrating: Adding catchphrases_json to codexia_humor_channels...")
+                            conn.execute(text("ALTER TABLE codexia_humor_channels ADD COLUMN catchphrases_json TEXT"))
+                            conn.commit()
+                        except Exception as e:
+                            print(f"Error adding catchphrases_json in codexia_humor_channels: {e}")
+            except Exception as e:
+                print(f"Error migrating codexia_humor_channels table: {e}")
 
     except Exception as e:
         print(f"Critical Migration Error: {e}")

@@ -43,6 +43,10 @@
                     <input v-model="allowedThemesText" class="w-full border rounded p-2 mt-1" placeholder="português, religiosa, gospel, cotidiano...">
                 </div>
                 <div>
+                    <label class="text-sm font-semibold text-gray-700">Galeria de bordões padrão do canal (1 por linha)</label>
+                    <textarea v-model="channelCatchphrasesText" class="w-full border rounded p-2 mt-1" rows="3" placeholder="Ex: Segura essa risada!\nEx: Essa foi de bênção!"></textarea>
+                </div>
+                <div>
                     <label class="text-sm font-semibold text-gray-700">Voz padrão</label>
                     <select v-model="channel.default_voice_gender" class="w-full border rounded p-2 mt-1">
                         <option value="male">Masculina</option>
@@ -111,6 +115,10 @@
                 <div>
                     <label class="text-sm font-semibold text-gray-700">Bordão do personagem (usado ao longo do vídeo)</label>
                     <input v-model="newProject.catchphrase_message" class="w-full border rounded p-2 mt-1" placeholder="Ex: Segura essa que é benção e risada!">
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-700">Galeria de bordões deste vídeo (aleatório, 1 por linha)</label>
+                    <textarea v-model="projectCatchphrasesText" rows="3" class="w-full border rounded p-2 mt-1" placeholder="Se vazio, usa a galeria padrão do canal."></textarea>
                 </div>
                 <div>
                     <label class="text-sm font-semibold text-gray-700">Mensagem de fechamento (fixa em todos os vídeos)</label>
@@ -209,9 +217,11 @@ createApp({
         return {
             channel: { name: "Canal de Humor", description: "", avatar_path: "", default_voice_gender: "male", allowed_themes: [] },
             allowedThemesText: "",
+            channelCatchphrasesText: "",
             savingChannel: false,
             creatingProject: false,
             customTheme: "",
+            projectCatchphrasesText: "",
             themeOptions: [
                 "Piadas de Português",
                 "Piadas Religiosas",
@@ -273,6 +283,7 @@ createApp({
                 if (data && data.id) {
                     this.channel = data;
                     this.allowedThemesText = (data.allowed_themes || []).join(", ");
+                    this.channelCatchphrasesText = (data.catchphrases || []).join("\\n");
                 }
             } catch (e) {
                 console.error(e);
@@ -326,7 +337,8 @@ createApp({
             this.savingChannel = true;
             try {
                 const themes = this.allowedThemesText.split(",").map(x => x.trim()).filter(Boolean);
-                const payload = { ...this.channel, allowed_themes: themes };
+                const catchphrases = this.channelCatchphrasesText.split(/\\r?\\n/).map(x => x.trim()).filter(Boolean);
+                const payload = { ...this.channel, allowed_themes: themes, catchphrases };
                 const res = await this.authFetch("/humor-factory/channel", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -378,9 +390,11 @@ createApp({
                 if (custom) themes.push(custom);
                 const uniqThemes = [...new Set(themes.map(t => String(t).trim()).filter(Boolean))];
                 if (uniqThemes.length === 0) throw new Error("Selecione pelo menos um tema.");
+                const catchphrases = this.projectCatchphrasesText.split(/\\r?\\n/).map(x => x.trim()).filter(Boolean);
                 const payload = {
                     ...this.newProject,
                     themes: uniqThemes,
+                    catchphrases,
                     channel_id: this.channel.id || null,
                 };
                 const res = await this.authFetch("/humor-factory/projects", {

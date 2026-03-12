@@ -11,6 +11,7 @@ class HumorChannel(Base):
     name = Column(String, nullable=False, default="Canal de Humor")
     description = Column(Text, nullable=True)
     avatar_path = Column(String, nullable=True)
+    catchphrases_json = Column(Text, nullable=True)  # JSON array
     default_voice_gender = Column(String, nullable=False, default="male")
     allowed_themes = Column(Text, nullable=True)  # JSON array
     is_active = Column(Boolean, nullable=False, default=True)
@@ -32,6 +33,7 @@ class HumorProject(Base):
     avatar_override_path = Column(String, nullable=True)
     opening_message = Column(Text, nullable=True)
     catchphrase_message = Column(Text, nullable=True)
+    catchphrases_json = Column(Text, nullable=True)  # JSON array
     closing_message = Column(Text, nullable=True)
 
     target_minutes = Column(Integer, nullable=False, default=10)

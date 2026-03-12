@@ -22,6 +22,7 @@ class HumorChannelRequest(BaseModel):
     name: str = Field(default="Canal de Humor")
     description: Optional[str] = ""
     avatar_path: Optional[str] = None
+    catchphrases: List[str] = Field(default_factory=list)
     default_voice_gender: str = Field(default="male")
     allowed_themes: List[str] = Field(default_factory=list)
     is_active: bool = True
@@ -37,6 +38,7 @@ class HumorProjectRequest(BaseModel):
     avatar_override_path: Optional[str] = None
     opening_message: Optional[str] = None
     catchphrase_message: Optional[str] = None
+    catchphrases: List[str] = Field(default_factory=list)
     closing_message: Optional[str] = None
     target_minutes: int = Field(default=10, ge=1, le=60)
     auto_publish_after_review: bool = False
@@ -74,6 +76,7 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         "avatar_override_path": p.avatar_override_path,
         "opening_message": p.opening_message,
         "catchphrase_message": p.catchphrase_message,
+        "catchphrases": _parse_json_list(p.catchphrases_json),
         "closing_message": p.closing_message,
         "jokes_count": len(jokes),
         "target_minutes": p.target_minutes,
@@ -97,6 +100,7 @@ def _channel_to_dict(c: HumorChannel) -> Dict[str, Any]:
         "name": c.name,
         "description": c.description,
         "avatar_path": c.avatar_path,
+        "catchphrases": _parse_json_list(c.catchphrases_json),
         "default_voice_gender": c.default_voice_gender,
         "allowed_themes": _parse_json_list(c.allowed_themes),
         "is_active": bool(c.is_active),
@@ -137,6 +141,7 @@ def upsert_channel(payload: HumorChannelRequest, db: Session = Depends(get_db)):
     channel.name = (payload.name or "Canal de Humor").strip()
     channel.description = (payload.description or "").strip() or None
     channel.avatar_path = (payload.avatar_path or "").strip() or channel.avatar_path
+    channel.catchphrases_json = json.dumps(payload.catchphrases or [], ensure_ascii=False)
     channel.default_voice_gender = (payload.default_voice_gender or "male").strip().lower()
     channel.allowed_themes = json.dumps(payload.allowed_themes or [], ensure_ascii=False)
     channel.is_active = bool(payload.is_active)
@@ -204,6 +209,7 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
         avatar_override_path=(payload.avatar_override_path or "").strip() or None,
         opening_message=(payload.opening_message or "").strip() or None,
         catchphrase_message=(payload.catchphrase_message or "").strip() or None,
+        catchphrases_json=json.dumps(payload.catchphrases or [], ensure_ascii=False),
         closing_message=(payload.closing_message or "").strip() or None,
         target_minutes=target_minutes,
         auto_publish_after_review=bool(payload.auto_publish_after_review),

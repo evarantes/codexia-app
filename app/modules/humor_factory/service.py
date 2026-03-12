@@ -2,6 +2,7 @@ import gc
 import json
 import math
 import os
+import random
 import traceback
 import uuid
 from datetime import datetime
@@ -100,13 +101,33 @@ class HumorFactoryService:
                 return None
         return None
 
-    def _generate_ai_jokes(self, theme: str, count: int, catchphrase: str = "") -> List[str]:
+    def _parse_json_list(self, raw: Optional[str]) -> List[str]:
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [str(x).strip() for x in data if str(x).strip()]
+        except Exception:
+            pass
+        return []
+
+    def _generate_ai_jokes(self, theme: str, count: int, catchphrase: str = "", catchphrases: Optional[List[str]] = None) -> List[str]:
         catchphrase_line = ""
         if (catchphrase or "").strip():
             catchphrase_line = (
                 f'- Bordão do personagem: "{catchphrase.strip()}". '
                 "Use de forma natural em parte das piadas, sem repetir em todas."
             )
+        elif catchphrases:
+            pool = [x.strip() for x in (catchphrases or []) if x and x.strip()]
+            if pool:
+                sample = pool[:6]
+                sample_txt = "; ".join(f"\"{x}\"" for x in sample)
+                catchphrase_line = (
+                    f"- Use ocasionalmente um destes bordões do personagem: {sample_txt}. "
+                    "Intercale de forma natural sem repetir em todas."
+                )
         prompt = f"""
 Você é roteirista de humor limpo para YouTube.
 Crie {count} piadas curtas e inéditas sobre o tema: "{theme}".
@@ -131,17 +152,17 @@ Retorne APENAS JSON válido:
             pass
         return self._fallback_jokes(theme, count)
 
-    def _generate_ai_jokes_by_themes(self, themes: List[str], count: int, catchphrase: str = "") -> List[str]:
+    def _generate_ai_jokes_by_themes(self, themes: List[str], count: int, catchphrase: str = "", catchphrases: Optional[List[str]] = None) -> List[str]:
         clean = [t.strip() for t in (themes or []) if t and t.strip()]
         if not clean:
             return self._fallback_jokes("humor geral", count)
         if len(clean) == 1:
-            return self._generate_ai_jokes(clean[0], count, catchphrase=catchphrase)
+            return self._generate_ai_jokes(clean[0], count, catchphrase=catchphrase, catchphrases=catchphrases)
 
         per_theme = max(4, math.ceil(count / len(clean)))
         buckets: List[List[str]] = []
         for t in clean:
-            jokes = self._generate_ai_jokes(t, per_theme, catchphrase=catchphrase)
+            jokes = self._generate_ai_jokes(t, per_theme, catchphrase=catchphrase, catchphrases=catchphrases)
             if not jokes:
                 jokes = self._fallback_jokes(t, per_theme)
             buckets.append(jokes)
@@ -263,7 +284,14 @@ Retorne APENAS JSON válido:
             themes_label = ", ".join(selected_themes) if selected_themes else "humor geral"
             opening_message = (project.opening_message or "").strip()
             catchphrase_message = (project.catchphrase_message or "").strip()
+            catchphrase_gallery = self._parse_json_list(project.catchphrases_json)
             closing_message = (project.closing_message or "").strip()
+            if not catchphrase_gallery and channel:
+                catchphrase_gallery = self._parse_json_list(getattr(channel, "catchphrases_json", None))
+
+            # Compatibilidade: bordão único legado entra na galeria.
+            if catchphrase_message and catchphrase_message not in catchphrase_gallery:
+                catchphrase_gallery.append(catchphrase_message)
 
             manual = self._parse_manual_jokes(project.manual_jokes_text)
             source = (project.joke_source or "ai").strip().lower()
@@ -274,9 +302,21 @@ Retorne APENAS JSON válido:
                 jokes = manual[:]
                 missing = max(0, needed_jokes - len(jokes))
                 if missing > 0:
-                    jokes.extend(self._generate_ai_jokes_by_themes(selected_themes, missing, catchphrase=catchphrase_message))
+                    jokes.extend(
+                        self._generate_ai_jokes_by_themes(
+                            selected_themes,
+                            missing,
+                            catchphrase=catchphrase_message,
+                            catchphrases=catchphrase_gallery,
+                        )
+                    )
             else:
-                jokes = self._generate_ai_jokes_by_themes(selected_themes, needed_jokes, catchphrase=catchphrase_message)
+                jokes = self._generate_ai_jokes_by_themes(
+                    selected_themes,
+                    needed_jokes,
+                    catchphrase=catchphrase_message,
+                    catchphrases=catchphrase_gallery,
+                )
 
             if len(jokes) < needed_jokes:
                 # Completa ciclando sem baixar qualidade do ritmo
@@ -346,6 +386,10 @@ Retorne APENAS JSON válido:
                 intro_narration = opening_message
                 if catchphrase_message and catchphrase_message.lower() not in intro_narration.lower():
                     intro_narration = f"{intro_narration} {catchphrase_message}"
+                elif catchphrase_gallery:
+                    pick = random.choice(catchphrase_gallery)
+                    if pick.lower() not in intro_narration.lower():
+                        intro_narration = f"{intro_narration} {pick}"
                 add_talking_scene(
                     text_on_screen=f"Abertura\n{opening_message}",
                     narration_text=intro_narration,
@@ -354,8 +398,11 @@ Retorne APENAS JSON válido:
 
             for idx, joke in enumerate(jokes, start=1):
                 narration = f"Piada {idx}. {joke} ... e já vem a próxima."
-                if catchphrase_message and idx % 3 == 1:
-                    narration = f"{catchphrase_message} {narration}"
+                if idx % 3 == 1:
+                    if catchphrase_gallery:
+                        narration = f"{random.choice(catchphrase_gallery)} {narration}"
+                    elif catchphrase_message:
+                        narration = f"{catchphrase_message} {narration}"
                 add_talking_scene(
                     text_on_screen=f"Piada {idx}/{len(jokes)}\n{joke}",
                     narration_text=narration,
@@ -366,6 +413,10 @@ Retorne APENAS JSON válido:
                 outro_narration = closing_message
                 if catchphrase_message and catchphrase_message.lower() not in outro_narration.lower():
                     outro_narration = f"{outro_narration} {catchphrase_message}"
+                elif catchphrase_gallery:
+                    pick = random.choice(catchphrase_gallery)
+                    if pick.lower() not in outro_narration.lower():
+                        outro_narration = f"{outro_narration} {pick}"
                 add_talking_scene(
                     text_on_screen=f"Encerramento\n{closing_message}",
                     narration_text=outro_narration,
@@ -408,6 +459,7 @@ Retorne APENAS JSON válido:
                         "humor_project_id": project.id,
                         "opening_message": opening_message,
                         "catchphrase_message": catchphrase_message,
+                        "catchphrases": catchphrase_gallery,
                         "closing_message": closing_message,
                         "jokes": jokes,
                     },
