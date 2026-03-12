@@ -52,6 +52,29 @@
                 <button @click="saveChannel" :disabled="savingChannel" class="bg-emerald-600 text-white px-4 py-2 rounded hover:bg-emerald-700 disabled:opacity-50">
                     <i v-if="savingChannel" class="fas fa-spinner fa-spin mr-2"></i> Salvar canal
                 </button>
+
+                <div class="mt-3 border-t pt-3 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <div class="text-sm font-semibold text-gray-700"><i class="fab fa-youtube mr-1 text-red-600"></i> Conexão YouTube</div>
+                        <span class="text-xs font-bold px-2 py-1 rounded" :class="youtubeStats.connected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
+                            {{ youtubeStats.connected ? 'Conectado' : 'Desconectado' }}
+                        </span>
+                    </div>
+                    <p v-if="youtubeStats.error" class="text-xs text-gray-600">{{ youtubeStats.error }}</p>
+                    <div class="flex flex-wrap gap-2">
+                        <button @click="connectYoutube" class="bg-red-600 text-white px-3 py-2 rounded hover:bg-red-700 text-sm">
+                            <i class="fab fa-youtube mr-1"></i> Conectar YouTube
+                        </button>
+                        <button @click="fetchYoutubeStats" class="bg-gray-100 text-gray-700 px-3 py-2 rounded hover:bg-gray-200 text-sm">
+                            <i class="fas fa-rotate mr-1"></i> Atualizar status
+                        </button>
+                    </div>
+                    <div v-if="showAuthCodeInput" class="space-y-2">
+                        <label class="text-xs font-semibold text-gray-700">Cole o código de autorização do Google</label>
+                        <input v-model="authCode" class="w-full border rounded p-2" placeholder="4/0A...">
+                        <button @click="submitAuthCode" class="bg-indigo-600 text-white px-3 py-2 rounded hover:bg-indigo-700 text-sm">Confirmar conexão</button>
+                    </div>
+                </div>
             </section>
 
             <section class="bg-white rounded-lg shadow p-6 space-y-4">
@@ -61,20 +84,17 @@
                     <input v-model="newProject.title" class="w-full border rounded p-2 mt-1" placeholder="Ex: 10 minutos de piadas gospel">
                 </div>
                 <div>
-                    <label class="text-sm font-semibold text-gray-700">Tema principal</label>
-                    <select v-model="newProject.theme" class="w-full border rounded p-2 mt-1">
-                        <option>Piadas de Português</option>
-                        <option>Piadas Religiosas</option>
-                        <option>Piadas Gospel</option>
-                        <option>Piadas de Escola</option>
-                        <option>Piadas de Casal</option>
-                        <option>Piadas de Trabalho</option>
-                        <option value="Tema Personalizado">Tema Personalizado</option>
-                    </select>
-                </div>
-                <div v-if="newProject.theme === 'Tema Personalizado'">
-                    <label class="text-sm font-semibold text-gray-700">Digite o tema</label>
-                    <input v-model="customTheme" class="w-full border rounded p-2 mt-1" placeholder="Ex: Piadas de fila de banco">
+                    <label class="text-sm font-semibold text-gray-700">Temas de piadas (marque vários para vídeo variado)</label>
+                    <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                        <label v-for="t in themeOptions" :key="t" class="inline-flex items-center gap-2 bg-gray-50 border rounded px-2 py-1">
+                            <input type="checkbox" :value="t" v-model="newProject.themes">
+                            <span>{{ t }}</span>
+                        </label>
+                    </div>
+                    <div class="mt-2">
+                        <label class="text-xs font-semibold text-gray-600">Tema personalizado (opcional)</label>
+                        <input v-model="customTheme" class="w-full border rounded p-2 mt-1" placeholder="Ex: Piadas de fila de banco">
+                    </div>
                 </div>
                 <div>
                     <label class="text-sm font-semibold text-gray-700">Fonte das piadas</label>
@@ -131,6 +151,7 @@
                             <td class="p-3">
                                 <div class="font-semibold">{{ p.title || p.theme }}</div>
                                 <div class="text-xs text-gray-500">{{ p.jokes_count }} piadas | {{ p.target_minutes }} min</div>
+                                <div v-if="p.themes && p.themes.length" class="text-[11px] text-gray-500">{{ p.themes.join(' • ') }}</div>
                             </td>
                             <td class="p-3">
                                 <span class="px-2 py-1 rounded text-xs font-bold" :class="statusClass(p.status)">{{ p.status }}</span>
@@ -171,21 +192,33 @@ createApp({
             savingChannel: false,
             creatingProject: false,
             customTheme: "",
+            themeOptions: [
+                "Piadas de Português",
+                "Piadas Religiosas",
+                "Piadas Gospel",
+                "Piadas de Escola",
+                "Piadas de Casal",
+                "Piadas de Trabalho",
+            ],
             newProject: {
                 title: "",
-                theme: "Piadas de Português",
+                themes: ["Piadas de Português"],
                 joke_source: "ai",
                 manual_jokes_text: "",
                 target_minutes: 10,
                 auto_publish_after_review: false,
                 start_immediately: true,
             },
+            youtubeStats: { connected: false, error: "" },
+            showAuthCodeInput: false,
+            authCode: "",
             projects: [],
             pollTimer: null,
         };
     },
     mounted() {
         this.fetchChannel();
+        this.fetchYoutubeStats();
         this.fetchProjects();
         this.pollTimer = setInterval(() => this.fetchProjects(), 8000);
     },
@@ -219,6 +252,50 @@ createApp({
                 }
             } catch (e) {
                 console.error(e);
+            }
+        },
+        async fetchYoutubeStats() {
+            try {
+                const res = await this.authFetch("/youtube/stats");
+                if (res.ok) {
+                    this.youtubeStats = await res.json();
+                } else {
+                    this.youtubeStats = { connected: false, error: "Falha ao consultar status do YouTube." };
+                }
+            } catch (e) {
+                this.youtubeStats = { connected: false, error: String(e.message || e) };
+            }
+        },
+        async connectYoutube() {
+            try {
+                const res = await this.authFetch("/youtube/auth_url");
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.auth_url) {
+                    throw new Error(data.detail || "Não foi possível gerar URL de conexão do YouTube.");
+                }
+                window.open(data.auth_url, "_blank");
+                this.showAuthCodeInput = true;
+            } catch (e) {
+                alert("Erro ao conectar YouTube: " + (e.message || e));
+            }
+        },
+        async submitAuthCode() {
+            try {
+                const code = String(this.authCode || "").trim().replace(/\s/g, "");
+                if (!code) throw new Error("Cole o código de autorização.");
+                const res = await this.authFetch("/youtube/auth/exchange", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ code })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || "Falha ao autenticar com YouTube.");
+                alert("Canal conectado com sucesso.");
+                this.showAuthCodeInput = false;
+                this.authCode = "";
+                this.fetchYoutubeStats();
+            } catch (e) {
+                alert("Erro ao confirmar código: " + (e.message || e));
             }
         },
         async saveChannel() {
@@ -258,9 +335,16 @@ createApp({
         async createProject() {
             this.creatingProject = true;
             try {
-                const theme = this.newProject.theme === "Tema Personalizado" ? (this.customTheme || "").trim() : this.newProject.theme;
-                if (!theme) throw new Error("Informe o tema do projeto.");
-                const payload = { ...this.newProject, theme, channel_id: this.channel.id || null };
+                const themes = Array.isArray(this.newProject.themes) ? [...this.newProject.themes] : [];
+                const custom = (this.customTheme || "").trim();
+                if (custom) themes.push(custom);
+                const uniqThemes = [...new Set(themes.map(t => String(t).trim()).filter(Boolean))];
+                if (uniqThemes.length === 0) throw new Error("Selecione pelo menos um tema.");
+                const payload = {
+                    ...this.newProject,
+                    themes: uniqThemes,
+                    channel_id: this.channel.id || null,
+                };
                 const res = await this.authFetch("/humor-factory/projects", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },

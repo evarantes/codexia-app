@@ -62,6 +62,19 @@ class HumorFactoryService:
             idx += 1
         return out
 
+    def _theme_list(self, value: Optional[str]) -> List[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        parts = [x.strip() for x in raw.split("|")]
+        seen = set()
+        out = []
+        for p in parts:
+            if p and p.lower() not in seen:
+                seen.add(p.lower())
+                out.append(p)
+        return out
+
     def _extract_json_array(self, text: str) -> Optional[List[str]]:
         raw = (text or "").strip()
         if not raw:
@@ -111,6 +124,41 @@ Retorne APENAS JSON válido:
             pass
         return self._fallback_jokes(theme, count)
 
+    def _generate_ai_jokes_by_themes(self, themes: List[str], count: int) -> List[str]:
+        clean = [t.strip() for t in (themes or []) if t and t.strip()]
+        if not clean:
+            return self._fallback_jokes("humor geral", count)
+        if len(clean) == 1:
+            return self._generate_ai_jokes(clean[0], count)
+
+        per_theme = max(4, math.ceil(count / len(clean)))
+        buckets: List[List[str]] = []
+        for t in clean:
+            jokes = self._generate_ai_jokes(t, per_theme)
+            if not jokes:
+                jokes = self._fallback_jokes(t, per_theme)
+            buckets.append(jokes)
+
+        # Intercala para aumentar variedade no vídeo.
+        mixed: List[str] = []
+        i = 0
+        while len(mixed) < count:
+            added = False
+            for bucket in buckets:
+                if i < len(bucket):
+                    mixed.append(bucket[i])
+                    added = True
+                    if len(mixed) >= count:
+                        break
+            if not added:
+                break
+            i += 1
+
+        if len(mixed) < count:
+            extra = self._fallback_jokes(", ".join(clean), count - len(mixed))
+            mixed.extend(extra)
+        return mixed[:count]
+
     def _resolve_avatar_path(self, channel: Optional[HumorChannel], video_gen: VideoGenerator) -> Optional[str]:
         if channel and channel.avatar_path:
             p = str(channel.avatar_path).strip()
@@ -147,6 +195,21 @@ Retorne APENAS JSON válido:
             return clip.with_fps(fps)
         return clip.set_fps(fps)
 
+    def _animated_clip(self, VideoClipClass, make_frame_fn, duration: float):
+        # Compatibilidade MoviePy 1.x e 2.x
+        try:
+            return VideoClipClass(frame_function=make_frame_fn, duration=duration)
+        except TypeError:
+            pass
+        try:
+            return VideoClipClass(make_frame=make_frame_fn, duration=duration)
+        except TypeError:
+            pass
+        try:
+            return VideoClipClass(make_frame_fn, duration=duration)
+        except TypeError:
+            return VideoClipClass(make_frame_fn)
+
     def _build_title(self, project: HumorProject) -> str:
         if (project.title or "").strip():
             return project.title.strip()
@@ -179,6 +242,8 @@ Retorne APENAS JSON válido:
             target_seconds = target_minutes * 60
             estimated_secs_per_joke = 12
             needed_jokes = max(20, math.ceil(target_seconds / estimated_secs_per_joke))
+            selected_themes = self._theme_list(project.theme)
+            themes_label = ", ".join(selected_themes) if selected_themes else "humor geral"
 
             manual = self._parse_manual_jokes(project.manual_jokes_text)
             source = (project.joke_source or "ai").strip().lower()
@@ -189,20 +254,20 @@ Retorne APENAS JSON válido:
                 jokes = manual[:]
                 missing = max(0, needed_jokes - len(jokes))
                 if missing > 0:
-                    jokes.extend(self._generate_ai_jokes(project.theme, missing))
+                    jokes.extend(self._generate_ai_jokes_by_themes(selected_themes, missing))
             else:
-                jokes = self._generate_ai_jokes(project.theme, needed_jokes)
+                jokes = self._generate_ai_jokes_by_themes(selected_themes, needed_jokes)
 
             if len(jokes) < needed_jokes:
                 # Completa ciclando sem baixar qualidade do ritmo
-                src = jokes[:] if jokes else self._fallback_jokes(project.theme, needed_jokes)
+                src = jokes[:] if jokes else self._fallback_jokes(themes_label, needed_jokes)
                 idx = 0
                 while len(jokes) < needed_jokes:
                     jokes.append(src[idx % len(src)])
                     idx += 1
 
             project.jokes_json = json.dumps(jokes, ensure_ascii=False)
-            self._set_progress(db, project, 12, f"{len(jokes)} piadas preparadas para o vídeo.")
+            self._set_progress(db, project, 12, f"{len(jokes)} piadas preparadas (temas: {themes_label}).")
 
             video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
             avatar_path = self._resolve_avatar_path(channel, video_gen)
@@ -245,7 +310,7 @@ Retorne APENAS JSON válido:
                 def make_frame(t, fo=frame_open, fc=frame_closed):
                     return fo if int(t * 5.4) % 2 == 0 else fc
 
-                clip = VideoClip(make_frame=make_frame, duration=duration)
+                clip = self._animated_clip(VideoClip, make_frame, duration)
                 clip = self._clip_with_audio(clip, audio_clip)
                 clip = self._clip_with_fps(clip, 24)
                 clips.append(clip)
@@ -276,7 +341,7 @@ Retorne APENAS JSON válido:
                 theme=project.theme,
                 title=self._build_title(project),
                 description=(
-                    f"Projeto Fábrica de Humor - tema {project.theme}. "
+                    f"Projeto Fábrica de Humor - temas: {themes_label}. "
                     "Conteúdo limpo e familiar, sem baixaria."
                 ),
                 scheduled_for=datetime.now(),

@@ -30,7 +30,8 @@ class HumorChannelRequest(BaseModel):
 class HumorProjectRequest(BaseModel):
     channel_id: Optional[int] = None
     title: Optional[str] = None
-    theme: str
+    theme: Optional[str] = None
+    themes: List[str] = Field(default_factory=list)
     joke_source: str = Field(default="ai")  # ai | manual | mixed
     manual_jokes_text: Optional[str] = None
     target_minutes: int = Field(default=10, ge=1, le=60)
@@ -57,11 +58,13 @@ def _parse_json_list(value: Optional[str]) -> List[str]:
 
 def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
     jokes = _parse_json_list(p.jokes_json)
+    themes = [x.strip() for x in str(p.theme or "").split("|") if x.strip()]
     return {
         "id": p.id,
         "channel_id": p.channel_id,
         "title": p.title,
         "theme": p.theme,
+        "themes": themes,
         "joke_source": p.joke_source,
         "manual_jokes_text": p.manual_jokes_text,
         "jokes_count": len(jokes),
@@ -158,11 +161,21 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
     if source == "manual" and not (payload.manual_jokes_text or "").strip():
         raise HTTPException(status_code=400, detail="Informe as piadas no modo manual.")
 
+    raw_themes = [str(t).strip() for t in (payload.themes or []) if str(t).strip()]
+    if payload.theme and str(payload.theme).strip():
+        raw_themes.append(str(payload.theme).strip())
+    themes = []
+    for t in raw_themes:
+        if t not in themes:
+            themes.append(t)
+    if not themes:
+        raise HTTPException(status_code=400, detail="Selecione pelo menos um tema de piadas.")
+
     target_minutes = max(10, int(payload.target_minutes or 10))
     project = HumorProject(
         channel_id=payload.channel_id,
         title=(payload.title or "").strip() or None,
-        theme=(payload.theme or "").strip(),
+        theme=" | ".join(themes),
         joke_source=source,
         manual_jokes_text=payload.manual_jokes_text or "",
         target_minutes=target_minutes,
