@@ -1,11 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.modules.ai_factory.service import AIFactoryService
-from app.modules.ai_factory.models import AIStory, AICover, AIImage, AIScript
+from app.modules.ai_factory.models import AIStory, AICover, AIImage, AIScript, AIJokeChannelProject
 from pydantic import BaseModel
-from typing import Optional, List
-import json
+from typing import Optional
 
 router = APIRouter(prefix="/ai-factory", tags=["ai-factory"])
 service = AIFactoryService()
@@ -35,6 +34,25 @@ class ScriptRequest(BaseModel):
 
 class ShortsRequest(BaseModel):
     script_id: int
+
+class JokeChannelRequest(BaseModel):
+    channel_name: str = "Canal de Piadas Sem Baixaria"
+    theme: str
+    category: Optional[str] = "Livre"
+    tone: Optional[str] = "Leve e familiar"
+    duration_minutes: int = 10
+    jokes_count: int = 24
+    source_mode: Optional[str] = "ai"
+    manual_jokes: Optional[str] = ""
+    avatar_name: Optional[str] = "Zeca do Riso"
+    avatar_style: Optional[str] = "cartoon simpatico em estudio"
+    avatar_description: Optional[str] = "apresentador fixo, sorridente e acolhedor"
+    auto_publish: bool = False
+
+class JokeChannelReviewRequest(BaseModel):
+    status: str
+    review_notes: Optional[str] = ""
+    auto_publish: Optional[bool] = None
 
 # Endpoints
 
@@ -178,6 +196,80 @@ async def generate_shorts(request: ShortsRequest, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/jokes-channel")
+async def generate_jokes_channel(request: JokeChannelRequest, db: Session = Depends(get_db)):
+    try:
+        payload = await service.generate_joke_channel_package(
+            channel_name=request.channel_name,
+            theme=request.theme,
+            category=request.category or "Livre",
+            tone=request.tone or "Leve e familiar",
+            duration_minutes=request.duration_minutes,
+            jokes_count=request.jokes_count,
+            source_mode=request.source_mode or "ai",
+            manual_jokes=request.manual_jokes or "",
+            avatar_name=request.avatar_name or "Zeca do Riso",
+            avatar_style=request.avatar_style or "cartoon simpatico em estudio",
+            avatar_description=request.avatar_description or "apresentador fixo, sorridente e acolhedor",
+            auto_publish=request.auto_publish,
+        )
+
+        db_project = AIJokeChannelProject(
+            channel_name=request.channel_name,
+            theme=request.theme,
+            category=request.category or "Livre",
+            tone=request.tone or "Leve e familiar",
+            source_mode=request.source_mode or "ai",
+            duration_minutes=request.duration_minutes,
+            jokes_count=max(request.jokes_count, request.duration_minutes * 2),
+            manual_jokes=request.manual_jokes or "",
+            avatar_name=request.avatar_name or "Zeca do Riso",
+            avatar_style=request.avatar_style or "cartoon simpatico em estudio",
+            avatar_description=request.avatar_description or "apresentador fixo, sorridente e acolhedor",
+            auto_publish=request.auto_publish,
+            status="ready_for_review",
+            generated_payload=payload,
+        )
+        db.add(db_project)
+        db.commit()
+        db.refresh(db_project)
+
+        return db_project
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/jokes-channel")
+async def list_jokes_channel_projects(db: Session = Depends(get_db)):
+    return (
+        db.query(AIJokeChannelProject)
+        .order_by(AIJokeChannelProject.created_at.desc(), AIJokeChannelProject.id.desc())
+        .all()
+    )
+
+@router.post("/jokes-channel/{project_id}/review")
+async def review_jokes_channel_project(project_id: int, request: JokeChannelReviewRequest, db: Session = Depends(get_db)):
+    project = db.query(AIJokeChannelProject).filter(AIJokeChannelProject.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Projeto de canal de piadas nao encontrado")
+
+    allowed_statuses = {"ready_for_review", "approved", "needs_changes", "scheduled"}
+    if request.status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="Status de revisao invalido")
+
+    project.status = request.status
+    if request.review_notes is not None:
+        project.review_notes = request.review_notes
+    if request.auto_publish is not None:
+        project.auto_publish = request.auto_publish
+
+    db.commit()
+    db.refresh(project)
+    return project
+
 @router.get("/library")
 async def get_library(type: str = "all", db: Session = Depends(get_db)):
     response = {}
@@ -193,5 +285,12 @@ async def get_library(type: str = "all", db: Session = Depends(get_db)):
         
     if type in ["all", "scripts"]:
         response["scripts"] = db.query(AIScript).order_by(AIScript.created_at.desc()).all()
+
+    if type in ["all", "joke_projects"]:
+        response["joke_projects"] = (
+            db.query(AIJokeChannelProject)
+            .order_by(AIJokeChannelProject.created_at.desc(), AIJokeChannelProject.id.desc())
+            .all()
+        )
         
     return response

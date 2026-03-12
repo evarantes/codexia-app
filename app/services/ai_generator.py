@@ -11,13 +11,21 @@ load_dotenv()
 
 class AIContentGenerator:
     def __init__(self):
+        self._settings_warning_logged = False
         self._load_config()
 
     def _load_config(self):
         # Tenta carregar do banco primeiro, depois do .env
         db = SessionLocal()
-        settings = db.query(Settings).first()
-        db.close()
+        settings = None
+        try:
+            settings = db.query(Settings).first()
+        except Exception as e:
+            if not self._settings_warning_logged:
+                print("AIContentGenerator: usando fallback de ambiente porque a tabela settings ainda nao esta disponivel.")
+                self._settings_warning_logged = True
+        finally:
+            db.close()
 
         self.api_key = None
         self.gemini_key = None

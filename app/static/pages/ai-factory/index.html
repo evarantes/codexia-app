@@ -9,237 +9,556 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         [v-cloak] { display: none; }
-        .fade-enter-active, .fade-leave-active { transition: opacity 0.5s; }
-        .fade-enter-from, .fade-leave-to { opacity: 0; }
     </style>
 </head>
 <body class="bg-gray-100 font-sans">
-    <div id="app" class="flex h-screen" v-cloak>
-        <!-- Sidebar (Replicated for consistency) -->
-        <aside class="bg-indigo-900 text-white flex flex-col w-64 fixed inset-y-0 left-0 z-30 md:relative">
+    <div id="app" class="flex min-h-screen" v-cloak>
+        <aside class="bg-indigo-900 text-white flex flex-col w-72 fixed inset-y-0 left-0 z-30 lg:relative">
             <div class="p-6 text-2xl font-bold flex items-center gap-2">
                 <i class="fas fa-robot"></i> AI Factory
             </div>
-            <nav class="flex-1 px-4 space-y-2">
-                <a href="/" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition opacity-75">
+            <nav class="flex-1 px-4 space-y-2 pb-6 overflow-y-auto">
+                <a href="/" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition opacity-80">
                     <i class="fas fa-arrow-left"></i> Voltar ao Codexia
                 </a>
                 <div class="border-t border-indigo-700 my-2"></div>
-                <a href="#" @click="currentTab = 'story'" :class="{'bg-indigo-700': currentTab === 'story'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                <a href="#" @click.prevent="currentTab = 'story'" :class="sidebarClass('story')" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-book-open"></i> Gerar História
                 </a>
-                <a href="#" @click="currentTab = 'cover'" :class="{'bg-indigo-700': currentTab === 'cover'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                <a href="#" @click.prevent="currentTab = 'cover'" :class="sidebarClass('cover')" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-image"></i> Gerar Capas
                 </a>
-                <a href="#" @click="currentTab = 'image'" :class="{'bg-indigo-700': currentTab === 'image'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                <a href="#" @click.prevent="currentTab = 'image'" :class="sidebarClass('image')" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-images"></i> Gerar Imagens
                 </a>
-                <a href="#" @click="currentTab = 'script'" :class="{'bg-indigo-700': currentTab === 'script'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                <a href="#" @click.prevent="currentTab = 'script'" :class="sidebarClass('script')" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-video"></i> Gerar Roteiro
                 </a>
-                <a href="#" @click="currentTab = 'shorts'" :class="{'bg-indigo-700': currentTab === 'shorts'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                <a href="#" @click.prevent="openJokesChannel()" :class="sidebarClass('jokes_channel')" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-laugh-beam"></i> Canal de Piadas
+                </a>
+                <a href="#" @click.prevent="openShortsTab()" :class="sidebarClass('shorts')" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-mobile-alt"></i> Gerar Shorts
                 </a>
-                <a href="#" @click="currentTab = 'library'; fetchLibrary()" :class="{'bg-indigo-700': currentTab === 'library'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                <a href="#" @click.prevent="openLibrary()" :class="sidebarClass('library')" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-archive"></i> Biblioteca
                 </a>
             </nav>
         </aside>
 
-        <!-- Main Content -->
-        <main class="flex-1 overflow-y-auto p-8">
-            
-            <!-- Story Generator -->
-            <div v-if="currentTab === 'story'" class="max-w-4xl mx-auto">
-                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Histórias</h2>
-                <div class="bg-white p-6 rounded shadow mb-6">
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <div>
-                            <label class="block font-bold mb-1">Tema</label>
-                            <input v-model="story.theme" class="w-full border p-2 rounded" placeholder="Ex: Ficção Científica em Marte">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Estilo</label>
-                            <input v-model="story.style" class="w-full border p-2 rounded" placeholder="Ex: Cyberpunk, Dark">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Público</label>
-                            <input v-model="story.audience" class="w-full border p-2 rounded" placeholder="Ex: Jovem Adulto">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Tamanho</label>
-                            <select v-model="story.length" class="w-full border p-2 rounded">
-                                <option>Curto</option>
-                                <option>Médio</option>
-                                <option>Longo</option>
-                            </select>
-                        </div>
-                    </div>
-                    <button @click="generateStory" :disabled="loading" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 w-full">
-                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar História
-                    </button>
-                </div>
-                
-                <div v-if="storyResult" class="bg-white p-6 rounded shadow animate-fade-in">
-                    <h3 class="text-2xl font-bold mb-2">{{ storyResult.title }}</h3>
-                    <p class="italic text-gray-600 mb-4">{{ storyResult.synopsis }}</p>
-                    
-                    <div class="mb-4">
-                        <h4 class="font-bold border-b pb-2 mb-2">Estrutura</h4>
-                        <ul class="list-disc pl-5">
-                            <li v-for="chap in storyResult.chapters_structure" :key="chap.chapter">
-                                <strong>Cap {{ chap.chapter }}: {{ chap.title }}</strong> - {{ chap.summary }}
-                            </li>
-                        </ul>
-                    </div>
-                    
-                    <div>
-                        <h4 class="font-bold border-b pb-2 mb-2">Primeiro Capítulo</h4>
-                        <div class="whitespace-pre-wrap text-gray-700">{{ storyResult.first_chapter_content }}</div>
-                    </div>
-                </div>
-            </div>
+        <main class="flex-1 overflow-y-auto p-6 lg:p-8 lg:ml-0 ml-72">
+            <div class="max-w-7xl mx-auto">
+                <div v-if="currentTab === 'story'" class="max-w-4xl">
+                    <h2 class="text-3xl font-bold mb-2 text-gray-800">Gerador de Histórias</h2>
+                    <p class="text-gray-500 mb-6">Monte estruturas narrativas completas para livros, vídeos ou séries de conteúdo.</p>
 
-            <!-- Cover Generator -->
-            <div v-if="currentTab === 'cover'" class="max-w-4xl mx-auto">
-                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Capas</h2>
-                <div class="bg-white p-6 rounded shadow mb-6">
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <div>
-                            <label class="block font-bold mb-1">Título</label>
-                            <input v-model="cover.title" class="w-full border p-2 rounded">
+                    <div class="bg-white p-6 rounded-xl shadow mb-6">
+                        <div class="grid md:grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label class="block font-semibold mb-1">Tema</label>
+                                <input v-model="story.theme" class="w-full border p-3 rounded-lg" placeholder="Ex: Ficção científica em Marte">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Estilo</label>
+                                <input v-model="story.style" class="w-full border p-3 rounded-lg" placeholder="Ex: Cyberpunk, dark, poético">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Público</label>
+                                <input v-model="story.audience" class="w-full border p-3 rounded-lg" placeholder="Ex: Jovem adulto">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Tamanho</label>
+                                <select v-model="story.length" class="w-full border p-3 rounded-lg">
+                                    <option>Curto</option>
+                                    <option>Médio</option>
+                                    <option>Longo</option>
+                                </select>
+                            </div>
                         </div>
-                        <div>
-                            <label class="block font-bold mb-1">Subtítulo</label>
-                            <input v-model="cover.subtitle" class="w-full border p-2 rounded">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Autor</label>
-                            <input v-model="cover.author" class="w-full border p-2 rounded">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Estilo Visual</label>
-                            <input v-model="cover.style" class="w-full border p-2 rounded" placeholder="Ex: Minimalista, Pintura a óleo">
-                        </div>
-                    </div>
-                    <button @click="generateCover" :disabled="loading" class="bg-pink-600 text-white px-6 py-2 rounded hover:bg-pink-700 w-full">
-                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar Capa
-                    </button>
-                </div>
-
-                <div v-if="coverResult" class="bg-white p-6 rounded shadow text-center">
-                    <img :src="coverResult.image_url" class="max-w-md mx-auto rounded shadow-lg mb-4">
-                    <p class="text-gray-500 text-sm">Prompt utilizado: {{ coverResult.prompt }}</p>
-                </div>
-            </div>
-
-            <!-- Image Generator -->
-            <div v-if="currentTab === 'image'" class="max-w-4xl mx-auto">
-                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Imagens</h2>
-                <div class="bg-white p-6 rounded shadow mb-6">
-                    <div class="mb-4">
-                        <label class="block font-bold mb-1">Tema / Descrição</label>
-                        <textarea v-model="image.theme" class="w-full border p-2 rounded" rows="3"></textarea>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <div>
-                            <label class="block font-bold mb-1">Estilo</label>
-                            <input v-model="image.style" class="w-full border p-2 rounded">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Quantidade</label>
-                            <input v-model="image.quantity" type="number" min="1" max="4" class="w-full border p-2 rounded">
-                        </div>
-                    </div>
-                    <button @click="generateImage" :disabled="loading" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 w-full">
-                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar Imagens
-                    </button>
-                </div>
-
-                <div v-if="imageResults.length" class="grid grid-cols-2 gap-4">
-                    <div v-for="img in imageResults" :key="img.id" class="bg-white p-2 rounded shadow">
-                        <img :src="img.image_url" class="w-full rounded">
-                    </div>
-                </div>
-            </div>
-
-            <!-- Script Generator -->
-            <div v-if="currentTab === 'script'" class="max-w-4xl mx-auto">
-                <h2 class="text-3xl font-bold mb-6 text-gray-800">Gerador de Roteiro</h2>
-                <div class="bg-white p-6 rounded shadow mb-6">
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <div class="col-span-2">
-                            <label class="block font-bold mb-1">Tema do Vídeo</label>
-                            <input v-model="script.theme" class="w-full border p-2 rounded">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Duração</label>
-                            <input v-model="script.duration" class="w-full border p-2 rounded">
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1">Narrativa</label>
-                            <select v-model="script.narrative_type" class="w-full border p-2 rounded">
-                                <option>Documentário</option>
-                                <option>Vlog</option>
-                                <option>Tutorial</option>
-                                <option>Drama</option>
-                            </select>
-                        </div>
-                    </div>
-                    <button @click="generateScript" :disabled="loading" class="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 w-full">
-                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i> Gerar Roteiro
-                    </button>
-                </div>
-
-                <div v-if="scriptResult" class="bg-white p-6 rounded shadow">
-                    <h3 class="text-xl font-bold mb-4">Roteiro Gerado</h3>
-                    <div class="whitespace-pre-wrap bg-gray-50 p-4 rounded border">{{ scriptResult.script_content }}</div>
-                    
-                    <div class="mt-6 text-center">
-                        <button @click="generateShorts(scriptResult.id)" :disabled="loading" class="bg-purple-600 text-white px-6 py-2 rounded hover:bg-purple-700">
-                            <i class="fas fa-cut mr-2"></i> Gerar Shorts deste Roteiro
+                        <button @click="generateStory" :disabled="loading" class="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 w-full font-semibold">
+                            <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i>Gerar História
                         </button>
                     </div>
 
-                    <div v-if="scriptResult.shorts" class="mt-6">
-                        <h4 class="font-bold text-lg mb-4">Shorts Derivados</h4>
-                        <div v-for="short in scriptResult.shorts" class="mb-4 bg-purple-50 p-4 rounded border border-purple-200">
-                            <h5 class="font-bold text-purple-900">{{ short.title }}</h5>
-                            <p class="text-sm text-gray-700">{{ short.content }}</p>
+                    <div v-if="storyResult" class="bg-white p-6 rounded-xl shadow">
+                        <h3 class="text-2xl font-bold mb-2">{{ storyResult.title || 'História gerada' }}</h3>
+                        <p class="italic text-gray-600 mb-4">{{ storyResult.synopsis || storyResult.raw_content }}</p>
+                        <div v-if="storyResult.chapters_structure?.length" class="mb-4">
+                            <h4 class="font-bold border-b pb-2 mb-2">Estrutura</h4>
+                            <ul class="list-disc pl-5 space-y-2">
+                                <li v-for="chap in storyResult.chapters_structure" :key="chap.chapter">
+                                    <strong>Cap. {{ chap.chapter }} - {{ chap.title }}</strong> {{ chap.summary }}
+                                </li>
+                            </ul>
+                        </div>
+                        <div v-if="storyResult.first_chapter_content">
+                            <h4 class="font-bold border-b pb-2 mb-2">Primeiro Capítulo</h4>
+                            <div class="whitespace-pre-wrap text-gray-700">{{ storyResult.first_chapter_content }}</div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Library -->
-            <div v-if="currentTab === 'library'" class="max-w-6xl mx-auto">
-                <h2 class="text-3xl font-bold mb-6 text-gray-800">Biblioteca de Conteúdo</h2>
-                
-                <div v-if="libraryData" class="space-y-8">
-                    <!-- Stories -->
-                    <div v-if="libraryData.stories && libraryData.stories.length">
-                        <h3 class="text-xl font-bold border-b pb-2 mb-4">Histórias</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div v-for="item in libraryData.stories" class="bg-white p-4 rounded shadow">
+                <div v-if="currentTab === 'cover'" class="max-w-5xl">
+                    <h2 class="text-3xl font-bold mb-2 text-gray-800">Gerador de Capas</h2>
+                    <p class="text-gray-500 mb-6">Crie capas conceituais com prompt refinado e imagem pronta para validação.</p>
+
+                    <div class="bg-white p-6 rounded-xl shadow mb-6">
+                        <div class="grid md:grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label class="block font-semibold mb-1">Título</label>
+                                <input v-model="cover.title" class="w-full border p-3 rounded-lg">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Subtítulo</label>
+                                <input v-model="cover.subtitle" class="w-full border p-3 rounded-lg">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Autor</label>
+                                <input v-model="cover.author" class="w-full border p-3 rounded-lg">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Estilo Visual</label>
+                                <input v-model="cover.style" class="w-full border p-3 rounded-lg" placeholder="Ex: Minimalista, pintura a óleo">
+                            </div>
+                        </div>
+                        <button @click="generateCover" :disabled="loading" class="bg-pink-600 text-white px-6 py-3 rounded-lg hover:bg-pink-700 w-full font-semibold">
+                            <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i>Gerar Capa
+                        </button>
+                    </div>
+
+                    <div v-if="coverResult" class="bg-white p-6 rounded-xl shadow text-center">
+                        <img :src="coverResult.image_url" class="max-w-md mx-auto rounded-xl shadow-lg mb-4" alt="Capa gerada">
+                        <p class="text-gray-500 text-sm">Prompt utilizado: {{ coverResult.prompt }}</p>
+                    </div>
+                </div>
+
+                <div v-if="currentTab === 'image'" class="max-w-5xl">
+                    <h2 class="text-3xl font-bold mb-2 text-gray-800">Gerador de Imagens</h2>
+                    <p class="text-gray-500 mb-6">Gere imagens de apoio, cenas ou conceitos visuais.</p>
+
+                    <div class="bg-white p-6 rounded-xl shadow mb-6">
+                        <div class="mb-4">
+                            <label class="block font-semibold mb-1">Tema / Descrição</label>
+                            <textarea v-model="image.theme" class="w-full border p-3 rounded-lg" rows="4" placeholder="Descreva a cena ou a ideia visual"></textarea>
+                        </div>
+                        <div class="grid md:grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label class="block font-semibold mb-1">Estilo</label>
+                                <input v-model="image.style" class="w-full border p-3 rounded-lg">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Quantidade</label>
+                                <input v-model="image.quantity" type="number" min="1" max="4" class="w-full border p-3 rounded-lg">
+                            </div>
+                        </div>
+                        <button @click="generateImage" :disabled="loading" class="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 w-full font-semibold">
+                            <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i>Gerar Imagens
+                        </button>
+                    </div>
+
+                    <div v-if="imageResults.length" class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        <div v-for="img in imageResults" :key="img.id" class="bg-white p-3 rounded-xl shadow">
+                            <img :src="img.image_url" class="w-full rounded-lg" alt="Imagem gerada">
+                            <p class="text-xs text-gray-500 mt-2">{{ img.prompt }}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="currentTab === 'script'" class="max-w-6xl">
+                    <h2 class="text-3xl font-bold mb-2 text-gray-800">Gerador de Roteiro</h2>
+                    <p class="text-gray-500 mb-6">Crie roteiros longos para YouTube com cenas, narrativa e derivação para shorts.</p>
+
+                    <div class="bg-white p-6 rounded-xl shadow mb-6">
+                        <div class="grid md:grid-cols-2 gap-4 mb-4">
+                            <div class="md:col-span-2">
+                                <label class="block font-semibold mb-1">Tema do Vídeo</label>
+                                <input v-model="script.theme" class="w-full border p-3 rounded-lg" placeholder="Ex: Como organizar uma rotina de estudos">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Duração</label>
+                                <input v-model="script.duration" class="w-full border p-3 rounded-lg" placeholder="Ex: 8 minutos">
+                            </div>
+                            <div>
+                                <label class="block font-semibold mb-1">Narrativa</label>
+                                <select v-model="script.narrative_type" class="w-full border p-3 rounded-lg">
+                                    <option>Documentário</option>
+                                    <option>Vlog</option>
+                                    <option>Tutorial</option>
+                                    <option>Drama</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button @click="generateScript" :disabled="loading" class="bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 w-full font-semibold">
+                            <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i>Gerar Roteiro
+                        </button>
+                    </div>
+
+                    <div v-if="scriptResult" class="bg-white p-6 rounded-xl shadow">
+                        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                            <div>
+                                <h3 class="text-2xl font-bold">{{ scriptResult.title || 'Roteiro gerado' }}</h3>
+                                <p class="text-gray-500">Pronto para edição, derivação ou reaproveitamento.</p>
+                            </div>
+                            <button @click="generateShorts(scriptResult.id)" :disabled="loading || !scriptResult.id" class="bg-purple-600 text-white px-5 py-3 rounded-lg hover:bg-purple-700 font-semibold">
+                                <i class="fas fa-cut mr-2"></i>Gerar Shorts deste roteiro
+                            </button>
+                        </div>
+
+                        <div class="whitespace-pre-wrap bg-gray-50 p-4 rounded-lg border text-gray-700">{{ scriptResult.script_content || scriptResult.raw_content }}</div>
+
+                        <div v-if="scriptResult.scenes?.length" class="mt-6">
+                            <h4 class="font-bold text-lg mb-4">Cenas sugeridas</h4>
+                            <div class="grid gap-4">
+                                <div v-for="scene in scriptResult.scenes" :key="scene.scene" class="border rounded-lg p-4 bg-white">
+                                    <div class="font-semibold text-gray-800 mb-2">Cena {{ scene.scene }}</div>
+                                    <div class="text-sm text-gray-600 mb-2"><strong>Visual:</strong> {{ scene.visual }}</div>
+                                    <div class="text-sm text-gray-700"><strong>Narração:</strong> {{ scene.narration }}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-if="scriptResult.shorts?.length" class="mt-6">
+                            <h4 class="font-bold text-lg mb-4">Shorts derivados</h4>
+                            <div class="grid gap-4">
+                                <div v-for="short in scriptResult.shorts" :key="short.title" class="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                                    <h5 class="font-semibold text-purple-900">{{ short.title }}</h5>
+                                    <p class="text-sm text-gray-700 mt-2">{{ short.content }}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="currentTab === 'jokes_channel'" class="space-y-6">
+                    <div>
+                        <h2 class="text-3xl font-bold mb-2 text-gray-800">Canal de Piadas Sem Baixaria</h2>
+                        <p class="text-gray-500">Novo bloco para montar videos longos com avatar fixo, piadas curtas, temas segmentados, imagem do personagem e fila de revisao antes da automacao.</p>
+                    </div>
+
+                    <div class="grid xl:grid-cols-3 gap-6">
+                        <div class="xl:col-span-1">
+                            <div class="bg-white p-6 rounded-xl shadow sticky top-6">
+                                <h3 class="text-xl font-bold mb-4">Configurar bloco</h3>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block font-semibold mb-1">Nome do canal</label>
+                                        <input v-model="jokesChannel.channel_name" class="w-full border p-3 rounded-lg">
+                                    </div>
+                                    <div>
+                                        <label class="block font-semibold mb-1">Tema principal</label>
+                                        <input v-model="jokesChannel.theme" class="w-full border p-3 rounded-lg" placeholder="Ex: piadas com portugues, igreja, cotidiano">
+                                    </div>
+                                    <div>
+                                        <label class="block font-semibold mb-1">Categoria</label>
+                                        <select v-model="jokesChannel.category" class="w-full border p-3 rounded-lg">
+                                            <option>Português</option>
+                                            <option>Religiosa</option>
+                                            <option>Gospel</option>
+                                            <option>Família</option>
+                                            <option>Casal</option>
+                                            <option>Escola</option>
+                                            <option>Trabalho</option>
+                                            <option>Regional</option>
+                                            <option>Livre</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block font-semibold mb-1">Tom</label>
+                                        <select v-model="jokesChannel.tone" class="w-full border p-3 rounded-lg">
+                                            <option>Leve e familiar</option>
+                                            <option>Esperto e rapido</option>
+                                            <option>Respeitoso e gospel</option>
+                                            <option>Popular e acolhedor</option>
+                                        </select>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="block font-semibold mb-1">Duracao alvo</label>
+                                            <input v-model="jokesChannel.duration_minutes" type="number" min="10" class="w-full border p-3 rounded-lg">
+                                        </div>
+                                        <div>
+                                            <label class="block font-semibold mb-1">Meta de piadas</label>
+                                            <input v-model="jokesChannel.jokes_count" type="number" min="20" class="w-full border p-3 rounded-lg">
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block font-semibold mb-1">Modo de origem</label>
+                                        <select v-model="jokesChannel.source_mode" class="w-full border p-3 rounded-lg">
+                                            <option value="ai">IA exclusiva</option>
+                                            <option value="manual">Somente piadas manuais</option>
+                                            <option value="mixed">Misto: manual + IA</option>
+                                        </select>
+                                    </div>
+                                    <div v-if="jokesChannel.source_mode !== 'ai'">
+                                        <label class="block font-semibold mb-1">Piadas prontas</label>
+                                        <textarea v-model="jokesChannel.manual_jokes" class="w-full border p-3 rounded-lg" rows="7" placeholder="Cole uma piada por linha ou separe por paragrafos."></textarea>
+                                        <p class="text-xs text-gray-500 mt-2">No modo manual, informe repertorio suficiente para atingir a meta de tempo. No misto, a IA completa o restante.</p>
+                                    </div>
+                                    <div class="border-t pt-4">
+                                        <h4 class="font-bold mb-3 text-gray-800">Avatar fixo</h4>
+                                        <div class="space-y-4">
+                                            <div>
+                                                <label class="block font-semibold mb-1">Nome do avatar</label>
+                                                <input v-model="jokesChannel.avatar_name" class="w-full border p-3 rounded-lg">
+                                            </div>
+                                            <div>
+                                                <label class="block font-semibold mb-1">Estilo visual</label>
+                                                <input v-model="jokesChannel.avatar_style" class="w-full border p-3 rounded-lg" placeholder="Ex: cartoon simpatico em estudio">
+                                            </div>
+                                            <div>
+                                                <label class="block font-semibold mb-1">Descricao do avatar</label>
+                                                <textarea v-model="jokesChannel.avatar_description" class="w-full border p-3 rounded-lg" rows="4" placeholder="Ex: contador de piadas, sorriso leve, roupa fixa, carisma tranquilo"></textarea>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <label class="flex items-center gap-3 bg-amber-50 border border-amber-200 p-3 rounded-lg">
+                                        <input v-model="jokesChannel.auto_publish" type="checkbox" class="rounded">
+                                        <span class="text-sm text-gray-700">Deixar sinalizado para automacao apos aprovacao manual</span>
+                                    </label>
+                                    <button @click="generateJokesChannel" :disabled="loading" class="bg-amber-600 text-white px-6 py-3 rounded-lg hover:bg-amber-700 w-full font-semibold">
+                                        <i v-if="loading" class="fas fa-spinner fa-spin mr-2"></i>Gerar pacote do canal
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="xl:col-span-2 space-y-6">
+                            <div v-if="jokeProjectResult" class="bg-white p-6 rounded-xl shadow">
+                                <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-6">
+                                    <div>
+                                        <div class="flex items-center gap-3 mb-2">
+                                            <h3 class="text-2xl font-bold">{{ jokePayload(jokeProjectResult).publication?.recommended_title || jokeProjectResult.channel_name }}</h3>
+                                            <span class="text-xs px-3 py-1 rounded-full font-semibold" :class="statusBadgeClass(jokeProjectResult.status)">
+                                                {{ statusLabel(jokeProjectResult.status, jokeProjectResult.auto_publish) }}
+                                            </span>
+                                        </div>
+                                        <p class="text-gray-600">{{ jokePayload(jokeProjectResult).project_summary }}</p>
+                                    </div>
+                                    <div class="text-sm text-gray-500">
+                                        Projeto #{{ jokeProjectResult.id }}<br>
+                                        {{ formatDateTime(jokeProjectResult.created_at) }}
+                                    </div>
+                                </div>
+
+                                <div class="grid lg:grid-cols-3 gap-6">
+                                    <div class="lg:col-span-1">
+                                        <div class="bg-gray-50 border rounded-xl p-4 h-full">
+                                            <img v-if="jokePayload(jokeProjectResult).avatar?.image_url" :src="jokePayload(jokeProjectResult).avatar.image_url" class="w-full rounded-xl shadow mb-4" alt="Avatar do canal">
+                                            <h4 class="font-bold text-lg">{{ jokePayload(jokeProjectResult).avatar?.name }}</h4>
+                                            <p class="text-sm text-gray-600 mt-2">{{ jokePayload(jokeProjectResult).avatar?.description }}</p>
+                                            <p class="text-xs text-gray-500 mt-3"><strong>Direcao:</strong> {{ jokePayload(jokeProjectResult).avatar?.movement_direction }}</p>
+                                            <p class="text-xs text-gray-500 mt-3 break-words"><strong>Prompt visual:</strong> {{ jokePayload(jokeProjectResult).avatar?.visual_prompt }}</p>
+                                        </div>
+                                    </div>
+                                    <div class="lg:col-span-2 space-y-4">
+                                        <div class="grid md:grid-cols-2 gap-4">
+                                            <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
+                                                <div class="text-sm text-indigo-700 font-semibold">Blueprint</div>
+                                                <div class="text-sm text-gray-700 mt-2">
+                                                    Meta: {{ jokePayload(jokeProjectResult).production_blueprint?.target_duration_minutes }} min<br>
+                                                    Estimado: {{ jokePayload(jokeProjectResult).production_blueprint?.estimated_duration_minutes }} min<br>
+                                                    Piadas: {{ jokePayload(jokeProjectResult).production_blueprint?.jokes_target_count }}
+                                                </div>
+                                            </div>
+                                            <div class="bg-green-50 border border-green-100 rounded-xl p-4">
+                                                <div class="text-sm text-green-700 font-semibold">Publicacao</div>
+                                                <div class="text-sm text-gray-700 mt-2">
+                                                    {{ jokePayload(jokeProjectResult).publication?.recommended_description }}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="bg-white border rounded-xl p-4">
+                                            <h4 class="font-bold mb-2">Gancho de abertura</h4>
+                                            <p class="text-gray-700">{{ jokePayload(jokeProjectResult).opening_hook }}</p>
+                                        </div>
+
+                                        <div class="bg-white border rounded-xl p-4">
+                                            <div class="flex items-center justify-between mb-3">
+                                                <h4 class="font-bold">Roteiro de piadas</h4>
+                                                <span class="text-xs text-gray-500">{{ jokePayload(jokeProjectResult).segments?.length || 0 }} blocos</span>
+                                            </div>
+                                            <div class="max-h-96 overflow-y-auto space-y-3">
+                                                <div v-for="segment in jokePayload(jokeProjectResult).segments" :key="segment.position" class="bg-gray-50 border rounded-lg p-4">
+                                                    <div class="text-xs uppercase tracking-wide text-amber-700 font-bold mb-2">Bloco {{ segment.position }} • {{ segment.theme_angle }}</div>
+                                                    <p class="text-sm text-gray-500 mb-2">{{ segment.lead_in }}</p>
+                                                    <p class="text-gray-800 font-medium">{{ segment.joke }}</p>
+                                                    <p class="text-sm text-indigo-600 mt-2">{{ segment.transition }}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="bg-white border rounded-xl p-4">
+                                            <h4 class="font-bold mb-3">Checklist de revisao</h4>
+                                            <ul class="space-y-2 text-sm text-gray-700">
+                                                <li v-for="item in jokePayload(jokeProjectResult).review_checklist" :key="item" class="flex gap-2">
+                                                    <i class="fas fa-check-circle text-green-600 mt-0.5"></i>
+                                                    <span>{{ item }}</span>
+                                                </li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="bg-white p-6 rounded-xl shadow">
+                                <div class="flex items-center justify-between mb-4">
+                                    <div>
+                                        <h3 class="text-xl font-bold">Fila de revisao</h3>
+                                        <p class="text-gray-500 text-sm">Aprovacao manual antes da automacao de publicacao.</p>
+                                    </div>
+                                    <button @click="fetchJokeProjects" :disabled="loading" class="text-sm bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-lg">
+                                        <i class="fas fa-rotate mr-2"></i>Atualizar
+                                    </button>
+                                </div>
+
+                                <div v-if="jokeProjects.length" class="space-y-4">
+                                    <div v-for="project in jokeProjects" :key="project.id" class="border rounded-xl p-4">
+                                        <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                                            <div class="flex-1">
+                                                <div class="flex flex-wrap items-center gap-3 mb-2">
+                                                    <h4 class="text-lg font-bold">{{ jokePayload(project).publication?.recommended_title || project.channel_name }}</h4>
+                                                    <span class="text-xs px-3 py-1 rounded-full font-semibold" :class="statusBadgeClass(project.status)">
+                                                        {{ statusLabel(project.status, project.auto_publish) }}
+                                                    </span>
+                                                </div>
+                                                <p class="text-sm text-gray-600">{{ jokePayload(project).project_summary }}</p>
+                                                <div class="grid md:grid-cols-3 gap-3 mt-4 text-sm text-gray-600">
+                                                    <div class="bg-gray-50 rounded-lg p-3 border">
+                                                        <strong>Canal</strong><br>{{ project.channel_name }}
+                                                    </div>
+                                                    <div class="bg-gray-50 rounded-lg p-3 border">
+                                                        <strong>Tema</strong><br>{{ project.theme }} / {{ project.category }}
+                                                    </div>
+                                                    <div class="bg-gray-50 rounded-lg p-3 border">
+                                                        <strong>Avatar</strong><br>{{ project.avatar_name }}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="text-sm text-gray-500 min-w-40">
+                                                Projeto #{{ project.id }}<br>
+                                                {{ formatDateTime(project.created_at) }}
+                                            </div>
+                                        </div>
+
+                                        <div class="mt-4 grid lg:grid-cols-4 gap-3">
+                                            <textarea v-model="jokeReviewNotes[project.id]" class="lg:col-span-2 border rounded-lg p-3 text-sm" rows="3" placeholder="Observacoes da revisao"></textarea>
+                                            <label class="flex items-center gap-2 border rounded-lg px-3 py-2 bg-amber-50">
+                                                <input type="checkbox" :checked="project.auto_publish" @change="toggleProjectAutoPublish(project, $event.target.checked)">
+                                                <span class="text-sm">Automacao apos aprovacao</span>
+                                            </label>
+                                            <div class="flex flex-wrap gap-2">
+                                                <button @click="updateJokeProjectStatus(project, 'approved')" class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">Aprovar</button>
+                                                <button @click="updateJokeProjectStatus(project, 'needs_changes')" class="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-orange-600">Pedir ajustes</button>
+                                                <button @click="updateJokeProjectStatus(project, 'scheduled')" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-indigo-700">Pronto p/ automacao</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div v-else class="text-gray-500 text-sm py-6 text-center border border-dashed rounded-xl">
+                                    Ainda nao ha projetos de canal de piadas gerados.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="currentTab === 'shorts'" class="max-w-6xl">
+                    <h2 class="text-3xl font-bold mb-2 text-gray-800">Gerar Shorts</h2>
+                    <p class="text-gray-500 mb-6">Use um roteiro salvo para criar cortes curtos reaproveitaveis em Shorts/TikTok.</p>
+
+                    <div class="bg-white p-6 rounded-xl shadow">
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-xl font-bold">Roteiros salvos</h3>
+                            <button @click="fetchLibrary" :disabled="loading" class="text-sm bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-lg">
+                                <i class="fas fa-rotate mr-2"></i>Atualizar
+                            </button>
+                        </div>
+
+                        <div v-if="libraryData.scripts?.length" class="grid gap-4">
+                            <div v-for="item in libraryData.scripts" :key="item.id" class="border rounded-xl p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                <div>
+                                    <div class="font-bold text-gray-800">{{ item.theme }}</div>
+                                    <div class="text-sm text-gray-500">{{ item.duration }} • {{ item.narrative_type }}</div>
+                                </div>
+                                <button @click="generateShorts(item.id)" :disabled="loading" class="bg-purple-600 text-white px-5 py-3 rounded-lg hover:bg-purple-700 font-semibold">
+                                    <i class="fas fa-cut mr-2"></i>Gerar shorts
+                                </button>
+                            </div>
+                        </div>
+                        <div v-else class="text-gray-500 text-sm py-6 text-center border border-dashed rounded-xl">
+                            Nenhum roteiro salvo ainda. Gere um roteiro primeiro.
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="currentTab === 'library'" class="space-y-8">
+                    <div>
+                        <h2 class="text-3xl font-bold mb-2 text-gray-800">Biblioteca de Conteudo</h2>
+                        <p class="text-gray-500">Consulte tudo o que ja foi gerado na AI Factory, inclusive os novos projetos do canal de piadas.</p>
+                    </div>
+
+                    <div v-if="libraryData.stories?.length">
+                        <h3 class="text-xl font-bold border-b pb-2 mb-4">Historias</h3>
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div v-for="item in libraryData.stories" :key="item.id" class="bg-white p-4 rounded-xl shadow">
                                 <h4 class="font-bold">{{ item.title || item.theme }}</h4>
-                                <p class="text-sm text-gray-500">{{ item.style }} | {{ new Date(item.created_at).toLocaleDateString() }}</p>
+                                <p class="text-sm text-gray-500">{{ item.style }} • {{ formatDate(item.created_at) }}</p>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Covers -->
-                    <div v-if="libraryData.covers && libraryData.covers.length">
+                    <div v-if="libraryData.covers?.length">
                         <h3 class="text-xl font-bold border-b pb-2 mb-4">Capas</h3>
                         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div v-for="item in libraryData.covers" class="bg-white p-2 rounded shadow">
-                                <img :src="item.image_url" class="w-full h-48 object-cover rounded mb-2">
+                            <div v-for="item in libraryData.covers" :key="item.id" class="bg-white p-3 rounded-xl shadow">
+                                <img :src="item.image_url" class="w-full h-48 object-cover rounded-lg mb-2" alt="Capa">
                                 <p class="font-bold text-xs truncate">{{ item.title }}</p>
                             </div>
                         </div>
                     </div>
+
+                    <div v-if="libraryData.images?.length">
+                        <h3 class="text-xl font-bold border-b pb-2 mb-4">Imagens</h3>
+                        <div class="grid md:grid-cols-3 gap-4">
+                            <div v-for="item in libraryData.images" :key="item.id" class="bg-white p-3 rounded-xl shadow">
+                                <img :src="item.image_url" class="w-full rounded-lg mb-2" alt="Imagem">
+                                <p class="text-xs text-gray-500">{{ item.theme }}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="libraryData.scripts?.length">
+                        <h3 class="text-xl font-bold border-b pb-2 mb-4">Roteiros</h3>
+                        <div class="grid gap-4">
+                            <div v-for="item in libraryData.scripts" :key="item.id" class="bg-white p-4 rounded-xl shadow">
+                                <div class="font-bold">{{ item.theme }}</div>
+                                <div class="text-sm text-gray-500">{{ item.duration }} • {{ item.narrative_type }}</div>
+                                <div class="text-sm text-gray-700 mt-3 line-clamp-3">{{ item.script_content }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="libraryData.joke_projects?.length">
+                        <h3 class="text-xl font-bold border-b pb-2 mb-4">Projetos do Canal de Piadas</h3>
+                        <div class="grid gap-4">
+                            <div v-for="item in libraryData.joke_projects" :key="item.id" class="bg-white p-4 rounded-xl shadow">
+                                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                                    <div>
+                                        <div class="font-bold">{{ jokePayload(item).publication?.recommended_title || item.channel_name }}</div>
+                                        <div class="text-sm text-gray-500">{{ item.theme }} • {{ item.category }} • {{ formatDate(item.created_at) }}</div>
+                                    </div>
+                                    <span class="text-xs px-3 py-1 rounded-full font-semibold" :class="statusBadgeClass(item.status)">
+                                        {{ statusLabel(item.status, item.auto_publish) }}
+                                    </span>
+                                </div>
+                                <div class="text-sm text-gray-700 mt-3">{{ jokePayload(item).project_summary }}</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
-
         </main>
     </div>
 
@@ -250,32 +569,91 @@
             setup() {
                 const currentTab = ref('story');
                 const loading = ref(false);
-                
-                // Forms
+
                 const story = ref({ theme: '', style: '', audience: '', length: 'Curto' });
-                const cover = ref({ title: '', subtitle: '', author: '', style: '' });
-                const image = ref({ theme: '', style: '', quantity: 1 });
-                const script = ref({ theme: '', duration: '', narrative_type: 'Documentário' });
-                
-                // Results
+                const cover = ref({ title: '', subtitle: '', author: '', style: 'Cinemático' });
+                const image = ref({ theme: '', style: 'Realista', quantity: 1 });
+                const script = ref({ theme: '', duration: '8 minutos', narrative_type: 'Documentário' });
+                const jokesChannel = ref({
+                    channel_name: 'Canal de Piadas Sem Baixaria',
+                    theme: '',
+                    category: 'Português',
+                    tone: 'Leve e familiar',
+                    duration_minutes: 10,
+                    jokes_count: 24,
+                    source_mode: 'ai',
+                    manual_jokes: '',
+                    avatar_name: 'Zeca do Riso',
+                    avatar_style: 'cartoon simpatico em estudio',
+                    avatar_description: 'apresentador fixo, sorridente, roupa consistente e carisma tranquilo',
+                    auto_publish: false
+                });
+
                 const storyResult = ref(null);
                 const coverResult = ref(null);
                 const imageResults = ref([]);
                 const scriptResult = ref(null);
                 const libraryData = ref({});
+                const jokeProjectResult = ref(null);
+                const jokeProjects = ref([]);
+                const jokeReviewNotes = ref({});
+
+                const parseResponse = async (response) => {
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.detail || 'Erro ao processar solicitacao.');
+                    }
+                    return data;
+                };
+
+                const syncReviewNotes = (projects) => {
+                    const nextState = { ...jokeReviewNotes.value };
+                    (projects || []).forEach((project) => {
+                        nextState[project.id] = nextState[project.id] ?? (project.review_notes || '');
+                    });
+                    jokeReviewNotes.value = nextState;
+                };
+
+                const sidebarClass = (tab) => currentTab.value === tab ? 'bg-indigo-700' : '';
+                const formatDate = (value) => value ? new Date(value).toLocaleDateString('pt-BR') : '-';
+                const formatDateTime = (value) => value ? new Date(value).toLocaleString('pt-BR') : '-';
+                const jokePayload = (project) => project?.generated_payload || {};
+
+                const statusBadgeClass = (status) => {
+                    const map = {
+                        ready_for_review: 'bg-yellow-100 text-yellow-800',
+                        approved: 'bg-green-100 text-green-800',
+                        needs_changes: 'bg-orange-100 text-orange-800',
+                        scheduled: 'bg-indigo-100 text-indigo-800'
+                    };
+                    return map[status] || 'bg-gray-100 text-gray-700';
+                };
+
+                const statusLabel = (status, autoPublish) => {
+                    const labels = {
+                        ready_for_review: 'Pronto para revisao',
+                        approved: autoPublish ? 'Aprovado para automacao' : 'Aprovado',
+                        needs_changes: 'Precisa de ajustes',
+                        scheduled: autoPublish ? 'Pronto para automacao' : 'Agendado'
+                    };
+                    return labels[status] || status;
+                };
 
                 const generateStory = async () => {
                     loading.value = true;
                     try {
                         const res = await fetch('/ai-factory/story', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(story.value)
                         });
-                        storyResult.value = await res.json();
-                        storyResult.value = storyResult.value.content; // Unpack content
-                    } catch (e) { alert('Erro: ' + e); }
-                    loading.value = false;
+                        const data = await parseResponse(res);
+                        storyResult.value = data.content || data;
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
                 };
 
                 const generateCover = async () => {
@@ -283,12 +661,15 @@
                     try {
                         const res = await fetch('/ai-factory/cover', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(cover.value)
                         });
-                        coverResult.value = await res.json();
-                    } catch (e) { alert('Erro: ' + e); }
-                    loading.value = false;
+                        coverResult.value = await parseResponse(res);
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
                 };
 
                 const generateImage = async () => {
@@ -296,12 +677,15 @@
                     try {
                         const res = await fetch('/ai-factory/image', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(image.value)
                         });
-                        imageResults.value = await res.json();
-                    } catch (e) { alert('Erro: ' + e); }
-                    loading.value = false;
+                        imageResults.value = await parseResponse(res);
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
                 };
 
                 const generateScript = async () => {
@@ -309,42 +693,163 @@
                     try {
                         const res = await fetch('/ai-factory/script', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(script.value)
                         });
-                        scriptResult.value = await res.json();
-                    } catch (e) { alert('Erro: ' + e); }
-                    loading.value = false;
+                        scriptResult.value = await parseResponse(res);
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
                 };
 
                 const generateShorts = async (scriptId) => {
+                    if (!scriptId) {
+                        alert('Selecione um roteiro valido.');
+                        return;
+                    }
                     loading.value = true;
                     try {
                         const res = await fetch('/ai-factory/shorts', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ script_id: scriptId })
                         });
-                        const updatedScript = await res.json();
-                        scriptResult.value.shorts = updatedScript.shorts;
-                    } catch (e) { alert('Erro: ' + e); }
-                    loading.value = false;
+                        const updatedScript = await parseResponse(res);
+                        scriptResult.value = updatedScript;
+                        currentTab.value = 'script';
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
                 };
 
                 const fetchLibrary = async () => {
                     loading.value = true;
                     try {
                         const res = await fetch('/ai-factory/library');
-                        libraryData.value = await res.json();
-                    } catch (e) { console.error(e); }
-                    loading.value = false;
+                        libraryData.value = await parseResponse(res);
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const fetchJokeProjects = async () => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/jokes-channel');
+                        jokeProjects.value = await parseResponse(res);
+                        syncReviewNotes(jokeProjects.value);
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const generateJokesChannel = async () => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/ai-factory/jokes-channel', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(jokesChannel.value)
+                        });
+                        jokeProjectResult.value = await parseResponse(res);
+                        await fetchJokeProjects();
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const updateJokeProjectStatus = async (project, status) => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch(`/ai-factory/jokes-channel/${project.id}/review`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                status,
+                                review_notes: jokeReviewNotes.value[project.id] || '',
+                                auto_publish: project.auto_publish
+                            })
+                        });
+                        const updated = await parseResponse(res);
+                        jokeProjects.value = jokeProjects.value.map((item) => item.id === updated.id ? updated : item);
+                        syncReviewNotes(jokeProjects.value);
+                        if (jokeProjectResult.value?.id === updated.id) {
+                            jokeProjectResult.value = updated;
+                        }
+                    } catch (error) {
+                        alert(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const toggleProjectAutoPublish = async (project, checked) => {
+                    project.auto_publish = checked;
+                    await updateJokeProjectStatus(project, project.status || 'ready_for_review');
+                };
+
+                const openJokesChannel = async () => {
+                    currentTab.value = 'jokes_channel';
+                    await fetchJokeProjects();
+                };
+
+                const openLibrary = async () => {
+                    currentTab.value = 'library';
+                    await fetchLibrary();
+                };
+
+                const openShortsTab = async () => {
+                    currentTab.value = 'shorts';
+                    if (!libraryData.value.scripts?.length) {
+                        await fetchLibrary();
+                    }
                 };
 
                 return {
-                    currentTab, loading,
-                    story, cover, image, script,
-                    storyResult, coverResult, imageResults, scriptResult, libraryData,
-                    generateStory, generateCover, generateImage, generateScript, generateShorts, fetchLibrary
+                    currentTab,
+                    loading,
+                    story,
+                    cover,
+                    image,
+                    script,
+                    jokesChannel,
+                    storyResult,
+                    coverResult,
+                    imageResults,
+                    scriptResult,
+                    libraryData,
+                    jokeProjectResult,
+                    jokeProjects,
+                    jokeReviewNotes,
+                    sidebarClass,
+                    formatDate,
+                    formatDateTime,
+                    jokePayload,
+                    statusBadgeClass,
+                    statusLabel,
+                    generateStory,
+                    generateCover,
+                    generateImage,
+                    generateScript,
+                    generateShorts,
+                    fetchLibrary,
+                    fetchJokeProjects,
+                    generateJokesChannel,
+                    updateJokeProjectStatus,
+                    toggleProjectAutoPublish,
+                    openJokesChannel,
+                    openLibrary,
+                    openShortsTab
                 };
             }
         }).mount('#app');

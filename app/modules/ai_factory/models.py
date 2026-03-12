@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON
+from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, JSON
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -44,3 +44,26 @@ class AIScript(Base):
     scenes = Column(JSON, nullable=True)
     shorts = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AIJokeChannelProject(Base):
+    __tablename__ = "codexia_ai_joke_channel_projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    channel_name = Column(String, nullable=False)
+    theme = Column(String, nullable=False)
+    category = Column(String, nullable=True)
+    tone = Column(String, nullable=True)
+    source_mode = Column(String, nullable=False, default="ai")  # ai | manual | mixed
+    duration_minutes = Column(Integer, nullable=False, default=10)
+    jokes_count = Column(Integer, nullable=False, default=24)
+    manual_jokes = Column(Text, nullable=True)
+    avatar_name = Column(String, nullable=True)
+    avatar_style = Column(String, nullable=True)
+    avatar_description = Column(Text, nullable=True)
+    auto_publish = Column(Boolean, nullable=False, default=False)
+    status = Column(String, nullable=False, default="ready_for_review")
+    review_notes = Column(Text, nullable=True)
+    generated_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
