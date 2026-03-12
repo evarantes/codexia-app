@@ -379,7 +379,7 @@ createApp({
                 const res = await this.authFetch("/humor-factory/channel/avatar", { method: "POST", body: form });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || "Falha no upload do avatar.");
-                this.channel.avatar_path = data.avatar_path;
+                this.channel.avatar_path = data.public_url || data.avatar_path;
             } catch (e) {
                 alert("Erro ao enviar avatar: " + (e.message || e));
             }
@@ -393,7 +393,7 @@ createApp({
                 const res = await this.authFetch("/humor-factory/projects/avatar", { method: "POST", body: form });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || "Falha no upload da imagem do personagem.");
-                this.newProject.avatar_override_path = data.avatar_path;
+                this.newProject.avatar_override_path = data.public_url || data.avatar_path;
             } catch (e) {
                 alert("Erro ao enviar imagem fixa: " + (e.message || e));
             }

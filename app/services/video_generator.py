@@ -194,20 +194,21 @@ class VideoGenerator:
         elif style in ["robotic", "robotica", "robótica"]:
             openai_voice = None
 
-        # 1. ElevenLabs/OpenAI TTS (ai_service tenta ElevenLabs primeiro, depois OpenAI - quando configurado em Mídias e Voz)
-        if openai_voice and self.ai_service and self.ai_service.api_key:
+        # 1. ElevenLabs/OpenAI TTS (ai_service tenta ElevenLabs primeiro, depois OpenAI)
+        # Importante: não depende de OPENAI_API_KEY para usar ElevenLabs.
+        if openai_voice and self.ai_service and hasattr(self.ai_service, "generate_audio"):
             try:
-                print(f"Tentando OpenAI TTS ({openai_voice})...")
+                print(f"Tentando TTS premium ({openai_voice})...")
                 audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice)
                 if audio_content:
                     filename = f"{uuid.uuid4()}.mp3"
                     path = os.path.join(self.output_dir, filename)
                     with open(path, "wb") as f:
                         f.write(audio_content)
-                    print(f"OpenAI TTS sucesso: {path}")
+                    print(f"TTS premium sucesso: {path}")
                     return path
             except Exception as e:
-                print(f"OpenAI TTS falhou, tentando fallback: {e}")
+                print(f"TTS premium falhou, tentando fallback: {e}")
 
         # 3. Edge TTS (Qualidade Natural Gratuita - Microsoft)
         if style not in ["robotic", "robotica", "robótica"]:

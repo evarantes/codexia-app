@@ -1807,17 +1807,36 @@ class AIContentGenerator:
         if not self.elevenlabs_key or not text or not text.strip():
             return None
         try:
-            # Mapeia hints para voice_id do ElevenLabs (Rachel = feminina, Josh = masculino)
-            voice_map = {"nova": "EXAVITQu4vr4xnSDxMaL", "shimmer": "EXAVITQu4vr4xnSDxMaL",
-                         "onyx": "VR6AewLTigWG4xSOukaG", "echo": "VR6AewLTigWG4xSOukaG",
-                         "fable": "EXAVITQu4vr4xnSDxMaL"}
-            voice_id = voice_map.get(voice_hint, "EXAVITQu4vr4xnSDxMaL")
+            # Permite customização por ambiente sem quebrar compatibilidade.
+            env_voice_male = os.getenv("ELEVENLABS_VOICE_ID_MALE", "").strip()
+            env_voice_female = os.getenv("ELEVENLABS_VOICE_ID_FEMALE", "").strip()
+            env_voice_default = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+
+            # Mapeia hints para voice_id do ElevenLabs (defaults públicos estáveis).
+            voice_map = {
+                "nova": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+                "shimmer": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+                "onyx": env_voice_male or "VR6AewLTigWG4xSOukaG",
+                "echo": env_voice_male or "VR6AewLTigWG4xSOukaG",
+                "fable": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+            }
+            voice_id = env_voice_default or voice_map.get(voice_hint, env_voice_female or "EXAVITQu4vr4xnSDxMaL")
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             headers = {"xi-api-key": self.elevenlabs_key, "Content-Type": "application/json"}
-            payload = {"text": text[:5000], "model_id": "eleven_multilingual_v2"}
+            payload = {
+                "text": text[:5000],
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.35,
+                    "similarity_boost": 0.85,
+                    "style": 0.35,
+                    "use_speaker_boost": True,
+                },
+            }
             r = requests.post(url, json=payload, headers=headers, timeout=30)
             if r.status_code == 200:
                 return r.content
+            print(f"ElevenLabs TTS HTTP {r.status_code}: {r.text[:240]}")
         except Exception as e:
             print(f"ElevenLabs TTS error: {e}")
         return None

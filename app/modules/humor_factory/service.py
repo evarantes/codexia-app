@@ -5,8 +5,9 @@ import os
 import random
 import traceback
 import uuid
+import wave
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -45,16 +46,16 @@ class HumorFactoryService:
 
     def _fallback_jokes(self, theme: str, count: int) -> List[str]:
         base = [
-            f"No tema {theme}, o português falou: 'vou só ali'. Voltou com pão, café e fofoca da rua inteira.",
-            f"No culto {theme}, o irmão disse 'é rapidinho' e pregou até o relógio pedir oração.",
-            f"Na igreja {theme}, pediram silêncio; até o bebê olhou pra mãe e cochichou 'amém'.",
-            f"No ônibus do bairro {theme}, o cobrador perguntou se era cartão; a pessoa respondeu 'só tenho fé'.",
-            f"No almoço {theme}, falaram 'come pouco'; quando viram, o prato já tava no segundo testemunho.",
-            f"No grupo da família {theme}, mandaram bom dia às 5h. Às 7h já tinha receita, notícia e piada.",
-            f"No trabalho {theme}, perguntaram se tava pronto. Resposta: 'tá quase, só faltam as partes importantes'.",
-            f"No mercado {theme}, a lista era curta. Saiu com sacola cheia e uma promoção que nem precisava.",
-            f"No futebol de bairro {theme}, o juiz era primo de todo mundo. Impedimento virou opinião.",
-            f"No churrasco {theme}, disseram 'sem exagero'. A farofa já chegou com status de patrimônio.",
+            f"No tema {theme}, eu sentei no boteco e falei que ia pedir só um café. Quando vi, já tava ouvindo a história da cidade inteira e saí com dois convites de casamento.",
+            f"Na pegada {theme}, meu amigo prometeu que era só um culto curtinho. Começou com aleluia, terminou com o relógio pedindo oração de libertação.",
+            f"No bairro {theme}, peguei o ônibus lotado e o cobrador me olhou com cara de coach: 'hoje você vence'. Eu venci foi o medo de cair na curva.",
+            f"Na família {theme}, falaram que o almoço era simples. Simples nada: teve fila da sobremesa, testemunho da tia e até reprise de treta de 2014.",
+            f"No trabalho {theme}, o chefe perguntou se estava pronto e eu disse que sim, no coração. Na prática, faltavam só pequenos detalhes... tipo tudo.",
+            f"Na escola do tema {theme}, o professor perguntou quem estudou. A sala inteira ficou em silêncio, até a caneta caiu de vergonha.",
+            f"No mercado {theme}, entrei só pra comprar pão e saí com promoção de panela, tapete e um pepino que nem sei fazer.",
+            f"No churrasco {theme}, o primo jurou que ia assar pouco. Três horas depois ele tava discutindo com a brasa como se fosse final de campeonato.",
+            f"No futebol {theme}, o juiz era tão conhecido da galera que cada falta virava reunião de condomínio no meio do campo.",
+            f"No culto jovem {theme}, falaram pra desligar o celular. Cinco minutos depois, até o pastor pediu o Wi-Fi pra passar o louvor novo.",
         ]
         out = []
         idx = 0
@@ -62,6 +63,33 @@ class HumorFactoryService:
             out.append(base[idx % len(base)])
             idx += 1
         return out
+
+    def _normalize_standup_joke(self, text: str) -> str:
+        raw = " ".join(str(text or "").replace("\n", " ").split()).strip()
+        if not raw:
+            return ""
+        raw = raw.replace("—", "-")
+        raw = raw.replace("Piada:", "").replace("piada:", "")
+        raw = raw.replace("Stand-up:", "").replace("stand-up:", "")
+        raw = raw.strip(" -")
+        raw = raw.lstrip("0123456789).:- ")
+        if raw.lower().startswith("por que ") or raw.lower().startswith("porque "):
+            raw = f"Vou te contar uma: {raw}"
+        return raw[:420]
+
+    def _build_standup_narration(self, joke_text: str, catchphrase: str = "") -> str:
+        base = self._normalize_standup_joke(joke_text)
+        if not base:
+            return ""
+        if catchphrase:
+            phrase = self._normalize_standup_joke(catchphrase)
+            if phrase and phrase.lower() not in base.lower():
+                base = f"{phrase}. {base}"
+        # Risos sempre no fechamento de cada bloco.
+        end = base.rstrip()
+        if not end.endswith((".", "!", "?")):
+            end += "."
+        return f"{end} Hahaha!"
 
     def _theme_list(self, value: Optional[str]) -> List[str]:
         raw = str(value or "").strip()
@@ -130,27 +158,28 @@ class HumorFactoryService:
                 )
         prompt = f"""
 Você é roteirista de humor limpo para YouTube.
-Crie {count} piadas curtas e inéditas sobre o tema: "{theme}".
+Crie {count} blocos curtos e inéditos de stand-up sobre o tema: "{theme}".
 
 Regras obrigatórias:
 - Humor leve, sem baixaria, sem ofensa, sem palavrão.
 - Linguagem natural em português do Brasil.
-- Cada piada em 1 ou 2 frases curtas.
-- Variar o gancho para manter retenção.
-- Evitar repetição de estrutura.
+- Formato de conversa/história curta de palco (2 a 4 frases por bloco).
+- NÃO usar formato de pergunta e resposta do tipo "por que ... porque ...".
+- NÃO numerar, NÃO usar "Piada 1", "Piada 2", nem títulos.
+- Variar contexto e desfecho para manter retenção.
 {catchphrase_line}
 
 Retorne APENAS JSON válido:
-{{"jokes": ["piada 1", "piada 2", "..."]}}
+{{"jokes": ["bloco de stand-up 1", "bloco de stand-up 2", "..."]}}
 """
         try:
             text = self.ai._generate_text(prompt) or ""
             parsed = self._extract_json_array(text)
             if parsed:
-                return parsed[:count]
+                return [self._normalize_standup_joke(x) for x in parsed[:count] if self._normalize_standup_joke(x)]
         except Exception:
             pass
-        return self._fallback_jokes(theme, count)
+        return [self._normalize_standup_joke(x) for x in self._fallback_jokes(theme, count)]
 
     def _generate_ai_jokes_by_themes(self, themes: List[str], count: int, catchphrase: str = "", catchphrases: Optional[List[str]] = None) -> List[str]:
         clean = [t.strip() for t in (themes or []) if t and t.strip()]
@@ -187,29 +216,95 @@ Retorne APENAS JSON válido:
             mixed.extend(extra)
         return mixed[:count]
 
-    def _resolve_avatar_path(self, channel: Optional[HumorChannel], video_gen: VideoGenerator, override_path: str = "") -> Optional[str]:
+    def _avatar_candidates(self, raw_path: str) -> List[str]:
+        p = str(raw_path or "").strip()
+        if not p:
+            return []
+        candidates = [p]
+        if p.startswith("/static/"):
+            from app.config import absolute_path_for_static
+
+            abs_p = absolute_path_for_static(p)
+            if abs_p:
+                candidates.append(abs_p)
+        if p.startswith("app/static/"):
+            candidates.append(os.path.abspath(p))
+        if not os.path.isabs(p):
+            candidates.append(os.path.abspath(p))
+
+        basename = os.path.basename(p)
+        if basename:
+            candidates.append(os.path.abspath(os.path.join("app/static/generated/humor_project_avatars", basename)))
+            candidates.append(os.path.abspath(os.path.join("app/static/generated/humor_avatars", basename)))
+        # Dedupe preservando ordem
+        out = []
+        seen = set()
+        for c in candidates:
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+        return out
+
+    def _resolve_avatar_path(
+        self, channel: Optional[HumorChannel], video_gen: VideoGenerator, override_path: str = ""
+    ) -> Tuple[Optional[str], str]:
         ov = (override_path or "").strip()
         if ov:
-            if os.path.exists(ov):
-                return ov
-            if ov.startswith("/static/"):
-                from app.config import absolute_path_for_static
+            for candidate in self._avatar_candidates(ov):
+                if os.path.exists(candidate):
+                    return candidate, "override"
+            return None, "missing_override"
 
-                abs_p = absolute_path_for_static(ov)
-                if abs_p and os.path.exists(abs_p):
-                    return abs_p
         if channel and channel.avatar_path:
             p = str(channel.avatar_path).strip()
-            if p and os.path.exists(p):
-                return p
-            if p.startswith("/static/"):
-                from app.config import absolute_path_for_static
+            for candidate in self._avatar_candidates(p):
+                if os.path.exists(candidate):
+                    return candidate, "channel"
 
-                abs_p = absolute_path_for_static(p)
-                if abs_p and os.path.exists(abs_p):
-                    return abs_p
         fallback = video_gen._generate_fallback_background((1280, 720))
-        return fallback if fallback and os.path.exists(fallback) else None
+        if fallback and os.path.exists(fallback):
+            return fallback, "fallback"
+        return None, "none"
+
+    def _create_applause_sfx(self, output_dir: str, duration_sec: float = 2.8, sample_rate: int = 22050) -> Optional[str]:
+        """
+        Gera um efeito simples de aplausos (ruído em rajadas) para fechamento.
+        Evita depender de assets externos no servidor.
+        """
+        try:
+            total = int(max(1.0, duration_sec) * sample_rate)
+            t = np.linspace(0, duration_sec, total, endpoint=False)
+            signal = np.zeros_like(t)
+            # Rajadas curtas simulando palmas
+            burst_every = 0.11
+            n_bursts = max(1, int(duration_sec / burst_every))
+            for i in range(n_bursts):
+                center = int((i * burst_every + random.uniform(0.0, 0.05)) * sample_rate)
+                if center >= total:
+                    break
+                span = int(0.035 * sample_rate)
+                start = max(0, center - span // 2)
+                end = min(total, center + span // 2)
+                if end <= start:
+                    continue
+                burst = np.random.uniform(-1.0, 1.0, end - start) * np.hanning(end - start)
+                signal[start:end] += burst * random.uniform(0.45, 0.9)
+
+            # Camada ambiente baixa para soar menos "digital"
+            signal += np.random.uniform(-1.0, 1.0, total) * 0.03
+            signal = np.clip(signal, -1.0, 1.0)
+            pcm = (signal * 32767).astype(np.int16)
+
+            os.makedirs(output_dir, exist_ok=True)
+            path = os.path.join(output_dir, f"applause_{uuid.uuid4().hex[:8]}.wav")
+            with wave.open(path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(pcm.tobytes())
+            return path
+        except Exception:
+            return None
 
     def _mouth_variant(self, base_frame: np.ndarray, mouth_open: bool) -> np.ndarray:
         img = Image.fromarray(base_frame.copy())
@@ -300,8 +395,8 @@ Retorne APENAS JSON válido:
 
             target_minutes = max(10, int(project.target_minutes or 10))
             target_seconds = target_minutes * 60
-            estimated_secs_per_joke = 12
-            needed_jokes = max(20, math.ceil(target_seconds / estimated_secs_per_joke))
+            estimated_secs_per_joke = 18
+            needed_jokes = max(18, math.ceil(target_seconds / estimated_secs_per_joke))
             selected_themes = self._theme_list(project.theme)
             themes_label = ", ".join(selected_themes) if selected_themes else "humor geral"
             opening_message = (project.opening_message or "").strip()
@@ -348,38 +443,66 @@ Retorne APENAS JSON válido:
                     jokes.append(src[idx % len(src)])
                     idx += 1
 
+            jokes = [self._normalize_standup_joke(x) for x in jokes]
+            jokes = [x for x in jokes if x]
             project.jokes_json = json.dumps(jokes, ensure_ascii=False)
-            self._set_progress(db, project, 12, f"{len(jokes)} piadas preparadas (temas: {themes_label}).")
+            self._set_progress(db, project, 12, f"{len(jokes)} blocos de stand-up preparados (temas: {themes_label}).")
 
             video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
-            avatar_path = self._resolve_avatar_path(channel, video_gen, override_path=(project.avatar_override_path or ""))
+            avatar_path, avatar_source = self._resolve_avatar_path(
+                channel, video_gen, override_path=(project.avatar_override_path or "")
+            )
+            if avatar_source == "missing_override":
+                raise RuntimeError("A imagem fixa anexada para este vídeo não foi encontrada. Reenvie o avatar do projeto.")
             if avatar_path and os.path.basename(avatar_path).startswith("fallback_local_"):
                 temporary_avatar = avatar_path
+            self._append_log(project, f"Avatar em uso: {avatar_source} ({avatar_path or 'sem arquivo'}).")
+            try:
+                self.ai._load_config()
+            except Exception:
+                pass
+            tts_provider = "ElevenLabs" if getattr(self.ai, "elevenlabs_key", None) else (
+                "OpenAI" if getattr(self.ai, "api_key", None) else "EdgeTTS/gTTS"
+            )
+            self._append_log(project, f"TTS prioritário detectado: {tts_provider}.")
+            db.commit()
 
             try:
                 from moviepy.editor import AudioFileClip, VideoClip, concatenate_videoclips
             except Exception:
                 from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
 
-            total_scenes = len(jokes) + (1 if opening_message else 0) + (1 if closing_message else 0)
+            total_scenes = len(jokes) + 3  # abertura + fechamento + aplausos
             scene_counter = 0
+            used_catchphrases = set()
+            clean_pool = [self._normalize_standup_joke(x) for x in catchphrase_gallery]
+            clean_pool = [x for x in clean_pool if x]
 
-            def add_talking_scene(text_on_screen: str, narration_text: str, label: str) -> bool:
+            def pick_catchphrase(force: bool = False) -> str:
+                if not clean_pool:
+                    return ""
+                available = [x for x in clean_pool if x.lower() not in used_catchphrases]
+                source = available if available else clean_pool
+                pick = random.choice(source)
+                if force or available:
+                    used_catchphrases.add(pick.lower())
+                return pick
+
+            approx_scene_seconds = max(10, int(target_seconds / max(1, len(jokes))))
+            catchphrase_every_jokes = max(1, int(round(180 / max(10, approx_scene_seconds))))
+            self._append_log(project, f"Bordão intermediário configurado para ~1x a cada {catchphrase_every_jokes} blocos.")
+            db.commit()
+
+            def add_audio_scene(text_on_screen: str, audio_path: str, label: str, animate_mouth: bool = True) -> bool:
                 nonlocal scene_counter
-                audio_path = video_gen.generate_audio(
-                    narration_text,
-                    voice_style="human",
-                    voice_gender=(channel.default_voice_gender if channel else "male"),
-                )
                 if not audio_path or not os.path.exists(audio_path):
                     self._append_log(project, f"Aviso: sem áudio para {label}, pulando.")
                     db.commit()
                     return False
 
-                temp_files.append(audio_path)
                 audio_clip = AudioFileClip(audio_path)
                 audio_clips.append(audio_clip)
-                duration = max(4.0, float(audio_clip.duration or 0) + 0.35)
+                duration = max(2.0, float(audio_clip.duration or 0) + 0.2)
 
                 base_frame = video_gen.create_text_image(
                     text=(text_on_screen or "")[:280],
@@ -391,7 +514,9 @@ Retorne APENAS JSON válido:
                 frame_open = self._mouth_variant(base_frame, mouth_open=True)
                 frame_closed = self._mouth_variant(base_frame, mouth_open=False)
 
-                def make_frame(t, fo=frame_open, fc=frame_closed):
+                def make_frame(t, fo=frame_open, fc=frame_closed, mouth=animate_mouth):
+                    if not mouth:
+                        return fc
                     return fo if int(t * 5.4) % 2 == 0 else fc
 
                 clip = self._animated_clip(VideoClip, make_frame, duration)
@@ -404,45 +529,62 @@ Retorne APENAS JSON válido:
                 self._set_progress(db, project, pct, f"Gerando cena {scene_counter}/{total_scenes}: {label}")
                 return True
 
-            if opening_message:
-                intro_narration = opening_message
-                if catchphrase_message and catchphrase_message.lower() not in intro_narration.lower():
-                    intro_narration = f"{intro_narration} {catchphrase_message}"
-                elif catchphrase_gallery:
-                    pick = random.choice(catchphrase_gallery)
-                    if pick.lower() not in intro_narration.lower():
-                        intro_narration = f"{intro_narration} {pick}"
-                add_talking_scene(
-                    text_on_screen=f"Abertura\n{opening_message}",
-                    narration_text=intro_narration,
-                    label="abertura",
+            def add_talking_scene(text_on_screen: str, narration_text: str, label: str) -> bool:
+                audio_path = video_gen.generate_audio(
+                    narration_text,
+                    voice_style="human",
+                    voice_gender=(channel.default_voice_gender if channel else "male"),
                 )
+                temp_files.append(audio_path)
+                return add_audio_scene(text_on_screen=text_on_screen, audio_path=audio_path, label=label, animate_mouth=True)
+
+            intro_text = self._normalize_standup_joke(opening_message) or "Boa noite, minha gente! Chega mais, porque hoje tem história boa."
+            opening_catchphrase = pick_catchphrase(force=True) or self._normalize_standup_joke(catchphrase_message)
+            intro_narration = intro_text
+            if opening_catchphrase and opening_catchphrase.lower() not in intro_narration.lower():
+                intro_narration = f"{opening_catchphrase}. {intro_narration}"
+            add_talking_scene(
+                text_on_screen=f"Abertura\n{intro_text}",
+                narration_text=intro_narration,
+                label="abertura",
+            )
 
             for idx, joke in enumerate(jokes, start=1):
-                narration = f"Piada {idx}. {joke} ... e já vem a próxima."
-                if idx % 3 == 1:
-                    if catchphrase_gallery:
-                        narration = f"{random.choice(catchphrase_gallery)} {narration}"
-                    elif catchphrase_message:
-                        narration = f"{catchphrase_message} {narration}"
+                mid_catchphrase = ""
+                if idx % catchphrase_every_jokes == 0:
+                    mid_catchphrase = pick_catchphrase()
+                narration = self._build_standup_narration(joke, catchphrase=mid_catchphrase)
                 add_talking_scene(
-                    text_on_screen=f"Piada {idx}/{len(jokes)}\n{joke}",
+                    text_on_screen=joke,
                     narration_text=narration,
-                    label=f"piada {idx}",
+                    label=f"stand-up {idx}",
                 )
 
-            if closing_message:
-                outro_narration = closing_message
-                if catchphrase_message and catchphrase_message.lower() not in outro_narration.lower():
-                    outro_narration = f"{outro_narration} {catchphrase_message}"
-                elif catchphrase_gallery:
-                    pick = random.choice(catchphrase_gallery)
-                    if pick.lower() not in outro_narration.lower():
-                        outro_narration = f"{outro_narration} {pick}"
+            closing_text = self._normalize_standup_joke(closing_message) or "Valeu demais pela companhia, vocês são incríveis."
+            closing_catchphrase = pick_catchphrase(force=True) or opening_catchphrase
+            outro_narration = closing_text
+            if closing_catchphrase and closing_catchphrase.lower() not in outro_narration.lower():
+                outro_narration = f"{outro_narration} {closing_catchphrase}."
+            add_talking_scene(
+                text_on_screen=f"Encerramento\n{closing_text}",
+                narration_text=outro_narration,
+                label="fechamento",
+            )
+
+            applause_path = self._create_applause_sfx(VIDEO_OUTPUT_DIR)
+            if applause_path and os.path.exists(applause_path):
+                temp_files.append(applause_path)
+                add_audio_scene(
+                    text_on_screen="Aplausos da plateia",
+                    audio_path=applause_path,
+                    label="aplausos finais",
+                    animate_mouth=False,
+                )
+            else:
                 add_talking_scene(
-                    text_on_screen=f"Encerramento\n{closing_message}",
-                    narration_text=outro_narration,
-                    label="fechamento",
+                    text_on_screen="Aplausos da plateia",
+                    narration_text="Muito obrigado, minha gente! Aplausos da plateia!",
+                    label="aplausos finais",
                 )
 
             if not clips:
