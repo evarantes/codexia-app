@@ -307,81 +307,22 @@
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Criador de Vídeos</h1>
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     <div class="bg-white p-6 rounded-lg shadow-md mb-8">
-                        <h2 class="text-xl font-bold mb-4">Configuração</h2>
+                        <h2 class="text-xl font-bold mb-4"><i class="fas fa-laugh-beam text-yellow-500 mr-2"></i>Descreva seu vídeo</h2>
                         
-                        <div class="mb-4">
-                            <label class="block text-gray-700 font-bold mb-2">Baseado em Livro (Opcional)</label>
-                            <select v-model="selectedBook" class="w-full border rounded p-2 text-gray-700 bg-white">
-                                <option :value="null">-- Selecione um Livro para preencher --</option>
-                                <option v-for="book in books" :key="book.id" :value="book">{{ book.title }}</option>
-                            </select>
-                            <p class="text-xs text-gray-500 mt-1">Ao selecionar, o título e roteiro serão preenchidos automaticamente.</p>
+                        <div class="mb-4 bg-gradient-to-r from-red-50 to-orange-50 p-4 rounded border border-red-100">
+                            <label class="block font-bold mb-2 text-red-900"><i class="fab fa-youtube text-red-600 mr-1"></i> Descreva o vídeo que você quer</label>
+                            <textarea v-model="videoContent" class="w-full border p-3 rounded" rows="4" placeholder="Ex.: Conte 3 piadas curtas sobre programadores. Ou: Um vídeo de humor sobre o dia a dia no trabalho."></textarea>
+                            <p class="text-xs text-gray-600 mt-2"><i class="fas fa-volume-up mr-1"></i> Voz humana natural · <i class="fas fa-laugh mr-1"></i> Aplausos e gargalhadas ao final de cada piada</p>
                         </div>
 
-                        <div class="mb-4">
-                            <label class="block text-gray-700 font-bold mb-2">Modo de Criação</label>
-                            <select v-model="videoMode" class="w-full border p-2 rounded">
-                                <option value="short">YouTube Short (um prompt)</option>
-                                <option value="manual">Manual (Roteiro Pronto)</option>
-                                <option value="topic">Por Tópico (IA Cria Roteiro)</option>
-                                <option value="story">História/Ficção (IA Cria Narrativa)</option>
-                            </select>
-                        </div>
-
-                        <div class="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-gray-700 font-bold mb-2">Tipo de Voz</label>
-                                <select v-model="voiceStyle" class="w-full border p-2 rounded">
-                                    <option value="robotic">Robótica</option>
-                                    <option value="human">Humana</option>
-                                    <option value="infantil">Infantil</option>
-                                    <option value="angelic">Angelical</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-gray-700 font-bold mb-2">Gênero da Voz</label>
-                                <select v-model="voiceGender" class="w-full border p-2 rounded">
-                                    <option value="male">Masculina</option>
-                                    <option value="female">Feminina</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div class="mb-4" v-if="videoMode !== 'short'">
-                            <label class="block font-bold mb-2">Título do Vídeo</label>
-                            <input v-model="videoTitle" class="w-full border p-2 rounded">
-                        </div>
-
-                        <div v-if="videoMode === 'short'" class="mb-4 bg-gradient-to-r from-red-50 to-orange-50 p-4 rounded border border-red-100">
-                            <label class="block font-bold mb-2 text-red-900"><i class="fab fa-youtube text-red-600 mr-1"></i> Descreva o Short que você quer</label>
-                            <textarea v-model="videoContent" class="w-full border p-3 rounded" rows="4" placeholder="Ex.: Um vídeo motivacional de 30 segundos sobre nunca desistir dos sonhos. Ou: Um Short com dica de produtividade em uma frase por cena."></textarea>
-                            <p class="text-xs text-gray-600 mt-2">A IA gera o roteiro e o vídeo vertical (9:16), ideal para YouTube Shorts e Reels.</p>
-                        </div>
-
-                        <div class="mb-4" v-if="videoMode === 'manual'">
-                            <label class="block font-bold mb-2">Roteiro (Linha por Linha)</label>
-                            <textarea v-model="videoScript" class="w-full border p-2 rounded" rows="10" placeholder="Digite cada frase do vídeo em uma linha nova..."></textarea>
-                        </div>
-
-                        <div class="mb-4" v-if="videoMode === 'topic'">
-                            <label class="block font-bold mb-2">Tópico do Vídeo</label>
-                            <input v-model="videoContent" class="w-full border p-2 rounded" placeholder="Ex: 5 Dicas para ser mais produtivo">
-                            <label class="block font-bold mt-2 mb-2">Duração (minutos)</label>
-                            <input type="number" v-model="videoDuration" class="w-full border p-2 rounded" min="1" max="10">
-                        </div>
-
-                        <div class="mb-4" v-if="videoMode === 'story'">
-                            <label class="block font-bold mb-2">Ideia da História / Prompt</label>
-                            <textarea v-model="videoContent" class="w-full border p-2 rounded" rows="5" placeholder="Descreva a história que você quer contar..."></textarea>
-                        </div>
-
-                        <div v-if="videoMode === 'short'" class="mb-4 text-sm text-gray-600">
+                        <div class="mb-4 text-sm text-gray-600">
                             <label class="block font-bold mb-1 text-gray-700">Título (opcional)</label>
                             <input v-model="videoTitle" class="w-full border p-2 rounded" placeholder="Deixe em branco para a IA sugerir">
                         </div>
 
-                        <button @click="generateVideo" :disabled="videoLoading" class="bg-indigo-600 text-white px-4 py-2 rounded w-full">
-                            <i v-if="videoLoading" class="fas fa-spinner fa-spin"></i> Gerar Vídeo
+                        <button @click="generateVideo" :disabled="videoLoading" class="bg-indigo-600 text-white px-6 py-3 rounded-lg w-full text-lg font-bold hover:bg-indigo-700 transition">
+                            <i v-if="videoLoading" class="fas fa-spinner fa-spin"></i>
+                            <i v-else class="fas fa-video mr-2"></i> Gerar Vídeo
                         </button>
                     </div>
                     <div class="bg-white p-6 rounded-lg shadow">
@@ -3532,23 +3473,16 @@
                     this.generatedVideoScript = null;
                     
                     try {
-                        let content = '';
-                        if (this.videoMode === 'manual') {
-                             content = this.videoScript;
-                        } else {
-                             content = this.videoContent;
-                        }
-                        
                         const res = await this.authFetch('/video/create', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
-                                mode: this.videoMode,
+                                mode: 'short',
                                 title: this.videoTitle,
-                                content: content,
-                                duration: this.videoDuration,
-                                voice_style: this.voiceStyle,
-                                voice_gender: this.voiceGender
+                                content: this.videoContent,
+                                duration: 1,
+                                voice_style: 'human',
+                                voice_gender: 'female'
                             })
                         });
                         

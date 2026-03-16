@@ -14,7 +14,9 @@ class VideoGenerator:
         self.output_dir = output_dir or VIDEO_OUTPUT_DIR
         os.makedirs(self.output_dir, exist_ok=True)
         self.music_dir = "app/static/music"
+        self.sfx_dir = "app/static/music/sfx"
         os.makedirs(self.music_dir, exist_ok=True)
+        os.makedirs(self.sfx_dir, exist_ok=True)
         self.ai_service = ai_service
         self.MUSIC_CREDITS = {
             "drama": "Music: Impact Prelude by Kevin MacLeod\nFree download: https://filmmusic.io/song/3900-impact-prelude\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
@@ -46,6 +48,85 @@ class VideoGenerator:
                         print(f"Erro ao baixar {filename}: {e}")
         except Exception as e:
             print(f"Erro no setup de músicas: {e}")
+
+    def _get_applause_laughter_path(self):
+        """Retorna o caminho do efeito sonoro de aplausos + gargalhadas, gerando-o se necessário."""
+        sfx_path = os.path.join(self.sfx_dir, "applause_laughter.wav")
+        if os.path.exists(sfx_path) and os.path.getsize(sfx_path) > 1000:
+            return sfx_path
+
+        try:
+            import numpy as np
+            import struct
+            import wave
+            import random
+
+            sample_rate = 22050
+            duration = 3.5
+
+            num_samples = int(sample_rate * duration)
+            t = np.linspace(0, duration, num_samples, endpoint=False)
+
+            envelope = np.ones(num_samples)
+            attack = int(0.15 * sample_rate)
+            decay_start = int(2.5 * sample_rate)
+            envelope[:attack] = np.linspace(0, 1, attack)
+            if decay_start < num_samples:
+                envelope[decay_start:] = np.linspace(1, 0, num_samples - decay_start)
+
+            applause = np.random.normal(0, 0.25, num_samples)
+            kernel_size = 5
+            kernel = np.ones(kernel_size) / kernel_size
+            applause = np.convolve(applause, kernel, mode='same')
+            mod = 1.0 + 0.3 * np.sin(2 * np.pi * 3.5 * t)
+            applause = applause * mod * envelope
+
+            laugh_signal = np.zeros(num_samples)
+            laugh_start = int(0.3 * sample_rate)
+            laugh_end = int(2.8 * sample_rate)
+            if laugh_end > num_samples:
+                laugh_end = num_samples
+
+            ha_duration = int(0.12 * sample_rate)
+            gap = int(0.08 * sample_rate)
+            pos = laugh_start
+            while pos + ha_duration < laugh_end:
+                freq = random.uniform(180, 350)
+                burst_t = np.linspace(0, ha_duration / sample_rate, ha_duration, endpoint=False)
+                burst = 0.35 * np.sin(2 * np.pi * freq * burst_t)
+                burst += 0.15 * np.sin(2 * np.pi * freq * 1.5 * burst_t)
+                burst += 0.1 * np.sin(2 * np.pi * freq * 2.0 * burst_t)
+                burst_env = np.ones(ha_duration)
+                burst_attack = int(0.02 * sample_rate)
+                burst_decay = int(0.04 * sample_rate)
+                if burst_attack > 0:
+                    burst_env[:burst_attack] = np.linspace(0, 1, burst_attack)
+                if burst_decay > 0 and burst_decay < ha_duration:
+                    burst_env[-burst_decay:] = np.linspace(1, 0, burst_decay)
+                burst = burst * burst_env
+                end_pos = min(pos + ha_duration, num_samples)
+                actual_len = end_pos - pos
+                laugh_signal[pos:end_pos] += burst[:actual_len]
+                pos += ha_duration + gap + random.randint(0, int(0.03 * sample_rate))
+
+            laugh_signal = laugh_signal * envelope
+
+            combined = 0.55 * applause + 0.45 * laugh_signal
+            combined = combined / (np.max(np.abs(combined)) + 1e-6) * 0.85
+
+            samples_int = np.clip(combined * 32767, -32768, 32767).astype(np.int16)
+
+            with wave.open(sfx_path, 'w') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(samples_int.tobytes())
+
+            print(f"SFX aplausos+gargalhadas gerado: {sfx_path}")
+            return sfx_path
+        except Exception as e:
+            print(f"Erro ao gerar SFX de aplausos: {e}")
+            return None
 
     def create_text_image(self, text, size=(1080, 1920), bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=None):
         """Cria uma imagem com texto centralizado usando Pillow, opcionalmente com imagem de fundo"""
@@ -743,15 +824,27 @@ class VideoGenerator:
                 img_scene = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
                 
                 # Cria clip da cena
-                # ImageClip precisa estar disponível no escopo (garantido pelo import no início da função)
                 clip_scene = ImageClip(img_scene)
                 
                 if audio_path:
                     audio_clip_scene = AudioFileClip(audio_path)
-                    clip_scene = clip_scene.with_duration(audio_clip_scene.duration + 0.5)
-                    clip_scene = clip_scene.with_audio(audio_clip_scene)
+                    
+                    sfx_path = self._get_applause_laughter_path()
+                    if sfx_path and os.path.exists(sfx_path):
+                        try:
+                            sfx_clip = AudioFileClip(sfx_path)
+                            scene_audio = concatenate_audioclips([audio_clip_scene, sfx_clip])
+                            clip_scene = clip_scene.with_duration(scene_audio.duration + 0.5)
+                            clip_scene = clip_scene.with_audio(scene_audio)
+                            print(f"Cena {i+1}: aplausos+gargalhadas adicionados ({sfx_clip.duration:.1f}s)")
+                        except Exception as e:
+                            print(f"Aviso: Falha ao adicionar SFX na cena {i+1}: {e}")
+                            clip_scene = clip_scene.with_duration(audio_clip_scene.duration + 0.5)
+                            clip_scene = clip_scene.with_audio(audio_clip_scene)
+                    else:
+                        clip_scene = clip_scene.with_duration(audio_clip_scene.duration + 0.5)
+                        clip_scene = clip_scene.with_audio(audio_clip_scene)
                 else:
-                    # FALLBACK DE ÁUDIO CRÍTICO
                     print(f"AVISO: Cena {i+1} sem áudio gerado. Mantendo duração padrão.")
                     clip_scene = clip_scene.with_duration(5)
                 
