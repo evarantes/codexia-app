@@ -14,7 +14,13 @@ from app.modules.humor_factory.service import HumorFactoryService
 
 
 router = APIRouter(prefix="/humor-factory", tags=["humor-factory"])
-service = HumorFactoryService()
+_service = None
+
+def get_service():
+    global _service
+    if _service is None:
+        _service = HumorFactoryService()
+    return _service
 
 
 class HumorChannelRequest(BaseModel):
@@ -222,7 +228,7 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
     db.refresh(project)
 
     if payload.start_immediately:
-        background_tasks.add_task(service.generate_project_video, project.id)
+        background_tasks.add_task(get_service().generate_project_video, project.id)
     return _project_to_dict(project)
 
 
@@ -250,7 +256,7 @@ def regenerate_project(project_id: int, background_tasks: BackgroundTasks, db: S
     row.status_message = "Regeneração solicitada."
     row.updated_at = datetime.now()
     db.commit()
-    background_tasks.add_task(service.generate_project_video, project_id)
+    background_tasks.add_task(get_service().generate_project_video, project_id)
     return {"status": "queued", "message": "Regeneração iniciada em background."}
 
 
@@ -270,7 +276,7 @@ def approve_project(project_id: int, payload: HumorReviewRequest, db: Session = 
 
     if payload.publish_now or row.auto_publish_after_review:
         try:
-            result = service.publish_project(project_id)
+            result = get_service().publish_project(project_id)
             return {"status": "published", "result": result}
         except Exception as e:
             raise HTTPException(status_code=502, detail=str(e))
@@ -293,7 +299,7 @@ def reject_project(project_id: int, payload: HumorReviewRequest, db: Session = D
 @router.post("/projects/{project_id}/publish")
 def publish_project(project_id: int):
     try:
-        return service.publish_project(project_id)
+        return get_service().publish_project(project_id)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 

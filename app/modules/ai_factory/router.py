@@ -8,7 +8,13 @@ from typing import Optional, List
 import json
 
 router = APIRouter(prefix="/ai-factory", tags=["ai-factory"])
-service = AIFactoryService()
+_service = None
+
+def get_service():
+    global _service
+    if _service is None:
+        _service = AIFactoryService()
+    return _service
 
 # Request Models
 class StoryRequest(BaseModel):
@@ -41,7 +47,7 @@ class ShortsRequest(BaseModel):
 @router.post("/story")
 async def generate_story(request: StoryRequest, db: Session = Depends(get_db)):
     try:
-        result = await service.generate_story(request.theme, request.style, request.audience, request.length)
+        result = await get_service().generate_story(request.theme, request.style, request.audience, request.length)
         
         # Save to DB
         db_story = AIStory(
@@ -71,12 +77,12 @@ async def generate_cover(request: CoverRequest, db: Session = Depends(get_db)):
         # We use the existing logic in AIContentGenerator which handles prompt + image generation
         # or we construct our own prompt.
         # Let's generate a refined prompt first using text gen
-        prompt = await service.generate_cover_prompt(request.title, request.subtitle, request.author, request.style)
+        prompt = await get_service().generate_cover_prompt(request.title, request.subtitle, request.author, request.style)
         
         # Now generate image
         # Using existing generate_cover_options from AIContentGenerator which expects (title, context, author, subtitle)
         # We pass the generated prompt as context or style
-        image_urls = service.ai_service.generate_cover_options(
+        image_urls = get_service().ai_service.generate_cover_options(
             title=request.title,
             context=f"Style: {request.style}. Prompt: {prompt}",
             author=request.author,
@@ -119,7 +125,7 @@ async def generate_image(request: ImageRequest, db: Session = Depends(get_db)):
             # Wait, I noticed generate_cover_options in ai_generator.py.
             # I will use that for now, passing the prompt as context.
             
-            urls = service.ai_service.generate_cover_options(
+            urls = get_service().ai_service.generate_cover_options(
                 title="Image", # Dummy title
                 context=base_prompt,
                 n=1
@@ -143,7 +149,7 @@ async def generate_image(request: ImageRequest, db: Session = Depends(get_db)):
 @router.post("/script")
 async def generate_script(request: ScriptRequest, db: Session = Depends(get_db)):
     try:
-        result = await service.generate_script(request.theme, request.duration, request.narrative_type)
+        result = await get_service().generate_script(request.theme, request.duration, request.narrative_type)
         
         db_script = AIScript(
             theme=request.theme,
@@ -168,7 +174,7 @@ async def generate_shorts(request: ShortsRequest, db: Session = Depends(get_db))
         if not original_script:
             raise HTTPException(status_code=404, detail="Script not found")
             
-        result = await service.generate_shorts_from_script(original_script.script_content)
+        result = await get_service().generate_shorts_from_script(original_script.script_content)
         
         # Update script with shorts
         original_script.shorts = result

@@ -6,18 +6,37 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app.models import Settings
+from sqlalchemy.exc import OperationalError
 
 load_dotenv()
 
 class AIContentGenerator:
     def __init__(self):
-        self._load_config()
+        self.api_key = None
+        self.gemini_key = None
+        self.deepseek_key = None
+        self.groq_key = None
+        self.anthropic_key = None
+        self.mistral_key = None
+        self.openrouter_key = None
+        self.elevenlabs_key = None
+        self.elevenlabs_voice_id = None
+        self.elevenlabs_voice_name = None
+        self.provider = "openai"
+        self.hf_token = os.getenv("HUGGINGFACE_TOKEN")
 
     def _load_config(self):
         # Tenta carregar do banco primeiro, depois do .env
         db = SessionLocal()
-        settings = db.query(Settings).first()
-        db.close()
+        settings = None
+        try:
+            settings = db.query(Settings).first()
+        except OperationalError as e:
+            print(f"AVISO: Falha ao carregar Settings do banco (migração pendente?): {e}")
+        except Exception as e:
+            print(f"AVISO: Falha ao carregar Settings do banco: {e}")
+        finally:
+            db.close()
 
         self.api_key = None
         self.gemini_key = None
