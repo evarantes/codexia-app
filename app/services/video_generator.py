@@ -504,9 +504,9 @@ class VideoGenerator:
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
         # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
         try:
-            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips, AudioClip
         except ImportError:
-            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
+            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips, AudioClip
         import numpy as np
 
         if progress_callback:
@@ -623,7 +623,23 @@ class VideoGenerator:
                 
                 # Concatenar clips visuais
                 if clips:
-                    final_video = concatenate_videoclips(clips, method="compose")
+                    transition_sec = 0.25
+                    if len(clips) > 1:
+                        faded = []
+                        for idx, c in enumerate(clips):
+                            if idx > 0 and hasattr(c, "crossfadein"):
+                                try:
+                                    c = c.crossfadein(transition_sec)
+                                except Exception:
+                                    pass
+                            faded.append(c)
+                        clips = faded
+                        try:
+                            final_video = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
+                        except Exception:
+                            final_video = concatenate_videoclips(clips, method="compose")
+                    else:
+                        final_video = concatenate_videoclips(clips, method="compose")
                     
                     # Ajustar áudio: Se vídeo for menor que áudio, corta áudio. Se vídeo for maior, loop ou corta vídeo.
                     # Vamos cortar o vídeo para bater com o áudio ou vice-versa.
@@ -803,7 +819,23 @@ class VideoGenerator:
             clips.append(clip_end)
             
             # Concatenar todos
-            final_clip = concatenate_videoclips(clips, method="compose")
+            transition_sec = 0.25
+            if len(clips) > 1:
+                faded = []
+                for idx, c in enumerate(clips):
+                    if idx > 0 and hasattr(c, "crossfadein"):
+                        try:
+                            c = c.crossfadein(transition_sec)
+                        except Exception:
+                            pass
+                    faded.append(c)
+                clips = faded
+                try:
+                    final_clip = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
+                except Exception:
+                    final_clip = concatenate_videoclips(clips, method="compose")
+            else:
+                final_clip = concatenate_videoclips(clips, method="compose")
             
             # 4. Adicionar Música de Fundo
             if progress_callback:
@@ -866,6 +898,42 @@ class VideoGenerator:
                     final_clip = final_clip.with_audio(final_audio)
                 except Exception as e:
                     print(f"Erro ao adicionar música de fundo: {e}")
+
+            target_duration = plan.get("target_duration_sec")
+            if target_duration:
+                try:
+                    target_duration = float(target_duration)
+                except Exception:
+                    target_duration = None
+            if target_duration and target_duration > 1 and final_clip:
+                try:
+                    current = float(final_clip.duration or 0)
+                except Exception:
+                    current = 0
+                if current > (target_duration + 0.5):
+                    final_clip = self._subclip(final_clip, 0, target_duration)
+                elif current and current < (target_duration - 0.5):
+                    extra = target_duration - current
+                    try:
+                        frame_t = max(0, current - 0.02)
+                        last_frame = final_clip.get_frame(frame_t)
+                        freeze = self._set_clip_duration(ImageClip(last_frame), extra)
+
+                        def _silence(_t):
+                            return np.array([0.0, 0.0])
+
+                        silence_audio = AudioClip(_silence, duration=extra, fps=44100)
+                        freeze = self._set_clip_audio(freeze, silence_audio)
+
+                        combined = concatenate_videoclips([final_clip, freeze], method="compose")
+                        base_audio = final_clip.audio
+                        if base_audio:
+                            combined_audio = concatenate_audioclips([base_audio, silence_audio])
+                        else:
+                            combined_audio = silence_audio
+                        final_clip = self._set_clip_audio(combined, combined_audio)
+                    except Exception as e:
+                        print(f"Aviso: não foi possível ajustar duração para {target_duration}s: {e}")
 
             # Output
             if progress_callback:

@@ -1841,6 +1841,99 @@ class AIContentGenerator:
             print(f"ElevenLabs TTS error: {e}")
         return None
 
+    def generate_song_lyrics(self, theme: str, message: str, language: str = "pt-BR", style: str = "", genre: str = ""):
+        self._load_config()
+        lang = (language or "pt-BR").strip()
+        theme = (theme or "").strip()
+        message = (message or "").strip()
+        style = (style or "").strip()
+        genre = (genre or "").strip()
+
+        if not theme or not message:
+            return {"title": "Música", "lyrics": ""}
+
+        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.groq_key or self.openrouter_key):
+            title = f"{theme.title()} - Recomeçar"
+            lyrics = (
+                f"Verso 1\n"
+                f"No silêncio eu me encontrei\n"
+                f"Quando tudo parecia não ter fim\n"
+                f"Guardei no peito o que eu sonhei\n"
+                f"E fiz da queda um novo sim\n\n"
+                f"Pré-Refrão\n"
+                f"Eu ouvi a vida me chamar\n"
+                f"Pra levantar e continuar\n\n"
+                f"Refrão\n"
+                f"{message}\n"
+                f"Eu vou seguir sem olhar pra trás\n"
+                f"Se a tempestade vem, eu faço paz\n"
+                f"{message}\n\n"
+                f"Verso 2\n"
+                f"Se o medo tenta me prender\n"
+                f"Eu lembro quem eu decidi ser\n"
+                f"Cada cicatriz me faz crescer\n"
+                f"E a esperança volta a aparecer\n\n"
+                f"Refrão\n"
+                f"{message}\n"
+                f"Eu vou seguir sem olhar pra trás\n"
+                f"Se a tempestade vem, eu faço paz\n"
+                f"{message}\n\n"
+                f"Ponte\n"
+                f"Eu não nasci pra desistir\n"
+                f"Eu nasci pra renascer\n\n"
+                f"Refrão Final\n"
+                f"{message}\n"
+                f"Eu vou seguir sem olhar pra trás\n"
+                f"Se a tempestade vem, eu faço paz\n"
+                f"{message}\n"
+            )
+            return {"title": title, "lyrics": lyrics}
+
+        prompt = f"""
+Crie uma letra de música ORIGINAL baseada no tema e na mensagem.
+
+Tema: {theme}
+Mensagem: {message}
+Idioma: {lang}
+Estilo: {style or 'livre'}
+Gênero: {genre or 'livre'}
+
+Regras:
+- Letra com estrutura clara: Verso 1, Pré-Refrão, Refrão, Verso 2, Refrão, Ponte, Refrão Final.
+- Sem palavrões.
+- Sem citar marcas, artistas ou músicas existentes.
+- Sem usar markdown.
+- Refrão deve repetir a mensagem de forma memorável.
+
+Retorne APENAS um JSON válido no formato:
+{{
+  "title": "Título curto e memorável",
+  "lyrics": "Letra completa com quebras de linha"
+}}
+"""
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um compositor profissional. Retorne somente JSON válido.",
+                temperature=0.85,
+                json_mode=True
+            )
+            if not content:
+                raise Exception("Resposta vazia da IA")
+            import json
+            clean = content.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean)
+            title = (data.get("title") or "Música").strip()[:120]
+            lyrics = (data.get("lyrics") or "").strip()
+            if not lyrics:
+                raise Exception("Letra vazia")
+            return {"title": title, "lyrics": lyrics}
+        except Exception as e:
+            print(f"Erro ao gerar letra: {e}")
+            title = f"{theme.title()} - Mensagem"
+            lyrics = f"Verso 1\n{theme}\n\nRefrão\n{message}\n"
+            return {"title": title, "lyrics": lyrics}
+
     def lyrics_to_music_prompt(self, lyrics: str, title: str = "", genre: str = ""):
         """Converte letra em prompt para geração de música instrumental (MusicGen)."""
         self._load_config()

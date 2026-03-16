@@ -132,6 +132,13 @@ def process_scheduled_video(video_id: int):
                 "IA não retornou roteiro válido. Configure OPENAI_API_KEY ou GEMINI_API_KEY em Configurações."
             )
 
+        try:
+            target_sec = int(duration) * 60 if video.video_type != "short" else 60
+            if isinstance(final_script, dict) and target_sec > 0:
+                final_script["target_duration_sec"] = target_sec
+        except Exception:
+            pass
+
         # ENRICHMENT: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
         # Skip enrichment for music videos as they are already visual-focused
         if not video.music_file_path:

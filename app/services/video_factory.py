@@ -409,15 +409,25 @@ class VideoFactory:
             job.logs += f"Aviso: IA indisponível/retorno inválido no script ({e}). Usando fallback.\n"
 
         if not data or not isinstance(data, dict):
+            try:
+                n_scenes = max(3, int(duration_min) * 2)
+            except Exception:
+                n_scenes = 6
+            scenes = [
+                {"idx": 1, "narration": f"Bem-vindo ao conteúdo sobre {theme}.", "visual_prompt": f"Cena introdutória sobre {theme}", "keywords": theme, "duration_sec": 6},
+            ]
+            for i in range(2, max(3, n_scenes)):
+                scenes.append(
+                    {"idx": i, "narration": f"Ponto importante {i-1} sobre {theme}.", "visual_prompt": f"Cena explicativa sobre {theme}, tópico {i-1}", "keywords": theme, "duration_sec": 8}
+                )
+            scenes.append(
+                {"idx": n_scenes, "narration": "Se gostou, curta e acompanhe os próximos vídeos.", "visual_prompt": "Chamada final para ação em estúdio", "keywords": "call to action", "duration_sec": 5},
+            )
             data = {
                 "title": video.title or f"{theme} - Vídeo",
                 "description": f"Vídeo sobre {theme}",
                 "tags": "youtube, conteúdo, automação",
-                "scenes": [
-                    {"idx": 1, "narration": f"Bem-vindo ao conteúdo sobre {theme}.", "visual_prompt": f"Cena introdutória sobre {theme}", "keywords": theme, "duration_sec": 6},
-                    {"idx": 2, "narration": f"Vamos explorar pontos importantes sobre {theme}.", "visual_prompt": f"Cena principal explicativa sobre {theme}", "keywords": theme, "duration_sec": 8},
-                    {"idx": 3, "narration": "Se gostou, curta e acompanhe os próximos vídeos.", "visual_prompt": "Chamada final para ação em estúdio", "keywords": "call to action", "duration_sec": 5},
-                ],
+                "scenes": scenes,
             }
         
         video.title = data.get("title", video.title)
@@ -618,9 +628,9 @@ class VideoFactory:
         # MVP Rápido: Usar MoviePy (já que o usuário permitiu e está instalado)
         # moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
         try:
-            from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
+            from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, concatenate_audioclips, AudioClip
         except ImportError:
-            from moviepy import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
+            from moviepy import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, concatenate_audioclips, AudioClip
         
         clips = []
         final_video = None
@@ -639,12 +649,65 @@ class VideoFactory:
                     img_clip = self._clip_resize(img_clip, (1280, 720))  # 720p = render ~2x mais rápido
                     img_clip = self._clip_with_duration(img_clip, duration)
                     img_clip = self._clip_with_audio(img_clip, audio_clip)
+                    try:
+                        img_clip = self.video_gen._apply_ken_burns(img_clip, (1280, 720))
+                    except Exception:
+                        pass
                     clips.append(img_clip)
 
             if not clips:
                 raise Exception("Sem clips para renderizar (áudio/imagem ausentes).")
 
-            final_video = concatenate_videoclips(clips, method="compose")
+            transition_sec = 0.25
+            if len(clips) > 1:
+                faded = []
+                for idx, c in enumerate(clips):
+                    if idx > 0 and hasattr(c, "crossfadein"):
+                        try:
+                            c = c.crossfadein(transition_sec)
+                        except Exception:
+                            pass
+                    faded.append(c)
+                clips = faded
+                try:
+                    final_video = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
+                except Exception:
+                    final_video = concatenate_videoclips(clips, method="compose")
+            else:
+                final_video = concatenate_videoclips(clips, method="compose")
+
+            target_duration = getattr(video, "duration_sec", None)
+            if target_duration:
+                try:
+                    target_duration = float(target_duration)
+                except Exception:
+                    target_duration = None
+            if target_duration and target_duration > 1:
+                try:
+                    current = float(final_video.duration or 0)
+                except Exception:
+                    current = 0
+                if current > (target_duration + 0.5):
+                    final_video = self._clip_subclip(final_video, 0, target_duration)
+                elif current and current < (target_duration - 0.5):
+                    extra = target_duration - current
+                    try:
+                        frame_t = max(0, current - 0.02)
+                        last_frame = final_video.get_frame(frame_t)
+                        freeze = self._clip_with_duration(ImageClip(last_frame), extra)
+
+                        silence_audio = AudioClip(lambda _t: [0.0, 0.0], duration=extra, fps=44100)
+                        freeze = self._clip_with_audio(freeze, silence_audio)
+
+                        combined = concatenate_videoclips([final_video, freeze], method="compose")
+                        base_audio = final_video.audio
+                        if base_audio:
+                            combined_audio = concatenate_audioclips([base_audio, silence_audio])
+                        else:
+                            combined_audio = silence_audio
+                        final_video = self._clip_with_audio(combined, combined_audio)
+                    except Exception as e:
+                        job.logs += f"Aviso: não foi possível ajustar duração ({e}).\n"
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
@@ -757,6 +820,8 @@ class VideoFactory:
         cropped = None
         resized = None
         final_short = None
+        composite = None
+        overlay_clip = None
         try:
             clip = VideoFileClip(parent_asset.storage_key)
             self._set_job_progress(job, 90, "Processando corte para short...")
@@ -780,8 +845,56 @@ class VideoFactory:
             resized = self._clip_resize(cropped, (1080, 1920))
             
             # Pega subclip de 60s
-            duration = min(clip.duration, 60)
-            final_short = self._clip_subclip(resized, 0, duration)
+            max_duration = 58
+            try:
+                total = float(clip.duration or 0)
+            except Exception:
+                total = 0
+            if total <= 0:
+                job.logs += "Erro: duração inválida do vídeo pai.\n"
+                return
+            start = 4.0 if total > (max_duration + 4.0) else max(0.0, total - max_duration)
+            end = min(total, start + max_duration)
+            final_short = self._clip_subclip(resized, start, end)
+
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                import uuid as _uuid
+                w, h = 1080, 1920
+                img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+                box_h = 210
+                y0 = h - box_h - 80
+                draw.rounded_rectangle((60, y0, w - 60, y0 + box_h), radius=36, fill=(0, 0, 0, 170))
+                text = "Quer o resto?\nAssista o vídeo completo no canal"
+                try:
+                    font = ImageFont.truetype("arial.ttf", 58)
+                except Exception:
+                    font = ImageFont.load_default()
+                draw.multiline_text((110, y0 + 40), text, font=font, fill=(255, 255, 255, 245), spacing=14)
+                overlay_path = os.path.join(VIDEO_OUTPUT_DIR, f"short_overlay_{_uuid.uuid4().hex}.png")
+                img.save(overlay_path)
+                overlay_duration = min(3.0, float(final_short.duration or 3.0))
+                overlay_clip = ImageClip(overlay_path)
+                if hasattr(overlay_clip, "with_duration"):
+                    overlay_clip = overlay_clip.with_duration(overlay_duration)
+                else:
+                    overlay_clip = overlay_clip.set_duration(overlay_duration)
+                start_t = max(0.0, float(final_short.duration or 0) - overlay_duration)
+                if hasattr(overlay_clip, "with_start"):
+                    overlay_clip = overlay_clip.with_start(start_t)
+                else:
+                    overlay_clip = overlay_clip.set_start(start_t)
+                if hasattr(overlay_clip, "with_position"):
+                    overlay_clip = overlay_clip.with_position(("center", "center"))
+                else:
+                    overlay_clip = overlay_clip.set_position(("center", "center"))
+                composite = CompositeVideoClip([final_short, overlay_clip])
+                if getattr(final_short, "audio", None):
+                    composite = self._clip_with_audio(composite, final_short.audio)
+                final_short = composite
+            except Exception as e:
+                job.logs += f"Aviso: overlay não aplicado ({e}).\n"
             
             output_filename = f"short_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
@@ -800,7 +913,7 @@ class VideoFactory:
             self.db.commit()
             job.logs += f"Short renderizado: {output_path}\n"
         finally:
-            for c in (final_short, resized, cropped, clip):
+            for c in (overlay_clip, composite, final_short, resized, cropped, clip):
                 try:
                     if c:
                         c.close()

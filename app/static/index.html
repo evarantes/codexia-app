@@ -416,6 +416,36 @@
                     <div class="bg-white rounded-lg shadow p-6">
                         <h2 class="text-xl font-bold mb-4">1. Letra e configuração</h2>
                         <div class="space-y-4">
+                            <div class="bg-gray-50 p-4 rounded border">
+                                <h3 class="font-bold mb-3">Gerar letra com IA</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block font-bold mb-1 text-sm">Tema</label>
+                                        <input v-model="musicLyricsTheme" class="w-full border p-2 rounded" placeholder="Ex: superação, amor, fé">
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold mb-1 text-sm">Mensagem</label>
+                                        <input v-model="musicLyricsMessage" class="w-full border p-2 rounded" placeholder="Ex: não desistir, recomeçar, esperança">
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold mb-1 text-sm">Idioma</label>
+                                        <select v-model="musicLyricsLanguage" class="w-full border p-2 rounded">
+                                            <option value="pt-BR">Português (BR)</option>
+                                            <option value="en">Inglês</option>
+                                            <option value="es">Espanhol</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold mb-1 text-sm">Estilo (opcional)</label>
+                                        <input v-model="musicLyricsStyle" class="w-full border p-2 rounded" placeholder="Ex: pop, rap, gospel, rock">
+                                    </div>
+                                </div>
+                                <button @click="generateLyrics" :disabled="musicLyricsLoading || !musicLyricsTheme.trim() || !musicLyricsMessage.trim()" class="mt-3 w-full bg-emerald-600 text-white py-2 rounded hover:bg-emerald-700 flex items-center justify-center gap-2">
+                                    <i v-if="musicLyricsLoading" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-pen-nib"></i>
+                                    Gerar Letra (IA)
+                                </button>
+                            </div>
                             <div>
                                 <label class="block font-bold mb-2">Título da música</label>
                                 <input v-model="musicTitle" class="w-full border p-2 rounded" placeholder="Ex: Minha Canção">
@@ -2041,6 +2071,11 @@
                     generatedVideoUrl: null,
 
                     // Música e Clipe
+                    musicLyricsTheme: '',
+                    musicLyricsMessage: '',
+                    musicLyricsLanguage: 'pt-BR',
+                    musicLyricsStyle: '',
+                    musicLyricsLoading: false,
                     musicLyrics: '',
                     musicTitle: 'Música',
                     musicGenre: '',
@@ -2703,7 +2738,10 @@
                                 concept: v.concept,
                                 time: v.time || '12:00',
                                 type: v.type || 'video',
-                                auto_post: v.auto_post !== undefined ? v.auto_post : true
+                                auto_post: v.auto_post !== undefined ? v.auto_post : true,
+                                duration: v.duration !== undefined && v.duration !== null
+                                    ? v.duration
+                                    : ((v.type || 'video') === 'short' ? 1 : (this.scheduleDuration || 5))
                             }))
                         }));
                         if (plan.length) {
@@ -3619,6 +3657,36 @@
                         alert("Erro ao gerar música: " + (e.message || e));
                     } finally {
                         this.musicLoading = false;
+                    }
+                },
+                async generateLyrics() {
+                    this.musicLyricsLoading = true;
+                    try {
+                        const res = await this.authFetch('/music/lyrics', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                theme: this.musicLyricsTheme,
+                                message: this.musicLyricsMessage,
+                                language: this.musicLyricsLanguage,
+                                style: this.musicLyricsStyle,
+                                genre: this.musicGenre
+                            })
+                        });
+                        let data = {};
+                        try { data = await res.json(); } catch (_) { data = {}; }
+                        if (res.ok && data.lyrics) {
+                            this.musicLyrics = data.lyrics;
+                            if ((!this.musicTitle || this.musicTitle === 'Música') && data.title) {
+                                this.musicTitle = data.title;
+                            }
+                        } else {
+                            alert(data.detail || data.message || "Erro ao gerar letra.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao gerar letra: " + (e.message || e));
+                    } finally {
+                        this.musicLyricsLoading = false;
                     }
                 },
                 async generateClip() {

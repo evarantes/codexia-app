@@ -18,3 +18,4 @@ app/static/icons/*
 .DS_Store
 .idea/
 .vscode/
+client_secret.json
