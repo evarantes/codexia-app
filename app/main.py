@@ -239,7 +239,8 @@ def run_migrations(engine):
                         "anthropic_api_key", "mistral_api_key", "openrouter_api_key",
                         "hotmart_client_id", "hotmart_client_secret", 
                         "hotmart_access_token", "suno_api_key",
-                        "pexels_api_key", "pixabay_api_key", "elevenlabs_api_key"
+                        "pexels_api_key", "pixabay_api_key", "elevenlabs_api_key",
+                        "elevenlabs_voice_id", "elevenlabs_voice_name"
                     ]:
                         if col not in settings_columns:
                             try:

@@ -342,6 +342,7 @@
                                     <option value="human">Humana</option>
                                     <option value="infantil">Infantil</option>
                                     <option value="angelic">Angelical</option>
+                                    <option value="my_voice">Minha voz (ElevenLabs)</option>
                                 </select>
                             </div>
                             <div>
@@ -734,6 +735,7 @@
                                 <option value="robotic">Robótica</option>
                                 <option value="child">Criança</option>
                                 <option value="angelic">Angelical</option>
+                                <option value="my_voice">Minha voz (ElevenLabs)</option>
                             </select>
                         </div>
                         <div>
@@ -1766,6 +1768,33 @@
                             <input v-model="settings.elevenlabs_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
                             <p class="text-xs text-gray-500 mt-1">Opcional. Se vazio, o sistema usa Edge-TTS (Grátis). Obtenha em <a href="https://elevenlabs.io/" target="_blank" class="text-blue-600 underline">ElevenLabs</a></p>
                         </div>
+
+                        <div class="mb-4 bg-gray-50 p-4 rounded border">
+                            <h4 class="font-bold mb-2">Minha voz (clonagem via ElevenLabs)</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Nome da voz</label>
+                                    <input v-model="settings.elevenlabs_voice_name" class="w-full border p-2 rounded bg-white" placeholder="Ex: Minha Voz">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Voice ID (opcional)</label>
+                                    <input v-model="settings.elevenlabs_voice_id" class="w-full border p-2 rounded bg-white" placeholder="Cole o voice_id do ElevenLabs">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Amostra de áudio</label>
+                                    <input type="file" accept="audio/*" @change="onElevenlabsSampleSelected" class="w-full border p-2 rounded bg-white">
+                                </div>
+                                <div class="flex items-end">
+                                    <button @click="createElevenlabsVoice" :disabled="elevenlabsVoiceCreating" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 w-full text-sm">
+                                        <i v-if="elevenlabsVoiceCreating" class="fas fa-spinner fa-spin mr-2"></i>
+                                        <span v-else>Criar voz com amostra</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">Para usar no YouTube Auto, selecione “Minha voz (ElevenLabs)” em Estilo de Voz.</p>
+                        </div>
                     </div>
                     <div class="mb-4">
                         <label class="block font-bold mb-2">Mercado Pago Access Token</label>
@@ -2125,8 +2154,12 @@
                         suno_api_key: '',
                         pexels_api_key: '',
                         pixabay_api_key: '',
-                        elevenlabs_api_key: ''
+                        elevenlabs_api_key: '',
+                        elevenlabs_voice_id: '',
+                        elevenlabs_voice_name: ''
                     },
+                    elevenlabsSampleFile: null,
+                    elevenlabsVoiceCreating: false,
                     
                     // Hotmart Auto
                     hotmartConnected: false,
@@ -3292,6 +3325,35 @@
                         }
                     } catch (e) { 
                         alert('Erro ao salvar'); 
+                    }
+                },
+                onElevenlabsSampleSelected(event) {
+                    const f = event && event.target ? event.target.files[0] : null;
+                    this.elevenlabsSampleFile = f || null;
+                },
+                async createElevenlabsVoice() {
+                    if (!this.settings.elevenlabs_api_key) return alert("Configure a ElevenLabs API Key antes de criar a voz.");
+                    if (!this.settings.elevenlabs_voice_name) return alert("Informe o nome da voz.");
+                    if (!this.elevenlabsSampleFile) return alert("Selecione uma amostra de áudio.");
+                    this.elevenlabsVoiceCreating = true;
+                    try {
+                        const form = new FormData();
+                        form.append('name', this.settings.elevenlabs_voice_name);
+                        form.append('file', this.elevenlabsSampleFile);
+                        const res = await this.authFetch('/settings/elevenlabs/voice', { method: 'POST', body: form });
+                        const data = await res.json().catch(() => ({}));
+                        if (res.ok && data.voice_id) {
+                            this.settings.elevenlabs_voice_id = data.voice_id;
+                            this.settings.elevenlabs_voice_name = data.voice_name || this.settings.elevenlabs_voice_name;
+                            this.elevenlabsSampleFile = null;
+                            alert("Voz criada e salva nas Configurações!");
+                        } else {
+                            alert(data.detail || "Erro ao criar voz no ElevenLabs.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao criar voz: " + (e.message || e));
+                    } finally {
+                        this.elevenlabsVoiceCreating = false;
                     }
                 },
                 // Hotmart Methods

@@ -105,6 +105,8 @@ class Settings(Base):
     pexels_api_key = Column(String, nullable=True)
     pixabay_api_key = Column(String, nullable=True)
     elevenlabs_api_key = Column(String, nullable=True)
+    elevenlabs_voice_id = Column(String, nullable=True)
+    elevenlabs_voice_name = Column(String, nullable=True)
     
     is_active = Column(Boolean, default=True)
 
@@ -280,4 +282,3 @@ class Job(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     video = relationship("Video", back_populates="jobs")
-

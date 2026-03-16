@@ -185,7 +185,9 @@ class VideoGenerator:
         print(f"Gerando áudio para: '{clean_text[:30]}...' (Style: {style}, Gender: {gender})")
         
         openai_voice = "onyx"
-        if style in ["human", "humana"]:
+        if style in ["my_voice", "myvoice", "minha_voz", "minhavoz"]:
+            openai_voice = "my_voice"
+        elif style in ["human", "humana"]:
             openai_voice = "onyx" if gender == "male" else "nova"
         elif style in ["child", "infantil"]:
             openai_voice = "echo" if gender == "male" else "shimmer"

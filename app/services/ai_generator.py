@@ -27,6 +27,8 @@ class AIContentGenerator:
         self.mistral_key = None
         self.openrouter_key = None
         self.elevenlabs_key = None
+        self.elevenlabs_voice_id = None
+        self.elevenlabs_voice_name = None
         self.provider = "openai"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN") # Para MusicGen
 
@@ -39,6 +41,8 @@ class AIContentGenerator:
             self.mistral_key = settings.mistral_api_key
             self.openrouter_key = settings.openrouter_api_key
             self.elevenlabs_key = settings.elevenlabs_api_key
+            self.elevenlabs_voice_id = getattr(settings, "elevenlabs_voice_id", None)
+            self.elevenlabs_voice_name = getattr(settings, "elevenlabs_voice_name", None)
             self.provider = settings.ai_provider or "openai"
         
         # Fallback to env vars
@@ -1820,7 +1824,12 @@ class AIContentGenerator:
                 "echo": env_voice_male or "VR6AewLTigWG4xSOukaG",
                 "fable": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
             }
-            voice_id = env_voice_default or voice_map.get(voice_hint, env_voice_female or "EXAVITQu4vr4xnSDxMaL")
+            hint = (voice_hint or "").strip().lower()
+            custom_voice_id = (self.elevenlabs_voice_id or "").strip()
+            if hint in ["my_voice", "myvoice", "minha_voz", "minhavoz", "custom"] and custom_voice_id:
+                voice_id = custom_voice_id
+            else:
+                voice_id = env_voice_default or voice_map.get(hint, env_voice_female or "EXAVITQu4vr4xnSDxMaL")
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             headers = {"xi-api-key": self.elevenlabs_key, "Content-Type": "application/json"}
             payload = {
