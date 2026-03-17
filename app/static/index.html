@@ -1703,12 +1703,14 @@
 
                         <div class="mb-2">
                             <label class="block font-bold mb-2">Modelo (OpenRouter)</label>
-                            <select v-model="settings.openrouter_model" class="w-full border p-2 rounded bg-white">
+                            <input list="openrouter-models" v-model="settings.openrouter_model" class="w-full border p-2 rounded bg-white" placeholder="openrouter/auto">
+                            <datalist id="openrouter-models">
+                                <option value="openrouter/auto">Automático (melhor disponível)</option>
                                 <option value="openai/gpt-4o-mini">GPT-4o mini (OpenAI)</option>
                                 <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet (Anthropic)</option>
                                 <option value="deepseek/deepseek-chat">DeepSeek Chat (DeepSeek)</option>
-                            </select>
-                            <p class="text-xs text-gray-500 mt-1">Dica: você pode colar qualquer model id do OpenRouter neste campo.</p>
+                            </datalist>
+                            <p class="text-xs text-gray-500 mt-1">Use openrouter/auto para escolher automaticamente o melhor modelo disponível.</p>
                         </div>
                     </div>
 
@@ -2100,9 +2102,9 @@
                         anthropic_api_key: '',
                         mistral_api_key: '',
                         openrouter_api_key: '',
-                        openrouter_model: 'openai/gpt-4o-mini',
+                        openrouter_model: 'openrouter/auto',
                         groq_api_key: '',
-                        ai_provider: 'openai',
+                        ai_provider: 'openrouter',
                         youtube_client_id: '',
                         youtube_client_secret: '',
                         youtube_refresh_token: '',

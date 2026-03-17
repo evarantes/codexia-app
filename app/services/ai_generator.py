@@ -94,7 +94,12 @@ class AIContentGenerator:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        model = (self.openrouter_model or "").strip() or "openai/gpt-4o-mini"
+        raw_model = (self.openrouter_model or "").strip()
+        raw_model_norm = raw_model.lower()
+        if not raw_model or raw_model_norm in {"auto", "automático", "automatico", "melhor", "best"}:
+            model = "openrouter/auto"
+        else:
+            model = raw_model
 
         client = openai.OpenAI(
             api_key=self.openrouter_key,
@@ -102,21 +107,32 @@ class AIContentGenerator:
             default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"},
         )
 
+        def _call(model_id: str, allow_json_mode: bool):
+            kwargs = {
+                "model": model_id,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            if json_mode and allow_json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            response = client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content
+
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                response_format={"type": "json_object"} if json_mode else None,
-            )
-            return response.choices[0].message.content
-        except Exception:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-            )
-            return response.choices[0].message.content
+            try:
+                return _call(model, allow_json_mode=True)
+            except Exception:
+                return _call(model, allow_json_mode=False)
+        except Exception as e:
+            if model != "openrouter/auto":
+                try:
+                    try:
+                        return _call("openrouter/auto", allow_json_mode=True)
+                    except Exception:
+                        return _call("openrouter/auto", allow_json_mode=False)
+                except Exception:
+                    raise e
+            raise e
 
     def generate_book_section(self, section_type, context_text, title, existing_content=None):
         """Generates specific book sections like synopsis, epigraph, preface. Can rewrite existing content."""
