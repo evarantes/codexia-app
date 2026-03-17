@@ -237,9 +237,11 @@ def run_migrations(engine):
                     for col in [
                         "gemini_api_key", "deepseek_api_key", "groq_api_key", 
                         "anthropic_api_key", "mistral_api_key", "openrouter_api_key",
+                        "openrouter_model",
                         "hotmart_client_id", "hotmart_client_secret", 
                         "hotmart_access_token", "suno_api_key",
                         "pexels_api_key", "pixabay_api_key", "elevenlabs_api_key",
+                        "edenai_api_key",
                         "elevenlabs_voice_id", "elevenlabs_voice_name"
                     ]:
                         if col not in settings_columns:

@@ -86,6 +86,7 @@ class Settings(Base):
     anthropic_api_key = Column(String, nullable=True)
     mistral_api_key = Column(String, nullable=True)
     openrouter_api_key = Column(String, nullable=True)
+    openrouter_model = Column(String, nullable=True)
     ai_provider = Column(String, default="openai") # openai | gemini | deepseek | groq | anthropic | mistral | openrouter | hybrid
     facebook_page_id = Column(String, nullable=True)
     facebook_access_token = Column(String, nullable=True)
@@ -104,6 +105,7 @@ class Settings(Base):
     # Stock Media & TTS
     pexels_api_key = Column(String, nullable=True)
     pixabay_api_key = Column(String, nullable=True)
+    edenai_api_key = Column(String, nullable=True)
     elevenlabs_api_key = Column(String, nullable=True)
     elevenlabs_voice_id = Column(String, nullable=True)
     elevenlabs_voice_name = Column(String, nullable=True)

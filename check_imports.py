@@ -9,6 +9,7 @@ def check_imports():
     sys.path.append(base_path)
     
     error_count = 0
+    is_windows = os.name == "nt"
     
     # Caminha por todos os arquivos .py em app/
     for root, dirs, files in os.walk(os.path.join(base_path, "app")):
@@ -17,6 +18,10 @@ def check_imports():
                 # Constrói o nome do módulo (ex: app.routers.video)
                 rel_path = os.path.relpath(os.path.join(root, file), base_path)
                 module_name = rel_path.replace(os.sep, ".").replace(".py", "")
+
+                if is_windows and module_name == "app.worker":
+                    print(f"Verificando {module_name}... IGNORADO")
+                    continue
                 
                 try:
                     print(f"Verificando {module_name}...", end=" ")

@@ -1693,58 +1693,23 @@
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Configurações</h1>
                 <div class="bg-white p-6 rounded-lg shadow max-w-2xl">
                     <div class="mb-6 p-4 bg-gray-50 border rounded-lg">
-                        <label class="block font-bold mb-2 text-indigo-700">Provedor de Inteligência Artificial</label>
-                        <select v-model="settings.ai_provider" class="w-full border p-2 rounded mb-4 bg-white">
-                            <option value="openai">OpenAI (GPT-3.5/4)</option>
-                            <option value="gemini">Google Gemini (Mais barato)</option>
-                            <option value="deepseek">DeepSeek (Custo-Benefício)</option>
-                            <option value="anthropic">Anthropic (Claude 3)</option>
-                            <option value="mistral">Mistral AI (Europeu/Open)</option>
-                            <option value="groq">Groq (Ultra Rápido/Llama 3)</option>
-                            <option value="openrouter">OpenRouter (Todas as IAs)</option>
-                            <option value="hybrid">✨ Modo Híbrido (Todas as IAs)</option>
-                        </select>
-                        
-                        <div v-if="settings.ai_provider === 'gemini' || settings.ai_provider === 'hybrid'" class="mb-2">
-                            <label class="block font-bold mb-2">Google Gemini API Key</label>
-                            <input v-model="settings.gemini_api_key" type="password" class="w-full border p-2 rounded" placeholder="Cole sua chave do Google AI Studio aqui">
-                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://aistudio.google.com/" target="_blank" class="text-blue-600 underline">Google AI Studio</a></p>
-                        </div>
+                        <label class="block font-bold mb-2 text-indigo-700">Texto/LLMs (via OpenRouter)</label>
 
-                        <div v-if="settings.ai_provider === 'deepseek' || settings.ai_provider === 'hybrid'" class="mb-2">
-                            <label class="block font-bold mb-2">DeepSeek API Key</label>
-                            <input v-model="settings.deepseek_api_key" type="password" class="w-full border p-2 rounded" placeholder="sk-...">
-                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://platform.deepseek.com/" target="_blank" class="text-blue-600 underline">DeepSeek Platform</a></p>
-                        </div>
-
-                        <div v-if="settings.ai_provider === 'anthropic' || settings.ai_provider === 'hybrid'" class="mb-2">
-                            <label class="block font-bold mb-2">Anthropic (Claude) API Key</label>
-                            <input v-model="settings.anthropic_api_key" type="password" class="w-full border p-2 rounded" placeholder="sk-ant-...">
-                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://console.anthropic.com/" target="_blank" class="text-blue-600 underline">Anthropic Console</a></p>
-                        </div>
-
-                        <div v-if="settings.ai_provider === 'mistral' || settings.ai_provider === 'hybrid'" class="mb-2">
-                            <label class="block font-bold mb-2">Mistral AI API Key</label>
-                            <input v-model="settings.mistral_api_key" type="password" class="w-full border p-2 rounded" placeholder="...mistral...">
-                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://console.mistral.ai/" target="_blank" class="text-blue-600 underline">Mistral Console</a></p>
-                        </div>
-
-                        <div v-if="settings.ai_provider === 'groq' || settings.ai_provider === 'hybrid'" class="mb-2">
-                            <label class="block font-bold mb-2">Groq API Key</label>
-                            <input v-model="settings.groq_api_key" type="password" class="w-full border p-2 rounded" placeholder="gsk_...">
-                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://console.groq.com/" target="_blank" class="text-blue-600 underline">Groq Console</a></p>
-                        </div>
-
-                        <div v-if="settings.ai_provider === 'openrouter' || settings.ai_provider === 'hybrid'" class="mb-2">
+                        <div class="mb-2">
                             <label class="block font-bold mb-2">OpenRouter API Key (Gateway Universal)</label>
                             <input v-model="settings.openrouter_api_key" type="password" class="w-full border p-2 rounded" placeholder="sk-or-...">
                             <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://openrouter.ai/" target="_blank" class="text-blue-600 underline">OpenRouter</a></p>
                         </div>
-                    </div>
 
-                    <div class="mb-4" v-if="settings.ai_provider === 'openai' || settings.ai_provider === 'hybrid'">
-                        <label class="block font-bold mb-2">OpenAI API Key</label>
-                        <input v-model="settings.openai_api_key" type="password" class="w-full border p-2 rounded">
+                        <div class="mb-2">
+                            <label class="block font-bold mb-2">Modelo (OpenRouter)</label>
+                            <select v-model="settings.openrouter_model" class="w-full border p-2 rounded bg-white">
+                                <option value="openai/gpt-4o-mini">GPT-4o mini (OpenAI)</option>
+                                <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet (Anthropic)</option>
+                                <option value="deepseek/deepseek-chat">DeepSeek Chat (DeepSeek)</option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Dica: você pode colar qualquer model id do OpenRouter neste campo.</p>
+                        </div>
                     </div>
 
                     <!-- Stock Media & TTS Configuration -->
@@ -1752,21 +1717,15 @@
                         <h3 class="text-lg font-bold mb-4 text-indigo-700">Mídias e Voz (Stock & TTS)</h3>
                         
                         <div class="mb-4">
-                            <label class="block font-bold mb-2">Pexels API Key (Essencial para Visuais)</label>
-                            <input v-model="settings.pexels_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="Sua chave da API do Pexels">
-                            <p class="text-xs text-gray-500 mt-1">Garante vídeos e imagens de alta qualidade. Obtenha em <a href="https://www.pexels.com/api/" target="_blank" class="text-blue-600 underline">Pexels API</a></p>
+                            <label class="block font-bold mb-2">Eden AI API Key (Imagens, vídeos e TTS)</label>
+                            <input v-model="settings.edenai_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="Sua chave da Eden AI">
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://www.edenai.co/" target="_blank" class="text-blue-600 underline">Eden AI</a></p>
                         </div>
 
                         <div class="mb-4">
-                            <label class="block font-bold mb-2">Pixabay API Key (Backup)</label>
-                            <input v-model="settings.pixabay_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="Sua chave da API do Pixabay">
-                            <p class="text-xs text-gray-500 mt-1">Backup caso o Pexels falhe. Obtenha em <a href="https://pixabay.com/api/docs/" target="_blank" class="text-blue-600 underline">Pixabay API</a></p>
-                        </div>
-
-                        <div class="mb-4">
-                            <label class="block font-bold mb-2">ElevenLabs API Key (Vozes Ultra-Realistas)</label>
+                            <label class="block font-bold mb-2">ElevenLabs API Key (apenas clonagem/isolamento de voz)</label>
                             <input v-model="settings.elevenlabs_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
-                            <p class="text-xs text-gray-500 mt-1">Opcional. Se vazio, o sistema usa Edge-TTS (Grátis). Obtenha em <a href="https://elevenlabs.io/" target="_blank" class="text-blue-600 underline">ElevenLabs</a></p>
+                            <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://elevenlabs.io/" target="_blank" class="text-blue-600 underline">ElevenLabs</a></p>
                         </div>
 
                         <div class="mb-4 bg-gray-50 p-4 rounded border">
@@ -1783,8 +1742,8 @@
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
                                 <div>
-                                    <label class="block font-bold mb-1 text-sm">Amostra de áudio</label>
-                                    <input type="file" accept="audio/*" @change="onElevenlabsSampleSelected" class="w-full border p-2 rounded bg-white">
+                                    <label class="block font-bold mb-1 text-sm">Amostra (áudio ou vídeo)</label>
+                                    <input type="file" accept="audio/*,video/*" @change="onElevenlabsSampleSelected" class="w-full border p-2 rounded bg-white">
                                 </div>
                                 <div class="flex items-end">
                                     <button @click="createElevenlabsVoice" :disabled="elevenlabsVoiceCreating" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 w-full text-sm">
@@ -2141,6 +2100,7 @@
                         anthropic_api_key: '',
                         mistral_api_key: '',
                         openrouter_api_key: '',
+                        openrouter_model: 'openai/gpt-4o-mini',
                         groq_api_key: '',
                         ai_provider: 'openai',
                         youtube_client_id: '',
@@ -2154,6 +2114,7 @@
                         suno_api_key: '',
                         pexels_api_key: '',
                         pixabay_api_key: '',
+                        edenai_api_key: '',
                         elevenlabs_api_key: '',
                         elevenlabs_voice_id: '',
                         elevenlabs_voice_name: ''
@@ -3334,7 +3295,7 @@
                 async createElevenlabsVoice() {
                     if (!this.settings.elevenlabs_api_key) return alert("Configure a ElevenLabs API Key antes de criar a voz.");
                     if (!this.settings.elevenlabs_voice_name) return alert("Informe o nome da voz.");
-                    if (!this.elevenlabsSampleFile) return alert("Selecione uma amostra de áudio.");
+                    if (!this.elevenlabsSampleFile) return alert("Selecione uma amostra de áudio ou vídeo.");
                     this.elevenlabsVoiceCreating = true;
                     try {
                         const form = new FormData();

@@ -2,11 +2,10 @@ import os
 import uuid
 import openai
 import requests
-import google.generativeai as genai
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app.models import Settings
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 load_dotenv()
 
@@ -19,6 +18,8 @@ class AIContentGenerator:
         self.anthropic_key = None
         self.mistral_key = None
         self.openrouter_key = None
+        self.openrouter_model = None
+        self.edenai_key = None
         self.elevenlabs_key = None
         self.elevenlabs_voice_id = None
         self.elevenlabs_voice_name = None
@@ -33,6 +34,8 @@ class AIContentGenerator:
             settings = db.query(Settings).first()
         except OperationalError as e:
             print(f"AVISO: Falha ao carregar Settings do banco (migração pendente?): {e}")
+        except SQLAlchemyError as e:
+            print(f"AVISO: Falha ao carregar Settings do banco (erro SQL): {e}")
         except Exception as e:
             print(f"AVISO: Falha ao carregar Settings do banco: {e}")
         finally:
@@ -45,10 +48,12 @@ class AIContentGenerator:
         self.anthropic_key = None
         self.mistral_key = None
         self.openrouter_key = None
+        self.openrouter_model = None
+        self.edenai_key = None
         self.elevenlabs_key = None
         self.elevenlabs_voice_id = None
         self.elevenlabs_voice_name = None
-        self.provider = "openai"
+        self.provider = "openrouter"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN") # Para MusicGen
 
         if settings:
@@ -56,13 +61,15 @@ class AIContentGenerator:
             self.gemini_key = settings.gemini_api_key
             self.deepseek_key = settings.deepseek_api_key
             self.groq_key = settings.groq_api_key
-            self.anthropic_api_key = settings.anthropic_api_key
+            self.anthropic_key = settings.anthropic_api_key
             self.mistral_key = settings.mistral_api_key
             self.openrouter_key = settings.openrouter_api_key
+            self.openrouter_model = getattr(settings, "openrouter_model", None)
+            self.edenai_key = getattr(settings, "edenai_api_key", None)
             self.elevenlabs_key = settings.elevenlabs_api_key
             self.elevenlabs_voice_id = getattr(settings, "elevenlabs_voice_id", None)
             self.elevenlabs_voice_name = getattr(settings, "elevenlabs_voice_name", None)
-            self.provider = settings.ai_provider or "openai"
+            self.provider = settings.ai_provider or "openrouter"
         
         # Fallback to env vars
         if not self.api_key: self.api_key = os.getenv("OPENAI_API_KEY")
@@ -72,243 +79,50 @@ class AIContentGenerator:
         if not self.anthropic_key: self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if not self.mistral_key: self.mistral_key = os.getenv("MISTRAL_API_KEY")
         if not self.openrouter_key: self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if not self.openrouter_model: self.openrouter_model = os.getenv("OPENROUTER_MODEL")
+        if not self.edenai_key: self.edenai_key = os.getenv("EDENAI_API_KEY")
         if not self.elevenlabs_key: self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
 
-        # Configure Gemini
-        if self.gemini_key:
-            genai.configure(api_key=self.gemini_key)
-
     def _generate_text(self, prompt, system_prompt=None, temperature=0.7, json_mode=False):
-        """Unified method to generate text using the configured provider"""
+        """Gera texto via OpenRouter (gateway único para LLMs)."""
         self._load_config()
-        
-        providers_to_try = []
-        
-        # Determine priority list
-        available_providers = []
-        if self.api_key: available_providers.append("openai")
-        if self.gemini_key: available_providers.append("gemini")
-        if self.deepseek_key: available_providers.append("deepseek")
-        if self.anthropic_key: available_providers.append("anthropic")
-        if self.mistral_key: available_providers.append("mistral")
-        if self.groq_key: available_providers.append("groq")
-        if self.openrouter_key: available_providers.append("openrouter")
+        if not self.openrouter_key:
+            return "{}" if json_mode else "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
-        providers_to_try = []
-        
-        if self.provider == "hybrid":
-             # Priority: OpenAI -> DeepSeek -> Anthropic -> Mistral -> Gemini -> Groq -> OpenRouter
-             preferred_order = ["openai", "deepseek", "anthropic", "mistral", "gemini", "groq", "openrouter"]
-             providers_to_try = [p for p in preferred_order if p in available_providers]
-             # Add any others not in preferred list but available
-             for p in available_providers:
-                 if p not in providers_to_try:
-                     providers_to_try.append(p)
-        else:
-            # User selected specific provider. Try it first.
-            if self.provider in available_providers:
-                providers_to_try.append(self.provider)
-            
-            # Then fallback to ALL other available providers (AUTO-FALLBACK)
-            for p in available_providers:
-                if p != self.provider:
-                    providers_to_try.append(p)
-            
-            # If the selected provider wasn't available (no key), we still try others.
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
 
+        model = (self.openrouter_model or "").strip() or "openai/gpt-4o-mini"
 
-        last_error = None
+        client = openai.OpenAI(
+            api_key=self.openrouter_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"},
+        )
 
-        for current_provider in providers_to_try:
-            try:
-                if current_provider == "mistral" and self.mistral_key:
-                    import requests
-                    headers = {
-                        "Authorization": f"Bearer {self.mistral_key}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json"
-                    }
-                    
-                    messages = []
-                    if system_prompt:
-                        messages.append({"role": "system", "content": system_prompt})
-                    messages.append({"role": "user", "content": prompt})
-
-                    data = {
-                        "model": "mistral-small-latest",
-                        "messages": messages,
-                        "temperature": temperature,
-                        "response_format": {"type": "json_object"} if json_mode else None
-                    }
-                    
-                    response = requests.post(
-                        "https://api.mistral.ai/v1/chat/completions",
-                        headers=headers,
-                        json=data
-                    )
-                    
-                    if response.status_code != 200:
-                        raise Exception(f"Mistral Error {response.status_code}: {response.text}")
-                        
-                    return response.json()["choices"][0]["message"]["content"]
-
-                elif current_provider == "openrouter" and self.openrouter_key:
-                    # Use OpenAI Client compatible interface
-                    client = openai.OpenAI(
-                        api_key=self.openrouter_key, 
-                        base_url="https://openrouter.ai/api/v1",
-                        default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"}
-                    )
-                    
-                    messages = []
-                    if system_prompt:
-                        messages.append({"role": "system", "content": system_prompt})
-                    messages.append({"role": "user", "content": prompt})
-
-                    # OpenRouter auto-routes, but we can specify a cheap default like auto or specific
-                    response = client.chat.completions.create(
-                        model="openai/gpt-3.5-turbo", # OpenRouter supports mapping, or use "mistralai/mistral-7b-instruct"
-                        messages=messages,
-                        temperature=temperature,
-                        response_format={"type": "json_object"} if json_mode else None
-                    )
-                    return response.choices[0].message.content
-
-                elif current_provider == "anthropic" and self.anthropic_key:
-                    import requests
-                    headers = {
-                        "x-api-key": self.anthropic_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json"
-                    }
-                    
-                    system_msg = system_prompt if system_prompt else "You are a helpful assistant."
-                    if json_mode:
-                        system_msg += " Output ONLY valid JSON."
-
-                    data = {
-                        "model": "claude-3-haiku-20240307", # Cheap and fast
-                        "max_tokens": 4000,
-                        "system": system_msg,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": temperature
-                    }
-                    
-                    response = requests.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers=headers,
-                        json=data
-                    )
-                    
-                    if response.status_code != 200:
-                        raise Exception(f"Anthropic Error {response.status_code}: {response.text}")
-                        
-                    result = response.json()
-                    return result["content"][0]["text"]
-
-                elif current_provider == "gemini" and self.gemini_key:
-                    # Lista de modelos para tentar em ordem de preferência/custo
-                    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro']
-                    gemini_error = None
-                    
-                    for model_name in models_to_try:
-                        try:
-                            model = genai.GenerativeModel(model_name)
-                            final_prompt = prompt
-                            if system_prompt:
-                                final_prompt = f"System Instruction: {system_prompt}\n\nUser Request: {prompt}"
-                            if json_mode:
-                                final_prompt += "\n\nIMPORTANT: Output ONLY valid JSON."
-                            
-                            response = model.generate_content(
-                                final_prompt,
-                                generation_config=genai.types.GenerationConfig(
-                                    temperature=temperature,
-                                    response_mime_type="application/json" if json_mode else "text/plain"
-                                )
-                            )
-                            return response.text
-                        except Exception as e:
-                            print(f"Gemini model {model_name} failed: {e}")
-                            gemini_error = e
-                            continue # Tenta o próximo modelo da lista
-                    
-                    # Se todos os modelos Gemini falharem, lança erro para tentar próximo provedor
-                    if gemini_error:
-                        raise gemini_error
-
-                elif current_provider == "openai" and self.api_key:
-                    # Use OpenAI Client (v1.0+) explicitly to avoid global state issues
-                    client = openai.OpenAI(api_key=self.api_key)
-                    
-                    messages = []
-                    if system_prompt:
-                        messages.append({"role": "system", "content": system_prompt})
-                    messages.append({"role": "user", "content": prompt})
-
-                    try:
-                        response = client.chat.completions.create(
-                            model="gpt-3.5-turbo",
-                            messages=messages,
-                            temperature=temperature,
-                            response_format={"type": "json_object"} if json_mode else None
-                        )
-                        return response.choices[0].message.content
-                    except Exception as e:
-                        print(f"OpenAI Error: {e}")
-                        raise e
-
-                elif current_provider == "deepseek" and self.deepseek_key:
-                    # Use OpenAI Client compatible interface
-                    client = openai.OpenAI(api_key=self.deepseek_key, base_url="https://api.deepseek.com")
-                    
-                    messages = []
-                    if system_prompt:
-                        messages.append({"role": "system", "content": system_prompt})
-                    messages.append({"role": "user", "content": prompt})
-
-                    response = client.chat.completions.create(
-                        model="deepseek-chat",
-                        messages=messages,
-                        temperature=temperature,
-                        response_format={"type": "json_object"} if json_mode else None
-                    )
-                    return response.choices[0].message.content
-
-                elif current_provider == "groq" and self.groq_key:
-                    # Use OpenAI Client compatible interface
-                    client = openai.OpenAI(api_key=self.groq_key, base_url="https://api.groq.com/openai/v1")
-                    
-                    messages = []
-                    if system_prompt:
-                        messages.append({"role": "system", "content": system_prompt})
-                    messages.append({"role": "user", "content": prompt})
-
-                    # Groq supports Llama 3 8b/70b
-                    response = client.chat.completions.create(
-                        model="llama3-70b-8192",
-                        messages=messages,
-                        temperature=temperature,
-                        response_format={"type": "json_object"} if json_mode else None
-                    )
-                    return response.choices[0].message.content
-
-            except Exception as e:
-                print(f"Erro no provedor {current_provider}: {e}")
-                last_error = e
-                continue # Try next provider
-        
-        # If we get here, all providers failed
-        if last_error:
-            print(f"CRITICAL: All AI providers failed. Last error: {last_error}")
-            raise Exception("Todas as IAs configuradas estão indisponíveis ou sem saldo. Verifique suas chaves de API e tente novamente.")
-        return None
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                response_format={"type": "json_object"} if json_mode else None,
+            )
+            return response.choices[0].message.content
+        except Exception:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content
 
     def generate_book_section(self, section_type, context_text, title, existing_content=None):
         """Generates specific book sections like synopsis, epigraph, preface. Can rewrite existing content."""
         self._load_config()
         # Verify if any key is available
-        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.mistral_key or self.groq_key or self.openrouter_key):
+        if not self.openrouter_key:
              return "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
         base_prompt = f"Escreva um texto para {section_type} do livro '{title}'. Contexto: {context_text}..."
@@ -360,7 +174,7 @@ class AIContentGenerator:
         """Generates a full book structure and content based on an idea"""
         self._load_config()
         
-        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.mistral_key or self.groq_key or self.openrouter_key):
+        if not self.openrouter_key:
             # Mock response
             return {
                 "dedication": "Aos sonhadores.",
@@ -586,7 +400,7 @@ class AIContentGenerator:
         # Recarrega config a cada chamada para pegar atualizações
         self._load_config()
 
-        if not (self.api_key or self.gemini_key):
+        if not self.openrouter_key:
             return self._mock_response(book_title, style)
 
         prompt = self._build_prompt(book_title, synopsis, style)
@@ -601,107 +415,85 @@ class AIContentGenerator:
         self._load_config()
 
         print(f"DEBUG: Generating covers for '{title}' with context: {context[:100]}...")
-
-        # [REMOVED] StockService priority removed to ensure AI generation with custom text (Title/Author) as requested.
-        # Previously, stock images were returned without any text overlay.
-        
-        # Mock response if no API key (usa chave do banco ou env)
-        if not self.api_key:
+        if not self.edenai_key:
             colors = ["1e293b", "4f46e5", "059669"]
             return [f"https://placehold.co/400x600/{color}/ffffff?text={title[:10]}...%0A{author}" for i, color in enumerate(colors[:n])]
 
         import json
+
+        title_display = title.strip() if title else "Livro"
+        author_display = author.strip() if author else ""
+        subtitle_display = subtitle.strip() if subtitle else ""
+
+        prompt_gen_prompt = f"""
+        Crie {n} descrições visuais artísticas e EXCLUSIVAS para a capa do livro '{title_display}'.
+        Contexto/Mensagem Central: {context[:500]}
+
+        Retorne APENAS um JSON:
+        {{
+          "prompts": ["descrição 1", "descrição 2", "descrição 3"]
+        }}
+        """
+
         try:
-            client = openai.OpenAI(api_key=self.api_key)
-            # 1. Get Prompts from GPT to ensure variety and relevance to the central message
-            prompt_gen_prompt = f"""
-            Crie {n} descrições visuais artísticas e EXCLUSIVAS para a capa do livro '{title}'.
-            Contexto/Mensagem Central: {context[:500]}
-            Gênero/Estilo: Identifique pelo contexto.
-            
-            OBJETIVO: Despertar o desejo de leitura através de uma imagem impactante e simbólica.
-            FOCO: Apenas a descrição da imagem (cenário, elementos, cores, estilo artístico). NÃO mencione texto ou tipografia aqui.
-            
-            Retorne apenas um JSON: {{ "prompts": ["descrição visual 1...", "descrição visual 2...", "descrição visual 3..."] }}
-            """
-            
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": prompt_gen_prompt}],
-                    temperature=0.8
-                )
-                content = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
-                prompts_data = json.loads(content)
-                prompts = prompts_data.get("prompts", []) if isinstance(prompts_data, dict) else []
-            except Exception as e_prompt:
-                print(f"Error generating cover prompts: {e_prompt}")
-                prompts = [f"A conceptual artistic cover representing {context[:50]}"] * n
-            
-            # Ensure we have enough prompts
-            while len(prompts) < n:
-                prompts.append(prompts[0] if prompts else f"Artistic cover for {title}")
-
-            # Título e autor devem aparecer exatamente como especificado na capa
-            title_display = title.strip() if title else "Livro"
-            author_display = author.strip() if author else ""
-            subtitle_display = subtitle.strip() if subtitle else ""
-            
-            image_urls = []
-            for p in prompts[:n]:
-                # Construct a very specific prompt for DALL-E 3 to handle text
-                dalle_prompt = f"""
-                Create a rectangular, flat 2D digital artwork for a book cover.
-
-                MANDATORY TEXT TO WRITE ON IMAGE:
-                Title: "{title_display}"
-                """
-                
-                if subtitle_display:
-                    dalle_prompt += f'Subtitle: "{subtitle_display}"\n'
-                
-                if author_display:
-                    dalle_prompt += f'Author Name: "{author_display}"\n'
-                
-                dalle_prompt += f"""
-                
-                VISUAL ART DESCRIPTION:
-                {p}
-                
-                STRICT LAYOUT RULES:
-                1. FORMAT: A flat digital image file. NO 3D MOCKUPS. NO SPINES. NO BACKGROUND SURFACE. NO TABLE.
-                2. TEXT: Write the Title, Subtitle, and Author Name EXACTLY as provided above.
-                3. HIERARCHY:
-                   - Title: Big, bold, centered.
-                   - Subtitle: Smaller, below the title.
-                   - Author: Small, at the very bottom center.
-                4. STYLE: High-quality illustration or graphic design. 
-                5. Do NOT include any other text.
-                """
-                
-                try:
-                    img_res = client.images.generate(
-                        model="dall-e-3",
-                        prompt=dalle_prompt.strip()[:4000], # Ensure within limit
-                        n=1,
-                        size="1024x1792", # Vertical aspect ratio for books
-                        quality="standard",
-                        style="vivid"
-                    )
-                    image_urls.append(img_res.data[0].url)
-                except Exception as e_img:
-                    print(f"Error generating single image: {e_img}")
-            
-            # Fallback if DALL-E fails completely
-            while len(image_urls) < n:
-                fallback_color = "4f46e5"
-                image_urls.append(f"https://placehold.co/400x600/{fallback_color}/ffffff?text={title_display}+Fail")
-                
-            return image_urls
-
+            raw = self._generate_text(prompt_gen_prompt, json_mode=True) or "{}"
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            prompts_data = json.loads(raw) if raw else {}
+            prompts = prompts_data.get("prompts", []) if isinstance(prompts_data, dict) else []
         except Exception as e:
-            print(f"Error generating covers: {e}")
-            return [f"https://placehold.co/400x600?text=Error+{i+1}" for i in range(n)]
+            print(f"Error generating cover prompts: {e}")
+            prompts = []
+
+        while len(prompts) < n:
+            prompts.append(f"Ilustração conceitual para a capa do livro, tema: {context[:120]}")
+
+        def edenai_image_url(text_prompt: str, resolution: str):
+            url = "https://api.edenai.run/v2/image/generation/"
+            headers = {"Authorization": f"Bearer {self.edenai_key}", "Content-Type": "application/json"}
+            payload = {
+                "providers": "openai/dall-e-3,stabilityai/stable-diffusion-xl-1024-v1-0",
+                "text": text_prompt,
+                "resolution": resolution,
+                "num_images": 1,
+                "response_as_dict": True,
+                "attributes_as_list": False,
+            }
+            r = requests.post(url, headers=headers, json=payload, timeout=120)
+            if r.status_code >= 400:
+                raise Exception(f"Eden AI HTTP {r.status_code}: {r.text[:240]}")
+            data = r.json() or {}
+            for provider in ["openai", "stabilityai"]:
+                provider_payload = data.get(provider) or {}
+                items = provider_payload.get("items") or []
+                if items and isinstance(items[0], dict):
+                    item0 = items[0]
+                    for k in ["image_resource_url", "image_url", "url", "image"]:
+                        v = item0.get(k)
+                        if isinstance(v, str) and v.strip().startswith("http"):
+                            return v.strip()
+            return None
+
+        image_urls = []
+        for p in prompts[:n]:
+            cover_prompt = (
+                f"Capa de livro, arte digital 2D plana, sem mockup 3D. "
+                f"Título: \"{title_display}\". "
+                + (f"Subtítulo: \"{subtitle_display}\". " if subtitle_display else "")
+                + (f"Autor: \"{author_display}\". " if author_display else "")
+                + f"Descrição visual: {p}. "
+                "Sem marcas d'água, sem texto extra."
+            )
+            try:
+                url = edenai_image_url(cover_prompt, resolution="1024x1792")
+                image_urls.append(url or "https://placehold.co/400x600?text=Capa+Indispon%C3%ADvel")
+            except Exception as e_img:
+                print(f"Error generating cover image: {e_img}")
+                image_urls.append("https://placehold.co/400x600?text=Cover+Error")
+
+        while len(image_urls) < n:
+            image_urls.append("https://placehold.co/400x600?text=Cover+Error")
+
+        return image_urls
 
     def generate_music_placeholder(self, prompt: str):
         """Gera música a partir de um prompt (Placeholder)"""
@@ -713,7 +505,7 @@ class AIContentGenerator:
         self._load_config()
         
         # Se não tiver chave, retorna mock
-        if not (self.api_key or self.gemini_key):
+        if not self.openrouter_key:
             return {
                 "title": f"Trailer: {book_title}",
                 "scenes": [
@@ -774,7 +566,7 @@ class AIContentGenerator:
     def generate_short_script_from_prompt(self, prompt: str):
         """Gera roteiro de YouTube Short (vertical, ~30-60s) a partir de um único prompt."""
         self._load_config()
-        if not (self.api_key or self.gemini_key):
+        if not self.openrouter_key:
             return {
                 "title": "Short gerado",
                 "scenes": [
@@ -844,7 +636,7 @@ class AIContentGenerator:
     def generate_motivational_script(self, topic, duration_minutes=5):
         """Gera um roteiro longo para vídeo motivacional"""
         self._load_config()
-        if not (self.api_key or self.gemini_key):
+        if not self.openrouter_key:
             return self._mock_response(topic, "motivational_long", duration=duration_minutes)
 
         # Estimate word count: approx 150 words per minute
@@ -895,7 +687,7 @@ class AIContentGenerator:
     def generate_script_from_text(self, text, duration_minutes=5):
         """Estrutura um texto existente em formato de roteiro de vídeo"""
         self._load_config()
-        if not (self.api_key or self.gemini_key):
+        if not self.openrouter_key:
             return self._mock_response("História do Usuário", "motivational_long")
 
         prompt = f"""
@@ -948,7 +740,7 @@ class AIContentGenerator:
         Atualiza apenas cenas que não têm image_prompt ou têm um muito curto/genérico.
         """
         self._load_config()
-        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.groq_key or self.openrouter_key):
+        if not self.openrouter_key:
             return plan
 
         scenes = plan.get("scenes") or []
@@ -1093,7 +885,7 @@ class AIContentGenerator:
         }}
         """
         
-        if not (self.api_key or self.gemini_key):
+        if not self.openrouter_key:
             return {
                 "analysis": "Simulação: O canal tem potencial mas precisa de consistência.",
                 "action_plan": ["Postar 2x por semana", "Melhorar Thumbnails", "Focar em Shorts"],
@@ -1120,27 +912,13 @@ class AIContentGenerator:
             return {"error": str(e)}
 
     def generate_banner_image(self, prompt_text: str) -> str:
-        """Gera um banner para o canal do YouTube usando DALL-E 3"""
-        self._load_config()
-        
-        # DALL-E requires OpenAI Key
-        if not self.api_key:
-            print("OpenAI Key missing for Image Generation. Skipping banner.")
+        prompt_text = (prompt_text or "").strip()
+        if not prompt_text:
             return None
-
-        try:
-            # Correct call for DALL-E 3
-            response = openai.images.generate(
-                model="dall-e-3",
-                prompt=f"YouTube Channel Banner art, {prompt_text}, wide aspect ratio, professional design, minimal text, 4k resolution",
-                size="1024x1024", 
-                quality="standard",
-                n=1,
-            )
-            return response.data[0].url
-        except Exception as e:
-            print(f"Error generating banner: {e}")
-            return None
+        return self.generate_image(
+            f"{prompt_text}. YouTube Channel Banner, wide 16:9 aspect ratio, professional design, no text.",
+            aspect_ratio="16:9",
+        )
 
     def generate_monitor_report(self, stats):
         """Gera relatório curto de monitoramento"""
@@ -1696,8 +1474,9 @@ class AIContentGenerator:
         if not raw_prompt:
             return None
 
-        width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
-        dalle_size = "1024x1792" if aspect_ratio == "9:16" else "1792x1024"
+        is_portrait = str(aspect_ratio).strip() == "9:16"
+        width, height = (720, 1280) if is_portrait else (1280, 720)
+        dalle_size = "1024x1792" if is_portrait else "1792x1024"
 
         quality_tokens = [
             "masterpiece", "unique artistic composition", "copyright free style",
@@ -1710,9 +1489,9 @@ class AIContentGenerator:
         if len(raw_prompt) < 240 and not any(token in raw_prompt.lower() for token in quality_tokens[:3]):
             enhanced_prompt = f"{raw_prompt}, {' '.join(quality_tokens[:7])}"
 
-        provider_order = providers or ["openai_dalle3", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        provider_order = providers or ["edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
         provider_labels = {
-            "openai_dalle3": "OpenAI DALL-E 3",
+            "edenai": "Eden AI",
             "pollinations_flux": "Pollinations Flux",
             "pollinations_turbo": "Pollinations Turbo",
             "pollinations": "Pollinations Base",
@@ -1728,8 +1507,8 @@ class AIContentGenerator:
         for provider in provider_order:
             label = provider_labels.get(provider, provider)
             try:
-                if provider == "openai_dalle3":
-                    if not self.api_key:
+                if provider == "edenai":
+                    if not (self.edenai_key or "").strip():
                         notify(f"{label} sem chave configurada; tentando próximo provedor.")
                         continue
                     notify(f"Tentando {label}...")
@@ -1737,22 +1516,38 @@ class AIContentGenerator:
                         f"{enhanced_prompt}. {negative_constraints}. "
                         "Original AI-generated illustration, cinematic concept art, highly detailed."
                     )
-                    client = openai.OpenAI(api_key=self.api_key)
-                    response = client.images.generate(
-                        model="dall-e-3",
-                        prompt=full_prompt,
-                        size=dalle_size,
-                        quality="hd",
-                        n=1,
-                        style="natural",
+                    eden_provider = (os.getenv("EDENAI_IMAGE_PROVIDER") or "openai").strip()
+                    headers = {"Authorization": f"Bearer {self.edenai_key.strip()}"}
+                    payload = {"providers": eden_provider, "text": full_prompt, "resolution": dalle_size}
+                    r = requests.post(
+                        "https://api.edenai.run/v2/image/generation",
+                        headers=headers,
+                        json=payload,
+                        timeout=120,
                     )
+                    if r.status_code >= 400:
+                        raise Exception(f"HTTP {r.status_code}: {(r.text or '').strip()[:240]}")
+                    data = r.json() if (r.headers.get("content-type") or "").startswith("application/json") else {}
+                    provider_payload = data.get(eden_provider) if isinstance(data, dict) else None
+                    if not isinstance(provider_payload, dict):
+                        provider_payload = None
+                        if isinstance(data, dict):
+                            for _, v in data.items():
+                                if isinstance(v, dict) and (
+                                    v.get("image_resource_url") or v.get("image_url") or v.get("url")
+                                ):
+                                    provider_payload = v
+                                    break
                     url = None
-                    if getattr(response, "data", None):
-                        item = response.data[0]
-                        url = getattr(item, "url", None)
-                    if url:
+                    if isinstance(provider_payload, dict):
+                        url = (
+                            provider_payload.get("image_resource_url")
+                            or provider_payload.get("image_url")
+                            or provider_payload.get("url")
+                        )
+                    if isinstance(url, str) and url.strip():
                         notify(f"{label} respondeu com sucesso.")
-                        return url
+                        return url.strip()
                     notify(f"{label} não retornou URL válida; tentando próximo.")
                     continue
 
@@ -1781,49 +1576,73 @@ class AIContentGenerator:
         notify("Todos os provedores de imagem falharam nesta rodada.")
         return None
 
-    def generate_banner_image(self, prompt):
-        self._load_config()
-        if not self.api_key:
-            return None
-            
-        try:
-            full_prompt = f"{prompt}. Horizontal YouTube Channel Banner, 16:9 aspect ratio. Professional digital art, high quality, 4k. No text."
-            
-            response = openai.images.generate(
-                model="dall-e-3",
-                prompt=full_prompt,
-                size="1792x1024", # Horizontal
-                quality="standard",
-                n=1,
-            )
-            return response.data[0].url
-        except Exception as e:
-            print(f"Erro ao gerar banner: {e}")
-            return None
-
     def generate_audio(self, text, voice="onyx"):
-        """Gera áudio usando ElevenLabs (prioridade), OpenAI TTS ou fallback."""
+        """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""
         self._load_config()
 
-        # 1. ElevenLabs (vozes ultra-realistas) - prioridade quando configurado
+        if self.edenai_key:
+            audio_content = self._generate_audio_edenai_elevenlabs(text, voice)
+            if audio_content:
+                return audio_content
+
         if self.elevenlabs_key:
             audio_content = self._generate_audio_elevenlabs(text, voice)
             if audio_content:
                 return audio_content
 
-        # 2. OpenAI TTS (Human-like)
-        if self.api_key:
-            try:
-                response = openai.audio.speech.create(
-                    model="tts-1",
-                    voice=voice,
-                    input=text
-                )
-                return response.content
-            except Exception as e:
-                print(f"Erro ao gerar áudio OpenAI: {e}")
-
         return None
+
+    def _generate_audio_edenai_elevenlabs(self, text: str, voice_hint: str = "onyx"):
+        if not (self.edenai_key or "").strip() or not text or not text.strip():
+            return None
+        try:
+            hint = (voice_hint or "").strip().lower()
+            custom_voice_id = (self.elevenlabs_voice_id or "").strip()
+            voice_id = None
+            if hint in {"my_voice", "myvoice", "minha_voz", "minhavoz", "custom"} and custom_voice_id:
+                voice_id = custom_voice_id
+
+            headers = {"Authorization": f"Bearer {self.edenai_key.strip()}"}
+            payload = {
+                "providers": "elevenlabs",
+                "text": text[:5000],
+                "language": "pt-BR",
+            }
+            if voice_id:
+                payload["voice_id"] = voice_id
+                payload["voice"] = voice_id
+
+            r = requests.post(
+                "https://api.edenai.run/v2/audio/text_to_speech",
+                headers=headers,
+                json=payload,
+                timeout=120,
+            )
+            if r.status_code >= 400:
+                print(f"Eden AI TTS HTTP {r.status_code}: {(r.text or '')[:240]}")
+                return None
+            data = r.json() if (r.headers.get("content-type") or "").startswith("application/json") else {}
+
+            def extract_url(obj):
+                if isinstance(obj, dict):
+                    for k in ("audio_resource_url", "audio_url", "url"):
+                        v = obj.get(k)
+                        if isinstance(v, str) and v.startswith("http"):
+                            return v
+                return None
+
+            provider_payload = data.get("elevenlabs") if isinstance(data, dict) else None
+            audio_url = extract_url(provider_payload) or extract_url(data)
+            if not audio_url:
+                return None
+
+            rr = requests.get(audio_url, timeout=120)
+            if rr.status_code >= 400 or not rr.content:
+                return None
+            return rr.content
+        except Exception as e:
+            print(f"Eden AI TTS error: {e}")
+            return None
 
     def _generate_audio_elevenlabs(self, text: str, voice_hint: str = "onyx"):
         """Gera áudio usando ElevenLabs API (vozes ultra-realistas)."""
@@ -1880,7 +1699,7 @@ class AIContentGenerator:
         if not theme or not message:
             return {"title": "Música", "lyrics": ""}
 
-        if not (self.api_key or self.gemini_key or self.deepseek_key or self.anthropic_key or self.groq_key or self.openrouter_key):
+        if not self.openrouter_key:
             title = f"{theme.title()} - Recomeçar"
             lyrics = (
                 f"Verso 1\n"
@@ -1965,7 +1784,7 @@ Retorne APENAS um JSON válido no formato:
     def lyrics_to_music_prompt(self, lyrics: str, title: str = "", genre: str = ""):
         """Converte letra em prompt para geração de música instrumental (MusicGen)."""
         self._load_config()
-        if not (self.api_key or self.gemini_key):
+        if not self.openrouter_key:
             return f"Emotional instrumental music, {genre or 'pop ballad'}. Cinematic, no lyrics."
         prompt = f"""Com base nesta letra, crie UM prompt em inglês para música INSTRUMENTAL (sem voz). Uma frase curta (até 80 palavras).
 Título: {title or 'Sem título'}
@@ -1991,7 +1810,7 @@ Retorne APENAS o prompt, sem aspas."""
             block = "\n".join(lines[i : i + chunk])
             if not block:
                 continue
-            if self.api_key or self.gemini_key:
+            if self.openrouter_key:
                 prompt = f"""Letra: "{block[:400]}". Título: {title or 'Música'}. Gere UM image_prompt em inglês para cena de clipe (visual artístico, sem texto na imagem). Uma frase."""
                 try:
                     ip = self._generate_text(prompt, system_prompt="Output only the image prompt.", temperature=0.7)

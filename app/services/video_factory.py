@@ -162,6 +162,23 @@ class VideoFactory:
             return clip.resize(size)
         raise AttributeError("Clip sem resize/resized")
 
+    def _infer_music_mood(self, theme: str, narration_text: str) -> str:
+        t = f"{theme or ''}\n{narration_text or ''}".lower()
+        if any(k in t for k in ["feliz", "alegr", "comédia", "divertid", "engraç", "leve", "good vibes", "relax"]):
+            return "happy"
+        if any(k in t for k in ["épico", "epic", "motiv", "supera", "conquista", "vitória", "fé", "propósito", "coragem", "guerreiro"]):
+            return "epic"
+        return "drama"
+
+    def _truncate_words(self, text: str, max_words: int) -> str:
+        words = (text or "").strip().split()
+        if max_words <= 0 or len(words) <= max_words:
+            return (text or "").strip()
+        truncated = " ".join(words[:max_words]).strip()
+        if truncated and truncated[-1] not in ".!?":
+            truncated += "."
+        return truncated
+
     def _set_job_progress(self, job: Job, progress: int, log_line: str = None):
         """Atualiza progresso do job sem permitir regressão visual."""
         try:
@@ -371,9 +388,12 @@ class VideoFactory:
         theme = plan.theme if plan and getattr(plan, "theme", None) else (video.title or "Tema")
         duration_min = plan.duration_min if plan and getattr(plan, "duration_min", None) else 3
         voice_style = plan.voice_style if plan and getattr(plan, "voice_style", None) else "human"
+        target_words = max(80, int(duration_min) * 150)
+        max_words = int(target_words * 1.10)
         prompt = f"""
         Crie um roteiro detalhado para um vídeo de YouTube sobre '{theme}'.
         Duração estimada: {duration_min} minutos.
+        Meta de palavras no total: aproximadamente {target_words} (não exceda {max_words}).
         Estilo: {voice_style}.
         Estrutura:
         1. Gancho (0-30s)
@@ -450,6 +470,21 @@ class VideoFactory:
                 "keywords": (s.get("keywords") or "").strip(),
                 "duration_sec": s.get("duration_sec", 5),
             })
+
+        try:
+            total_words = sum(len((s.get("narration") or "").split()) for s in normalized_scenes)
+        except Exception:
+            total_words = 0
+        if total_words and total_words > max_words:
+            scale = float(target_words) / float(total_words)
+            adjusted = []
+            for s in normalized_scenes:
+                narration = s.get("narration") or ""
+                n_words = len(narration.split())
+                new_max = max(12, int(n_words * scale))
+                s["narration"] = self._truncate_words(narration, new_max)
+                adjusted.append(s)
+            normalized_scenes = adjusted
 
         # Garante coerência visual com a narração por cena (prompts exclusivos da IA).
         try:
@@ -628,9 +663,9 @@ class VideoFactory:
         # MVP Rápido: Usar MoviePy (já que o usuário permitiu e está instalado)
         # moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
         try:
-            from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, concatenate_audioclips, AudioClip
+            from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips, AudioClip
         except ImportError:
-            from moviepy import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, concatenate_audioclips, AudioClip
+            from moviepy import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips, AudioClip
         
         clips = []
         final_video = None
@@ -708,6 +743,73 @@ class VideoFactory:
                         final_video = self._clip_with_audio(combined, combined_audio)
                     except Exception as e:
                         job.logs += f"Aviso: não foi possível ajustar duração ({e}).\n"
+
+            try:
+                plan = video.plan
+                theme = plan.theme if plan and getattr(plan, "theme", None) else (video.title or "")
+                narration_text = " ".join((s.narration_text or "") for s in scenes)
+                music_path = None
+                if plan and getattr(plan, "music_file", None):
+                    raw = str(plan.music_file or "").strip()
+                    if raw:
+                        if os.path.exists(raw):
+                            music_path = raw
+                        else:
+                            candidate = os.path.join(self.video_gen.music_dir, raw)
+                            if os.path.exists(candidate):
+                                music_path = candidate
+                if not music_path:
+                    self.video_gen._ensure_fallback_music()
+                    mood = self._infer_music_mood(theme, narration_text)
+                    candidate = os.path.join(self.video_gen.music_dir, f"{mood}.mp3")
+                    if os.path.exists(candidate):
+                        music_path = candidate
+                    else:
+                        try:
+                            import glob
+                            any_mp3 = glob.glob(os.path.join(self.video_gen.music_dir, "*.mp3"))
+                            music_path = any_mp3[0] if any_mp3 else None
+                        except Exception:
+                            music_path = None
+
+                if music_path and os.path.exists(music_path):
+                    bg = AudioFileClip(music_path)
+                    try:
+                        bg = bg.volumex(0.10)
+                    except Exception:
+                        pass
+                    try:
+                        bg = bg.audio_fadein(1.2).audio_fadeout(1.2)
+                    except Exception:
+                        pass
+                    try:
+                        loops = []
+                        remaining = float(final_video.duration or 0)
+                        while remaining > 0:
+                            seg = bg
+                            try:
+                                if remaining < float(bg.duration or 0):
+                                    seg = self._clip_subclip(bg, 0, remaining)
+                            except Exception:
+                                pass
+                            loops.append(seg)
+                            try:
+                                remaining -= float(seg.duration or 0)
+                            except Exception:
+                                remaining = 0
+                        bg_loop = concatenate_audioclips(loops) if loops else bg
+                    except Exception:
+                        bg_loop = bg
+
+                    base_audio = final_video.audio
+                    if base_audio:
+                        final_audio = CompositeAudioClip([bg_loop, base_audio])
+                    else:
+                        final_audio = bg_loop
+                    final_video = self._clip_with_audio(final_video, final_audio)
+            except Exception as e:
+                job.logs += f"Aviso: não foi possível aplicar música de fundo ({e}).\n"
+
             output_filename = f"final_{video.id}.mp4"
             output_path = os.path.join(VIDEO_OUTPUT_DIR, output_filename)
             
