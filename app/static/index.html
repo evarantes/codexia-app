@@ -1802,6 +1802,19 @@
                             <p class="text-xs text-gray-500 mt-1">Separe por vírgula. Se vazio, qualquer número consegue conversar.</p>
                         </div>
                     </div>
+
+                    <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4">Telegram (Bot)</h3>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Telegram Bot Token</label>
+                            <input v-model="settings.telegram_bot_token" type="password" class="w-full border p-2 rounded" placeholder="123456:ABC-DEF...">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Chat IDs autorizados (opcional)</label>
+                            <input v-model="settings.telegram_allowed_chat_ids" class="w-full border p-2 rounded" placeholder="123456789,-1001234567890">
+                            <p class="text-xs text-gray-500 mt-1">Separe por vírgula. Se vazio, qualquer chat consegue conversar.</p>
+                        </div>
+                    </div>
                     
                     <div class="border-t pt-4 mt-6 mb-4">
                         <h3 class="text-lg font-bold mb-4">Integração Hotmart</h3>
@@ -2135,6 +2148,8 @@
                         whatsapp_access_token: '',
                         whatsapp_verify_token: '',
                         whatsapp_allowed_numbers: '',
+                        telegram_bot_token: '',
+                        telegram_allowed_chat_ids: '',
                         mercadopago_access_token: '',
                         hotmart_client_id: '',
                         hotmart_client_secret: '',

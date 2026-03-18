@@ -23,6 +23,9 @@ class WebhookPayload(BaseModel):
 _WA_LAST_VIDEO_BY_NUMBER: Dict[str, Dict[str, str]] = {}
 _WA_LAST_CHANNEL_BY_NUMBER: Dict[str, str] = {}
 _WA_LAST_LIST_BY_NUMBER: Dict[str, List[Dict[str, str]]] = {}
+_TG_LAST_VIDEO_BY_CHAT: Dict[str, Dict[str, str]] = {}
+_TG_LAST_CHANNEL_BY_CHAT: Dict[str, str] = {}
+_TG_LAST_LIST_BY_CHAT: Dict[str, List[Dict[str, str]]] = {}
 
 def _wa_config(db: Session) -> Dict[str, Any]:
     settings = db.query(Settings).first()
@@ -99,6 +102,83 @@ def _wa_send_menu(cfg: Dict[str, Any], to_number: str) -> None:
         },
     })
 
+def _tg_config(db: Session) -> Dict[str, Any]:
+    settings = db.query(Settings).first()
+    bot_token = (getattr(settings, "telegram_bot_token", None) if settings else None) or os.getenv("TELEGRAM_BOT_TOKEN")
+    allowed_chat_ids_raw = (getattr(settings, "telegram_allowed_chat_ids", None) if settings else None) or os.getenv("TELEGRAM_ALLOWED_CHAT_IDS")
+    allowed_chat_ids: Optional[List[str]] = None
+    if allowed_chat_ids_raw and str(allowed_chat_ids_raw).strip():
+        allowed_chat_ids = [str(part).strip() for part in str(allowed_chat_ids_raw).split(",")]
+        allowed_chat_ids = [c for c in allowed_chat_ids if c]
+    return {
+        "bot_token": str(bot_token).strip() if bot_token else "",
+        "allowed_chat_ids": allowed_chat_ids,
+    }
+
+def _tg_is_allowed(cfg: Dict[str, Any], chat_id: str) -> bool:
+    allowed = cfg.get("allowed_chat_ids")
+    if not allowed:
+        return True
+    return str(chat_id) in set(allowed)
+
+def _tg_api_post(cfg: Dict[str, Any], method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    token = (cfg.get("bot_token") or "").strip()
+    if not token:
+        return None
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    try:
+        r = requests.post(url, json=payload, timeout=30)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+def _tg_send_text(cfg: Dict[str, Any], chat_id: str, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
+    payload: Dict[str, Any] = {"chat_id": chat_id, "text": text, "disable_web_page_preview": False}
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    _tg_api_post(cfg, "sendMessage", payload)
+
+def _tg_send_menu(cfg: Dict[str, Any], chat_id: str) -> None:
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "Gerar vídeo", "callback_data": "tg_generate"},
+                {"text": "Últimos vídeos", "callback_data": "tg_list"},
+            ],
+            [
+                {"text": "Publicar último", "callback_data": "tg_publish_last"},
+                {"text": "Ajuda", "callback_data": "tg_help"},
+            ],
+        ]
+    }
+    _tg_send_text(cfg, chat_id, "Codexia — escolha uma opção:", reply_markup=reply_markup)
+
+def _tg_get_file_url(cfg: Dict[str, Any], file_id: str) -> Optional[str]:
+    token = (cfg.get("bot_token") or "").strip()
+    if not token or not file_id:
+        return None
+    res = _tg_api_post(cfg, "getFile", {"file_id": file_id})
+    file_path = (((res or {}).get("result") or {}) if isinstance(res, dict) else {}).get("file_path")
+    if not file_path:
+        return None
+    return f"https://api.telegram.org/file/bot{token}/{file_path}"
+
+def _tg_download_file(cfg: Dict[str, Any], file_id: str) -> Optional[str]:
+    url = _tg_get_file_url(cfg, file_id)
+    if not url:
+        return None
+    try:
+        r = requests.get(url, timeout=120)
+        if r.status_code != 200 or not r.content:
+            return None
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp:
+            tmp.write(r.content)
+            return tmp.name
+    except Exception:
+        return None
+
 def _edenai_key(db: Session) -> str:
     settings = db.query(Settings).first()
     key = (getattr(settings, "edenai_api_key", None) if settings else None) or os.getenv("EDENAI_API_KEY")
@@ -155,6 +235,103 @@ def _edenai_speech_to_text(edenai_key: str, file_path: str) -> Optional[str]:
         return None
     except Exception:
         return None
+
+def _tg_handle_list(cfg: Dict[str, Any], chat_id: str) -> None:
+    videos = _list_recent_videos(limit=5)
+    _TG_LAST_LIST_BY_CHAT[str(chat_id)] = videos
+    if not videos:
+        _tg_send_text(cfg, chat_id, "Nenhum vídeo encontrado ainda.")
+        return
+    lines = ["Últimos vídeos:"]
+    for i, it in enumerate(videos, start=1):
+        lines.append(f"{i}) {_safe_abs_url(it.get('url') or '')}")
+    lines.append("")
+    lines.append("Para publicar: \"publicar último vídeo\" ou \"publicar <nome>.mp4\"")
+    _tg_send_text(cfg, chat_id, "\n".join(lines))
+
+def _tg_handle_help(cfg: Dict[str, Any], chat_id: str) -> None:
+    _tg_send_text(cfg, chat_id, "\n".join([
+        "Exemplos:",
+        "- menu",
+        "- gerar um vídeo motivacional de 10 minutos para o YouTube",
+        "- últimos vídeos",
+        "- publicar último vídeo",
+        "- publicar 123abc.mp4",
+        "Você também pode mandar um áudio com o comando.",
+    ]))
+
+def _tg_handle_generate_video(cfg: Dict[str, Any], chat_id: str, cmd: Dict[str, Any]) -> None:
+    from app.services.ai_generator import AIContentGenerator
+    from app.services.video_generator import VideoGenerator
+    theme = (cmd.get("theme") or "").strip() or "motivacional"
+    minutes = cmd.get("minutes")
+    try:
+        minutes_val = int(minutes) if minutes is not None else 10
+    except Exception:
+        minutes_val = 10
+    voice_style = (cmd.get("voice_style") or "").strip() or "human"
+    voice_gender = (cmd.get("voice_gender") or "").strip() or "female"
+
+    ai = AIContentGenerator()
+    video_gen = VideoGenerator(ai_service=ai)
+    script_plan = ai.generate_motivational_script(theme, minutes_val)
+    if isinstance(script_plan, dict):
+        script_plan["title"] = script_plan.get("title") or f"{theme.title()} ({minutes_val} min)"
+    result = video_gen.create_video_from_plan(
+        script_plan,
+        aspect_ratio="16:9",
+        voice_style=voice_style,
+        voice_gender=voice_gender,
+    )
+    video_url = (result or {}).get("video_url") or ""
+    abs_url = _safe_abs_url(video_url)
+    _TG_LAST_VIDEO_BY_CHAT[str(chat_id)] = {"video_url": video_url, "abs_url": abs_url}
+    _tg_send_text(cfg, chat_id, f"Vídeo pronto para avaliação:\n{abs_url}\n\nPara publicar: \"publicar último vídeo\"")
+
+def _tg_handle_publish(cfg: Dict[str, Any], chat_id: str, cmd: Dict[str, Any]) -> None:
+    from app.services.youtube_service import YouTubeService
+    from app.services.ai_generator import AIContentGenerator
+
+    channel = (cmd.get("channel") or "").strip()
+    if channel:
+        _TG_LAST_CHANNEL_BY_CHAT[str(chat_id)] = channel
+    channel_display = _TG_LAST_CHANNEL_BY_CHAT.get(str(chat_id)) or channel or "canal conectado"
+
+    filename = (cmd.get("filename") or "").strip()
+    video_url = ""
+    abs_url = ""
+    if filename:
+        video_url = f"{VIDEO_URL_PREFIX}/{filename}"
+        abs_url = _safe_abs_url(video_url)
+    else:
+        last = _TG_LAST_VIDEO_BY_CHAT.get(str(chat_id)) or {}
+        video_url = last.get("video_url") or ""
+        abs_url = last.get("abs_url") or ""
+
+    if not video_url:
+        _tg_send_text(cfg, chat_id, "Não encontrei um vídeo recente para publicar. Use \"últimos vídeos\" ou gere um vídeo primeiro.")
+        return
+
+    path = absolute_path_for_video(video_url)
+    if not path or not os.path.isfile(path):
+        _tg_send_text(cfg, chat_id, f"Arquivo do vídeo não encontrado no servidor:\n{abs_url}")
+        return
+
+    ai = AIContentGenerator()
+    title_prompt = f"Crie um título curto e forte para um vídeo do tema: {os.path.basename(path)}"
+    title = (ai._generate_text(title_prompt) or "").strip() or "Vídeo Codexia"
+    description = "Vídeo gerado automaticamente por Codexia."
+
+    yt = YouTubeService()
+    res = yt.upload_video(path, title=title, description=description, tags=[])
+    if isinstance(res, dict) and res.get("error"):
+        _tg_send_text(cfg, chat_id, f"Falha ao publicar no YouTube ({channel_display}): {res.get('error')}")
+        return
+    video_id = (res.get("id") if isinstance(res, dict) else None) or (res.get("videoId") if isinstance(res, dict) else None)
+    if video_id:
+        _tg_send_text(cfg, chat_id, f"Publicado no YouTube ({channel_display}).\nhttps://www.youtube.com/watch?v={video_id}")
+        return
+    _tg_send_text(cfg, chat_id, f"Upload finalizado no YouTube ({channel_display}). Confira no seu canal.\n{abs_url}")
 
 def _wa_parse_incoming(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -258,7 +435,7 @@ def _parse_command_fallback(text: str) -> Dict[str, Any]:
         if m:
             return {"action": "publish_file", "filename": m.group(1)}
         return {"action": "publish_last"}
-    if "gerar" in t and "vídeo" in t or "video" in t:
+    if "gerar" in t and ("vídeo" in t or "video" in t):
         m = re.search(r"(\\d{1,2})\\s*(min|mins|minutos)", t)
         minutes = int(m.group(1)) if m else None
         return {"action": "generate_video", "theme": None, "minutes": minutes, "publish": ("youtube" in t), "channel": None}
@@ -449,6 +626,95 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks, 
             _wa_send_text(cfg, from_number, "Não entendi. Envie: \"codexia, me mostre o menu\"")
 
     return {"status": "ok"}
+
+@router.post("/telegram")
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    cfg = _tg_config(db)
+    payload = await request.json()
+
+    callback_query = (payload or {}).get("callback_query")
+    if callback_query:
+        callback_id = callback_query.get("id")
+        data = (callback_query.get("data") or "").strip()
+        message = callback_query.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id") or "").strip()
+        if callback_id:
+            _tg_api_post(cfg, "answerCallbackQuery", {"callback_query_id": callback_id})
+        if not chat_id:
+            return {"ok": True}
+        if not _tg_is_allowed(cfg, chat_id):
+            _tg_send_text(cfg, chat_id, "Acesso não autorizado para este chat.")
+            return {"ok": True}
+        if data == "tg_generate":
+            _tg_send_text(cfg, chat_id, "Envie: \"gerar um vídeo motivacional de 10 minutos para o YouTube\"")
+        elif data == "tg_list":
+            _tg_handle_list(cfg, chat_id)
+        elif data == "tg_publish_last":
+            _tg_send_text(cfg, chat_id, "Publicando no YouTube...")
+            background_tasks.add_task(_tg_handle_publish, cfg, chat_id, {"action": "publish_last"})
+        elif data == "tg_help":
+            _tg_handle_help(cfg, chat_id)
+        else:
+            _tg_send_menu(cfg, chat_id)
+        return {"ok": True}
+
+    message = (payload or {}).get("message") or (payload or {}).get("edited_message") or {}
+    if not message:
+        return {"ok": True}
+
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id") or "").strip()
+    if not chat_id:
+        return {"ok": True}
+    if not _tg_is_allowed(cfg, chat_id):
+        _tg_send_text(cfg, chat_id, "Acesso não autorizado para este chat.")
+        return {"ok": True}
+
+    text = _normalize_command_text((message.get("text") or "").strip())
+    if not text and message.get("voice"):
+        file_id = ((message.get("voice") or {}).get("file_id") or "").strip()
+        tmp_path = _tg_download_file(cfg, file_id) if file_id else None
+        if tmp_path:
+            try:
+                transcript = _edenai_speech_to_text(_edenai_key(db), tmp_path)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+            if transcript:
+                text = _normalize_command_text(transcript)
+
+    if not text:
+        return {"ok": True}
+
+    low = text.strip().lower()
+    if low in {"/start", "/menu", "menu"}:
+        _tg_send_menu(cfg, chat_id)
+        return {"ok": True}
+
+    cmd = _parse_command_with_ai(text)
+    if not cmd or not cmd.get("action") or cmd.get("action") == "unknown":
+        cmd = _parse_command_fallback(text)
+
+    action = (cmd.get("action") or "").strip()
+    if action == "menu":
+        _tg_send_menu(cfg, chat_id)
+    elif action == "help":
+        _tg_handle_help(cfg, chat_id)
+    elif action == "list_videos":
+        _tg_handle_list(cfg, chat_id)
+    elif action == "generate_video":
+        _tg_send_text(cfg, chat_id, "Gerando seu vídeo... vou te avisar quando terminar.")
+        background_tasks.add_task(_tg_handle_generate_video, cfg, chat_id, cmd)
+    elif action in {"publish_last", "publish_file"}:
+        _tg_send_text(cfg, chat_id, "Publicando no YouTube...")
+        background_tasks.add_task(_tg_handle_publish, cfg, chat_id, cmd)
+    else:
+        _tg_send_text(cfg, chat_id, "Não entendi. Envie \"menu\" para ver as opções.")
+
+    return {"ok": True}
 
 @router.post("/mercadopago")
 async def mercadopago_webhook(payload: dict, db: Session = Depends(get_db)):

@@ -94,6 +94,8 @@ class Settings(Base):
     whatsapp_access_token = Column(String, nullable=True)
     whatsapp_verify_token = Column(String, nullable=True)
     whatsapp_allowed_numbers = Column(String, nullable=True)
+    telegram_bot_token = Column(String, nullable=True)
+    telegram_allowed_chat_ids = Column(String, nullable=True)
     mercadopago_access_token = Column(String, nullable=True)
     # YouTube Integration
     youtube_client_id = Column(String, nullable=True)

@@ -28,6 +28,8 @@ class SettingsUpdate(BaseModel):
     whatsapp_access_token: Optional[str] = None
     whatsapp_verify_token: Optional[str] = None
     whatsapp_allowed_numbers: Optional[str] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_allowed_chat_ids: Optional[str] = None
     mercadopago_access_token: Optional[str] = None
     youtube_client_id: Optional[str] = None
     youtube_client_secret: Optional[str] = None
@@ -96,6 +98,12 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
     if settings_update.whatsapp_allowed_numbers is not None:
         v = str(settings_update.whatsapp_allowed_numbers).strip()
         settings.whatsapp_allowed_numbers = v or None
+    if settings_update.telegram_bot_token is not None:
+        v = str(settings_update.telegram_bot_token).strip()
+        settings.telegram_bot_token = v or None
+    if settings_update.telegram_allowed_chat_ids is not None:
+        v = str(settings_update.telegram_allowed_chat_ids).strip()
+        settings.telegram_allowed_chat_ids = v or None
     if settings_update.mercadopago_access_token is not None:
         settings.mercadopago_access_token = settings_update.mercadopago_access_token
     # Evita apagar credenciais do YouTube por engano quando o frontend envia string vazia.

@@ -244,7 +244,8 @@ def run_migrations(engine):
                         "edenai_api_key",
                         "elevenlabs_voice_id", "elevenlabs_voice_name",
                         "whatsapp_phone_number_id", "whatsapp_access_token",
-                        "whatsapp_verify_token", "whatsapp_allowed_numbers"
+                        "whatsapp_verify_token", "whatsapp_allowed_numbers",
+                        "telegram_bot_token", "telegram_allowed_chat_ids"
                     ]:
                         if col not in settings_columns:
                             try:
