@@ -445,7 +445,7 @@ def _normalize_command_text(text: str) -> str:
     raw = (text or "").strip()
     if not raw:
         return ""
-    m = re.match(r"^\\s*codexia\\s*[,\\-:]*\\s*(.*)$", raw, flags=re.IGNORECASE)
+    m = re.match(r"^\\s*codexia\\s*[-,:]*\\s*(.*)$", raw, flags=re.IGNORECASE)
     return (m.group(1) if m else raw).strip()
 
 def _handle_generate_video(cfg: Dict[str, Any], from_number: str, cmd: Dict[str, Any]) -> None:
