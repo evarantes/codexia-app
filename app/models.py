@@ -90,6 +90,10 @@ class Settings(Base):
     ai_provider = Column(String, default="openai") # openai | gemini | deepseek | groq | anthropic | mistral | openrouter | hybrid
     facebook_page_id = Column(String, nullable=True)
     facebook_access_token = Column(String, nullable=True)
+    whatsapp_phone_number_id = Column(String, nullable=True)
+    whatsapp_access_token = Column(String, nullable=True)
+    whatsapp_verify_token = Column(String, nullable=True)
+    whatsapp_allowed_numbers = Column(String, nullable=True)
     mercadopago_access_token = Column(String, nullable=True)
     # YouTube Integration
     youtube_client_id = Column(String, nullable=True)

@@ -242,7 +242,9 @@ def run_migrations(engine):
                         "hotmart_access_token", "suno_api_key",
                         "pexels_api_key", "pixabay_api_key", "elevenlabs_api_key",
                         "edenai_api_key",
-                        "elevenlabs_voice_id", "elevenlabs_voice_name"
+                        "elevenlabs_voice_id", "elevenlabs_voice_name",
+                        "whatsapp_phone_number_id", "whatsapp_access_token",
+                        "whatsapp_verify_token", "whatsapp_allowed_numbers"
                     ]:
                         if col not in settings_columns:
                             try:

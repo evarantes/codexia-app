@@ -24,6 +24,10 @@ class SettingsUpdate(BaseModel):
     ai_provider: Optional[str] = None
     facebook_page_id: Optional[str] = None
     facebook_access_token: Optional[str] = None
+    whatsapp_phone_number_id: Optional[str] = None
+    whatsapp_access_token: Optional[str] = None
+    whatsapp_verify_token: Optional[str] = None
+    whatsapp_allowed_numbers: Optional[str] = None
     mercadopago_access_token: Optional[str] = None
     youtube_client_id: Optional[str] = None
     youtube_client_secret: Optional[str] = None
@@ -80,6 +84,18 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         settings.facebook_page_id = settings_update.facebook_page_id
     if settings_update.facebook_access_token is not None:
         settings.facebook_access_token = settings_update.facebook_access_token
+    if settings_update.whatsapp_phone_number_id is not None:
+        v = str(settings_update.whatsapp_phone_number_id).strip()
+        settings.whatsapp_phone_number_id = v or None
+    if settings_update.whatsapp_access_token is not None:
+        v = str(settings_update.whatsapp_access_token).strip()
+        settings.whatsapp_access_token = v or None
+    if settings_update.whatsapp_verify_token is not None:
+        v = str(settings_update.whatsapp_verify_token).strip()
+        settings.whatsapp_verify_token = v or None
+    if settings_update.whatsapp_allowed_numbers is not None:
+        v = str(settings_update.whatsapp_allowed_numbers).strip()
+        settings.whatsapp_allowed_numbers = v or None
     if settings_update.mercadopago_access_token is not None:
         settings.mercadopago_access_token = settings_update.mercadopago_access_token
     # Evita apagar credenciais do YouTube por engano quando o frontend envia string vazia.

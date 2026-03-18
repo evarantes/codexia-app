@@ -1781,6 +1781,27 @@
                         <label class="block font-bold mb-2">Facebook Access Token</label>
                         <input v-model="settings.facebook_access_token" type="password" class="w-full border p-2 rounded">
                     </div>
+
+                    <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4">WhatsApp (Bot)</h3>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">WhatsApp Phone Number ID (Meta)</label>
+                            <input v-model="settings.whatsapp_phone_number_id" class="w-full border p-2 rounded" placeholder="Ex: 123456789012345">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">WhatsApp Access Token (Meta)</label>
+                            <input v-model="settings.whatsapp_access_token" type="password" class="w-full border p-2 rounded" placeholder="EAAB...">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">WhatsApp Verify Token (Webhook)</label>
+                            <input v-model="settings.whatsapp_verify_token" type="password" class="w-full border p-2 rounded" placeholder="Defina um token e use no webhook da Meta">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Números autorizados (opcional)</label>
+                            <input v-model="settings.whatsapp_allowed_numbers" class="w-full border p-2 rounded" placeholder="5511999999999,5511888888888">
+                            <p class="text-xs text-gray-500 mt-1">Separe por vírgula. Se vazio, qualquer número consegue conversar.</p>
+                        </div>
+                    </div>
                     
                     <div class="border-t pt-4 mt-6 mb-4">
                         <h3 class="text-lg font-bold mb-4">Integração Hotmart</h3>
@@ -2110,6 +2131,10 @@
                         youtube_refresh_token: '',
                         facebook_page_id: '',
                         facebook_access_token: '',
+                        whatsapp_phone_number_id: '',
+                        whatsapp_access_token: '',
+                        whatsapp_verify_token: '',
+                        whatsapp_allowed_numbers: '',
                         mercadopago_access_token: '',
                         hotmart_client_id: '',
                         hotmart_client_secret: '',
