@@ -997,6 +997,49 @@ class VideoRequest(BaseModel):
     mode: str = "topic" # topic | story
     story_content: Optional[str] = None
 
+class StoryTextGenerateRequest(BaseModel):
+    kind: str = "story"  # story | devotional
+    instruction: str
+    duration_min: int = 10
+    duration_max: Optional[int] = None
+
+class StoryTextImproveRequest(BaseModel):
+    kind: str = "story"  # story | devotional
+    instruction: str = ""
+    original_text: str
+    duration_min: int = 10
+    duration_max: Optional[int] = None
+
+@router.post("/story/generate_text")
+def generate_story_text(request: StoryTextGenerateRequest):
+    ai_service = AIContentGenerator()
+    kind = (request.kind or "story").strip().lower()
+    if kind not in {"story", "devotional"}:
+        kind = "story"
+    text = ai_service.generate_story_or_devotional_text(
+        instruction=request.instruction,
+        kind=kind,
+        duration_min_minutes=request.duration_min,
+        duration_max_minutes=request.duration_max,
+    )
+    return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+
+@router.post("/story/improve_text")
+def improve_story_text(request: StoryTextImproveRequest):
+    ai_service = AIContentGenerator()
+    kind = (request.kind or "story").strip().lower()
+    if kind not in {"story", "devotional"}:
+        kind = "story"
+    instruction = (request.instruction or "").strip() or "Melhore o texto mantendo o sentido e aumentando a retenção."
+    text = ai_service.improve_story_or_devotional_text(
+        original_text=request.original_text,
+        instruction=instruction,
+        kind=kind,
+        duration_min_minutes=request.duration_min,
+        duration_max_minutes=request.duration_max,
+    )
+    return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+
 @router.get("/reports")
 def get_reports(db: Session = Depends(get_db)):
     """Retorna o histórico de relatórios de monitoramento"""

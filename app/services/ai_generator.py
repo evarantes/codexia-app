@@ -2,6 +2,7 @@ import os
 import uuid
 import openai
 import requests
+from typing import Optional
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app.models import Settings
@@ -748,6 +749,115 @@ class AIContentGenerator:
         except Exception as e:
             print(f"Erro ao estruturar roteiro do texto: {e}")
             return self._mock_response("História do Usuário", "motivational_long", error=str(e))
+
+    def generate_story_or_devotional_text(
+        self,
+        instruction: str,
+        kind: str = "story",
+        duration_min_minutes: int = 10,
+        duration_max_minutes: Optional[int] = None,
+    ) -> str:
+        self._load_config()
+        if not self.openrouter_key:
+            title = "História" if kind == "story" else "Devocional"
+            return f"{title} (Simulação - Sem Chave)\n\n{instruction}".strip()
+
+        safe_kind = "história" if kind == "story" else "devocional"
+        min_m = max(1, int(duration_min_minutes or 1))
+        max_m = int(duration_max_minutes) if duration_max_minutes else min_m
+        if max_m < min_m:
+            max_m = min_m
+
+        min_words = min_m * 150
+        max_words = max_m * 150
+
+        prompt = f"""
+        Escreva um(a) {safe_kind} ORIGINAL em português (pt-BR), para ser NARRADO em vídeo.
+
+        INSTRUÇÕES DO USUÁRIO (respeite exatamente):
+        {instruction}
+
+        REGRAS:
+        - Objetivo: texto para narração (sem marcações, sem JSON, sem listas, sem títulos de seção).
+        - Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
+        - Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 150 palavras por minuto).
+        - Escreva em parágrafos, com ritmo natural e envolvente.
+        - Não inclua nomes de marcas, links, nem instruções técnicas.
+        - Não escreva "Cena 1" / "Narrador:" / "Roteiro:".
+
+        Retorne APENAS o texto final completo.
+        """
+
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um escritor e roteirista de narração. Entregue apenas o texto final em português, sem JSON.",
+                temperature=0.8,
+                json_mode=False,
+            )
+            if not content:
+                raise Exception("Resposta vazia da IA")
+            return content.strip()
+        except Exception as e:
+            print(f"Erro ao gerar {safe_kind}: {e}")
+            title = "História" if kind == "story" else "Devocional"
+            return f"{title} (Falha na IA)\n\n{instruction}".strip()
+
+    def improve_story_or_devotional_text(
+        self,
+        original_text: str,
+        instruction: str,
+        kind: str = "story",
+        duration_min_minutes: int = 10,
+        duration_max_minutes: Optional[int] = None,
+    ) -> str:
+        self._load_config()
+        if not self.openrouter_key:
+            return (original_text or "").strip() or "Texto (Simulação - Sem Chave)"
+
+        safe_kind = "história" if kind == "story" else "devocional"
+        min_m = max(1, int(duration_min_minutes or 1))
+        max_m = int(duration_max_minutes) if duration_max_minutes else min_m
+        if max_m < min_m:
+            max_m = min_m
+
+        min_words = min_m * 150
+        max_words = max_m * 150
+
+        prompt = f"""
+        Você é um editor profissional de textos para narração em vídeo.
+        Reescreva e MELHORE o(a) {safe_kind} abaixo, mantendo o tema e o sentido, mas elevando:
+        - Clareza e fluidez
+        - Emoção e retenção
+        - Coerência e ritmo de narração
+
+        INSTRUÇÕES DO USUÁRIO (respeite exatamente):
+        {instruction}
+
+        Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
+        Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 150 palavras por minuto).
+
+        TEXTO ORIGINAL:
+        {original_text}
+
+        REGRAS:
+        - Retorne APENAS o texto final completo (sem explicações, sem JSON, sem listas).
+        - Não inclua nomes de marcas, links, nem instruções técnicas.
+        """
+
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um editor de textos para narração. Entregue apenas o texto final em português, sem JSON.",
+                temperature=0.7,
+                json_mode=False,
+            )
+            if not content:
+                raise Exception("Resposta vazia da IA")
+            return content.strip()
+        except Exception as e:
+            print(f"Erro ao melhorar {safe_kind}: {e}")
+            return (original_text or "").strip()
 
     def enrich_scenes_with_image_prompts(self, plan: dict) -> dict:
         """
