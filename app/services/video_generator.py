@@ -612,16 +612,21 @@ class VideoGenerator:
                         allow_non_ai_fallback=allow_non_ai_fallback
                     )
                     
+                    if not img_path:
+                        img_path = self._generate_fallback_background(video_size)
+                        if img_path and progress_callback:
+                            progress_callback(
+                                10 + int((i / max(1, len(scenes))) * 60),
+                                f"Cena {i+1}/{len(scenes)}: IA de imagem indisponível; usando fundo local."
+                            )
+
                     if img_path and os.path.exists(img_path):
                         # Criar clip
                         clip = self._set_clip_duration(ImageClip(img_path), duration)
                         clip = self._apply_ken_burns(clip, video_size)
                         clips.append(clip)
                     else:
-                        raise Exception(
-                            "Falha ao gerar imagem por IA para cena musical. "
-                            "Ative ALLOW_NON_AI_IMAGE_FALLBACK=true se quiser permitir fallback local."
-                        )
+                        raise Exception("Falha ao gerar imagem da cena musical.")
                 
                 # Concatenar clips visuais
                 if clips:
@@ -754,10 +759,11 @@ class VideoGenerator:
                 )
 
                 if not bg_image_path:
-                    raise Exception(
-                        f"Falha ao gerar imagem por IA na cena {i+1}. "
-                        "A renderização foi interrompida para evitar fundo de cor."
-                    )
+                    bg_image_path = self._generate_fallback_background(video_size)
+                    if bg_image_path and progress_callback:
+                        progress_callback(scene_progress, f"Cena {i+1}/{total_scenes}: IA de imagem indisponível; usando fundo local.")
+                if not bg_image_path:
+                    raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
 
                 # Fallback colors
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
@@ -1021,6 +1027,7 @@ class VideoGenerator:
         if not os.path.exists(music_path):
             raise FileNotFoundError(f"Arquivo de música não encontrado: {music_path}")
         video_size = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
+        allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
         clips = []
         try:
             audio_clip = AudioFileClip(music_path)
@@ -1043,10 +1050,11 @@ class VideoGenerator:
                     allow_non_ai_fallback=allow_non_ai_fallback
                 ) if image_prompt else None
                 if image_prompt and not bg_image_path:
-                    raise Exception(
-                        f"Falha ao gerar imagem por IA para cena {i+1}. "
-                        "A geração do clipe foi interrompida para evitar fundo genérico."
-                    )
+                    bg_image_path = self._generate_fallback_background(video_size)
+                    if bg_image_path:
+                        print(f"[Clip][Cena {i+1}/{n}] IA de imagem indisponível; usando fundo local.")
+                if image_prompt and not bg_image_path:
+                    raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
                 bg_color = bg_colors[i % len(bg_colors)]
                 img = self.create_text_image(self._clean_text(text), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
