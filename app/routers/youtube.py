@@ -1010,6 +1010,16 @@ class StoryTextImproveRequest(BaseModel):
     duration_min: int = 10
     duration_max: Optional[int] = None
 
+class QueueGeneratedVideoRequest(BaseModel):
+    video_url: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    kind: Optional[str] = None
+    auto_post: bool = False
+    scheduled_for: Optional[str] = None
+    voice_style: Optional[str] = None
+    voice_gender: Optional[str] = None
+
 @router.post("/story/generate_text")
 def generate_story_text(request: StoryTextGenerateRequest):
     ai_service = AIContentGenerator()
@@ -1039,6 +1049,78 @@ def improve_story_text(request: StoryTextImproveRequest):
         duration_max_minutes=request.duration_max,
     )
     return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+
+@router.post("/schedule/from_generated")
+def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = Depends(get_db)):
+    """Envia um vídeo já gerado para a fila 'Aguardando Publicação'."""
+    video_url = (request.video_url or "").strip()
+    if not video_url:
+        raise HTTPException(status_code=400, detail="video_url é obrigatório.")
+
+    kind = (request.kind or "").strip().lower()
+    if kind not in {"story", "devotional"}:
+        kind = "story"
+
+    title = (request.title or "").strip() or f"Vídeo {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    description = (request.description or "").strip()
+
+    scheduled_for = datetime.now()
+    if request.scheduled_for:
+        raw = str(request.scheduled_for).strip()
+        try:
+            scheduled_for = datetime.fromisoformat(raw)
+        except Exception:
+            try:
+                scheduled_for = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+            except Exception:
+                scheduled_for = datetime.now()
+
+    payload = {
+        "source": "generated_story",
+        "kind": kind,
+        "title": title,
+        "description": description,
+        "video_url": video_url,
+    }
+    if request.voice_style:
+        payload["voice_style"] = request.voice_style
+    if request.voice_gender:
+        payload["voice_gender"] = request.voice_gender
+
+    video = ScheduledVideo(
+        theme="História/Devocional",
+        title=title,
+        description=description,
+        scheduled_for=scheduled_for,
+        video_type="video",
+        script_data=json.dumps(payload),
+        status="completed",
+        auto_post=bool(request.auto_post),
+    )
+    try:
+        setattr(video, "progress", 100)
+    except Exception:
+        pass
+    if request.voice_style:
+        try:
+            setattr(video, "voice_style", request.voice_style)
+        except Exception:
+            pass
+    if request.voice_gender:
+        try:
+            setattr(video, "voice_gender", request.voice_gender)
+        except Exception:
+            pass
+    try:
+        setattr(video, "video_url", video_url)
+    except Exception:
+        pass
+
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+
+    return {"id": video.id, "status": video.status, "video_url": video.video_url}
 
 @router.get("/reports")
 def get_reports(db: Session = Depends(get_db)):
@@ -1811,9 +1893,21 @@ def process_video_generation(request: VideoRequest, task_id):
                 description=description,
                 tags=script.get('tags', ['motivação', 'sucesso'])
             )
-            update_task(task_id, progress=100, status="completed", message="Vídeo gerado e publicado com sucesso!", result={"video_url": video_path})
+            update_task(task_id, progress=100, status="completed", message="Vídeo gerado e publicado com sucesso!", result={
+                "video_url": video_path,
+                "title": script.get("title"),
+                "description": description,
+                "tags": script.get("tags"),
+                "kind": "story" if request.mode == "story" else "topic",
+            })
         else:
-            update_task(task_id, progress=100, status="completed", message="Vídeo gerado com sucesso!", result={"video_url": video_path})
+            update_task(task_id, progress=100, status="completed", message="Vídeo gerado com sucesso!", result={
+                "video_url": video_path,
+                "title": script.get("title"),
+                "description": script.get("description"),
+                "tags": script.get("tags"),
+                "kind": "story" if request.mode == "story" else "topic",
+            })
             
     except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")

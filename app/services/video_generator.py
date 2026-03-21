@@ -903,7 +903,9 @@ class VideoGenerator:
             title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
             
             start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
-            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(50, 0, 100), bg_image_path=start_bg_path)
+            if not start_bg_path and video_bg_path and os.path.exists(video_bg_path):
+                start_bg_path = video_bg_path
+            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path)
             
             clip_title = ImageClip(img_title)
             
@@ -1050,7 +1052,9 @@ class VideoGenerator:
             audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.", voice_style=voice_style, voice_gender=voice_gender)
             
             end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
-            img_end = self.create_text_image(end_text, size=video_size, bg_color=(0, 100, 50), bg_image_path=end_bg_path)
+            if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
+                end_bg_path = video_bg_path
+            img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path)
             
             clip_end = ImageClip(img_end)
             

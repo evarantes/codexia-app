@@ -929,6 +929,16 @@
                         <div class="aspect-w-16 aspect-h-9 bg-black rounded flex items-center justify-center overflow-hidden">
                             <video :src="ytStoryVideoUrl" controls class="w-full h-full"></video>
                         </div>
+                        <div v-if="ytStoryTask && String(ytStoryTask.status || '').toLowerCase() === 'completed' && !ytStoryAutoUpload" class="mt-4 flex flex-col md:flex-row gap-3">
+                            <button @click="queueGeneratedStoryVideo" :disabled="ytStoryQueueLoading || ytStoryPublishNowLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex justify-center items-center gap-2 disabled:opacity-50">
+                                <i v-if="ytStoryQueueLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-list"></i> Ir para fila de publicação</span>
+                            </button>
+                            <button @click="publishGeneratedStoryVideoNow" :disabled="ytStoryQueueLoading || ytStoryPublishNowLoading" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex justify-center items-center gap-2 disabled:opacity-50">
+                                <i v-if="ytStoryPublishNowLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fab fa-youtube"></i> Publicar agora</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -1017,7 +1027,7 @@
 
 
                     <!-- 2. Ready to Publish (The "Other Field") -->
-                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
+                    <div id="ready-queue" class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
                         <h2 class="text-xl font-bold mb-4 text-green-800"><i class="fas fa-clock"></i> Aguardando Publicação</h2>
                         <div v-if="readyVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum vídeo aguardando publicação.</div>
                         <div v-else class="overflow-x-auto">
@@ -2108,6 +2118,9 @@
                     ytStoryVideoLoading: false,
                     ytStoryTask: null,
                     ytStoryVideoUrl: null,
+                    ytStoryScheduledId: null,
+                    ytStoryQueueLoading: false,
+                    ytStoryPublishNowLoading: false,
                     ytStoryFileName: null,
                     ytLoading: false,
                     checkingYoutube: true,
@@ -3073,8 +3086,9 @@
                         if (status === 'completed') {
                             const videoUrl = data.result && (data.result.video_url || data.result.videoUrl);
                             if (videoUrl) {
-                                this.ytStoryVideoUrl = videoUrl;
+                                this.ytStoryVideoUrl = this.normalizePlayableVideoUrl(videoUrl);
                             }
+                            this.ytStoryScheduledId = null;
                             this.ytStoryVideoLoading = false;
                             return;
                         }
@@ -3086,6 +3100,70 @@
                     } catch (e) {
                         this.ytStoryVideoLoading = false;
                         this.ytStoryTask = { status: 'failed', progress: 0, message: e.message || String(e) };
+                    }
+                },
+                async queueGeneratedStoryVideo() {
+                    if (!this.ytStoryTask || !this.ytStoryVideoUrl) return;
+                    if (this.ytStoryQueueLoading) return;
+                    this.ytStoryQueueLoading = true;
+                    try {
+                        let scheduledId = this.ytStoryScheduledId;
+                        if (!scheduledId) {
+                            const r = this.ytStoryTask.result || {};
+                            const title = (r.title || '').toString().trim();
+                            const description = (r.description || '').toString().trim();
+                            const kind = (r.kind || 'story').toString().trim().toLowerCase();
+                            const res = await this.authFetch('/youtube/schedule/from_generated', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    video_url: this.ytStoryVideoUrl,
+                                    title: title || null,
+                                    description: description || null,
+                                    kind: kind || 'story',
+                                    auto_post: false,
+                                    voice_style: this.voiceStyle || null,
+                                    voice_gender: this.voiceGender || null
+                                })
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok || !data.id) {
+                                throw new Error(data.detail || data.message || "Falha ao enviar para a fila.");
+                            }
+                            scheduledId = data.id;
+                            this.ytStoryScheduledId = scheduledId;
+                        }
+                        await this.fetchScheduledVideos();
+                        await this.fetchProductionQueue();
+                        setTimeout(() => {
+                            const el = document.getElementById('ready-queue');
+                            if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }, 50);
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.ytStoryQueueLoading = false;
+                    }
+                },
+                async publishGeneratedStoryVideoNow() {
+                    if (!this.ytStoryTask || !this.ytStoryVideoUrl) return;
+                    if (this.ytStoryQueueLoading || this.ytStoryPublishNowLoading) return;
+                    this.ytStoryPublishNowLoading = true;
+                    try {
+                        await this.queueGeneratedStoryVideo();
+                        const scheduledId = this.ytStoryScheduledId;
+                        if (!scheduledId) throw new Error("Não foi possível criar o item na fila.");
+                        const res = await this.authFetch(`/youtube/schedule/${scheduledId}/publish-now`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || "Falha ao publicar.");
+                        }
+                        await this.fetchScheduledVideos();
+                        alert(data.message || "Publicado com sucesso.");
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.ytStoryPublishNowLoading = false;
                     }
                 },
                 async generateSchedule() {
