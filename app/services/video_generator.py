@@ -49,99 +49,218 @@ class VideoGenerator:
             print(f"Erro no setup de músicas: {e}")
 
     def create_text_image(self, text, size=(1080, 1920), bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=None):
-        """Cria uma imagem com texto centralizado usando Pillow, opcionalmente com imagem de fundo"""
-        from PIL import Image, ImageDraw, ImageFont, ImageEnhance
-        import textwrap
+        from PIL import Image, ImageEnhance
         import numpy as np
-        
+
+        bg = None
         if bg_image_path and os.path.exists(bg_image_path):
             try:
-                img = Image.open(bg_image_path).convert('RGB')
-                # Resize and crop to fill
-                img_ratio = img.width / img.height
-                target_ratio = size[0] / size[1]
-                
-                if img_ratio > target_ratio:
-                    # Imagem mais larga que o alvo, corta as laterais
-                    new_height = size[1]
-                    new_width = int(new_height * img_ratio)
-                    img = img.resize((new_width, new_height), Image.LANCZOS)
-                    left = (new_width - size[0]) / 2
-                    img = img.crop((left, 0, left + size[0], size[1]))
-                else:
-                    # Imagem mais alta que o alvo, corta topo/base
-                    new_width = size[0]
-                    new_height = int(new_width / img_ratio)
-                    img = img.resize((new_width, new_height), Image.LANCZOS)
-                    top = (new_height - size[1]) / 2
-                    img = img.crop((0, top, size[0], top + size[1]))
-                
-                # Escurecer moderadamente a imagem para legibilidade do texto
-                enhancer = ImageEnhance.Brightness(img)
-                img = enhancer.enhance(0.8) # mantém legibilidade sem escurecer demais
+                bg = Image.open(bg_image_path).convert("RGB")
             except Exception as e:
                 print(f"Erro ao carregar imagem de fundo: {e}")
-                img = Image.new('RGB', size, color=bg_color)
+                bg = None
+        if bg is None:
+            bg = Image.new("RGB", size, color=bg_color)
         else:
-            img = Image.new('RGB', size, color=bg_color)
+            img_ratio = bg.width / max(1, bg.height)
+            target_ratio = size[0] / max(1, size[1])
+            if img_ratio > target_ratio:
+                new_height = size[1]
+                new_width = int(new_height * img_ratio)
+                bg = bg.resize((new_width, new_height), Image.LANCZOS)
+                left = int((new_width - size[0]) / 2)
+                bg = bg.crop((left, 0, left + size[0], size[1]))
+            else:
+                new_width = size[0]
+                new_height = int(new_width / max(0.0001, img_ratio))
+                bg = bg.resize((new_width, new_height), Image.LANCZOS)
+                top = int((new_height - size[1]) / 2)
+                bg = bg.crop((0, top, size[0], top + size[1]))
+            try:
+                bg = ImageEnhance.Brightness(bg).enhance(0.8)
+            except Exception:
+                pass
 
-        d = ImageDraw.Draw(img)
-        
-        # Tenta carregar fonte com tamanho adequado para evitar texto minúsculo.
+        overlay = self.create_text_overlay(text, size=size, text_color=text_color)
+        base = bg.convert("RGBA")
         try:
-            font_size = max(34, min(72, int(size[0] * 0.055)))
-            font_candidates = [
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "DejaVuSans-Bold.ttf",
-                "arial.ttf",
-            ]
+            base.alpha_composite(Image.fromarray(overlay, mode="RGBA"))
+        except Exception:
+            base = base.convert("RGB")
+            return np.array(base)
+        return np.array(base.convert("RGB"))
+
+    def create_text_overlay(self, text, size=(1080, 1920), text_color=(255, 255, 255)):
+        from PIL import Image, ImageDraw, ImageFont
+        import numpy as np
+
+        text = (text or "").strip()
+        img = Image.new("RGBA", size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        font_candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "DejaVuSans-Bold.ttf",
+            "arial.ttf",
+        ]
+
+        def measure(s: str, f):
+            try:
+                return draw.textlength(s, font=f)
+            except Exception:
+                b = draw.textbbox((0, 0), s, font=f)
+                return float(b[2] - b[0])
+
+        def wrap_words(s: str, f, max_w: int):
+            words = [w for w in (s or "").split() if w]
+            lines = []
+            cur = ""
+            for w in words:
+                test = w if not cur else f"{cur} {w}"
+                if measure(test, f) <= max_w:
+                    cur = test
+                    continue
+                if cur:
+                    lines.append(cur)
+                    cur = w
+                    continue
+                acc = ""
+                for ch in w:
+                    test2 = acc + ch
+                    if measure(test2, f) <= max_w:
+                        acc = test2
+                    else:
+                        if acc:
+                            lines.append(acc)
+                        acc = ch
+                cur = acc
+            if cur:
+                lines.append(cur)
+            return lines
+
+        w, h = size
+        margin_x = int(w * 0.07)
+        margin_bottom = int(h * 0.10)
+        max_w = max(120, w - 2 * margin_x)
+        max_h = max(120, int(h * 0.42))
+
+        base_size = max(26, min(78, int(w * 0.060)))
+        min_size = max(18, min(34, int(w * 0.030)))
+
+        chosen_font = None
+        chosen_lines = []
+        chosen_line_h = 0
+
+        for fs in range(base_size, min_size - 1, -2):
             font = None
-            for font_path in font_candidates:
+            for fp in font_candidates:
                 try:
-                    font = ImageFont.truetype(font_path, font_size)
+                    font = ImageFont.truetype(fp, fs)
                     break
                 except Exception:
                     continue
             if font is None:
-                raise OSError("no truetype font found")
-        except Exception:
-            font = ImageFont.load_default()
+                font = ImageFont.load_default()
 
-        # Quebra o texto
-        # Aumentado width para 40 caracteres para ocupar menos altura
-        lines = textwrap.wrap(text, width=40) 
-        
-        # Calcula altura total do bloco de texto
-        line_height = max(42, int(getattr(font, "size", 40) * 1.25))
-        text_block_height = len(lines) * line_height
-        
-        # Posiciona no terço inferior (Subtitle style), mas com limite
-        # Garante que não suba muito para o meio
-        # Fixamos a base do texto a 100px do fundo
-        margin_bottom = 150
-        y_text = size[1] - text_block_height - margin_bottom
-        
-        # Se o texto for muito longo e subir demais, cortamos o topo (fallback)
-        # Mas idealmente o texto deve ser curto.
-        # Vamos desenhar o fundo preto
-        
-        # Fundo transparente (background box removido)
-        
-        for line in lines:
-            bbox = d.textbbox((0, 0), line, font=font)
-            text_width = bbox[2] - bbox[0]
-            
-            x = (size[0] - text_width) / 2
-            # Desenha texto com leve sombra/outline para legibilidade extra
-            # Outline
-            for off in [(1,1), (-1,-1), (1,-1), (-1,1)]:
-                d.text((x+off[0], y_text+off[1]), line, font=font, fill=(0,0,0))
-                
-            d.text((x, y_text), line, font=font, fill=text_color)
-            y_text += line_height
+            lines = wrap_words(text, font, max_w)
+            try:
+                line_h = int(getattr(font, "size", fs) * 1.20)
+            except Exception:
+                line_h = int(fs * 1.20)
+            total_h = len(lines) * line_h
+            if lines and total_h <= max_h:
+                chosen_font = font
+                chosen_lines = lines
+                chosen_line_h = line_h
+                break
+
+        if chosen_font is None:
+            font = None
+            for fp in font_candidates:
+                try:
+                    font = ImageFont.truetype(fp, min_size)
+                    break
+                except Exception:
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+            lines = wrap_words(text, font, max_w)
+            line_h = int(getattr(font, "size", min_size) * 1.20)
+            max_lines = max(1, int(max_h / max(1, line_h)))
+            if len(lines) > max_lines:
+                keep = lines[:max_lines]
+                last = keep[-1]
+                ell = "..."
+                while last and measure(last + ell, font) > max_w:
+                    last = last[:-1].rstrip()
+                keep[-1] = (last + ell).strip() if last else ell
+                lines = keep
+            chosen_font = font
+            chosen_lines = lines
+            chosen_line_h = line_h
+
+        text_block_h = len(chosen_lines) * chosen_line_h
+        y = h - margin_bottom - text_block_h
+        y = max(int(h * 0.08), y)
+
+        outline = (0, 0, 0, 255)
+        fill = (int(text_color[0]), int(text_color[1]), int(text_color[2]), 255)
+        for line in chosen_lines:
+            b = draw.textbbox((0, 0), line, font=chosen_font)
+            tw = b[2] - b[0]
+            x = int((w - tw) / 2)
+            for off in [(2, 2), (-2, -2), (2, -2), (-2, 2), (0, 2), (2, 0), (-2, 0), (0, -2)]:
+                draw.text((x + off[0], y + off[1]), line, font=chosen_font, fill=outline)
+            draw.text((x, y), line, font=chosen_font, fill=fill)
+            y += chosen_line_h
 
         return np.array(img)
+
+    def _make_caption(self, narration: str):
+        t = (narration or "").strip()
+        if not t:
+            return ""
+        t = re.sub(r"\s+", " ", t)
+        parts = re.split(r"(?<=[.!?])\s+", t)
+        cap = ""
+        for p in parts:
+            if not p:
+                continue
+            if len((cap + " " + p).strip()) <= 180:
+                cap = (cap + " " + p).strip()
+                if len(cap) >= 120:
+                    break
+            else:
+                break
+        if not cap:
+            cap = t[:180].rstrip()
+        return cap
+
+    def review_plan(self, plan: dict):
+        if not isinstance(plan, dict):
+            return plan
+        scenes = plan.get("scenes") or []
+        if not isinstance(scenes, list) or not scenes:
+            return plan
+        notes = []
+        for i, s in enumerate(scenes):
+            if not isinstance(s, dict):
+                continue
+            txt = (s.get("text") or "").strip()
+            clean = self._clean_text(txt)
+            cap = (s.get("caption") or s.get("on_screen_text") or "").strip()
+            if not cap:
+                cap = self._make_caption(clean)
+                s["caption"] = cap
+                notes.append(f"caption_auto:cena_{i+1}")
+            elif len(cap) > 220:
+                s["caption"] = self._make_caption(cap)
+                notes.append(f"caption_trunc:cena_{i+1}")
+        plan["scenes"] = scenes
+        if notes:
+            plan["review_notes"] = notes
+        return plan
 
     def _clean_text(self, text):
         """Limpa o texto de metadados, instruções de roteiro e markdown"""
@@ -496,9 +615,9 @@ class VideoGenerator:
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
         # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
         try:
-            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips, AudioClip
+            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips, AudioClip
         except ImportError:
-            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips, AudioClip
+            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips, AudioClip
         import numpy as np
 
         if progress_callback:
@@ -512,9 +631,16 @@ class VideoGenerator:
         image_cache = {}
         cached_temp_paths = set()
         fallback_bg_path = None
+        use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "true").strip().lower() in {"1", "true", "yes", "on"}
+        video_bg_path = None
+        video_bg_frame = None
         
         try:
             title = plan.get('title', 'Vídeo Sem Título')
+            try:
+                plan = self.review_plan(plan)
+            except Exception:
+                pass
             raw_scenes = plan.get('scenes', [])
             
             # Validação extra: Se 'scenes' não for lista, tenta corrigir ou usa lista vazia
@@ -585,6 +711,38 @@ class VideoGenerator:
                 video_size = (1280, 720) # Antes: 1920, 1080
             else:
                 video_size = (720, 1280) # Antes: 1080, 1920
+
+            if use_single_bg and scenes and not music_file_path:
+                try:
+                    first_txt = ""
+                    s0 = scenes[0]
+                    if isinstance(s0, dict):
+                        first_txt = (s0.get("text") or "").strip()
+                    else:
+                        first_txt = str(s0).strip()
+                    bg_prompt = (
+                        plan.get("background_prompt")
+                        or f"{title}. Cinematic digital art background representing the story. {first_txt[:260]}"
+                    )
+                    def _bg_status(message: str):
+                        if progress_callback:
+                            progress_callback(8, f"Fundo do vídeo: {message}")
+                    video_bg_path = self._ensure_image_for_scene(
+                        bg_prompt,
+                        text_fallback=(first_txt or title)[:220],
+                        aspect_ratio=aspect_ratio,
+                        status_callback=_bg_status,
+                        max_rounds=image_max_rounds,
+                        allow_non_ai_fallback=allow_non_ai_fallback,
+                    )
+                    if not video_bg_path:
+                        video_bg_path = self._generate_fallback_background(video_size)
+                    if video_bg_path:
+                        cached_temp_paths.add(video_bg_path)
+                        video_bg_frame = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path)
+                except Exception:
+                    video_bg_path = None
+                    video_bg_frame = None
 
             # --- MODO MÚSICA ---
             if music_file_path and os.path.exists(music_file_path):
@@ -759,22 +917,26 @@ class VideoGenerator:
                     if progress_callback:
                         progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
 
-                prompt_key = (
-                    str(aspect_ratio).strip(),
-                    (image_prompt or "").strip().lower() or clean_text[:220].strip().lower(),
-                )
-                cached = image_cache.get(prompt_key)
-                if cached and os.path.exists(cached):
-                    bg_image_path = cached
+                bg_image_path = None
+                if use_single_bg and video_bg_path:
+                    bg_image_path = video_bg_path
                 else:
-                    bg_image_path = self._ensure_image_for_scene(
-                        image_prompt,
-                        text_fallback=clean_text,
-                        aspect_ratio=aspect_ratio,
-                        status_callback=_scene_status,
-                        max_rounds=image_max_rounds,
-                        allow_non_ai_fallback=allow_non_ai_fallback
+                    prompt_key = (
+                        str(aspect_ratio).strip(),
+                        (image_prompt or "").strip().lower() or clean_text[:220].strip().lower(),
                     )
+                    cached = image_cache.get(prompt_key)
+                    if cached and os.path.exists(cached):
+                        bg_image_path = cached
+                    else:
+                        bg_image_path = self._ensure_image_for_scene(
+                            image_prompt,
+                            text_fallback=clean_text,
+                            aspect_ratio=aspect_ratio,
+                            status_callback=_scene_status,
+                            max_rounds=image_max_rounds,
+                            allow_non_ai_fallback=allow_non_ai_fallback
+                        )
 
                 if not bg_image_path:
                     if not fallback_bg_path or not os.path.exists(fallback_bg_path):
@@ -787,7 +949,8 @@ class VideoGenerator:
                 if not bg_image_path:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 try:
-                    image_cache[prompt_key] = bg_image_path
+                    if not (use_single_bg and video_bg_path):
+                        image_cache[prompt_key] = bg_image_path
                     base = os.path.basename(bg_image_path or "")
                     if base.startswith("temp_") or base.startswith("fallback_local_"):
                         cached_temp_paths.add(bg_image_path)
@@ -801,26 +964,42 @@ class VideoGenerator:
                 # Gerar Audio da cena
                 audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
                 
-                # Gerar Imagem
-                img_scene = self.create_text_image(clean_text, size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
-                
-                # Cria clip da cena
-                # ImageClip precisa estar disponível no escopo (garantido pelo import no início da função)
-                clip_scene = ImageClip(img_scene)
-                
+                screen_text = ""
+                if isinstance(scene, dict):
+                    screen_text = (scene.get("caption") or scene.get("on_screen_text") or "").strip()
+                if not screen_text:
+                    screen_text = self._make_caption(clean_text)
+
+                if use_single_bg and video_bg_frame is not None:
+                    bg_frame = video_bg_frame
+                else:
+                    bg_frame = self.create_text_image("", size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+
+                bg_clip = ImageClip(bg_frame)
                 if audio_path:
                     audio_clip_scene = AudioFileClip(audio_path)
-                    clip_scene = clip_scene.with_duration(audio_clip_scene.duration + 0.5)
-                    clip_scene = clip_scene.with_audio(audio_clip_scene)
+                    scene_dur = float(audio_clip_scene.duration or 0) + 0.5
                 else:
-                    # FALLBACK DE ÁUDIO CRÍTICO
-                    print(f"AVISO: Cena {i+1} sem áudio gerado. Mantendo duração padrão.")
-                    clip_scene = clip_scene.with_duration(5)
+                    audio_clip_scene = None
+                    scene_dur = 5
+
+                if hasattr(bg_clip, "with_duration"):
+                    bg_clip = bg_clip.with_duration(scene_dur)
+                else:
+                    bg_clip = bg_clip.set_duration(scene_dur)
+                bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
+
+                overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
+                overlay_clip = _clip_from_rgba(overlay_arr, scene_dur)
+                clip_scene = CompositeVideoClip([bg_clip, overlay_clip], size=video_size)
                 
-                # APLICAÇÃO DE EFEITOS VISUAIS (Ken Burns)
-                # Só aplica se tivermos uma imagem real de fundo (não cor sólida gerada por código)
-                if bg_image_path:
-                    clip_scene = self._apply_ken_burns(clip_scene, video_size)
+                if audio_clip_scene:
+                    if hasattr(clip_scene, "with_audio"):
+                        clip_scene = clip_scene.with_audio(audio_clip_scene)
+                    else:
+                        clip_scene = clip_scene.set_audio(audio_clip_scene)
+                else:
+                    print(f"AVISO: Cena {i+1} sem áudio gerado. Mantendo duração padrão.")
                     
                 clips.append(clip_scene)
                 
