@@ -385,7 +385,7 @@ class VideoGenerator:
         text_fallback,
         aspect_ratio="9:16",
         status_callback=None,
-        max_rounds=4,
+        max_rounds=2,
         allow_non_ai_fallback=False
     ):
         """
@@ -393,7 +393,7 @@ class VideoGenerator:
         Se allow_non_ai_fallback=False, retorna None ao esgotar tentativas.
         """
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
-        rounds = max(1, min(12, int(max_rounds or 4)))
+        rounds = max(1, min(6, int(max_rounds or 2)))
 
         def notify(msg):
             if status_callback:
@@ -404,24 +404,22 @@ class VideoGenerator:
 
         # Garante prompt
         if not prompt and text_fallback:
-             prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:220]}"
+            prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:220]}"
 
         base_prompt = (prompt or "").strip()
         if not base_prompt:
             notify("Sem prompt de imagem válido para esta cena.")
             return None
 
-        providers = ["openai_dalle3", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        providers = ["edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
         final_prompt = (
             f"{base_prompt}. Must align with the narration context. "
             "Exclusive original artwork, no stock photo, no text, no watermark."
         )
 
         for round_idx in range(1, rounds + 1):
-            notify(f"Tentativa de imagem {round_idx}/{rounds} em múltiplas IAs...")
-            last_provider = None
+            notify(f"Tentando gerar imagem ({round_idx}/{rounds})...")
             for provider in providers:
-                last_provider = provider
                 url = None
                 if self.ai_service:
                     try:
@@ -444,14 +442,6 @@ class VideoGenerator:
                     return path
 
                 notify(f"Resposta inválida de {provider}; tentando próximo provedor.")
-
-            if round_idx < rounds:
-                wait_s = min(10, 2 + round_idx * 2)
-                why = "provedores ocupados/instáveis"
-                if last_provider:
-                    why = f"última tentativa ({last_provider}) sem imagem válida"
-                notify(f"Aguardando {wait_s}s para nova rodada ({why}).")
-                time.sleep(wait_s)
 
         notify("Não foi possível gerar imagem personalizada após todas as tentativas.")
         if allow_non_ai_fallback:
@@ -518,6 +508,10 @@ class VideoGenerator:
         final_clip = None
         bg_music = None
         allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
+        image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
+        image_cache = {}
+        cached_temp_paths = set()
+        fallback_bg_path = None
         
         try:
             title = plan.get('title', 'Vídeo Sem Título')
@@ -544,17 +538,31 @@ class VideoGenerator:
                     else:
                         scene_text = scene.get('text', '')
                         scene_prompt = scene.get('image_prompt', '')
+
+                    if not scene_prompt and scene_text:
+                        scene_prompt = f"Cinematic digital art representing: {scene_text[:140]}"
                     
-                    # Se o texto for muito longo (> 200 caracteres), quebra em múltiplas cenas
-                    if len(scene_text) > 200:
-                        import re
-                        # Quebra por pontuação final (. ! ?) mantendo a pontuação
-                        # Regex: split por (.+espaço, !+espaço, ?+espaço)
+                    split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "650").strip() or "650")
+                    target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "520").strip() or "520")
+                    target_chars = max(280, min(1200, target_chars))
+
+                    if len(scene_text) > split_threshold:
                         parts = re.split(r'(?<=[.!?])\s+', scene_text)
-                        
+                        buf = ""
                         for part in parts:
-                            if part.strip():
-                                scenes.append({"text": part.strip(), "image_prompt": scene_prompt})
+                            p = (part or "").strip()
+                            if not p:
+                                continue
+                            if not buf:
+                                buf = p
+                                continue
+                            if len(buf) + 1 + len(p) <= target_chars:
+                                buf = f"{buf} {p}"
+                                continue
+                            scenes.append({"text": buf.strip(), "image_prompt": scene_prompt})
+                            buf = p
+                        if buf.strip():
+                            scenes.append({"text": buf.strip(), "image_prompt": scene_prompt})
                     else:
                         # Adiciona como está (normalizando para dicionário)
                         scenes.append({"text": scene_text, "image_prompt": scene_prompt})
@@ -609,6 +617,7 @@ class VideoGenerator:
                         text_fallback=title,
                         aspect_ratio=aspect_ratio,
                         status_callback=_music_status,
+                        max_rounds=image_max_rounds,
                         allow_non_ai_fallback=allow_non_ai_fallback
                     )
                     
@@ -750,20 +759,40 @@ class VideoGenerator:
                     if progress_callback:
                         progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
 
-                bg_image_path = self._ensure_image_for_scene(
-                    image_prompt,
-                    text_fallback=clean_text,
-                    aspect_ratio=aspect_ratio,
-                    status_callback=_scene_status,
-                    allow_non_ai_fallback=allow_non_ai_fallback
+                prompt_key = (
+                    str(aspect_ratio).strip(),
+                    (image_prompt or "").strip().lower() or clean_text[:220].strip().lower(),
                 )
+                cached = image_cache.get(prompt_key)
+                if cached and os.path.exists(cached):
+                    bg_image_path = cached
+                else:
+                    bg_image_path = self._ensure_image_for_scene(
+                        image_prompt,
+                        text_fallback=clean_text,
+                        aspect_ratio=aspect_ratio,
+                        status_callback=_scene_status,
+                        max_rounds=image_max_rounds,
+                        allow_non_ai_fallback=allow_non_ai_fallback
+                    )
 
                 if not bg_image_path:
-                    bg_image_path = self._generate_fallback_background(video_size)
+                    if not fallback_bg_path or not os.path.exists(fallback_bg_path):
+                        fallback_bg_path = self._generate_fallback_background(video_size)
+                        if fallback_bg_path:
+                            cached_temp_paths.add(fallback_bg_path)
+                    bg_image_path = fallback_bg_path
                     if bg_image_path and progress_callback:
                         progress_callback(scene_progress, f"Cena {i+1}/{total_scenes}: IA de imagem indisponível; usando fundo local.")
                 if not bg_image_path:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
+                try:
+                    image_cache[prompt_key] = bg_image_path
+                    base = os.path.basename(bg_image_path or "")
+                    if base.startswith("temp_") or base.startswith("fallback_local_"):
+                        cached_temp_paths.add(bg_image_path)
+                except Exception:
+                    pass
 
                 # Fallback colors
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
@@ -796,7 +825,7 @@ class VideoGenerator:
                 clips.append(clip_scene)
                 
                 # Limpeza de imagens temporárias
-                if bg_image_path and "temp_" in bg_image_path:
+                if bg_image_path and "temp_" in bg_image_path and bg_image_path not in cached_temp_paths:
                     try:
                         os.remove(bg_image_path)
                     except Exception:
@@ -1016,6 +1045,15 @@ class VideoGenerator:
                 
             # Force GC
             gc.collect()
+            try:
+                for p in list(cached_temp_paths):
+                    try:
+                        if p and os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def create_music_video(self, music_path, scenes, title="Música", aspect_ratio="9:16"):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
