@@ -580,6 +580,35 @@ class VideoGenerator:
             return clip.with_audio(audio_clip)
         return clip.set_audio(audio_clip)
 
+    def _clip_from_rgba(self, rgba_arr, duration):
+        try:
+            from moviepy.editor import ImageClip
+        except Exception:
+            from moviepy import ImageClip
+        rgb = rgba_arr[:, :, :3]
+        alpha = (rgba_arr[:, :, 3].astype("float32") / 255.0)
+        base = ImageClip(rgb)
+        mask = None
+        try:
+            mask = ImageClip(alpha, ismask=True)
+        except Exception:
+            try:
+                mask = ImageClip(alpha)
+            except Exception:
+                mask = None
+        if mask is not None:
+            if hasattr(base, "with_mask"):
+                base = base.with_mask(mask)
+            else:
+                base = base.set_mask(mask)
+        base = self._set_clip_duration(base, duration)
+        if mask is not None:
+            try:
+                mask = self._set_clip_duration(mask, duration)
+            except Exception:
+                pass
+        return base
+
     def _subclip(self, clip, start_t, end_t):
         """Compatível com MoviePy 1.x (subclip) e 2.x (subclipped)."""
         if hasattr(clip, "subclip"):
@@ -990,7 +1019,7 @@ class VideoGenerator:
                 bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
 
                 overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
-                overlay_clip = _clip_from_rgba(overlay_arr, scene_dur)
+                overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
                 clip_scene = CompositeVideoClip([bg_clip, overlay_clip], size=video_size)
                 
                 if audio_clip_scene:
