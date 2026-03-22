@@ -1092,6 +1092,12 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
         except Exception:
             continue
 
+    if not images:
+        raise HTTPException(
+            status_code=503,
+            detail="Não foi possível gerar imagens agora. Verifique a configuração do provedor de imagens da IA."
+        )
+
     _progress(100, "Imagens prontas.")
     return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}
 

@@ -922,6 +922,21 @@
                             </div>
                         </div>
 
+                        <div v-if="ytStoryImagesLoading || ytStoryImagesTask" class="mt-3 bg-white border rounded p-3">
+                            <div class="flex justify-between items-center mb-2">
+                                <div class="font-bold text-gray-800">
+                                    Status: {{ (ytStoryImagesTask && ytStoryImagesTask.status) ? ytStoryImagesTask.status : 'processing' }}
+                                </div>
+                                <div class="text-sm text-gray-600">
+                                    {{ (ytStoryImagesTask && ytStoryImagesTask.progress !== undefined) ? (ytStoryImagesTask.progress + '%') : '' }}
+                                </div>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-indigo-600 h-2.5 rounded-full" :style="{ width: ((ytStoryImagesTask && ytStoryImagesTask.progress) ? ytStoryImagesTask.progress : 0) + '%' }"></div>
+                            </div>
+                            <div v-if="ytStoryImagesTask && ytStoryImagesTask.message" class="text-sm text-gray-700 mt-2">{{ ytStoryImagesTask.message }}</div>
+                        </div>
+
                         <div v-if="ytStoryGeneratedImages.length > 0" class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
                             <label v-for="(img, idx) in ytStoryGeneratedImages" :key="img.url || idx" class="bg-white rounded border overflow-hidden cursor-pointer hover:border-indigo-400 transition">
                                 <div class="relative">
@@ -3171,6 +3186,7 @@
                 },
                 clearStoryImages() {
                     this.ytStoryGeneratedImages = [];
+                    this.ytStoryImagesTask = null;
                 },
                 async generateStoryVideo() {
                     this.ytStoryVideoLoading = true;
