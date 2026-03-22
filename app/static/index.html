@@ -3110,7 +3110,9 @@
                 async generateStoryImages() {
                     if (this.ytStoryImagesLoading) return;
                     const count = Number(this.ytStoryImagesCount || 1);
-                    if (!this.ytStoryContent || !String(this.ytStoryContent).trim()) return;
+                    const fullStory = String(this.ytStoryContent || "").trim();
+                    if (!fullStory) return;
+                    const storyPayload = fullStory.slice(0, 8000);
                     this.ytStoryImagesLoading = true;
                     this.ytStoryGeneratedImages = [];
                     this.ytStoryImagesTask = null;
@@ -3120,7 +3122,7 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 kind: this.ytStoryKind,
-                                story_content: this.ytStoryContent,
+                                story_content: storyPayload,
                                 count: count,
                                 aspect_ratio: this.ytStoryImagesAspectRatio || '16:9'
                             })

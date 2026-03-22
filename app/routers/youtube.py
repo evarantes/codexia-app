@@ -1038,6 +1038,7 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
     story_content = (request.story_content or "").strip()
     if not story_content:
         raise HTTPException(status_code=400, detail="story_content é obrigatório.")
+    story_content = story_content[:8000]
 
     def _progress(pct: int, msg: str):
         if progress_callback:
