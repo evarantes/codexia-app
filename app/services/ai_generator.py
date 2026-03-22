@@ -859,6 +859,85 @@ class AIContentGenerator:
             print(f"Erro ao melhorar {safe_kind}: {e}")
             return (original_text or "").strip()
 
+    def generate_story_image_prompts(self, story_text: str, n: int = 4, kind: str = "story") -> list:
+        self._load_config()
+        try:
+            count = int(n or 1)
+        except Exception:
+            count = 1
+        count = max(1, min(12, count))
+
+        text = (story_text or "").strip()
+        if not text:
+            return []
+
+        safe_kind = (kind or "story").strip().lower()
+        if safe_kind not in {"story", "devotional"}:
+            safe_kind = "story"
+
+        if not self.openrouter_key:
+            base = text.replace("\n", " ").strip()[:320]
+            styles = [
+                "cinematic lighting, shallow depth of field",
+                "dramatic atmosphere, volumetric light",
+                "soft warm light, film still composition",
+                "moody color grading, high detail",
+            ]
+            prompts = []
+            for i in range(count):
+                prompts.append(
+                    f"Cinematic digital art illustration inspired by this {safe_kind} message: {base}. "
+                    f"{styles[i % len(styles)]}. No text, no watermark, no logo."
+                )
+            return prompts
+
+        import json
+
+        prompt = f"""
+        Crie {count} prompts de imagem DISTINTOS em INGLÊS, para gerar ilustrações por IA,
+        com base no texto abaixo (um(a) {('história' if safe_kind == 'story' else 'devocional')} para narração).
+
+        TEXTO (resumo/ideia central):
+        {text[:2200]}
+
+        REGRAS:
+        - Cada prompt deve ser uma descrição visual rica (sem texto na imagem).
+        - Varie composição, ângulo de câmera, cenário e momento (para evitar imagens repetidas).
+        - Não inclua nomes de marcas, logos, marcas d'água nem "text overlay".
+        - Retorne APENAS um JSON válido:
+          {{ "prompts": ["...", "..."] }}
+        """
+
+        try:
+            raw = self._generate_text(
+                prompt,
+                system_prompt="Você é um diretor de arte. Gere apenas JSON no formato solicitado.",
+                temperature=0.6,
+                json_mode=True,
+            ) or "{}"
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            data = json.loads(raw) if raw else {}
+            prompts = data.get("prompts") if isinstance(data, dict) else None
+            if not isinstance(prompts, list):
+                prompts = []
+        except Exception:
+            prompts = []
+
+        while len(prompts) < count:
+            base = text.replace("\n", " ").strip()[:320]
+            prompts.append(
+                f"Cinematic digital art illustration inspired by this {safe_kind} message: {base}. "
+                "No text, no watermark, no logo."
+            )
+
+        clean = []
+        for p in prompts[:count]:
+            if isinstance(p, str) and p.strip():
+                clean.append(p.strip()[:900])
+        while len(clean) < count:
+            clean.append(f"Cinematic digital art illustration inspired by this {safe_kind} message.")
+        return clean[:count]
+
     def enrich_scenes_with_image_prompts(self, plan: dict) -> dict:
         """
         Gera image_prompt profissionais com base na narração de cada cena, para a IA

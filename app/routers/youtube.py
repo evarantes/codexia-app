@@ -2,6 +2,7 @@ import os
 import glob
 import shutil
 import json
+import uuid
 from datetime import datetime
 try:
     from filelock import FileLock, Timeout
@@ -23,6 +24,7 @@ except Exception:
             self._locked = False
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import requests
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -997,6 +999,7 @@ class VideoRequest(BaseModel):
     mode: str = "topic" # topic | story
     story_content: Optional[str] = None
     custom_image_paths: Optional[List[str]] = None
+    selected_images: Optional[List[str]] = None
 
 class StoryTextGenerateRequest(BaseModel):
     kind: str = "story"  # story | devotional
@@ -1010,11 +1013,11 @@ class StoryTextImproveRequest(BaseModel):
     original_text: str
     duration_min: int = 10
     duration_max: Optional[int] = None
-
-class StoryImageGenerateRequest(BaseModel):
-    text: str
-    count: int = 5
-    kind: str = "story"
+class StoryImagesRequest(BaseModel):
+    kind: str = "story"  # story | devotional
+    story_content: str
+    count: int = 4
+    aspect_ratio: str = "16:9"  # 16:9 | 9:16
 
 class QueueGeneratedVideoRequest(BaseModel):
     video_url: str
@@ -1057,89 +1060,67 @@ def improve_story_text(request: StoryTextImproveRequest):
     return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
 
 @router.post("/story/generate_images")
-def generate_story_images(request: StoryImageGenerateRequest):
-    """Gera N imagens baseadas no texto da história/devocional usando IA."""
-    import uuid
-    import requests as http_requests
-    from app.config import STATIC_DIR
-
-    count = max(1, min(20, int(request.count or 5)))
-    text = (request.text or "").strip()
+def generate_story_images(request: StoryImagesRequest):
+    ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()
     if kind not in {"story", "devotional"}:
         kind = "story"
-
-    if not text:
-        raise HTTPException(status_code=400, detail="O campo 'text' é obrigatório.")
-
-    ai_service = AIContentGenerator()
-
-    # Gera N prompts de imagem baseados no texto
-    kind_label = "história" if kind == "story" else "devocional"
-    prompt_gen = f"""
-Você é um diretor de arte criativo. Baseado no texto de {kind_label} abaixo, crie exatamente {count} descrições visuais (image prompts) em INGLÊS para gerar imagens com IA.
-
-Texto:
-{text[:2000]}
-
-Regras:
-- Cada prompt deve ser único, detalhado, artístico e cinematográfico (mínimo 60 palavras).
-- Capturar momentos-chave, emoções ou cenas do texto.
-- Sem texto, sem marcas, sem personagens famosos, sem watermarks.
-- Estilo: digital painting, cinematic lighting, highly detailed, dramatic atmosphere.
-
-Retorne APENAS um JSON válido:
-{{"prompts": ["prompt 1 em inglês...", "prompt 2 em inglês...", ...]}}
-"""
     try:
-        raw = ai_service._generate_text(prompt_gen, json_mode=True) or "{}"
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        data = json.loads(raw)
-        prompts = data.get("prompts") or []
-    except Exception as e:
-        print(f"Erro ao gerar prompts de imagem: {e}")
+        count = int(request.count or 1)
+    except Exception:
+        count = 1
+    count = max(1, min(12, count))
+
+    aspect_ratio = (request.aspect_ratio or "16:9").strip()
+    if aspect_ratio not in {"16:9", "9:16"}:
+        aspect_ratio = "16:9"
+
+    story_content = (request.story_content or "").strip()
+    if not story_content:
+        raise HTTPException(status_code=400, detail="story_content é obrigatório.")
+
+    prompts = ai_service.generate_story_image_prompts(story_content, n=count, kind=kind) or []
+    if not isinstance(prompts, list):
         prompts = []
 
-    # Garante que temos exatamente count prompts
-    while len(prompts) < count:
-        prompts.append(f"Cinematic digital art illustration based on this {kind} story, dramatic lighting, highly detailed, emotional scene {len(prompts)+1}")
+    covers_dir = Path("app/static/covers")
+    covers_dir.mkdir(parents=True, exist_ok=True)
 
-    prompts = prompts[:count]
-
-    # Gera e salva as imagens
-    images_dir = STATIC_DIR / "generated" / "story_images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-
-    results = []
-    for i, img_prompt in enumerate(prompts):
+    images: List[Dict[str, Any]] = []
+    for p in prompts[:count]:
+        prompt_text = (p or "").strip()
+        if not prompt_text:
+            continue
         try:
-            url = ai_service.generate_image(img_prompt, aspect_ratio="16:9")
-            if url:
-                ext = "jpg"
-                filename = f"story_img_{uuid.uuid4().hex}.{ext}"
-                filepath = images_dir / filename
-                r = http_requests.get(url, timeout=60)
-                if r.status_code == 200 and len(r.content) > 1000:
-                    filepath.write_bytes(r.content)
-                    results.append({
-                        "url": f"/static/generated/story_images/{filename}",
-                        "path": str(filepath),
-                        "prompt": img_prompt,
-                        "index": i,
-                    })
-                    continue
-        except Exception as e:
-            print(f"Erro ao gerar imagem {i+1}: {e}")
+            url = ai_service.generate_image(prompt_text, aspect_ratio=aspect_ratio)
+        except Exception:
+            url = None
+        if not url:
+            continue
 
-        results.append({
-            "url": None,
-            "path": None,
-            "prompt": img_prompt,
-            "index": i,
-            "error": "Falha ao gerar imagem"
-        })
+        try:
+            resp = requests.get(url, timeout=120)
+            if resp.status_code >= 400:
+                continue
+            content_type = (resp.headers.get("content-type") or "").lower()
+            ext = ".png"
+            if "jpeg" in content_type or "jpg" in content_type:
+                ext = ".jpg"
+            filename = f"storyimg_{uuid.uuid4().hex}{ext}"
+            file_path = covers_dir / filename
+            with open(file_path, "wb") as f:
+                f.write(resp.content or b"")
+            if not file_path.exists() or file_path.stat().st_size < 1024:
+                try:
+                    file_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                continue
+            images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
+        except Exception:
+            continue
 
-    return {"images": results, "count": count, "kind": kind}
+    return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}
 
 @router.post("/schedule/from_generated")
 def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = Depends(get_db)):
@@ -1953,6 +1934,19 @@ def process_video_generation(request: VideoRequest, task_id):
             script = ai_service.generate_motivational_script(topic, request.duration)
             
         print("Roteiro gerado/estruturado.")
+
+        if isinstance(script, dict):
+            selected = []
+            if request.selected_images and isinstance(request.selected_images, list):
+                for v in request.selected_images:
+                    if isinstance(v, str) and v.strip():
+                        selected.append(v.strip())
+            if request.custom_image_paths and isinstance(request.custom_image_paths, list):
+                for v in request.custom_image_paths:
+                    if isinstance(v, str) and v.strip():
+                        selected.append(v.strip())
+            if selected:
+                script["selected_images"] = selected[:24]
         
         # 2. Gerar Vídeo (16:9)
         # Passamos uma função de callback para atualizar o progresso
@@ -1961,8 +1955,7 @@ def process_video_generation(request: VideoRequest, task_id):
             task_progress = 20 + int(progress * 0.7)
             update_task(task_id, progress=task_progress, message=message)
             
-        custom_images = [p for p in (request.custom_image_paths or []) if p and os.path.exists(p)]
-        video_result = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback, custom_image_paths=custom_images or None)
+        video_result = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback)
         video_path = video_result["video_url"]
         
         # Path absoluto para upload (compatível com Docker e /data/media)

@@ -640,7 +640,47 @@ class VideoGenerator:
             print(f"Erro ao aplicar Ken Burns: {e}")
             return clip
 
-    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None, custom_image_paths=None):
+    def _resolve_input_image_path(self, value: str) -> str:
+        v = (value or "").strip()
+        if not v:
+            return ""
+        v = v.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip()
+        if not v:
+            return ""
+
+        if v.startswith("/static/"):
+            rel = v.replace("/static/", "", 1).lstrip("/")
+            candidate = os.path.join("app", "static", rel)
+            if os.path.exists(candidate):
+                return candidate
+
+        if v.startswith("static/"):
+            candidate = os.path.join("app", v)
+            if os.path.exists(candidate):
+                return candidate
+
+        if v.startswith("app/static/"):
+            candidate = v
+            if os.path.exists(candidate):
+                return candidate
+
+        if os.path.isabs(v) and os.path.exists(v):
+            return v
+
+        if v.startswith("http://") or v.startswith("https://"):
+            try:
+                path = self.download_image(v, retries=1)
+                if path and os.path.exists(path) and os.path.getsize(path) > 1000:
+                    return path
+            except Exception:
+                return ""
+
+        candidate = os.path.join("app", "static", v.lstrip("/"))
+        if os.path.exists(candidate):
+            return candidate
+        return ""
+
+    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None):
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
         # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
         try:
@@ -740,6 +780,21 @@ class VideoGenerator:
                 video_size = (1280, 720) # Antes: 1920, 1080
             else:
                 video_size = (720, 1280) # Antes: 1080, 1920
+
+            selected_image_paths = []
+            selected_primary_path = None
+            selected_raw = plan.get("selected_images") or plan.get("images") or []
+            if isinstance(selected_raw, list):
+                for item in selected_raw:
+                    if not isinstance(item, str):
+                        continue
+                    p = self._resolve_input_image_path(item)
+                    if p and os.path.exists(p):
+                        selected_image_paths.append(p)
+            if selected_image_paths:
+                selected_primary_path = selected_image_paths[0]
+                if not music_file_path:
+                    use_single_bg = False
 
             if use_single_bg and scenes and not music_file_path:
                 try:
@@ -902,7 +957,9 @@ class VideoGenerator:
 
             title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
             
-            start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
+            start_bg_path = selected_primary_path if selected_primary_path and os.path.exists(selected_primary_path) else None
+            if not start_bg_path:
+                start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not start_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 start_bg_path = video_bg_path
             img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path)
@@ -952,12 +1009,9 @@ class VideoGenerator:
                         progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
 
                 bg_image_path = None
-
-                # Se há imagens personalizadas selecionadas, distribui entre as cenas (round-robin)
-                if _valid_custom:
-                    bg_image_path = _valid_custom[i % len(_valid_custom)]
-                    if progress_callback:
-                        progress_callback(scene_progress, f"Cena {i+1}/{total_scenes}: Usando imagem personalizada {(i % len(_valid_custom)) + 1}.")
+                prompt_key = None
+                if selected_image_paths:
+                    bg_image_path = selected_image_paths[i % len(selected_image_paths)]
                 elif use_single_bg and video_bg_path:
                     bg_image_path = video_bg_path
                 else:
@@ -989,7 +1043,7 @@ class VideoGenerator:
                 if not bg_image_path:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 try:
-                    if not (use_single_bg and video_bg_path):
+                    if prompt_key and not (use_single_bg and video_bg_path):
                         image_cache[prompt_key] = bg_image_path
                     base = os.path.basename(bg_image_path or "")
                     if base.startswith("temp_") or base.startswith("fallback_local_"):
