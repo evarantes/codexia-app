@@ -1019,6 +1019,81 @@ class StoryImagesRequest(BaseModel):
     count: int = 4
     aspect_ratio: str = "16:9"  # 16:9 | 9:16
 
+def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
+    ai_service = AIContentGenerator()
+    kind = (request.kind or "story").strip().lower()
+    if kind not in {"story", "devotional"}:
+        kind = "story"
+
+    try:
+        count = int(request.count or 1)
+    except Exception:
+        count = 1
+    count = max(1, min(12, count))
+
+    aspect_ratio = (request.aspect_ratio or "16:9").strip()
+    if aspect_ratio not in {"16:9", "9:16"}:
+        aspect_ratio = "16:9"
+
+    story_content = (request.story_content or "").strip()
+    if not story_content:
+        raise HTTPException(status_code=400, detail="story_content é obrigatório.")
+
+    def _progress(pct: int, msg: str):
+        if progress_callback:
+            try:
+                progress_callback(pct, msg)
+            except Exception:
+                pass
+
+    _progress(5, "Gerando prompts de imagem...")
+    prompts = ai_service.generate_story_image_prompts(story_content, n=count, kind=kind) or []
+    if not isinstance(prompts, list):
+        prompts = []
+
+    covers_dir = Path("app/static/covers")
+    covers_dir.mkdir(parents=True, exist_ok=True)
+
+    images: List[Dict[str, Any]] = []
+    total = max(1, min(count, len(prompts) or count))
+    for idx, p in enumerate(prompts[:count]):
+        step_pct = 15 + int((idx / total) * 80)
+        _progress(step_pct, f"Gerando imagem {idx+1}/{count}...")
+        prompt_text = (p or "").strip()
+        if not prompt_text:
+            continue
+        try:
+            url = ai_service.generate_image(prompt_text, aspect_ratio=aspect_ratio)
+        except Exception:
+            url = None
+        if not url:
+            continue
+
+        try:
+            resp = requests.get(url, timeout=120)
+            if resp.status_code >= 400:
+                continue
+            content_type = (resp.headers.get("content-type") or "").lower()
+            ext = ".png"
+            if "jpeg" in content_type or "jpg" in content_type:
+                ext = ".jpg"
+            filename = f"storyimg_{uuid.uuid4().hex}{ext}"
+            file_path = covers_dir / filename
+            with open(file_path, "wb") as f:
+                f.write(resp.content or b"")
+            if not file_path.exists() or file_path.stat().st_size < 1024:
+                try:
+                    file_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                continue
+            images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
+        except Exception:
+            continue
+
+    _progress(100, "Imagens prontas.")
+    return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}
+
 class QueueGeneratedVideoRequest(BaseModel):
     video_url: str
     title: Optional[str] = None
@@ -1059,68 +1134,29 @@ def improve_story_text(request: StoryTextImproveRequest):
     )
     return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
 
+@router.post("/story/generate_images_task")
+def generate_story_images_task(request: StoryImagesRequest, background_tasks: BackgroundTasks):
+    task_id = create_task()
+    update_task(task_id, status="processing", progress=0, message="Iniciando geração de imagens...")
+    background_tasks.add_task(process_story_images_generation, request, task_id)
+    return {"message": "Processo iniciado", "task_id": task_id}
+
 @router.post("/story/generate_images")
 def generate_story_images(request: StoryImagesRequest):
-    ai_service = AIContentGenerator()
-    kind = (request.kind or "story").strip().lower()
-    if kind not in {"story", "devotional"}:
-        kind = "story"
+    return _generate_story_images_payload(request)
+
+def process_story_images_generation(request: StoryImagesRequest, task_id: str):
     try:
-        count = int(request.count or 1)
-    except Exception:
-        count = 1
-    count = max(1, min(12, count))
+        def progress_callback(progress, message):
+            try:
+                update_task(task_id, progress=int(progress or 0), message=message)
+            except Exception:
+                pass
 
-    aspect_ratio = (request.aspect_ratio or "16:9").strip()
-    if aspect_ratio not in {"16:9", "9:16"}:
-        aspect_ratio = "16:9"
-
-    story_content = (request.story_content or "").strip()
-    if not story_content:
-        raise HTTPException(status_code=400, detail="story_content é obrigatório.")
-
-    prompts = ai_service.generate_story_image_prompts(story_content, n=count, kind=kind) or []
-    if not isinstance(prompts, list):
-        prompts = []
-
-    covers_dir = Path("app/static/covers")
-    covers_dir.mkdir(parents=True, exist_ok=True)
-
-    images: List[Dict[str, Any]] = []
-    for p in prompts[:count]:
-        prompt_text = (p or "").strip()
-        if not prompt_text:
-            continue
-        try:
-            url = ai_service.generate_image(prompt_text, aspect_ratio=aspect_ratio)
-        except Exception:
-            url = None
-        if not url:
-            continue
-
-        try:
-            resp = requests.get(url, timeout=120)
-            if resp.status_code >= 400:
-                continue
-            content_type = (resp.headers.get("content-type") or "").lower()
-            ext = ".png"
-            if "jpeg" in content_type or "jpg" in content_type:
-                ext = ".jpg"
-            filename = f"storyimg_{uuid.uuid4().hex}{ext}"
-            file_path = covers_dir / filename
-            with open(file_path, "wb") as f:
-                f.write(resp.content or b"")
-            if not file_path.exists() or file_path.stat().st_size < 1024:
-                try:
-                    file_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-                continue
-            images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
-        except Exception:
-            continue
-
-    return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}
+        result = _generate_story_images_payload(request, progress_callback=progress_callback)
+        update_task(task_id, progress=100, status="completed", message="Imagens geradas com sucesso!", result=result)
+    except Exception as e:
+        update_task(task_id, status="failed", message=f"Erro: {str(e)}")
 
 @router.post("/schedule/from_generated")
 def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = Depends(get_db)):

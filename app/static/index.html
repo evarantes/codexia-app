@@ -2176,6 +2176,7 @@
                     ytStoryImagesCount: 4,
                     ytStoryImagesAspectRatio: '16:9',
                     ytStoryImagesLoading: false,
+                    ytStoryImagesTask: null,
                     ytStoryGeneratedImages: [],
                     ytLoading: false,
                     checkingYoutube: true,
@@ -3112,8 +3113,9 @@
                     if (!this.ytStoryContent || !String(this.ytStoryContent).trim()) return;
                     this.ytStoryImagesLoading = true;
                     this.ytStoryGeneratedImages = [];
+                    this.ytStoryImagesTask = null;
                     try {
-                        const res = await this.authFetch('/youtube/story/generate_images', {
+                        const res = await this.authFetch('/youtube/story/generate_images_task', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -3124,20 +3126,38 @@
                             })
                         });
                         const data = await res.json().catch(() => ({}));
-                        if (!res.ok) {
-                            throw new Error(data.detail || data.message || "Falha ao gerar imagens.");
-                        }
-                        const items = Array.isArray(data.images) ? data.images : [];
-                        this.ytStoryGeneratedImages = items.map((it) => ({
-                            url: it.url,
-                            prompt: it.prompt || '',
-                            selected: true
-                        }));
+                        if (!res.ok || !data.task_id) throw new Error(data.detail || data.message || "Falha ao iniciar geração de imagens.");
+                        await this.pollStoryImagesTask(data.task_id);
                     } catch (e) {
                         alert("Erro ao gerar imagens: " + (e.message || e));
                     } finally {
                         this.ytStoryImagesLoading = false;
                     }
+                },
+                async pollStoryImagesTask(taskId) {
+                    const tick = async () => {
+                        const res = await this.authFetch(`/youtube/task/${taskId}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || "Erro ao consultar tarefa.");
+                        this.ytStoryImagesTask = data;
+                        const status = String((data.status || '')).toLowerCase();
+                        if (status === 'completed') {
+                            const r = data.result || {};
+                            const items = Array.isArray(r.images) ? r.images : [];
+                            this.ytStoryGeneratedImages = items.map((it) => ({
+                                url: it.url,
+                                prompt: it.prompt || '',
+                                selected: true
+                            }));
+                            return;
+                        }
+                        if (status === 'failed') {
+                            throw new Error(data.message || "Falha ao gerar imagens.");
+                        }
+                        await new Promise((resolve) => setTimeout(resolve, 1500));
+                        return tick();
+                    };
+                    return tick();
                 },
                 toggleSelectAllStoryImages(value) {
                     const v = !!value;
