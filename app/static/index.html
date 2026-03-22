@@ -885,6 +885,78 @@
                         <textarea v-model="ytStoryContent" class="w-full border p-3 rounded" rows="10" placeholder="Cole aqui sua história/devocional, ou gere com IA acima."></textarea>
                     </div>
 
+                    <!-- === GERADOR DE IMAGENS === -->
+                    <div v-if="ytStoryContent" class="mb-6 bg-gradient-to-br from-violet-50 to-indigo-50 rounded-xl border border-violet-200 p-5 shadow-sm">
+                        <div class="flex items-center gap-3 mb-4">
+                            <div class="bg-violet-600 text-white rounded-full w-9 h-9 flex items-center justify-center shadow">
+                                <i class="fas fa-images"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-bold text-violet-900 text-lg">Gerador de Imagens</h3>
+                                <p class="text-sm text-violet-700">Gere imagens com IA baseadas na sua história e escolha quais usar no vídeo</p>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-wrap gap-4 items-end mb-4">
+                            <div>
+                                <label class="block font-semibold text-violet-900 mb-1 text-sm">Quantidade de imagens</label>
+                                <input v-model.number="ytStoryImageCount" type="number" min="1" max="20" class="border border-violet-300 p-2 rounded-lg bg-white w-24 text-center font-bold text-violet-800">
+                            </div>
+                            <button @click="generateStoryImages" :disabled="ytStoryImagesLoading || !ytStoryContent" class="bg-violet-600 text-white px-5 py-2 rounded-lg hover:bg-violet-700 flex items-center gap-2 disabled:opacity-50 shadow font-semibold">
+                                <i v-if="ytStoryImagesLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-magic"></i> Gerar imagens</span>
+                            </button>
+                            <div v-if="ytStoryImagesLoading" class="flex items-center gap-2 text-violet-700 text-sm font-medium animate-pulse">
+                                <i class="fas fa-clock"></i> Gerando imagens com IA, aguarde...
+                            </div>
+                            <div v-if="ytStoryGeneratedImages.length > 0" class="ml-auto flex items-center gap-3">
+                                <span class="text-sm text-violet-700 font-medium">
+                                    <span class="font-bold text-violet-900">{{ ytStoryGeneratedImages.filter(img => img.selected).length }}</span> selecionada(s) para o vídeo
+                                </span>
+                                <button @click="ytStoryGeneratedImages.forEach(img => img.selected = !img.selected || false)" class="text-xs px-3 py-1 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 border border-violet-300">Inverter seleção</button>
+                                <button @click="ytStoryGeneratedImages.forEach(img => img.selected = true)" class="text-xs px-3 py-1 rounded bg-violet-100 text-violet-700 hover:bg-violet-200 border border-violet-300">Todas</button>
+                                <button @click="ytStoryGeneratedImages.forEach(img => img.selected = false)" class="text-xs px-3 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-300">Nenhuma</button>
+                            </div>
+                        </div>
+
+                        <!-- Grid de imagens geradas -->
+                        <div v-if="ytStoryGeneratedImages.length > 0" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                            <div v-for="(img, idx) in ytStoryGeneratedImages" :key="idx"
+                                @click="img.selected = !img.selected"
+                                :class="['relative rounded-xl overflow-hidden cursor-pointer border-4 transition-all duration-200 shadow group', img.selected ? 'border-violet-500 ring-2 ring-violet-400 scale-[1.03]' : 'border-gray-200 hover:border-violet-300']"
+                                style="aspect-ratio: 16/9; background: #1e1b4b;">
+                                <img v-if="img.url" :src="img.url" alt="Imagem gerada"
+                                    class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105">
+                                <div v-else class="w-full h-full flex items-center justify-center bg-gray-100 text-gray-400">
+                                    <i class="fas fa-exclamation-circle text-2xl"></i>
+                                </div>
+
+                                <!-- Overlay selecionado -->
+                                <div v-if="img.selected" class="absolute inset-0 bg-violet-600 bg-opacity-20 flex items-center justify-center">
+                                    <div class="bg-violet-600 text-white rounded-full w-8 h-8 flex items-center justify-center shadow-lg">
+                                        <i class="fas fa-check"></i>
+                                    </div>
+                                </div>
+
+                                <!-- Badge número -->
+                                <div class="absolute top-1 left-1 bg-black bg-opacity-60 text-white text-xs rounded-full px-2 py-0.5 font-bold">
+                                    {{ idx + 1 }}
+                                </div>
+
+                                <!-- Indicador erro -->
+                                <div v-if="img.error" class="absolute bottom-0 left-0 right-0 bg-red-500 bg-opacity-80 text-white text-xs text-center py-1">
+                                    <i class="fas fa-times-circle"></i> Falha
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-if="ytStoryGeneratedImages.length > 0" class="mt-3 flex items-center gap-2 p-3 bg-white rounded-lg border border-violet-200 text-sm text-violet-800">
+                            <i class="fas fa-info-circle text-violet-500"></i>
+                            <span>Clique nas imagens para selecionar/desselecionar. As selecionadas serão usadas no vídeo com efeito Ken Burns e transições suaves entre imagens.</span>
+                        </div>
+                    </div>
+                    <!-- === FIM GERADOR DE IMAGENS === -->
+
                     <div class="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
                         <div class="md:col-span-3">
                             <label class="block font-bold mb-2">Instrução para melhorar o texto (opcional)</label>
@@ -2122,6 +2194,9 @@
                     ytStoryQueueLoading: false,
                     ytStoryPublishNowLoading: false,
                     ytStoryFileName: null,
+                    ytStoryImageCount: 5,
+                    ytStoryImagesLoading: false,
+                    ytStoryGeneratedImages: [],
                     ytLoading: false,
                     checkingYoutube: true,
                     channelAnalysis: null,
@@ -3048,12 +3123,40 @@
                         this.ytStoryImproveLoading = false;
                     }
                 },
+                async generateStoryImages() {
+                    if (!this.ytStoryContent) return;
+                    this.ytStoryImagesLoading = true;
+                    this.ytStoryGeneratedImages = [];
+                    try {
+                        const res = await this.authFetch('/youtube/story/generate_images', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                text: this.ytStoryContent,
+                                count: Number(this.ytStoryImageCount || 5),
+                                kind: this.ytStoryKind || 'story'
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao gerar imagens.');
+                        this.ytStoryGeneratedImages = (data.images || []).map(img => ({
+                            ...img,
+                            selected: !!img.url
+                        }));
+                    } catch (e) {
+                        alert('Erro ao gerar imagens: ' + (e.message || e));
+                    } finally {
+                        this.ytStoryImagesLoading = false;
+                    }
+                },
                 async generateStoryVideo() {
                     this.ytStoryVideoLoading = true;
                     this.ytStoryTask = null;
                     this.ytStoryVideoUrl = null;
                     try {
                         const duration = Number(this.ytStoryVideoDuration || this.ytStoryDurationMax || this.ytStoryDurationMin || 10);
+                        const selectedImages = this.ytStoryGeneratedImages.filter(img => img.selected && img.path);
+                        const customImagePaths = selectedImages.length > 0 ? selectedImages.map(img => img.path) : null;
                         const res = await this.authFetch('/youtube/generate_video', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -3061,7 +3164,8 @@
                                 mode: 'story',
                                 duration: duration,
                                 auto_upload: !!this.ytStoryAutoUpload,
-                                story_content: this.ytStoryContent
+                                story_content: this.ytStoryContent,
+                                custom_image_paths: customImagePaths
                             })
                         });
                         const data = await res.json().catch(() => ({}));

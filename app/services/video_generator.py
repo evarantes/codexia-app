@@ -640,7 +640,7 @@ class VideoGenerator:
             print(f"Erro ao aplicar Ken Burns: {e}")
             return clip
 
-    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None):
+    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None, custom_image_paths=None):
         """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
         # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
         try:
@@ -920,6 +920,9 @@ class VideoGenerator:
             clips.append(clip_title)
             
             # 2. Cenas
+            # Prepara lista de imagens personalizadas (se fornecidas)
+            _valid_custom = [p for p in (custom_image_paths or []) if p and os.path.exists(p)]
+
             total_scenes = len(scenes)
             for i, scene in enumerate(scenes):
                 if progress_callback:
@@ -949,7 +952,13 @@ class VideoGenerator:
                         progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
 
                 bg_image_path = None
-                if use_single_bg and video_bg_path:
+
+                # Se há imagens personalizadas selecionadas, distribui entre as cenas (round-robin)
+                if _valid_custom:
+                    bg_image_path = _valid_custom[i % len(_valid_custom)]
+                    if progress_callback:
+                        progress_callback(scene_progress, f"Cena {i+1}/{total_scenes}: Usando imagem personalizada {(i % len(_valid_custom)) + 1}.")
+                elif use_single_bg and video_bg_path:
                     bg_image_path = video_bg_path
                 else:
                     prompt_key = (

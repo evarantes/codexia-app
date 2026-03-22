@@ -39,6 +39,18 @@ app/
 alembic/           - Database migration scripts
 ```
 
+## Recent Features
+
+### YouTube Auto - Gerador de Imagens (Image Generator)
+After the user writes or generates a story/devotional text in the YouTube Auto tab, a new "Gerador de Imagens" panel appears. It allows:
+- Specifying how many images to generate (1–20) based on the story text
+- AI generates image prompts from the text, then generates the images via EdenAI / Pollinations
+- Images appear in a grid — user clicks to select/deselect which images to use in the video
+- Selection helpers: "Todas" (all), "Nenhuma" (none), "Inverter seleção" (toggle)
+- When "Gerar vídeo narrado" is clicked, selected images are distributed across video scenes with Ken Burns zoom effect and smooth crossfade transitions between them
+- Backend endpoint: `POST /youtube/story/generate_images`
+- Images saved to `app/static/generated/story_images/`
+
 ## Running the Application
 
 The app runs via the "Start application" workflow:
