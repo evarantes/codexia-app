@@ -977,9 +977,6 @@ class VideoGenerator:
             clips.append(clip_title)
             
             # 2. Cenas
-            # Prepara lista de imagens personalizadas (se fornecidas)
-            _valid_custom = [p for p in (custom_image_paths or []) if p and os.path.exists(p)]
-
             total_scenes = len(scenes)
             for i, scene in enumerate(scenes):
                 if progress_callback:
