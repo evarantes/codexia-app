@@ -235,6 +235,7 @@ def run_migrations(engine):
                 settings_columns = [c["name"] for c in inspector.get_columns("settings")]
                 with engine.connect() as conn:
                     for col in [
+                        "leonardo_api_key", "leonardo_model_id",
                         "gemini_api_key", "deepseek_api_key", "groq_api_key", 
                         "anthropic_api_key", "mistral_api_key", "openrouter_api_key",
                         "openrouter_model",

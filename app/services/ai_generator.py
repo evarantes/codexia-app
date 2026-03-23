@@ -21,6 +21,8 @@ class AIContentGenerator:
         self.openrouter_key = None
         self.openrouter_model = None
         self.edenai_key = None
+        self.leonardo_key = None
+        self.leonardo_model_id = None
         self.elevenlabs_key = None
         self.elevenlabs_voice_id = None
         self.elevenlabs_voice_name = None
@@ -51,6 +53,8 @@ class AIContentGenerator:
         self.openrouter_key = None
         self.openrouter_model = None
         self.edenai_key = None
+        self.leonardo_key = None
+        self.leonardo_model_id = None
         self.elevenlabs_key = None
         self.elevenlabs_voice_id = None
         self.elevenlabs_voice_name = None
@@ -67,6 +71,8 @@ class AIContentGenerator:
             self.openrouter_key = settings.openrouter_api_key
             self.openrouter_model = getattr(settings, "openrouter_model", None)
             self.edenai_key = getattr(settings, "edenai_api_key", None)
+            self.leonardo_key = getattr(settings, "leonardo_api_key", None)
+            self.leonardo_model_id = getattr(settings, "leonardo_model_id", None)
             self.elevenlabs_key = settings.elevenlabs_api_key
             self.elevenlabs_voice_id = getattr(settings, "elevenlabs_voice_id", None)
             self.elevenlabs_voice_name = getattr(settings, "elevenlabs_voice_name", None)
@@ -82,6 +88,8 @@ class AIContentGenerator:
         if not self.openrouter_key: self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
         if not self.openrouter_model: self.openrouter_model = os.getenv("OPENROUTER_MODEL")
         if not self.edenai_key: self.edenai_key = os.getenv("EDENAI_API_KEY")
+        if not self.leonardo_key: self.leonardo_key = os.getenv("LEONARDO_API_KEY")
+        if not self.leonardo_model_id: self.leonardo_model_id = os.getenv("LEONARDO_MODEL_ID")
         if not self.elevenlabs_key: self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
 
     def _generate_text(self, prompt, system_prompt=None, temperature=0.7, json_mode=False):
@@ -1694,9 +1702,11 @@ class AIContentGenerator:
         if len(raw_prompt) < 240 and not any(token in raw_prompt.lower() for token in quality_tokens[:3]):
             enhanced_prompt = f"{raw_prompt}, {' '.join(quality_tokens[:7])}"
 
-        provider_order = providers or ["edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        provider_order = providers or ["edenai", "openai_direct", "leonardo", "pollinations_flux", "pollinations_turbo", "pollinations"]
         provider_labels = {
             "edenai": "Eden AI",
+            "openai_direct": "OpenAI Direto",
+            "leonardo": "Leonardo.AI",
             "pollinations_flux": "Pollinations Flux",
             "pollinations_turbo": "Pollinations Turbo",
             "pollinations": "Pollinations Base",
@@ -1755,6 +1765,106 @@ class AIContentGenerator:
                         return url.strip()
                     notify(f"{label} não retornou URL válida; tentando próximo.")
                     continue
+
+                if provider == "openai_direct":
+                    if not (self.api_key or "").strip():
+                        notify(f"{label} sem chave configurada; tentando próximo provedor.")
+                        continue
+                    notify(f"Tentando {label}...")
+                    full_prompt = (
+                        f"{enhanced_prompt}. {negative_constraints}. "
+                        "Original AI-generated illustration, cinematic concept art, highly detailed."
+                    )
+                    model = (os.getenv("OPENAI_IMAGE_MODEL") or "dall-e-3").strip() or "dall-e-3"
+                    client = openai.OpenAI(api_key=(self.api_key or "").strip())
+                    resp = client.images.generate(
+                        model=model,
+                        prompt=full_prompt,
+                        size=dalle_size,
+                        quality="standard",
+                        n=1,
+                        response_format="url",
+                    )
+                    url = None
+                    try:
+                        if resp and getattr(resp, "data", None) and resp.data:
+                            url = getattr(resp.data[0], "url", None)
+                    except Exception:
+                        url = None
+                    if isinstance(url, str) and url.strip():
+                        notify(f"{label} respondeu com sucesso.")
+                        return url.strip()
+                    notify(f"{label} não retornou URL válida; tentando próximo.")
+                    continue
+
+                if provider == "leonardo":
+                    if not (self.leonardo_key or "").strip():
+                        notify(f"{label} sem chave configurada; tentando próximo provedor.")
+                        continue
+                    notify(f"Tentando {label}...")
+                    full_prompt = (
+                        f"{enhanced_prompt}. {negative_constraints}. "
+                        "Original AI-generated illustration, cinematic concept art, highly detailed."
+                    )
+                    model_id = (self.leonardo_model_id or "").strip() or (os.getenv("LEONARDO_MODEL_ID") or "").strip() or None
+                    out_w, out_h = (576, 1024) if is_portrait else (1024, 576)
+                    headers = {
+                        "Authorization": f"Bearer {(self.leonardo_key or '').strip()}",
+                        "Content-Type": "application/json",
+                        "accept": "application/json",
+                    }
+                    payload = {
+                        "prompt": full_prompt,
+                        "negative_prompt": negative_constraints,
+                        "num_images": 1,
+                        "width": out_w,
+                        "height": out_h,
+                    }
+                    if model_id:
+                        payload["modelId"] = model_id
+
+                    r = requests.post(
+                        "https://cloud.leonardo.ai/api/rest/v1/generations",
+                        headers=headers,
+                        json=payload,
+                        timeout=120,
+                    )
+                    if r.status_code >= 400:
+                        raise Exception(f"HTTP {r.status_code}: {(r.text or '').strip()[:240]}")
+                    data = r.json() if (r.headers.get("content-type") or "").startswith("application/json") else {}
+                    generation_id = None
+                    if isinstance(data, dict):
+                        job = data.get("sdGenerationJob") or {}
+                        generation_id = job.get("generationId") or data.get("generationId") or data.get("id")
+                    if not generation_id:
+                        raise Exception("Sem generationId")
+
+                    import time
+                    deadline = time.time() + 120
+                    while time.time() < deadline:
+                        rr = requests.get(
+                            f"https://cloud.leonardo.ai/api/rest/v1/generations/{generation_id}",
+                            headers=headers,
+                            timeout=120,
+                        )
+                        if rr.status_code >= 400:
+                            raise Exception(f"HTTP {rr.status_code}: {(rr.text or '').strip()[:240]}")
+                        out = rr.json() if (rr.headers.get("content-type") or "").startswith("application/json") else {}
+                        node = None
+                        if isinstance(out, dict):
+                            node = out.get("generations_by_pk") or out.get("generation") or out.get("sdGenerationJob") or out
+                        images = None
+                        if isinstance(node, dict):
+                            images = node.get("generated_images") or node.get("images") or []
+                        if isinstance(images, list) and images:
+                            item0 = images[0]
+                            if isinstance(item0, dict):
+                                url = item0.get("url") or item0.get("imageUrl") or item0.get("image_url")
+                                if isinstance(url, str) and url.strip().startswith("http"):
+                                    notify(f"{label} respondeu com sucesso.")
+                                    return url.strip()
+                        time.sleep(2)
+                    raise Exception("Timeout aguardando imagem")
 
                 if provider in {"pollinations_flux", "pollinations_turbo", "pollinations"}:
                     import urllib.parse

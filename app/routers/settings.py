@@ -14,6 +14,8 @@ router = APIRouter(prefix="/settings", tags=["Settings"])
 
 class SettingsUpdate(BaseModel):
     openai_api_key: Optional[str] = None
+    leonardo_api_key: Optional[str] = None
+    leonardo_model_id: Optional[str] = None
     gemini_api_key: Optional[str] = None
     deepseek_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
@@ -65,6 +67,12 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
     
     if settings_update.openai_api_key is not None:
         settings.openai_api_key = settings_update.openai_api_key
+    if settings_update.leonardo_api_key is not None:
+        v = str(settings_update.leonardo_api_key).strip()
+        settings.leonardo_api_key = v or None
+    if settings_update.leonardo_model_id is not None:
+        v = str(settings_update.leonardo_model_id).strip()
+        settings.leonardo_model_id = v or None
     if settings_update.gemini_api_key is not None:
         settings.gemini_api_key = settings_update.gemini_api_key
     if settings_update.deepseek_api_key is not None:

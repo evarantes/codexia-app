@@ -1908,6 +1908,27 @@
                         </div>
 
                         <div class="mb-4">
+                            <label class="block font-bold mb-2">OpenAI API Key (fallback de imagens)</label>
+                            <input v-model="settings.openai_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
+                            <p class="text-xs text-gray-500 mt-1">Usada quando EdenAI/Pollinations falharem na geração de imagens.</p>
+                        </div>
+
+                        <div class="mb-4 bg-gray-50 p-4 rounded border">
+                            <h4 class="font-bold mb-2">Leonardo.AI (Imagens)</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Leonardo API Key</label>
+                                    <input v-model="settings.leonardo_api_key" type="password" class="w-full border p-2 rounded bg-white" placeholder="Cole sua chave">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Model ID (opcional)</label>
+                                    <input v-model="settings.leonardo_model_id" class="w-full border p-2 rounded bg-white" placeholder="Ex: 1e7737d7-...">
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">Entrará na fila de tentativas de geração de imagens.</p>
+                        </div>
+
+                        <div class="mb-4">
                             <label class="block font-bold mb-2">ElevenLabs API Key (apenas clonagem/isolamento de voz)</label>
                             <input v-model="settings.elevenlabs_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
                             <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://elevenlabs.io/" target="_blank" class="text-blue-600 underline">ElevenLabs</a></p>
@@ -2336,6 +2357,8 @@
                     // Settings
                     settings: {
                         openai_api_key: '',
+                        leonardo_api_key: '',
+                        leonardo_model_id: '',
                         gemini_api_key: '',
                         deepseek_api_key: '',
                         anthropic_api_key: '',

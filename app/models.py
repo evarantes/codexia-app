@@ -80,6 +80,8 @@ class Settings(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     openai_api_key = Column(String, nullable=True)
+    leonardo_api_key = Column(String, nullable=True)
+    leonardo_model_id = Column(String, nullable=True)
     gemini_api_key = Column(String, nullable=True)
     deepseek_api_key = Column(String, nullable=True)
     groq_api_key = Column(String, nullable=True)
