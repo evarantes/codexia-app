@@ -1235,11 +1235,10 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
             continue
 
     if not images:
-        # Como último recurso, evita 503 e entrega algo utilizável ao usuário.
-        for _ in range(count):
-            filename = _local_fallback_image(aspect_ratio)
-            if filename:
-                images.append({"url": f"/static/covers/{filename}", "prompt": "local fallback"})
+        raise HTTPException(
+            status_code=503,
+            detail="Nenhum provedor de IA retornou imagem. Configure OpenAI/Leonardo em Configurações."
+        )
 
     _progress(100, "Imagens prontas.")
     return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}

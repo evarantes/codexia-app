@@ -1775,20 +1775,32 @@ class AIContentGenerator:
                         f"{enhanced_prompt}. {negative_constraints}. "
                         "Original AI-generated illustration, cinematic concept art, highly detailed."
                     )
-                    model = (os.getenv("OPENAI_IMAGE_MODEL") or "dall-e-3").strip() or "dall-e-3"
-                    client = openai.OpenAI(api_key=(self.api_key or "").strip())
-                    resp = client.images.generate(
-                        model=model,
-                        prompt=full_prompt,
-                        size=dalle_size,
-                        quality="standard",
-                        n=1,
-                        response_format="url",
-                    )
                     url = None
+                    model = (os.getenv("OPENAI_IMAGE_MODEL") or "dall-e-3").strip() or "dall-e-3"
                     try:
-                        if resp and getattr(resp, "data", None) and resp.data:
-                            url = getattr(resp.data[0], "url", None)
+                        # Novo SDK (>=1.x)
+                        if hasattr(openai, "OpenAI"):
+                            client = openai.OpenAI(api_key=(self.api_key or "").strip())
+                            resp = client.images.generate(
+                                model=model,
+                                prompt=full_prompt,
+                                size=dalle_size,
+                                quality="standard",
+                                n=1,
+                                response_format="url",
+                            )
+                            if resp and getattr(resp, "data", None) and resp.data:
+                                url = getattr(resp.data[0], "url", None)
+                        else:
+                            # SDK antigo (0.x)
+                            openai.api_key = (self.api_key or "").strip()
+                            resp = openai.Image.create(
+                                prompt=full_prompt,
+                                size=dalle_size,
+                                n=1,
+                            )
+                            if isinstance(resp, dict) and resp.get("data"):
+                                url = resp["data"][0].get("url")
                     except Exception:
                         url = None
                     if isinstance(url, str) and url.strip():
