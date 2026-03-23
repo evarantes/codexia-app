@@ -3,7 +3,7 @@ import glob
 import shutil
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     from filelock import FileLock, Timeout
 except Exception:
@@ -1027,6 +1027,9 @@ class StoryShortsRequest(BaseModel):
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
 
+class CreateShortsFromScheduledRequest(BaseModel):
+    count: int = 3
+
 def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()
@@ -1415,6 +1418,165 @@ def process_story_shorts_generation(request: StoryShortsRequest, task_id: str):
         update_task(task_id, progress=100, status="completed", message="Shorts gerados com sucesso!", result=result)
     except Exception as e:
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
+
+@router.post("/schedule/{video_id}/create_shorts_task")
+def create_shorts_from_scheduled_task(video_id: int, request: CreateShortsFromScheduledRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+    if (video.video_type or "video").strip().lower() != "video":
+        raise HTTPException(status_code=400, detail="Apenas vídeos longos (não-shorts) podem gerar shorts.")
+
+    task_id = create_task()
+    update_task(task_id, status="processing", progress=0, message="Iniciando criação de shorts a partir do vídeo...")
+    payload = {"count": int(getattr(request, "count", 3) or 3)}
+    background_tasks.add_task(process_create_shorts_from_scheduled_video, video_id, payload, task_id)
+    return {"message": "Processo iniciado", "task_id": task_id}
+
+def process_create_shorts_from_scheduled_video(video_id: int, payload: Dict[str, Any], task_id: str):
+    db = SessionLocal()
+    try:
+        scheduled = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+        if not scheduled:
+            raise Exception("Vídeo não encontrado.")
+        if (scheduled.video_type or "video").strip().lower() != "video":
+            raise Exception("Apenas vídeos longos (não-shorts) podem gerar shorts.")
+
+        try:
+            count = int((payload or {}).get("count") or 3)
+        except Exception:
+            count = 3
+        count = max(1, min(8, count))
+
+        kind = "story"
+        base_text = ""
+        data = {}
+        if scheduled.script_data:
+            try:
+                data = json.loads(scheduled.script_data or "{}") or {}
+            except Exception:
+                data = {}
+
+        if isinstance(data, dict):
+            raw_kind = str(data.get("kind") or "").strip().lower()
+            if raw_kind in {"story", "devotional"}:
+                kind = raw_kind
+
+            scenes = data.get("scenes")
+            if isinstance(scenes, list) and scenes:
+                parts = []
+                for s in scenes:
+                    if isinstance(s, dict):
+                        t = (s.get("text") or s.get("narration_text") or s.get("narration") or "").strip()
+                        if t:
+                            parts.append(t)
+                base_text = "\n".join(parts).strip()
+
+            if not base_text:
+                for k in ("story_content", "text", "content", "script", "concept", "narration_text", "narration"):
+                    v = data.get(k)
+                    if isinstance(v, str) and v.strip():
+                        base_text = v.strip()
+                        break
+
+        if not base_text:
+            title = (scheduled.title or "").strip()
+            desc = (scheduled.description or "").strip()
+            base_text = f"{title}\n\n{desc}".strip()
+
+        base_text = (base_text or "").strip()[:12000]
+        if not base_text:
+            raise Exception("Sem conteúdo para gerar shorts.")
+
+        ai_service = AIContentGenerator()
+        voice_style = (getattr(scheduled, "voice_style", "") or "").strip() or None
+        voice_gender = (getattr(scheduled, "voice_gender", "") or "").strip() or None
+
+        def progress_callback(progress, message):
+            try:
+                update_task(task_id, progress=int(progress or 0), message=message)
+            except Exception:
+                pass
+
+        req = StoryShortsRequest(
+            kind=kind,
+            story_content=base_text,
+            count=count,
+            selected_images=None,
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+        )
+        result = _generate_story_shorts_payload(req, progress_callback=progress_callback) or {}
+        shorts = result.get("shorts") if isinstance(result, dict) else None
+        shorts = shorts if isinstance(shorts, list) else []
+
+        created_ids: List[int] = []
+        now = datetime.now()
+        theme = f"Shorts: {(scheduled.title or 'Vídeo').strip()}"[:120]
+        for idx, s in enumerate(shorts):
+            if not isinstance(s, dict):
+                continue
+            video_url = (s.get("video_url") or "").strip()
+            if not video_url:
+                continue
+            title = (s.get("title") or "").strip() or f"{(scheduled.title or 'Vídeo').strip()} (Short {idx+1})"
+            description = (s.get("description") or "").strip()
+            scheduled_for = now + timedelta(minutes=idx + 1)
+            short_payload = {
+                "source": "derived_from_scheduled",
+                "source_scheduled_video_id": scheduled.id,
+                "parent_video_id": scheduled.id,
+                "kind": kind,
+                "video_type": "short",
+                "title": title,
+                "description": description,
+                "video_url": video_url,
+            }
+            item = ScheduledVideo(
+                theme=theme,
+                title=title,
+                description=description,
+                scheduled_for=scheduled_for,
+                status="completed",
+                video_type="short",
+                parent_video_id=scheduled.id,
+                script_data=json.dumps(short_payload),
+                auto_post=False,
+                voice_style=getattr(scheduled, "voice_style", "human"),
+                voice_gender=getattr(scheduled, "voice_gender", "female"),
+            )
+            try:
+                setattr(item, "progress", 100)
+            except Exception:
+                pass
+            try:
+                setattr(item, "video_url", video_url)
+            except Exception:
+                pass
+            db.add(item)
+            db.flush()
+            if item.id:
+                created_ids.append(int(item.id))
+
+        db.commit()
+        update_task(
+            task_id,
+            progress=100,
+            status="completed",
+            message="Shorts criados e enviados para Aguardando Publicação.",
+            result={"created_ids": created_ids, "count": len(created_ids)},
+        )
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        update_task(task_id, status="failed", message=f"Erro: {str(e)}")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 @router.post("/schedule/from_generated")
 def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = Depends(get_db)):

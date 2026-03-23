@@ -1210,6 +1210,12 @@
                     <!-- 3. Published History -->
                     <div class="bg-white rounded-lg shadow p-6 border-l-4 border-gray-400 opacity-90 hover:opacity-100 transition">
                         <h2 class="text-xl font-bold mb-4 text-gray-700"><i class="fas fa-history"></i> Histórico de Publicados</h2>
+                         <div v-if="ytPublishedShortsTask && String(ytPublishedShortsTask.status || '').toLowerCase() === 'processing'" class="mb-3">
+                            <div class="text-sm font-semibold text-gray-700">Criando shorts: {{ ytPublishedShortsTask.message }}</div>
+                            <div class="w-full bg-gray-200 rounded h-2 mt-2">
+                                <div class="bg-purple-600 h-2 rounded" :style="{width: (ytPublishedShortsTask.progress || 0) + '%'}"></div>
+                            </div>
+                        </div>
                          <div v-if="publishedVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum histórico disponível.</div>
                         <div v-else class="overflow-x-auto">
                             <table class="w-full">
@@ -1235,6 +1241,7 @@
                                         <td class="p-3 flex gap-2 flex-wrap">
                                             <button @click="viewPublishedVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
                                             <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
+                                            <button v-if="(video.video_type || 'video') === 'video'" @click="createShortsFromPublishedVideo(video)" :disabled="ytPublishedShortsLoadingId === video.id" class="text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 p-2 rounded text-sm disabled:opacity-50" title="Criar shorts deste vídeo"><i class="fas fa-bolt"></i> Criar shorts</button>
                                             <button @click="republishScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
                                             <button @click="deleteScheduledVideo(video)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
                                         </td>
@@ -2281,6 +2288,8 @@
                     ytStoryShortsLoading: false,
                     ytStoryShortsTask: null,
                     ytStoryShorts: [],
+                    ytPublishedShortsLoadingId: null,
+                    ytPublishedShortsTask: null,
                     ytLoading: false,
                     checkingYoutube: true,
                     channelAnalysis: null,
@@ -4002,6 +4011,48 @@
                             this.fetchProductionQueue();
                         }
                     } catch (e) { alert("Erro: " + (e.message || e)); }
+                },
+                async createShortsFromPublishedVideo(video) {
+                    if (!video || !video.id) return;
+                    if ((video.video_type || 'video') !== 'video') return;
+                    const count = Number(this.ytStoryShortsCount || 3);
+                    if (!confirm(`Criar ${count} shorts deste vídeo e enviar para Aguardando Publicação?`)) return;
+                    this.ytPublishedShortsLoadingId = video.id;
+                    this.ytPublishedShortsTask = null;
+                    try {
+                        const res = await this.authFetch(`/youtube/schedule/${video.id}/create_shorts_task`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ count })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok || !data.task_id) {
+                            throw new Error(data.detail || data.message || "Falha ao iniciar criação de shorts.");
+                        }
+                        const taskId = data.task_id;
+                        const poll = async () => {
+                            const rr = await this.authFetch(`/youtube/task/${taskId}`);
+                            const td = await rr.json().catch(() => ({}));
+                            if (!rr.ok) throw new Error(td.detail || "Erro ao consultar tarefa.");
+                            this.ytPublishedShortsTask = td;
+                            const st = String((td.status || '')).toLowerCase();
+                            if (st === 'completed') {
+                                await this.fetchScheduledVideos();
+                                await this.fetchProductionQueue();
+                                alert("Shorts criados e enviados para Aguardando Publicação.");
+                                this.ytPublishedShortsLoadingId = null;
+                                return;
+                            }
+                            if (st === 'failed') {
+                                throw new Error(td.message || "Falha ao criar shorts.");
+                            }
+                            setTimeout(poll, 1500);
+                        };
+                        poll();
+                    } catch (e) {
+                        alert("Erro ao criar shorts: " + (e.message || e));
+                        this.ytPublishedShortsLoadingId = null;
+                    }
                 },
                 async saveSettings() {
                     try {
