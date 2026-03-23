@@ -1216,38 +1216,76 @@
                                 <div class="bg-purple-600 h-2 rounded" :style="{width: (ytPublishedShortsTask.progress || 0) + '%'}"></div>
                             </div>
                         </div>
-                         <div v-if="publishedVideos.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum histórico disponível.</div>
-                        <div v-else class="overflow-x-auto">
-                            <table class="w-full">
-                                <thead>
-                                    <tr class="bg-gray-50">
-                                        <th class="p-3 text-left">Título</th>
-                                        <th class="p-3 text-left">Agendado Para</th>
-                                        <th class="p-3 text-left">Status</th>
-                                        <th class="p-3 text-left">Ações</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr v-for="video in publishedVideos" :key="video.id" class="border-t">
-                                        <td class="p-3">{{ video.title }}</td>
-                                        <td class="p-3 text-sm text-gray-600">
-                                            <input type="datetime-local" v-model="video.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-gray-100" disabled>
-                                        </td>
-                                        <td class="p-3">
-                                            <span class="bg-gray-200 text-gray-800 px-2 py-1 rounded text-xs font-bold uppercase">
-                                                {{ translateStatus(video.status) }}
-                                            </span>
-                                        </td>
-                                        <td class="p-3 flex gap-2 flex-wrap">
-                                            <button @click="viewPublishedVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
-                                            <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
-                                            <button v-if="(video.video_type || 'video') === 'video'" @click="createShortsFromPublishedVideo(video)" :disabled="ytPublishedShortsLoadingId === video.id" class="text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 p-2 rounded text-sm disabled:opacity-50" title="Criar shorts deste vídeo"><i class="fas fa-bolt"></i> Criar shorts</button>
-                                            <button @click="republishScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
-                                            <button @click="deleteScheduledVideo(video)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
+                         <div v-if="publishedVideoBlocks.length === 0" class="text-gray-500 italic p-4 text-center bg-gray-50 rounded">Nenhum histórico disponível.</div>
+                        <div v-else class="space-y-4">
+                            <div v-for="block in publishedVideoBlocks" :key="block.key" class="border rounded bg-white overflow-hidden">
+                                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2 p-3 bg-gray-50">
+                                    <div class="font-semibold text-gray-800">
+                                        <span v-if="block.parent">{{ block.parent.title }}</span>
+                                        <span v-else>Shorts (sem vídeo pai)</span>
+                                    </div>
+                                    <div class="text-sm text-gray-600">
+                                        <span v-if="block.parent">ID {{ block.parent.id }} • Shorts: {{ (block.shorts || []).length }}</span>
+                                        <span v-else>Total: {{ (block.shorts || []).length }}</span>
+                                    </div>
+                                </div>
+                                <div class="overflow-x-auto">
+                                    <table class="w-full">
+                                        <thead>
+                                            <tr class="bg-white">
+                                                <th class="p-3 text-left">Título</th>
+                                                <th class="p-3 text-left">Agendado Para</th>
+                                                <th class="p-3 text-left">Status</th>
+                                                <th class="p-3 text-left">Ações</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr v-if="block.parent" class="border-t">
+                                                <td class="p-3">
+                                                    <span class="bg-gray-200 text-gray-800 px-2 py-1 rounded text-xs font-bold uppercase mr-2">VIDEO</span>
+                                                    {{ block.parent.title }}
+                                                </td>
+                                                <td class="p-3 text-sm text-gray-600">
+                                                    <input type="datetime-local" v-model="block.parent.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-gray-100" disabled>
+                                                </td>
+                                                <td class="p-3">
+                                                    <span class="bg-gray-200 text-gray-800 px-2 py-1 rounded text-xs font-bold uppercase">
+                                                        {{ translateStatus(block.parent.status) }}
+                                                    </span>
+                                                </td>
+                                                <td class="p-3 flex gap-2 flex-wrap">
+                                                    <button @click="viewPublishedVideo(block.parent)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
+                                                    <button @click="regenerateScheduledVideo(block.parent)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
+                                                    <button @click="createShortsFromPublishedVideo(block.parent)" :disabled="ytPublishedShortsLoadingId === block.parent.id" class="text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 p-2 rounded text-sm disabled:opacity-50" title="Criar shorts deste vídeo"><i class="fas fa-bolt"></i> Criar shorts</button>
+                                                    <button @click="republishScheduledVideo(block.parent)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
+                                                    <button @click="deleteScheduledVideo(block.parent)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
+                                                </td>
+                                            </tr>
+                                            <tr v-for="short in (block.shorts || [])" :key="short.id" class="border-t bg-purple-50/40">
+                                                <td class="p-3">
+                                                    <span class="bg-purple-200 text-purple-900 px-2 py-1 rounded text-xs font-bold uppercase mr-2">SHORT</span>
+                                                    <span v-if="block.parent" class="text-gray-600 mr-1">↳</span>
+                                                    {{ short.title }}
+                                                </td>
+                                                <td class="p-3 text-sm text-gray-600">
+                                                    <input type="datetime-local" v-model="short.scheduled_for_local" class="border rounded p-1 text-sm w-full bg-gray-100" disabled>
+                                                </td>
+                                                <td class="p-3">
+                                                    <span class="bg-gray-200 text-gray-800 px-2 py-1 rounded text-xs font-bold uppercase">
+                                                        {{ translateStatus(short.status) }}
+                                                    </span>
+                                                </td>
+                                                <td class="p-3 flex gap-2 flex-wrap">
+                                                    <button @click="viewPublishedVideo(short)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
+                                                    <button @click="regenerateScheduledVideo(short)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
+                                                    <button @click="republishScheduledVideo(short)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
+                                                    <button @click="deleteScheduledVideo(short)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2528,6 +2566,47 @@
                 },
                 publishedVideos() {
                     return this.scheduledVideos.filter(v => this.isPublishedStatus(v.status));
+                },
+                publishedVideoBlocks() {
+                    const published = this.scheduledVideos
+                        .filter(v => this.isPublishedStatus(v.status))
+                        .slice()
+                        .sort((a, b) => (Number(b.id || 0) - Number(a.id || 0)));
+
+                    const blocksByParentId = {};
+                    const blocks = [];
+
+                    const parents = published.filter(v => (v.video_type || 'video') === 'video');
+                    for (const p of parents) {
+                        const id = Number(p.id || 0);
+                        if (!id) continue;
+                        const block = { key: `p-${id}`, parent: p, shorts: [] };
+                        blocksByParentId[id] = block;
+                        blocks.push(block);
+                    }
+
+                    const orphanShorts = [];
+                    for (const v of published) {
+                        if ((v.video_type || 'video') !== 'short') continue;
+                        const pid = Number(v.parent_video_id || 0);
+                        const block = pid ? blocksByParentId[pid] : null;
+                        if (block) block.shorts.push(v);
+                        else orphanShorts.push(v);
+                    }
+
+                    for (const b of blocks) {
+                        b.shorts = (b.shorts || []).slice().sort((a, c) => (Number(c.id || 0) - Number(a.id || 0)));
+                    }
+
+                    if (orphanShorts.length) {
+                        blocks.push({
+                            key: 'orphans',
+                            parent: null,
+                            shorts: orphanShorts.slice().sort((a, b) => (Number(b.id || 0) - Number(a.id || 0)))
+                        });
+                    }
+
+                    return blocks;
                 },
                 totalSales() {
                     return this.sales.reduce((sum, sale) => sum + sale.amount, 0);

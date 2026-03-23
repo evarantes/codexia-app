@@ -2304,6 +2304,7 @@ def get_schedule(db: Session = Depends(get_db)):
             "scheduled_for": v.scheduled_for.isoformat() if v.scheduled_for else None,
             "auto_post": getattr(v, "auto_post", False),
             "video_type": v.video_type,
+            "parent_video_id": v.parent_video_id,
             "video_url": _normalize_video_url_for_client(v.video_url),
             "youtube_video_id": v.youtube_video_id,
             "uploaded_at": v.uploaded_at.isoformat() if getattr(v, "uploaded_at", None) else None,
