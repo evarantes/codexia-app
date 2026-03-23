@@ -594,6 +594,7 @@ class AIContentGenerator:
         if not self.openrouter_key:
             return {
                 "title": "Short gerado",
+                "description": "Um short criado automaticamente com base na mensagem do vídeo. #shorts",
                 "scenes": [
                     {"text": "Um momento que inspira.", "image_prompt": "cinematic inspiring scene"},
                     {"text": "Vale a pena persistir.", "image_prompt": "person overcoming challenge"},
@@ -613,12 +614,14 @@ class AIContentGenerator:
 
         Regras:
         - Título: uma frase chamativa (máx. 60 caracteres).
+        - Descrição: 2-4 linhas com CTA e hashtags relevantes (inclua #shorts).
         - Cenas: entre 3 e 5 cenas. Cada cena: "text" (frase narrada, curta) e "image_prompt" (descrição visual em inglês para gerar imagem com IA, sem texto na imagem).
         - Estilo: dinâmico, adequado para Shorts/Reels, gancho no início.
 
         Retorne APENAS este JSON (sem markdown, sem texto extra):
         {{
             "title": "Título do Short",
+            "description": "Descrição do short com hashtags",
             "scenes": [
                 {{"text": "Frase da cena 1", "image_prompt": "descrição visual artística da cena 1"}},
                 {{"text": "Frase da cena 2", "image_prompt": "descrição visual artística da cena 2"}}
@@ -645,11 +648,26 @@ class AIContentGenerator:
                     {"text": "Um momento inspirador.", "image_prompt": "cinematic inspiring scene"},
                     {"text": "Persista e conquiste.", "image_prompt": "person overcoming challenge"}
                 ]
+            desc = (data.get("description") or "").strip()
+            if not desc:
+                try:
+                    desc_prompt = (
+                        f"Crie uma descrição curta (2-4 linhas) para um YouTube Short com base neste pedido:\n\n"
+                        f"\"{prompt}\"\n\n"
+                        "Regras: inclua CTA (inscreva-se/curta/compartilhe), inclua hashtags relevantes e #shorts. "
+                        "Retorne apenas o texto da descrição (sem aspas, sem markdown)."
+                    )
+                    gen_desc = (self._generate_text(desc_prompt, system_prompt="Você é um copywriter de YouTube. Retorne só o texto.", json_mode=False) or "").strip()
+                    if gen_desc:
+                        data["description"] = gen_desc[:1200]
+                except Exception:
+                    pass
             return data
         except Exception as e:
             print(f"Erro ao gerar script de Short: {e}")
             return {
                 "title": "Short inspirador",
+                "description": "Um short criado automaticamente com base na mensagem do vídeo. #shorts",
                 "scenes": [
                     {"text": "Um momento que inspira.", "image_prompt": "cinematic inspiring scene"},
                     {"text": "Vale a pena persistir.", "image_prompt": "person overcoming challenge"},

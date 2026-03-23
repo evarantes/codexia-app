@@ -2563,6 +2563,19 @@ def process_video_generation(request: VideoRequest, task_id):
         print("Roteiro gerado/estruturado.")
 
         if isinstance(script, dict):
+            try:
+                desc = (script.get("description") or "").strip()
+                if not desc and request.story_content:
+                    dprompt = (
+                        "Crie uma descrição otimizada para YouTube (6-10 linhas) com base nesta mensagem. "
+                        "Inclua CTA e 5-10 hashtags relevantes.\n\n"
+                        f"MENSAGEM:\n{(request.story_content or '').strip()[:4000]}"
+                    )
+                    gen_desc = (ai_service._generate_text(dprompt, system_prompt="Você é um copywriter de YouTube. Retorne apenas o texto.", json_mode=False) or "").strip()
+                    if gen_desc:
+                        script["description"] = gen_desc[:2000]
+            except Exception:
+                pass
             selected = []
             if request.selected_images and isinstance(request.selected_images, list):
                 for v in request.selected_images:
