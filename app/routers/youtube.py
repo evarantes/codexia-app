@@ -1029,6 +1029,8 @@ class StoryShortsRequest(BaseModel):
 
 class CreateShortsFromScheduledRequest(BaseModel):
     count: int = 3
+    voice_style: Optional[str] = None
+    voice_gender: Optional[str] = None
 
 def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
@@ -1429,7 +1431,11 @@ def create_shorts_from_scheduled_task(video_id: int, request: CreateShortsFromSc
 
     task_id = create_task()
     update_task(task_id, status="processing", progress=0, message="Iniciando criação de shorts a partir do vídeo...")
-    payload = {"count": int(getattr(request, "count", 3) or 3)}
+    payload = {
+        "count": int(getattr(request, "count", 3) or 3),
+        "voice_style": (getattr(request, "voice_style", None) or None),
+        "voice_gender": (getattr(request, "voice_gender", None) or None),
+    }
     background_tasks.add_task(process_create_shorts_from_scheduled_video, video_id, payload, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
 
@@ -1489,8 +1495,24 @@ def process_create_shorts_from_scheduled_video(video_id: int, payload: Dict[str,
             raise Exception("Sem conteúdo para gerar shorts.")
 
         ai_service = AIContentGenerator()
-        voice_style = (getattr(scheduled, "voice_style", "") or "").strip() or None
-        voice_gender = (getattr(scheduled, "voice_gender", "") or "").strip() or None
+        p_voice_style = ((payload or {}).get("voice_style") or "").strip() if isinstance(payload, dict) else ""
+        p_voice_gender = ((payload or {}).get("voice_gender") or "").strip() if isinstance(payload, dict) else ""
+        voice_style = p_voice_style or (getattr(scheduled, "voice_style", "") or "").strip() or None
+        voice_gender = p_voice_gender or (getattr(scheduled, "voice_gender", "") or "").strip() or None
+
+        selected_images = []
+        try:
+            if isinstance(data, dict):
+                for k in ("rendered_images", "selected_images", "images"):
+                    v = data.get(k)
+                    if isinstance(v, list) and v:
+                        for item in v:
+                            if isinstance(item, str) and item.strip():
+                                selected_images.append(item.strip())
+                        break
+        except Exception:
+            selected_images = []
+        selected_images = selected_images[:24]
 
         def progress_callback(progress, message):
             try:
@@ -1502,7 +1524,7 @@ def process_create_shorts_from_scheduled_video(video_id: int, payload: Dict[str,
             kind=kind,
             story_content=base_text,
             count=count,
-            selected_images=None,
+            selected_images=selected_images or None,
             voice_style=voice_style,
             voice_gender=voice_gender,
         )

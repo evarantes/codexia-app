@@ -4228,7 +4228,11 @@
                         const res = await this.authFetch(`/youtube/schedule/${video.id}/create_shorts_task`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ count })
+                            body: JSON.stringify({
+                                count,
+                                voice_style: this.voiceStyle || null,
+                                voice_gender: this.voiceGender || null
+                            })
                         });
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok || !data.task_id) {

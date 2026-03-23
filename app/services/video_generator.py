@@ -7,7 +7,7 @@ import asyncio
 import re
 import time
 
-from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX
+from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
 
 class VideoGenerator:
@@ -16,6 +16,8 @@ class VideoGenerator:
         os.makedirs(self.output_dir, exist_ok=True)
         self.music_dir = "app/static/music"
         os.makedirs(self.music_dir, exist_ok=True)
+        self.generated_dir = os.path.join(str(STATIC_DIR), "generated")
+        os.makedirs(self.generated_dir, exist_ok=True)
         self.ai_service = ai_service
         self.MUSIC_CREDITS = {
             "drama": "Music: Impact Prelude by Kevin MacLeod\nFree download: https://filmmusic.io/song/3900-impact-prelude\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
@@ -407,8 +409,8 @@ class VideoGenerator:
                 response = requests.get(url, headers=headers, stream=True, timeout=20)
                 
                 if response.status_code == 200:
-                    filename = f"temp_{uuid.uuid4()}.png"
-                    filepath = os.path.join(self.output_dir, filename)
+                    filename = f"genimg_{uuid.uuid4().hex}.png"
+                    filepath = os.path.join(self.generated_dir, filename)
                     
                     with open(filepath, 'wb') as f:
                         for chunk in response.iter_content(4096):
@@ -490,8 +492,8 @@ class VideoGenerator:
             # Redimensiona para tamanho final com suavização
             img = small_img.resize((width, height), Image.BICUBIC)
             
-            filename = f"fallback_local_{uuid.uuid4()}.png"
-            filepath = os.path.join(self.output_dir, filename)
+            filename = f"genbg_{uuid.uuid4().hex}.png"
+            filepath = os.path.join(self.generated_dir, filename)
             img.save(filepath)
             return filepath
         except Exception as e:
@@ -703,6 +705,26 @@ class VideoGenerator:
         use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "true").strip().lower() in {"1", "true", "yes", "on"}
         video_bg_path = None
         video_bg_frame = None
+        used_image_urls = []
+        used_image_url_set = set()
+
+        def _track_image_path(p: str):
+            try:
+                if not p or not isinstance(p, str):
+                    return
+                pp = os.path.abspath(p)
+                static_root = os.path.abspath(os.path.join("app", "static"))
+                if not pp.startswith(static_root):
+                    return
+                rel = pp[len(static_root):].lstrip(os.sep).replace(os.sep, "/")
+                if not rel:
+                    return
+                url = f"/static/{rel}"
+                if url not in used_image_url_set:
+                    used_image_url_set.add(url)
+                    used_image_urls.append(url)
+            except Exception:
+                return
         
         try:
             title = plan.get('title', 'Vídeo Sem Título')
@@ -822,8 +844,8 @@ class VideoGenerator:
                     if not video_bg_path:
                         video_bg_path = self._generate_fallback_background(video_size)
                     if video_bg_path:
-                        cached_temp_paths.add(video_bg_path)
                         video_bg_frame = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path)
+                        _track_image_path(video_bg_path)
                 except Exception:
                     video_bg_path = None
                     video_bg_frame = None
@@ -962,6 +984,7 @@ class VideoGenerator:
                 start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not start_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 start_bg_path = video_bg_path
+            _track_image_path(start_bg_path)
             img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path)
             
             clip_title = ImageClip(img_title)
@@ -1032,8 +1055,6 @@ class VideoGenerator:
                 if not bg_image_path:
                     if not fallback_bg_path or not os.path.exists(fallback_bg_path):
                         fallback_bg_path = self._generate_fallback_background(video_size)
-                        if fallback_bg_path:
-                            cached_temp_paths.add(fallback_bg_path)
                     bg_image_path = fallback_bg_path
                     if bg_image_path and progress_callback:
                         progress_callback(scene_progress, f"Cena {i+1}/{total_scenes}: IA de imagem indisponível; usando fundo local.")
@@ -1042,11 +1063,9 @@ class VideoGenerator:
                 try:
                     if prompt_key and not (use_single_bg and video_bg_path):
                         image_cache[prompt_key] = bg_image_path
-                    base = os.path.basename(bg_image_path or "")
-                    if base.startswith("temp_") or base.startswith("fallback_local_"):
-                        cached_temp_paths.add(bg_image_path)
                 except Exception:
                     pass
+                _track_image_path(bg_image_path)
 
                 # Fallback colors
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
@@ -1114,6 +1133,7 @@ class VideoGenerator:
             end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 end_bg_path = video_bg_path
+            _track_image_path(end_bg_path)
             img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path)
             
             clip_end = ImageClip(img_end)
@@ -1292,7 +1312,7 @@ class VideoGenerator:
             if progress_callback:
                 progress_callback(100, "Vídeo renderizado com sucesso!")
             
-            return {"video_url": f"{VIDEO_URL_PREFIX}/{filename}", "music_credit": used_music_credit}
+            return {"video_url": f"{VIDEO_URL_PREFIX}/{filename}", "music_credit": used_music_credit, "used_images": used_image_urls}
             
         except Exception as e:
             print(f"Erro na geração do vídeo: {e}")

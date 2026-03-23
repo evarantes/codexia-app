@@ -169,6 +169,19 @@ def process_scheduled_video(video_id: int):
             music_file_path=video.music_file_path # Pass music file if exists
         )
         video_path = result["video_url"]
+
+        try:
+            used_images = result.get("used_images") if isinstance(result, dict) else None
+            if isinstance(used_images, list):
+                cleaned = []
+                for v in used_images:
+                    if isinstance(v, str) and v.strip() and v.strip().startswith("/static/"):
+                        cleaned.append(v.strip())
+                if cleaned:
+                    script_data["rendered_images"] = cleaned[:60]
+                    video.script_data = json.dumps(script_data)
+        except Exception:
+            pass
         
         # Adicionar créditos ao script_data se possível ou salvar na descrição do vídeo
         if result.get("music_credit"):
