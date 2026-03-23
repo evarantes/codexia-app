@@ -1019,6 +1019,14 @@ class StoryImagesRequest(BaseModel):
     count: int = 4
     aspect_ratio: str = "16:9"  # 16:9 | 9:16
 
+class StoryShortsRequest(BaseModel):
+    kind: str = "story"  # story | devotional
+    story_content: str
+    count: int = 3
+    selected_images: Optional[List[str]] = None
+    voice_style: Optional[str] = None
+    voice_gender: Optional[str] = None
+
 def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()
@@ -1047,10 +1055,59 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
             except Exception:
                 pass
 
-    _progress(5, "Gerando prompts de imagem...")
-    prompts = ai_service.generate_story_image_prompts(story_content, n=count, kind=kind) or []
-    if not isinstance(prompts, list):
-        prompts = []
+    def _extract_scene_chunks(text: str, n: int) -> List[str]:
+        raw = (text or "").replace("\r\n", "\n").strip()
+        if not raw:
+            return []
+        parts = [p.strip() for p in raw.split("\n") if p.strip()]
+        if len(parts) < n:
+            import re
+            sents = re.split(r"(?<=[.!?])\s+", raw.replace("\n", " ").strip())
+            parts = [s.strip() for s in sents if s and s.strip()]
+        if not parts:
+            return []
+        chunks: List[str] = []
+        idx = 0
+        max_chars = 420
+        while idx < len(parts) and len(chunks) < n:
+            buf = parts[idx].strip()
+            idx += 1
+            while idx < len(parts) and len(buf) < int(max_chars * 0.7):
+                cand = parts[idx].strip()
+                if not cand:
+                    idx += 1
+                    continue
+                if len(buf) + 1 + len(cand) > max_chars:
+                    break
+                buf = f"{buf} {cand}"
+                idx += 1
+            chunks.append(buf[:max_chars].strip())
+        while len(chunks) < n:
+            chunks.append(chunks[-1])
+        return chunks[:n]
+
+    _progress(5, "Preparando cenas para gerar imagens...")
+    scene_chunks = _extract_scene_chunks(story_content, count)
+    if not scene_chunks:
+        base = story_content.replace("\n", " ").strip()[:320]
+        scene_chunks = [base] * count
+
+    prompts: List[str] = []
+    _progress(8, "Gerando prompts de imagem por cena...")
+    for idx, chunk in enumerate(scene_chunks[:count]):
+        try:
+            p_list = ai_service.generate_story_image_prompts(chunk, n=1, kind=kind) or []
+            p = (p_list[0] if isinstance(p_list, list) and p_list else "") if p_list is not None else ""
+        except Exception:
+            p = ""
+        p = (p or "").strip()
+        if not p:
+            safe_kind = "story" if kind == "story" else "devotional"
+            p = (
+                f"Cinematic digital art illustration of a scene inspired by this {safe_kind} excerpt: {chunk}. "
+                "High detail, cinematic lighting, expressive atmosphere, no text, no watermark, no logo."
+            )
+        prompts.append(p[:900])
 
     covers_dir = Path("app/static/covers")
     covers_dir.mkdir(parents=True, exist_ok=True)
@@ -1103,35 +1160,49 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
         return filename
 
     images: List[Dict[str, Any]] = []
-    base = story_content.replace("\n", " ").strip()[:320]
-    if not prompts:
-        prompts = [
-            f"Cinematic digital art illustration inspired by this {kind} message: {base}. No text, no watermark, no logo."
-            for _ in range(count)
-        ]
-    prompts = prompts[:count]
-    if len(prompts) < count:
-        prompts = prompts + [prompts[-1]] * (count - len(prompts))
+    forced_providers = ["openai_direct", "leonardo", "edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
+    extra_image_providers = ["openai_direct", "leonardo"]
+    has_openai_or_leonardo = bool((getattr(ai_service, "api_key", None) or "").strip() or (getattr(ai_service, "leonardo_key", None) or "").strip())
+    allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
 
-    total = max(1, count)
-    for idx, p in enumerate(prompts):
+    all_prompts = prompts[:count]
+    if has_openai_or_leonardo:
+        try:
+            extra_prompt_list = ai_service.generate_story_image_prompts(
+                f"{story_content}\n\nFoco: a cena mais marcante e emocional.",
+                n=1,
+                kind=kind,
+            ) or []
+            extra_prompt = (extra_prompt_list[0] if isinstance(extra_prompt_list, list) and extra_prompt_list else "") if extra_prompt_list is not None else ""
+        except Exception:
+            extra_prompt = ""
+        extra_prompt = (extra_prompt or "").strip() or (all_prompts[-1] if all_prompts else "")
+        if extra_prompt:
+            all_prompts.append(extra_prompt[:900])
+
+    total = max(1, len(all_prompts))
+    for idx, p in enumerate(all_prompts):
         step_pct = 15 + int((idx / total) * 80)
         prompt_text = (p or "").strip()
         if not prompt_text:
             continue
         try:
             def _status(msg: str, scene_idx=idx, total_scenes=count, pct=step_pct):
-                _progress(pct, f"Imagem {scene_idx+1}/{total_scenes}: {msg}")
+                _progress(pct, f"Imagem {scene_idx+1}/{total}: {msg}")
 
-            _progress(step_pct, f"Gerando imagem {idx+1}/{count}...")
-            url = ai_service.generate_image(prompt_text, aspect_ratio=aspect_ratio, status_callback=_status)
+            _progress(step_pct, f"Gerando imagem {idx+1}/{total}...")
+            providers = extra_image_providers if (has_openai_or_leonardo and idx == (len(all_prompts) - 1) and len(all_prompts) > count) else forced_providers
+            url = ai_service.generate_image(prompt_text, aspect_ratio=aspect_ratio, providers=providers, status_callback=_status)
         except Exception:
             url = None
         if not url:
-            _progress(step_pct, f"Imagem {idx+1}/{count}: IA indisponível; usando fundo local.")
-            filename = _local_fallback_image(aspect_ratio)
-            if filename:
-                images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
+            if allow_non_ai_fallback:
+                _progress(step_pct, f"Imagem {idx+1}/{total}: IA indisponível; usando fundo local.")
+                filename = _local_fallback_image(aspect_ratio)
+                if filename:
+                    images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
+            else:
+                _progress(step_pct, f"Imagem {idx+1}/{total}: IA indisponível; pulando.")
             continue
 
         try:
@@ -1154,10 +1225,13 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
                 raise Exception("Arquivo vazio")
             images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
         except Exception:
-            _progress(step_pct, f"Imagem {idx+1}/{count}: download falhou; usando fundo local.")
-            filename = _local_fallback_image(aspect_ratio)
-            if filename:
-                images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
+            if allow_non_ai_fallback:
+                _progress(step_pct, f"Imagem {idx+1}/{total}: download falhou; usando fundo local.")
+                filename = _local_fallback_image(aspect_ratio)
+                if filename:
+                    images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
+            else:
+                _progress(step_pct, f"Imagem {idx+1}/{total}: download falhou; pulando.")
             continue
 
     if not images:
@@ -1169,11 +1243,96 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
     _progress(100, "Imagens prontas.")
     return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}
 
+def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callback=None) -> Dict[str, Any]:
+    ai_service = AIContentGenerator()
+    kind = (request.kind or "story").strip().lower()
+    if kind not in {"story", "devotional"}:
+        kind = "story"
+
+    try:
+        count = int(request.count or 1)
+    except Exception:
+        count = 1
+    count = max(1, min(8, count))
+
+    story_content = (request.story_content or "").strip()
+    if not story_content:
+        raise HTTPException(status_code=400, detail="story_content é obrigatório.")
+    story_content = story_content[:12000]
+
+    selected_images = []
+    if request.selected_images and isinstance(request.selected_images, list):
+        for v in request.selected_images:
+            if isinstance(v, str) and v.strip():
+                selected_images.append(v.strip())
+    selected_images = selected_images[:24]
+
+    voice_style = (request.voice_style or "").strip() or None
+    voice_gender = (request.voice_gender or "").strip() or None
+
+    def _progress(pct: int, msg: str):
+        if progress_callback:
+            try:
+                progress_callback(pct, msg)
+            except Exception:
+                pass
+
+    angles = (
+        ["Gancho forte (início da história)", "Momento mais impactante", "Lição final e CTA"]
+        if kind == "story"
+        else ["Gancho de fé (início)", "Aplicação prática", "Mensagem final e CTA"]
+    )
+
+    from app.services.video_generator import VideoGenerator
+    video_service = VideoGenerator(ai_service=ai_service)
+
+    shorts = []
+    for idx in range(count):
+        angle = angles[idx % len(angles)]
+        _progress(5 + int((idx / max(1, count)) * 75), f"Gerando short {idx+1}/{count} ({angle})...")
+        prompt = (
+            f"Crie UM roteiro de YouTube Short vertical (30-60s), baseado nesta {('história' if kind == 'story' else 'mensagem/devocional')}.\n"
+            f"Foco: {angle}.\n\n"
+            f"TEXTO BASE:\n{story_content}\n\n"
+            "Regras: gancho no início, 3 a 5 cenas, frases curtas, sem texto na imagem."
+        )
+        plan = ai_service.generate_short_script_from_prompt(prompt)
+        if not isinstance(plan, dict):
+            plan = {"title": f"Short {idx+1}", "scenes": [{"text": "Assista até o fim.", "image_prompt": "cinematic inspiring scene"}]}
+        if selected_images:
+            plan["selected_images"] = selected_images
+
+        def _video_progress(p, m, short_idx=idx, total=count):
+            base = 10 + int((short_idx / max(1, total)) * 80)
+            span = int((1 / max(1, total)) * 80)
+            mapped = min(95, base + int((p or 0) / 100 * max(1, span)))
+            _progress(mapped, f"Short {short_idx+1}/{total}: {m}")
+
+        result = video_service.create_video_from_plan(
+            plan,
+            aspect_ratio="9:16",
+            progress_callback=_video_progress,
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+        )
+        video_url = result.get("video_url") if isinstance(result, dict) else None
+        shorts.append({
+            "title": plan.get("title") or f"Short {idx+1}",
+            "description": plan.get("description") or "",
+            "video_url": video_url,
+            "kind": kind,
+            "video_type": "short",
+        })
+
+    _progress(100, "Shorts prontos.")
+    return {"count": len(shorts), "shorts": shorts, "kind": kind}
+
 class QueueGeneratedVideoRequest(BaseModel):
     video_url: str
     title: Optional[str] = None
     description: Optional[str] = None
     kind: Optional[str] = None
+    video_type: Optional[str] = None
     auto_post: bool = False
     scheduled_for: Optional[str] = None
     voice_style: Optional[str] = None
@@ -1233,6 +1392,30 @@ def process_story_images_generation(request: StoryImagesRequest, task_id: str):
     except Exception as e:
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
 
+@router.post("/story/generate_shorts_task")
+def generate_story_shorts_task(request: StoryShortsRequest, background_tasks: BackgroundTasks):
+    task_id = create_task()
+    update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...")
+    background_tasks.add_task(process_story_shorts_generation, request, task_id)
+    return {"message": "Processo iniciado", "task_id": task_id}
+
+@router.post("/story/generate_shorts")
+def generate_story_shorts(request: StoryShortsRequest):
+    return _generate_story_shorts_payload(request)
+
+def process_story_shorts_generation(request: StoryShortsRequest, task_id: str):
+    try:
+        def progress_callback(progress, message):
+            try:
+                update_task(task_id, progress=int(progress or 0), message=message)
+            except Exception:
+                pass
+
+        result = _generate_story_shorts_payload(request, progress_callback=progress_callback)
+        update_task(task_id, progress=100, status="completed", message="Shorts gerados com sucesso!", result=result)
+    except Exception as e:
+        update_task(task_id, status="failed", message=f"Erro: {str(e)}")
+
 @router.post("/schedule/from_generated")
 def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = Depends(get_db)):
     """Envia um vídeo já gerado para a fila 'Aguardando Publicação'."""
@@ -1243,6 +1426,10 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
     kind = (request.kind or "").strip().lower()
     if kind not in {"story", "devotional"}:
         kind = "story"
+
+    video_type = (request.video_type or "").strip().lower() or "video"
+    if video_type not in {"video", "short"}:
+        video_type = "video"
 
     title = (request.title or "").strip() or f"Vídeo {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     description = (request.description or "").strip()
@@ -1261,6 +1448,7 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
     payload = {
         "source": "generated_story",
         "kind": kind,
+        "video_type": video_type,
         "title": title,
         "description": description,
         "video_url": video_url,
@@ -1275,7 +1463,7 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
         title=title,
         description=description,
         scheduled_for=scheduled_for,
-        video_type="video",
+        video_type=video_type,
         script_data=json.dumps(payload),
         status="completed",
         auto_post=bool(request.auto_post),
