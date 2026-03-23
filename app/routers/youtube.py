@@ -41,7 +41,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment
 from app.redis_client import conn
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
@@ -2352,6 +2352,149 @@ def get_monetization_status():
         "progress": progress,
         "ai_insights": ai_insights,
     }
+
+class CommunityReplyRequest(BaseModel):
+    youtube_parent_id: str
+    text: str
+    youtube_video_id: Optional[str] = None
+    scheduled_video_id: Optional[int] = None
+
+@router.get("/community/comments")
+def get_community_comments(
+    youtube_video_id: Optional[str] = Query(None),
+    scheduled_id: Optional[int] = Query(None),
+    classify: bool = Query(True),
+    db: Session = Depends(get_db)
+):
+    yt = YouTubeService()
+    ai = AIContentGenerator()
+
+    yid = (youtube_video_id or "").strip()
+    if not yid and scheduled_id:
+        sv = db.query(ScheduledVideo).filter(ScheduledVideo.id == scheduled_id).first()
+        if not sv:
+            raise HTTPException(status_code=404, detail="Vídeo agendado não encontrado")
+        if not sv.youtube_video_id:
+            raise HTTPException(status_code=400, detail="Vídeo ainda não possui youtube_video_id (não publicado).")
+        yid = sv.youtube_video_id
+    if not yid:
+        raise HTTPException(status_code=400, detail="Informe youtube_video_id ou scheduled_id")
+
+    try:
+        raw_comments = yt.list_video_comments(yid, max_results=100)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    results = []
+    for c in raw_comments:
+        top_level = c.get("youtube_parent_id") is None
+        label = None
+        sentiment = None
+        urgency = None
+        draft = None
+        status = "new"
+
+        existing = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == c["youtube_comment_id"]).first()
+        if existing:
+            label = existing.label
+            sentiment = existing.sentiment
+            urgency = existing.urgency
+            draft = existing.reply_draft
+            status = existing.status
+
+        if classify and top_level:
+            try:
+                sys = "Você é um assistente pastoral. Classifique e redija resposta empática, breve e bíblica quando apropriado."
+                prompt = f"""
+Analise o comentário abaixo e devolva JSON com as chaves:
+- label: uma de [elogio, duvida, critica, pedido_oracao, testemunho, sugestao_tema, spam, toxico]
+- sentiment: positive|neutral|negative
+- urgency: low|medium|high
+- draft_reply: texto breve (PT-BR), respeitoso, sem promessas irreais, citando referência bíblica opcional.
+
+Comentário: \"\"\"{(c.get('text') or '').strip()}\"\"\"
+"""
+                raw = ai._generate_text(prompt, system_prompt=sys, json_mode=True)
+                data = json.loads(raw or "{}")
+                label = (data.get("label") or "").strip() or label
+                sentiment = (data.get("sentiment") or "").strip() or sentiment
+                urgency = (data.get("urgency") or "").strip() or urgency
+                draft = (data.get("draft_reply") or "").strip() or draft
+                status = "reviewed"
+            except Exception:
+                pass
+
+        def _parse_dt(s: Optional[str]):
+            try:
+                return datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+            except Exception:
+                return None
+
+        if existing:
+            existing.youtube_parent_id = c.get("youtube_parent_id")
+            existing.youtube_video_id = c.get("youtube_video_id")
+            existing.author = c.get("author")
+            existing.text = c.get("text")
+            existing.like_count = int(c.get("like_count") or 0)
+            existing.published_at = _parse_dt(c.get("published_at"))
+            existing.label = label
+            existing.sentiment = sentiment
+            existing.urgency = urgency
+            if draft:
+                existing.reply_draft = draft
+            if status:
+                existing.status = status
+        else:
+            rec = CommunityComment(
+                youtube_comment_id=c.get("youtube_comment_id"),
+                youtube_parent_id=c.get("youtube_parent_id"),
+                youtube_video_id=c.get("youtube_video_id"),
+                scheduled_video_id=scheduled_id,
+                author=c.get("author"),
+                text=c.get("text"),
+                like_count=int(c.get("like_count") or 0),
+                published_at=_parse_dt(c.get("published_at")),
+                status=status,
+                sentiment=sentiment,
+                label=label,
+                urgency=urgency,
+                reply_draft=draft
+            )
+            db.add(rec)
+        results.append({
+            "youtube_comment_id": c.get("youtube_comment_id"),
+            "youtube_parent_id": c.get("youtube_parent_id"),
+            "youtube_video_id": c.get("youtube_video_id"),
+            "author": c.get("author"),
+            "text": c.get("text"),
+            "like_count": int(c.get("like_count") or 0),
+            "published_at": c.get("published_at"),
+            "status": status,
+            "label": label,
+            "sentiment": sentiment,
+            "urgency": urgency,
+            "reply_draft": draft,
+        })
+    db.commit()
+    return {"youtube_video_id": yid, "count": len(results), "items": results}
+
+@router.post("/community/reply")
+def post_community_reply(req: CommunityReplyRequest, db: Session = Depends(get_db)):
+    yt = YouTubeService()
+    if not req.youtube_parent_id or not req.text:
+        raise HTTPException(status_code=400, detail="Campos obrigatórios: youtube_parent_id e text")
+    try:
+        yt.reply_to_comment(req.youtube_parent_id, req.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    top = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == req.youtube_parent_id).first()
+    if top:
+        top.status = "replied"
+        top.reply_text = req.text
+        top.reply_sent_at = datetime.utcnow()
+        db.commit()
+    return {"status": "sent"}
 
 @router.post("/generate_video")
 def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):

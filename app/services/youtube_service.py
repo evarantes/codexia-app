@@ -146,6 +146,71 @@ class YouTubeService:
         self.service = None
         self.auth_error = last_error or "Credenciais do YouTube ausentes (banco/ENV/token.json)."
 
+    def list_video_comments(self, youtube_video_id: str, max_results: int = 100):
+        """Lista comentários (threads) de um vídeo. Retorna lista achatada de comentários (top-level e replies)."""
+        if not self.service:
+            raise RuntimeError(self.auth_error or "Serviço do YouTube não inicializado.")
+        items = []
+        try:
+            page_token = None
+            while True:
+                req = self.service.commentThreads().list(
+                    part="snippet,replies",
+                    videoId=youtube_video_id,
+                    maxResults=min(max_results, 100),
+                    order="time",
+                    textFormat="plainText",
+                    pageToken=page_token
+                )
+                resp = req.execute()
+                for th in resp.get("items", []):
+                    top = th.get("snippet", {}).get("topLevelComment", {})
+                    s = top.get("snippet", {}) if top else {}
+                    if top:
+                        items.append({
+                            "youtube_comment_id": top.get("id"),
+                            "youtube_parent_id": None,
+                            "youtube_video_id": youtube_video_id,
+                            "author": s.get("authorDisplayName"),
+                            "text": s.get("textDisplay") or s.get("textOriginal"),
+                            "like_count": s.get("likeCount", 0),
+                            "published_at": s.get("publishedAt"),
+                        })
+                    for rep in (th.get("replies", {}) or {}).get("comments", []) or []:
+                        rs = rep.get("snippet", {}) if rep else {}
+                        items.append({
+                            "youtube_comment_id": rep.get("id"),
+                            "youtube_parent_id": top.get("id") if top else None,
+                            "youtube_video_id": youtube_video_id,
+                            "author": rs.get("authorDisplayName"),
+                            "text": rs.get("textDisplay") or rs.get("textOriginal"),
+                            "like_count": rs.get("likeCount", 0),
+                            "published_at": rs.get("publishedAt"),
+                        })
+                page_token = resp.get("nextPageToken")
+                if not page_token:
+                    break
+        except HttpError as e:
+            raise RuntimeError(f"Erro YouTube API (comments): {e}")
+        return items
+
+    def reply_to_comment(self, parent_comment_id: str, text: str):
+        """Responde a um comentário (parentId = comentário top-level)."""
+        if not self.service:
+            raise RuntimeError(self.auth_error or "Serviço do YouTube não inicializado.")
+        try:
+            body = {
+                "snippet": {
+                    "parentId": parent_comment_id,
+                    "textOriginal": text
+                }
+            }
+            req = self.service.comments().insert(part="snippet", body=body)
+            resp = req.execute()
+            return resp
+        except HttpError as e:
+            raise RuntimeError(f"Erro ao responder comentário: {e}")
+
     def get_auth_url(self):
         """Gera URL para o usuário autorizar (Fluxo simplificado)"""
         # 1. Tentar credenciais do banco/ENV (Client ID + Secret) para montar client_config

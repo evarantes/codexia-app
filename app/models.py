@@ -3,6 +3,28 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime
 
+class CommunityComment(Base):
+    __tablename__ = "community_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    youtube_comment_id = Column(String, unique=True, index=True)
+    youtube_parent_id = Column(String, nullable=True, index=True)
+    youtube_video_id = Column(String, index=True)
+    scheduled_video_id = Column(Integer, ForeignKey("scheduled_videos.id"), nullable=True)
+    author = Column(String, nullable=True)
+    text = Column(Text)
+    like_count = Column(Integer, default=0)
+    published_at = Column(DateTime, nullable=True)
+    status = Column(String, default="new")
+    sentiment = Column(String, nullable=True)
+    label = Column(String, nullable=True)
+    urgency = Column(String, nullable=True)
+    reply_draft = Column(Text, nullable=True)
+    reply_text = Column(Text, nullable=True)
+    reply_sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class Tenant(Base):
     """Tenant para multi-tenant SaaS."""
