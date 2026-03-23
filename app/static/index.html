@@ -3501,22 +3501,39 @@
                         const selectedImages = (this.ytStoryGeneratedImages || [])
                             .filter((it) => it && it.selected && it.url)
                             .map((it) => it.url);
-                        const res = await this.authFetch('/youtube/generate_video', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                mode: 'story',
-                                duration: duration,
-                                auto_upload: !!this.ytStoryAutoUpload,
-                                story_content: this.ytStoryContent,
-                                selected_images: selectedImages
-                            })
-                        });
-                        const data = await res.json().catch(() => ({}));
-                        if (!res.ok || !data.task_id) {
-                            throw new Error(data.detail || data.message || "Falha ao iniciar geração do vídeo.");
+                        const payload = {
+                            mode: 'story',
+                            duration: duration,
+                            auto_upload: !!this.ytStoryAutoUpload,
+                            story_content: this.ytStoryContent,
+                            selected_images: selectedImages
+                        };
+                        const attempt = async () => {
+                            const res = await this.authFetch('/youtube/generate_video', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload)
+                            });
+                            const text = await res.text().catch(() => '');
+                            let data = {};
+                            try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                            if (!res.ok || !data.task_id) {
+                                const msg = data.detail || data.message || text || "Falha ao iniciar geração do vídeo.";
+                                throw new Error(msg);
+                            }
+                            return data.task_id;
+                        };
+                        let taskId = null;
+                        for (let i = 0; i < 2; i++) {
+                            try {
+                                taskId = await attempt();
+                                break;
+                            } catch (err) {
+                                if (i === 1) throw err;
+                                await new Promise(r => setTimeout(r, 800));
+                            }
                         }
-                        await this.pollStoryTask(data.task_id);
+                        await this.pollStoryTask(taskId);
                     } catch (e) {
                         alert("Erro ao gerar vídeo: " + (e.message || e));
                         this.ytStoryVideoLoading = false;
