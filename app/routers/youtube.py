@@ -3,6 +3,7 @@ import glob
 import shutil
 import json
 import uuid
+import threading
 from datetime import datetime, timedelta
 try:
     from filelock import FileLock, Timeout
@@ -2695,8 +2696,8 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     # Cria ID da tarefa
     task_id = create_task()
     
-    # Inicia processo em background
-    background_tasks.add_task(process_video_generation, request, task_id)
+    t = threading.Thread(target=process_video_generation, args=(request, task_id), daemon=True)
+    t.start()
     
     return {"message": "Processo iniciado", "task_id": task_id}
 
