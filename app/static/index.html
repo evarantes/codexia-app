@@ -983,7 +983,7 @@
                         <div v-if="ytStoryGeneratedImages.length > 0" class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
                             <label v-for="(img, idx) in ytStoryGeneratedImages" :key="img.url || idx" class="bg-white rounded border overflow-hidden cursor-pointer hover:border-indigo-400 transition">
                                 <div class="relative">
-                                    <img :src="img.url" class="w-full h-32 object-cover">
+                                    <img :src="normalizeStaticUrl(img.url)" class="w-full h-32 object-cover">
                                     <div class="absolute top-2 left-2 bg-white/90 rounded px-2 py-1 text-xs flex items-center gap-2">
                                         <input type="checkbox" v-model="img.selected" class="w-4 h-4 text-indigo-600">
                                         <span>Usar</span>
@@ -1011,7 +1011,7 @@
                             <div v-if="ytImageBankImages.length > 0" class="grid grid-cols-2 md:grid-cols-4 gap-3">
                                 <label v-for="(img, idx) in ytImageBankImages" :key="'bank-'+(img.id || idx)" class="bg-white rounded border overflow-hidden cursor-pointer hover:border-indigo-400 transition">
                                     <div class="relative">
-                                        <img :src="img.url" class="w-full h-32 object-cover">
+                                        <img :src="normalizeStaticUrl(img.url)" class="w-full h-32 object-cover">
                                         <div class="absolute top-2 left-2 bg-white/90 rounded px-2 py-1 text-xs flex items-center gap-2">
                                             <input type="checkbox" v-model="img.selected" class="w-4 h-4 text-indigo-600">
                                             <span>Usar</span>
@@ -4125,6 +4125,14 @@
                         return `/media/videos/${encodeURIComponent(cleanName)}`;
                     }
                     return raw;
+                },
+                normalizeStaticUrl(url) {
+                    const raw = (url || '').toString().trim();
+                    if (!raw) return '';
+                    if (raw.startsWith('/static/')) return raw;
+                    if (raw.startsWith('static/')) return '/' + raw;
+                    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+                    return raw.startsWith('/') ? raw : `/static/${raw}`;
                 },
                 normalizedStatus(status) {
                     return (status || '').toString().trim().toLowerCase();
