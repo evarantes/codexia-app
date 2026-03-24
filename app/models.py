@@ -71,6 +71,18 @@ class BookDraft(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class StoryDraft(Base):
+    __tablename__ = "story_drafts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    title = Column(String, index=True)
+    kind = Column(String, default="story")
+    content = Column(Text)
+    metadata_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class Post(Base):
     __tablename__ = "posts"
 

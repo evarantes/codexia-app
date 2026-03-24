@@ -41,7 +41,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, StoryDraft
 from app.redis_client import conn
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
@@ -1027,6 +1027,12 @@ class StoryShortsRequest(BaseModel):
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
 
+class StoryDraftSaveRequest(BaseModel):
+    title: Optional[str] = None
+    kind: str = "story"
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+
 class CreateShortsFromScheduledRequest(BaseModel):
     count: int = 3
     voice_style: Optional[str] = None
@@ -1372,6 +1378,77 @@ def improve_story_text(request: StoryTextImproveRequest):
         duration_max_minutes=request.duration_max,
     )
     return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+
+@router.post("/story/draft")
+def save_story_draft(request: StoryDraftSaveRequest, db: Session = Depends(get_db)):
+    kind = (request.kind or "story").strip().lower()
+    if kind not in {"story", "devotional"}:
+        kind = "story"
+    content = (request.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content é obrigatório.")
+    content = content[:40000]
+    meta = request.metadata if isinstance(request.metadata, dict) else {}
+    title = (request.title or "").strip()
+    if not title:
+        base = (meta.get("instruction") or meta.get("prompt") or "").strip()
+        if not base:
+            base = content.split("\n", 1)[0].strip()
+        title = base[:80] if base else ("História" if kind == "story" else "Devocional")
+
+    draft = StoryDraft(
+        title=title,
+        kind=kind,
+        content=content,
+        metadata_json=json.dumps(meta, ensure_ascii=False),
+    )
+    try:
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return {"id": draft.id, "title": draft.title, "message": "Rascunho salvo com sucesso."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/story/drafts")
+def list_story_drafts(db: Session = Depends(get_db)):
+    drafts = db.query(StoryDraft).order_by(StoryDraft.updated_at.desc()).all()
+    return [
+        {
+            "id": d.id,
+            "title": d.title,
+            "kind": d.kind,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+            "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+        }
+        for d in drafts
+    ]
+
+@router.get("/story/drafts/{draft_id}")
+def get_story_draft(draft_id: int, db: Session = Depends(get_db)):
+    draft = db.query(StoryDraft).filter(StoryDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    meta = json.loads(draft.metadata_json) if draft.metadata_json else {}
+    return {
+        "id": draft.id,
+        "title": draft.title,
+        "kind": draft.kind,
+        "content": draft.content or "",
+        "metadata": meta,
+        "created_at": draft.created_at.isoformat() if draft.created_at else None,
+        "updated_at": draft.updated_at.isoformat() if draft.updated_at else None,
+    }
+
+@router.delete("/story/drafts/{draft_id}")
+def delete_story_draft(draft_id: int, db: Session = Depends(get_db)):
+    draft = db.query(StoryDraft).filter(StoryDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    db.delete(draft)
+    db.commit()
+    return {"message": "Rascunho excluído."}
 
 @router.post("/story/generate_images_task")
 def generate_story_images_task(request: StoryImagesRequest, background_tasks: BackgroundTasks):

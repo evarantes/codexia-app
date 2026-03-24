@@ -283,6 +283,12 @@ def run_migrations(engine):
             except Exception as e:
                 print(f"Error migrating book_drafts table: {e}")
 
+        if "story_drafts" not in inspector.get_table_names():
+            try:
+                Base.metadata.create_all(bind=engine)
+            except Exception as e:
+                print(f"Error creating story_drafts table: {e}")
+
         # Humor Factory migration
         if "codexia_humor_projects" in inspector.get_table_names():
             try:

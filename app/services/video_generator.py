@@ -253,7 +253,7 @@ class VideoGenerator:
             clean = self._clean_text(txt)
             cap = (s.get("caption") or s.get("on_screen_text") or "").strip()
             if not cap:
-                cap = self._make_caption(clean)
+                cap = clean if len(clean) <= 220 else self._make_caption(clean)
                 s["caption"] = cap
                 notes.append(f"caption_auto:cena_{i+1}")
             elif len(cap) > 220:
@@ -759,9 +759,9 @@ class VideoGenerator:
                     if not scene_prompt and scene_text:
                         scene_prompt = f"Cinematic digital art representing: {scene_text[:140]}"
                     
-                    split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "650").strip() or "650")
-                    target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "520").strip() or "520")
-                    target_chars = max(280, min(1200, target_chars))
+                    split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "320").strip() or "320")
+                    target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "240").strip() or "240")
+                    target_chars = max(160, min(800, target_chars))
 
                     if len(scene_text) > split_threshold:
                         parts = re.split(r'(?<=[.!?])\s+', scene_text)
@@ -788,8 +788,10 @@ class VideoGenerator:
                 scenes = raw_scenes
 
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
-            # Skip enrichment if music mode (handled by generator)
-            if self.ai_service and scenes and not music_file_path:
+            # Skip enrichment if music mode (handled by generator) or if images were preselected
+            selected_raw_pre = plan.get("selected_images") or plan.get("images") or []
+            has_preselected_images = isinstance(selected_raw_pre, list) and any(isinstance(x, str) and x.strip() for x in selected_raw_pre)
+            if self.ai_service and scenes and not music_file_path and not has_preselected_images:
                 try:
                     enriched = self.ai_service.enrich_scenes_with_image_prompts({"title": title, "scenes": scenes})
                     if enriched and enriched.get("scenes"):

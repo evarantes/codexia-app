@@ -794,8 +794,8 @@ class AIContentGenerator:
         if max_m < min_m:
             max_m = min_m
 
-        min_words = min_m * 150
-        max_words = max_m * 150
+        min_words = min_m * 200
+        max_words = max_m * 200
 
         prompt = f"""
         Escreva um(a) {safe_kind} ORIGINAL em português (pt-BR), para ser NARRADO em vídeo.
@@ -806,7 +806,7 @@ class AIContentGenerator:
         REGRAS:
         - Objetivo: texto para narração (sem marcações, sem JSON, sem listas, sem títulos de seção).
         - Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
-        - Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 150 palavras por minuto).
+        - Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 200 palavras por minuto).
         - Escreva em parágrafos, com ritmo natural e envolvente.
         - Não inclua nomes de marcas, links, nem instruções técnicas.
         - Não escreva "Cena 1" / "Narrador:" / "Roteiro:".
@@ -847,8 +847,8 @@ class AIContentGenerator:
         if max_m < min_m:
             max_m = min_m
 
-        min_words = min_m * 150
-        max_words = max_m * 150
+        min_words = min_m * 200
+        max_words = max_m * 200
 
         prompt = f"""
         Você é um editor profissional de textos para narração em vídeo.

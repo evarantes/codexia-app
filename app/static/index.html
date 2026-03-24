@@ -889,6 +889,43 @@
                     </div>
 
                     <div class="mb-4 bg-gray-50 border rounded p-4">
+                        <div class="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                            <div class="md:col-span-2">
+                                <label class="block font-bold mb-2">Rascunhos (para continuar depois)</label>
+                                <select v-model="ytStorySelectedDraftId" class="w-full border p-2 rounded bg-white">
+                                    <option :value="null">Selecione um rascunho...</option>
+                                    <option v-for="d in ytStoryDrafts" :key="'sd-'+d.id" :value="d.id">
+                                        #{{ d.id }} • {{ d.title }} ({{ (d.kind || '').toLowerCase() === 'devotional' ? 'Devocional' : 'História' }})
+                                    </option>
+                                </select>
+                            </div>
+                            <div>
+                                <button @click="fetchStoryDrafts" :disabled="ytStoryDraftLoading" class="w-full px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50">
+                                    <i v-if="ytStoryDraftLoading" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>Atualizar</span>
+                                </button>
+                            </div>
+                            <div>
+                                <button @click="loadSelectedStoryDraft" :disabled="ytStoryDraftLoading || !ytStorySelectedDraftId" class="w-full px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
+                                    Carregar
+                                </button>
+                            </div>
+                            <div>
+                                <button @click="saveCurrentStoryDraft" :disabled="ytStoryDraftSaving || !ytStoryContent" class="w-full px-3 py-2 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+                                    <i v-if="ytStoryDraftSaving" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>Guardar</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="mt-2">
+                            <button @click="deleteSelectedStoryDraft" :disabled="ytStoryDraftDeleting || !ytStorySelectedDraftId" class="px-3 py-2 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50">
+                                <i v-if="ytStoryDraftDeleting" class="fas fa-spinner fa-spin"></i>
+                                <span v-else>Excluir rascunho</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="mb-4 bg-gray-50 border rounded p-4">
                         <div class="flex flex-col md:flex-row md:items-end gap-3">
                             <div class="flex-1">
                                 <label class="block font-bold mb-2">Imagens do vídeo (opcional)</label>
@@ -1001,7 +1038,7 @@
                         <div v-if="ytStoryTask && String(ytStoryTask.status || '').toLowerCase() === 'completed' && !ytStoryAutoUpload" class="mt-4 flex flex-col md:flex-row gap-3">
                             <button @click="queueGeneratedStoryVideo" :disabled="ytStoryQueueLoading || ytStoryPublishNowLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex justify-center items-center gap-2 disabled:opacity-50">
                                 <i v-if="ytStoryQueueLoading" class="fas fa-spinner fa-spin"></i>
-                                <span v-else><i class="fas fa-list"></i> Ir para fila de publicação</span>
+                                <span v-else><i class="fas fa-save"></i> Guardar para decidir depois</span>
                             </button>
                             <button @click="publishGeneratedStoryVideoNow" :disabled="ytStoryQueueLoading || ytStoryPublishNowLoading" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex justify-center items-center gap-2 disabled:opacity-50">
                                 <i v-if="ytStoryPublishNowLoading" class="fas fa-spinner fa-spin"></i>
@@ -2395,6 +2432,11 @@
                     ytStoryShortsLoading: false,
                     ytStoryShortsTask: null,
                     ytStoryShorts: [],
+                    ytStoryDrafts: [],
+                    ytStorySelectedDraftId: null,
+                    ytStoryDraftLoading: false,
+                    ytStoryDraftSaving: false,
+                    ytStoryDraftDeleting: false,
                     ytPublishedShortsLoadingId: null,
                     ytPublishedShortsTask: null,
                     ytLoading: false,
@@ -2731,6 +2773,7 @@
                 await this.fetchCRMData();
                 await this.fetchScheduledVideos();
                 await this.fetchProductionQueue(); // Added
+                await this.fetchStoryDrafts();
                 await this.fetchReports();
                 await this.fetchYoutubeStats(); // Check YouTube status on load
                 
@@ -2739,6 +2782,7 @@
                     if (this.currentTab === 'youtube') {
                         this.fetchScheduledVideos();
                         this.fetchProductionQueue(); // Added
+                        this.fetchStoryDrafts();
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
                     }
@@ -3367,6 +3411,104 @@
                     };
                     reader.readAsText(file, 'UTF-8');
                 },
+                async fetchStoryDrafts() {
+                    if (this.ytStoryDraftLoading) return;
+                    this.ytStoryDraftLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/story/drafts');
+                        const data = await res.json().catch(() => ([]));
+                        if (res.ok && Array.isArray(data)) {
+                            this.ytStoryDrafts = data;
+                            if (this.ytStorySelectedDraftId) {
+                                const exists = data.some(d => Number(d.id) === Number(this.ytStorySelectedDraftId));
+                                if (!exists) this.ytStorySelectedDraftId = null;
+                            }
+                        }
+                    } catch (e) {
+                        console.error(e);
+                    } finally {
+                        this.ytStoryDraftLoading = false;
+                    }
+                },
+                async loadSelectedStoryDraft() {
+                    const id = Number(this.ytStorySelectedDraftId || 0);
+                    if (!id) return;
+                    this.ytStoryDraftLoading = true;
+                    try {
+                        const res = await this.authFetch(`/youtube/story/drafts/${id}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || "Falha ao carregar rascunho.");
+                        }
+                        this.ytStoryKind = (data.kind || this.ytStoryKind || 'story').toString();
+                        this.ytStoryContent = (data.content || '').toString();
+                        const meta = data.metadata || {};
+                        if (meta && typeof meta === 'object') {
+                            const min = Number(meta.duration_min || meta.durationMin || 0);
+                            const max = Number(meta.duration_max || meta.durationMax || 0);
+                            if (min) this.ytStoryDurationMin = min;
+                            if (max) this.ytStoryDurationMax = max;
+                            const prompt = (meta.instruction || meta.prompt || '').toString().trim();
+                            if (prompt) this.ytStoryInstruction = prompt;
+                        }
+                        this.ytStoryGeneratedImages = [];
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.ytStoryDraftLoading = false;
+                    }
+                },
+                async saveCurrentStoryDraft() {
+                    if (this.ytStoryDraftSaving) return;
+                    const content = String(this.ytStoryContent || '').trim();
+                    if (!content) return;
+                    this.ytStoryDraftSaving = true;
+                    try {
+                        const meta = {
+                            duration_min: Number(this.ytStoryDurationMin || 10),
+                            duration_max: Number(this.ytStoryDurationMax || this.ytStoryDurationMin || 10),
+                            instruction: String(this.ytStoryInstruction || '').trim()
+                        };
+                        const res = await this.authFetch('/youtube/story/draft', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                kind: this.ytStoryKind || 'story',
+                                content,
+                                metadata: meta
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok || !data.id) {
+                            throw new Error(data.detail || data.message || "Falha ao salvar rascunho.");
+                        }
+                        await this.fetchStoryDrafts();
+                        this.ytStorySelectedDraftId = data.id;
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.ytStoryDraftSaving = false;
+                    }
+                },
+                async deleteSelectedStoryDraft() {
+                    if (this.ytStoryDraftDeleting) return;
+                    const id = Number(this.ytStorySelectedDraftId || 0);
+                    if (!id) return;
+                    this.ytStoryDraftDeleting = true;
+                    try {
+                        const res = await this.authFetch(`/youtube/story/drafts/${id}`, { method: 'DELETE' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || "Falha ao excluir rascunho.");
+                        }
+                        this.ytStorySelectedDraftId = null;
+                        await this.fetchStoryDrafts();
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.ytStoryDraftDeleting = false;
+                    }
+                },
                 async generateStoryText() {
                     this.ytStoryTextLoading = true;
                     try {
@@ -3555,6 +3697,9 @@
                             }
                             this.ytStoryScheduledId = null;
                             this.ytStoryVideoLoading = false;
+                            if (!this.ytStoryAutoUpload && this.ytStoryVideoUrl) {
+                                this.queueGeneratedStoryVideo({ noScroll: true });
+                            }
                             return;
                         }
                         if (status === 'failed') {
@@ -3702,11 +3847,13 @@
                         this.ytStoryPublishNowLoading = false;
                     }
                 },
-                async queueGeneratedStoryVideo() {
+                async queueGeneratedStoryVideo(options) {
                     if (!this.ytStoryTask || !this.ytStoryVideoUrl) return;
                     if (this.ytStoryQueueLoading) return;
                     this.ytStoryQueueLoading = true;
                     try {
+                        const opts = options && typeof options === 'object' ? options : {};
+                        const noScroll = !!opts.noScroll;
                         let scheduledId = this.ytStoryScheduledId;
                         if (!scheduledId) {
                             const r = this.ytStoryTask.result || {};
@@ -3735,10 +3882,12 @@
                         }
                         await this.fetchScheduledVideos();
                         await this.fetchProductionQueue();
-                        setTimeout(() => {
-                            const el = document.getElementById('ready-queue');
-                            if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        }, 50);
+                        if (!noScroll) {
+                            setTimeout(() => {
+                                const el = document.getElementById('ready-queue');
+                                if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }, 50);
+                        }
                     } catch (e) {
                         alert("Erro: " + (e.message || e));
                     } finally {
