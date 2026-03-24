@@ -42,6 +42,7 @@ from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, StoryDraft
+from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
@@ -1254,6 +1255,98 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
     _progress(100, "Imagens prontas.")
     return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}
 
+class ImageBankItem(BaseModel):
+    url: str
+    prompt: Optional[str] = None
+
+class ImageBankSaveRequest(BaseModel):
+    selected_images: List[ImageBankItem]
+    kind: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+
+@router.post("/images/bank/save")
+def save_images_to_bank(request: ImageBankSaveRequest, db: Session = Depends(get_db)):
+    items = request.selected_images or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="selected_images é obrigatório.")
+    kind = (request.kind or "").strip().lower()
+    if kind and kind not in {"story", "devotional"}:
+        kind = ""
+    aspect = (request.aspect_ratio or "").strip()
+    static_root = os.path.abspath(os.path.join("app", "static"))
+    bank_dir = os.path.join(static_root, "image_bank")
+    os.makedirs(bank_dir, exist_ok=True)
+    saved = []
+    for it in items:
+        url = (it.url or "").strip()
+        if not url or not url.startswith("/static/"):
+            continue
+        rel = url.replace("/static/", "", 1).replace("/", os.sep)
+        src = os.path.abspath(os.path.join(static_root, rel))
+        if not os.path.exists(src):
+            continue
+        ext = os.path.splitext(src)[1] or ".png"
+        filename = f"bank_{uuid.uuid4().hex}{ext}"
+        dst = os.path.abspath(os.path.join(bank_dir, filename))
+        try:
+            shutil.copyfile(src, dst)
+        except Exception:
+            continue
+        image_url = f"/static/image_bank/{filename}"
+        aiimg = AIImage(
+            theme=(kind or "image"),
+            style=(aspect or None),
+            prompt=(it.prompt or None),
+            image_url=image_url,
+        )
+        try:
+            db.add(aiimg)
+            db.commit()
+            db.refresh(aiimg)
+            saved.append({"id": aiimg.id, "url": image_url, "prompt": aiimg.prompt})
+        except Exception as e:
+            db.rollback()
+            try:
+                os.remove(dst)
+            except Exception:
+                pass
+    if not saved:
+        raise HTTPException(status_code=400, detail="Nenhuma imagem válida para salvar.")
+    return {"saved": saved}
+
+@router.get("/images/bank")
+def list_image_bank(
+    aspect_ratio: Optional[str] = Query(None),
+    kind: Optional[str] = Query(None),
+    limit: int = Query(40, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    q = db.query(AIImage).order_by(AIImage.created_at.desc())
+    if aspect_ratio:
+        q = q.filter(AIImage.style == aspect_ratio)
+    if kind:
+        q = q.filter(AIImage.theme == kind)
+    rows = q.limit(limit).all()
+    return [{"id": r.id, "url": r.image_url, "prompt": r.prompt, "style": r.style, "theme": r.theme} for r in rows]
+
+@router.delete("/images/bank/{image_id}")
+def delete_image_bank_item(image_id: int, db: Session = Depends(get_db)):
+    row = db.query(AIImage).filter(AIImage.id == image_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Imagem não encontrada.")
+    url = (row.image_url or "").strip()
+    static_root = os.path.abspath(os.path.join("app", "static"))
+    if url.startswith("/static/"):
+        rel = url.replace("/static/", "", 1).replace("/", os.sep)
+        path = os.path.abspath(os.path.join(static_root, rel))
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    db.delete(row)
+    db.commit()
+    return {"message": "Imagem removida."}
 def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()

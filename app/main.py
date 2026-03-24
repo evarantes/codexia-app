@@ -524,6 +524,7 @@ app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
 if os.path.isdir("/data"):
     os.makedirs("/data/media/videos", exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "videos"), exist_ok=True)
+os.makedirs(os.path.join(STATIC_DIR, "image_bank"), exist_ok=True)
 # NOTA: Não montamos /media como StaticFiles porque temos rotas específicas (/media/videos/{filename})
 # que servem vídeos de VIDEO_OUTPUT_DIR. O mount genérico interceptaria essas rotas.
 

@@ -959,6 +959,9 @@
                                 <button @click="clearStoryImages" :disabled="ytStoryGeneratedImages.length === 0" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm">
                                     Limpar
                                 </button>
+                                <button @click="saveSelectedStoryImagesToBank" :disabled="ytStoryGeneratedImages.filter(i => i && i.selected && i.url).length === 0" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm">
+                                    Guardar selecionadas no Banco
+                                </button>
                             </div>
                         </div>
 
@@ -988,6 +991,35 @@
                                 </div>
                                 <div v-if="img.prompt" class="p-2 text-xs text-gray-600 max-h-12 overflow-hidden" :title="img.prompt">{{ img.prompt }}</div>
                             </label>
+                        </div>
+                        <div class="mt-6">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="block font-bold">Banco de Imagens (servidor)</label>
+                                <div class="flex gap-2">
+                                    <button @click="fetchImageBank" :disabled="ytImageBankLoading" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm">
+                                        Atualizar
+                                    </button>
+                                    <button @click="toggleSelectAllImageBank(true)" :disabled="ytImageBankImages.length === 0" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm">
+                                        Selecionar todas
+                                    </button>
+                                    <button @click="toggleSelectAllImageBank(false)" :disabled="ytImageBankImages.length === 0" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm">
+                                        Desmarcar
+                                    </button>
+                                </div>
+                            </div>
+                            <div v-if="ytImageBankLoading" class="text-sm text-gray-600">Carregando banco...</div>
+                            <div v-if="ytImageBankImages.length > 0" class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <label v-for="(img, idx) in ytImageBankImages" :key="'bank-'+(img.id || idx)" class="bg-white rounded border overflow-hidden cursor-pointer hover:border-indigo-400 transition">
+                                    <div class="relative">
+                                        <img :src="img.url" class="w-full h-32 object-cover">
+                                        <div class="absolute top-2 left-2 bg-white/90 rounded px-2 py-1 text-xs flex items-center gap-2">
+                                            <input type="checkbox" v-model="img.selected" class="w-4 h-4 text-indigo-600">
+                                            <span>Usar</span>
+                                        </div>
+                                    </div>
+                                    <div v-if="img.prompt" class="p-2 text-xs text-gray-600 max-h-12 overflow-hidden" :title="img.prompt">{{ img.prompt }}</div>
+                                </label>
+                            </div>
                         </div>
                     </div>
 
@@ -2427,6 +2459,8 @@
                     ytStoryImagesAspectRatio: '16:9',
                     ytStoryImagesLoading: false,
                     ytStoryImagesTask: null,
+                    ytImageBankImages: [],
+                    ytImageBankLoading: false,
                     ytStoryGeneratedImages: [],
                     ytStoryShortsCount: 3,
                     ytStoryShortsLoading: false,
@@ -3612,6 +3646,7 @@
                                 prompt: it.prompt || '',
                                 selected: true
                             }));
+                            await this.fetchImageBank();
                             return;
                         }
                         if (status === 'failed') {
@@ -3621,6 +3656,51 @@
                         return tick();
                     };
                     return tick();
+                },
+                async saveSelectedStoryImagesToBank() {
+                    try {
+                        const selected = (this.ytStoryGeneratedImages || []).filter(i => i && i.selected && i.url);
+                        if (selected.length === 0) return;
+                        const res = await this.authFetch('/images/bank/save', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                selected_images: selected.map(i => ({ url: i.url, prompt: i.prompt || '' })),
+                                kind: (this.ytStoryKind || 'story'),
+                                aspect_ratio: this.ytStoryImagesAspectRatio || '16:9'
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            alert(data.detail || 'Erro ao guardar imagens.');
+                            return;
+                        }
+                        await this.fetchImageBank();
+                        alert('Imagens guardadas no Banco.');
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    }
+                },
+                async fetchImageBank() {
+                    try {
+                        this.ytImageBankLoading = true;
+                        const ar = this.ytStoryImagesAspectRatio || '16:9';
+                        const res = await this.authFetch(`/images/bank?aspect_ratio=${encodeURIComponent(ar)}&kind=${encodeURIComponent(this.ytStoryKind || 'story')}`);
+                        const data = await res.json().catch(() => []);
+                        this.ytImageBankLoading = false;
+                        if (!res.ok) return;
+                        this.ytImageBankImages = (data || []).map(it => ({ ...it, selected: false }));
+                    } catch (_) {
+                        this.ytImageBankLoading = false;
+                    }
+                },
+                toggleSelectAllImageBank(v) {
+                    this.ytImageBankImages = (this.ytImageBankImages || []).map(i => ({ ...i, selected: !!v }));
+                },
+                selectedImageUrlsAll() {
+                    const a = (this.ytStoryGeneratedImages || []).filter(i => i && i.selected && i.url).map(i => i.url);
+                    const b = (this.ytImageBankImages || []).filter(i => i && i.selected && i.url).map(i => i.url);
+                    return [...a, ...b];
                 },
                 toggleSelectAllStoryImages(value) {
                     const v = !!value;
@@ -3640,9 +3720,7 @@
                     this.ytStoryVideoUrl = null;
                     try {
                         const duration = Number(this.ytStoryVideoDuration || this.ytStoryDurationMax || this.ytStoryDurationMin || 10);
-                        const selectedImages = (this.ytStoryGeneratedImages || [])
-                            .filter((it) => it && it.selected && it.url)
-                            .map((it) => it.url);
+                        const selectedImages = this.selectedImageUrlsAll();
                         const payload = {
                             mode: 'story',
                             duration: duration,
@@ -3719,9 +3797,7 @@
                     this.ytStoryShorts = [];
                     try {
                         const count = Number(this.ytStoryShortsCount || 3);
-                        const selectedImages = (this.ytStoryGeneratedImages || [])
-                            .filter((it) => it && it.selected && it.url)
-                            .map((it) => it.url);
+                        const selectedImages = this.selectedImageUrlsAll();
                         const res = await this.authFetch('/youtube/story/generate_shorts_task', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
