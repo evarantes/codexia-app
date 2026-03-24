@@ -3661,7 +3661,7 @@
                     try {
                         const selected = (this.ytStoryGeneratedImages || []).filter(i => i && i.selected && i.url);
                         if (selected.length === 0) return;
-                        const res = await this.authFetch('/images/bank/save', {
+                        const res = await this.authFetch('/youtube/images/bank/save', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -3685,7 +3685,7 @@
                     try {
                         this.ytImageBankLoading = true;
                         const ar = this.ytStoryImagesAspectRatio || '16:9';
-                        const res = await this.authFetch(`/images/bank?aspect_ratio=${encodeURIComponent(ar)}&kind=${encodeURIComponent(this.ytStoryKind || 'story')}`);
+                        const res = await this.authFetch(`/youtube/images/bank?aspect_ratio=${encodeURIComponent(ar)}&kind=${encodeURIComponent(this.ytStoryKind || 'story')}`);
                         const data = await res.json().catch(() => []);
                         this.ytImageBankLoading = false;
                         if (!res.ok) return;
