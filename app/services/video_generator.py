@@ -346,6 +346,103 @@ class VideoGenerator:
 
         return [seg for seg in segments if seg.get("duration", 0) > 0]
 
+    def _env_flag(self, name: str, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None or str(raw).strip() == "":
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _env_int(self, name: str, default: int, min_value: int = None, max_value: int = None) -> int:
+        raw = os.getenv(name)
+        try:
+            value = int(str(raw).strip()) if raw is not None and str(raw).strip() != "" else int(default)
+        except Exception:
+            value = int(default)
+        if min_value is not None:
+            value = max(min_value, value)
+        if max_value is not None:
+            value = min(max_value, value)
+        return value
+
+    def _resolve_render_options(self, target_duration=None, scene_count: int = 0):
+        mode = (os.getenv("VIDEO_RENDER_MODE") or "auto").strip().lower()
+        duration_threshold = self._env_int("VIDEO_FAST_TARGET_DURATION_SEC", 360, min_value=60, max_value=7200)
+        scene_threshold = self._env_int("VIDEO_FAST_SCENE_THRESHOLD", 12, min_value=4, max_value=200)
+        max_threads = max(1, min(8, os.cpu_count() or 2))
+
+        fast_mode = int(scene_count or 0) >= scene_threshold
+        try:
+            if target_duration is not None and float(target_duration) >= float(duration_threshold):
+                fast_mode = True
+        except Exception:
+            pass
+
+        if mode in {"quality", "full", "normal", "off", "false", "0"}:
+            fast_mode = False
+        elif mode in {"fast", "1", "true", "yes", "on"}:
+            fast_mode = True
+
+        enable_ken_burns = self._env_flag("VIDEO_ENABLE_KEN_BURNS", default=True) and not fast_mode
+        enable_transitions = self._env_flag("VIDEO_ENABLE_TRANSITIONS", default=True) and not fast_mode
+
+        fps_default = 20 if fast_mode else 24
+        fps = self._env_int("VIDEO_RENDER_FPS", fps_default, min_value=12, max_value=60)
+        if fast_mode:
+            fps = self._env_int("VIDEO_FAST_RENDER_FPS", fps, min_value=12, max_value=60)
+
+        threads_default = 2 if fast_mode else 1
+        threads = self._env_int("VIDEO_RENDER_THREADS", threads_default, min_value=1, max_value=max_threads)
+        if fast_mode:
+            threads = self._env_int("VIDEO_FAST_RENDER_THREADS", threads, min_value=1, max_value=max_threads)
+
+        crf_default = 30 if fast_mode else 28
+        crf = self._env_int("VIDEO_RENDER_CRF", crf_default, min_value=18, max_value=36)
+        if fast_mode:
+            crf = self._env_int("VIDEO_FAST_RENDER_CRF", crf, min_value=18, max_value=36)
+
+        return {
+            "fast_mode": fast_mode,
+            "enable_ken_burns": enable_ken_burns,
+            "enable_transitions": enable_transitions,
+            "fps": fps,
+            "threads": threads,
+            "crf": crf,
+        }
+
+    def _composite_overlay_on_frame(self, base_frame, overlay_arr):
+        from PIL import Image
+        import numpy as np
+
+        base_img = Image.fromarray(np.asarray(base_frame, dtype="uint8"), mode="RGB").convert("RGBA")
+        overlay_img = Image.fromarray(np.asarray(overlay_arr, dtype="uint8"), mode="RGBA")
+        base_img.alpha_composite(overlay_img)
+        return np.array(base_img.convert("RGB"))
+
+    def _concatenate_clips(self, concatenate_videoclips, clips, enable_transitions: bool = True, transition_sec: float = 0.25):
+        if not clips:
+            return None
+        if len(clips) == 1:
+            return clips[0]
+
+        if enable_transitions:
+            faded = []
+            for idx, clip in enumerate(clips):
+                if idx > 0 and hasattr(clip, "crossfadein"):
+                    try:
+                        clip = clip.crossfadein(transition_sec)
+                    except Exception:
+                        pass
+                faded.append(clip)
+            try:
+                return concatenate_videoclips(faded, method="compose", padding=-transition_sec)
+            except Exception:
+                return concatenate_videoclips(faded, method="compose")
+
+        try:
+            return concatenate_videoclips(clips, method="chain")
+        except Exception:
+            return concatenate_videoclips(clips, method="compose")
+
     def review_plan(self, plan: dict):
         if not isinstance(plan, dict):
             return plan
@@ -816,6 +913,7 @@ class VideoGenerator:
             progress_callback(0, "Iniciando composição do vídeo...")
             
         clips = []
+        aux_clips = []
         final_clip = None
         bg_music = None
         allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -919,6 +1017,8 @@ class VideoGenerator:
             else:
                 # No modo música, usamos as cenas como vieram (já quebradas por tempo)
                 scenes = raw_scenes
+
+            render_options = self._resolve_render_options(plan.get("target_duration_sec"), len(scenes))
 
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
             # Skip enrichment if music mode (handled by generator) or if images were preselected
@@ -1031,30 +1131,19 @@ class VideoGenerator:
                     if img_path and os.path.exists(img_path):
                         # Criar clip
                         clip = self._set_clip_duration(ImageClip(img_path), duration)
-                        clip = self._apply_ken_burns(clip, video_size)
+                        if render_options.get("enable_ken_burns"):
+                            clip = self._apply_ken_burns(clip, video_size)
                         clips.append(clip)
                     else:
                         raise Exception("Falha ao gerar imagem da cena musical.")
                 
                 # Concatenar clips visuais
                 if clips:
-                    transition_sec = 0.25
-                    if len(clips) > 1:
-                        faded = []
-                        for idx, c in enumerate(clips):
-                            if idx > 0 and hasattr(c, "crossfadein"):
-                                try:
-                                    c = c.crossfadein(transition_sec)
-                                except Exception:
-                                    pass
-                            faded.append(c)
-                        clips = faded
-                        try:
-                            final_video = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
-                        except Exception:
-                            final_video = concatenate_videoclips(clips, method="compose")
-                    else:
-                        final_video = concatenate_videoclips(clips, method="compose")
+                    final_video = self._concatenate_clips(
+                        concatenate_videoclips,
+                        clips,
+                        enable_transitions=render_options.get("enable_transitions", True),
+                    )
                     
                     # Ajustar áudio: Se vídeo for menor que áudio, corta áudio. Se vídeo for maior, loop ou corta vídeo.
                     # Vamos cortar o vídeo para bater com o áudio ou vice-versa.
@@ -1077,11 +1166,11 @@ class VideoGenerator:
                         
                     final_video.write_videofile(
                         output_path,
-                        fps=24,
+                        fps=render_options.get("fps", 24),
                         codec='libx264',
                         audio_codec='aac',
-                        threads=4,
-                        preset='ultrafast'
+                        threads=render_options.get("threads", 2),
+                        ffmpeg_params=["-preset", "ultrafast", "-crf", str(render_options.get("crf", 30))]
                     )
                     
                     # Cleanup
@@ -1232,18 +1321,38 @@ class VideoGenerator:
                     bg_clip = bg_clip.with_duration(scene_dur)
                 else:
                     bg_clip = bg_clip.set_duration(scene_dur)
-                bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
 
                 caption_target_chars = 120 if aspect_ratio == "16:9" else 90
                 caption_segments = self._build_caption_segments(screen_text, scene_dur, target_chars=caption_target_chars)
-                overlay_clips = []
-                for seg in caption_segments:
-                    overlay_arr = self.create_text_overlay(seg["text"], size=video_size, text_color=(255, 255, 255))
-                    overlay_clip = self._clip_from_rgba(overlay_arr, seg["duration"])
-                    overlay_clip = self._set_clip_start(overlay_clip, seg["start"])
-                    overlay_clips.append(overlay_clip)
-
-                clip_scene = CompositeVideoClip([bg_clip, *overlay_clips] if overlay_clips else [bg_clip], size=video_size)
+                if render_options.get("enable_ken_burns"):
+                    bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
+                    overlay_clips = []
+                    for seg in caption_segments:
+                        overlay_arr = self.create_text_overlay(seg["text"], size=video_size, text_color=(255, 255, 255))
+                        overlay_clip = self._clip_from_rgba(overlay_arr, seg["duration"])
+                        overlay_clip = self._set_clip_start(overlay_clip, seg["start"])
+                        overlay_clips.append(overlay_clip)
+                    aux_clips.extend(overlay_clips)
+                    clip_scene = CompositeVideoClip([bg_clip, *overlay_clips] if overlay_clips else [bg_clip], size=video_size)
+                else:
+                    scene_segments = caption_segments or [{"text": "", "start": 0.0, "duration": scene_dur}]
+                    segment_clips = []
+                    for seg in scene_segments:
+                        seg_duration = max(0.25, float(seg.get("duration") or 0.25))
+                        seg_text = (seg.get("text") or "").strip()
+                        if seg_text:
+                            overlay_arr = self.create_text_overlay(seg_text, size=video_size, text_color=(255, 255, 255))
+                            composed_frame = self._composite_overlay_on_frame(bg_frame, overlay_arr)
+                        else:
+                            composed_frame = bg_frame
+                        segment_clips.append(self._set_clip_duration(ImageClip(composed_frame), seg_duration))
+                    if len(segment_clips) > 1:
+                        aux_clips.extend(segment_clips)
+                    clip_scene = self._concatenate_clips(
+                        concatenate_videoclips,
+                        segment_clips,
+                        enable_transitions=False,
+                    )
                 
                 if audio_clip_scene:
                     if hasattr(clip_scene, "with_audio"):
@@ -1290,23 +1399,11 @@ class VideoGenerator:
             clips.append(clip_end)
             
             # Concatenar todos
-            transition_sec = 0.25
-            if len(clips) > 1:
-                faded = []
-                for idx, c in enumerate(clips):
-                    if idx > 0 and hasattr(c, "crossfadein"):
-                        try:
-                            c = c.crossfadein(transition_sec)
-                        except Exception:
-                            pass
-                    faded.append(c)
-                clips = faded
-                try:
-                    final_clip = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
-                except Exception:
-                    final_clip = concatenate_videoclips(clips, method="compose")
-            else:
-                final_clip = concatenate_videoclips(clips, method="compose")
+            final_clip = self._concatenate_clips(
+                concatenate_videoclips,
+                clips,
+                enable_transitions=render_options.get("enable_transitions", True),
+            )
             
             # 4. Adicionar Música de Fundo
             if progress_callback:
@@ -1446,8 +1543,12 @@ class VideoGenerator:
             # threads=1 + preset ultrafast para reduzir memória e tempo (evita OOM no Render)
             print(f"Renderizando vídeo para: {output_path}")
             final_clip.write_videofile(
-                output_path, fps=24, codec="libx264", audio_codec="aac", threads=1,
-                ffmpeg_params=["-preset", "ultrafast"],
+                output_path,
+                fps=render_options.get("fps", 24),
+                codec="libx264",
+                audio_codec="aac",
+                threads=render_options.get("threads", 1),
+                ffmpeg_params=["-preset", "ultrafast", "-crf", str(render_options.get("crf", 28))],
                 **logger_kw
             )
             
@@ -1474,6 +1575,13 @@ class VideoGenerator:
                     try:
                         clip.close()
                         if clip.audio:
+                            clip.audio.close()
+                    except:
+                        pass
+                for clip in aux_clips:
+                    try:
+                        clip.close()
+                        if getattr(clip, "audio", None):
                             clip.audio.close()
                     except:
                         pass

@@ -670,6 +670,7 @@ class VideoFactory:
         clips = []
         final_video = None
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
+        render_options = self.video_gen._resolve_render_options(getattr(video, "duration_sec", None), len(scenes))
         
         try:
             for scene in scenes:
@@ -684,32 +685,21 @@ class VideoFactory:
                     img_clip = self._clip_resize(img_clip, (1280, 720))  # 720p = render ~2x mais rápido
                     img_clip = self._clip_with_duration(img_clip, duration)
                     img_clip = self._clip_with_audio(img_clip, audio_clip)
-                    try:
-                        img_clip = self.video_gen._apply_ken_burns(img_clip, (1280, 720))
-                    except Exception:
-                        pass
+                    if render_options.get("enable_ken_burns"):
+                        try:
+                            img_clip = self.video_gen._apply_ken_burns(img_clip, (1280, 720))
+                        except Exception:
+                            pass
                     clips.append(img_clip)
 
             if not clips:
                 raise Exception("Sem clips para renderizar (áudio/imagem ausentes).")
 
-            transition_sec = 0.25
-            if len(clips) > 1:
-                faded = []
-                for idx, c in enumerate(clips):
-                    if idx > 0 and hasattr(c, "crossfadein"):
-                        try:
-                            c = c.crossfadein(transition_sec)
-                        except Exception:
-                            pass
-                    faded.append(c)
-                clips = faded
-                try:
-                    final_video = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
-                except Exception:
-                    final_video = concatenate_videoclips(clips, method="compose")
-            else:
-                final_video = concatenate_videoclips(clips, method="compose")
+            final_video = self.video_gen._concatenate_clips(
+                concatenate_videoclips,
+                clips,
+                enable_transitions=render_options.get("enable_transitions", True),
+            )
 
             target_duration = getattr(video, "duration_sec", None)
             if target_duration:
@@ -866,8 +856,13 @@ class VideoFactory:
             try:
                 kw = {"logger": write_logger} if write_logger else {}
                 final_video.write_videofile(
-                    output_path, fps=20, codec="libx264", audio_codec="aac",
-                    threads=4, ffmpeg_params=["-preset", "ultrafast", "-crf", "28"], **kw
+                    output_path,
+                    fps=render_options.get("fps", 20),
+                    codec="libx264",
+                    audio_codec="aac",
+                    threads=render_options.get("threads", 4),
+                    ffmpeg_params=["-preset", "ultrafast", "-crf", str(render_options.get("crf", 28))],
+                    **kw
                 )
             finally:
                 stop_event.set()
