@@ -409,6 +409,16 @@ class VideoGenerator:
             "crf": crf,
         }
 
+    def _should_enrich_prompts(self, render_options: dict, scene_count: int) -> bool:
+        if self._env_flag("VIDEO_FORCE_ENRICH_PROMPTS", default=False):
+            return True
+        if self._env_flag("VIDEO_DISABLE_ENRICH_PROMPTS", default=False):
+            return False
+        if not render_options.get("fast_mode"):
+            return True
+        max_fast_scene_enrichment = self._env_int("VIDEO_FAST_MAX_ENRICH_SCENES", 8, min_value=0, max_value=200)
+        return int(scene_count or 0) <= max_fast_scene_enrichment
+
     def _composite_overlay_on_frame(self, base_frame, overlay_arr):
         from PIL import Image
         import numpy as np
@@ -442,6 +452,16 @@ class VideoGenerator:
             return concatenate_videoclips(clips, method="chain")
         except Exception:
             return concatenate_videoclips(clips, method="compose")
+
+    def _audio_cache_key(self, text: str, lang: str, voice_style=None, voice_gender=None) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "")).strip()
+        raw = "|".join([
+            normalized,
+            str(lang or "pt").strip().lower(),
+            str(voice_style or "").strip().lower(),
+            str(voice_gender or "").strip().lower(),
+        ])
+        return raw
 
     def review_plan(self, plan: dict):
         if not isinstance(plan, dict):
@@ -919,6 +939,8 @@ class VideoGenerator:
         allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
         image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
         image_cache = {}
+        audio_cache = {}
+        overlay_frame_cache = {}
         cached_temp_paths = set()
         fallback_bg_path = None
         use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -1024,7 +1046,8 @@ class VideoGenerator:
             # Skip enrichment if music mode (handled by generator) or if images were preselected
             selected_raw_pre = plan.get("selected_images") or plan.get("images") or []
             has_preselected_images = isinstance(selected_raw_pre, list) and any(isinstance(x, str) and x.strip() for x in selected_raw_pre)
-            if self.ai_service and scenes and not music_file_path and not has_preselected_images:
+            should_enrich_prompts = self._should_enrich_prompts(render_options, len(scenes))
+            if self.ai_service and scenes and not music_file_path and not has_preselected_images and should_enrich_prompts:
                 try:
                     enriched = self.ai_service.enrich_scenes_with_image_prompts({"title": title, "scenes": scenes})
                     if enriched and enriched.get("scenes"):
@@ -1201,7 +1224,12 @@ class VideoGenerator:
             if len(clean_title) > 100:
                 clean_title = clean_title[:97] + "..."
 
-            title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
+            title_audio_key = self._audio_cache_key(clean_title, "pt", voice_style=voice_style, voice_gender=voice_gender)
+            title_audio_path = audio_cache.get(title_audio_key)
+            if not title_audio_path or not os.path.exists(title_audio_path):
+                title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
+                if title_audio_path and os.path.exists(title_audio_path):
+                    audio_cache[title_audio_key] = title_audio_path
             
             start_bg_path = selected_primary_path if selected_primary_path and os.path.exists(selected_primary_path) else None
             if not start_bg_path:
@@ -1296,7 +1324,12 @@ class VideoGenerator:
                 bg_color = bg_colors[i % len(bg_colors)]
                 
                 # Gerar Audio da cena
-                audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
+                audio_key = self._audio_cache_key(clean_text, "pt", voice_style=voice_style, voice_gender=voice_gender)
+                audio_path = audio_cache.get(audio_key)
+                if not audio_path or not os.path.exists(audio_path):
+                    audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
+                    if audio_path and os.path.exists(audio_path):
+                        audio_cache[audio_key] = audio_path
                 
                 screen_text = ""
                 if isinstance(scene, dict):
@@ -1341,8 +1374,12 @@ class VideoGenerator:
                         seg_duration = max(0.25, float(seg.get("duration") or 0.25))
                         seg_text = (seg.get("text") or "").strip()
                         if seg_text:
-                            overlay_arr = self.create_text_overlay(seg_text, size=video_size, text_color=(255, 255, 255))
-                            composed_frame = self._composite_overlay_on_frame(bg_frame, overlay_arr)
+                            cache_key = (seg_text, video_size)
+                            composed_frame = overlay_frame_cache.get(cache_key)
+                            if composed_frame is None:
+                                overlay_arr = self.create_text_overlay(seg_text, size=video_size, text_color=(255, 255, 255))
+                                composed_frame = self._composite_overlay_on_frame(bg_frame, overlay_arr)
+                                overlay_frame_cache[cache_key] = composed_frame
                         else:
                             composed_frame = bg_frame
                         segment_clips.append(self._set_clip_duration(ImageClip(composed_frame), seg_duration))
@@ -1379,7 +1416,13 @@ class VideoGenerator:
                 progress_callback(85, "Criando slide final...")
                 
             end_text = "Inscreva-se no Canal!\nLink na Bio."
-            audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.", voice_style=voice_style, voice_gender=voice_gender)
+            end_audio_text = "Inscreva-se no canal e ative o sininho."
+            end_audio_key = self._audio_cache_key(end_audio_text, "pt", voice_style=voice_style, voice_gender=voice_gender)
+            audio_end_path = audio_cache.get(end_audio_key)
+            if not audio_end_path or not os.path.exists(audio_end_path):
+                audio_end_path = self.generate_audio(end_audio_text, voice_style=voice_style, voice_gender=voice_gender)
+                if audio_end_path and os.path.exists(audio_end_path):
+                    audio_cache[end_audio_key] = audio_end_path
             
             end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
