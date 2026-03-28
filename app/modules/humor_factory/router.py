@@ -57,6 +57,11 @@ class HumorReviewRequest(BaseModel):
     publish_now: bool = False
 
 
+class HumorScriptPreviewRequest(BaseModel):
+    script_text: str
+    target_minutes: int = Field(default=10, ge=1, le=60)
+
+
 def _parse_json_list(value: Optional[str]) -> List[str]:
     if not value:
         return []
@@ -242,6 +247,16 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
         db.commit()
         background_tasks.add_task(get_service().generate_project_video, project.id)
     return _project_to_dict(project)
+
+
+@router.post("/script/preview")
+def preview_script_blocks(payload: HumorScriptPreviewRequest):
+    blocks = get_service().preview_script_blocks(payload.script_text, payload.target_minutes)
+    return {
+        "count": len(blocks),
+        "blocks": blocks,
+        "target_minutes": int(payload.target_minutes or 10),
+    }
 
 
 @router.get("/projects")

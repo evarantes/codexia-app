@@ -3,6 +3,7 @@ import json
 import math
 import os
 import random
+import re
 import traceback
 import uuid
 import wave
@@ -44,21 +45,95 @@ class HumorFactoryService:
         jokes = [ln for ln in lines if ln and len(ln) >= 8]
         return jokes
 
-    def _parse_manual_script_blocks(self, raw: Optional[str]) -> List[str]:
+    def _count_words(self, text: str) -> int:
+        normalized = " ".join(str(text or "").split()).strip()
+        if not normalized:
+            return 0
+        return len([w for w in normalized.split(" ") if w.strip()])
+
+    def _parse_manual_script_blocks(self, raw: Optional[str], target_minutes: int = 10) -> List[str]:
         text = str(raw or "").replace("\r\n", "\n").strip()
         if not text:
             return []
-        blocks = [blk.strip() for blk in text.split("\n\n") if blk and blk.strip()]
-        if not blocks:
-            lines = [ln.strip() for ln in text.split("\n") if ln and ln.strip()]
-            if lines:
-                blocks = lines
-        clean_blocks = []
-        for block in blocks:
+
+        explicit_blocks = [blk.strip() for blk in re.split(r"\n{2,}", text) if blk and blk.strip()]
+        clean_explicit = []
+        for block in explicit_blocks:
             normalized = " ".join(block.split()).strip()
             if len(normalized) >= 20:
+                clean_explicit.append(normalized[:1200])
+        if len(clean_explicit) >= 2:
+            return clean_explicit
+
+        normalized_text = " ".join(text.split()).strip()
+        if not normalized_text:
+            return []
+
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", normalized_text) if s and s.strip()]
+        if not sentences:
+            sentences = [normalized_text]
+
+        try:
+            minutes = max(1, int(target_minutes or 10))
+        except Exception:
+            minutes = 10
+
+        total_words = sum(self._count_words(sentence) for sentence in sentences)
+        target_blocks = max(4, min(32, minutes * 2))
+        target_words_per_block = max(35, min(120, int(total_words / max(1, target_blocks)) or 0))
+        min_words_per_block = max(18, int(target_words_per_block * 0.55))
+
+        blocks = []
+        buffer = []
+        buffer_words = 0
+
+        for sentence in sentences:
+            s_words = self._count_words(sentence)
+            if buffer and (buffer_words + s_words) > target_words_per_block and buffer_words >= min_words_per_block:
+                blocks.append(" ".join(buffer).strip())
+                buffer = [sentence]
+                buffer_words = s_words
+                continue
+            buffer.append(sentence)
+            buffer_words += s_words
+
+        if buffer:
+            blocks.append(" ".join(buffer).strip())
+
+        merged_blocks = []
+        for block in blocks:
+            word_count = self._count_words(block)
+            if merged_blocks and word_count < min_words_per_block:
+                merged_blocks[-1] = f"{merged_blocks[-1]} {block}".strip()
+            else:
+                merged_blocks.append(block)
+
+        clean_blocks = []
+        for block in merged_blocks:
+            normalized = " ".join(block.split()).strip()
+            if not normalized:
+                continue
+            if self._count_words(normalized) > max(80, target_words_per_block * 2):
+                words = normalized.split()
+                chunk_size = max(40, target_words_per_block)
+                for start in range(0, len(words), chunk_size):
+                    chunk = " ".join(words[start:start + chunk_size]).strip()
+                    if chunk:
+                        clean_blocks.append(chunk[:1200])
+            elif len(normalized) >= 20:
                 clean_blocks.append(normalized[:1200])
+
         return clean_blocks
+
+    def preview_script_blocks(self, raw: Optional[str], target_minutes: int = 10) -> dict:
+        blocks = self._parse_manual_script_blocks(raw, target_minutes=target_minutes)
+        words = sum(self._count_words(block) for block in blocks)
+        return {
+            "blocks": blocks,
+            "count": len(blocks),
+            "word_count": words,
+            "target_minutes": max(1, int(target_minutes or 10)),
+        }
 
     def _fallback_jokes(self, theme: str, count: int) -> List[str]:
         base = [
