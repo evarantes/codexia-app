@@ -44,6 +44,22 @@ class HumorFactoryService:
         jokes = [ln for ln in lines if ln and len(ln) >= 8]
         return jokes
 
+    def _parse_manual_script_blocks(self, raw: Optional[str]) -> List[str]:
+        text = str(raw or "").replace("\r\n", "\n").strip()
+        if not text:
+            return []
+        blocks = [blk.strip() for blk in text.split("\n\n") if blk and blk.strip()]
+        if not blocks:
+            lines = [ln.strip() for ln in text.split("\n") if ln and ln.strip()]
+            if lines:
+                blocks = lines
+        clean_blocks = []
+        for block in blocks:
+            normalized = " ".join(block.split()).strip()
+            if len(normalized) >= 20:
+                clean_blocks.append(normalized[:1200])
+        return clean_blocks
+
     def _fallback_jokes(self, theme: str, count: int) -> List[str]:
         base = [
             f"No tema {theme}, eu sentei no boteco e falei que ia pedir só um café. Quando vi, já tava ouvindo a história da cidade inteira e saí com dois convites de casamento.",
@@ -411,9 +427,12 @@ Retorne APENAS JSON válido:
                 catchphrase_gallery.append(catchphrase_message)
 
             manual = self._parse_manual_jokes(project.manual_jokes_text)
+            script_blocks = self._parse_manual_script_blocks(getattr(project, "manual_script_text", None))
             source = (project.joke_source or "ai").strip().lower()
             jokes = []
-            if source == "manual":
+            if source == "script":
+                jokes = script_blocks[:]
+            elif source == "manual":
                 jokes = manual[:]
             elif source == "mixed":
                 jokes = manual[:]
@@ -435,7 +454,7 @@ Retorne APENAS JSON válido:
                     catchphrases=catchphrase_gallery,
                 )
 
-            if len(jokes) < needed_jokes:
+            if source != "script" and len(jokes) < needed_jokes:
                 # Completa ciclando sem baixar qualidade do ritmo
                 src = jokes[:] if jokes else self._fallback_jokes(themes_label, needed_jokes)
                 idx = 0
@@ -445,8 +464,14 @@ Retorne APENAS JSON válido:
 
             jokes = [self._normalize_standup_joke(x) for x in jokes]
             jokes = [x for x in jokes if x]
+            if source == "script":
+                jokes = script_blocks[:]
+                jokes = [x for x in jokes if x]
+            if source == "script" and not jokes:
+                raise RuntimeError("Informe um roteiro para gerar o vídeo na Fábrica de Humor.")
             project.jokes_json = json.dumps(jokes, ensure_ascii=False)
-            self._set_progress(db, project, 12, f"{len(jokes)} blocos de stand-up preparados (temas: {themes_label}).")
+            mode_label = "blocos de roteiro" if source == "script" else "blocos de stand-up"
+            self._set_progress(db, project, 12, f"{len(jokes)} {mode_label} preparados (temas: {themes_label}).")
 
             video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
             avatar_path, avatar_source = self._resolve_avatar_path(
@@ -490,7 +515,8 @@ Retorne APENAS JSON válido:
 
             approx_scene_seconds = max(10, int(target_seconds / max(1, len(jokes))))
             catchphrase_every_jokes = max(1, int(round(180 / max(10, approx_scene_seconds))))
-            self._append_log(project, f"Bordão intermediário configurado para ~1x a cada {catchphrase_every_jokes} blocos.")
+            if source != "script":
+                self._append_log(project, f"Bordão intermediário configurado para ~1x a cada {catchphrase_every_jokes} blocos.")
             db.commit()
 
             def add_audio_scene(text_on_screen: str, audio_path: str, label: str, animate_mouth: bool = True) -> bool:
@@ -550,15 +576,24 @@ Retorne APENAS JSON válido:
             )
 
             for idx, joke in enumerate(jokes, start=1):
-                mid_catchphrase = ""
-                if idx % catchphrase_every_jokes == 0:
-                    mid_catchphrase = pick_catchphrase()
-                narration = self._build_standup_narration(joke, catchphrase=mid_catchphrase)
-                add_talking_scene(
-                    text_on_screen=joke,
-                    narration_text=narration,
-                    label=f"stand-up {idx}",
-                )
+                if source == "script":
+                    narration = joke.strip()
+                    text_on_screen = narration[:280]
+                    add_talking_scene(
+                        text_on_screen=text_on_screen,
+                        narration_text=narration,
+                        label=f"roteiro {idx}",
+                    )
+                else:
+                    mid_catchphrase = ""
+                    if idx % catchphrase_every_jokes == 0:
+                        mid_catchphrase = pick_catchphrase()
+                    narration = self._build_standup_narration(joke, catchphrase=mid_catchphrase)
+                    add_talking_scene(
+                        text_on_screen=joke,
+                        narration_text=narration,
+                        label=f"stand-up {idx}",
+                    )
 
             closing_text = self._normalize_standup_joke(closing_message) or "Valeu demais pela companhia, vocês são incríveis."
             closing_catchphrase = pick_catchphrase(force=True) or opening_catchphrase
@@ -622,11 +657,13 @@ Retorne APENAS JSON válido:
                     {
                         "source": "humor_factory",
                         "humor_project_id": project.id,
+                        "joke_source": source,
                         "opening_message": opening_message,
                         "catchphrase_message": catchphrase_message,
                         "catchphrases": catchphrase_gallery,
                         "closing_message": closing_message,
                         "jokes": jokes,
+                        "manual_script_text": getattr(project, "manual_script_text", None),
                     },
                     ensure_ascii=False,
                 ),

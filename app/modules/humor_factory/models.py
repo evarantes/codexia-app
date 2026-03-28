@@ -29,6 +29,7 @@ class HumorProject(Base):
     theme = Column(String, nullable=False)
     joke_source = Column(String, nullable=False, default="ai")  # ai | manual | mixed
     manual_jokes_text = Column(Text, nullable=True)
+    script_text = Column(Text, nullable=True)
     jokes_json = Column(Text, nullable=True)  # JSON array
     avatar_override_path = Column(String, nullable=True)
     opening_message = Column(Text, nullable=True)

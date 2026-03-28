@@ -131,16 +131,22 @@
                     <textarea v-model="newProject.closing_message" rows="2" class="w-full border rounded p-2 mt-1" placeholder="Ex: Curta, compartilhe e até a próxima piada!"></textarea>
                 </div>
                 <div>
-                    <label class="text-sm font-semibold text-gray-700">Fonte das piadas</label>
+                    <label class="text-sm font-semibold text-gray-700">Modo de criação</label>
                     <select v-model="newProject.joke_source" class="w-full border rounded p-2 mt-1">
                         <option value="ai">IA cria piadas exclusivas</option>
                         <option value="manual">Inserir piadas já existentes</option>
                         <option value="mixed">Misturar minhas piadas + IA</option>
+                        <option value="script">Usar um roteiro pronto</option>
                     </select>
                 </div>
-                <div v-if="newProject.joke_source !== 'ai'">
+                <div v-if="newProject.joke_source === 'manual' || newProject.joke_source === 'mixed'">
                     <label class="text-sm font-semibold text-gray-700">Piadas (uma por linha)</label>
                     <textarea v-model="newProject.manual_jokes_text" class="w-full border rounded p-2 mt-1" rows="5" placeholder="Digite as piadas aqui, uma em cada linha."></textarea>
+                </div>
+                <div v-if="newProject.joke_source === 'script'">
+                    <label class="text-sm font-semibold text-gray-700">Roteiro do vídeo</label>
+                    <textarea v-model="newProject.script_text" class="w-full border rounded p-2 mt-1" rows="8" placeholder="Cole ou digite o roteiro completo aqui. Você pode separar blocos por linhas em branco para ajudar a divisão em cenas."></textarea>
+                    <p class="text-xs text-gray-500 mt-1">O sistema vai narrar o roteiro e criar o vídeo com base nesse texto.</p>
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -241,6 +247,7 @@ createApp({
                 themes: ["Piadas de Português"],
                 joke_source: "ai",
                 manual_jokes_text: "",
+                script_text: "",
                 avatar_override_path: "",
                 opening_message: "",
                 catchphrase_message: "",
@@ -405,7 +412,12 @@ createApp({
                 const custom = (this.customTheme || "").trim();
                 if (custom) themes.push(custom);
                 const uniqThemes = [...new Set(themes.map(t => String(t).trim()).filter(Boolean))];
-                if (uniqThemes.length === 0) throw new Error("Selecione pelo menos um tema.");
+                if (this.newProject.joke_source !== 'script' && uniqThemes.length === 0) {
+                    throw new Error("Selecione pelo menos um tema.");
+                }
+                if (this.newProject.joke_source === 'script' && !String(this.newProject.script_text || '').trim()) {
+                    throw new Error("Informe um roteiro para gerar o vídeo.");
+                }
                 const catchphrases = this.channelCatchphrases.map(x => String(x).trim()).filter(Boolean);
                 const payload = {
                     ...this.newProject,
