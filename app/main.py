@@ -1,4 +1,5 @@
 from pathlib import Path
+import threading
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +17,7 @@ import os
 from contextlib import asynccontextmanager
 from app.services.monitor_service import monitor_service
 from sqlalchemy import text, inspect
-from app.models import User
+from app.models import User, PersistentTask
 from app.routers.auth import get_password_hash
 
 # Carregar variáveis de ambiente
@@ -398,6 +399,18 @@ async def lifespan(app: FastAPI):
             from app.models import ScheduledVideo, Job, Video
             from sqlalchemy import func
             from datetime import datetime as dt, timedelta
+            from app.modules.humor_factory.models import HumorProject
+            from app.modules.humor_factory.service import HumorFactoryService
+            from app.routers.youtube import (
+                process_jobs_background,
+                process_story_images_generation,
+                process_story_shorts_generation,
+                process_create_shorts_from_scheduled_video,
+                process_video_generation,
+                StoryImagesRequest,
+                StoryShortsRequest,
+                VideoRequest,
+            )
             db = SessionLocal()
             try:
                 stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
@@ -421,6 +434,98 @@ async def lifespan(app: FastAPI):
                         if v and (v.status or "").upper() not in ("PAUSED", "CANCELLED", "CANCELED"):
                             v.status = "queued"
                     db.commit()
+
+                # Reenfileira jobs pendentes da produção persistida.
+                pending_jobs = db.query(Job).filter(Job.status == "pending").count()
+                if pending_jobs:
+                    print(f"Startup Recovery: Found {pending_jobs} pending production Jobs. Triggering background processor.")
+                    try:
+                        threading.Thread(target=process_jobs_background, daemon=True).start()
+                    except Exception as e:
+                        print(f"Startup Job Queue Recovery Error: {e}")
+
+                # Retoma tarefas persistidas do YouTube/story que ainda não concluíram.
+                recoverable_tasks = (
+                    db.query(PersistentTask)
+                    .filter(PersistentTask.status.in_(["pending", "processing"]))
+                    .all()
+                )
+                if recoverable_tasks:
+                    print(f"Startup Recovery: Found {len(recoverable_tasks)} persistent tasks to resume.")
+                for task in recoverable_tasks:
+                    try:
+                        payload = {}
+                        if task.payload_json:
+                            payload = json.loads(task.payload_json) or {}
+                        kind = (task.kind or "").strip().lower()
+                        task.status = "processing"
+                        if not task.started_at:
+                            task.started_at = dt.utcnow()
+                        task.message = task.message or "Retomando tarefa após reinício..."
+                        db.commit()
+
+                        if kind == "video_generate":
+                            request = VideoRequest(**payload)
+                            threading.Thread(
+                                target=process_video_generation,
+                                args=(request, task.task_id),
+                                daemon=True,
+                            ).start()
+                        elif kind == "story_images":
+                            request = StoryImagesRequest(**payload)
+                            threading.Thread(
+                                target=process_story_images_generation,
+                                args=(request, task.task_id),
+                                daemon=True,
+                            ).start()
+                        elif kind == "story_shorts":
+                            request = StoryShortsRequest(**payload)
+                            threading.Thread(
+                                target=process_story_shorts_generation,
+                                args=(request, task.task_id),
+                                daemon=True,
+                            ).start()
+                        elif kind == "scheduled_shorts":
+                            video_id = int((payload or {}).get("video_id") or 0)
+                            task_payload = (payload or {}).get("payload") or {}
+                            if video_id > 0:
+                                threading.Thread(
+                                    target=process_create_shorts_from_scheduled_video,
+                                    args=(video_id, task_payload, task.task_id),
+                                    daemon=True,
+                                ).start()
+                        else:
+                            task.status = "failed"
+                            task.message = f"Tarefa não suportada para retomada: {task.kind}"
+                            task.completed_at = dt.utcnow()
+                            db.commit()
+                    except Exception as e:
+                        try:
+                            task.status = "failed"
+                            task.message = f"Falha ao retomar tarefa: {e}"
+                            task.completed_at = dt.utcnow()
+                            db.commit()
+                        except Exception:
+                            pass
+
+                # Retoma projetos de humor que ficaram enfileirados ou gerando.
+                humor_projects = (
+                    db.query(HumorProject)
+                    .filter(HumorProject.status.in_(["queued", "generating"]))
+                    .all()
+                )
+                if humor_projects:
+                    print(f"Startup Recovery: Found {len(humor_projects)} humor projects to resume.")
+                humor_service = HumorFactoryService()
+                for project in humor_projects:
+                    try:
+                        threading.Thread(
+                            target=humor_service.generate_project_video,
+                            args=(project.id,),
+                            daemon=True,
+                        ).start()
+                    except Exception as e:
+                        print(f"Startup Humor Recovery Error (project {project.id}): {e}")
             finally:
                 db.close()
         except Exception as e:

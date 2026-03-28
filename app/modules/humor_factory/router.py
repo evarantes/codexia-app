@@ -228,6 +228,10 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
     db.refresh(project)
 
     if payload.start_immediately:
+        project.status = "queued"
+        project.status_message = "Projeto salvo e reenfileirado para geração."
+        project.updated_at = datetime.now()
+        db.commit()
         background_tasks.add_task(get_service().generate_project_video, project.id)
     return _project_to_dict(project)
 

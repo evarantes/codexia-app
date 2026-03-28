@@ -326,3 +326,21 @@ class Job(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     video = relationship("Video", back_populates="jobs")
+
+
+class PersistentTask(Base):
+    __tablename__ = "persistent_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String, unique=True, index=True, nullable=False)
+    kind = Column(String, nullable=False, default="generic")  # video_generate, story_images, story_shorts, scheduled_shorts
+    status = Column(String, default="pending")  # pending, processing, completed, failed
+    progress = Column(Integer, default=0)
+    message = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    error_text = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

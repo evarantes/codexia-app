@@ -105,6 +105,34 @@ def process_jobs_background():
                 pass
         db.close()
 
+
+def _resume_persistent_youtube_task(task_id: str, kind: str, payload: Dict[str, Any]) -> bool:
+    kind = (kind or "").strip().lower()
+    if not task_id:
+        return False
+    try:
+        if kind == "story_images":
+            request = StoryImagesRequest(**(payload or {}))
+            process_story_images_generation(request, task_id)
+            return True
+        if kind == "story_shorts":
+            request = StoryShortsRequest(**(payload or {}))
+            process_story_shorts_generation(request, task_id)
+            return True
+        if kind == "scheduled_shorts":
+            video_id = int((payload or {}).get("video_id") or 0)
+            req_payload = (payload or {}).get("request_payload") or {}
+            process_create_shorts_from_scheduled_video(video_id, req_payload, task_id)
+            return video_id > 0
+        if kind == "video_generate":
+            request = VideoRequest(**(payload or {}))
+            process_video_generation(request, task_id)
+            return True
+    except Exception as e:
+        update_task(task_id, status="failed", message=f"Erro ao retomar tarefa persistida: {str(e)}")
+        return False
+    return False
+
 def _resolve_video_file_path(raw_path: Optional[str]) -> str:
     """
     Resolve path robusto para arquivos de vídeo, cobrindo:
@@ -1546,7 +1574,7 @@ def delete_story_draft(draft_id: int, db: Session = Depends(get_db)):
 
 @router.post("/story/generate_images_task")
 def generate_story_images_task(request: StoryImagesRequest, background_tasks: BackgroundTasks):
-    task_id = create_task()
+    task_id = create_task(kind="story_images", payload=request.model_dump())
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de imagens...")
     background_tasks.add_task(process_story_images_generation, request, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
@@ -1570,7 +1598,7 @@ def process_story_images_generation(request: StoryImagesRequest, task_id: str):
 
 @router.post("/story/generate_shorts_task")
 def generate_story_shorts_task(request: StoryShortsRequest, background_tasks: BackgroundTasks):
-    task_id = create_task()
+    task_id = create_task(kind="story_shorts", payload=request.model_dump())
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...")
     background_tasks.add_task(process_story_shorts_generation, request, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
@@ -1600,13 +1628,16 @@ def create_shorts_from_scheduled_task(video_id: int, request: CreateShortsFromSc
     if (video.video_type or "video").strip().lower() != "video":
         raise HTTPException(status_code=400, detail="Apenas vídeos longos (não-shorts) podem gerar shorts.")
 
-    task_id = create_task()
-    update_task(task_id, status="processing", progress=0, message="Iniciando criação de shorts a partir do vídeo...")
     payload = {
         "count": int(getattr(request, "count", 3) or 3),
         "voice_style": (getattr(request, "voice_style", None) or None),
         "voice_gender": (getattr(request, "voice_gender", None) or None),
     }
+    task_id = create_task(
+        kind="scheduled_shorts",
+        payload={"video_id": video_id, "payload": payload},
+    )
+    update_task(task_id, status="processing", progress=0, message="Iniciando criação de shorts a partir do vídeo...")
     background_tasks.add_task(process_create_shorts_from_scheduled_video, video_id, payload, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
 
@@ -2694,7 +2725,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     """Gera um vídeo motivacional e opcionalmente faz upload"""
     
     # Cria ID da tarefa
-    task_id = create_task()
+    task_id = create_task(kind="video_generate", payload=request.model_dump())
     
     t = threading.Thread(target=process_video_generation, args=(request, task_id), daemon=True)
     t.start()
