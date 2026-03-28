@@ -722,7 +722,15 @@ class AIContentGenerator:
 
             # Limpeza básica de markdown json
             content = content.replace("```json", "").replace("```", "")
-            return json.loads(content)
+            data = json.loads(content)
+            if isinstance(data, dict):
+                try:
+                    target_sec = int(duration_minutes) * 60
+                except Exception:
+                    target_sec = 0
+                if target_sec > 0 and not data.get("target_duration_sec"):
+                    data["target_duration_sec"] = target_sec
+            return data
         except Exception as e:
             print(f"Erro ao gerar roteiro motivacional: {e}")
             return self._mock_response(topic, "motivational_long", error=str(e), duration=duration_minutes)
@@ -731,7 +739,7 @@ class AIContentGenerator:
         """Estrutura um texto existente em formato de roteiro de vídeo"""
         self._load_config()
         if not self.openrouter_key:
-            return self._mock_response("História do Usuário", "motivational_long")
+            return self._mock_response("História do Usuário", "motivational_long", duration=duration_minutes)
 
         prompt = f"""
         Atue como um Editor de Vídeo Profissional.
@@ -771,10 +779,18 @@ class AIContentGenerator:
                  raise Exception("Resposta vazia da IA")
 
             content = content.replace("```json", "").replace("```", "")
-            return json.loads(content)
+            data = json.loads(content)
+            if isinstance(data, dict):
+                try:
+                    target_sec = int(duration_minutes) * 60
+                except Exception:
+                    target_sec = 0
+                if target_sec > 0 and not data.get("target_duration_sec"):
+                    data["target_duration_sec"] = target_sec
+            return data
         except Exception as e:
             print(f"Erro ao estruturar roteiro do texto: {e}")
-            return self._mock_response("História do Usuário", "motivational_long", error=str(e))
+            return self._mock_response("História do Usuário", "motivational_long", error=str(e), duration=duration_minutes)
 
     def generate_story_or_devotional_text(
         self,
@@ -1686,12 +1702,19 @@ class AIContentGenerator:
                 
             scenes.append({"text": "Acredite em si mesmo e conquiste seus sonhos.", "image_prompt": "Lion looking at horizon"})
 
-            return {
+            data = {
                 "title": f"Motivação: {title} (Vídeo Épico)",
                 "description": "Vídeo motivacional gerado automaticamente.",
                 "scenes": scenes,
                 "music_mood": "epic"
             }
+            try:
+                target_sec = int(duration) * 60 if duration else 0
+            except Exception:
+                target_sec = 0
+            if target_sec > 0:
+                data["target_duration_sec"] = target_sec
+            return data
         else:
             return base_msg + f"🎬 [Simulação] Roteiro para '{title}'..."
 

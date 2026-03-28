@@ -239,6 +239,113 @@ class VideoGenerator:
             cap = t[:180].rstrip()
         return cap
 
+    def _split_text_chunks(self, text: str, target_chars: int = 240, min_chars: int = 90):
+        normalized = re.sub(r"\s+", " ", (text or "")).strip()
+        if not normalized:
+            return []
+
+        try:
+            target_chars = int(target_chars or 240)
+        except Exception:
+            target_chars = 240
+        target_chars = max(80, min(800, target_chars))
+        min_chars = max(30, min(target_chars, int(min_chars or max(40, target_chars * 0.4))))
+
+        sentence_parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", normalized) if p and p.strip()]
+        if not sentence_parts:
+            sentence_parts = [normalized]
+
+        atomic_chunks = []
+        for part in sentence_parts:
+            if len(part) <= target_chars:
+                atomic_chunks.append(part)
+                continue
+
+            words = [w for w in part.split() if w]
+            buf = ""
+            for word in words:
+                candidate = word if not buf else f"{buf} {word}"
+                if len(candidate) <= target_chars:
+                    buf = candidate
+                    continue
+
+                if buf:
+                    atomic_chunks.append(buf.strip())
+                    buf = ""
+
+                if len(word) <= target_chars:
+                    buf = word
+                    continue
+
+                remaining = word
+                while len(remaining) > target_chars:
+                    atomic_chunks.append(remaining[:target_chars].strip())
+                    remaining = remaining[target_chars:].strip()
+                buf = remaining
+
+            if buf.strip():
+                atomic_chunks.append(buf.strip())
+
+        merged_chunks = []
+        for chunk in atomic_chunks:
+            if not merged_chunks:
+                merged_chunks.append(chunk)
+                continue
+            if len(merged_chunks[-1]) < min_chars and len(merged_chunks[-1]) + 1 + len(chunk) <= target_chars:
+                merged_chunks[-1] = f"{merged_chunks[-1]} {chunk}".strip()
+            else:
+                merged_chunks.append(chunk)
+
+        return merged_chunks or [normalized]
+
+    def _build_caption_segments(self, text: str, duration: float, target_chars: int = 110):
+        caption_text = re.sub(r"\s+", " ", (text or "")).strip()
+        if not caption_text:
+            return []
+
+        chunks = self._split_text_chunks(
+            caption_text,
+            target_chars=target_chars,
+            min_chars=max(30, int(target_chars * 0.45)),
+        )
+        if not chunks:
+            return []
+
+        try:
+            total_duration = float(duration or 0)
+        except Exception:
+            total_duration = 0.0
+
+        if total_duration <= 0 or len(chunks) == 1:
+            return [{"text": chunks[0], "start": 0.0, "duration": max(0.1, total_duration or 0.1)}]
+
+        min_segment_duration = 1.2 if len(chunks) > 3 else 1.5
+        if total_duration <= len(chunks) * min_segment_duration:
+            durations = [max(0.25, total_duration / len(chunks))] * len(chunks)
+        else:
+            weights = [max(1, len(chunk.split())) for chunk in chunks]
+            remaining = total_duration - (len(chunks) * min_segment_duration)
+            total_weight = max(1, sum(weights))
+            durations = [min_segment_duration + (remaining * (w / total_weight)) for w in weights]
+
+        segments = []
+        cursor = 0.0
+        for idx, chunk in enumerate(chunks):
+            if idx == len(chunks) - 1:
+                seg_duration = max(0.25, total_duration - cursor)
+            else:
+                seg_duration = max(0.25, float(durations[idx]))
+                if cursor + seg_duration > total_duration:
+                    seg_duration = max(0.25, total_duration - cursor)
+            segments.append({"text": chunk, "start": max(0.0, cursor), "duration": seg_duration})
+            cursor += seg_duration
+
+        if segments:
+            last = segments[-1]
+            last["duration"] = max(0.25, total_duration - last["start"])
+
+        return [seg for seg in segments if seg.get("duration", 0) > 0]
+
     def review_plan(self, plan: dict):
         if not isinstance(plan, dict):
             return plan
@@ -251,12 +358,20 @@ class VideoGenerator:
                 continue
             txt = (s.get("text") or "").strip()
             clean = self._clean_text(txt)
-            cap = (s.get("caption") or s.get("on_screen_text") or "").strip()
-            if not cap:
-                cap = clean if len(clean) <= 220 else self._make_caption(clean)
-                s["caption"] = cap
-                notes.append(f"caption_auto:cena_{i+1}")
-            elif len(cap) > 220:
+            on_screen_text = (s.get("on_screen_text") or "").strip()
+            cap = (s.get("caption") or "").strip()
+
+            if not on_screen_text:
+                if cap:
+                    on_screen_text = self._clean_text(cap) or cap
+                else:
+                    on_screen_text = clean
+                    notes.append(f"caption_auto:cena_{i+1}")
+                s["on_screen_text"] = on_screen_text
+
+            if not cap and on_screen_text:
+                s["caption"] = on_screen_text if len(on_screen_text) <= 220 else self._make_caption(on_screen_text)
+            elif cap and len(cap) > 220:
                 s["caption"] = self._make_caption(cap)
                 notes.append(f"caption_trunc:cena_{i+1}")
         plan["scenes"] = scenes
@@ -576,6 +691,12 @@ class VideoGenerator:
             return clip.with_duration(duration)
         return clip.set_duration(duration)
 
+    def _set_clip_start(self, clip, start_t):
+        """Compatível com MoviePy 1.x (set_start) e 2.x (with_start)."""
+        if hasattr(clip, "with_start"):
+            return clip.with_start(start_t)
+        return clip.set_start(start_t)
+
     def _set_clip_audio(self, clip, audio_clip):
         """Compatível com MoviePy 1.x (set_audio) e 2.x (with_audio)."""
         if hasattr(clip, "with_audio"):
@@ -762,27 +883,39 @@ class VideoGenerator:
                     split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "320").strip() or "320")
                     target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "240").strip() or "240")
                     target_chars = max(160, min(800, target_chars))
+                    text_chunks = self._split_text_chunks(
+                        scene_text,
+                        target_chars=target_chars,
+                        min_chars=max(60, int(target_chars * 0.45)),
+                    )
 
-                    if len(scene_text) > split_threshold:
-                        parts = re.split(r'(?<=[.!?])\s+', scene_text)
-                        buf = ""
-                        for part in parts:
-                            p = (part or "").strip()
-                            if not p:
-                                continue
-                            if not buf:
-                                buf = p
-                                continue
-                            if len(buf) + 1 + len(p) <= target_chars:
-                                buf = f"{buf} {p}"
-                                continue
-                            scenes.append({"text": buf.strip(), "image_prompt": scene_prompt})
-                            buf = p
-                        if buf.strip():
-                            scenes.append({"text": buf.strip(), "image_prompt": scene_prompt})
+                    if len(scene_text) > split_threshold and len(text_chunks) > 1:
+                        base_scene = dict(scene) if isinstance(scene, dict) else {}
+                        screen_text_source = ""
+                        if isinstance(scene, dict):
+                            screen_text_source = (scene.get("on_screen_text") or scene.get("caption") or "").strip()
+                        screen_chunks = self._split_text_chunks(
+                            screen_text_source,
+                            target_chars=target_chars,
+                            min_chars=max(60, int(target_chars * 0.45)),
+                        ) if screen_text_source else []
+
+                        for chunk_idx, chunk_text in enumerate(text_chunks):
+                            normalized_scene = dict(base_scene)
+                            normalized_scene["text"] = chunk_text.strip()
+                            normalized_scene["image_prompt"] = scene_prompt
+                            normalized_scene.pop("caption", None)
+                            normalized_scene.pop("on_screen_text", None)
+                            if screen_chunks:
+                                chosen_screen_text = screen_chunks[min(chunk_idx, len(screen_chunks) - 1)]
+                                if chosen_screen_text:
+                                    normalized_scene["on_screen_text"] = chosen_screen_text
+                            scenes.append(normalized_scene)
                     else:
-                        # Adiciona como está (normalizando para dicionário)
-                        scenes.append({"text": scene_text, "image_prompt": scene_prompt})
+                        normalized_scene = dict(scene) if isinstance(scene, dict) else {}
+                        normalized_scene["text"] = scene_text
+                        normalized_scene["image_prompt"] = scene_prompt
+                        scenes.append(normalized_scene)
             else:
                 # No modo música, usamos as cenas como vieram (já quebradas por tempo)
                 scenes = raw_scenes
@@ -1078,9 +1211,9 @@ class VideoGenerator:
                 
                 screen_text = ""
                 if isinstance(scene, dict):
-                    screen_text = (scene.get("caption") or scene.get("on_screen_text") or "").strip()
+                    screen_text = (scene.get("on_screen_text") or scene.get("caption") or "").strip()
                 if not screen_text:
-                    screen_text = self._make_caption(clean_text)
+                    screen_text = clean_text
 
                 if use_single_bg and video_bg_frame is not None:
                     bg_frame = video_bg_frame
@@ -1101,9 +1234,16 @@ class VideoGenerator:
                     bg_clip = bg_clip.set_duration(scene_dur)
                 bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
 
-                overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
-                overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
-                clip_scene = CompositeVideoClip([bg_clip, overlay_clip], size=video_size)
+                caption_target_chars = 120 if aspect_ratio == "16:9" else 90
+                caption_segments = self._build_caption_segments(screen_text, scene_dur, target_chars=caption_target_chars)
+                overlay_clips = []
+                for seg in caption_segments:
+                    overlay_arr = self.create_text_overlay(seg["text"], size=video_size, text_color=(255, 255, 255))
+                    overlay_clip = self._clip_from_rgba(overlay_arr, seg["duration"])
+                    overlay_clip = self._set_clip_start(overlay_clip, seg["start"])
+                    overlay_clips.append(overlay_clip)
+
+                clip_scene = CompositeVideoClip([bg_clip, *overlay_clips] if overlay_clips else [bg_clip], size=video_size)
                 
                 if audio_clip_scene:
                     if hasattr(clip_scene, "with_audio"):
@@ -1242,7 +1382,10 @@ class VideoGenerator:
                 except Exception:
                     current = 0
                 if current > (target_duration + 0.5):
-                    final_clip = self._subclip(final_clip, 0, target_duration)
+                    print(
+                        f"Aviso: duração final ({current:.2f}s) excede a meta ({target_duration:.2f}s); "
+                        "preservando a narração completa em vez de cortar o vídeo."
+                    )
                 elif current and current < (target_duration - 0.5):
                     extra = target_duration - current
                     try:
