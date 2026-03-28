@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,21 @@ def get_service():
     if _service is None:
         _service = HumorFactoryService()
     return _service
+
+
+@router.get("/app", include_in_schema=False)
+def humor_factory_app():
+    page_path = Path("app/static/pages/humor-factory/index.html")
+    if not page_path.exists():
+        raise HTTPException(status_code=404, detail="Página da Fábrica de Humor não encontrada.")
+    return FileResponse(
+        str(page_path),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 class HumorChannelRequest(BaseModel):
