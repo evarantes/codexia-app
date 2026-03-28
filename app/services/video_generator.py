@@ -743,22 +743,31 @@ class VideoGenerator:
                 else:
                     raw_scenes = []
 
-            # PROCESSAMENTO DE CENAS LONGAS: Quebra automática de texto (Apenas se NÃO for modo música)
-            scenes = []
-            if not music_file_path:
-                for scene in raw_scenes:
+            def _materialize_scenes(raw_list):
+                scenes_local = []
+                if music_file_path:
+                    return raw_list if isinstance(raw_list, list) else []
+                if not isinstance(raw_list, list):
+                    return []
+                for scene in raw_list:
                     scene_text = ""
                     scene_prompt = ""
-                    
+
                     if isinstance(scene, str):
                         scene_text = scene
-                    else:
+                    elif isinstance(scene, dict):
                         scene_text = scene.get('text', '')
                         scene_prompt = scene.get('image_prompt', '')
+                    else:
+                        scene_text = str(scene)
+
+                    scene_text = (scene_text or "").strip()
+                    if not scene_text:
+                        continue
 
                     if not scene_prompt and scene_text:
                         scene_prompt = f"Cinematic digital art representing: {scene_text[:140]}"
-                    
+
                     split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "320").strip() or "320")
                     target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "240").strip() or "240")
                     target_chars = max(160, min(800, target_chars))
@@ -776,16 +785,56 @@ class VideoGenerator:
                             if len(buf) + 1 + len(p) <= target_chars:
                                 buf = f"{buf} {p}"
                                 continue
-                            scenes.append({"text": buf.strip(), "image_prompt": scene_prompt})
+                            scenes_local.append({"text": buf.strip(), "image_prompt": scene_prompt})
                             buf = p
                         if buf.strip():
-                            scenes.append({"text": buf.strip(), "image_prompt": scene_prompt})
+                            scenes_local.append({"text": buf.strip(), "image_prompt": scene_prompt})
                     else:
-                        # Adiciona como está (normalizando para dicionário)
-                        scenes.append({"text": scene_text, "image_prompt": scene_prompt})
-            else:
-                # No modo música, usamos as cenas como vieram (já quebradas por tempo)
-                scenes = raw_scenes
+                        scenes_local.append({"text": scene_text, "image_prompt": scene_prompt})
+                return scenes_local
+
+            scenes = _materialize_scenes(raw_scenes)
+            if not scenes and not music_file_path:
+                alt_raw = plan.get("blocks") or plan.get("segments") or plan.get("parts") or plan.get("chapters") or []
+                if isinstance(alt_raw, list) and alt_raw:
+                    raw_scenes = alt_raw
+                    scenes = _materialize_scenes(raw_scenes)
+
+            if not scenes and not music_file_path:
+                base_text = ""
+                for k in (
+                    "roteiro",
+                    "script",
+                    "text",
+                    "content",
+                    "story_content",
+                    "narration_text",
+                    "narration",
+                    "raw_text",
+                    "raw_script",
+                    "full_text",
+                ):
+                    v = plan.get(k)
+                    if isinstance(v, str) and v.strip():
+                        base_text = v.strip()
+                        break
+                if base_text:
+                    raw_scenes = [{"text": base_text, "image_prompt": plan.get("image_prompt") or ""}]
+                    scenes = _materialize_scenes(raw_scenes)
+
+            if not scenes and not music_file_path:
+                fallback_text = ""
+                try:
+                    desc = (plan.get("description") or "").strip() if isinstance(plan, dict) else ""
+                except Exception:
+                    desc = ""
+                if isinstance(title, str) and title.strip():
+                    fallback_text = title.strip()
+                if desc:
+                    fallback_text = (fallback_text + "\n\n" + desc).strip()
+                if not fallback_text:
+                    fallback_text = "Conteúdo em preparação."
+                scenes = [{"text": fallback_text, "image_prompt": plan.get("image_prompt") if isinstance(plan, dict) else ""}]
 
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
             # Skip enrichment if music mode (handled by generator) or if images were preselected
