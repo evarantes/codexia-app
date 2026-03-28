@@ -44,7 +44,7 @@ from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, StoryDraft
 from app.modules.ai_factory.models import AIImage
-from app.redis_client import conn
+from app.redis_client import conn, queue as rq_queue
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
 # Lock file para quando Redis não está disponível (garante 1 job por vez)
@@ -2695,7 +2695,18 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     
     # Cria ID da tarefa
     task_id = create_task()
-    
+    try:
+        payload = request.model_dump()  # type: ignore[attr-defined]
+    except Exception:
+        payload = request.dict()
+
+    if conn is not None:
+        try:
+            rq_queue.enqueue(process_video_generation_payload, payload, task_id)
+            return {"message": "Processo iniciado", "task_id": task_id}
+        except Exception:
+            pass
+
     t = threading.Thread(target=process_video_generation, args=(request, task_id), daemon=True)
     t.start()
     
@@ -2707,6 +2718,14 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return task
+
+def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
+    try:
+        req = VideoRequest(**(payload or {}))
+    except Exception:
+        update_task(task_id, status="failed", progress=0, message="Payload inválido para geração de vídeo.")
+        return
+    process_video_generation(req, task_id)
 
 def process_video_generation(request: VideoRequest, task_id):
     # Lazy import VideoGenerator (moviepy/PIL/numpy) para reduzir memória no startup

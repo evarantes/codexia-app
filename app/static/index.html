@@ -2450,6 +2450,7 @@
                     ytStoryImproveLoading: false,
                     ytStoryVideoLoading: false,
                     ytStoryTask: null,
+                    ytStoryTaskPollFails: {},
                     ytStoryVideoUrl: null,
                     ytStoryScheduledId: null,
                     ytStoryQueueLoading: false,
@@ -3753,6 +3754,10 @@
                                 await new Promise(r => setTimeout(r, 800));
                             }
                         }
+                        if (taskId) {
+                            this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                            this.ytStoryTaskPollFails[String(taskId)] = 0;
+                        }
                         await this.pollStoryTask(taskId);
                     } catch (e) {
                         alert("Erro ao gerar vídeo: " + (e.message || e));
@@ -3786,6 +3791,17 @@
                         }
                         setTimeout(() => this.pollStoryTask(taskId), 1500);
                     } catch (e) {
+                        const key = String(taskId || '');
+                        this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                        const prev = Number(this.ytStoryTaskPollFails[key] || 0);
+                        const next = prev + 1;
+                        this.ytStoryTaskPollFails[key] = next;
+                        if (next <= 10) {
+                            const currentProgress = (this.ytStoryTask && typeof this.ytStoryTask.progress === 'number') ? this.ytStoryTask.progress : 0;
+                            this.ytStoryTask = { status: 'processing', progress: currentProgress, message: 'Reconectando...' };
+                            setTimeout(() => this.pollStoryTask(taskId), 1200 + (next * 400));
+                            return;
+                        }
                         this.ytStoryVideoLoading = false;
                         this.ytStoryTask = { status: 'failed', progress: 0, message: e.message || String(e) };
                     }
