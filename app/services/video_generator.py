@@ -409,6 +409,39 @@ class VideoGenerator:
             "crf": crf,
         }
 
+    def _resolve_image_strategy(self, render_options: dict, scene_count: int) -> dict:
+        mode = (os.getenv("VIDEO_IMAGE_REUSE_MODE") or "auto").strip().lower()
+        default_block_size = 2 if render_options.get("fast_mode") else 1
+        default_max_unique = 8 if render_options.get("fast_mode") else max(1, int(scene_count or 1))
+
+        block_size = self._env_int("VIDEO_IMAGE_REUSE_BLOCK_SIZE", default_block_size, min_value=1, max_value=24)
+        max_unique = self._env_int("VIDEO_MAX_UNIQUE_IMAGES", default_max_unique, min_value=1, max_value=200)
+
+        enabled = render_options.get("fast_mode", False)
+        if mode in {"off", "false", "0", "none"}:
+            enabled = False
+        elif mode in {"on", "true", "1", "yes", "window", "block"}:
+            enabled = True
+
+        return {
+            "enabled": bool(enabled),
+            "block_size": max(1, block_size),
+            "max_unique_images": max(1, max_unique),
+        }
+
+    def _scene_image_reuse_key(self, scene: dict, image_prompt: str, fallback_text: str, block_idx: int) -> tuple:
+        scene_kind = (scene.get("image_group") or scene.get("image_cluster") or "").strip().lower() if isinstance(scene, dict) else ""
+        prompt_source = (image_prompt or "").strip().lower()
+        fallback_source = (fallback_text or "").strip().lower()
+        source = prompt_source or fallback_source
+        if source:
+            source = re.sub(r"\s+", " ", source)
+            if len(source) > 220:
+                source = source[:220]
+        if not scene_kind:
+            scene_kind = f"block:{int(block_idx)}"
+        return (scene_kind, source)
+
     def _should_enrich_prompts(self, render_options: dict, scene_count: int) -> bool:
         if self._env_flag("VIDEO_FORCE_ENRICH_PROMPTS", default=False):
             return True
@@ -1042,6 +1075,12 @@ class VideoGenerator:
 
             render_options = self._resolve_render_options(plan.get("target_duration_sec"), len(scenes))
 
+            image_strategy = self._resolve_image_strategy(render_options, len(scenes))
+            reuse_block_size = max(1, int(image_strategy.get("block_size", 1)))
+            max_unique_images = max(1, int(image_strategy.get("max_unique_images", max(1, len(scenes)))))
+            unique_images_generated = 0
+            block_image_cache = {}
+
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
             # Skip enrichment if music mode (handled by generator) or if images were preselected
             selected_raw_pre = plan.get("selected_images") or plan.get("images") or []
@@ -1287,22 +1326,50 @@ class VideoGenerator:
                 elif use_single_bg and video_bg_path:
                     bg_image_path = video_bg_path
                 else:
+                    block_idx = int(i // reuse_block_size) if image_strategy.get("enabled") else i
+                    reuse_key = self._scene_image_reuse_key(
+                        scene if isinstance(scene, dict) else {},
+                        image_prompt,
+                        clean_text[:220],
+                        block_idx,
+                    )
                     prompt_key = (
                         str(aspect_ratio).strip(),
                         (image_prompt or "").strip().lower() or clean_text[:220].strip().lower(),
                     )
                     cached = image_cache.get(prompt_key)
+                    if not cached and image_strategy.get("enabled"):
+                        cached = block_image_cache.get((str(aspect_ratio).strip(), reuse_key))
                     if cached and os.path.exists(cached):
                         bg_image_path = cached
                     else:
-                        bg_image_path = self._ensure_image_for_scene(
-                            image_prompt,
-                            text_fallback=clean_text,
-                            aspect_ratio=aspect_ratio,
-                            status_callback=_scene_status,
-                            max_rounds=image_max_rounds,
-                            allow_non_ai_fallback=allow_non_ai_fallback
-                        )
+                        if image_strategy.get("enabled") and unique_images_generated >= max_unique_images and block_image_cache:
+                            fallback_reuse = block_image_cache.get((str(aspect_ratio).strip(), reuse_key))
+                            if not fallback_reuse or not os.path.exists(fallback_reuse):
+                                fallback_reuse = next(
+                                    (
+                                        p for (_cache_key, p) in block_image_cache.items()
+                                        if _cache_key and os.path.exists(p)
+                                    ),
+                                    None,
+                                )
+                            bg_image_path = fallback_reuse
+                            if bg_image_path and progress_callback:
+                                progress_callback(
+                                    scene_progress,
+                                    f"Cena {i+1}/{total_scenes}: reutilizando imagem para acelerar o vídeo."
+                                )
+                        if not bg_image_path:
+                            bg_image_path = self._ensure_image_for_scene(
+                                image_prompt,
+                                text_fallback=clean_text,
+                                aspect_ratio=aspect_ratio,
+                                status_callback=_scene_status,
+                                max_rounds=image_max_rounds,
+                                allow_non_ai_fallback=allow_non_ai_fallback
+                            )
+                            if bg_image_path and os.path.exists(bg_image_path):
+                                unique_images_generated += 1
 
                 if not bg_image_path:
                     if not fallback_bg_path or not os.path.exists(fallback_bg_path):
@@ -1315,6 +1382,8 @@ class VideoGenerator:
                 try:
                     if prompt_key and not (use_single_bg and video_bg_path):
                         image_cache[prompt_key] = bg_image_path
+                    if image_strategy.get("enabled") and bg_image_path and os.path.exists(bg_image_path):
+                        block_image_cache[(str(aspect_ratio).strip(), reuse_key)] = bg_image_path
                 except Exception:
                     pass
                 _track_image_path(bg_image_path)

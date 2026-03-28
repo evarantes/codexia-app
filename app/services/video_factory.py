@@ -556,6 +556,7 @@ class VideoFactory:
         job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
+        render_options = self.video_gen._resolve_render_options(getattr(video, "duration_sec", None), len(scenes))
         # Modo estrito opcional: quando true, falha a cena caso nenhum provedor de IA responda.
         # Quando false (padrão), usa fallback contextual (texto/narração) para não travar a produção.
         strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
@@ -566,6 +567,21 @@ class VideoFactory:
         except Exception:
             max_rounds = 4
         fallback_used = False
+        image_reuse_window = self.video_gen._env_int(
+            "VIDEO_IMAGE_REUSE_WINDOW",
+            2 if render_options.get("fast_mode") else 1,
+            min_value=1,
+            max_value=total,
+        )
+        image_budget = self.video_gen._env_int(
+            "VIDEO_MAX_UNIQUE_IMAGES",
+            6 if render_options.get("fast_mode") else max(1, total),
+            min_value=1,
+            max_value=total,
+        )
+        generated_unique = 0
+        reusable_images = {}
+        last_generated_path = None
 
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
@@ -582,16 +598,30 @@ class VideoFactory:
             def scene_status(message: str):
                 self._set_job_progress(job, base_progress, f"Cena {idx}/{total}: {message}")
 
-            scene_status(f"Iniciando geração da imagem (cena {scene.idx}).")
-            filepath = self.video_gen._ensure_image_for_scene(
-                prompt,
-                text_fallback=narration[:120] if narration else (scene.keywords or ""),
-                aspect_ratio="16:9",
-                status_callback=scene_status,
-                max_rounds=max_rounds,
-                allow_non_ai_fallback=allow_local_gradient
-            )
-            source_type = "AI_EXCLUSIVE"
+            reuse_group = min((idx - 1) // max(1, image_reuse_window), max(0, image_budget - 1))
+            filepath = reusable_images.get(reuse_group)
+            if filepath and os.path.exists(filepath):
+                source_type = "AI_REUSED"
+                scene_status(f"Reutilizando imagem do bloco {reuse_group + 1}.")
+            elif last_generated_path and os.path.exists(last_generated_path) and generated_unique >= image_budget:
+                filepath = last_generated_path
+                source_type = "AI_REUSED_LIMIT"
+                scene_status(f"Limite de imagens únicas atingido; reutilizando visual anterior.")
+            else:
+                scene_status(f"Iniciando geração da imagem (cena {scene.idx}).")
+                filepath = self.video_gen._ensure_image_for_scene(
+                    prompt,
+                    text_fallback=narration[:120] if narration else (scene.keywords or ""),
+                    aspect_ratio="16:9",
+                    status_callback=scene_status,
+                    max_rounds=max_rounds,
+                    allow_non_ai_fallback=allow_local_gradient
+                )
+                source_type = "AI_EXCLUSIVE"
+                if filepath and os.path.exists(filepath):
+                    reusable_images[reuse_group] = filepath
+                    last_generated_path = filepath
+                    generated_unique += 1
             invalid_path = (not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) < 1000)
             local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
 
