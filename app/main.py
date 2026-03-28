@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import threading
 
 from fastapi import FastAPI, Request, HTTPException
@@ -396,7 +397,7 @@ async def lifespan(app: FastAPI):
             print(f"MonitorService start warning (app continua): {e}")
         
         try:
-            from app.models import ScheduledVideo, Job, Video
+            from app.models import ScheduledVideo, Job, Video, PersistentTask
             from sqlalchemy import func
             from datetime import datetime as dt, timedelta
             from app.modules.humor_factory.models import HumorProject

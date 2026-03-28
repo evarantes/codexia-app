@@ -461,6 +461,25 @@ class VideoGenerator:
         base_img.alpha_composite(overlay_img)
         return np.array(base_img.convert("RGB"))
 
+    def _safe_frame_array(self, frame, fallback_size=(1280, 720)):
+        import numpy as np
+
+        arr = np.asarray(frame)
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, axis=-1)
+        if arr.ndim == 3 and arr.shape[2] == 4:
+            arr = arr[:, :, :3]
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            width, height = fallback_size
+            arr = np.zeros((int(height), int(width), 3), dtype="uint8")
+        if arr.dtype != np.uint8:
+            if np.issubdtype(arr.dtype, np.floating):
+                scale = 255.0 if float(arr.max(initial=0.0)) <= 1.0 else 1.0
+                arr = np.clip(arr * scale, 0, 255).astype("uint8")
+            else:
+                arr = np.clip(arr, 0, 255).astype("uint8")
+        return np.ascontiguousarray(arr)
+
     def _concatenate_clips(self, concatenate_videoclips, clips, enable_transitions: bool = True, transition_sec: float = 0.25):
         if not clips:
             return None
@@ -1141,7 +1160,10 @@ class VideoGenerator:
                     if not video_bg_path:
                         video_bg_path = self._generate_fallback_background(video_size)
                     if video_bg_path:
-                        video_bg_frame = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path)
+                        video_bg_frame = self._safe_frame_array(
+                            self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path),
+                            fallback_size=video_size,
+                        )
                         _track_image_path(video_bg_path)
                 except Exception:
                     video_bg_path = None
@@ -1276,7 +1298,10 @@ class VideoGenerator:
             if not start_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 start_bg_path = video_bg_path
             _track_image_path(start_bg_path)
-            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path)
+            img_title = self._safe_frame_array(
+                self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path),
+                fallback_size=video_size,
+            )
             
             clip_title = ImageClip(img_title)
             
@@ -1409,7 +1434,10 @@ class VideoGenerator:
                 if use_single_bg and video_bg_frame is not None:
                     bg_frame = video_bg_frame
                 else:
-                    bg_frame = self.create_text_image("", size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                    bg_frame = self._safe_frame_array(
+                        self.create_text_image("", size=video_size, bg_color=bg_color, bg_image_path=bg_image_path),
+                        fallback_size=video_size,
+                    )
 
                 bg_clip = ImageClip(bg_frame)
                 if audio_path:
@@ -1447,11 +1475,19 @@ class VideoGenerator:
                             composed_frame = overlay_frame_cache.get(cache_key)
                             if composed_frame is None:
                                 overlay_arr = self.create_text_overlay(seg_text, size=video_size, text_color=(255, 255, 255))
-                                composed_frame = self._composite_overlay_on_frame(bg_frame, overlay_arr)
+                                composed_frame = self._safe_frame_array(
+                                    self._composite_overlay_on_frame(bg_frame, overlay_arr),
+                                    fallback_size=video_size,
+                                )
                                 overlay_frame_cache[cache_key] = composed_frame
                         else:
                             composed_frame = bg_frame
-                        segment_clips.append(self._set_clip_duration(ImageClip(composed_frame), seg_duration))
+                        segment_clips.append(
+                            self._set_clip_duration(
+                                ImageClip(self._safe_frame_array(composed_frame, fallback_size=video_size)),
+                                seg_duration,
+                            )
+                        )
                     if len(segment_clips) > 1:
                         aux_clips.extend(segment_clips)
                     clip_scene = self._concatenate_clips(
@@ -1497,7 +1533,10 @@ class VideoGenerator:
             if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 end_bg_path = video_bg_path
             _track_image_path(end_bg_path)
-            img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path)
+            img_end = self._safe_frame_array(
+                self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path),
+                fallback_size=video_size,
+            )
             
             clip_end = ImageClip(img_end)
             
