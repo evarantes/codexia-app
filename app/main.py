@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import threading
+import shutil
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +37,8 @@ CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_r
 _BASE_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _BASE_DIR / "static"
 _STATIC_SERVE = "/app/app/static" if os.path.isdir("/app/app/static") else str(_STATIC_DIR)
+_STATIC_RUNTIME_DIR = Path(_STATIC_SERVE)
+_STATIC_IMAGE_SENTINEL = _STATIC_DIR / "pages" / "humor-factory" / "index.html"
 
 print(f"STARTUP DEBUG: _BASE_DIR={_BASE_DIR}")
 print(f"STARTUP DEBUG: _STATIC_DIR={_STATIC_DIR}")
@@ -44,6 +47,62 @@ if os.path.exists(_STATIC_SERVE):
     print(f"STARTUP DEBUG: listing {_STATIC_SERVE}: {os.listdir(_STATIC_SERVE)}")
 else:
     print(f"STARTUP DEBUG: {_STATIC_SERVE} does not exist!")
+
+def _seed_runtime_static():
+    """
+    Garante que a pasta servida em runtime contenha os arquivos estáticos atuais do build.
+    Isso evita UI desatualizada quando o ambiente monta um volume persistente em /app/app/static.
+    """
+    try:
+        source_dir = _STATIC_DIR
+        runtime_dir = _STATIC_RUNTIME_DIR
+        if not source_dir.exists() or not runtime_dir:
+            return
+
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        sentinel_rel = Path("pages") / "humor-factory" / "index.html"
+        runtime_sentinel = runtime_dir / sentinel_rel
+
+        should_copy = False
+        if not runtime_sentinel.exists():
+            should_copy = True
+        else:
+            try:
+                should_copy = runtime_sentinel.read_text(encoding="utf-8") != _STATIC_IMAGE_SENTINEL.read_text(encoding="utf-8")
+            except Exception:
+                should_copy = True
+
+        if not should_copy:
+            return
+
+        print(f"Seeding runtime static files into {runtime_dir}...")
+        preserve_dirs = {"videos", "covers", "generated", "image_bank"}
+        for root, dirs, files in os.walk(source_dir):
+            rel_root = Path(root).relative_to(source_dir)
+            if rel_root.parts and rel_root.parts[0] in preserve_dirs:
+                dirs[:] = []
+                continue
+
+            target_root = runtime_dir / rel_root
+            try:
+                target_root.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                print(f"Static seed warning creating dir {target_root}: {e}")
+                continue
+
+            for filename in files:
+                src_file = Path(root) / filename
+                rel_file = src_file.relative_to(source_dir)
+                if rel_file.parts and rel_file.parts[0] in preserve_dirs:
+                    continue
+                dst_file = runtime_dir / rel_file
+                try:
+                    dst_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst_file)
+                except Exception as e:
+                    print(f"Static seed warning for {src_file}: {e}")
+    except Exception as e:
+        print(f"Static seed error: {e}")
 
 # Create tables (não derrubar o processo se o banco estiver inacessível no startup, ex.: Render)
 try:
@@ -381,6 +440,11 @@ async def lifespan(app: FastAPI):
     print(f"Iniciando aplicação... APP_ENV={APP_ENV} | Banco: {DATABASE_DISPLAY}")
     
     try:
+        try:
+            _seed_runtime_static()
+        except Exception as e:
+            print(f"Static seed warning (app continua): {e}")
+
         try:
             run_migrations(engine)
         except Exception as e:
