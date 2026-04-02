@@ -524,6 +524,9 @@
                     <button @click="youtubeSubTab = 'community'" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'community' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
                         Comunidade
                     </button>
+                    <button @click="youtubeSubTab = 'promotion'" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'promotion' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
+                        Divulgação
+                    </button>
                 </div>
                 
                 <!-- Connection & Actions (comum) -->
@@ -2509,6 +2512,16 @@
                     communityError: '',
                     communityClassify: true,
                     replySendingId: null,
+                    socialPromotionSelectedId: '',
+                    socialPromotionSourceType: 'scheduled',
+                    socialPromotionPlatform: 'all',
+                    socialPromotionMode: 'video',
+                    socialPromotionInstruction: '',
+                    socialPromotionPreview: null,
+                    socialPromotionLoading: false,
+                    socialPromotionCopied: '',
+                    socialPromotionPublishingFacebook: false,
+                    socialPromotionPreparingWhatsApp: false,
 
                     // Book Factory Data
                     factoryStep: 1,
@@ -3344,6 +3357,113 @@
                         alert("Erro ao carregar status de monetização.");
                     } finally {
                         this.monetizationLoading = false;
+                    }
+                },
+                resetPromotionState() {
+                    this.socialPromotionPreview = null;
+                    this.socialPromotionCopied = '';
+                },
+                promotionTargetOptions() {
+                    const published = (this.publishedVideos || []).map(v => ({
+                        id: Number(v.id || 0),
+                        label: `${v.title || 'Vídeo'}${v.youtube_video_id ? ` (${v.youtube_video_id})` : ''}`,
+                        type: (v.video_type || 'video').toString().trim().toLowerCase(),
+                        source: 'scheduled'
+                    }));
+                    const productionReady = (this.productionVideos || [])
+                        .filter(v => this.isReadyStatus(v.status) || this.isPublishedStatus(v.status))
+                        .map(v => ({
+                            id: Number(v.id || 0),
+                            label: `${v.title || 'Vídeo da produção'} [produção]`,
+                            type: (v.type || 'LONG').toString().trim().toUpperCase() === 'SHORT' ? 'short' : 'video',
+                            source: 'production'
+                        }));
+                    return [...published, ...productionReady].filter(x => x.id);
+                },
+                resolvePromotionRequestPayload() {
+                    const source = String(this.socialPromotionSourceType || 'scheduled').trim().toLowerCase();
+                    const selectedId = Number(this.socialPromotionSelectedId || 0);
+                    if (!selectedId) throw new Error("Selecione um vídeo ou short.");
+                    return {
+                        scheduled_video_id: source === 'scheduled' ? selectedId : null,
+                        production_video_id: source === 'production' ? selectedId : null,
+                        mode: this.socialPromotionMode || 'video',
+                        platform: this.socialPromotionPlatform || 'all',
+                        custom_instruction: String(this.socialPromotionInstruction || '').trim() || null
+                    };
+                },
+                async previewSocialPromotion() {
+                    try {
+                        this.socialPromotionLoading = true;
+                        this.resetPromotionState();
+                        const payload = this.resolvePromotionRequestPayload();
+                        const res = await this.authFetch('/youtube/social/promotion/preview', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || "Falha ao gerar materiais de divulgação.");
+                        this.socialPromotionPreview = data;
+                        this.youtubeSubTab = 'promotion';
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.socialPromotionLoading = false;
+                    }
+                },
+                copyPromotionText(label, text) {
+                    const value = String(text || '').trim();
+                    if (!value) return;
+                    navigator.clipboard?.writeText(value).then(() => {
+                        this.socialPromotionCopied = label;
+                        setTimeout(() => {
+                            if (this.socialPromotionCopied === label) this.socialPromotionCopied = '';
+                        }, 1800);
+                    }).catch(() => {
+                        alert("Não foi possível copiar automaticamente. Copie manualmente.");
+                    });
+                },
+                async publishPromotionFacebook() {
+                    try {
+                        this.socialPromotionPublishingFacebook = true;
+                        const payload = this.resolvePromotionRequestPayload();
+                        const res = await this.authFetch('/youtube/social/promotion/publish-facebook', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || "Falha ao publicar no Facebook.");
+                        alert(data.message || "Post enviado para o Facebook.");
+                        if (!this.socialPromotionPreview) this.socialPromotionPreview = {};
+                        this.socialPromotionPreview.facebook_publish_result = data;
+                    } catch (e) {
+                        alert("Erro ao publicar no Facebook: " + (e.message || e));
+                    } finally {
+                        this.socialPromotionPublishingFacebook = false;
+                    }
+                },
+                async prepareWhatsAppPromotionText() {
+                    try {
+                        this.socialPromotionPreparingWhatsApp = true;
+                        const payload = this.resolvePromotionRequestPayload();
+                        payload.platform = 'whatsapp';
+                        const res = await this.authFetch('/youtube/social/promotion/whatsapp-preview', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || "Falha ao preparar texto do WhatsApp.");
+                        if (!this.socialPromotionPreview) this.socialPromotionPreview = {};
+                        this.socialPromotionPreview.whatsapp_status = data.whatsapp_status || {};
+                        this.socialPromotionPreview.telegram = data.telegram || {};
+                        this.socialPromotionPreview.watch_url = data.watch_url || (this.socialPromotionPreview.watch_url || '');
+                    } catch (e) {
+                        alert("Erro ao preparar texto do WhatsApp: " + (e.message || e));
+                    } finally {
+                        this.socialPromotionPreparingWhatsApp = false;
                     }
                 },
                 applyAutoInsightsToSchedule() {

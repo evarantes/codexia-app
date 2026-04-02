@@ -728,6 +728,111 @@ class AIContentGenerator:
             print(f"Erro na IA: {e}")
             return self._mock_response(book_title, style, error=str(e))
 
+    def generate_social_campaign_pack(
+        self,
+        title: str,
+        description: str = "",
+        video_url: str = "",
+        kind: str = "video",
+        channel_name: str = "",
+        focus: str = "video",
+    ) -> dict:
+        """
+        Gera copies de divulgação para múltiplas redes a partir de um vídeo/canal.
+        O retorno é usado como material pronto para publicação assistida no YouTube Auto.
+        """
+        self._load_config()
+
+        safe_title = (title or "").strip() or "Novo vídeo"
+        safe_desc = (description or "").strip()
+        safe_url = (video_url or "").strip()
+        safe_kind = (kind or "video").strip().lower()
+        safe_focus = (focus or "video").strip().lower()
+        safe_channel = (channel_name or "").strip()
+
+        fallback = {
+            "focus": safe_focus,
+            "kind": safe_kind,
+            "headline": f"{safe_title} - confira agora",
+            "facebook_post": f"{safe_title}\n\n{safe_desc[:240]}\n\n{safe_url}".strip(),
+            "instagram_caption": f"{safe_title}\n\n{safe_desc[:220]}\n\n#reels #shorts #youtube".strip(),
+            "tiktok_caption": f"{safe_title} #fyp #tiktok #shorts".strip(),
+            "kwai_caption": f"{safe_title} #kwai #video".strip(),
+            "whatsapp_status": f"{safe_title}\n{safe_url}".strip(),
+            "telegram_text": f"{safe_title}\n\n{safe_desc[:220]}\n\n{safe_url}".strip(),
+            "channel_ad_copy": f"Conheça o canal {safe_channel or 'no YouTube'} e acompanhe os vídeos mais recentes.".strip(),
+            "video_ad_copy": f"Novo conteúdo no ar: {safe_title}. Assista agora.".strip(),
+            "hashtags": ["#youtube", "#shorts", "#video"],
+        }
+
+        if not self.openrouter_key:
+            return fallback
+
+        prompt = f"""
+        Você é um estrategista de marketing digital e social media.
+        Crie materiais de divulgação para múltiplas redes sociais.
+
+        DADOS:
+        - Foco: {safe_focus}
+        - Tipo do conteúdo: {safe_kind}
+        - Título: {safe_title}
+        - Nome do canal: {safe_channel}
+        - Descrição base: {safe_desc[:3000]}
+        - URL: {safe_url}
+
+        REGRAS:
+        - Escreva tudo em português do Brasil.
+        - Gere textos curtos, prontos para postagem.
+        - Foque em aumentar visualizações do vídeo/short ou crescimento do canal.
+        - Para TikTok/Kwai/Instagram use legendas curtas.
+        - Para Facebook/Telegram/WhatsApp pode ser um pouco mais explicativo.
+        - Inclua CTA claros.
+        - Retorne APENAS JSON válido neste formato:
+        {{
+          "headline": "headline principal",
+          "facebook_post": "texto para Facebook",
+          "instagram_caption": "legenda para Instagram/Reels",
+          "tiktok_caption": "legenda curta para TikTok",
+          "kwai_caption": "legenda curta para Kwai",
+          "whatsapp_status": "texto curto para status/story",
+          "telegram_text": "texto para Telegram",
+          "channel_ad_copy": "anúncio do canal",
+          "video_ad_copy": "anúncio do vídeo",
+          "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"]
+        }}
+        """
+
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um social media e copywriter. Retorne apenas JSON válido.",
+                temperature=0.7,
+                json_mode=True,
+            )
+            if not content:
+                return fallback
+            clean = content.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean)
+            if not isinstance(data, dict):
+                return fallback
+            hashtags = data.get("hashtags")
+            if not isinstance(hashtags, list):
+                hashtags = fallback["hashtags"]
+            data["hashtags"] = [str(x).strip() for x in hashtags if str(x).strip()][:12] or fallback["hashtags"]
+            data["focus"] = safe_focus
+            data["kind"] = safe_kind
+            for key, default_value in fallback.items():
+                if key in {"focus", "kind", "hashtags"}:
+                    continue
+                if not isinstance(data.get(key), str) or not str(data.get(key)).strip():
+                    data[key] = default_value
+                else:
+                    data[key] = str(data[key]).strip()
+            return data
+        except Exception as e:
+            print(f"Erro ao gerar pack social: {e}")
+            return fallback
+
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
         self._load_config()
 

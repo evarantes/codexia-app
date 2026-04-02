@@ -5,6 +5,7 @@ from app.models import Settings
 
 class FacebookService:
     def __init__(self):
+        self.base_url = "https://graph.facebook.com/v20.0"
         self._load_config()
 
     def _load_config(self):
@@ -52,6 +53,10 @@ class FacebookService:
             if hasattr(e, 'response') and e.response is not None:
                 print(f"Detalhes do erro: {e.response.text}")
             return {"error": str(e)}
+
+    def has_credentials(self) -> bool:
+        self._load_config()
+        return bool((self.page_id or "").strip() and (self.access_token or "").strip())
 
     def get_post_metrics(self, post_id):
         """

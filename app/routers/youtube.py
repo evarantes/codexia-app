@@ -40,6 +40,7 @@ except Exception:
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
+from app.services.facebook_api import FacebookService
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, StoryDraft
@@ -50,6 +51,27 @@ FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
 # Lock file para quando Redis não está disponível (garante 1 job por vez)
 _lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
 _FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
+
+
+class DistributionGenerateRequest(BaseModel):
+    mode: str = "video"  # video | channel
+    scheduled_video_id: Optional[int] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    video_url: Optional[str] = None
+    channel_summary: Optional[str] = None
+    target_platforms: Optional[List[str]] = None
+
+
+class DistributionPublishRequest(BaseModel):
+    mode: str = "video"  # video | channel
+    scheduled_video_id: Optional[int] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    video_url: Optional[str] = None
+    channel_summary: Optional[str] = None
+    target_platform: str = "facebook"  # facebook | whatsapp_status | telegram
+    text: str = ""
 
 def _rq_workers_online() -> bool:
     """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
@@ -1067,6 +1089,71 @@ class CreateShortsFromScheduledRequest(BaseModel):
     count: int = 3
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
+
+class SocialPromotionRequest(BaseModel):
+    scheduled_video_id: Optional[int] = None
+    production_video_id: Optional[int] = None
+    mode: str = "video"  # video | short | channel
+    platform: str = "all"  # all | facebook | instagram | whatsapp | telegram | tiktok | kwai
+    custom_instruction: Optional[str] = None
+
+
+def _social_source_from_scheduled(video: ScheduledVideo) -> Dict[str, Any]:
+    video_url = (video.video_url or "").strip()
+    watch_url = ""
+    if (video.status or "").strip().lower() == "published" and (video.youtube_video_id or "").strip():
+        watch_url = f"https://www.youtube.com/watch?v={video.youtube_video_id.strip()}"
+    elif video_url:
+        watch_url = video_url
+    return {
+        "title": (video.title or "").strip() or "Vídeo do canal",
+        "description": (video.description or "").strip(),
+        "watch_url": watch_url,
+        "video_type": (video.video_type or "video").strip().lower() or "video",
+    }
+
+
+def _social_source_from_production(db: Session, video: Video) -> Dict[str, Any]:
+    final_path = _latest_final_asset_path(db, video.id) or _resolve_video_file_path(video.youtube_video_id)
+    watch_url = ""
+    if (video.youtube_video_id or "").strip() and (video.status or "").strip().upper() == "PUBLISHED":
+        watch_url = f"https://www.youtube.com/watch?v={video.youtube_video_id.strip()}"
+    elif final_path:
+        filename = os.path.basename(final_path)
+        watch_url = f"{VIDEO_URL_PREFIX}/{filename}"
+    return {
+        "title": (video.title or "").strip() or "Vídeo do canal",
+        "description": (video.description or "").strip(),
+        "watch_url": watch_url,
+        "video_type": "short" if (video.type or "").strip().upper() == "SHORT" else "video",
+    }
+
+
+def _load_social_source(request: SocialPromotionRequest, db: Session) -> Dict[str, Any]:
+    mode = (request.mode or "video").strip().lower()
+    if mode not in {"video", "short", "channel"}:
+        mode = "video"
+
+    if request.scheduled_video_id:
+        item = db.query(ScheduledVideo).filter(ScheduledVideo.id == request.scheduled_video_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Vídeo agendado não encontrado.")
+        data = _social_source_from_scheduled(item)
+    elif request.production_video_id:
+        item = db.query(Video).filter(Video.id == request.production_video_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Vídeo da produção não encontrado.")
+        data = _social_source_from_production(db, item)
+    else:
+        raise HTTPException(status_code=400, detail="Informe scheduled_video_id ou production_video_id.")
+
+    if mode == "channel":
+        data["video_type"] = "channel"
+    elif mode == "short":
+        data["video_type"] = "short"
+    else:
+        data["video_type"] = "video"
+    return data
 
 def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
