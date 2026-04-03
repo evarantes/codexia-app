@@ -1093,6 +1093,21 @@
                                 <span v-else><i class="fab fa-youtube"></i> Publicar agora</span>
                             </button>
                         </div>
+                        <div class="mt-3 p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded border border-indigo-200">
+                            <h4 class="font-bold text-sm mb-2 text-indigo-900"><i class="fas fa-share-alt mr-1"></i> Publicar nas Redes Sociais</h4>
+                            <div class="flex flex-wrap gap-2">
+                                <button @click="publishToSocialYT('facebook', ytStoryVideoUrl, ytStoryContent)" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-facebook mr-1"></i> Facebook
+                                </button>
+                                <button @click="publishToSocialYT('instagram', ytStoryVideoUrl, ytStoryContent)" class="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-3 py-1.5 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-instagram mr-1"></i> Instagram
+                                </button>
+                                <button @click="publishToSocialYT('tiktok', ytStoryVideoUrl, ytStoryContent)" class="bg-black hover:bg-gray-800 text-white px-3 py-1.5 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-tiktok mr-1"></i> TikTok
+                                </button>
+                            </div>
+                            <p v-if="socialPublishResult" class="text-xs mt-2" :class="socialPublishResult.error ? 'text-red-600' : 'text-green-600'">{{ socialPublishResult.message }}</p>
+                        </div>
                     </div>
 
                     <div class="mt-6 bg-gray-50 border rounded p-4">
@@ -1235,6 +1250,15 @@
                                             <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="downloadVideo(video)" class="text-green-600 hover:text-green-800" title="Baixar Vídeo">
                                                 <i class="fas fa-download"></i>
                                             </button>
+                                            <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="publishToSocialYT('facebook', getVideoUrl(video), video.title)" class="text-blue-600 hover:text-blue-800" title="Facebook Reels" :disabled="socialPublishing">
+                                                <i class="fab fa-facebook"></i>
+                                            </button>
+                                            <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="publishToSocialYT('instagram', getVideoUrl(video), video.title)" class="text-pink-600 hover:text-pink-800" title="Instagram Reels" :disabled="socialPublishing">
+                                                <i class="fab fa-instagram"></i>
+                                            </button>
+                                            <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="publishToSocialYT('tiktok', getVideoUrl(video), video.title)" class="text-gray-800 hover:text-black" title="TikTok" :disabled="socialPublishing">
+                                                <i class="fab fa-tiktok"></i>
+                                            </button>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -1346,6 +1370,9 @@
                                                     <button @click="regenerateScheduledVideo(block.parent)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
                                                     <button @click="createShortsFromPublishedVideo(block.parent)" :disabled="ytPublishedShortsLoadingId === block.parent.id" class="text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 p-2 rounded text-sm disabled:opacity-50" title="Criar shorts deste vídeo"><i class="fas fa-bolt"></i> Criar shorts</button>
                                                     <button @click="republishScheduledVideo(block.parent)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
+                                                    <button v-if="block.parent.video_url" @click="publishToSocialYT('facebook', block.parent.video_url, block.parent.title)" class="text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 p-2 rounded text-sm" title="Facebook Reels" :disabled="socialPublishing"><i class="fab fa-facebook"></i></button>
+                                                    <button v-if="block.parent.video_url" @click="publishToSocialYT('instagram', block.parent.video_url, block.parent.title)" class="text-pink-600 hover:text-pink-800 bg-pink-50 hover:bg-pink-100 p-2 rounded text-sm" title="Instagram Reels" :disabled="socialPublishing"><i class="fab fa-instagram"></i></button>
+                                                    <button v-if="block.parent.video_url" @click="publishToSocialYT('tiktok', block.parent.video_url, block.parent.title)" class="text-gray-800 hover:text-black bg-gray-100 hover:bg-gray-200 p-2 rounded text-sm" title="TikTok" :disabled="socialPublishing"><i class="fab fa-tiktok"></i></button>
                                                     <button @click="deleteScheduledVideo(block.parent)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
                                                 </td>
                                             </tr>
@@ -1367,6 +1394,9 @@
                                                     <button @click="viewPublishedVideo(short)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
                                                     <button @click="regenerateScheduledVideo(short)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
                                                     <button @click="republishScheduledVideo(short)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
+                                                    <button v-if="short.video_url" @click="publishToSocialYT('facebook', short.video_url, short.title)" class="text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 p-2 rounded text-sm" title="Facebook Reels" :disabled="socialPublishing"><i class="fab fa-facebook"></i></button>
+                                                    <button v-if="short.video_url" @click="publishToSocialYT('instagram', short.video_url, short.title)" class="text-pink-600 hover:text-pink-800 bg-pink-50 hover:bg-pink-100 p-2 rounded text-sm" title="Instagram Reels" :disabled="socialPublishing"><i class="fab fa-instagram"></i></button>
+                                                    <button v-if="short.video_url" @click="publishToSocialYT('tiktok', short.video_url, short.title)" class="text-gray-800 hover:text-black bg-gray-100 hover:bg-gray-200 p-2 rounded text-sm" title="TikTok" :disabled="socialPublishing"><i class="fab fa-tiktok"></i></button>
                                                     <button @click="deleteScheduledVideo(short)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
                                                 </td>
                                             </tr>
@@ -4943,6 +4973,48 @@
                         }
                     } catch (e) {
                         this.socialPublishResult = {error: true, message: `Erro ao publicar: ${e.message || e}`};
+                    } finally {
+                        this.socialPublishing = false;
+                    }
+                },
+                getVideoUrl(video) {
+                    if (!video) return '';
+                    return video.video_url || video.file_path || '';
+                },
+                async publishToSocialYT(platform, videoUrl, title) {
+                    if (!videoUrl) { alert('URL do vídeo não disponível.'); return; }
+                    const names = {facebook: 'Facebook Reels', instagram: 'Instagram Reels', tiktok: 'TikTok'};
+                    if (!confirm(`Publicar este vídeo no ${names[platform] || platform}?`)) return;
+                    this.socialPublishing = true;
+                    this.socialPublishResult = null;
+                    try {
+                        const fullUrl = videoUrl.startsWith('http') ? videoUrl : (window.location.origin + videoUrl);
+                        const endpoint = platform === 'facebook' ? '/social/facebook/reels' :
+                                         platform === 'instagram' ? '/social/instagram/reels' :
+                                         '/social/tiktok/video';
+                        const body = {
+                            video_url: fullUrl,
+                            video_path: videoUrl,
+                            title: title || 'Codexia Video',
+                            description: title || '',
+                            caption: title || ''
+                        };
+                        const res = await this.authFetch(endpoint, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body)
+                        });
+                        const data = await res.json();
+                        if (data.error || data.detail) {
+                            this.socialPublishResult = {error: true, message: `Erro: ${data.error || data.detail}`};
+                            alert(`Erro ao publicar no ${names[platform]}: ${data.error || data.detail}`);
+                        } else {
+                            this.socialPublishResult = {error: false, message: `Publicado no ${names[platform]}! ID: ${data.id || data.publish_id || data.video_id || 'ok'}`};
+                            alert(`Publicado no ${names[platform]} com sucesso!`);
+                        }
+                    } catch (e) {
+                        this.socialPublishResult = {error: true, message: `Erro ao publicar: ${e.message || e}`};
+                        alert(`Erro ao publicar: ${e.message || e}`);
                     } finally {
                         this.socialPublishing = false;
                     }
