@@ -151,6 +151,11 @@ class Settings(Base):
     elevenlabs_api_key = Column(String, nullable=True)
     elevenlabs_voice_id = Column(String, nullable=True)
     elevenlabs_voice_name = Column(String, nullable=True)
+    # Instagram Integration (via Graph API — usa token do Facebook)
+    instagram_user_id = Column(String, nullable=True)
+    instagram_access_token = Column(String, nullable=True)
+    # TikTok Integration (Content Posting API)
+    tiktok_access_token = Column(String, nullable=True)
     
     is_active = Column(Boolean, default=True)
 
