@@ -596,8 +596,28 @@ class VideoFactory:
             local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
 
             if invalid_path or local_fallback:
-                # Mesmo em modo estrito, evitamos interrupção total do pipeline.
-                # O fallback contextual mantém produção ativa e evita "tela preta".
+                scene_status("Provedores configurados falharam. Tentando Pollinations direto...")
+                try:
+                    direct_url = self.video_gen._pollinations_direct_url(
+                        visual_prompt or f"Cinematic illustration for: {narration[:140]}",
+                        "16:9"
+                    )
+                    direct_path = self.video_gen.download_image(direct_url, retries=2, timeout=90)
+                    if direct_path and os.path.exists(direct_path) and os.path.getsize(direct_path) > 1000:
+                        if filepath and os.path.exists(filepath) and os.path.basename(filepath).startswith("fallback_local_"):
+                            try:
+                                os.remove(filepath)
+                            except Exception:
+                                pass
+                        filepath = direct_path
+                        source_type = "POLLINATIONS_DIRECT"
+                        invalid_path = False
+                        local_fallback = False
+                        scene_status(f"Imagem obtida via Pollinations direto (cena {scene.idx}).")
+                except Exception as e:
+                    scene_status(f"Pollinations direto falhou: {str(e)[:100]}")
+
+            if invalid_path or local_fallback:
                 from PIL import Image
                 fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
                 fallback_bg = self.video_gen._generate_fallback_background((1280, 720))
