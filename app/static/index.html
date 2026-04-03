@@ -400,6 +400,22 @@
                             O vídeo gerado aparecerá aqui
                         </div>
                         
+                        <div v-if="generatedVideoUrl" class="mt-4 p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded border border-indigo-200">
+                            <h3 class="font-bold text-sm mb-3 text-indigo-900"><i class="fas fa-share-alt mr-1"></i> Publicar nas Redes Sociais</h3>
+                            <div class="flex flex-wrap gap-2">
+                                <button @click="publishToSocial('facebook')" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-facebook mr-1"></i> Facebook Reels
+                                </button>
+                                <button @click="publishToSocial('instagram')" class="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-3 py-2 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-instagram mr-1"></i> Instagram Reels
+                                </button>
+                                <button @click="publishToSocial('tiktok')" class="bg-black hover:bg-gray-800 text-white px-3 py-2 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-tiktok mr-1"></i> TikTok
+                                </button>
+                            </div>
+                            <p v-if="socialPublishResult" class="text-xs mt-2" :class="socialPublishResult.error ? 'text-red-600' : 'text-green-600'">{{ socialPublishResult.message }}</p>
+                        </div>
+
                         <div v-if="generatedVideoScript" class="mt-4 p-4 bg-gray-50 rounded border max-h-64 overflow-y-auto">
                              <h3 class="font-bold text-sm mb-2">Roteiro Gerado:</h3>
                              <pre class="text-xs whitespace-pre-wrap">{{ JSON.stringify(generatedVideoScript, null, 2) }}</pre>
@@ -2233,6 +2249,28 @@
                     </div>
 
                     <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4"><i class="fab fa-instagram text-pink-600 mr-2"></i>Instagram (Reels & Feed)</h3>
+                        <p class="text-xs text-gray-500 mb-3">Requer conta Business/Creator vinculada a uma Facebook Page. O token pode ser o mesmo do Facebook com permissões instagram_basic e instagram_content_publish.</p>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Instagram User ID</label>
+                            <input v-model="settings.instagram_user_id" class="w-full border p-2 rounded" placeholder="Ex: 17841400123456789">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Instagram Access Token</label>
+                            <input v-model="settings.instagram_access_token" type="password" class="w-full border p-2 rounded" placeholder="Deixe vazio para usar o token do Facebook">
+                        </div>
+                    </div>
+
+                    <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4"><i class="fab fa-tiktok mr-2"></i>TikTok (Content Posting API)</h3>
+                        <p class="text-xs text-gray-500 mb-3">Requer um TikTok Developer App com acesso ao Content Posting API e um Access Token OAuth2 do usuário.</p>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">TikTok Access Token</label>
+                            <input v-model="settings.tiktok_access_token" type="password" class="w-full border p-2 rounded" placeholder="OAuth2 Access Token">
+                        </div>
+                    </div>
+
+                    <div class="border-t pt-4 mt-6 mb-4">
                         <h3 class="text-lg font-bold mb-4">WhatsApp (Bot)</h3>
                         <div class="mb-4">
                             <label class="block font-bold mb-2">WhatsApp Phone Number ID (Meta)</label>
@@ -2585,6 +2623,8 @@
                     voiceGender: 'female',
                     videoLoading: false,
                     generatedVideoUrl: null,
+                    socialPublishing: false,
+                    socialPublishResult: null,
 
                     // Música e Clipe
                     musicLyricsTheme: '',
@@ -2638,6 +2678,9 @@
                         youtube_refresh_token: '',
                         facebook_page_id: '',
                         facebook_access_token: '',
+                        instagram_user_id: '',
+                        instagram_access_token: '',
+                        tiktok_access_token: '',
                         whatsapp_phone_number_id: '',
                         whatsapp_access_token: '',
                         whatsapp_verify_token: '',
@@ -4867,6 +4910,41 @@
                         else alert("Erro: " + JSON.stringify(data));
                     } catch (e) {
                         alert("Erro ao postar");
+                    }
+                },
+                async publishToSocial(platform) {
+                    if (!this.generatedVideoUrl) return;
+                    const names = {facebook: 'Facebook Reels', instagram: 'Instagram Reels', tiktok: 'TikTok'};
+                    if (!confirm(`Publicar este vídeo no ${names[platform] || platform}?`)) return;
+                    this.socialPublishing = true;
+                    this.socialPublishResult = null;
+                    try {
+                        const videoUrl = this.generatedVideoUrl.startsWith('http') ? this.generatedVideoUrl : (window.location.origin + this.generatedVideoUrl);
+                        const endpoint = platform === 'facebook' ? '/social/facebook/reels' :
+                                         platform === 'instagram' ? '/social/instagram/reels' :
+                                         '/social/tiktok/video';
+                        const body = {
+                            video_url: videoUrl,
+                            video_path: this.generatedVideoUrl,
+                            title: this.videoContent || 'Codexia Video',
+                            description: this.videoContent || '',
+                            caption: this.videoContent || ''
+                        };
+                        const res = await this.authFetch(endpoint, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body)
+                        });
+                        const data = await res.json();
+                        if (data.error || data.detail) {
+                            this.socialPublishResult = {error: true, message: `Erro: ${data.error || data.detail}`};
+                        } else {
+                            this.socialPublishResult = {error: false, message: `Publicado no ${names[platform]}! ID: ${data.id || data.publish_id || data.video_id || 'ok'}`};
+                        }
+                    } catch (e) {
+                        this.socialPublishResult = {error: true, message: `Erro ao publicar: ${e.message || e}`};
+                    } finally {
+                        this.socialPublishing = false;
                     }
                 },
                 async generateVideo() {

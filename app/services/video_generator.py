@@ -391,22 +391,24 @@ class VideoGenerator:
             print(f"Erro no TTS Final (gTTS): {e}")
             return None
 
-    def download_image(self, url, retries=3):
+    def download_image(self, url, retries=3, timeout=20):
         import time
         try:
             import imghdr
         except ImportError:
             imghdr = None
         
+        if "pollinations.ai" in (url or ""):
+            timeout = max(timeout, 60)
+        
         for attempt in range(retries):
             try:
-                print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries})")
+                print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries}, timeout={timeout}s)")
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
                 }
-                # Verify=False somente se absolutamente necessário (risco de segurança, mas útil para debug em alguns envs)
-                response = requests.get(url, headers=headers, stream=True, timeout=20)
+                response = requests.get(url, headers=headers, stream=True, timeout=timeout)
                 
                 if response.status_code == 200:
                     filename = f"genimg_{uuid.uuid4().hex}.png"
@@ -500,6 +502,17 @@ class VideoGenerator:
             print(f"Erro ao gerar fundo local: {e}")
             return None
 
+    def _pollinations_direct_url(self, prompt, aspect_ratio="9:16"):
+        """Gera URL direta do Pollinations como último recurso (não requer API key)."""
+        import urllib.parse
+        width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
+        safe_prompt = urllib.parse.quote(
+            f"{prompt} original ai illustration cinematic concept art "
+            "highly detailed digital painting no text no watermark"
+        )
+        seed = uuid.uuid4()
+        return f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={seed}&enhance=false&model=flux"
+
     def _ensure_image_for_scene(
         self,
         prompt,
@@ -510,8 +523,9 @@ class VideoGenerator:
         allow_non_ai_fallback=False
     ):
         """
-        Garante imagem por IA com múltiplas tentativas/provedores.
-        Se allow_non_ai_fallback=False, retorna None ao esgotar tentativas.
+        Garante imagem por IA com múltiplas tentativas e todos os provedores disponíveis.
+        Sempre tenta obter uma imagem real de IA — nunca retorna None sem esgotar
+        todas as opções, incluindo Pollinations direto como último recurso gratuito.
         """
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
         rounds = max(1, min(6, int(max_rounds or 2)))
@@ -523,7 +537,6 @@ class VideoGenerator:
                 except Exception:
                     pass
 
-        # Garante prompt
         if not prompt and text_fallback:
             prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:220]}"
 
@@ -532,7 +545,10 @@ class VideoGenerator:
             notify("Sem prompt de imagem válido para esta cena.")
             return None
 
-        providers = ["edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        providers = [
+            "edenai", "openai_direct", "leonardo",
+            "pollinations_flux", "pollinations_turbo", "pollinations",
+        ]
         final_prompt = (
             f"{base_prompt}. Must align with the narration context. "
             "Exclusive original artwork, no stock photo, no text, no watermark."
@@ -563,6 +579,19 @@ class VideoGenerator:
                     return path
 
                 notify(f"Resposta inválida de {provider}; tentando próximo provedor.")
+
+        notify("Provedores configurados falharam. Tentando Pollinations direto como último recurso...")
+        for attempt in range(3):
+            try:
+                direct_url = self._pollinations_direct_url(base_prompt, aspect_ratio)
+                path = self.download_image(direct_url, retries=2, timeout=90)
+                if path and os.path.exists(path) and os.path.getsize(path) > 1000:
+                    notify(f"Imagem obtida via Pollinations direto (tentativa {attempt+1}).")
+                    return path
+            except Exception as e:
+                notify(f"Pollinations direto tentativa {attempt+1} falhou: {str(e)[:100]}")
+            import time
+            time.sleep(2)
 
         notify("Não foi possível gerar imagem personalizada após todas as tentativas.")
         if allow_non_ai_fallback:
@@ -893,6 +922,17 @@ class VideoGenerator:
                         allow_non_ai_fallback=allow_non_ai_fallback,
                     )
                     if not video_bg_path:
+                        try:
+                            direct_url = self._pollinations_direct_url(
+                                bg_prompt or f"Cinematic digital art background for: {title}",
+                                aspect_ratio
+                            )
+                            video_bg_path = self.download_image(direct_url, retries=2, timeout=90)
+                            if not (video_bg_path and os.path.exists(video_bg_path) and os.path.getsize(video_bg_path) > 1000):
+                                video_bg_path = None
+                        except Exception:
+                            video_bg_path = None
+                    if not video_bg_path:
                         video_bg_path = self._generate_fallback_background(video_size)
                     if video_bg_path:
                         video_bg_frame = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path)
@@ -936,6 +976,17 @@ class VideoGenerator:
                         allow_non_ai_fallback=allow_non_ai_fallback
                     )
                     
+                    if not img_path:
+                        try:
+                            direct_url = self._pollinations_direct_url(
+                                image_prompt or f"Cinematic scene for music video: {title}",
+                                aspect_ratio
+                            )
+                            img_path = self.download_image(direct_url, retries=2, timeout=90)
+                            if not (img_path and os.path.exists(img_path) and os.path.getsize(img_path) > 1000):
+                                img_path = None
+                        except Exception:
+                            img_path = None
                     if not img_path:
                         img_path = self._generate_fallback_background(video_size)
                         if img_path and progress_callback:
@@ -1102,6 +1153,22 @@ class VideoGenerator:
                             max_rounds=image_max_rounds,
                             allow_non_ai_fallback=allow_non_ai_fallback
                         )
+
+                if not bg_image_path:
+                    if progress_callback:
+                        progress_callback(scene_progress, f"Cena {i+1}/{total_scenes}: Tentando Pollinations direto como último recurso...")
+                    try:
+                        direct_url = self._pollinations_direct_url(
+                            image_prompt or f"Cinematic illustration for: {clean_text[:140]}",
+                            aspect_ratio
+                        )
+                        bg_image_path = self.download_image(direct_url, retries=2, timeout=90)
+                        if bg_image_path and os.path.exists(bg_image_path) and os.path.getsize(bg_image_path) > 1000:
+                            _track_image_path(bg_image_path)
+                        else:
+                            bg_image_path = None
+                    except Exception:
+                        bg_image_path = None
 
                 if not bg_image_path:
                     if not fallback_bg_path or not os.path.exists(fallback_bg_path):
@@ -1430,6 +1497,17 @@ class VideoGenerator:
                     status_callback=_clip_status,
                     allow_non_ai_fallback=allow_non_ai_fallback
                 ) if image_prompt else None
+                if image_prompt and not bg_image_path:
+                    try:
+                        direct_url = self._pollinations_direct_url(
+                            image_prompt or f"Cinematic scene for music clip: {text[:80]}",
+                            aspect_ratio
+                        )
+                        bg_image_path = self.download_image(direct_url, retries=2, timeout=90)
+                        if not (bg_image_path and os.path.exists(bg_image_path) and os.path.getsize(bg_image_path) > 1000):
+                            bg_image_path = None
+                    except Exception:
+                        bg_image_path = None
                 if image_prompt and not bg_image_path:
                     bg_image_path = self._generate_fallback_background(video_size)
                     if bg_image_path:
