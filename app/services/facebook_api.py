@@ -43,8 +43,7 @@ class FacebookService:
         self._load_config()
 
         if not self._is_configured():
-            print("[FACEBOOK MOCK] Credenciais não configuradas. Simulando postagem.")
-            return {"id": "mock_post_id_12345", "status": "published_mock"}
+            return {"error": "Facebook não configurado. Adicione o Page ID e Access Token em Configurações."}
 
         url = f"{GRAPH_API_BASE}/{self.page_id}/feed"
         payload = {
@@ -69,8 +68,7 @@ class FacebookService:
         self._load_config()
 
         if not self._is_configured():
-            print("[FACEBOOK MOCK] Credenciais não configuradas. Simulando upload de vídeo.")
-            return {"id": "mock_video_id_12345", "status": "published_mock"}
+            return {"error": "Facebook não configurado. Adicione o Page ID e Access Token em Configurações."}
 
         if not video_path or not os.path.exists(video_path):
             return {"error": f"Arquivo de vídeo não encontrado: {video_path}"}
@@ -99,8 +97,7 @@ class FacebookService:
         self._load_config()
 
         if not self._is_configured():
-            print("[FACEBOOK MOCK] Credenciais não configuradas. Simulando upload de Reel.")
-            return {"id": "mock_reel_id_12345", "status": "published_mock"}
+            return {"error": "Facebook não configurado. Adicione o Page ID e Access Token em Configurações."}
 
         if not video_path or not os.path.exists(video_path):
             return {"error": f"Arquivo de vídeo não encontrado: {video_path}"}

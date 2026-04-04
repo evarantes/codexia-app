@@ -48,8 +48,7 @@ class InstagramService:
         self._load_config()
 
         if not self._is_configured():
-            print("[INSTAGRAM MOCK] Credenciais não configuradas. Simulando publicação de Reel.")
-            return {"id": "mock_ig_reel_12345", "status": "published_mock"}
+            return {"error": "Instagram não configurado. Adicione o User ID e Access Token em Configurações."}
 
         try:
             container_url = f"{GRAPH_API_BASE}/{self.ig_user_id}/media"
@@ -106,8 +105,7 @@ class InstagramService:
         self._load_config()
 
         if not self._is_configured():
-            print("[INSTAGRAM MOCK] Credenciais não configuradas. Simulando publicação.")
-            return {"id": "mock_ig_post_12345", "status": "published_mock"}
+            return {"error": "Instagram não configurado. Adicione o User ID e Access Token em Configurações."}
 
         try:
             container_url = f"{GRAPH_API_BASE}/{self.ig_user_id}/media"
