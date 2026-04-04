@@ -675,22 +675,24 @@ class VideoGenerator:
             print(f"Erro no TTS Final (gTTS): {e}")
             return None
 
-    def download_image(self, url, retries=3):
+    def download_image(self, url, retries=3, timeout=20):
         import time
         try:
             import imghdr
         except ImportError:
             imghdr = None
         
+        if "pollinations.ai" in (url or ""):
+            timeout = max(timeout, 60)
+        
         for attempt in range(retries):
             try:
-                print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries})")
+                print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries}, timeout={timeout}s)")
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
                 }
-                # Verify=False somente se absolutamente necessário (risco de segurança, mas útil para debug em alguns envs)
-                response = requests.get(url, headers=headers, stream=True, timeout=20)
+                response = requests.get(url, headers=headers, stream=True, timeout=timeout)
                 
                 if response.status_code == 200:
                     filename = f"genimg_{uuid.uuid4().hex}.png"
@@ -784,6 +786,17 @@ class VideoGenerator:
             print(f"Erro ao gerar fundo local: {e}")
             return None
 
+    def _pollinations_direct_url(self, prompt, aspect_ratio="9:16"):
+        """Gera URL direta do Pollinations como último recurso (não requer API key)."""
+        import urllib.parse
+        width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
+        safe_prompt = urllib.parse.quote(
+            f"{prompt} original ai illustration cinematic concept art "
+            "highly detailed digital painting no text no watermark"
+        )
+        seed = uuid.uuid4()
+        return f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={seed}&enhance=false&model=flux"
+
     def _ensure_image_for_scene(
         self,
         prompt,
@@ -794,8 +807,9 @@ class VideoGenerator:
         allow_non_ai_fallback=False
     ):
         """
-        Garante imagem por IA com múltiplas tentativas/provedores.
-        Se allow_non_ai_fallback=False, retorna None ao esgotar tentativas.
+        Garante imagem por IA com múltiplas tentativas e todos os provedores disponíveis.
+        Sempre tenta obter uma imagem real de IA — nunca retorna None sem esgotar
+        todas as opções, incluindo Pollinations direto como último recurso gratuito.
         """
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
         rounds = max(1, min(6, int(max_rounds or 2)))
@@ -807,7 +821,6 @@ class VideoGenerator:
                 except Exception:
                     pass
 
-        # Garante prompt
         if not prompt and text_fallback:
             prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:220]}"
 
@@ -816,7 +829,10 @@ class VideoGenerator:
             notify("Sem prompt de imagem válido para esta cena.")
             return None
 
-        providers = ["edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        providers = [
+            "edenai", "openai_direct", "leonardo",
+            "pollinations_flux", "pollinations_turbo", "pollinations",
+        ]
         final_prompt = (
             f"{base_prompt}. Must align with the narration context. "
             "Exclusive original artwork, no stock photo, no text, no watermark."
@@ -847,6 +863,19 @@ class VideoGenerator:
                     return path
 
                 notify(f"Resposta inválida de {provider}; tentando próximo provedor.")
+
+        notify("Provedores configurados falharam. Tentando Pollinations direto como último recurso...")
+        for attempt in range(3):
+            try:
+                direct_url = self._pollinations_direct_url(base_prompt, aspect_ratio)
+                path = self.download_image(direct_url, retries=2, timeout=90)
+                if path and os.path.exists(path) and os.path.getsize(path) > 1000:
+                    notify(f"Imagem obtida via Pollinations direto (tentativa {attempt+1}).")
+                    return path
+            except Exception as e:
+                notify(f"Pollinations direto tentativa {attempt+1} falhou: {str(e)[:100]}")
+            import time
+            time.sleep(2)
 
         notify("Não foi possível gerar imagem personalizada após todas as tentativas.")
         if allow_non_ai_fallback:
@@ -1036,22 +1065,31 @@ class VideoGenerator:
                 else:
                     raw_scenes = []
 
-            # PROCESSAMENTO DE CENAS LONGAS: Quebra automática de texto (Apenas se NÃO for modo música)
-            scenes = []
-            if not music_file_path:
-                for scene in raw_scenes:
+            def _materialize_scenes(raw_list):
+                scenes_local = []
+                if music_file_path:
+                    return raw_list if isinstance(raw_list, list) else []
+                if not isinstance(raw_list, list):
+                    return []
+                for scene in raw_list:
                     scene_text = ""
                     scene_prompt = ""
-                    
+
                     if isinstance(scene, str):
                         scene_text = scene
-                    else:
+                    elif isinstance(scene, dict):
                         scene_text = scene.get('text', '')
                         scene_prompt = scene.get('image_prompt', '')
+                    else:
+                        scene_text = str(scene)
+
+                    scene_text = (scene_text or "").strip()
+                    if not scene_text:
+                        continue
 
                     if not scene_prompt and scene_text:
                         scene_prompt = f"Cinematic digital art representing: {scene_text[:140]}"
-                    
+
                     split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "320").strip() or "320")
                     target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "240").strip() or "240")
                     target_chars = max(160, min(800, target_chars))
@@ -1082,15 +1120,56 @@ class VideoGenerator:
                                 chosen_screen_text = screen_chunks[min(chunk_idx, len(screen_chunks) - 1)]
                                 if chosen_screen_text:
                                     normalized_scene["on_screen_text"] = chosen_screen_text
-                            scenes.append(normalized_scene)
+                            scenes_local.append(normalized_scene)
                     else:
                         normalized_scene = dict(scene) if isinstance(scene, dict) else {}
                         normalized_scene["text"] = scene_text
                         normalized_scene["image_prompt"] = scene_prompt
-                        scenes.append(normalized_scene)
-            else:
-                # No modo música, usamos as cenas como vieram (já quebradas por tempo)
-                scenes = raw_scenes
+                        scenes_local.append(normalized_scene)
+                return scenes_local
+
+            scenes = _materialize_scenes(raw_scenes)
+            if not scenes and not music_file_path:
+                alt_raw = plan.get("blocks") or plan.get("segments") or plan.get("parts") or plan.get("chapters") or []
+                if isinstance(alt_raw, list) and alt_raw:
+                    raw_scenes = alt_raw
+                    scenes = _materialize_scenes(raw_scenes)
+
+            if not scenes and not music_file_path:
+                base_text = ""
+                for k in (
+                    "roteiro",
+                    "script",
+                    "text",
+                    "content",
+                    "story_content",
+                    "narration_text",
+                    "narration",
+                    "raw_text",
+                    "raw_script",
+                    "full_text",
+                ):
+                    v = plan.get(k)
+                    if isinstance(v, str) and v.strip():
+                        base_text = v.strip()
+                        break
+                if base_text:
+                    raw_scenes = [{"text": base_text, "image_prompt": plan.get("image_prompt") or ""}]
+                    scenes = _materialize_scenes(raw_scenes)
+
+            if not scenes and not music_file_path:
+                fallback_text = ""
+                try:
+                    desc = (plan.get("description") or "").strip() if isinstance(plan, dict) else ""
+                except Exception:
+                    desc = ""
+                if isinstance(title, str) and title.strip():
+                    fallback_text = title.strip()
+                if desc:
+                    fallback_text = (fallback_text + "\n\n" + desc).strip()
+                if not fallback_text:
+                    fallback_text = "Conteúdo em preparação."
+                scenes = [{"text": fallback_text, "image_prompt": plan.get("image_prompt") if isinstance(plan, dict) else ""}]
 
             render_options = self._resolve_render_options(plan.get("target_duration_sec"), len(scenes))
 
@@ -1158,6 +1237,17 @@ class VideoGenerator:
                         allow_non_ai_fallback=allow_non_ai_fallback,
                     )
                     if not video_bg_path:
+                        try:
+                            direct_url = self._pollinations_direct_url(
+                                bg_prompt or f"Cinematic digital art background for: {title}",
+                                aspect_ratio
+                            )
+                            video_bg_path = self.download_image(direct_url, retries=2, timeout=90)
+                            if not (video_bg_path and os.path.exists(video_bg_path) and os.path.getsize(video_bg_path) > 1000):
+                                video_bg_path = None
+                        except Exception:
+                            video_bg_path = None
+                    if not video_bg_path:
                         video_bg_path = self._generate_fallback_background(video_size)
                     if video_bg_path:
                         video_bg_frame = self._safe_frame_array(
@@ -1204,6 +1294,17 @@ class VideoGenerator:
                         allow_non_ai_fallback=allow_non_ai_fallback
                     )
                     
+                    if not img_path:
+                        try:
+                            direct_url = self._pollinations_direct_url(
+                                image_prompt or f"Cinematic scene for music video: {title}",
+                                aspect_ratio
+                            )
+                            img_path = self.download_image(direct_url, retries=2, timeout=90)
+                            if not (img_path and os.path.exists(img_path) and os.path.getsize(img_path) > 1000):
+                                img_path = None
+                        except Exception:
+                            img_path = None
                     if not img_path:
                         img_path = self._generate_fallback_background(video_size)
                         if img_path and progress_callback:
@@ -1318,9 +1419,8 @@ class VideoGenerator:
             # 2. Cenas
             total_scenes = len(scenes)
             for i, scene in enumerate(scenes):
+                scene_progress = 10 + int((i / total_scenes) * 70)
                 if progress_callback:
-                    # Progresso proporcional entre 10% e 80%
-                    scene_progress = 10 + int((i / total_scenes) * 70)
                     progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
                     
                 if isinstance(scene, str):
@@ -1395,6 +1495,22 @@ class VideoGenerator:
                             )
                             if bg_image_path and os.path.exists(bg_image_path):
                                 unique_images_generated += 1
+
+                if not bg_image_path:
+                    if progress_callback:
+                        progress_callback(scene_progress, f"Cena {i+1}/{total_scenes}: Tentando Pollinations direto como último recurso...")
+                    try:
+                        direct_url = self._pollinations_direct_url(
+                            image_prompt or f"Cinematic illustration for: {clean_text[:140]}",
+                            aspect_ratio
+                        )
+                        bg_image_path = self.download_image(direct_url, retries=2, timeout=90)
+                        if bg_image_path and os.path.exists(bg_image_path) and os.path.getsize(bg_image_path) > 1000:
+                            _track_image_path(bg_image_path)
+                        else:
+                            bg_image_path = None
+                    except Exception:
+                        bg_image_path = None
 
                 if not bg_image_path:
                     if not fallback_bg_path or not os.path.exists(fallback_bg_path):
@@ -1783,6 +1899,17 @@ class VideoGenerator:
                     status_callback=_clip_status,
                     allow_non_ai_fallback=allow_non_ai_fallback
                 ) if image_prompt else None
+                if image_prompt and not bg_image_path:
+                    try:
+                        direct_url = self._pollinations_direct_url(
+                            image_prompt or f"Cinematic scene for music clip: {text[:80]}",
+                            aspect_ratio
+                        )
+                        bg_image_path = self.download_image(direct_url, retries=2, timeout=90)
+                        if not (bg_image_path and os.path.exists(bg_image_path) and os.path.getsize(bg_image_path) > 1000):
+                            bg_image_path = None
+                    except Exception:
+                        bg_image_path = None
                 if image_prompt and not bg_image_path:
                     bg_image_path = self._generate_fallback_background(video_size)
                     if bg_image_path:

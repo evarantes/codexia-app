@@ -400,6 +400,22 @@
                             O vídeo gerado aparecerá aqui
                         </div>
                         
+                        <div v-if="generatedVideoUrl" class="mt-4 p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded border border-indigo-200">
+                            <h3 class="font-bold text-sm mb-3 text-indigo-900"><i class="fas fa-share-alt mr-1"></i> Publicar nas Redes Sociais</h3>
+                            <div class="flex flex-wrap gap-2">
+                                <button @click="publishToSocial('facebook')" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-facebook mr-1"></i> Facebook Reels
+                                </button>
+                                <button @click="publishToSocial('instagram')" class="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-3 py-2 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-instagram mr-1"></i> Instagram Reels
+                                </button>
+                                <button @click="publishToSocial('tiktok')" class="bg-black hover:bg-gray-800 text-white px-3 py-2 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-tiktok mr-1"></i> TikTok
+                                </button>
+                            </div>
+                            <p v-if="socialPublishResult" class="text-xs mt-2" :class="socialPublishResult.error ? 'text-red-600' : 'text-green-600'">{{ socialPublishResult.message }}</p>
+                        </div>
+
                         <div v-if="generatedVideoScript" class="mt-4 p-4 bg-gray-50 rounded border max-h-64 overflow-y-auto">
                              <h3 class="font-bold text-sm mb-2">Roteiro Gerado:</h3>
                              <pre class="text-xs whitespace-pre-wrap">{{ JSON.stringify(generatedVideoScript, null, 2) }}</pre>
@@ -1080,6 +1096,21 @@
                                 <span v-else><i class="fab fa-youtube"></i> Publicar agora</span>
                             </button>
                         </div>
+                        <div class="mt-3 p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded border border-indigo-200">
+                            <h4 class="font-bold text-sm mb-2 text-indigo-900"><i class="fas fa-share-alt mr-1"></i> Publicar nas Redes Sociais</h4>
+                            <div class="flex flex-wrap gap-2">
+                                <button @click="publishToSocialYT('facebook', ytStoryVideoUrl, ytStoryContent)" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-facebook mr-1"></i> Facebook
+                                </button>
+                                <button @click="publishToSocialYT('instagram', ytStoryVideoUrl, ytStoryContent)" class="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-3 py-1.5 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-instagram mr-1"></i> Instagram
+                                </button>
+                                <button @click="publishToSocialYT('tiktok', ytStoryVideoUrl, ytStoryContent)" class="bg-black hover:bg-gray-800 text-white px-3 py-1.5 rounded text-sm transition-colors" :disabled="socialPublishing">
+                                    <i class="fab fa-tiktok mr-1"></i> TikTok
+                                </button>
+                            </div>
+                            <p v-if="socialPublishResult" class="text-xs mt-2" :class="socialPublishResult.error ? 'text-red-600' : 'text-green-600'">{{ socialPublishResult.message }}</p>
+                        </div>
                     </div>
 
                     <div class="mt-6 bg-gray-50 border rounded p-4">
@@ -1222,6 +1253,15 @@
                                             <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="downloadVideo(video)" class="text-green-600 hover:text-green-800" title="Baixar Vídeo">
                                                 <i class="fas fa-download"></i>
                                             </button>
+                                            <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="publishToSocialYT('facebook', getVideoUrl(video), video.title)" class="text-blue-600 hover:text-blue-800" title="Facebook Reels" :disabled="socialPublishing">
+                                                <i class="fab fa-facebook"></i>
+                                            </button>
+                                            <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="publishToSocialYT('instagram', getVideoUrl(video), video.title)" class="text-pink-600 hover:text-pink-800" title="Instagram Reels" :disabled="socialPublishing">
+                                                <i class="fab fa-instagram"></i>
+                                            </button>
+                                            <button v-if="isReadyStatus(video.status) || isPublishedStatus(video.status)" @click="publishToSocialYT('tiktok', getVideoUrl(video), video.title)" class="text-gray-800 hover:text-black" title="TikTok" :disabled="socialPublishing">
+                                                <i class="fab fa-tiktok"></i>
+                                            </button>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -1333,6 +1373,9 @@
                                                     <button @click="regenerateScheduledVideo(block.parent)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
                                                     <button @click="createShortsFromPublishedVideo(block.parent)" :disabled="ytPublishedShortsLoadingId === block.parent.id" class="text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 p-2 rounded text-sm disabled:opacity-50" title="Criar shorts deste vídeo"><i class="fas fa-bolt"></i> Criar shorts</button>
                                                     <button @click="republishScheduledVideo(block.parent)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
+                                                    <button v-if="block.parent.video_url" @click="publishToSocialYT('facebook', block.parent.video_url, block.parent.title)" class="text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 p-2 rounded text-sm" title="Facebook Reels" :disabled="socialPublishing"><i class="fab fa-facebook"></i></button>
+                                                    <button v-if="block.parent.video_url" @click="publishToSocialYT('instagram', block.parent.video_url, block.parent.title)" class="text-pink-600 hover:text-pink-800 bg-pink-50 hover:bg-pink-100 p-2 rounded text-sm" title="Instagram Reels" :disabled="socialPublishing"><i class="fab fa-instagram"></i></button>
+                                                    <button v-if="block.parent.video_url" @click="publishToSocialYT('tiktok', block.parent.video_url, block.parent.title)" class="text-gray-800 hover:text-black bg-gray-100 hover:bg-gray-200 p-2 rounded text-sm" title="TikTok" :disabled="socialPublishing"><i class="fab fa-tiktok"></i></button>
                                                     <button @click="deleteScheduledVideo(block.parent)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
                                                 </td>
                                             </tr>
@@ -1354,6 +1397,9 @@
                                                     <button @click="viewPublishedVideo(short)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
                                                     <button @click="regenerateScheduledVideo(short)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
                                                     <button @click="republishScheduledVideo(short)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded text-sm" title="Republicar no YouTube"><i class="fas fa-upload"></i> Republicar</button>
+                                                    <button v-if="short.video_url" @click="publishToSocialYT('facebook', short.video_url, short.title)" class="text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 p-2 rounded text-sm" title="Facebook Reels" :disabled="socialPublishing"><i class="fab fa-facebook"></i></button>
+                                                    <button v-if="short.video_url" @click="publishToSocialYT('instagram', short.video_url, short.title)" class="text-pink-600 hover:text-pink-800 bg-pink-50 hover:bg-pink-100 p-2 rounded text-sm" title="Instagram Reels" :disabled="socialPublishing"><i class="fab fa-instagram"></i></button>
+                                                    <button v-if="short.video_url" @click="publishToSocialYT('tiktok', short.video_url, short.title)" class="text-gray-800 hover:text-black bg-gray-100 hover:bg-gray-200 p-2 rounded text-sm" title="TikTok" :disabled="socialPublishing"><i class="fab fa-tiktok"></i></button>
                                                     <button @click="deleteScheduledVideo(short)" class="text-red-400 hover:text-red-600 p-2" title="Excluir do Histórico"><i class="fas fa-trash"></i></button>
                                                 </td>
                                             </tr>
@@ -1368,10 +1414,11 @@
                 </div> <!-- fim youtubeSubTab === 'production' wrapper -->
 
                 <div v-if="youtubeSubTab === 'community'" class="space-y-6">
+                    <!-- Seção Comentários -->
                     <div class="bg-white rounded-lg shadow p-6 border-l-4 border-indigo-500">
                         <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
                             <h2 class="text-xl font-bold text-indigo-900 flex items-center gap-2">
-                                <i class="fas fa-comments"></i> Comunidade do Canal
+                                <i class="fas fa-comments"></i> Comentários da Comunidade
                             </h2>
                             <button @click="loadCommunityComments" :disabled="communityLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2 text-sm disabled:opacity-50">
                                 <i v-if="communityLoading" class="fas fa-spinner fa-spin"></i>
@@ -1384,6 +1431,7 @@
                                 <label class="block font-bold mb-2 text-sm text-gray-700">Vídeo publicado</label>
                                 <select v-model="communitySelectedYoutubeId" class="w-full border rounded p-2 bg-white">
                                     <option value="">Selecione...</option>
+                                    <option value="__all__">📋 Todos os vídeos</option>
                                     <option v-for="v in publishedVideos.filter(x => x.youtube_video_id)" :key="'cvid-'+v.id" :value="v.youtube_video_id">
                                         {{ v.title }} ({{ v.youtube_video_id }})
                                     </option>
@@ -1403,31 +1451,123 @@
                     </div>
 
                     <div v-if="communityLoading" class="text-gray-500 italic">Carregando comentários...</div>
-                    <div v-else-if="communityItems.length === 0" class="text-gray-500 italic">Nenhum comentário carregado ainda.</div>
+                    <div v-else-if="communityItems.length === 0 && !communityLoading" class="text-gray-500 italic">Nenhum comentário carregado ainda.</div>
                     <div v-else class="space-y-3">
-                        <div v-for="it in communityItems" :key="it.youtube_comment_id" class="bg-white rounded-lg shadow p-5 border">
+                        <div v-for="it in communityItems" :key="it.youtube_comment_id" class="bg-white rounded-lg shadow p-5 border" :class="{'border-l-4 border-green-400': it.status === 'replied'}">
                             <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-3">
                                 <div class="text-sm text-gray-700 font-semibold">
                                     {{ it.author || 'Usuário' }} • {{ it.like_count || 0 }} likes
+                                    <span v-if="communitySelectedYoutubeId === '__all__'" class="text-xs text-gray-400 ml-2">({{ it.youtube_video_id }})</span>
                                 </div>
                                 <div class="flex gap-2 flex-wrap text-xs">
                                     <span v-if="it.label" class="px-2 py-1 rounded bg-indigo-100 text-indigo-800 font-bold uppercase">{{ it.label }}</span>
                                     <span v-if="it.sentiment" class="px-2 py-1 rounded bg-gray-100 text-gray-800 font-bold uppercase">{{ it.sentiment }}</span>
                                     <span v-if="it.urgency" class="px-2 py-1 rounded bg-amber-100 text-amber-900 font-bold uppercase">{{ it.urgency }}</span>
-                                    <span v-if="it.status" class="px-2 py-1 rounded bg-green-100 text-green-800 font-bold uppercase">{{ it.status }}</span>
+                                    <span v-if="it.status === 'replied'" class="px-2 py-1 rounded bg-green-500 text-white font-bold uppercase"><i class="fas fa-check-circle mr-1"></i>Respondido</span>
+                                    <span v-else-if="it.status === 'reviewed'" class="px-2 py-1 rounded bg-blue-100 text-blue-800 font-bold uppercase">Revisado</span>
+                                    <span v-else-if="it.status" class="px-2 py-1 rounded bg-yellow-100 text-yellow-800 font-bold uppercase">{{ it.status === 'new' ? 'Novo' : it.status }}</span>
                                 </div>
                             </div>
 
                             <div class="text-gray-800 whitespace-pre-line mb-4">{{ it.text }}</div>
 
-                            <label class="block font-bold mb-2 text-sm text-gray-700">Resposta sugerida</label>
-                            <textarea v-model="it.reply_draft" class="w-full border rounded p-3 text-sm" rows="3" placeholder="Escreva ou edite a resposta..."></textarea>
+                            <!-- Resposta já enviada -->
+                            <div v-if="it.status === 'replied' && it.reply_text" class="mb-4 p-3 rounded bg-green-50 border border-green-200">
+                                <div class="text-xs font-bold text-green-700 mb-1"><i class="fas fa-reply mr-1"></i> Sua resposta:</div>
+                                <div class="text-sm text-green-900 whitespace-pre-line">{{ it.reply_text }}</div>
+                                <div v-if="it.reply_sent_at" class="text-xs text-green-600 mt-1">Enviada em {{ new Date(it.reply_sent_at).toLocaleString('pt-BR') }}</div>
+                            </div>
 
-                            <div class="flex justify-end mt-3">
-                                <button @click="sendCommunityReply(it)" :disabled="replySendingId === it.youtube_comment_id || it.status === 'replied'" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 flex items-center gap-2 text-sm disabled:opacity-50">
-                                    <i v-if="replySendingId === it.youtube_comment_id" class="fas fa-spinner fa-spin"></i>
-                                    <span v-else>Enviar resposta</span>
+                            <!-- Respostas de outros usuários (thread) -->
+                            <div v-if="communityReplies[it.youtube_comment_id] && communityReplies[it.youtube_comment_id].length" class="mb-4 ml-4 pl-4 border-l-2 border-indigo-200 space-y-2">
+                                <div class="text-xs font-bold text-indigo-700 mb-1"><i class="fas fa-comments mr-1"></i> Respostas ({{ communityReplies[it.youtube_comment_id].length }}):</div>
+                                <div v-for="reply in communityReplies[it.youtube_comment_id]" :key="reply.youtube_comment_id" class="p-2 rounded bg-indigo-50 text-sm">
+                                    <span class="font-semibold text-indigo-800">{{ reply.author || 'Usuário' }}</span>
+                                    <span class="text-gray-500 ml-1">• {{ reply.like_count || 0 }} likes</span>
+                                    <div class="text-gray-700 mt-1 whitespace-pre-line">{{ reply.text }}</div>
+                                </div>
+                            </div>
+
+                            <!-- Área de resposta (só se não respondido) -->
+                            <div v-if="it.status !== 'replied'">
+                                <label class="block font-bold mb-2 text-sm text-gray-700">Resposta sugerida</label>
+                                <textarea v-model="it.reply_draft" class="w-full border rounded p-3 text-sm" rows="3" placeholder="Escreva ou edite a resposta..."></textarea>
+
+                                <div class="flex justify-end mt-3">
+                                    <button @click="sendCommunityReply(it)" :disabled="replySendingId === it.youtube_comment_id" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 flex items-center gap-2 text-sm disabled:opacity-50">
+                                        <i v-if="replySendingId === it.youtube_comment_id" class="fas fa-spinner fa-spin"></i>
+                                        <span v-else><i class="fas fa-paper-plane mr-1"></i> Enviar resposta</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Seção Posts da Comunidade (Posters & Enquetes) -->
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-purple-500 mt-6">
+                        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                            <h2 class="text-xl font-bold text-purple-900 flex items-center gap-2">
+                                <i class="fas fa-bullhorn"></i> Posts da Comunidade
+                            </h2>
+                            <button @click="fetchCommunityPosts" :disabled="communityPostsLoading" class="bg-purple-600 text-white px-3 py-2 rounded hover:bg-purple-700 text-sm disabled:opacity-50">
+                                <i v-if="communityPostsLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-sync-alt mr-1"></i> Atualizar</span>
+                            </button>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                            <div class="md:col-span-2">
+                                <input v-model="communityPostTopic" type="text" class="w-full border rounded p-2 text-sm" placeholder="Tema do post (ex: motivação, tecnologia, dúvidas do público...)">
+                            </div>
+                            <div class="flex gap-2">
+                                <button @click="generateCommunityPost('poster')" :disabled="communityPostGenerating" class="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white px-3 py-2 rounded hover:from-purple-600 hover:to-pink-600 text-sm disabled:opacity-50">
+                                    <i v-if="communityPostGenerating" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else><i class="fas fa-image mr-1"></i> Gerar Poster</span>
                                 </button>
+                                <button @click="generateCommunityPost('poll')" :disabled="communityPostGenerating" class="flex-1 bg-gradient-to-r from-blue-500 to-indigo-500 text-white px-3 py-2 rounded hover:from-blue-600 hover:to-indigo-600 text-sm disabled:opacity-50">
+                                    <i v-if="communityPostGenerating" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else><i class="fas fa-poll mr-1"></i> Gerar Enquete</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div v-if="communityPosts.length === 0 && !communityPostsLoading" class="text-gray-500 italic text-sm">Nenhum post gerado ainda. Use os botões acima para criar posters e enquetes com IA.</div>
+
+                        <div class="space-y-4">
+                            <div v-for="post in communityPosts" :key="'cp-'+post.id" class="border rounded-lg p-4" :class="post.post_type === 'poll' ? 'bg-blue-50 border-blue-200' : 'bg-purple-50 border-purple-200'">
+                                <div class="flex justify-between items-start mb-2">
+                                    <div>
+                                        <span class="text-xs font-bold uppercase px-2 py-1 rounded" :class="post.post_type === 'poll' ? 'bg-blue-200 text-blue-800' : 'bg-purple-200 text-purple-800'">
+                                            {{ post.post_type === 'poll' ? 'Enquete' : 'Poster' }}
+                                        </span>
+                                        <span class="text-xs ml-2" :class="post.status === 'published' ? 'text-green-600 font-bold' : 'text-gray-500'">
+                                            {{ post.status === 'published' ? 'Publicado' : 'Rascunho' }}
+                                        </span>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button v-if="post.status !== 'published'" @click="publishCommunityPost(post.id)" class="text-green-600 hover:text-green-800 text-sm" title="Publicar">
+                                            <i class="fas fa-check-circle"></i>
+                                        </button>
+                                        <button @click="deleteCommunityPost(post.id)" class="text-red-400 hover:text-red-600 text-sm" title="Excluir">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <h3 class="font-bold text-gray-800 mb-2">{{ post.title }}</h3>
+                                <div class="text-sm text-gray-700 whitespace-pre-line mb-3">{{ post.content }}</div>
+
+                                <!-- Enquete: opções de voto -->
+                                <div v-if="post.post_type === 'poll' && post.poll_options" class="space-y-2">
+                                    <div v-for="(opt, idx) in post.poll_options" :key="'opt-'+idx" class="flex items-center gap-3">
+                                        <button @click="voteCommunityPoll(post.id, idx)" class="flex-1 text-left p-2 rounded border bg-white hover:bg-blue-100 text-sm transition-colors">
+                                            {{ opt.text }}
+                                        </button>
+                                        <span class="text-xs font-bold text-blue-700 min-w-[40px] text-right">{{ opt.votes || 0 }} votos</span>
+                                    </div>
+                                </div>
+
+                                <div v-if="post.image_prompt" class="mt-2 text-xs text-gray-400"><i class="fas fa-palette mr-1"></i> Prompt de imagem: {{ post.image_prompt }}</div>
+                                <div class="text-xs text-gray-400 mt-1">{{ post.created_at ? new Date(post.created_at).toLocaleString('pt-BR') : '' }}</div>
                             </div>
                         </div>
                     </div>
@@ -1531,11 +1671,17 @@
                                 </ul>
                             </div>
 
+                            <div v-if="monetizationData.ai_insights.strategy_suggestion" class="text-sm text-gray-700 p-3 rounded bg-green-50 border border-green-200">
+                                <h3 class="font-semibold mb-1 text-green-800"><i class="fas fa-chess mr-1"></i> Estratégia Principal:</h3>
+                                <p>{{ monetizationData.ai_insights.strategy_suggestion }}</p>
+                            </div>
+
                             <div v-if="monetizationData.ai_insights.weekly_actions && monetizationData.ai_insights.weekly_actions.length" class="text-sm text-gray-700">
-                                <h3 class="font-semibold mb-1">Ações semanais sugeridas:</h3>
-                                <ul class="list-disc pl-5 space-y-1">
-                                    <li v-for="(act, idx) in monetizationData.ai_insights.weekly_actions" :key="'wa-'+idx">
-                                        {{ act }}
+                                <h3 class="font-semibold mb-2"><i class="fas fa-tasks mr-1"></i> Ações semanais sugeridas:</h3>
+                                <ul class="space-y-2">
+                                    <li v-for="(act, idx) in monetizationData.ai_insights.weekly_actions" :key="'wa-'+idx" class="flex items-start gap-2">
+                                        <span class="flex-shrink-0 w-6 h-6 rounded-full bg-green-100 text-green-800 flex items-center justify-center text-xs font-bold">{{ idx + 1 }}</span>
+                                        <span>{{ act }}</span>
                                     </li>
                                 </ul>
                             </div>
@@ -2236,6 +2382,28 @@
                     </div>
 
                     <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4"><i class="fab fa-instagram text-pink-600 mr-2"></i>Instagram (Reels & Feed)</h3>
+                        <p class="text-xs text-gray-500 mb-3">Requer conta Business/Creator vinculada a uma Facebook Page. O token pode ser o mesmo do Facebook com permissões instagram_basic e instagram_content_publish.</p>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Instagram User ID</label>
+                            <input v-model="settings.instagram_user_id" class="w-full border p-2 rounded" placeholder="Ex: 17841400123456789">
+                        </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Instagram Access Token</label>
+                            <input v-model="settings.instagram_access_token" type="password" class="w-full border p-2 rounded" placeholder="Deixe vazio para usar o token do Facebook">
+                        </div>
+                    </div>
+
+                    <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4"><i class="fab fa-tiktok mr-2"></i>TikTok (Content Posting API)</h3>
+                        <p class="text-xs text-gray-500 mb-3">Requer um TikTok Developer App com acesso ao Content Posting API e um Access Token OAuth2 do usuário.</p>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">TikTok Access Token</label>
+                            <input v-model="settings.tiktok_access_token" type="password" class="w-full border p-2 rounded" placeholder="OAuth2 Access Token">
+                        </div>
+                    </div>
+
+                    <div class="border-t pt-4 mt-6 mb-4">
                         <h3 class="text-lg font-bold mb-4">WhatsApp (Bot)</h3>
                         <div class="mb-4">
                             <label class="block font-bold mb-2">WhatsApp Phone Number ID (Meta)</label>
@@ -2453,6 +2621,7 @@
                     ytStoryImproveLoading: false,
                     ytStoryVideoLoading: false,
                     ytStoryTask: null,
+                    ytStoryTaskPollFails: {},
                     ytStoryVideoUrl: null,
                     ytStoryScheduledId: null,
                     ytStoryQueueLoading: false,
@@ -2509,6 +2678,7 @@
                     communitySelectedYoutubeId: '',
                     communityLoading: false,
                     communityItems: [],
+                    communityReplies: {},
                     communityError: '',
                     communityClassify: true,
                     replySendingId: null,
@@ -2522,6 +2692,10 @@
                     socialPromotionCopied: '',
                     socialPromotionPublishingFacebook: false,
                     socialPromotionPreparingWhatsApp: false,
+                    communityPosts: [],
+                    communityPostsLoading: false,
+                    communityPostTopic: '',
+                    communityPostGenerating: false,
 
                     // Book Factory Data
                     factoryStep: 1,
@@ -2597,6 +2771,8 @@
                     voiceGender: 'female',
                     videoLoading: false,
                     generatedVideoUrl: null,
+                    socialPublishing: false,
+                    socialPublishResult: null,
 
                     // Música e Clipe
                     musicLyricsTheme: '',
@@ -2650,6 +2826,9 @@
                         youtube_refresh_token: '',
                         facebook_page_id: '',
                         facebook_access_token: '',
+                        instagram_user_id: '',
+                        instagram_access_token: '',
+                        tiktok_access_token: '',
                         whatsapp_phone_number_id: '',
                         whatsapp_access_token: '',
                         whatsapp_verify_token: '',
@@ -3258,14 +3437,26 @@
                     this.communityLoading = true;
                     this.communityError = '';
                     try {
-                        const url = `/youtube/community/comments?youtube_video_id=${encodeURIComponent(this.communitySelectedYoutubeId)}&classify=${this.communityClassify ? 'true' : 'false'}`;
+                        let url;
+                        if (this.communitySelectedYoutubeId === '__all__') {
+                            url = `/youtube/community/all-comments?classify=${this.communityClassify ? 'true' : 'false'}`;
+                        } else {
+                            url = `/youtube/community/comments?youtube_video_id=${encodeURIComponent(this.communitySelectedYoutubeId)}&classify=${this.communityClassify ? 'true' : 'false'}`;
+                        }
                         const res = await this.authFetch(url);
                         if (!res.ok) {
                             const err = await res.json().catch(() => ({ detail: 'Erro ao carregar comentários' }));
                             throw new Error(err.detail || 'Erro ao carregar comentários');
                         }
                         const data = await res.json();
-                        this.communityItems = (data.items || []).filter(it => !it.youtube_parent_id);
+                        const allItems = data.items || [];
+                        this.communityItems = allItems.filter(it => !it.youtube_parent_id);
+                        const replies = {};
+                        allItems.filter(it => it.youtube_parent_id).forEach(reply => {
+                            if (!replies[reply.youtube_parent_id]) replies[reply.youtube_parent_id] = [];
+                            replies[reply.youtube_parent_id].push(reply);
+                        });
+                        this.communityReplies = replies;
                     } catch (e) {
                         this.communityError = e.message || String(e);
                     } finally {
@@ -3280,17 +3471,20 @@
                     }
                     this.replySendingId = item.youtube_comment_id;
                     try {
+                        const videoId = this.communitySelectedYoutubeId === '__all__' ? (item.youtube_video_id || '') : this.communitySelectedYoutubeId;
                         const res = await this.authFetch('/youtube/community/reply', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 youtube_parent_id: item.youtube_comment_id,
                                 text,
-                                youtube_video_id: this.communitySelectedYoutubeId
+                                youtube_video_id: videoId
                             })
                         });
                         if (res.ok) {
                             item.status = 'replied';
+                            item.reply_text = text;
+                            item.reply_sent_at = new Date().toISOString();
                         } else {
                             const err = await res.json().catch(() => ({ detail: 'Falha ao enviar resposta' }));
                             alert(err.detail || 'Falha ao enviar resposta');
@@ -3300,6 +3494,67 @@
                     } finally {
                         this.replySendingId = null;
                     }
+                },
+                async fetchCommunityPosts() {
+                    this.communityPostsLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/community/posts');
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.communityPosts = data.items || [];
+                        }
+                    } catch (e) { console.error(e); }
+                    finally { this.communityPostsLoading = false; }
+                },
+                async generateCommunityPost(postType) {
+                    this.communityPostGenerating = true;
+                    try {
+                        const res = await this.authFetch('/youtube/community/posts/generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ post_type: postType, topic: this.communityPostTopic || null })
+                        });
+                        if (res.ok) {
+                            const post = await res.json();
+                            this.communityPosts.unshift(post);
+                        } else {
+                            const err = await res.json().catch(() => ({ detail: 'Erro ao gerar post' }));
+                            alert(err.detail || 'Erro ao gerar post');
+                        }
+                    } catch (e) { alert('Erro: ' + (e.message || e)); }
+                    finally { this.communityPostGenerating = false; }
+                },
+                async publishCommunityPost(postId) {
+                    try {
+                        const res = await this.authFetch(`/youtube/community/posts/${postId}/publish`, { method: 'POST' });
+                        if (res.ok) {
+                            const post = this.communityPosts.find(p => p.id === postId);
+                            if (post) post.status = 'published';
+                        }
+                    } catch (e) { alert('Erro: ' + (e.message || e)); }
+                },
+                async voteCommunityPoll(postId, optionIndex) {
+                    try {
+                        const res = await this.authFetch(`/youtube/community/posts/${postId}/vote`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ option_index: optionIndex })
+                        });
+                        if (res.ok) {
+                            const data = await res.json();
+                            const post = this.communityPosts.find(p => p.id === postId);
+                            if (post) post.poll_options = data.poll_options;
+                        }
+                    } catch (e) { console.error(e); }
+                },
+                async deleteCommunityPost(postId) {
+                    if (!confirm('Excluir este post da comunidade?')) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/community/posts/${postId}`, { method: 'DELETE' });
+                        if (res.ok) {
+                            this.communityPosts = this.communityPosts.filter(p => p.id !== postId);
+                        }
+                    } catch (e) { alert('Erro: ' + (e.message || e)); }
                 },
                 async saveScheduledVideo(video) {
                     try {
@@ -3873,6 +4128,10 @@
                                 await new Promise(r => setTimeout(r, 800));
                             }
                         }
+                        if (taskId) {
+                            this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                            this.ytStoryTaskPollFails[String(taskId)] = 0;
+                        }
                         await this.pollStoryTask(taskId);
                     } catch (e) {
                         alert("Erro ao gerar vídeo: " + (e.message || e));
@@ -3906,6 +4165,17 @@
                         }
                         setTimeout(() => this.pollStoryTask(taskId), 1500);
                     } catch (e) {
+                        const key = String(taskId || '');
+                        this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                        const prev = Number(this.ytStoryTaskPollFails[key] || 0);
+                        const next = prev + 1;
+                        this.ytStoryTaskPollFails[key] = next;
+                        if (next <= 10) {
+                            const currentProgress = (this.ytStoryTask && typeof this.ytStoryTask.progress === 'number') ? this.ytStoryTask.progress : 0;
+                            this.ytStoryTask = { status: 'processing', progress: currentProgress, message: 'Reconectando...' };
+                            setTimeout(() => this.pollStoryTask(taskId), 1200 + (next * 400));
+                            return;
+                        }
                         this.ytStoryVideoLoading = false;
                         this.ytStoryTask = { status: 'failed', progress: 0, message: e.message || String(e) };
                     }
@@ -4971,6 +5241,83 @@
                         else alert("Erro: " + JSON.stringify(data));
                     } catch (e) {
                         alert("Erro ao postar");
+                    }
+                },
+                async publishToSocial(platform) {
+                    if (!this.generatedVideoUrl) return;
+                    const names = {facebook: 'Facebook Reels', instagram: 'Instagram Reels', tiktok: 'TikTok'};
+                    if (!confirm(`Publicar este vídeo no ${names[platform] || platform}?`)) return;
+                    this.socialPublishing = true;
+                    this.socialPublishResult = null;
+                    try {
+                        const videoUrl = this.generatedVideoUrl.startsWith('http') ? this.generatedVideoUrl : (window.location.origin + this.generatedVideoUrl);
+                        const endpoint = platform === 'facebook' ? '/social/facebook/reels' :
+                                         platform === 'instagram' ? '/social/instagram/reels' :
+                                         '/social/tiktok/video';
+                        const body = {
+                            video_url: videoUrl,
+                            video_path: this.generatedVideoUrl,
+                            title: this.videoContent || 'Codexia Video',
+                            description: this.videoContent || '',
+                            caption: this.videoContent || ''
+                        };
+                        const res = await this.authFetch(endpoint, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body)
+                        });
+                        const data = await res.json();
+                        if (data.error || data.detail) {
+                            this.socialPublishResult = {error: true, message: `Erro: ${data.error || data.detail}`};
+                        } else {
+                            this.socialPublishResult = {error: false, message: `Publicado no ${names[platform]}! ID: ${data.id || data.publish_id || data.video_id || 'ok'}`};
+                        }
+                    } catch (e) {
+                        this.socialPublishResult = {error: true, message: `Erro ao publicar: ${e.message || e}`};
+                    } finally {
+                        this.socialPublishing = false;
+                    }
+                },
+                getVideoUrl(video) {
+                    if (!video) return '';
+                    return video.video_url || video.file_path || '';
+                },
+                async publishToSocialYT(platform, videoUrl, title) {
+                    if (!videoUrl) { alert('URL do vídeo não disponível.'); return; }
+                    const names = {facebook: 'Facebook Reels', instagram: 'Instagram Reels', tiktok: 'TikTok'};
+                    if (!confirm(`Publicar este vídeo no ${names[platform] || platform}?`)) return;
+                    this.socialPublishing = true;
+                    this.socialPublishResult = null;
+                    try {
+                        const fullUrl = videoUrl.startsWith('http') ? videoUrl : (window.location.origin + videoUrl);
+                        const endpoint = platform === 'facebook' ? '/social/facebook/reels' :
+                                         platform === 'instagram' ? '/social/instagram/reels' :
+                                         '/social/tiktok/video';
+                        const body = {
+                            video_url: fullUrl,
+                            video_path: videoUrl,
+                            title: title || 'Codexia Video',
+                            description: title || '',
+                            caption: title || ''
+                        };
+                        const res = await this.authFetch(endpoint, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body)
+                        });
+                        const data = await res.json();
+                        if (data.error || data.detail) {
+                            this.socialPublishResult = {error: true, message: `Erro: ${data.error || data.detail}`};
+                            alert(`Erro ao publicar no ${names[platform]}: ${data.error || data.detail}`);
+                        } else {
+                            this.socialPublishResult = {error: false, message: `Publicado no ${names[platform]}! ID: ${data.id || data.publish_id || data.video_id || 'ok'}`};
+                            alert(`Publicado no ${names[platform]} com sucesso!`);
+                        }
+                    } catch (e) {
+                        this.socialPublishResult = {error: true, message: `Erro ao publicar: ${e.message || e}`};
+                        alert(`Erro ao publicar: ${e.message || e}`);
+                    } finally {
+                        this.socialPublishing = false;
                     }
                 },
                 async generateVideo() {

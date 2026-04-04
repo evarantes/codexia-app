@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, social_media
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
 from app.modules.humor_factory import router as humor_factory
@@ -307,7 +307,9 @@ def run_migrations(engine):
                         "elevenlabs_voice_id", "elevenlabs_voice_name",
                         "whatsapp_phone_number_id", "whatsapp_access_token",
                         "whatsapp_verify_token", "whatsapp_allowed_numbers",
-                        "telegram_bot_token", "telegram_allowed_chat_ids"
+                        "telegram_bot_token", "telegram_allowed_chat_ids",
+                        "instagram_user_id", "instagram_access_token",
+                        "tiktok_access_token"
                     ]:
                         if col not in settings_columns:
                             try:
@@ -801,6 +803,7 @@ app.include_router(book_factory.router)
 app.include_router(hotmart.router)
 app.include_router(music.router)
 app.include_router(admin.router)
+app.include_router(social_media.router)
 app.include_router(ai_factory.router)
 app.include_router(humor_factory.router)
 

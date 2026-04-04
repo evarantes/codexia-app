@@ -1761,74 +1761,96 @@ class AIContentGenerator:
         Gera insights focados em atingir a monetização do YouTube.
         """
         self._load_config()
-        
-        prompt = f"""
-        Atue como um Consultor de Monetização do YouTube.
-        
-        STATUS ATUAL:
-        - Inscritos: {progress_data.get('subscribers')} (Meta: {progress_data.get('subscribers_target')})
-        - Horas de Exibição Estimadas: {progress_data.get('estimated_watch_hours')} (Meta: {progress_data.get('watch_hours_target')})
-        - Progresso Inscritos: {progress_data.get('subscribers_progress_pct')}%
-        - Progresso Horas: {progress_data.get('watch_hours_progress_pct')}%
-        
-        MISSÃO:
-        1. Analise o que falta para a monetização.
-        2. Dê sugestões PRÁTICAS para acelerar o preenchimento das lacunas (ex: se faltam horas, sugerir lives ou vídeos longos; se faltam inscritos, sugerir shorts virais).
-        
-        Retorne APENAS um JSON válido:
-        {{
-            "summary": "Resumo da situação atual.",
-            "gap_analysis": {{
-                "subscribers_missing": 0,
-                "watch_hours_missing": 0,
-                "estimated_time_to_monetize": "Estimativa (ex: 3 meses)"
-            }},
-            "strategy_suggestion": "Sua principal estratégia para fechar o gap.",
-            "weekly_actions": [
-                "Ação prática 1",
-                "Ação prática 2",
-                "Ação prática 3"
-            ]
-        }}
-        """
-        
+
+        subs = progress_data.get('subscribers', 0)
+        subs_target = progress_data.get('subscribers_target', 1000)
+        hours = progress_data.get('estimated_watch_hours', 0)
+        hours_target = progress_data.get('watch_hours_target', 4000)
+        subs_pct = progress_data.get('subscribers_progress_pct', 0)
+        hours_pct = progress_data.get('watch_hours_progress_pct', 0)
+        subs_missing = max(0, subs_target - subs)
+        hours_missing = max(0, hours_target - hours)
+
+        prompt = f"""Atue como um Consultor Expert de Monetização do YouTube (YPP).
+
+DADOS DO CANAL:
+- Inscritos atuais: {subs} / Meta: {subs_target} (progresso: {subs_pct}%, faltam: {subs_missing})
+- Horas de exibição estimadas: {hours} / Meta: {hours_target} (progresso: {hours_pct}%, faltam: {hours_missing})
+
+REGRAS IMPORTANTES:
+- Os valores de subscribers_missing e watch_hours_missing DEVEM ser calculados exatamente: {subs_missing} e {hours_missing} respectivamente.
+- Se o canal JÁ atingiu uma meta, indique 0 faltante e parabenize.
+- A estimativa de tempo deve ser realista (baseada no ritmo atual de crescimento).
+- As ações semanais devem ser ESPECÍFICAS e ACIONÁVEIS (não genéricas).
+- A estratégia deve priorizar o gap MAIOR (se faltam mais horas, foque em watch time; se faltam mais inscritos, foque em crescimento).
+
+Retorne APENAS JSON válido com esta estrutura EXATA:
+{{
+    "summary": "Análise detalhada da situação atual do canal em relação à monetização (2-3 frases).",
+    "gap_analysis": {{
+        "subscribers_missing": {subs_missing},
+        "watch_hours_missing": {hours_missing},
+        "estimated_time_to_monetize": "Estimativa realista baseada no ritmo atual (ex: 2-3 meses)"
+    }},
+    "strategy_suggestion": "Estratégia principal detalhada para fechar o gap mais crítico.",
+    "weekly_actions": [
+        "Ação específica 1 com detalhes de implementação",
+        "Ação específica 2 com detalhes de implementação",
+        "Ação específica 3 com detalhes de implementação",
+        "Ação específica 4 com detalhes de implementação",
+        "Ação específica 5 com detalhes de implementação"
+    ]
+}}"""
+
         try:
             content = self._generate_text(
                 prompt,
-                system_prompt="Você é um especialista em monetização do YouTube.",
+                system_prompt="Você é um consultor especialista em monetização do YouTube Partner Program. Responda sempre em português do Brasil com dados precisos.",
                 json_mode=True
             )
-            
+
             if not content:
                 raise Exception("Resposta vazia da IA")
-                
+
             clean_content = content.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_content)
-            
+            result = json.loads(clean_content)
+
+            if "gap_analysis" in result:
+                result["gap_analysis"]["subscribers_missing"] = subs_missing
+                result["gap_analysis"]["watch_hours_missing"] = hours_missing
+
+            return result
+
         except Exception as e:
             print(f"Erro ao gerar insights de monetização: {e}")
-            
-            # Calculate missing values for fallback
-            subs_target = progress_data.get('subscribers_target', 1000)
-            subs_current = progress_data.get('subscribers', 0)
-            subs_missing = max(0, subs_target - subs_current)
-            
-            hours_target = progress_data.get('watch_hours_target', 4000)
-            hours_current = progress_data.get('estimated_watch_hours', 0)
-            hours_missing = max(0, hours_target - hours_current)
-            
+
+            if subs >= subs_target and hours >= hours_target:
+                summary = f"Parabéns! Seu canal já atingiu os requisitos de monetização: {subs} inscritos e ~{hours} horas de exibição."
+                strategy = "Mantenha a consistência e solicite a revisão do YPP se ainda não o fez."
+                time_est = "Elegível agora!"
+            elif subs_pct > hours_pct:
+                summary = f"Seu canal tem {subs} inscritos ({subs_pct}%) e ~{hours} horas de exibição ({hours_pct}%). O gap principal são as horas de exibição."
+                strategy = "Foque em vídeos longos (10-20 min) e lives para aumentar as horas de exibição."
+                time_est = "Depende do ritmo de publicação"
+            else:
+                summary = f"Seu canal tem {subs} inscritos ({subs_pct}%) e ~{hours} horas de exibição ({hours_pct}%). O gap principal são os inscritos."
+                strategy = "Foque em Shorts virais e colaborações para crescer a base de inscritos."
+                time_est = "Depende do ritmo de publicação"
+
             return {
-                "summary": "Não foi possível gerar a análise detalhada da IA, mas aqui estão seus números.",
+                "summary": summary,
                 "gap_analysis": {
                     "subscribers_missing": subs_missing,
                     "watch_hours_missing": hours_missing,
-                    "estimated_time_to_monetize": "Calculando..."
+                    "estimated_time_to_monetize": time_est
                 },
-                "strategy_suggestion": "Continue postando conteúdo de qualidade com consistência.",
+                "strategy_suggestion": strategy,
                 "weekly_actions": [
-                    "Verifique suas configurações de API da IA se o erro persistir.",
-                    "Foque em Shorts para ganhar inscritos rapidamente.",
-                    "Faça vídeos mais longos para aumentar as horas de exibição."
+                    f"Publicar pelo menos 3 vídeos longos (10+ min) para aumentar horas de exibição" if hours_pct < subs_pct else "Publicar 5 Shorts por semana para ganhar inscritos",
+                    "Responder todos os comentários para aumentar engajamento e retenção",
+                    "Criar thumbnails chamativas com CTR acima de 5%",
+                    "Analisar Analytics para identificar vídeos com maior retenção e replicar o formato",
+                    "Promover o canal em comunidades relevantes e redes sociais"
                 ]
             }
 

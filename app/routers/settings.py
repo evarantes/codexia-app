@@ -46,6 +46,11 @@ class SettingsUpdate(BaseModel):
     elevenlabs_api_key: Optional[str] = None
     elevenlabs_voice_id: Optional[str] = None
     elevenlabs_voice_name: Optional[str] = None
+    # Instagram
+    instagram_user_id: Optional[str] = None
+    instagram_access_token: Optional[str] = None
+    # TikTok
+    tiktok_access_token: Optional[str] = None
 
 @router.get("/")
 def get_settings(db: Session = Depends(get_db)):
@@ -149,6 +154,15 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
     if settings_update.elevenlabs_voice_name is not None:
         v = str(settings_update.elevenlabs_voice_name).strip()
         settings.elevenlabs_voice_name = v or None
+    if settings_update.instagram_user_id is not None:
+        v = str(settings_update.instagram_user_id).strip()
+        settings.instagram_user_id = v or None
+    if settings_update.instagram_access_token is not None:
+        v = str(settings_update.instagram_access_token).strip()
+        settings.instagram_access_token = v or None
+    if settings_update.tiktok_access_token is not None:
+        v = str(settings_update.tiktok_access_token).strip()
+        settings.tiktok_access_token = v or None
     
     db.commit()
     db.refresh(settings)
