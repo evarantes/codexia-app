@@ -48,8 +48,7 @@ class TikTokService:
         self._load_config()
 
         if not self._is_configured():
-            print("[TIKTOK MOCK] Credenciais não configuradas. Simulando publicação.")
-            return {"publish_id": "mock_tt_12345", "status": "published_mock"}
+            return {"error": "TikTok não configurado. Adicione o Access Token em Configurações."}
 
         if not video_path or not os.path.exists(video_path):
             return {"error": f"Arquivo de vídeo não encontrado: {video_path}"}
@@ -134,8 +133,7 @@ class TikTokService:
         self._load_config()
 
         if not self._is_configured():
-            print("[TIKTOK MOCK] Credenciais não configuradas. Simulando publicação.")
-            return {"publish_id": "mock_tt_url_12345", "status": "published_mock"}
+            return {"error": "TikTok não configurado. Adicione o Access Token em Configurações."}
 
         try:
             url = f"{TIKTOK_API_BASE}/post/publish/video/init/"

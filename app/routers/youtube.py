@@ -42,7 +42,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, StoryDraft
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
 
@@ -2827,3 +2827,167 @@ def process_video_generation(request: VideoRequest, task_id):
     except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
+
+
+# ─── Community: All Comments (across videos) ────────────
+@router.get("/community/all-comments")
+def get_all_community_comments(
+    classify: bool = Query(False),
+    db: Session = Depends(get_db)
+):
+    """Retorna todos os comentários salvos no banco, de todos os vídeos."""
+    comments = db.query(CommunityComment).order_by(CommunityComment.created_at.desc()).limit(200).all()
+    items = []
+    for c in comments:
+        items.append({
+            "youtube_comment_id": c.youtube_comment_id,
+            "youtube_parent_id": c.youtube_parent_id,
+            "youtube_video_id": c.youtube_video_id,
+            "author": c.author,
+            "text": c.text,
+            "like_count": c.like_count or 0,
+            "published_at": c.published_at.isoformat() if c.published_at else None,
+            "status": c.status,
+            "label": c.label,
+            "sentiment": c.sentiment,
+            "urgency": c.urgency,
+            "reply_draft": c.reply_draft,
+            "reply_text": c.reply_text,
+            "reply_sent_at": c.reply_sent_at.isoformat() if c.reply_sent_at else None,
+        })
+    return {"youtube_video_id": "all", "count": len(items), "items": items}
+
+
+# ─── Community Posts: AI-generated Posters & Polls ──────
+class CommunityPostCreate(BaseModel):
+    post_type: str = "poster"  # poster | poll
+    topic: Optional[str] = None
+
+class CommunityPollVote(BaseModel):
+    option_index: int
+
+@router.post("/community/posts/generate")
+def generate_community_post(req: CommunityPostCreate, db: Session = Depends(get_db)):
+    """Gera um poster ou enquete para a comunidade usando IA."""
+    ai = AIContentGenerator()
+    post_type = (req.post_type or "poster").lower()
+
+    if post_type == "poster":
+        prompt = f"""Crie um post engajante para a comunidade de um canal do YouTube.
+Tema: {req.topic or 'motivação e crescimento pessoal'}
+
+Retorne APENAS um JSON válido:
+{{
+    "title": "Título chamativo do post (máx 80 caracteres)",
+    "content": "Texto completo do post (2-4 parágrafos, engajante, com emojis, CTA no final pedindo opinião dos inscritos)",
+    "image_prompt": "Prompt em inglês para gerar imagem (estilo poster motivacional, cores vibrantes)"
+}}"""
+        sys_prompt = "Você é um especialista em community management do YouTube. Crie conteúdo que incentive a participação."
+    else:
+        prompt = f"""Crie uma enquete engajante para a comunidade de um canal do YouTube.
+Tema: {req.topic or 'preferências do público sobre conteúdo'}
+
+A enquete deve gerar debate e participação ativa. Crie opções que cubram diferentes perspectivas.
+
+Retorne APENAS um JSON válido:
+{{
+    "title": "Pergunta principal da enquete (direta, provocativa, máx 120 caracteres)",
+    "content": "Texto contextualizando a enquete (1-2 parágrafos, explica por que a opinião deles importa)",
+    "options": ["Opção 1", "Opção 2", "Opção 3", "Opção 4"]
+}}"""
+        sys_prompt = "Você é um especialista em engajamento de comunidade no YouTube. Crie enquetes que gerem discussão."
+
+    try:
+        raw = ai._generate_text(prompt, system_prompt=sys_prompt, json_mode=True)
+        data = json.loads((raw or "{}").replace("```json", "").replace("```", "").strip())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar conteúdo: {e}")
+
+    post = CommunityPost(
+        post_type=post_type,
+        title=data.get("title", "Post da Comunidade"),
+        content=data.get("content", ""),
+        image_prompt=data.get("image_prompt"),
+        status="draft",
+    )
+    if post_type == "poll":
+        options = data.get("options", [])
+        post.poll_options_json = json.dumps([{"text": opt, "votes": 0} for opt in options])
+        post.poll_votes_json = json.dumps({})
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+
+    result = {
+        "id": post.id,
+        "post_type": post.post_type,
+        "title": post.title,
+        "content": post.content,
+        "image_prompt": post.image_prompt,
+        "status": post.status,
+        "created_at": post.created_at.isoformat() if post.created_at else None,
+    }
+    if post_type == "poll":
+        result["poll_options"] = json.loads(post.poll_options_json or "[]")
+    return result
+
+
+@router.get("/community/posts")
+def list_community_posts(db: Session = Depends(get_db)):
+    """Lista todos os posts da comunidade."""
+    posts = db.query(CommunityPost).order_by(CommunityPost.created_at.desc()).limit(50).all()
+    items = []
+    for p in posts:
+        item = {
+            "id": p.id,
+            "post_type": p.post_type,
+            "title": p.title,
+            "content": p.content,
+            "image_prompt": p.image_prompt,
+            "image_url": p.image_url,
+            "status": p.status,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        }
+        if p.post_type == "poll":
+            item["poll_options"] = json.loads(p.poll_options_json or "[]")
+        items.append(item)
+    return {"count": len(items), "items": items}
+
+
+@router.post("/community/posts/{post_id}/publish")
+def publish_community_post(post_id: int, db: Session = Depends(get_db)):
+    """Marca um post como publicado."""
+    post = db.query(CommunityPost).filter(CommunityPost.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post não encontrado")
+    post.status = "published"
+    db.commit()
+    return {"status": "published", "id": post.id}
+
+
+@router.post("/community/posts/{post_id}/vote")
+def vote_community_poll(post_id: int, req: CommunityPollVote, db: Session = Depends(get_db)):
+    """Registra um voto em uma enquete."""
+    post = db.query(CommunityPost).filter(CommunityPost.id == post_id).first()
+    if not post or post.post_type != "poll":
+        raise HTTPException(status_code=404, detail="Enquete não encontrada")
+
+    options = json.loads(post.poll_options_json or "[]")
+    if req.option_index < 0 or req.option_index >= len(options):
+        raise HTTPException(status_code=400, detail="Opção inválida")
+
+    options[req.option_index]["votes"] = options[req.option_index].get("votes", 0) + 1
+    post.poll_options_json = json.dumps(options)
+    db.commit()
+    return {"poll_options": options}
+
+
+@router.delete("/community/posts/{post_id}")
+def delete_community_post(post_id: int, db: Session = Depends(get_db)):
+    """Remove um post da comunidade."""
+    post = db.query(CommunityPost).filter(CommunityPost.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post não encontrado")
+    db.delete(post)
+    db.commit()
+    return {"status": "deleted"}

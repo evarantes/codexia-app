@@ -22,3 +22,5 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 - **Frontend**: Vue.js 3 + Tailwind CSS loaded from CDN. Served as static HTML from `app/static/index.html`. No build step required.
 - **Book creation endpoint** (`POST /books/`): Uses multipart form data (`Form(...)` fields), not JSON body.
 - **OpenAPI docs**: Available at `http://localhost:8000/docs` (Swagger UI) and `http://localhost:8000/redoc`.
+- **PATH**: `pip install` puts scripts in `~/.local/bin` which may not be on `PATH`. Run `export PATH="$HOME/.local/bin:$PATH"` before starting uvicorn if you see "command not found".
+- **ImageMagick policy**: After installing ImageMagick, fix the security policy for PDF/Text ops: `sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml`.

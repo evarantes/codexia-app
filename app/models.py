@@ -26,6 +26,24 @@ class CommunityComment(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CommunityPost(Base):
+    """Posts da comunidade: posters e enquetes gerados por IA."""
+    __tablename__ = "community_posts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    post_type = Column(String, default="poster")  # poster | poll
+    title = Column(String, nullable=False)
+    content = Column(Text, nullable=True)
+    image_prompt = Column(Text, nullable=True)
+    image_url = Column(String, nullable=True)
+    poll_options_json = Column(Text, nullable=True)  # JSON: [{"text": "...", "votes": 0}]
+    poll_votes_json = Column(Text, nullable=True)  # JSON: {"option_idx": count}
+    status = Column(String, default="draft")  # draft | published
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Tenant(Base):
     """Tenant para multi-tenant SaaS."""
     __tablename__ = "tenants"
