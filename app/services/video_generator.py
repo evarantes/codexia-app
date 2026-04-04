@@ -1104,9 +1104,8 @@ class VideoGenerator:
             # 2. Cenas
             total_scenes = len(scenes)
             for i, scene in enumerate(scenes):
+                scene_progress = 10 + int((i / total_scenes) * 70)
                 if progress_callback:
-                    # Progresso proporcional entre 10% e 80%
-                    scene_progress = 10 + int((i / total_scenes) * 70)
                     progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
                     
                 if isinstance(scene, str):
