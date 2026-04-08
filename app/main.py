@@ -147,6 +147,7 @@ def run_migrations(engine):
             ("books", "user_id"), ("book_drafts", "user_id"), ("leads", "user_id"),
             ("settings", "user_id"), ("customers", "user_id"), ("scheduled_videos", "user_id"),
             ("channel_reports", "user_id"),
+            ("system_notifications", "user_id"), ("channel_insights", "user_id"),
         ]:
             if table in inspector.get_table_names():
                 try:
@@ -158,6 +159,13 @@ def run_migrations(engine):
                             conn.commit()
                 except Exception as e:
                     print(f"Failed to migrate {table} ({col}): {e}")
+
+        try:
+            tables = set(inspector.get_table_names())
+            if "system_notifications" not in tables or "channel_insights" not in tables:
+                Base.metadata.create_all(bind=engine)
+        except Exception as e:
+            print(f"Failed to create notifications/insights tables: {e}")
 
         # ScheduledVideo migration
         if "scheduled_videos" in inspector.get_table_names():

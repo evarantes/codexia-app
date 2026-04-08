@@ -1,7 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.services.video_processing import process_scheduled_video
 from app.database import SessionLocal, SQLALCHEMY_DATABASE_URL
-from app.models import ChannelReport, ScheduledVideo
+from app.models import ChannelReport, ScheduledVideo, CommunityComment, SystemNotification, ChannelInsight
 import datetime
 import logging
 import json
@@ -17,14 +17,15 @@ class MonitorService:
         self.job = None
         self.queue_job = None
         self.upload_job = None
+        self.comments_job = None
+        self.insights_job = None
 
     def start(self):
         if not self.job:
             # Startup Recovery: Reset any 'processing' videos to 'queued'
             self._reset_stuck_videos()
 
-            # Run every 10 minutes
-            self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=10)
+            self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=2, max_instances=1)
             # Run video queue check every 1 minute
             # REMOVED next_run_time=now to allow server to startup fully before heavy processing
             self.queue_job = self.scheduler.add_job(
@@ -51,6 +52,21 @@ class MonitorService:
             self.check_file_integrity()
             # E agendar para rodar a cada 30 minutos para pegar arquivos deletados (ephemeral storage)
             self.scheduler.add_job(self.check_file_integrity, 'interval', minutes=30)
+
+            self.comments_job = self.scheduler.add_job(
+                self.check_new_comments,
+                "interval",
+                minutes=2,
+                max_instances=1,
+                next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
+            )
+            self.insights_job = self.scheduler.add_job(
+                self.check_subscriber_insights,
+                "interval",
+                minutes=2,
+                max_instances=1,
+                next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
+            )
             
             self.scheduler.start()
             logger.info("Monitoramento do canal, processador de fila e agendador de uploads iniciados.")
@@ -360,6 +376,128 @@ class MonitorService:
             
         except Exception as e:
             logger.error(f"Erro no monitoramento: {e}")
+        finally:
+            db.close()
+
+    def check_new_comments(self):
+        from app.services.youtube_service import YouTubeService
+
+        db = SessionLocal()
+        try:
+            yt = YouTubeService()
+            if not yt.service:
+                return
+
+            videos = yt.get_recent_videos_performance(max_results=8) or []
+            new_items = []
+            for v in videos[:5]:
+                yid = (v or {}).get("videoId")
+                if not yid:
+                    continue
+                try:
+                    raw = yt.list_video_comments(yid, max_results=80)
+                except Exception:
+                    continue
+
+                for c in raw or []:
+                    cid = (c or {}).get("youtube_comment_id")
+                    if not cid:
+                        continue
+                    exists = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == cid).first()
+                    if exists:
+                        continue
+
+                    published_at = None
+                    try:
+                        s = (c.get("published_at") or "").strip()
+                        if s:
+                            s = s.replace("Z", "+00:00")
+                            published_at = datetime.datetime.fromisoformat(s)
+                    except Exception:
+                        published_at = None
+
+                    item = CommunityComment(
+                        youtube_comment_id=cid,
+                        youtube_parent_id=c.get("youtube_parent_id"),
+                        youtube_video_id=c.get("youtube_video_id") or yid,
+                        author=c.get("author"),
+                        text=(c.get("text") or "").strip(),
+                        like_count=int(c.get("like_count", 0) or 0),
+                        published_at=published_at,
+                        status="new",
+                    )
+                    db.add(item)
+                    new_items.append(item)
+
+                    if len(new_items) <= 5:
+                        msg = (item.text or "")[:240]
+                        payload = {
+                            "youtube_video_id": item.youtube_video_id,
+                            "youtube_comment_id": item.youtube_comment_id,
+                            "youtube_parent_id": item.youtube_parent_id,
+                            "author": item.author,
+                        }
+                        db.add(SystemNotification(
+                            user_id=None,
+                            kind="youtube_comment",
+                            title="Novo comentário no YouTube",
+                            message=f"{(item.author or 'Usuário')}: {msg}",
+                            payload_json=json.dumps(payload, ensure_ascii=False),
+                            status="new",
+                        ))
+
+            if new_items:
+                db.commit()
+        except Exception as e:
+            logger.error(f"Erro ao verificar comentários: {e}")
+        finally:
+            db.close()
+
+    def check_subscriber_insights(self):
+        from app.services.youtube_service import YouTubeService
+
+        db = SessionLocal()
+        try:
+            last = db.query(ChannelInsight).filter(ChannelInsight.kind == "subscribers_14d").order_by(ChannelInsight.id.desc()).first()
+            if last and last.created_at and (datetime.datetime.utcnow() - last.created_at) < datetime.timedelta(hours=2):
+                return
+
+            yt = YouTubeService()
+            if not yt.service:
+                return
+
+            data = yt.get_subscriber_insights(days=14, max_results=20) or {}
+            insight = ChannelInsight(
+                user_id=None,
+                kind="subscribers_14d",
+                start_date=None,
+                end_date=None,
+                data_json=json.dumps(data, ensure_ascii=False),
+                ai_summary=None,
+            )
+            db.add(insight)
+
+            if not data.get("error"):
+                totals = data.get("totals") or {}
+                gained = totals.get("subscribersGained", 0)
+                lost = totals.get("subscribersLost", 0)
+                sources = data.get("subscriber_sources") or []
+                top = sources[0]["source"] if sources and isinstance(sources[0], dict) else None
+                message = f"Últimos 14 dias: +{gained} ganhos / -{lost} perdas."
+                if top:
+                    message = f"{message} Top fonte: {top}."
+                db.add(SystemNotification(
+                    user_id=None,
+                    kind="subscriber_insights",
+                    title="Insights de inscritos",
+                    message=message,
+                    payload_json=json.dumps({"days": 14, "totals": totals, "top_source": top}, ensure_ascii=False),
+                    status="new",
+                ))
+
+            db.commit()
+        except Exception as e:
+            logger.error(f"Erro ao gerar insights de inscritos: {e}")
         finally:
             db.close()
 
