@@ -2732,13 +2732,15 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     except Exception:
         payload = request.dict()
 
-    if conn is not None and _rq_workers_online():
+    use_rq = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
+    if use_rq and conn is not None and _rq_workers_online():
         try:
             rq_queue.enqueue(process_video_generation_payload, payload, task_id)
             return {"message": "Processo iniciado", "task_id": task_id}
         except Exception:
             pass
 
+    update_task(task_id, status="processing", progress=1, message="Iniciando geração local...")
     t = threading.Thread(target=process_video_generation, args=(request, task_id), daemon=True)
     t.start()
     
