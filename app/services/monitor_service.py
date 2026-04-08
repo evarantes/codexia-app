@@ -25,7 +25,7 @@ class MonitorService:
             # Startup Recovery: Reset any 'processing' videos to 'queued'
             self._reset_stuck_videos()
 
-            self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=2, max_instances=1)
+            self.job = self.scheduler.add_job(self.check_channel_status, 'interval', minutes=10, max_instances=1)
             # Run video queue check every 1 minute
             # REMOVED next_run_time=now to allow server to startup fully before heavy processing
             self.queue_job = self.scheduler.add_job(
@@ -56,14 +56,14 @@ class MonitorService:
             self.comments_job = self.scheduler.add_job(
                 self.check_new_comments,
                 "interval",
-                minutes=2,
+                minutes=10,
                 max_instances=1,
                 next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
             )
             self.insights_job = self.scheduler.add_job(
                 self.check_subscriber_insights,
                 "interval",
-                minutes=2,
+                minutes=10,
                 max_instances=1,
                 next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
             )

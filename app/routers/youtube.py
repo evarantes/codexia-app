@@ -2726,12 +2726,13 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     
     # Cria ID da tarefa
     task_id = create_task()
+    update_task(task_id, status="processing", progress=0, message="Enfileirando geração de vídeo...")
     try:
         payload = request.model_dump()  # type: ignore[attr-defined]
     except Exception:
         payload = request.dict()
 
-    if conn is not None:
+    if conn is not None and _rq_workers_online():
         try:
             rq_queue.enqueue(process_video_generation_payload, payload, task_id)
             return {"message": "Processo iniciado", "task_id": task_id}
