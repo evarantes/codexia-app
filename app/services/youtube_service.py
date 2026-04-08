@@ -13,7 +13,8 @@ from app.models import Settings
 SCOPES = [
     'https://www.googleapis.com/auth/youtube.upload',
     'https://www.googleapis.com/auth/youtube.force-ssl',
-    'https://www.googleapis.com/auth/youtube.readonly'
+    'https://www.googleapis.com/auth/youtube.readonly',
+    'https://www.googleapis.com/auth/yt-analytics.readonly'
 ]
 
 class YouTubeService:
@@ -114,7 +115,7 @@ class YouTubeService:
         last_error = None
         for source, raw in candidates:
             try:
-                creds = Credentials.from_authorized_user_info(self._compose_info(raw), scopes=SCOPES)
+                creds = Credentials.from_authorized_user_info(self._compose_info(raw), scopes=None)
                 if creds.refresh_token and (not creds.valid or creds.expired):
                     creds.refresh(Request())
                 service = build('youtube', 'v3', credentials=creds)
@@ -705,6 +706,141 @@ class YouTubeService:
         except Exception as e:
             print(f"[YouTubeService] Erro ao buscar performance de vídeos: {e}")
             return []
+
+    def get_subscriber_insights(self, days: int = 14, max_results: int = 20):
+        if not self.credentials:
+            return {
+                "days": days,
+                "subscriber_sources": [],
+                "best_videos": [],
+                "totals": {"subscribersGained": 0, "subscribersLost": 0},
+                "error": self.auth_error or "Credenciais não disponíveis."
+            }
+
+        if not self.service:
+            return {
+                "days": days,
+                "subscriber_sources": [],
+                "best_videos": [],
+                "totals": {"subscribersGained": 0, "subscribersLost": 0},
+                "error": self.auth_error or "Serviço do YouTube não inicializado."
+            }
+
+        from datetime import datetime, timedelta
+        end_date = datetime.utcnow().date()
+        start_date = end_date - timedelta(days=max(1, int(days)))
+
+        try:
+            analytics = build("youtubeAnalytics", "v2", credentials=self.credentials)
+
+            totals_resp = analytics.reports().query(
+                ids="channel==MINE",
+                startDate=start_date.isoformat(),
+                endDate=end_date.isoformat(),
+                metrics="subscribersGained,subscribersLost"
+            ).execute()
+
+            totals = {"subscribersGained": 0, "subscribersLost": 0}
+            try:
+                row = (totals_resp.get("rows") or [[0, 0]])[0]
+                totals["subscribersGained"] = int(row[0] or 0)
+                totals["subscribersLost"] = int(row[1] or 0)
+            except Exception:
+                pass
+
+            sources_resp = analytics.reports().query(
+                ids="channel==MINE",
+                startDate=start_date.isoformat(),
+                endDate=end_date.isoformat(),
+                metrics="subscribersGained",
+                dimensions="trafficSourceType",
+                sort="-subscribersGained",
+                maxResults=min(int(max_results), 25)
+            ).execute()
+
+            subscriber_sources = []
+            for r in (sources_resp.get("rows") or []):
+                try:
+                    subscriber_sources.append({"source": r[0], "subscribersGained": int(r[1] or 0)})
+                except Exception:
+                    continue
+
+            best_videos_resp = analytics.reports().query(
+                ids="channel==MINE",
+                startDate=start_date.isoformat(),
+                endDate=end_date.isoformat(),
+                metrics="subscribersGained,views,likes,comments",
+                dimensions="video",
+                sort="-subscribersGained",
+                maxResults=min(int(max_results), 50)
+            ).execute()
+
+            rows = best_videos_resp.get("rows") or []
+            video_ids = [r[0] for r in rows if r and r[0]]
+
+            meta_by_id = {}
+            if video_ids:
+                try:
+                    meta_resp = self.service.videos().list(
+                        part="snippet,contentDetails",
+                        id=",".join(video_ids[:50])
+                    ).execute()
+                    for it in (meta_resp.get("items") or []):
+                        vid = it.get("id")
+                        snippet = it.get("snippet") or {}
+                        cd = it.get("contentDetails") or {}
+                        meta_by_id[vid] = {
+                            "title": snippet.get("title"),
+                            "publishedAt": snippet.get("publishedAt"),
+                            "duration": cd.get("duration"),
+                        }
+                except Exception:
+                    meta_by_id = {}
+
+            best_videos = []
+            for r in rows:
+                if not r or len(r) < 5:
+                    continue
+                vid = r[0]
+                best_videos.append({
+                    "videoId": vid,
+                    "title": meta_by_id.get(vid, {}).get("title"),
+                    "publishedAt": meta_by_id.get(vid, {}).get("publishedAt"),
+                    "duration": meta_by_id.get(vid, {}).get("duration"),
+                    "subscribersGained": int(r[1] or 0),
+                    "views": int(r[2] or 0),
+                    "likes": int(r[3] or 0),
+                    "comments": int(r[4] or 0),
+                })
+
+            return {
+                "days": days,
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "totals": totals,
+                "subscriber_sources": subscriber_sources,
+                "best_videos": best_videos,
+            }
+        except HttpError as e:
+            return {
+                "days": days,
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "subscriber_sources": [],
+                "best_videos": [],
+                "totals": {"subscribersGained": 0, "subscribersLost": 0},
+                "error": str(e),
+            }
+        except Exception as e:
+            return {
+                "days": days,
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "subscriber_sources": [],
+                "best_videos": [],
+                "totals": {"subscribersGained": 0, "subscribersLost": 0},
+                "error": str(e),
+            }
 
     def get_monetization_progress(self):
         """

@@ -42,7 +42,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
 
@@ -2545,6 +2545,37 @@ def get_monetization_status():
         "progress": progress,
         "ai_insights": ai_insights,
     }
+
+@router.get("/insights/subscribers")
+def get_subscribers_insights(days: int = Query(14, ge=1, le=90), db: Session = Depends(get_db)):
+    yt = YouTubeService()
+    data = yt.get_subscriber_insights(days=days, max_results=20)
+    kind = f"subscribers_{int(days)}d"
+    db.add(ChannelInsight(
+        user_id=None,
+        kind=kind,
+        start_date=None,
+        end_date=None,
+        data_json=json.dumps(data, ensure_ascii=False),
+        ai_summary=None,
+    ))
+    db.commit()
+    return data
+
+@router.get("/notifications")
+def list_notifications(db: Session = Depends(get_db)):
+    return db.query(SystemNotification).order_by(SystemNotification.id.desc()).limit(50).all()
+
+@router.post("/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: int, db: Session = Depends(get_db)):
+    n = db.query(SystemNotification).filter(SystemNotification.id == notification_id).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="Notificação não encontrada")
+    n.status = "read"
+    n.read_at = datetime.utcnow()
+    db.commit()
+    db.refresh(n)
+    return n
 
 class CommunityReplyRequest(BaseModel):
     youtube_parent_id: str

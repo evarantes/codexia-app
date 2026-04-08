@@ -265,6 +265,31 @@ class ChannelReport(Base):
     # Status
     status = Column(String, default="generated")
 
+class SystemNotification(Base):
+    __tablename__ = "system_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    kind = Column(String, index=True)
+    title = Column(String)
+    message = Column(Text)
+    payload_json = Column(Text, nullable=True)
+    status = Column(String, default="new", index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    read_at = Column(DateTime, nullable=True)
+
+class ChannelInsight(Base):
+    __tablename__ = "channel_insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    kind = Column(String, index=True)
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    data_json = Column(Text, nullable=True)
+    ai_summary = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class ContentPlan(Base):
     __tablename__ = "content_plans"
 
