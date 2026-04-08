@@ -1,0 +1,44 @@
+name: sync-main-cursor
+
+on:
+  push:
+    branches:
+      - main
+      - cursor/v-deo-10-minutos-legenda-ed04
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: pick-target
+        shell: bash
+        run: |
+          src="${GITHUB_REF_NAME}"
+          if [ "${src}" = "main" ]; then
+            echo "target=cursor/v-deo-10-minutos-legenda-ed04" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          if [ "${src}" = "cursor/v-deo-10-minutos-legenda-ed04" ]; then
+            echo "target=main" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          echo "target=" >> "${GITHUB_ENV}"
+      - name: sync-target
+        if: env.target != ''
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          current="$(git rev-parse HEAD)"
+          remote="$(git ls-remote --heads origin "${target}" | awk '{print $1}')"
+          if [ "${remote}" = "${current}" ]; then
+            exit 0
+          fi
+          git push origin "HEAD:refs/heads/${target}" --force
