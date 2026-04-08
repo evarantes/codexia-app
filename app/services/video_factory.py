@@ -556,6 +556,7 @@ class VideoFactory:
         job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
+        render_options = self.video_gen._resolve_render_options(getattr(video, "duration_sec", None), len(scenes))
         # Modo estrito opcional: quando true, falha a cena caso nenhum provedor de IA responda.
         # Quando false (padrão), usa fallback contextual (texto/narração) para não travar a produção.
         strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
@@ -566,6 +567,21 @@ class VideoFactory:
         except Exception:
             max_rounds = 4
         fallback_used = False
+        image_reuse_window = self.video_gen._env_int(
+            "VIDEO_IMAGE_REUSE_WINDOW",
+            2 if render_options.get("fast_mode") else 1,
+            min_value=1,
+            max_value=total,
+        )
+        image_budget = self.video_gen._env_int(
+            "VIDEO_MAX_UNIQUE_IMAGES",
+            6 if render_options.get("fast_mode") else max(1, total),
+            min_value=1,
+            max_value=total,
+        )
+        generated_unique = 0
+        reusable_images = {}
+        last_generated_path = None
 
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
@@ -582,16 +598,30 @@ class VideoFactory:
             def scene_status(message: str):
                 self._set_job_progress(job, base_progress, f"Cena {idx}/{total}: {message}")
 
-            scene_status(f"Iniciando geração da imagem (cena {scene.idx}).")
-            filepath = self.video_gen._ensure_image_for_scene(
-                prompt,
-                text_fallback=narration[:120] if narration else (scene.keywords or ""),
-                aspect_ratio="16:9",
-                status_callback=scene_status,
-                max_rounds=max_rounds,
-                allow_non_ai_fallback=allow_local_gradient
-            )
-            source_type = "AI_EXCLUSIVE"
+            reuse_group = min((idx - 1) // max(1, image_reuse_window), max(0, image_budget - 1))
+            filepath = reusable_images.get(reuse_group)
+            if filepath and os.path.exists(filepath):
+                source_type = "AI_REUSED"
+                scene_status(f"Reutilizando imagem do bloco {reuse_group + 1}.")
+            elif last_generated_path and os.path.exists(last_generated_path) and generated_unique >= image_budget:
+                filepath = last_generated_path
+                source_type = "AI_REUSED_LIMIT"
+                scene_status(f"Limite de imagens únicas atingido; reutilizando visual anterior.")
+            else:
+                scene_status(f"Iniciando geração da imagem (cena {scene.idx}).")
+                filepath = self.video_gen._ensure_image_for_scene(
+                    prompt,
+                    text_fallback=narration[:120] if narration else (scene.keywords or ""),
+                    aspect_ratio="16:9",
+                    status_callback=scene_status,
+                    max_rounds=max_rounds,
+                    allow_non_ai_fallback=allow_local_gradient
+                )
+                source_type = "AI_EXCLUSIVE"
+                if filepath and os.path.exists(filepath):
+                    reusable_images[reuse_group] = filepath
+                    last_generated_path = filepath
+                    generated_unique += 1
             invalid_path = (not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) < 1000)
             local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
 
@@ -690,6 +720,7 @@ class VideoFactory:
         clips = []
         final_video = None
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
+        render_options = self.video_gen._resolve_render_options(getattr(video, "duration_sec", None), len(scenes))
         
         try:
             for scene in scenes:
@@ -704,32 +735,21 @@ class VideoFactory:
                     img_clip = self._clip_resize(img_clip, (1280, 720))  # 720p = render ~2x mais rápido
                     img_clip = self._clip_with_duration(img_clip, duration)
                     img_clip = self._clip_with_audio(img_clip, audio_clip)
-                    try:
-                        img_clip = self.video_gen._apply_ken_burns(img_clip, (1280, 720))
-                    except Exception:
-                        pass
+                    if render_options.get("enable_ken_burns"):
+                        try:
+                            img_clip = self.video_gen._apply_ken_burns(img_clip, (1280, 720))
+                        except Exception:
+                            pass
                     clips.append(img_clip)
 
             if not clips:
                 raise Exception("Sem clips para renderizar (áudio/imagem ausentes).")
 
-            transition_sec = 0.25
-            if len(clips) > 1:
-                faded = []
-                for idx, c in enumerate(clips):
-                    if idx > 0 and hasattr(c, "crossfadein"):
-                        try:
-                            c = c.crossfadein(transition_sec)
-                        except Exception:
-                            pass
-                    faded.append(c)
-                clips = faded
-                try:
-                    final_video = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
-                except Exception:
-                    final_video = concatenate_videoclips(clips, method="compose")
-            else:
-                final_video = concatenate_videoclips(clips, method="compose")
+            final_video = self.video_gen._concatenate_clips(
+                concatenate_videoclips,
+                clips,
+                enable_transitions=render_options.get("enable_transitions", True),
+            )
 
             target_duration = getattr(video, "duration_sec", None)
             if target_duration:
@@ -886,8 +906,13 @@ class VideoFactory:
             try:
                 kw = {"logger": write_logger} if write_logger else {}
                 final_video.write_videofile(
-                    output_path, fps=20, codec="libx264", audio_codec="aac",
-                    threads=4, ffmpeg_params=["-preset", "ultrafast", "-crf", "28"], **kw
+                    output_path,
+                    fps=render_options.get("fps", 20),
+                    codec="libx264",
+                    audio_codec="aac",
+                    threads=render_options.get("threads", 4),
+                    ffmpeg_params=["-preset", "ultrafast", "-crf", str(render_options.get("crf", 28))],
+                    **kw
                 )
             finally:
                 stop_event.set()

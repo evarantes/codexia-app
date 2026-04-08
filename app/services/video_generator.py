@@ -239,6 +239,282 @@ class VideoGenerator:
             cap = t[:180].rstrip()
         return cap
 
+    def _split_text_chunks(self, text: str, target_chars: int = 240, min_chars: int = 90):
+        normalized = re.sub(r"\s+", " ", (text or "")).strip()
+        if not normalized:
+            return []
+
+        try:
+            target_chars = int(target_chars or 240)
+        except Exception:
+            target_chars = 240
+        target_chars = max(80, min(800, target_chars))
+        min_chars = max(30, min(target_chars, int(min_chars or max(40, target_chars * 0.4))))
+
+        sentence_parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", normalized) if p and p.strip()]
+        if not sentence_parts:
+            sentence_parts = [normalized]
+
+        atomic_chunks = []
+        for part in sentence_parts:
+            if len(part) <= target_chars:
+                atomic_chunks.append(part)
+                continue
+
+            words = [w for w in part.split() if w]
+            buf = ""
+            for word in words:
+                candidate = word if not buf else f"{buf} {word}"
+                if len(candidate) <= target_chars:
+                    buf = candidate
+                    continue
+
+                if buf:
+                    atomic_chunks.append(buf.strip())
+                    buf = ""
+
+                if len(word) <= target_chars:
+                    buf = word
+                    continue
+
+                remaining = word
+                while len(remaining) > target_chars:
+                    atomic_chunks.append(remaining[:target_chars].strip())
+                    remaining = remaining[target_chars:].strip()
+                buf = remaining
+
+            if buf.strip():
+                atomic_chunks.append(buf.strip())
+
+        merged_chunks = []
+        for chunk in atomic_chunks:
+            if not merged_chunks:
+                merged_chunks.append(chunk)
+                continue
+            if len(merged_chunks[-1]) < min_chars and len(merged_chunks[-1]) + 1 + len(chunk) <= target_chars:
+                merged_chunks[-1] = f"{merged_chunks[-1]} {chunk}".strip()
+            else:
+                merged_chunks.append(chunk)
+
+        return merged_chunks or [normalized]
+
+    def _build_caption_segments(self, text: str, duration: float, target_chars: int = 110):
+        caption_text = re.sub(r"\s+", " ", (text or "")).strip()
+        if not caption_text:
+            return []
+
+        chunks = self._split_text_chunks(
+            caption_text,
+            target_chars=target_chars,
+            min_chars=max(30, int(target_chars * 0.45)),
+        )
+        if not chunks:
+            return []
+
+        try:
+            total_duration = float(duration or 0)
+        except Exception:
+            total_duration = 0.0
+
+        if total_duration <= 0 or len(chunks) == 1:
+            return [{"text": chunks[0], "start": 0.0, "duration": max(0.1, total_duration or 0.1)}]
+
+        min_segment_duration = 1.2 if len(chunks) > 3 else 1.5
+        if total_duration <= len(chunks) * min_segment_duration:
+            durations = [max(0.25, total_duration / len(chunks))] * len(chunks)
+        else:
+            weights = [max(1, len(chunk.split())) for chunk in chunks]
+            remaining = total_duration - (len(chunks) * min_segment_duration)
+            total_weight = max(1, sum(weights))
+            durations = [min_segment_duration + (remaining * (w / total_weight)) for w in weights]
+
+        segments = []
+        cursor = 0.0
+        for idx, chunk in enumerate(chunks):
+            if idx == len(chunks) - 1:
+                seg_duration = max(0.25, total_duration - cursor)
+            else:
+                seg_duration = max(0.25, float(durations[idx]))
+                if cursor + seg_duration > total_duration:
+                    seg_duration = max(0.25, total_duration - cursor)
+            segments.append({"text": chunk, "start": max(0.0, cursor), "duration": seg_duration})
+            cursor += seg_duration
+
+        if segments:
+            last = segments[-1]
+            last["duration"] = max(0.25, total_duration - last["start"])
+
+        return [seg for seg in segments if seg.get("duration", 0) > 0]
+
+    def _env_flag(self, name: str, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None or str(raw).strip() == "":
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _env_int(self, name: str, default: int, min_value: int = None, max_value: int = None) -> int:
+        raw = os.getenv(name)
+        try:
+            value = int(str(raw).strip()) if raw is not None and str(raw).strip() != "" else int(default)
+        except Exception:
+            value = int(default)
+        if min_value is not None:
+            value = max(min_value, value)
+        if max_value is not None:
+            value = min(max_value, value)
+        return value
+
+    def _resolve_render_options(self, target_duration=None, scene_count: int = 0):
+        mode = (os.getenv("VIDEO_RENDER_MODE") or "auto").strip().lower()
+        duration_threshold = self._env_int("VIDEO_FAST_TARGET_DURATION_SEC", 360, min_value=60, max_value=7200)
+        scene_threshold = self._env_int("VIDEO_FAST_SCENE_THRESHOLD", 12, min_value=4, max_value=200)
+        max_threads = max(1, min(8, os.cpu_count() or 2))
+
+        fast_mode = int(scene_count or 0) >= scene_threshold
+        try:
+            if target_duration is not None and float(target_duration) >= float(duration_threshold):
+                fast_mode = True
+        except Exception:
+            pass
+
+        if mode in {"quality", "full", "normal", "off", "false", "0"}:
+            fast_mode = False
+        elif mode in {"fast", "1", "true", "yes", "on"}:
+            fast_mode = True
+
+        enable_ken_burns = self._env_flag("VIDEO_ENABLE_KEN_BURNS", default=True) and not fast_mode
+        enable_transitions = self._env_flag("VIDEO_ENABLE_TRANSITIONS", default=True) and not fast_mode
+
+        fps_default = 20 if fast_mode else 24
+        fps = self._env_int("VIDEO_RENDER_FPS", fps_default, min_value=12, max_value=60)
+        if fast_mode:
+            fps = self._env_int("VIDEO_FAST_RENDER_FPS", fps, min_value=12, max_value=60)
+
+        threads_default = 2 if fast_mode else 1
+        threads = self._env_int("VIDEO_RENDER_THREADS", threads_default, min_value=1, max_value=max_threads)
+        if fast_mode:
+            threads = self._env_int("VIDEO_FAST_RENDER_THREADS", threads, min_value=1, max_value=max_threads)
+
+        crf_default = 30 if fast_mode else 28
+        crf = self._env_int("VIDEO_RENDER_CRF", crf_default, min_value=18, max_value=36)
+        if fast_mode:
+            crf = self._env_int("VIDEO_FAST_RENDER_CRF", crf, min_value=18, max_value=36)
+
+        return {
+            "fast_mode": fast_mode,
+            "enable_ken_burns": enable_ken_burns,
+            "enable_transitions": enable_transitions,
+            "fps": fps,
+            "threads": threads,
+            "crf": crf,
+        }
+
+    def _resolve_image_strategy(self, render_options: dict, scene_count: int) -> dict:
+        mode = (os.getenv("VIDEO_IMAGE_REUSE_MODE") or "auto").strip().lower()
+        default_block_size = 2 if render_options.get("fast_mode") else 1
+        default_max_unique = 8 if render_options.get("fast_mode") else max(1, int(scene_count or 1))
+
+        block_size = self._env_int("VIDEO_IMAGE_REUSE_BLOCK_SIZE", default_block_size, min_value=1, max_value=24)
+        max_unique = self._env_int("VIDEO_MAX_UNIQUE_IMAGES", default_max_unique, min_value=1, max_value=200)
+
+        enabled = render_options.get("fast_mode", False)
+        if mode in {"off", "false", "0", "none"}:
+            enabled = False
+        elif mode in {"on", "true", "1", "yes", "window", "block"}:
+            enabled = True
+
+        return {
+            "enabled": bool(enabled),
+            "block_size": max(1, block_size),
+            "max_unique_images": max(1, max_unique),
+        }
+
+    def _scene_image_reuse_key(self, scene: dict, image_prompt: str, fallback_text: str, block_idx: int) -> tuple:
+        scene_kind = (scene.get("image_group") or scene.get("image_cluster") or "").strip().lower() if isinstance(scene, dict) else ""
+        prompt_source = (image_prompt or "").strip().lower()
+        fallback_source = (fallback_text or "").strip().lower()
+        source = prompt_source or fallback_source
+        if source:
+            source = re.sub(r"\s+", " ", source)
+            if len(source) > 220:
+                source = source[:220]
+        if not scene_kind:
+            scene_kind = f"block:{int(block_idx)}"
+        return (scene_kind, source)
+
+    def _should_enrich_prompts(self, render_options: dict, scene_count: int) -> bool:
+        if self._env_flag("VIDEO_FORCE_ENRICH_PROMPTS", default=False):
+            return True
+        if self._env_flag("VIDEO_DISABLE_ENRICH_PROMPTS", default=False):
+            return False
+        if not render_options.get("fast_mode"):
+            return True
+        max_fast_scene_enrichment = self._env_int("VIDEO_FAST_MAX_ENRICH_SCENES", 8, min_value=0, max_value=200)
+        return int(scene_count or 0) <= max_fast_scene_enrichment
+
+    def _composite_overlay_on_frame(self, base_frame, overlay_arr):
+        from PIL import Image
+        import numpy as np
+
+        base_img = Image.fromarray(np.asarray(base_frame, dtype="uint8"), mode="RGB").convert("RGBA")
+        overlay_img = Image.fromarray(np.asarray(overlay_arr, dtype="uint8"), mode="RGBA")
+        base_img.alpha_composite(overlay_img)
+        return np.array(base_img.convert("RGB"))
+
+    def _safe_frame_array(self, frame, fallback_size=(1280, 720)):
+        import numpy as np
+
+        arr = np.asarray(frame)
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, axis=-1)
+        if arr.ndim == 3 and arr.shape[2] == 4:
+            arr = arr[:, :, :3]
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            width, height = fallback_size
+            arr = np.zeros((int(height), int(width), 3), dtype="uint8")
+        if arr.dtype != np.uint8:
+            if np.issubdtype(arr.dtype, np.floating):
+                scale = 255.0 if float(arr.max(initial=0.0)) <= 1.0 else 1.0
+                arr = np.clip(arr * scale, 0, 255).astype("uint8")
+            else:
+                arr = np.clip(arr, 0, 255).astype("uint8")
+        return np.ascontiguousarray(arr)
+
+    def _concatenate_clips(self, concatenate_videoclips, clips, enable_transitions: bool = True, transition_sec: float = 0.25):
+        if not clips:
+            return None
+        if len(clips) == 1:
+            return clips[0]
+
+        if enable_transitions:
+            faded = []
+            for idx, clip in enumerate(clips):
+                if idx > 0 and hasattr(clip, "crossfadein"):
+                    try:
+                        clip = clip.crossfadein(transition_sec)
+                    except Exception:
+                        pass
+                faded.append(clip)
+            try:
+                return concatenate_videoclips(faded, method="compose", padding=-transition_sec)
+            except Exception:
+                return concatenate_videoclips(faded, method="compose")
+
+        try:
+            return concatenate_videoclips(clips, method="chain")
+        except Exception:
+            return concatenate_videoclips(clips, method="compose")
+
+    def _audio_cache_key(self, text: str, lang: str, voice_style=None, voice_gender=None) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "")).strip()
+        raw = "|".join([
+            normalized,
+            str(lang or "pt").strip().lower(),
+            str(voice_style or "").strip().lower(),
+            str(voice_gender or "").strip().lower(),
+        ])
+        return raw
+
     def review_plan(self, plan: dict):
         if not isinstance(plan, dict):
             return plan
@@ -251,12 +527,20 @@ class VideoGenerator:
                 continue
             txt = (s.get("text") or "").strip()
             clean = self._clean_text(txt)
-            cap = (s.get("caption") or s.get("on_screen_text") or "").strip()
-            if not cap:
-                cap = clean if len(clean) <= 220 else self._make_caption(clean)
-                s["caption"] = cap
-                notes.append(f"caption_auto:cena_{i+1}")
-            elif len(cap) > 220:
+            on_screen_text = (s.get("on_screen_text") or "").strip()
+            cap = (s.get("caption") or "").strip()
+
+            if not on_screen_text:
+                if cap:
+                    on_screen_text = self._clean_text(cap) or cap
+                else:
+                    on_screen_text = clean
+                    notes.append(f"caption_auto:cena_{i+1}")
+                s["on_screen_text"] = on_screen_text
+
+            if not cap and on_screen_text:
+                s["caption"] = on_screen_text if len(on_screen_text) <= 220 else self._make_caption(on_screen_text)
+            elif cap and len(cap) > 220:
                 s["caption"] = self._make_caption(cap)
                 notes.append(f"caption_trunc:cena_{i+1}")
         plan["scenes"] = scenes
@@ -605,6 +889,12 @@ class VideoGenerator:
             return clip.with_duration(duration)
         return clip.set_duration(duration)
 
+    def _set_clip_start(self, clip, start_t):
+        """Compatível com MoviePy 1.x (set_start) e 2.x (with_start)."""
+        if hasattr(clip, "with_start"):
+            return clip.with_start(start_t)
+        return clip.set_start(start_t)
+
     def _set_clip_audio(self, clip, audio_clip):
         """Compatível com MoviePy 1.x (set_audio) e 2.x (with_audio)."""
         if hasattr(clip, "with_audio"):
@@ -724,11 +1014,14 @@ class VideoGenerator:
             progress_callback(0, "Iniciando composição do vídeo...")
             
         clips = []
+        aux_clips = []
         final_clip = None
         bg_music = None
         allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
         image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
         image_cache = {}
+        audio_cache = {}
+        overlay_frame_cache = {}
         cached_temp_paths = set()
         fallback_bg_path = None
         use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -800,26 +1093,39 @@ class VideoGenerator:
                     split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "320").strip() or "320")
                     target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "240").strip() or "240")
                     target_chars = max(160, min(800, target_chars))
+                    text_chunks = self._split_text_chunks(
+                        scene_text,
+                        target_chars=target_chars,
+                        min_chars=max(60, int(target_chars * 0.45)),
+                    )
 
-                    if len(scene_text) > split_threshold:
-                        parts = re.split(r'(?<=[.!?])\s+', scene_text)
-                        buf = ""
-                        for part in parts:
-                            p = (part or "").strip()
-                            if not p:
-                                continue
-                            if not buf:
-                                buf = p
-                                continue
-                            if len(buf) + 1 + len(p) <= target_chars:
-                                buf = f"{buf} {p}"
-                                continue
-                            scenes_local.append({"text": buf.strip(), "image_prompt": scene_prompt})
-                            buf = p
-                        if buf.strip():
-                            scenes_local.append({"text": buf.strip(), "image_prompt": scene_prompt})
+                    if len(scene_text) > split_threshold and len(text_chunks) > 1:
+                        base_scene = dict(scene) if isinstance(scene, dict) else {}
+                        screen_text_source = ""
+                        if isinstance(scene, dict):
+                            screen_text_source = (scene.get("on_screen_text") or scene.get("caption") or "").strip()
+                        screen_chunks = self._split_text_chunks(
+                            screen_text_source,
+                            target_chars=target_chars,
+                            min_chars=max(60, int(target_chars * 0.45)),
+                        ) if screen_text_source else []
+
+                        for chunk_idx, chunk_text in enumerate(text_chunks):
+                            normalized_scene = dict(base_scene)
+                            normalized_scene["text"] = chunk_text.strip()
+                            normalized_scene["image_prompt"] = scene_prompt
+                            normalized_scene.pop("caption", None)
+                            normalized_scene.pop("on_screen_text", None)
+                            if screen_chunks:
+                                chosen_screen_text = screen_chunks[min(chunk_idx, len(screen_chunks) - 1)]
+                                if chosen_screen_text:
+                                    normalized_scene["on_screen_text"] = chosen_screen_text
+                            scenes_local.append(normalized_scene)
                     else:
-                        scenes_local.append({"text": scene_text, "image_prompt": scene_prompt})
+                        normalized_scene = dict(scene) if isinstance(scene, dict) else {}
+                        normalized_scene["text"] = scene_text
+                        normalized_scene["image_prompt"] = scene_prompt
+                        scenes_local.append(normalized_scene)
                 return scenes_local
 
             scenes = _materialize_scenes(raw_scenes)
@@ -865,11 +1171,20 @@ class VideoGenerator:
                     fallback_text = "Conteúdo em preparação."
                 scenes = [{"text": fallback_text, "image_prompt": plan.get("image_prompt") if isinstance(plan, dict) else ""}]
 
+            render_options = self._resolve_render_options(plan.get("target_duration_sec"), len(scenes))
+
+            image_strategy = self._resolve_image_strategy(render_options, len(scenes))
+            reuse_block_size = max(1, int(image_strategy.get("block_size", 1)))
+            max_unique_images = max(1, int(image_strategy.get("max_unique_images", max(1, len(scenes)))))
+            unique_images_generated = 0
+            block_image_cache = {}
+
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
             # Skip enrichment if music mode (handled by generator) or if images were preselected
             selected_raw_pre = plan.get("selected_images") or plan.get("images") or []
             has_preselected_images = isinstance(selected_raw_pre, list) and any(isinstance(x, str) and x.strip() for x in selected_raw_pre)
-            if self.ai_service and scenes and not music_file_path and not has_preselected_images:
+            should_enrich_prompts = self._should_enrich_prompts(render_options, len(scenes))
+            if self.ai_service and scenes and not music_file_path and not has_preselected_images and should_enrich_prompts:
                 try:
                     enriched = self.ai_service.enrich_scenes_with_image_prompts({"title": title, "scenes": scenes})
                     if enriched and enriched.get("scenes"):
@@ -935,7 +1250,10 @@ class VideoGenerator:
                     if not video_bg_path:
                         video_bg_path = self._generate_fallback_background(video_size)
                     if video_bg_path:
-                        video_bg_frame = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path)
+                        video_bg_frame = self._safe_frame_array(
+                            self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path),
+                            fallback_size=video_size,
+                        )
                         _track_image_path(video_bg_path)
                 except Exception:
                     video_bg_path = None
@@ -998,30 +1316,19 @@ class VideoGenerator:
                     if img_path and os.path.exists(img_path):
                         # Criar clip
                         clip = self._set_clip_duration(ImageClip(img_path), duration)
-                        clip = self._apply_ken_burns(clip, video_size)
+                        if render_options.get("enable_ken_burns"):
+                            clip = self._apply_ken_burns(clip, video_size)
                         clips.append(clip)
                     else:
                         raise Exception("Falha ao gerar imagem da cena musical.")
                 
                 # Concatenar clips visuais
                 if clips:
-                    transition_sec = 0.25
-                    if len(clips) > 1:
-                        faded = []
-                        for idx, c in enumerate(clips):
-                            if idx > 0 and hasattr(c, "crossfadein"):
-                                try:
-                                    c = c.crossfadein(transition_sec)
-                                except Exception:
-                                    pass
-                            faded.append(c)
-                        clips = faded
-                        try:
-                            final_video = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
-                        except Exception:
-                            final_video = concatenate_videoclips(clips, method="compose")
-                    else:
-                        final_video = concatenate_videoclips(clips, method="compose")
+                    final_video = self._concatenate_clips(
+                        concatenate_videoclips,
+                        clips,
+                        enable_transitions=render_options.get("enable_transitions", True),
+                    )
                     
                     # Ajustar áudio: Se vídeo for menor que áudio, corta áudio. Se vídeo for maior, loop ou corta vídeo.
                     # Vamos cortar o vídeo para bater com o áudio ou vice-versa.
@@ -1044,11 +1351,11 @@ class VideoGenerator:
                         
                     final_video.write_videofile(
                         output_path,
-                        fps=24,
+                        fps=render_options.get("fps", 24),
                         codec='libx264',
                         audio_codec='aac',
-                        threads=4,
-                        preset='ultrafast'
+                        threads=render_options.get("threads", 2),
+                        ffmpeg_params=["-preset", "ultrafast", "-crf", str(render_options.get("crf", 30))]
                     )
                     
                     # Cleanup
@@ -1079,7 +1386,12 @@ class VideoGenerator:
             if len(clean_title) > 100:
                 clean_title = clean_title[:97] + "..."
 
-            title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
+            title_audio_key = self._audio_cache_key(clean_title, "pt", voice_style=voice_style, voice_gender=voice_gender)
+            title_audio_path = audio_cache.get(title_audio_key)
+            if not title_audio_path or not os.path.exists(title_audio_path):
+                title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
+                if title_audio_path and os.path.exists(title_audio_path):
+                    audio_cache[title_audio_key] = title_audio_path
             
             start_bg_path = selected_primary_path if selected_primary_path and os.path.exists(selected_primary_path) else None
             if not start_bg_path:
@@ -1087,7 +1399,10 @@ class VideoGenerator:
             if not start_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 start_bg_path = video_bg_path
             _track_image_path(start_bg_path)
-            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path)
+            img_title = self._safe_frame_array(
+                self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path),
+                fallback_size=video_size,
+            )
             
             clip_title = ImageClip(img_title)
             
@@ -1136,22 +1451,50 @@ class VideoGenerator:
                 elif use_single_bg and video_bg_path:
                     bg_image_path = video_bg_path
                 else:
+                    block_idx = int(i // reuse_block_size) if image_strategy.get("enabled") else i
+                    reuse_key = self._scene_image_reuse_key(
+                        scene if isinstance(scene, dict) else {},
+                        image_prompt,
+                        clean_text[:220],
+                        block_idx,
+                    )
                     prompt_key = (
                         str(aspect_ratio).strip(),
                         (image_prompt or "").strip().lower() or clean_text[:220].strip().lower(),
                     )
                     cached = image_cache.get(prompt_key)
+                    if not cached and image_strategy.get("enabled"):
+                        cached = block_image_cache.get((str(aspect_ratio).strip(), reuse_key))
                     if cached and os.path.exists(cached):
                         bg_image_path = cached
                     else:
-                        bg_image_path = self._ensure_image_for_scene(
-                            image_prompt,
-                            text_fallback=clean_text,
-                            aspect_ratio=aspect_ratio,
-                            status_callback=_scene_status,
-                            max_rounds=image_max_rounds,
-                            allow_non_ai_fallback=allow_non_ai_fallback
-                        )
+                        if image_strategy.get("enabled") and unique_images_generated >= max_unique_images and block_image_cache:
+                            fallback_reuse = block_image_cache.get((str(aspect_ratio).strip(), reuse_key))
+                            if not fallback_reuse or not os.path.exists(fallback_reuse):
+                                fallback_reuse = next(
+                                    (
+                                        p for (_cache_key, p) in block_image_cache.items()
+                                        if _cache_key and os.path.exists(p)
+                                    ),
+                                    None,
+                                )
+                            bg_image_path = fallback_reuse
+                            if bg_image_path and progress_callback:
+                                progress_callback(
+                                    scene_progress,
+                                    f"Cena {i+1}/{total_scenes}: reutilizando imagem para acelerar o vídeo."
+                                )
+                        if not bg_image_path:
+                            bg_image_path = self._ensure_image_for_scene(
+                                image_prompt,
+                                text_fallback=clean_text,
+                                aspect_ratio=aspect_ratio,
+                                status_callback=_scene_status,
+                                max_rounds=image_max_rounds,
+                                allow_non_ai_fallback=allow_non_ai_fallback
+                            )
+                            if bg_image_path and os.path.exists(bg_image_path):
+                                unique_images_generated += 1
 
                 if not bg_image_path:
                     if progress_callback:
@@ -1180,6 +1523,8 @@ class VideoGenerator:
                 try:
                     if prompt_key and not (use_single_bg and video_bg_path):
                         image_cache[prompt_key] = bg_image_path
+                    if image_strategy.get("enabled") and bg_image_path and os.path.exists(bg_image_path):
+                        block_image_cache[(str(aspect_ratio).strip(), reuse_key)] = bg_image_path
                 except Exception:
                     pass
                 _track_image_path(bg_image_path)
@@ -1189,18 +1534,26 @@ class VideoGenerator:
                 bg_color = bg_colors[i % len(bg_colors)]
                 
                 # Gerar Audio da cena
-                audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
+                audio_key = self._audio_cache_key(clean_text, "pt", voice_style=voice_style, voice_gender=voice_gender)
+                audio_path = audio_cache.get(audio_key)
+                if not audio_path or not os.path.exists(audio_path):
+                    audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
+                    if audio_path and os.path.exists(audio_path):
+                        audio_cache[audio_key] = audio_path
                 
                 screen_text = ""
                 if isinstance(scene, dict):
-                    screen_text = (scene.get("caption") or scene.get("on_screen_text") or "").strip()
+                    screen_text = (scene.get("on_screen_text") or scene.get("caption") or "").strip()
                 if not screen_text:
-                    screen_text = self._make_caption(clean_text)
+                    screen_text = clean_text
 
                 if use_single_bg and video_bg_frame is not None:
                     bg_frame = video_bg_frame
                 else:
-                    bg_frame = self.create_text_image("", size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                    bg_frame = self._safe_frame_array(
+                        self.create_text_image("", size=video_size, bg_color=bg_color, bg_image_path=bg_image_path),
+                        fallback_size=video_size,
+                    )
 
                 bg_clip = ImageClip(bg_frame)
                 if audio_path:
@@ -1214,11 +1567,50 @@ class VideoGenerator:
                     bg_clip = bg_clip.with_duration(scene_dur)
                 else:
                     bg_clip = bg_clip.set_duration(scene_dur)
-                bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
 
-                overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
-                overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
-                clip_scene = CompositeVideoClip([bg_clip, overlay_clip], size=video_size)
+                caption_target_chars = 120 if aspect_ratio == "16:9" else 90
+                caption_segments = self._build_caption_segments(screen_text, scene_dur, target_chars=caption_target_chars)
+                if render_options.get("enable_ken_burns"):
+                    bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
+                    overlay_clips = []
+                    for seg in caption_segments:
+                        overlay_arr = self.create_text_overlay(seg["text"], size=video_size, text_color=(255, 255, 255))
+                        overlay_clip = self._clip_from_rgba(overlay_arr, seg["duration"])
+                        overlay_clip = self._set_clip_start(overlay_clip, seg["start"])
+                        overlay_clips.append(overlay_clip)
+                    aux_clips.extend(overlay_clips)
+                    clip_scene = CompositeVideoClip([bg_clip, *overlay_clips] if overlay_clips else [bg_clip], size=video_size)
+                else:
+                    scene_segments = caption_segments or [{"text": "", "start": 0.0, "duration": scene_dur}]
+                    segment_clips = []
+                    for seg in scene_segments:
+                        seg_duration = max(0.25, float(seg.get("duration") or 0.25))
+                        seg_text = (seg.get("text") or "").strip()
+                        if seg_text:
+                            cache_key = (seg_text, video_size)
+                            composed_frame = overlay_frame_cache.get(cache_key)
+                            if composed_frame is None:
+                                overlay_arr = self.create_text_overlay(seg_text, size=video_size, text_color=(255, 255, 255))
+                                composed_frame = self._safe_frame_array(
+                                    self._composite_overlay_on_frame(bg_frame, overlay_arr),
+                                    fallback_size=video_size,
+                                )
+                                overlay_frame_cache[cache_key] = composed_frame
+                        else:
+                            composed_frame = bg_frame
+                        segment_clips.append(
+                            self._set_clip_duration(
+                                ImageClip(self._safe_frame_array(composed_frame, fallback_size=video_size)),
+                                seg_duration,
+                            )
+                        )
+                    if len(segment_clips) > 1:
+                        aux_clips.extend(segment_clips)
+                    clip_scene = self._concatenate_clips(
+                        concatenate_videoclips,
+                        segment_clips,
+                        enable_transitions=False,
+                    )
                 
                 if audio_clip_scene:
                     if hasattr(clip_scene, "with_audio"):
@@ -1245,13 +1637,22 @@ class VideoGenerator:
                 progress_callback(85, "Criando slide final...")
                 
             end_text = "Inscreva-se no Canal!\nLink na Bio."
-            audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.", voice_style=voice_style, voice_gender=voice_gender)
+            end_audio_text = "Inscreva-se no canal e ative o sininho."
+            end_audio_key = self._audio_cache_key(end_audio_text, "pt", voice_style=voice_style, voice_gender=voice_gender)
+            audio_end_path = audio_cache.get(end_audio_key)
+            if not audio_end_path or not os.path.exists(audio_end_path):
+                audio_end_path = self.generate_audio(end_audio_text, voice_style=voice_style, voice_gender=voice_gender)
+                if audio_end_path and os.path.exists(audio_end_path):
+                    audio_cache[end_audio_key] = audio_end_path
             
             end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 end_bg_path = video_bg_path
             _track_image_path(end_bg_path)
-            img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path)
+            img_end = self._safe_frame_array(
+                self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path),
+                fallback_size=video_size,
+            )
             
             clip_end = ImageClip(img_end)
             
@@ -1265,23 +1666,11 @@ class VideoGenerator:
             clips.append(clip_end)
             
             # Concatenar todos
-            transition_sec = 0.25
-            if len(clips) > 1:
-                faded = []
-                for idx, c in enumerate(clips):
-                    if idx > 0 and hasattr(c, "crossfadein"):
-                        try:
-                            c = c.crossfadein(transition_sec)
-                        except Exception:
-                            pass
-                    faded.append(c)
-                clips = faded
-                try:
-                    final_clip = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
-                except Exception:
-                    final_clip = concatenate_videoclips(clips, method="compose")
-            else:
-                final_clip = concatenate_videoclips(clips, method="compose")
+            final_clip = self._concatenate_clips(
+                concatenate_videoclips,
+                clips,
+                enable_transitions=render_options.get("enable_transitions", True),
+            )
             
             # 4. Adicionar Música de Fundo
             if progress_callback:
@@ -1357,7 +1746,10 @@ class VideoGenerator:
                 except Exception:
                     current = 0
                 if current > (target_duration + 0.5):
-                    final_clip = self._subclip(final_clip, 0, target_duration)
+                    print(
+                        f"Aviso: duração final ({current:.2f}s) excede a meta ({target_duration:.2f}s); "
+                        "preservando a narração completa em vez de cortar o vídeo."
+                    )
                 elif current and current < (target_duration - 0.5):
                     extra = target_duration - current
                     try:
@@ -1418,8 +1810,12 @@ class VideoGenerator:
             # threads=1 + preset ultrafast para reduzir memória e tempo (evita OOM no Render)
             print(f"Renderizando vídeo para: {output_path}")
             final_clip.write_videofile(
-                output_path, fps=24, codec="libx264", audio_codec="aac", threads=1,
-                ffmpeg_params=["-preset", "ultrafast"],
+                output_path,
+                fps=render_options.get("fps", 24),
+                codec="libx264",
+                audio_codec="aac",
+                threads=render_options.get("threads", 1),
+                ffmpeg_params=["-preset", "ultrafast", "-crf", str(render_options.get("crf", 28))],
                 **logger_kw
             )
             
@@ -1446,6 +1842,13 @@ class VideoGenerator:
                     try:
                         clip.close()
                         if clip.audio:
+                            clip.audio.close()
+                    except:
+                        pass
+                for clip in aux_clips:
+                    try:
+                        clip.close()
+                        if getattr(clip, "audio", None):
                             clip.audio.close()
                     except:
                         pass

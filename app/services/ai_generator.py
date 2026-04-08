@@ -2,6 +2,7 @@ import os
 import uuid
 import openai
 import requests
+import re
 from typing import Optional
 from dotenv import load_dotenv
 from app.database import SessionLocal
@@ -142,6 +143,297 @@ class AIContentGenerator:
                 except Exception:
                     raise e
             raise e
+
+    def _count_words(self, text: str) -> int:
+        normalized = re.sub(r"\s+", " ", (text or "")).strip()
+        if not normalized:
+            return 0
+        return len([w for w in normalized.split(" ") if w.strip()])
+
+    def _split_long_text_into_scenes(self, text: str, duration_minutes: int = 5) -> list:
+        normalized = re.sub(r"\r\n", "\n", (text or "")).strip()
+        if not normalized:
+            return []
+
+        try:
+            target_minutes = max(1, int(duration_minutes or 1))
+        except Exception:
+            target_minutes = 5
+
+        target_scenes = max(6, target_minutes * 2)
+        target_words_per_scene = max(70, int((target_minutes * 170) / max(1, target_scenes)))
+        min_words_per_scene = max(45, int(target_words_per_scene * 0.65))
+
+        paragraphs = [p.strip() for p in re.split(r"\n{2,}", normalized) if p and p.strip()]
+        if not paragraphs:
+            paragraphs = [normalized]
+
+        sentence_pool = []
+        for paragraph in paragraphs:
+            pieces = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", paragraph) if s and s.strip()]
+            if pieces:
+                sentence_pool.extend(pieces)
+
+        if not sentence_pool:
+            sentence_pool = [normalized]
+
+        scenes = []
+        buffer = []
+        buffer_words = 0
+
+        for sentence in sentence_pool:
+            sentence_words = self._count_words(sentence)
+            if buffer and (buffer_words + sentence_words) > target_words_per_scene and buffer_words >= min_words_per_scene:
+                scenes.append(" ".join(buffer).strip())
+                buffer = [sentence]
+                buffer_words = sentence_words
+                continue
+            buffer.append(sentence)
+            buffer_words += sentence_words
+
+        if buffer:
+            scenes.append(" ".join(buffer).strip())
+
+        merged = []
+        for scene_text in scenes:
+            current_words = self._count_words(scene_text)
+            if merged and current_words < min_words_per_scene:
+                merged[-1] = f"{merged[-1]} {scene_text}".strip()
+            else:
+                merged.append(scene_text)
+
+        final_scenes = []
+        for idx, scene_text in enumerate(merged, start=1):
+            clean_text = re.sub(r"\s+", " ", (scene_text or "")).strip()
+            if not clean_text:
+                continue
+            final_scenes.append({
+                "text": clean_text,
+                "image_prompt": f"Cinematic digital art representing this narrated moment: {clean_text[:220]}",
+            })
+
+        if len(final_scenes) == 1 and self._count_words(final_scenes[0]["text"]) > (target_words_per_scene * 1.8):
+            long_text = final_scenes[0]["text"]
+            chunks = []
+            words = long_text.split()
+            chunk_size = max(70, target_words_per_scene)
+            for start in range(0, len(words), chunk_size):
+                chunk_words = words[start:start + chunk_size]
+                if chunk_words:
+                    chunk_text = " ".join(chunk_words).strip()
+                    chunks.append({
+                        "text": chunk_text,
+                        "image_prompt": f"Cinematic digital art representing this narrated moment: {chunk_text[:220]}",
+                    })
+            final_scenes = chunks or final_scenes
+
+        return final_scenes
+
+    def _ensure_long_form_script(self, plan: dict, original_text: str, duration_minutes: int = 5) -> dict:
+        if not isinstance(plan, dict):
+            plan = {}
+
+        try:
+            target_minutes = max(1, int(duration_minutes or 1))
+        except Exception:
+            target_minutes = 5
+
+        target_words = target_minutes * 160
+        minimum_words = max(300, int(target_words * 0.72))
+        target_sec = target_minutes * 60
+
+        raw_scenes = plan.get("scenes") or []
+        normalized_scenes = []
+        total_scene_words = 0
+
+        if isinstance(raw_scenes, list):
+            for item in raw_scenes:
+                if isinstance(item, dict):
+                    text = (item.get("text") or item.get("narration") or "").strip()
+                    if not text:
+                        continue
+                    prompt = (item.get("image_prompt") or "").strip()
+                else:
+                    text = str(item).strip()
+                    if not text:
+                        continue
+                    prompt = ""
+                total_scene_words += self._count_words(text)
+                normalized_scenes.append({
+                    "text": text,
+                    "image_prompt": prompt or f"Cinematic digital art representing this narrated moment: {text[:220]}",
+                })
+
+        original_words = self._count_words(original_text)
+        use_source_text = original_words >= minimum_words
+        if total_scene_words < minimum_words and use_source_text:
+            normalized_scenes = self._split_long_text_into_scenes(original_text, target_minutes)
+            total_scene_words = sum(self._count_words((scene.get("text") or "")) for scene in normalized_scenes)
+
+        if not normalized_scenes:
+            fallback_text = (original_text or "").strip()
+            if fallback_text:
+                normalized_scenes = self._split_long_text_into_scenes(fallback_text, target_minutes)
+            if not normalized_scenes:
+                normalized_scenes = [{
+                    "text": "Conteúdo principal do vídeo.",
+                    "image_prompt": "cinematic storytelling scene"
+                }]
+
+        plan["scenes"] = normalized_scenes
+        if target_sec > 0 and not plan.get("target_duration_sec"):
+            plan["target_duration_sec"] = target_sec
+        return plan
+
+    def _plan_scene_text(self, plan: dict) -> str:
+        if not isinstance(plan, dict):
+            return ""
+        scenes = plan.get("scenes") or []
+        if not isinstance(scenes, list):
+            return ""
+        blocks = []
+        for item in scenes:
+            if isinstance(item, dict):
+                text = (item.get("text") or item.get("narration") or "").strip()
+            else:
+                text = str(item).strip()
+            if text:
+                blocks.append(text)
+        return "\n\n".join(blocks).strip()
+
+    def _build_long_form_plan_from_text(
+        self,
+        text: str,
+        duration_minutes: int = 5,
+        title: str = "",
+        description: str = "",
+        tags=None,
+        music_mood: str = "emotional_cinematic",
+    ) -> dict:
+        safe_text = (text or "").strip()
+        safe_title = (title or "").strip() or "Vídeo Narrado"
+        safe_description = (description or "").strip() or f"Vídeo narrado sobre {safe_title}."
+        plan = {
+            "title": safe_title,
+            "description": safe_description,
+            "scenes": self._split_long_text_into_scenes(safe_text, duration_minutes),
+            "music_mood": music_mood or "emotional_cinematic",
+        }
+        if tags is not None:
+            plan["tags"] = tags
+        return self._ensure_long_form_script(plan, safe_text, duration_minutes)
+
+    def _expand_narration_text(
+        self,
+        text: str,
+        instruction: str,
+        kind: str = "story",
+        min_words: int = 1200,
+        max_words: Optional[int] = None,
+    ) -> str:
+        current = re.sub(r"\s+", " ", (text or "")).strip()
+        if not current:
+            return ""
+        if self._count_words(current) >= int(min_words or 0):
+            return current
+        if not self.openrouter_key:
+            return current
+
+        upper_limit = max_words if max_words is not None else max(min_words + 300, int(min_words * 1.25))
+        safe_kind = "história" if str(kind).strip().lower() == "story" else "devocional"
+        expanded = current
+
+        for _ in range(2):
+            current_words = self._count_words(expanded)
+            if current_words >= min_words:
+                break
+            missing_words = max(0, int(min_words) - current_words)
+            prompt = f"""
+            Expanda o(a) {safe_kind} abaixo para narração em vídeo, sem resumir o conteúdo já existente.
+
+            TEMA/INSTRUÇÃO ORIGINAL:
+            {(instruction or '').strip()[:4000]}
+
+            TEXTO ATUAL:
+            {expanded[:12000]}
+
+            REGRAS:
+            - Preserve o sentido, a ordem dos acontecimentos e a mensagem central.
+            - Acrescente desenvolvimento, emoção, contexto, exemplos, detalhes narrativos e transições.
+            - NÃO corte nem reduza o texto atual; apenas expanda.
+            - O texto final deve ficar entre {int(min_words)} e {int(upper_limit)} palavras.
+            - Ainda faltam aproximadamente {missing_words} palavras para atingir o mínimo desejado.
+            - Retorne APENAS o texto final completo, em português, sem JSON e sem explicações.
+            """
+            try:
+                candidate = self._generate_text(
+                    prompt,
+                    system_prompt="Você é um roteirista de narração longa. Expanda o texto preservando o sentido e retorne apenas o texto final completo.",
+                    temperature=0.7,
+                    json_mode=False,
+                )
+            except Exception:
+                candidate = None
+            candidate_text = (candidate or "").strip()
+            if not candidate_text:
+                break
+            if self._count_words(candidate_text) > current_words:
+                expanded = candidate_text
+        return expanded
+
+    def _mock_long_narration_text(
+        self,
+        seed_text: str,
+        kind: str = "story",
+        duration_min_minutes: int = 10,
+        duration_max_minutes: Optional[int] = None,
+    ) -> str:
+        try:
+            min_m = max(1, int(duration_min_minutes or 1))
+        except Exception:
+            min_m = 10
+        try:
+            max_m = int(duration_max_minutes) if duration_max_minutes else min_m
+        except Exception:
+            max_m = min_m
+        if max_m < min_m:
+            max_m = min_m
+        target_minutes = max(min_m, int(round((min_m + max_m) / 2)))
+        scene_count = max(6, target_minutes * 2)
+        safe_kind = "história" if str(kind).strip().lower() == "story" else "devocional"
+        base = re.sub(r"\s+", " ", (seed_text or "")).strip()
+        if not base:
+            base = "uma mensagem profunda sobre transformação, persistência e propósito"
+        if len(base) > 220:
+            base = base[:220]
+
+        blocks = []
+        for idx in range(scene_count):
+            if idx == 0:
+                paragraph = (
+                    f"Esta {safe_kind} começa com uma reflexão importante sobre {base}. "
+                    "Nem sempre a mudança aparece de forma repentina; muitas vezes ela nasce em silêncio, "
+                    "dentro do coração de quem decidiu continuar mesmo depois do medo, da frustração e das perdas. "
+                    "É justamente nesse início, aparentemente simples, que se forma a base emocional para uma jornada longa, profunda e transformadora."
+                )
+            elif idx == scene_count - 1:
+                paragraph = (
+                    f"No final dessa {safe_kind}, a mensagem permanece clara: {base} não é apenas uma ideia bonita, "
+                    "mas um chamado para ação diária, disciplina emocional e perseverança verdadeira. "
+                    "Quem entende isso passa a olhar para os próprios desafios com mais coragem, mais maturidade e mais visão de futuro, "
+                    "transformando a dor em aprendizado e a esperança em movimento real."
+                )
+            else:
+                stage = idx + 1
+                paragraph = (
+                    f"Na etapa {stage} dessa {safe_kind}, surge uma camada mais profunda do tema {base}. "
+                    "O personagem, a voz narrativa ou a reflexão central encontra obstáculos internos e externos, "
+                    "mas também descobre sinais de amadurecimento, pequenas vitórias, recaídas, perguntas difíceis e decisões que exigem firmeza. "
+                    "Esse desenvolvimento torna a mensagem mais rica, mais humana e mais próxima da experiência de quem está ouvindo, "
+                    "criando um ritmo de narração consistente e forte o suficiente para sustentar um vídeo longo."
+                )
+            blocks.append(paragraph.strip())
+        return "\n\n".join(blocks).strip()
 
     def generate_book_section(self, section_type, context_text, title, existing_content=None):
         """Generates specific book sections like synopsis, epigraph, preface. Can rewrite existing content."""
@@ -436,6 +728,111 @@ class AIContentGenerator:
             print(f"Erro na IA: {e}")
             return self._mock_response(book_title, style, error=str(e))
 
+    def generate_social_campaign_pack(
+        self,
+        title: str,
+        description: str = "",
+        video_url: str = "",
+        kind: str = "video",
+        channel_name: str = "",
+        focus: str = "video",
+    ) -> dict:
+        """
+        Gera copies de divulgação para múltiplas redes a partir de um vídeo/canal.
+        O retorno é usado como material pronto para publicação assistida no YouTube Auto.
+        """
+        self._load_config()
+
+        safe_title = (title or "").strip() or "Novo vídeo"
+        safe_desc = (description or "").strip()
+        safe_url = (video_url or "").strip()
+        safe_kind = (kind or "video").strip().lower()
+        safe_focus = (focus or "video").strip().lower()
+        safe_channel = (channel_name or "").strip()
+
+        fallback = {
+            "focus": safe_focus,
+            "kind": safe_kind,
+            "headline": f"{safe_title} - confira agora",
+            "facebook_post": f"{safe_title}\n\n{safe_desc[:240]}\n\n{safe_url}".strip(),
+            "instagram_caption": f"{safe_title}\n\n{safe_desc[:220]}\n\n#reels #shorts #youtube".strip(),
+            "tiktok_caption": f"{safe_title} #fyp #tiktok #shorts".strip(),
+            "kwai_caption": f"{safe_title} #kwai #video".strip(),
+            "whatsapp_status": f"{safe_title}\n{safe_url}".strip(),
+            "telegram_text": f"{safe_title}\n\n{safe_desc[:220]}\n\n{safe_url}".strip(),
+            "channel_ad_copy": f"Conheça o canal {safe_channel or 'no YouTube'} e acompanhe os vídeos mais recentes.".strip(),
+            "video_ad_copy": f"Novo conteúdo no ar: {safe_title}. Assista agora.".strip(),
+            "hashtags": ["#youtube", "#shorts", "#video"],
+        }
+
+        if not self.openrouter_key:
+            return fallback
+
+        prompt = f"""
+        Você é um estrategista de marketing digital e social media.
+        Crie materiais de divulgação para múltiplas redes sociais.
+
+        DADOS:
+        - Foco: {safe_focus}
+        - Tipo do conteúdo: {safe_kind}
+        - Título: {safe_title}
+        - Nome do canal: {safe_channel}
+        - Descrição base: {safe_desc[:3000]}
+        - URL: {safe_url}
+
+        REGRAS:
+        - Escreva tudo em português do Brasil.
+        - Gere textos curtos, prontos para postagem.
+        - Foque em aumentar visualizações do vídeo/short ou crescimento do canal.
+        - Para TikTok/Kwai/Instagram use legendas curtas.
+        - Para Facebook/Telegram/WhatsApp pode ser um pouco mais explicativo.
+        - Inclua CTA claros.
+        - Retorne APENAS JSON válido neste formato:
+        {{
+          "headline": "headline principal",
+          "facebook_post": "texto para Facebook",
+          "instagram_caption": "legenda para Instagram/Reels",
+          "tiktok_caption": "legenda curta para TikTok",
+          "kwai_caption": "legenda curta para Kwai",
+          "whatsapp_status": "texto curto para status/story",
+          "telegram_text": "texto para Telegram",
+          "channel_ad_copy": "anúncio do canal",
+          "video_ad_copy": "anúncio do vídeo",
+          "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"]
+        }}
+        """
+
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um social media e copywriter. Retorne apenas JSON válido.",
+                temperature=0.7,
+                json_mode=True,
+            )
+            if not content:
+                return fallback
+            clean = content.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean)
+            if not isinstance(data, dict):
+                return fallback
+            hashtags = data.get("hashtags")
+            if not isinstance(hashtags, list):
+                hashtags = fallback["hashtags"]
+            data["hashtags"] = [str(x).strip() for x in hashtags if str(x).strip()][:12] or fallback["hashtags"]
+            data["focus"] = safe_focus
+            data["kind"] = safe_kind
+            for key, default_value in fallback.items():
+                if key in {"focus", "kind", "hashtags"}:
+                    continue
+                if not isinstance(data.get(key), str) or not str(data.get(key)).strip():
+                    data[key] = default_value
+                else:
+                    data[key] = str(data[key]).strip()
+            return data
+        except Exception as e:
+            print(f"Erro ao gerar pack social: {e}")
+            return fallback
+
     def generate_cover_options(self, title: str, context: str, author: str = "", subtitle: str = "", n: int = 3):
         self._load_config()
 
@@ -680,7 +1077,10 @@ class AIContentGenerator:
         """Gera um roteiro longo para vídeo motivacional"""
         self._load_config()
         if not self.openrouter_key:
-            return self._mock_response(topic, "motivational_long", duration=duration_minutes)
+            data = self._mock_response(topic, "motivational_long", duration=duration_minutes)
+            if isinstance(data, dict):
+                data = self._ensure_long_form_script(data, self._plan_scene_text(data), duration_minutes)
+            return data
 
         # Estimate word count: approx 150 words per minute
         target_word_count = duration_minutes * 150
@@ -722,16 +1122,39 @@ class AIContentGenerator:
 
             # Limpeza básica de markdown json
             content = content.replace("```json", "").replace("```", "")
-            return json.loads(content)
+            data = json.loads(content)
+            if isinstance(data, dict):
+                try:
+                    target_sec = int(duration_minutes) * 60
+                except Exception:
+                    target_sec = 0
+                if target_sec > 0 and not data.get("target_duration_sec"):
+                    data["target_duration_sec"] = target_sec
+                data = self._ensure_long_form_script(data, self._plan_scene_text(data), duration_minutes)
+            return data
         except Exception as e:
             print(f"Erro ao gerar roteiro motivacional: {e}")
-            return self._mock_response(topic, "motivational_long", error=str(e), duration=duration_minutes)
+            data = self._mock_response(topic, "motivational_long", error=str(e), duration=duration_minutes)
+            if isinstance(data, dict):
+                data = self._ensure_long_form_script(data, self._plan_scene_text(data), duration_minutes)
+            return data
 
     def generate_script_from_text(self, text, duration_minutes=5):
         """Estrutura um texto existente em formato de roteiro de vídeo"""
         self._load_config()
         if not self.openrouter_key:
-            return self._mock_response("História do Usuário", "motivational_long")
+            safe_text = (text or "").strip()
+            if safe_text:
+                return self._build_long_form_plan_from_text(
+                    safe_text,
+                    duration_minutes=duration_minutes,
+                    title="História do Usuário",
+                    description="Vídeo estruturado automaticamente a partir do texto informado.",
+                )
+            data = self._mock_response("História do Usuário", "motivational_long", duration=duration_minutes)
+            if isinstance(data, dict):
+                data = self._ensure_long_form_script(data, self._plan_scene_text(data), duration_minutes)
+            return data
 
         prompt = f"""
         Atue como um Editor de Vídeo Profissional.
@@ -771,10 +1194,30 @@ class AIContentGenerator:
                  raise Exception("Resposta vazia da IA")
 
             content = content.replace("```json", "").replace("```", "")
-            return json.loads(content)
+            data = json.loads(content)
+            if isinstance(data, dict):
+                try:
+                    target_sec = int(duration_minutes) * 60
+                except Exception:
+                    target_sec = 0
+                if target_sec > 0 and not data.get("target_duration_sec"):
+                    data["target_duration_sec"] = target_sec
+                data = self._ensure_long_form_script(data, (text or "").strip(), duration_minutes)
+            return data
         except Exception as e:
             print(f"Erro ao estruturar roteiro do texto: {e}")
-            return self._mock_response("História do Usuário", "motivational_long", error=str(e))
+            safe_text = (text or "").strip()
+            if safe_text:
+                return self._build_long_form_plan_from_text(
+                    safe_text,
+                    duration_minutes=duration_minutes,
+                    title="História do Usuário",
+                    description="Vídeo estruturado automaticamente a partir do texto informado.",
+                )
+            data = self._mock_response("História do Usuário", "motivational_long", error=str(e), duration=duration_minutes)
+            if isinstance(data, dict):
+                data = self._ensure_long_form_script(data, self._plan_scene_text(data), duration_minutes)
+            return data
 
     def generate_story_or_devotional_text(
         self,
@@ -823,11 +1266,22 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
-            return content.strip()
+            expanded = self._expand_narration_text(
+                content.strip(),
+                instruction=instruction,
+                kind=kind,
+                min_words=min_words,
+                max_words=max_words,
+            )
+            return expanded.strip()
         except Exception as e:
             print(f"Erro ao gerar {safe_kind}: {e}")
-            title = "História" if kind == "story" else "Devocional"
-            return f"{title} (Falha na IA)\n\n{instruction}".strip()
+            return self._mock_long_narration_text(
+                instruction,
+                kind=kind,
+                duration_min_minutes=min_m,
+                duration_max_minutes=max_m,
+            )
 
     def improve_story_or_devotional_text(
         self,
@@ -880,10 +1334,23 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
-            return content.strip()
+            expanded = self._expand_narration_text(
+                content.strip(),
+                instruction=instruction,
+                kind=kind,
+                min_words=min_words,
+                max_words=max_words,
+            )
+            return expanded.strip()
         except Exception as e:
             print(f"Erro ao melhorar {safe_kind}: {e}")
-            return (original_text or "").strip()
+            base_text = (original_text or "").strip() or (instruction or "").strip()
+            return self._mock_long_narration_text(
+                base_text,
+                kind=kind,
+                duration_min_minutes=min_m,
+                duration_max_minutes=max_m,
+            )
 
     def generate_story_image_prompts(self, story_text: str, n: int = 4, kind: str = "story") -> list:
         self._load_config()
@@ -1708,12 +2175,19 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 
             scenes.append({"text": "Acredite em si mesmo e conquiste seus sonhos.", "image_prompt": "Lion looking at horizon"})
 
-            return {
+            data = {
                 "title": f"Motivação: {title} (Vídeo Épico)",
                 "description": "Vídeo motivacional gerado automaticamente.",
                 "scenes": scenes,
                 "music_mood": "epic"
             }
+            try:
+                target_sec = int(duration) * 60 if duration else 0
+            except Exception:
+                target_sec = 0
+            if target_sec > 0:
+                data["target_duration_sec"] = target_sec
+            return data
         else:
             return base_msg + f"🎬 [Simulação] Roteiro para '{title}'..."
 

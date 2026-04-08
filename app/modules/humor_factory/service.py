@@ -3,6 +3,7 @@ import json
 import math
 import os
 import random
+import re
 import traceback
 import uuid
 import wave
@@ -43,6 +44,96 @@ class HumorFactoryService:
         lines = [ln.strip(" -\t\r\n") for ln in str(raw or "").splitlines()]
         jokes = [ln for ln in lines if ln and len(ln) >= 8]
         return jokes
+
+    def _count_words(self, text: str) -> int:
+        normalized = " ".join(str(text or "").split()).strip()
+        if not normalized:
+            return 0
+        return len([w for w in normalized.split(" ") if w.strip()])
+
+    def _parse_manual_script_blocks(self, raw: Optional[str], target_minutes: int = 10) -> List[str]:
+        text = str(raw or "").replace("\r\n", "\n").strip()
+        if not text:
+            return []
+
+        explicit_blocks = [blk.strip() for blk in re.split(r"\n{2,}", text) if blk and blk.strip()]
+        clean_explicit = []
+        for block in explicit_blocks:
+            normalized = " ".join(block.split()).strip()
+            if len(normalized) >= 20:
+                clean_explicit.append(normalized[:1200])
+        if len(clean_explicit) >= 2:
+            return clean_explicit
+
+        normalized_text = " ".join(text.split()).strip()
+        if not normalized_text:
+            return []
+
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", normalized_text) if s and s.strip()]
+        if not sentences:
+            sentences = [normalized_text]
+
+        try:
+            minutes = max(1, int(target_minutes or 10))
+        except Exception:
+            minutes = 10
+
+        total_words = sum(self._count_words(sentence) for sentence in sentences)
+        target_blocks = max(4, min(32, minutes * 2))
+        target_words_per_block = max(35, min(120, int(total_words / max(1, target_blocks)) or 0))
+        min_words_per_block = max(18, int(target_words_per_block * 0.55))
+
+        blocks = []
+        buffer = []
+        buffer_words = 0
+
+        for sentence in sentences:
+            s_words = self._count_words(sentence)
+            if buffer and (buffer_words + s_words) > target_words_per_block and buffer_words >= min_words_per_block:
+                blocks.append(" ".join(buffer).strip())
+                buffer = [sentence]
+                buffer_words = s_words
+                continue
+            buffer.append(sentence)
+            buffer_words += s_words
+
+        if buffer:
+            blocks.append(" ".join(buffer).strip())
+
+        merged_blocks = []
+        for block in blocks:
+            word_count = self._count_words(block)
+            if merged_blocks and word_count < min_words_per_block:
+                merged_blocks[-1] = f"{merged_blocks[-1]} {block}".strip()
+            else:
+                merged_blocks.append(block)
+
+        clean_blocks = []
+        for block in merged_blocks:
+            normalized = " ".join(block.split()).strip()
+            if not normalized:
+                continue
+            if self._count_words(normalized) > max(80, target_words_per_block * 2):
+                words = normalized.split()
+                chunk_size = max(40, target_words_per_block)
+                for start in range(0, len(words), chunk_size):
+                    chunk = " ".join(words[start:start + chunk_size]).strip()
+                    if chunk:
+                        clean_blocks.append(chunk[:1200])
+            elif len(normalized) >= 20:
+                clean_blocks.append(normalized[:1200])
+
+        return clean_blocks
+
+    def preview_script_blocks(self, raw: Optional[str], target_minutes: int = 10) -> dict:
+        blocks = self._parse_manual_script_blocks(raw, target_minutes=target_minutes)
+        words = sum(self._count_words(block) for block in blocks)
+        return {
+            "blocks": blocks,
+            "count": len(blocks),
+            "word_count": words,
+            "target_minutes": max(1, int(target_minutes or 10)),
+        }
 
     def _fallback_jokes(self, theme: str, count: int) -> List[str]:
         base = [
@@ -411,9 +502,12 @@ Retorne APENAS JSON válido:
                 catchphrase_gallery.append(catchphrase_message)
 
             manual = self._parse_manual_jokes(project.manual_jokes_text)
+            script_blocks = self._parse_manual_script_blocks(getattr(project, "manual_script_text", None))
             source = (project.joke_source or "ai").strip().lower()
             jokes = []
-            if source == "manual":
+            if source == "script":
+                jokes = script_blocks[:]
+            elif source == "manual":
                 jokes = manual[:]
             elif source == "mixed":
                 jokes = manual[:]
@@ -435,7 +529,7 @@ Retorne APENAS JSON válido:
                     catchphrases=catchphrase_gallery,
                 )
 
-            if len(jokes) < needed_jokes:
+            if source != "script" and len(jokes) < needed_jokes:
                 # Completa ciclando sem baixar qualidade do ritmo
                 src = jokes[:] if jokes else self._fallback_jokes(themes_label, needed_jokes)
                 idx = 0
@@ -445,8 +539,14 @@ Retorne APENAS JSON válido:
 
             jokes = [self._normalize_standup_joke(x) for x in jokes]
             jokes = [x for x in jokes if x]
+            if source == "script":
+                jokes = script_blocks[:]
+                jokes = [x for x in jokes if x]
+            if source == "script" and not jokes:
+                raise RuntimeError("Informe um roteiro para gerar o vídeo na Fábrica de Humor.")
             project.jokes_json = json.dumps(jokes, ensure_ascii=False)
-            self._set_progress(db, project, 12, f"{len(jokes)} blocos de stand-up preparados (temas: {themes_label}).")
+            mode_label = "blocos de roteiro" if source == "script" else "blocos de stand-up"
+            self._set_progress(db, project, 12, f"{len(jokes)} {mode_label} preparados (temas: {themes_label}).")
 
             video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
             avatar_path, avatar_source = self._resolve_avatar_path(
@@ -490,7 +590,8 @@ Retorne APENAS JSON válido:
 
             approx_scene_seconds = max(10, int(target_seconds / max(1, len(jokes))))
             catchphrase_every_jokes = max(1, int(round(180 / max(10, approx_scene_seconds))))
-            self._append_log(project, f"Bordão intermediário configurado para ~1x a cada {catchphrase_every_jokes} blocos.")
+            if source != "script":
+                self._append_log(project, f"Bordão intermediário configurado para ~1x a cada {catchphrase_every_jokes} blocos.")
             db.commit()
 
             def add_audio_scene(text_on_screen: str, audio_path: str, label: str, animate_mouth: bool = True) -> bool:
@@ -550,15 +651,24 @@ Retorne APENAS JSON válido:
             )
 
             for idx, joke in enumerate(jokes, start=1):
-                mid_catchphrase = ""
-                if idx % catchphrase_every_jokes == 0:
-                    mid_catchphrase = pick_catchphrase()
-                narration = self._build_standup_narration(joke, catchphrase=mid_catchphrase)
-                add_talking_scene(
-                    text_on_screen=joke,
-                    narration_text=narration,
-                    label=f"stand-up {idx}",
-                )
+                if source == "script":
+                    narration = joke.strip()
+                    text_on_screen = narration[:280]
+                    add_talking_scene(
+                        text_on_screen=text_on_screen,
+                        narration_text=narration,
+                        label=f"roteiro {idx}",
+                    )
+                else:
+                    mid_catchphrase = ""
+                    if idx % catchphrase_every_jokes == 0:
+                        mid_catchphrase = pick_catchphrase()
+                    narration = self._build_standup_narration(joke, catchphrase=mid_catchphrase)
+                    add_talking_scene(
+                        text_on_screen=joke,
+                        narration_text=narration,
+                        label=f"stand-up {idx}",
+                    )
 
             closing_text = self._normalize_standup_joke(closing_message) or "Valeu demais pela companhia, vocês são incríveis."
             closing_catchphrase = pick_catchphrase(force=True) or opening_catchphrase
@@ -622,11 +732,13 @@ Retorne APENAS JSON válido:
                     {
                         "source": "humor_factory",
                         "humor_project_id": project.id,
+                        "joke_source": source,
                         "opening_message": opening_message,
                         "catchphrase_message": catchphrase_message,
                         "catchphrases": catchphrase_gallery,
                         "closing_message": closing_message,
                         "jokes": jokes,
+                        "manual_script_text": getattr(project, "manual_script_text", None),
                     },
                     ensure_ascii=False,
                 ),

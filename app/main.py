@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+import threading
+import shutil
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +19,7 @@ import os
 from contextlib import asynccontextmanager
 from app.services.monitor_service import monitor_service
 from sqlalchemy import text, inspect
-from app.models import User
+from app.models import User, PersistentTask
 from app.routers.auth import get_password_hash
 
 # Carregar variáveis de ambiente
@@ -34,6 +37,8 @@ CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_r
 _BASE_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _BASE_DIR / "static"
 _STATIC_SERVE = "/app/app/static" if os.path.isdir("/app/app/static") else str(_STATIC_DIR)
+_STATIC_RUNTIME_DIR = Path(_STATIC_SERVE)
+_STATIC_IMAGE_SENTINEL = _STATIC_DIR / "pages" / "humor-factory" / "index.html"
 
 print(f"STARTUP DEBUG: _BASE_DIR={_BASE_DIR}")
 print(f"STARTUP DEBUG: _STATIC_DIR={_STATIC_DIR}")
@@ -42,6 +47,62 @@ if os.path.exists(_STATIC_SERVE):
     print(f"STARTUP DEBUG: listing {_STATIC_SERVE}: {os.listdir(_STATIC_SERVE)}")
 else:
     print(f"STARTUP DEBUG: {_STATIC_SERVE} does not exist!")
+
+def _seed_runtime_static():
+    """
+    Garante que a pasta servida em runtime contenha os arquivos estáticos atuais do build.
+    Isso evita UI desatualizada quando o ambiente monta um volume persistente em /app/app/static.
+    """
+    try:
+        source_dir = _STATIC_DIR
+        runtime_dir = _STATIC_RUNTIME_DIR
+        if not source_dir.exists() or not runtime_dir:
+            return
+
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        sentinel_rel = Path("pages") / "humor-factory" / "index.html"
+        runtime_sentinel = runtime_dir / sentinel_rel
+
+        should_copy = False
+        if not runtime_sentinel.exists():
+            should_copy = True
+        else:
+            try:
+                should_copy = runtime_sentinel.read_text(encoding="utf-8") != _STATIC_IMAGE_SENTINEL.read_text(encoding="utf-8")
+            except Exception:
+                should_copy = True
+
+        if not should_copy:
+            return
+
+        print(f"Seeding runtime static files into {runtime_dir}...")
+        preserve_dirs = {"videos", "covers", "generated", "image_bank"}
+        for root, dirs, files in os.walk(source_dir):
+            rel_root = Path(root).relative_to(source_dir)
+            if rel_root.parts and rel_root.parts[0] in preserve_dirs:
+                dirs[:] = []
+                continue
+
+            target_root = runtime_dir / rel_root
+            try:
+                target_root.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                print(f"Static seed warning creating dir {target_root}: {e}")
+                continue
+
+            for filename in files:
+                src_file = Path(root) / filename
+                rel_file = src_file.relative_to(source_dir)
+                if rel_file.parts and rel_file.parts[0] in preserve_dirs:
+                    continue
+                dst_file = runtime_dir / rel_file
+                try:
+                    dst_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst_file)
+                except Exception as e:
+                    print(f"Static seed warning for {src_file}: {e}")
+    except Exception as e:
+        print(f"Static seed error: {e}")
 
 # Create tables (não derrubar o processo se o banco estiver inacessível no startup, ex.: Render)
 try:
@@ -382,6 +443,11 @@ async def lifespan(app: FastAPI):
     
     try:
         try:
+            _seed_runtime_static()
+        except Exception as e:
+            print(f"Static seed warning (app continua): {e}")
+
+        try:
             run_migrations(engine)
         except Exception as e:
             print(f"Migration warning (app continua): {e}")
@@ -397,9 +463,21 @@ async def lifespan(app: FastAPI):
             print(f"MonitorService start warning (app continua): {e}")
         
         try:
-            from app.models import ScheduledVideo, Job, Video
+            from app.models import ScheduledVideo, Job, Video, PersistentTask
             from sqlalchemy import func
             from datetime import datetime as dt, timedelta
+            from app.modules.humor_factory.models import HumorProject
+            from app.modules.humor_factory.service import HumorFactoryService
+            from app.routers.youtube import (
+                process_jobs_background,
+                process_story_images_generation,
+                process_story_shorts_generation,
+                process_create_shorts_from_scheduled_video,
+                process_video_generation,
+                StoryImagesRequest,
+                StoryShortsRequest,
+                VideoRequest,
+            )
             db = SessionLocal()
             try:
                 stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
@@ -423,6 +501,98 @@ async def lifespan(app: FastAPI):
                         if v and (v.status or "").upper() not in ("PAUSED", "CANCELLED", "CANCELED"):
                             v.status = "queued"
                     db.commit()
+
+                # Reenfileira jobs pendentes da produção persistida.
+                pending_jobs = db.query(Job).filter(Job.status == "pending").count()
+                if pending_jobs:
+                    print(f"Startup Recovery: Found {pending_jobs} pending production Jobs. Triggering background processor.")
+                    try:
+                        threading.Thread(target=process_jobs_background, daemon=True).start()
+                    except Exception as e:
+                        print(f"Startup Job Queue Recovery Error: {e}")
+
+                # Retoma tarefas persistidas do YouTube/story que ainda não concluíram.
+                recoverable_tasks = (
+                    db.query(PersistentTask)
+                    .filter(PersistentTask.status.in_(["pending", "processing"]))
+                    .all()
+                )
+                if recoverable_tasks:
+                    print(f"Startup Recovery: Found {len(recoverable_tasks)} persistent tasks to resume.")
+                for task in recoverable_tasks:
+                    try:
+                        payload = {}
+                        if task.payload_json:
+                            payload = json.loads(task.payload_json) or {}
+                        kind = (task.kind or "").strip().lower()
+                        task.status = "processing"
+                        if not task.started_at:
+                            task.started_at = dt.utcnow()
+                        task.message = task.message or "Retomando tarefa após reinício..."
+                        db.commit()
+
+                        if kind == "video_generate":
+                            request = VideoRequest(**payload)
+                            threading.Thread(
+                                target=process_video_generation,
+                                args=(request, task.task_id),
+                                daemon=True,
+                            ).start()
+                        elif kind == "story_images":
+                            request = StoryImagesRequest(**payload)
+                            threading.Thread(
+                                target=process_story_images_generation,
+                                args=(request, task.task_id),
+                                daemon=True,
+                            ).start()
+                        elif kind == "story_shorts":
+                            request = StoryShortsRequest(**payload)
+                            threading.Thread(
+                                target=process_story_shorts_generation,
+                                args=(request, task.task_id),
+                                daemon=True,
+                            ).start()
+                        elif kind == "scheduled_shorts":
+                            video_id = int((payload or {}).get("video_id") or 0)
+                            task_payload = (payload or {}).get("payload") or {}
+                            if video_id > 0:
+                                threading.Thread(
+                                    target=process_create_shorts_from_scheduled_video,
+                                    args=(video_id, task_payload, task.task_id),
+                                    daemon=True,
+                                ).start()
+                        else:
+                            task.status = "failed"
+                            task.message = f"Tarefa não suportada para retomada: {task.kind}"
+                            task.completed_at = dt.utcnow()
+                            db.commit()
+                    except Exception as e:
+                        try:
+                            task.status = "failed"
+                            task.message = f"Falha ao retomar tarefa: {e}"
+                            task.completed_at = dt.utcnow()
+                            db.commit()
+                        except Exception:
+                            pass
+
+                # Retoma projetos de humor que ficaram enfileirados ou gerando.
+                humor_projects = (
+                    db.query(HumorProject)
+                    .filter(HumorProject.status.in_(["queued", "generating"]))
+                    .all()
+                )
+                if humor_projects:
+                    print(f"Startup Recovery: Found {len(humor_projects)} humor projects to resume.")
+                humor_service = HumorFactoryService()
+                for project in humor_projects:
+                    try:
+                        threading.Thread(
+                            target=humor_service.generate_project_video,
+                            args=(project.id,),
+                            daemon=True,
+                        ).start()
+                    except Exception as e:
+                        print(f"Startup Humor Recovery Error (project {project.id}): {e}")
             finally:
                 db.close()
         except Exception as e:

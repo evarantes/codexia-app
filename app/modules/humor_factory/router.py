@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,21 @@ def get_service():
     return _service
 
 
+@router.get("/app", include_in_schema=False)
+def humor_factory_app():
+    page_path = Path("app/static/pages/humor-factory/index.html")
+    if not page_path.exists():
+        raise HTTPException(status_code=404, detail="Página da Fábrica de Humor não encontrada.")
+    return FileResponse(
+        str(page_path),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
 class HumorChannelRequest(BaseModel):
     id: Optional[int] = None
     name: str = Field(default="Canal de Humor")
@@ -39,8 +55,9 @@ class HumorProjectRequest(BaseModel):
     title: Optional[str] = None
     theme: Optional[str] = None
     themes: List[str] = Field(default_factory=list)
-    joke_source: str = Field(default="ai")  # ai | manual | mixed
+    joke_source: str = Field(default="ai")  # ai | manual | mixed | script
     manual_jokes_text: Optional[str] = None
+    script_text: Optional[str] = None
     avatar_override_path: Optional[str] = None
     opening_message: Optional[str] = None
     catchphrase_message: Optional[str] = None
@@ -54,6 +71,11 @@ class HumorProjectRequest(BaseModel):
 class HumorReviewRequest(BaseModel):
     notes: Optional[str] = ""
     publish_now: bool = False
+
+
+class HumorScriptPreviewRequest(BaseModel):
+    script_text: str
+    target_minutes: int = Field(default=10, ge=1, le=60)
 
 
 def _parse_json_list(value: Optional[str]) -> List[str]:
@@ -79,6 +101,7 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         "themes": themes,
         "joke_source": p.joke_source,
         "manual_jokes_text": p.manual_jokes_text,
+        "script_text": p.script_text,
         "avatar_override_path": p.avatar_override_path,
         "opening_message": p.opening_message,
         "catchphrase_message": p.catchphrase_message,
@@ -190,10 +213,12 @@ async def upload_project_avatar(file: UploadFile = File(...)):
 @router.post("/projects")
 def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     source = (payload.joke_source or "ai").strip().lower()
-    if source not in {"ai", "manual", "mixed"}:
+    if source not in {"ai", "manual", "mixed", "script"}:
         source = "ai"
     if source == "manual" and not (payload.manual_jokes_text or "").strip():
         raise HTTPException(status_code=400, detail="Informe as piadas no modo manual.")
+    if source == "script" and not (payload.script_text or "").strip():
+        raise HTTPException(status_code=400, detail="Informe o roteiro no modo por roteiro.")
 
     raw_themes = [str(t).strip() for t in (payload.themes or []) if str(t).strip()]
     if payload.theme and str(payload.theme).strip():
@@ -202,8 +227,11 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
     for t in raw_themes:
         if t not in themes:
             themes.append(t)
-    if not themes:
+    if source != "script" and not themes:
         raise HTTPException(status_code=400, detail="Selecione pelo menos um tema de piadas.")
+    if source == "script" and not themes:
+        fallback_theme = (payload.title or "").strip() or "Roteiro de Humor"
+        themes = [fallback_theme]
 
     target_minutes = max(10, int(payload.target_minutes or 10))
     project = HumorProject(
@@ -212,6 +240,7 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
         theme=" | ".join(themes),
         joke_source=source,
         manual_jokes_text=payload.manual_jokes_text or "",
+        script_text=(payload.script_text or "").strip() or None,
         avatar_override_path=(payload.avatar_override_path or "").strip() or None,
         opening_message=(payload.opening_message or "").strip() or None,
         catchphrase_message=(payload.catchphrase_message or "").strip() or None,
@@ -228,8 +257,22 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
     db.refresh(project)
 
     if payload.start_immediately:
+        project.status = "queued"
+        project.status_message = "Projeto salvo e reenfileirado para geração."
+        project.updated_at = datetime.now()
+        db.commit()
         background_tasks.add_task(get_service().generate_project_video, project.id)
     return _project_to_dict(project)
+
+
+@router.post("/script/preview")
+def preview_script_blocks(payload: HumorScriptPreviewRequest):
+    blocks = get_service().preview_script_blocks(payload.script_text, payload.target_minutes)
+    return {
+        "count": len(blocks),
+        "blocks": blocks,
+        "target_minutes": int(payload.target_minutes or 10),
+    }
 
 
 @router.get("/projects")

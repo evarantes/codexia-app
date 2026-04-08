@@ -1,4 +1,4 @@
-const CACHE_NAME = 'codexia-v2';
+const CACHE_NAME = 'codexia-v3';
 const urlsToCache = [
   '/',
   '/static/index.html',
@@ -45,6 +45,12 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   // Ignora requisições de API e POST para não cachear dados dinâmicos
   if (event.request.method !== 'GET' || event.request.url.includes('/api/') || event.request.url.includes('/auth/')) {
+      return;
+  }
+
+  // Não cachear páginas estáticas de ferramentas internas para evitar UI antiga.
+  if (event.request.url.includes('/static/pages/')) {
+      event.respondWith(fetch(event.request));
       return;
   }
 

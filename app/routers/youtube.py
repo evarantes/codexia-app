@@ -40,6 +40,7 @@ except Exception:
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
+from app.services.facebook_api import FacebookService
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft
@@ -50,6 +51,27 @@ FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
 # Lock file para quando Redis não está disponível (garante 1 job por vez)
 _lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
 _FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
+
+
+class DistributionGenerateRequest(BaseModel):
+    mode: str = "video"  # video | channel
+    scheduled_video_id: Optional[int] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    video_url: Optional[str] = None
+    channel_summary: Optional[str] = None
+    target_platforms: Optional[List[str]] = None
+
+
+class DistributionPublishRequest(BaseModel):
+    mode: str = "video"  # video | channel
+    scheduled_video_id: Optional[int] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    video_url: Optional[str] = None
+    channel_summary: Optional[str] = None
+    target_platform: str = "facebook"  # facebook | whatsapp_status | telegram
+    text: str = ""
 
 def _rq_workers_online() -> bool:
     """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
@@ -104,6 +126,34 @@ def process_jobs_background():
             except Exception:
                 pass
         db.close()
+
+
+def _resume_persistent_youtube_task(task_id: str, kind: str, payload: Dict[str, Any]) -> bool:
+    kind = (kind or "").strip().lower()
+    if not task_id:
+        return False
+    try:
+        if kind == "story_images":
+            request = StoryImagesRequest(**(payload or {}))
+            process_story_images_generation(request, task_id)
+            return True
+        if kind == "story_shorts":
+            request = StoryShortsRequest(**(payload or {}))
+            process_story_shorts_generation(request, task_id)
+            return True
+        if kind == "scheduled_shorts":
+            video_id = int((payload or {}).get("video_id") or 0)
+            req_payload = (payload or {}).get("request_payload") or {}
+            process_create_shorts_from_scheduled_video(video_id, req_payload, task_id)
+            return video_id > 0
+        if kind == "video_generate":
+            request = VideoRequest(**(payload or {}))
+            process_video_generation(request, task_id)
+            return True
+    except Exception as e:
+        update_task(task_id, status="failed", message=f"Erro ao retomar tarefa persistida: {str(e)}")
+        return False
+    return False
 
 def _resolve_video_file_path(raw_path: Optional[str]) -> str:
     """
@@ -1040,6 +1090,71 @@ class CreateShortsFromScheduledRequest(BaseModel):
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
 
+class SocialPromotionRequest(BaseModel):
+    scheduled_video_id: Optional[int] = None
+    production_video_id: Optional[int] = None
+    mode: str = "video"  # video | short | channel
+    platform: str = "all"  # all | facebook | instagram | whatsapp | telegram | tiktok | kwai
+    custom_instruction: Optional[str] = None
+
+
+def _social_source_from_scheduled(video: ScheduledVideo) -> Dict[str, Any]:
+    video_url = (video.video_url or "").strip()
+    watch_url = ""
+    if (video.status or "").strip().lower() == "published" and (video.youtube_video_id or "").strip():
+        watch_url = f"https://www.youtube.com/watch?v={video.youtube_video_id.strip()}"
+    elif video_url:
+        watch_url = video_url
+    return {
+        "title": (video.title or "").strip() or "Vídeo do canal",
+        "description": (video.description or "").strip(),
+        "watch_url": watch_url,
+        "video_type": (video.video_type or "video").strip().lower() or "video",
+    }
+
+
+def _social_source_from_production(db: Session, video: Video) -> Dict[str, Any]:
+    final_path = _latest_final_asset_path(db, video.id) or _resolve_video_file_path(video.youtube_video_id)
+    watch_url = ""
+    if (video.youtube_video_id or "").strip() and (video.status or "").strip().upper() == "PUBLISHED":
+        watch_url = f"https://www.youtube.com/watch?v={video.youtube_video_id.strip()}"
+    elif final_path:
+        filename = os.path.basename(final_path)
+        watch_url = f"{VIDEO_URL_PREFIX}/{filename}"
+    return {
+        "title": (video.title or "").strip() or "Vídeo do canal",
+        "description": (video.description or "").strip(),
+        "watch_url": watch_url,
+        "video_type": "short" if (video.type or "").strip().upper() == "SHORT" else "video",
+    }
+
+
+def _load_social_source(request: SocialPromotionRequest, db: Session) -> Dict[str, Any]:
+    mode = (request.mode or "video").strip().lower()
+    if mode not in {"video", "short", "channel"}:
+        mode = "video"
+
+    if request.scheduled_video_id:
+        item = db.query(ScheduledVideo).filter(ScheduledVideo.id == request.scheduled_video_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Vídeo agendado não encontrado.")
+        data = _social_source_from_scheduled(item)
+    elif request.production_video_id:
+        item = db.query(Video).filter(Video.id == request.production_video_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Vídeo da produção não encontrado.")
+        data = _social_source_from_production(db, item)
+    else:
+        raise HTTPException(status_code=400, detail="Informe scheduled_video_id ou production_video_id.")
+
+    if mode == "channel":
+        data["video_type"] = "channel"
+    elif mode == "short":
+        data["video_type"] = "short"
+    else:
+        data["video_type"] = "video"
+    return data
+
 def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()
@@ -1546,7 +1661,7 @@ def delete_story_draft(draft_id: int, db: Session = Depends(get_db)):
 
 @router.post("/story/generate_images_task")
 def generate_story_images_task(request: StoryImagesRequest, background_tasks: BackgroundTasks):
-    task_id = create_task()
+    task_id = create_task(kind="story_images", payload=request.model_dump())
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de imagens...")
     background_tasks.add_task(process_story_images_generation, request, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
@@ -1570,7 +1685,7 @@ def process_story_images_generation(request: StoryImagesRequest, task_id: str):
 
 @router.post("/story/generate_shorts_task")
 def generate_story_shorts_task(request: StoryShortsRequest, background_tasks: BackgroundTasks):
-    task_id = create_task()
+    task_id = create_task(kind="story_shorts", payload=request.model_dump())
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...")
     background_tasks.add_task(process_story_shorts_generation, request, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
@@ -1600,13 +1715,16 @@ def create_shorts_from_scheduled_task(video_id: int, request: CreateShortsFromSc
     if (video.video_type or "video").strip().lower() != "video":
         raise HTTPException(status_code=400, detail="Apenas vídeos longos (não-shorts) podem gerar shorts.")
 
-    task_id = create_task()
-    update_task(task_id, status="processing", progress=0, message="Iniciando criação de shorts a partir do vídeo...")
     payload = {
         "count": int(getattr(request, "count", 3) or 3),
         "voice_style": (getattr(request, "voice_style", None) or None),
         "voice_gender": (getattr(request, "voice_gender", None) or None),
     }
+    task_id = create_task(
+        kind="scheduled_shorts",
+        payload={"video_id": video_id, "payload": payload},
+    )
+    update_task(task_id, status="processing", progress=0, message="Iniciando criação de shorts a partir do vídeo...")
     background_tasks.add_task(process_create_shorts_from_scheduled_video, video_id, payload, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
 
@@ -2694,19 +2812,19 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     """Gera um vídeo motivacional e opcionalmente faz upload"""
     
     # Cria ID da tarefa
-    task_id = create_task()
     try:
         payload = request.model_dump()  # type: ignore[attr-defined]
     except Exception:
         payload = request.dict()
 
-    if conn is not None:
+    task_id = create_task(kind="video_generate", payload=payload)
+
+    if conn is not None and rq_queue is not None and _rq_workers_online():
         try:
             rq_queue.enqueue(process_video_generation_payload, payload, task_id)
             return {"message": "Processo iniciado", "task_id": task_id}
         except Exception:
             pass
-
     t = threading.Thread(target=process_video_generation, args=(request, task_id), daemon=True)
     t.start()
     
