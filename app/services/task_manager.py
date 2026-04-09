@@ -1,6 +1,7 @@
 import uuid
 import json
 from typing import Dict, Any, Optional
+from datetime import datetime
 try:
     from app.redis_client import conn as _redis_conn  # type: ignore
 except Exception:
@@ -39,7 +40,8 @@ def create_task():
         "status": "pending",
         "progress": 0,
         "message": "Aguardando início...",
-        "result": None
+        "result": None,
+        "created_at": datetime.utcnow().isoformat()
     }
     video_tasks[task_id] = initial
     _redis_set(task_id, initial)
@@ -50,15 +52,18 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
         "status": "processing",
         "progress": 0,
         "message": "Iniciando...",
-        "result": None
+        "result": None,
+        "created_at": datetime.utcnow().isoformat()
     }
+    if "created_at" not in current or not current.get("created_at"):
+        current["created_at"] = datetime.utcnow().isoformat()
     if status:
         current["status"] = status
     if progress is not None:
         current["progress"] = progress
     if message:
         current["message"] = message
-    if result:
+    if result is not None:
         current["result"] = result
     video_tasks[task_id] = current
     _redis_set(task_id, current)

@@ -4,6 +4,8 @@ import shutil
 import json
 import uuid
 import threading
+import sys
+import multiprocessing
 from datetime import datetime, timedelta
 try:
     from filelock import FileLock, Timeout
@@ -45,6 +47,7 @@ from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
+from app.routers.auth import get_current_admin_user
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
 # Lock file para quando Redis não está disponível (garante 1 job por vez)
@@ -2724,13 +2727,13 @@ def post_community_reply(req: CommunityReplyRequest, db: Session = Depends(get_d
 def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     """Gera um vídeo motivacional e opcionalmente faz upload"""
     
-    # Cria ID da tarefa
-    task_id = create_task()
-    update_task(task_id, status="processing", progress=0, message="Enfileirando geração de vídeo...")
     try:
         payload = request.model_dump()  # type: ignore[attr-defined]
     except Exception:
         payload = request.dict()
+
+    task_id = create_task()
+    update_task(task_id, status="processing", progress=0, message="Enfileirando geração de vídeo...", result={"payload": payload})
 
     use_rq = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
     if use_rq and conn is not None and _rq_workers_online():
@@ -2740,8 +2743,23 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         except Exception:
             pass
 
-    update_task(task_id, status="processing", progress=1, message="Iniciando geração local...")
-    t = threading.Thread(target=process_video_generation, args=(request, task_id), daemon=True)
+    executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "auto").strip().lower()
+    if executor not in {"auto", "thread", "process"}:
+        executor = "auto"
+
+    use_process = executor == "process" or (executor == "auto" and sys.platform != "win32" and conn is not None)
+    if use_process:
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            p = ctx.Process(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
+            p.start()
+            update_task(task_id, status="processing", progress=1, message="Iniciando geração em processo separado...", result={"payload": payload, "executor": "process", "pid": p.pid})
+            return {"message": "Processo iniciado", "task_id": task_id}
+        except Exception:
+            pass
+
+    update_task(task_id, status="processing", progress=1, message="Iniciando geração local...", result={"payload": payload, "executor": "thread"})
+    t = threading.Thread(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
     t.start()
     
     return {"message": "Processo iniciado", "task_id": task_id}
@@ -2752,6 +2770,96 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return task
+
+@router.post("/task/{task_id}/retry")
+def retry_task(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    status = str((task.get("status") or "")).lower()
+    progress = task.get("progress")
+    try:
+        progress_n = int(progress) if progress is not None else 0
+    except Exception:
+        progress_n = 0
+    if status == "completed":
+        raise HTTPException(status_code=400, detail="Tarefa já concluída.")
+    if status == "processing" and progress_n >= 5:
+        raise HTTPException(status_code=409, detail="Tarefa já está em processamento.")
+    result = task.get("result") if isinstance(task.get("result"), dict) else {}
+    payload = (result or {}).get("payload") if isinstance(result, dict) else None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Não há payload salvo para reiniciar esta tarefa.")
+    try:
+        req = VideoRequest(**payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payload inválido para reiniciar a tarefa.")
+    update_task(task_id, status="processing", progress=1, message="Reiniciando geração local...")
+    t = threading.Thread(target=process_video_generation, args=(req, task_id), daemon=True)
+    t.start()
+    return {"message": "Reiniciado", "task_id": task_id}
+
+@router.get("/diagnostics/video_generation")
+def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _admin=Depends(get_current_admin_user)):
+    import shutil
+    checks = []
+
+    use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
+    use_rq = use_rq_raw.lower() in {"1", "true", "yes"}
+    checks.append({"name": "USE_RQ_FOR_VIDEO_GENERATION", "ok": True, "value": use_rq_raw or "(não definido)"})
+
+    redis_ok = conn is not None
+    checks.append({"name": "Redis (conn)", "ok": redis_ok})
+
+    workers = _rq_workers_online()
+    checks.append({"name": "RQ workers online", "ok": bool(workers)})
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    checks.append({"name": "ffmpeg no PATH", "ok": bool(ffmpeg_path), "value": ffmpeg_path})
+
+    magick_path = shutil.which("magick") or shutil.which("convert")
+    checks.append({"name": "ImageMagick no PATH", "ok": bool(magick_path), "value": magick_path})
+
+    report: Dict[str, Any] = {
+        "task_id": task_id,
+        "checks": checks,
+        "task": None,
+        "recommendations": [],
+        "ai": None,
+    }
+
+    if task_id:
+        t = get_task(task_id)
+        report["task"] = t
+        if not t:
+            report["recommendations"].append("Task não encontrada: confirme se o deploy é o mesmo servidor e se o task_id é válido.")
+        else:
+            status = str((t.get("status") or "")).lower()
+            msg = str((t.get("message") or ""))
+            if status in {"pending", "processing"} and ("enfileirando" in msg.lower() or (t.get("progress") in (0, 1))):
+                report["recommendations"].append("Se ficar preso em 'Enfileirando...' por muito tempo, use o botão Reiniciar para rodar local.")
+            if use_rq and (not workers):
+                report["recommendations"].append("USE_RQ_FOR_VIDEO_GENERATION está ativo, mas não há workers RQ. Desative USE_RQ_FOR_VIDEO_GENERATION ou suba um worker.")
+            if (not ffmpeg_path):
+                report["recommendations"].append("ffmpeg não encontrado no PATH. Instale/adicione ffmpeg (moviepy precisa).")
+
+    if ai:
+        try:
+            ai_service = AIContentGenerator()
+            prompt = (
+                "Você é um engenheiro de suporte. Analise este relatório de diagnóstico (JSON) e retorne um JSON com:\n"
+                "{ \"causas_provaveis\": [..], \"acoes_recomendadas\": [..], \"acoes_seguras_no_sistema\": [..] }\n\n"
+                f"RELATÓRIO:\n{json.dumps(report, ensure_ascii=False)}"
+            )
+            raw = (ai_service._generate_text(prompt, system_prompt="Responda apenas JSON válido.", json_mode=True) or "").strip()
+            try:
+                report["ai"] = json.loads(raw) if raw else None
+            except Exception:
+                report["ai"] = {"raw": raw}
+        except Exception as e:
+            report["ai"] = {"error": str(e)}
+
+    return report
 
 def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
     try:
@@ -2765,7 +2873,28 @@ def process_video_generation(request: VideoRequest, task_id):
     # Lazy import VideoGenerator (moviepy/PIL/numpy) para reduzir memória no startup
     from app.services.video_generator import VideoGenerator
 
+    redis_lock = None
+    file_lock = None
     try:
+        if conn:
+            try:
+                redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
+                if not redis_lock.acquire(blocking=False):
+                    update_task(task_id, status="failed", progress=0, message="Já existe uma geração de vídeo em andamento no servidor.")
+                    return
+            except Exception:
+                redis_lock = None
+
+        if not conn or not redis_lock:
+            try:
+                file_lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
+                file_lock.acquire()
+            except Timeout:
+                update_task(task_id, status="failed", progress=0, message="Já existe uma geração de vídeo em andamento no servidor.")
+                return
+            except Exception:
+                file_lock = None
+
         topic_display = request.topic if request.mode == 'topic' else "História Personalizada"
         update_task(task_id, status="processing", progress=5, message=f"Iniciando geração sobre: {topic_display}")
         print(f"Iniciando geração de vídeo ({request.mode}): {topic_display}")
@@ -2861,6 +2990,17 @@ def process_video_generation(request: VideoRequest, task_id):
     except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
+    finally:
+        if redis_lock:
+            try:
+                redis_lock.release()
+            except Exception:
+                pass
+        if file_lock:
+            try:
+                file_lock.release()
+            except Exception:
+                pass
 
 
 # ─── Community: All Comments (across videos) ────────────

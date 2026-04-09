@@ -1076,6 +1076,26 @@
                             <div class="bg-indigo-600 h-2.5 rounded-full" :style="{ width: (ytStoryTask.progress || 0) + '%' }"></div>
                         </div>
                         <div v-if="ytStoryTask.message" class="text-sm text-gray-700 mt-2">{{ ytStoryTask.message }}</div>
+                        <div class="mt-3 flex flex-wrap gap-2">
+                            <button @click="diagnoseStoryTask" :disabled="ytStoryAssistLoading || !ytStoryTaskId" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
+                                <i v-if="ytStoryAssistLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-stethoscope"></i> Diagnosticar</span>
+                            </button>
+                            <button @click="retryStoryTask" :disabled="!ytStoryTaskId" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
+                                <i class="fas fa-rotate-right"></i>
+                                <span>Reiniciar tarefa</span>
+                            </button>
+                        </div>
+                        <div v-if="ytStoryAssistReport" class="mt-3 text-xs bg-white border rounded p-3">
+                            <div class="font-bold text-gray-800 mb-1">Diagnóstico</div>
+                            <div v-if="ytStoryAssistReport.recommendations && ytStoryAssistReport.recommendations.length" class="text-gray-700">
+                                <div v-for="(r, idx) in ytStoryAssistReport.recommendations" :key="'rec-'+idx">- {{ r }}</div>
+                            </div>
+                            <div v-if="ytStoryAssistReport.ai && ytStoryAssistReport.ai.acoes_recomendadas && ytStoryAssistReport.ai.acoes_recomendadas.length" class="mt-2 text-gray-700">
+                                <div class="font-semibold">IA</div>
+                                <div v-for="(r, idx) in ytStoryAssistReport.ai.acoes_recomendadas" :key="'airec-'+idx">- {{ r }}</div>
+                            </div>
+                        </div>
                     </div>
 
                     <div v-if="ytStoryVideoUrl" class="mt-6">
@@ -2618,7 +2638,10 @@
                     ytStoryImproveLoading: false,
                     ytStoryVideoLoading: false,
                     ytStoryTask: null,
+                    ytStoryTaskId: null,
                     ytStoryTaskPollFails: {},
+                    ytStoryAssistLoading: false,
+                    ytStoryAssistReport: null,
                     ytStoryVideoUrl: null,
                     ytStoryScheduledId: null,
                     ytStoryQueueLoading: false,
@@ -3972,6 +3995,8 @@
                 async generateStoryVideo() {
                     this.ytStoryVideoLoading = true;
                     this.ytStoryTask = null;
+                    this.ytStoryTaskId = null;
+                    this.ytStoryAssistReport = null;
                     this.ytStoryVideoUrl = null;
                     try {
                         const duration = Number(this.ytStoryVideoDuration || this.ytStoryDurationMax || this.ytStoryDurationMin || 10);
@@ -4011,11 +4036,46 @@
                         if (taskId) {
                             this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
                             this.ytStoryTaskPollFails[String(taskId)] = 0;
+                            this.ytStoryTaskId = taskId;
                         }
                         await this.pollStoryTask(taskId);
                     } catch (e) {
                         alert("Erro ao gerar vídeo: " + (e.message || e));
                         this.ytStoryVideoLoading = false;
+                    }
+                },
+                async diagnoseStoryTask() {
+                    if (!this.ytStoryTaskId) return;
+                    this.ytStoryAssistLoading = true;
+                    this.ytStoryAssistReport = null;
+                    try {
+                        const url = `/youtube/diagnostics/video_generation?task_id=${encodeURIComponent(this.ytStoryTaskId)}&ai=1`;
+                        const res = await this.authFetch(url);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || "Falha ao diagnosticar.");
+                        }
+                        this.ytStoryAssistReport = data;
+                    } catch (e) {
+                        alert("Erro ao diagnosticar: " + (e.message || e));
+                    } finally {
+                        this.ytStoryAssistLoading = false;
+                    }
+                },
+                async retryStoryTask() {
+                    if (!this.ytStoryTaskId) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(this.ytStoryTaskId)}/retry`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || "Falha ao reiniciar.");
+                        }
+                        this.ytStoryAssistReport = null;
+                        this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                        this.ytStoryTaskPollFails[String(this.ytStoryTaskId)] = 0;
+                        await this.pollStoryTask(this.ytStoryTaskId);
+                    } catch (e) {
+                        alert("Erro ao reiniciar: " + (e.message || e));
                     }
                 },
                 async pollStoryTask(taskId) {
