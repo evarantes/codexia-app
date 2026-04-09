@@ -6,6 +6,8 @@ import datetime
 import logging
 import json
 import os
+import sys
+import multiprocessing
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -224,8 +226,19 @@ class MonitorService:
             
             if next_video:
                 logger.info(f"Iniciando processamento do vídeo agendado {next_video.id}...")
-                # We call the processor directly (synchronously in this thread)
-                # Since we use max_instances=1, this won't overlap with itself.
+                try:
+                    if sys.platform != "win32":
+                        try:
+                            ctx = multiprocessing.get_context("fork")
+                        except Exception:
+                            ctx = multiprocessing.get_context("spawn")
+                        p = ctx.Process(target=process_scheduled_video, args=(next_video.id,), daemon=True)
+                        p.start()
+                        logger.info(f"Processo iniciado para vídeo {next_video.id} (pid={p.pid}).")
+                        return
+                except Exception as e:
+                    logger.error(f"Falha ao iniciar processo separado para vídeo {next_video.id}: {e}")
+
                 process_scheduled_video(next_video.id)
             else:
                 pass # Nothing to do

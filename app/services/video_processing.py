@@ -7,6 +7,10 @@ from app.models import ScheduledVideo
 from app.services.ai_generator import AIContentGenerator
 
 def process_scheduled_video(video_id: int):
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
     # Lazy import para reduzir uso de memória no startup (moviepy/PIL/numpy são pesados)
     from app.services.video_generator import VideoGenerator
 
