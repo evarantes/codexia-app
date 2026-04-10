@@ -2747,18 +2747,33 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     if executor not in {"auto", "thread", "process"}:
         executor = "auto"
 
-    use_process = executor == "process" or (executor == "auto" and sys.platform != "win32" and conn is not None)
+    use_process = (executor == "process" or (executor == "auto" and sys.platform != "win32")) and (conn is not None)
     if use_process:
         try:
-            ctx = multiprocessing.get_context("spawn")
+            method = "spawn" if sys.platform == "win32" else "fork"
+            ctx = multiprocessing.get_context(method)
             p = ctx.Process(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
             p.start()
             update_task(task_id, status="processing", progress=1, message="Iniciando geração em processo separado...", result={"payload": payload, "executor": "process", "pid": p.pid})
+            def _watch(proc: multiprocessing.Process, tid: str):
+                try:
+                    proc.join()
+                    if proc.exitcode and proc.exitcode != 0:
+                        t = get_task(tid) or {}
+                        status = str((t.get("status") or "")).lower()
+                        if status not in {"completed", "failed"}:
+                            update_task(tid, status="failed", progress=0, message="Falha ao iniciar/rodar o processo de geração. Verifique os logs do container.")
+                except Exception:
+                    pass
+            threading.Thread(target=_watch, args=(p, task_id), daemon=True).start()
             return {"message": "Processo iniciado", "task_id": task_id}
         except Exception:
             pass
 
-    update_task(task_id, status="processing", progress=1, message="Iniciando geração local...", result={"payload": payload, "executor": "thread"})
+    msg = "Iniciando geração local..."
+    if executor == "process" and conn is None:
+        msg = "Redis indisponível para acompanhar progresso em processo separado. Iniciando geração local..."
+    update_task(task_id, status="processing", progress=1, message=msg, result={"payload": payload, "executor": "thread"})
     t = threading.Thread(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
     t.start()
     

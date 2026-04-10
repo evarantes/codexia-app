@@ -14,7 +14,8 @@ try:
     from rq import Queue
     
     redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-    conn = redis.from_url(redis_url)
+    conn = redis.from_url(redis_url, socket_timeout=1, socket_connect_timeout=1, retry_on_timeout=False)
+    conn.ping()
     queue = Queue('default', connection=conn)
 except Exception as e:
     print(f"Warning: Redis/RQ initialization failed: {e}. Worker functionality will be disabled/mocked.")
