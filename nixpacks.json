@@ -1,0 +1,21 @@
+{
+  "providers": [
+    "..."
+  ],
+  "variables": {
+    "COOLIFY_FQDN": "",
+    "COOLIFY_BRANCH": ""
+  },
+  "phases": {
+    "setup": {
+      "nixPkgs": [
+        "...",
+        "ffmpeg"
+      ],
+      "aptPkgs": [
+        "...",
+        "imagemagick"
+      ]
+    }
+  }
+}
