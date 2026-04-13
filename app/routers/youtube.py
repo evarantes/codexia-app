@@ -1352,88 +1352,126 @@ def delete_image_bank_item(image_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Imagem removida."}
 def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callback=None) -> Dict[str, Any]:
-    ai_service = AIContentGenerator()
-    kind = (request.kind or "story").strip().lower()
-    if kind not in {"story", "devotional"}:
-        kind = "story"
+    from app.redis_client import conn
+    from filelock import FileLock, Timeout
+    _FACTORY_LOCK_PATH = "video_factory.lock"
+    FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+
+    redis_lock = None
+    file_lock = None
+    if conn:
+        try:
+            redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=2 * 60 * 60, blocking_timeout=1)
+            if not redis_lock.acquire(blocking=False):
+                raise HTTPException(status_code=409, detail="Já existe uma geração de vídeo em andamento. Aguarde terminar.")
+        except HTTPException:
+            raise
+        except Exception:
+            redis_lock = None
+
+    if not conn or not redis_lock:
+        try:
+            file_lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
+            file_lock.acquire()
+        except Timeout:
+            raise HTTPException(status_code=409, detail="Já existe uma geração de vídeo em andamento. Aguarde terminar.")
+        except Exception:
+            file_lock = None
 
     try:
-        count = int(request.count or 1)
-    except Exception:
-        count = 1
-    count = max(1, min(8, count))
+        ai_service = AIContentGenerator()
+        kind = (request.kind or "story").strip().lower()
+        if kind not in {"story", "devotional"}:
+            kind = "story"
 
-    story_content = (request.story_content or "").strip()
-    if not story_content:
-        raise HTTPException(status_code=400, detail="story_content é obrigatório.")
-    story_content = story_content[:12000]
+        try:
+            count = int(request.count or 1)
+        except Exception:
+            count = 1
+        count = max(1, min(8, count))
 
-    selected_images = []
-    if request.selected_images and isinstance(request.selected_images, list):
-        for v in request.selected_images:
-            if isinstance(v, str) and v.strip():
-                selected_images.append(v.strip())
-    selected_images = selected_images[:24]
+        story_content = (request.story_content or "").strip()
+        if not story_content:
+            raise HTTPException(status_code=400, detail="story_content é obrigatório.")
+        story_content = story_content[:12000]
 
-    voice_style = (request.voice_style or "").strip() or None
-    voice_gender = (request.voice_gender or "").strip() or None
+        selected_images = []
+        if request.selected_images and isinstance(request.selected_images, list):
+            for v in request.selected_images:
+                if isinstance(v, str) and v.strip():
+                    selected_images.append(v.strip())
+        selected_images = selected_images[:24]
 
-    def _progress(pct: int, msg: str):
-        if progress_callback:
+        voice_style = (request.voice_style or "").strip() or None
+        voice_gender = (request.voice_gender or "").strip() or None
+
+        def _progress(pct: int, msg: str):
+            if progress_callback:
+                try:
+                    progress_callback(pct, msg)
+                except Exception:
+                    pass
+
+        angles = (
+            ["Gancho forte (início da história)", "Momento mais impactante", "Lição final e CTA"]
+            if kind == "story"
+            else ["Gancho de fé (início)", "Aplicação prática", "Mensagem final e CTA"]
+        )
+
+        from app.services.video_generator import VideoGenerator
+        video_service = VideoGenerator(ai_service=ai_service)
+
+        shorts = []
+        for idx in range(count):
+            angle = angles[idx % len(angles)]
+            _progress(5 + int((idx / max(1, count)) * 75), f"Gerando short {idx+1}/{count} ({angle})...")
+            prompt = (
+                f"Crie UM roteiro de YouTube Short vertical (30-60s), baseado nesta {('história' if kind == 'story' else 'mensagem/devocional')}.\n"
+                f"Foco: {angle}.\n\n"
+                f"TEXTO BASE:\n{story_content}\n\n"
+                "Regras: gancho no início, 3 a 5 cenas, frases curtas, sem texto na imagem."
+            )
+            plan = ai_service.generate_short_script_from_prompt(prompt)
+            if not isinstance(plan, dict):
+                plan = {"title": f"Short {idx+1}", "scenes": [{"text": "Assista até o fim.", "image_prompt": "cinematic inspiring scene"}]}
+            if selected_images:
+                plan["selected_images"] = selected_images
+
+            def _video_progress(p, m, short_idx=idx, total=count):
+                base = 10 + int((short_idx / max(1, total)) * 80)
+                span = int((1 / max(1, total)) * 80)
+                mapped = min(95, base + int((p or 0) / 100 * max(1, span)))
+                _progress(mapped, f"Short {short_idx+1}/{total}: {m}")
+
+            result = video_service.create_video_from_plan(
+                plan,
+                aspect_ratio="9:16",
+                progress_callback=_video_progress,
+                voice_style=voice_style,
+                voice_gender=voice_gender,
+            )
+            video_url = result.get("video_url") if isinstance(result, dict) else None
+            shorts.append({
+                "title": plan.get("title") or f"Short {idx+1}",
+                "description": plan.get("description") or "",
+                "video_url": video_url,
+                "kind": kind,
+                "video_type": "short",
+            })
+
+        _progress(100, "Shorts prontos.")
+        return {"count": len(shorts), "shorts": shorts, "kind": kind}
+    finally:
+        if redis_lock:
             try:
-                progress_callback(pct, msg)
+                redis_lock.release()
             except Exception:
                 pass
-
-    angles = (
-        ["Gancho forte (início da história)", "Momento mais impactante", "Lição final e CTA"]
-        if kind == "story"
-        else ["Gancho de fé (início)", "Aplicação prática", "Mensagem final e CTA"]
-    )
-
-    from app.services.video_generator import VideoGenerator
-    video_service = VideoGenerator(ai_service=ai_service)
-
-    shorts = []
-    for idx in range(count):
-        angle = angles[idx % len(angles)]
-        _progress(5 + int((idx / max(1, count)) * 75), f"Gerando short {idx+1}/{count} ({angle})...")
-        prompt = (
-            f"Crie UM roteiro de YouTube Short vertical (30-60s), baseado nesta {('história' if kind == 'story' else 'mensagem/devocional')}.\n"
-            f"Foco: {angle}.\n\n"
-            f"TEXTO BASE:\n{story_content}\n\n"
-            "Regras: gancho no início, 3 a 5 cenas, frases curtas, sem texto na imagem."
-        )
-        plan = ai_service.generate_short_script_from_prompt(prompt)
-        if not isinstance(plan, dict):
-            plan = {"title": f"Short {idx+1}", "scenes": [{"text": "Assista até o fim.", "image_prompt": "cinematic inspiring scene"}]}
-        if selected_images:
-            plan["selected_images"] = selected_images
-
-        def _video_progress(p, m, short_idx=idx, total=count):
-            base = 10 + int((short_idx / max(1, total)) * 80)
-            span = int((1 / max(1, total)) * 80)
-            mapped = min(95, base + int((p or 0) / 100 * max(1, span)))
-            _progress(mapped, f"Short {short_idx+1}/{total}: {m}")
-
-        result = video_service.create_video_from_plan(
-            plan,
-            aspect_ratio="9:16",
-            progress_callback=_video_progress,
-            voice_style=voice_style,
-            voice_gender=voice_gender,
-        )
-        video_url = result.get("video_url") if isinstance(result, dict) else None
-        shorts.append({
-            "title": plan.get("title") or f"Short {idx+1}",
-            "description": plan.get("description") or "",
-            "video_url": video_url,
-            "kind": kind,
-            "video_type": "short",
-        })
-
-    _progress(100, "Shorts prontos.")
-    return {"count": len(shorts), "shorts": shorts, "kind": kind}
+        if file_lock:
+            try:
+                file_lock.release()
+            except Exception:
+                pass
 
 class QueueGeneratedVideoRequest(BaseModel):
     video_url: str
@@ -2743,11 +2781,11 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         except Exception:
             pass
 
-    executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "auto").strip().lower()
+    executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "thread").strip().lower()
     if executor not in {"auto", "thread", "process"}:
-        executor = "auto"
+        executor = "thread"
 
-    use_process = (executor == "process" or (executor == "auto" and sys.platform != "win32")) and (conn is not None)
+    use_process = (executor == "process") and (conn is not None)
     if use_process:
         try:
             method = "spawn" if sys.platform == "win32" else "fork"
@@ -2817,6 +2855,7 @@ def retry_task(task_id: str):
 @router.get("/diagnostics/video_generation")
 def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _admin=Depends(get_current_admin_user)):
     import shutil
+    
     checks = []
 
     use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
@@ -2835,6 +2874,16 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
     magick_path = shutil.which("magick") or shutil.which("convert")
     checks.append({"name": "ImageMagick no PATH", "ok": bool(magick_path), "value": magick_path})
 
+    # Memory Check
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            lines = f.readlines()
+            mem_total = int([l.split()[1] for l in lines if l.startswith('MemTotal')][0]) / 1024
+            mem_avail = int([l.split()[1] for l in lines if l.startswith('MemAvailable')][0]) / 1024
+            checks.append({"name": "Memória (MB)", "ok": mem_avail > 300, "value": f"Livre: {mem_avail:.0f} MB / Total: {mem_total:.0f} MB"})
+    except Exception:
+        pass
+
     report: Dict[str, Any] = {
         "task_id": task_id,
         "checks": checks,
@@ -2851,8 +2900,8 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
         else:
             status = str((t.get("status") or "")).lower()
             msg = str((t.get("message") or ""))
-            if status in {"pending", "processing"} and ("enfileirando" in msg.lower() or (t.get("progress") in (0, 1))):
-                report["recommendations"].append("Se ficar preso em 'Enfileirando...' por muito tempo, use o botão Reiniciar para rodar local.")
+            if status in {"pending", "processing"} and ("enfileirando" in msg.lower() or "separado" in msg.lower() or (t.get("progress") in (0, 1))):
+                report["recommendations"].append("O processo parece travado no início. A geração via processo/thread pode ter falhado silenciosamente. Use o botão Reiniciar para forçar a execução local via thread na API.")
             if use_rq and (not workers):
                 report["recommendations"].append("USE_RQ_FOR_VIDEO_GENERATION está ativo, mas não há workers RQ. Desative USE_RQ_FOR_VIDEO_GENERATION ou suba um worker.")
             if (not ffmpeg_path):
@@ -2862,11 +2911,16 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
         try:
             ai_service = AIContentGenerator()
             prompt = (
-                "Você é um engenheiro de suporte. Analise este relatório de diagnóstico (JSON) e retorne um JSON com:\n"
-                "{ \"causas_provaveis\": [..], \"acoes_recomendadas\": [..], \"acoes_seguras_no_sistema\": [..] }\n\n"
-                f"RELATÓRIO:\n{json.dumps(report, ensure_ascii=False)}"
+                "Você é um engenheiro de suporte de infraestrutura diagnosticando um sistema de geração de vídeos em Python (MoviePy).\n"
+                "O usuário diz que o sistema está travando e não gera vídeos. Analise os dados abaixo:\n"
+                "- O sistema pode estar sem memória RAM livre (< 300MB é crítico para vídeo).\n"
+                "- A tarefa pode ter tentado iniciar em um processo separado (multiprocessing) e falhado devido a falta de Redis ou falha do SO.\n"
+                "- Ferramentas como ffmpeg e ImageMagick precisam estar presentes.\n"
+                "Retorne um JSON estrito respondendo:\n"
+                "{ \"causas_provaveis\": [\"...\"], \"acoes_recomendadas\": [\"...\"], \"acoes_seguras_no_sistema\": [\"...\"] }\n\n"
+                f"RELATÓRIO DO SISTEMA:\n{json.dumps(report, ensure_ascii=False)}"
             )
-            raw = (ai_service._generate_text(prompt, system_prompt="Responda apenas JSON válido.", json_mode=True) or "").strip()
+            raw = (ai_service._generate_text(prompt, system_prompt="Responda apenas JSON válido e direto ao ponto em português.", json_mode=True) or "").strip()
             try:
                 report["ai"] = json.loads(raw) if raw else None
             except Exception:

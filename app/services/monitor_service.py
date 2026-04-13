@@ -227,17 +227,13 @@ class MonitorService:
             if next_video:
                 logger.info(f"Iniciando processamento do vídeo agendado {next_video.id}...")
                 try:
-                    if sys.platform != "win32":
-                        try:
-                            ctx = multiprocessing.get_context("fork")
-                        except Exception:
-                            ctx = multiprocessing.get_context("spawn")
-                        p = ctx.Process(target=process_scheduled_video, args=(next_video.id,), daemon=True)
-                        p.start()
-                        logger.info(f"Processo iniciado para vídeo {next_video.id} (pid={p.pid}).")
-                        return
+                    import threading
+                    t = threading.Thread(target=process_scheduled_video, args=(next_video.id,), daemon=True)
+                    t.start()
+                    logger.info(f"Thread iniciada para vídeo {next_video.id}.")
+                    return
                 except Exception as e:
-                    logger.error(f"Falha ao iniciar processo separado para vídeo {next_video.id}: {e}")
+                    logger.error(f"Falha ao iniciar thread para vídeo {next_video.id}: {e}")
 
                 process_scheduled_video(next_video.id)
             else:

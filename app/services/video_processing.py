@@ -11,6 +11,34 @@ def process_scheduled_video(video_id: int):
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+    
+    # Adicionar Lock Global para impedir concorrência entre fila e frontend
+    from app.redis_client import conn
+    from filelock import FileLock, Timeout
+    _FACTORY_LOCK_PATH = "video_factory.lock"
+    FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+    
+    redis_lock = None
+    file_lock = None
+    if conn:
+        try:
+            redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
+            if not redis_lock.acquire(blocking=False):
+                print(f"Vídeo agendado {video_id} abortado (Redis): já existe uma geração de vídeo rodando no servidor.")
+                return
+        except Exception:
+            redis_lock = None
+
+    if not conn or not redis_lock:
+        try:
+            file_lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
+            file_lock.acquire()
+        except Timeout:
+            print(f"Vídeo agendado {video_id} abortado (FileLock): já existe uma geração de vídeo rodando no servidor.")
+            return
+        except Exception:
+            file_lock = None
+
     # Lazy import para reduzir uso de memória no startup (moviepy/PIL/numpy são pesados)
     from app.services.video_generator import VideoGenerator
 
@@ -217,3 +245,15 @@ def process_scheduled_video(video_id: int):
     finally:
         db.close()
         gc.collect()
+        
+        # Release locks
+        try:
+            if redis_lock:
+                redis_lock.release()
+        except Exception:
+            pass
+        try:
+            if file_lock:
+                file_lock.release()
+        except Exception:
+            pass
