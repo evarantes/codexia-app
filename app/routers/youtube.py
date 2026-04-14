@@ -1354,14 +1354,14 @@ def delete_image_bank_item(image_id: int, db: Session = Depends(get_db)):
 def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callback=None) -> Dict[str, Any]:
     from app.redis_client import conn
     from filelock import FileLock, Timeout
-    _FACTORY_LOCK_PATH = "video_factory.lock"
-    FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+    lock_path = _FACTORY_LOCK_PATH
+    lock_key = FACTORY_LOCK_KEY
 
     redis_lock = None
     file_lock = None
     if conn:
         try:
-            redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=2 * 60 * 60, blocking_timeout=1)
+            redis_lock = conn.lock(lock_key, timeout=2 * 60 * 60, blocking_timeout=1)
             if not redis_lock.acquire(blocking=False):
                 raise HTTPException(status_code=409, detail="Já existe uma geração de vídeo em andamento. Aguarde terminar.")
         except HTTPException:
@@ -1371,7 +1371,7 @@ def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callbac
 
     if not conn or not redis_lock:
         try:
-            file_lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
+            file_lock = FileLock(lock_path, timeout=0)
             file_lock.acquire()
         except Timeout:
             raise HTTPException(status_code=409, detail="Já existe uma geração de vídeo em andamento. Aguarde terminar.")
@@ -1613,15 +1613,28 @@ def process_story_images_generation(request: StoryImagesRequest, task_id: str):
 def generate_story_shorts_task(request: StoryShortsRequest, background_tasks: BackgroundTasks):
     task_id = create_task()
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...")
-    background_tasks.add_task(process_story_shorts_generation, request, task_id)
+    use_rq = conn is not None and _rq_workers_online()
+    if use_rq:
+        rq_queue.enqueue(process_story_shorts_generation, request.model_dump() if hasattr(request, "model_dump") else request.dict(), task_id)
+    else:
+        allow_inline = (os.getenv("ALLOW_INLINE_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
+        if not allow_inline:
+            update_task(task_id, status="failed", progress=0, message="Geração em segundo plano indisponível: inicie o worker RQ e configure REDIS_URL.")
+            return {"message": "Worker indisponível", "task_id": task_id}
+        background_tasks.add_task(process_story_shorts_generation, request, task_id)
     return {"message": "Processo iniciado", "task_id": task_id}
 
 @router.post("/story/generate_shorts")
 def generate_story_shorts(request: StoryShortsRequest):
     return _generate_story_shorts_payload(request)
 
-def process_story_shorts_generation(request: StoryShortsRequest, task_id: str):
+def process_story_shorts_generation(request: Any, task_id: str):
     try:
+        try:
+            if isinstance(request, dict):
+                request = StoryShortsRequest(**request)
+        except Exception:
+            pass
         def progress_callback(progress, message):
             try:
                 update_task(task_id, progress=int(progress or 0), message=message)
@@ -1630,6 +1643,28 @@ def process_story_shorts_generation(request: StoryShortsRequest, task_id: str):
 
         result = _generate_story_shorts_payload(request, progress_callback=progress_callback)
         update_task(task_id, progress=100, status="completed", message="Shorts gerados com sucesso!", result=result)
+        try:
+            dbn = SessionLocal()
+            n = SystemNotification(
+                user_id=None,
+                kind="shorts_generated",
+                title="Shorts gerados",
+                message="Shorts gerados com sucesso!",
+                payload_json=json.dumps({"task_id": task_id}, ensure_ascii=False),
+                status="new",
+            )
+            dbn.add(n)
+            dbn.commit()
+        except Exception:
+            try:
+                dbn.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                dbn.close()
+            except Exception:
+                pass
     except Exception as e:
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
 
@@ -2773,13 +2808,26 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     task_id = create_task()
     update_task(task_id, status="processing", progress=0, message="Enfileirando geração de vídeo...", result={"payload": payload})
 
-    use_rq = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
-    if use_rq and conn is not None and _rq_workers_online():
+    use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
+    use_rq = None
+    if use_rq_raw:
+        use_rq = use_rq_raw.lower() in {"1", "true", "yes"}
+    else:
+        use_rq = conn is not None and _rq_workers_online()
+
+    if use_rq:
+        if conn is None or not _rq_workers_online():
+            raise HTTPException(status_code=503, detail="Geração em segundo plano indisponível: inicie o worker RQ e configure REDIS_URL.")
         try:
             rq_queue.enqueue(process_video_generation_payload, payload, task_id)
+            update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq"})
             return {"message": "Processo iniciado", "task_id": task_id}
-        except Exception:
-            pass
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
+
+    allow_inline = (os.getenv("ALLOW_INLINE_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
+    if not allow_inline:
+        raise HTTPException(status_code=503, detail="Para evitar travamentos, a geração de vídeo está configurada para rodar em segundo plano (worker). Suba um worker RQ ou ative ALLOW_INLINE_VIDEO_GENERATION=1.")
 
     executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "thread").strip().lower()
     if executor not in {"auto", "thread", "process"}:
@@ -2823,6 +2871,50 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return task
+
+@router.get("/notifications")
+def list_youtube_notifications(limit: int = 20, status: Optional[str] = None, _admin=Depends(get_current_admin_user)):
+    db = SessionLocal()
+    try:
+        q = db.query(SystemNotification).filter(SystemNotification.kind.in_(["video_generated", "shorts_generated"]))
+        if status:
+            q = q.filter(SystemNotification.status == status)
+        rows = q.order_by(SystemNotification.created_at.desc()).limit(max(1, min(100, int(limit or 20)))).all()
+        items = []
+        for n in rows:
+            payload = None
+            if n.payload_json:
+                try:
+                    payload = json.loads(n.payload_json)
+                except Exception:
+                    payload = n.payload_json
+            items.append({
+                "id": n.id,
+                "kind": n.kind,
+                "title": n.title,
+                "message": n.message,
+                "status": n.status,
+                "created_at": (n.created_at.isoformat() if n.created_at else None),
+                "read_at": (n.read_at.isoformat() if n.read_at else None),
+                "payload": payload,
+            })
+        return {"count": len(items), "items": items}
+    finally:
+        db.close()
+
+@router.post("/notifications/{notification_id}/read")
+def mark_youtube_notification_read(notification_id: int, _admin=Depends(get_current_admin_user)):
+    db = SessionLocal()
+    try:
+        n = db.query(SystemNotification).filter(SystemNotification.id == notification_id).first()
+        if not n:
+            raise HTTPException(status_code=404, detail="Notificação não encontrada")
+        n.status = "read"
+        n.read_at = datetime.utcnow()
+        db.commit()
+        return {"status": "read", "id": n.id}
+    finally:
+        db.close()
 
 @router.post("/task/{task_id}/retry")
 def retry_task(task_id: str):
@@ -3051,6 +3143,28 @@ def process_video_generation(request: VideoRequest, task_id):
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
             })
+            try:
+                dbn = SessionLocal()
+                n = SystemNotification(
+                    user_id=None,
+                    kind="video_generated",
+                    title="Vídeo gerado",
+                    message="Vídeo gerado e publicado com sucesso!",
+                    payload_json=json.dumps({"task_id": task_id, "video_url": video_path}, ensure_ascii=False),
+                    status="new",
+                )
+                dbn.add(n)
+                dbn.commit()
+            except Exception:
+                try:
+                    dbn.rollback()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    dbn.close()
+                except Exception:
+                    pass
         else:
             update_task(task_id, progress=100, status="completed", message="Vídeo gerado com sucesso!", result={
                 "video_url": video_path,
@@ -3059,6 +3173,28 @@ def process_video_generation(request: VideoRequest, task_id):
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
             })
+            try:
+                dbn = SessionLocal()
+                n = SystemNotification(
+                    user_id=None,
+                    kind="video_generated",
+                    title="Vídeo gerado",
+                    message="Vídeo gerado com sucesso!",
+                    payload_json=json.dumps({"task_id": task_id, "video_url": video_path}, ensure_ascii=False),
+                    status="new",
+                )
+                dbn.add(n)
+                dbn.commit()
+            except Exception:
+                try:
+                    dbn.rollback()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    dbn.close()
+                except Exception:
+                    pass
             
     except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")

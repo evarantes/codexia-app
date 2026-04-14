@@ -15,7 +15,8 @@ def process_scheduled_video(video_id: int):
     # Adicionar Lock Global para impedir concorrência entre fila e frontend
     from app.redis_client import conn
     from filelock import FileLock, Timeout
-    _FACTORY_LOCK_PATH = "video_factory.lock"
+    _lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
+    _FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
     FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
     
     redis_lock = None

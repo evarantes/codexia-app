@@ -278,6 +278,18 @@ class SystemNotification(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     read_at = Column(DateTime, nullable=True)
 
+class VideoTask(Base):
+    __tablename__ = "video_tasks"
+
+    id = Column(String, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    status = Column(String, default="pending", index=True)
+    progress = Column(Integer, default=0)
+    message = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class ChannelInsight(Base):
     __tablename__ = "channel_insights"
 

@@ -8,6 +8,13 @@ import json
 import os
 import sys
 import multiprocessing
+from app.redis_client import conn as redis_conn, queue as rq_queue
+try:
+    from rq import Worker
+    _RQ_AVAILABLE = True
+except Exception:
+    Worker = None
+    _RQ_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -227,15 +234,28 @@ class MonitorService:
             if next_video:
                 logger.info(f"Iniciando processamento do vídeo agendado {next_video.id}...")
                 try:
-                    import threading
-                    t = threading.Thread(target=process_scheduled_video, args=(next_video.id,), daemon=True)
-                    t.start()
-                    logger.info(f"Thread iniciada para vídeo {next_video.id}.")
+                    workers_ok = False
+                    if redis_conn is not None and _RQ_AVAILABLE and Worker is not None:
+                        try:
+                            workers_ok = Worker.count(redis_conn) > 0
+                        except Exception:
+                            workers_ok = False
+
+                    is_mock = (rq_queue.__class__.__name__ == "MockQueue")
+                    if redis_conn is not None and workers_ok and (not is_mock):
+                        rq_queue.enqueue(process_scheduled_video, next_video.id)
+                        logger.info(f"Enfileirado para worker: vídeo {next_video.id}.")
+                        return
+
+                    allow_inline = (os.getenv("ALLOW_INLINE_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
+                    if allow_inline:
+                        process_scheduled_video(next_video.id)
+                        return
+                    logger.warning(f"Worker indisponível. Mantendo vídeo {next_video.id} em fila (queued) para evitar travar o servidor web.")
                     return
                 except Exception as e:
-                    logger.error(f"Falha ao iniciar thread para vídeo {next_video.id}: {e}")
-
-                process_scheduled_video(next_video.id)
+                    logger.error(f"Falha ao enfileirar vídeo {next_video.id} no worker: {e}")
+                    return
             else:
                 pass # Nothing to do
                 

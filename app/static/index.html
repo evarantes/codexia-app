@@ -3012,6 +3012,15 @@
                 await this.fetchStoryDrafts();
                 await this.fetchReports();
                 await this.fetchYoutubeStats(); // Check YouTube status on load
+                try {
+                    const saved = localStorage.getItem('ytStoryTaskId');
+                    if (saved) {
+                        this.ytStoryTaskId = saved;
+                        this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                        this.ytStoryTaskPollFails[String(saved)] = 0;
+                        this.pollStoryTask(saved);
+                    }
+                } catch (e) {}
                 
                 // Polling for updates
                 setInterval(() => {
@@ -3998,6 +4007,7 @@
                     this.ytStoryTaskId = null;
                     this.ytStoryAssistReport = null;
                     this.ytStoryVideoUrl = null;
+                    try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                     try {
                         const duration = Number(this.ytStoryVideoDuration || this.ytStoryDurationMax || this.ytStoryDurationMin || 10);
                         const selectedImages = this.selectedImageUrlsAll();
@@ -4037,6 +4047,7 @@
                             this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
                             this.ytStoryTaskPollFails[String(taskId)] = 0;
                             this.ytStoryTaskId = taskId;
+                            try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
                         }
                         await this.pollStoryTask(taskId);
                     } catch (e) {
@@ -4094,6 +4105,17 @@
                             }
                             this.ytStoryScheduledId = null;
                             this.ytStoryVideoLoading = false;
+                            try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                            try {
+                                if ('Notification' in window) {
+                                    if (Notification.permission === 'default') {
+                                        await Notification.requestPermission();
+                                    }
+                                    if (Notification.permission === 'granted') {
+                                        new Notification('Vídeo pronto', { body: 'Seu vídeo foi gerado com sucesso.' });
+                                    }
+                                }
+                            } catch (e) {}
                             if (!this.ytStoryAutoUpload && this.ytStoryVideoUrl) {
                                 this.queueGeneratedStoryVideo({ noScroll: true });
                             }
@@ -4101,6 +4123,7 @@
                         }
                         if (status === 'failed') {
                             this.ytStoryVideoLoading = false;
+                            try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                             return;
                         }
                         setTimeout(() => this.pollStoryTask(taskId), 1500);
@@ -4118,6 +4141,7 @@
                         }
                         this.ytStoryVideoLoading = false;
                         this.ytStoryTask = { status: 'failed', progress: 0, message: e.message || String(e) };
+                        try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                     }
                 },
                 async generateStoryShorts() {
