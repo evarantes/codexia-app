@@ -44,15 +44,25 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
 from app.routers.auth import get_current_admin_user
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+_CANCEL_ALL_KEY = "codexia:video_cancel_all"
 # Lock file para quando Redis não está disponível (garante 1 job por vez)
 _lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
 _FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
+
+def _cancel_all_active() -> bool:
+    if not conn:
+        return False
+    try:
+        v = conn.get(_CANCEL_ALL_KEY)
+        return bool(v)
+    except Exception:
+        return False
 
 def _rq_workers_online() -> bool:
     """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
@@ -2887,6 +2897,43 @@ def cancel_task(task_id: str):
     update_task(task_id, status="cancelled", progress=current_progress, message="Cancelado pelo usuário.")
     return {"message": "Cancelado", "task_id": task_id, "status": "cancelled"}
 
+@router.post("/tasks/cancel_all")
+def cancel_all_tasks(_admin=Depends(get_current_admin_user)):
+    if conn:
+        try:
+            conn.set(_CANCEL_ALL_KEY, "1", ex=15 * 60)
+        except Exception:
+            pass
+        try:
+            conn.delete(FACTORY_LOCK_KEY)
+        except Exception:
+            pass
+
+    try:
+        if os.path.exists(_FACTORY_LOCK_PATH):
+            os.remove(_FACTORY_LOCK_PATH)
+    except Exception:
+        pass
+
+    db = SessionLocal()
+    try:
+        rows = db.query(VideoTask).filter(VideoTask.status.in_(["pending", "processing"])).all()
+        for r in rows:
+            r.status = "cancelled"
+            r.message = "Cancelado pelo usuário (encerrar produção do servidor)."
+        sv = db.query(ScheduledVideo).filter(ScheduledVideo.status.in_(["queued", "processing"])).all()
+        for v in sv:
+            v.status = "failed"
+            v.progress = 0
+            msg = "[CANCELADO]: Produção encerrada pelo usuário."
+            if not (v.description and msg in v.description):
+                v.description = ((v.description or "") + "\n\n" + msg).strip()[:5000]
+        db.commit()
+    finally:
+        db.close()
+
+    return {"status": "ok", "message": "Solicitação enviada. As tarefas serão encerradas assim que atingirem o próximo checkpoint."}
+
 @router.get("/notifications")
 def list_youtube_notifications(limit: int = 20, status: Optional[str] = None, _admin=Depends(get_current_admin_user)):
     db = SessionLocal()
@@ -3054,7 +3101,7 @@ def process_video_generation(request: VideoRequest, task_id):
 
     def _raise_if_cancelled():
         t = get_task(task_id) or {}
-        if str((t.get("status") or "")).lower() == "cancelled":
+        if str((t.get("status") or "")).lower() == "cancelled" or _cancel_all_active():
             raise _TaskCancelled()
 
     redis_lock = None
