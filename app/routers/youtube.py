@@ -2872,6 +2872,21 @@ def get_task_status(task_id: str):
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return task
 
+@router.post("/task/{task_id}/cancel")
+def cancel_task(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    status = str((task.get("status") or "")).lower()
+    if status in {"completed", "failed", "cancelled"}:
+        return {"message": "Nada a cancelar", "task_id": task_id, "status": status}
+    try:
+        current_progress = int(task.get("progress") or 0)
+    except Exception:
+        current_progress = 0
+    update_task(task_id, status="cancelled", progress=current_progress, message="Cancelado pelo usuário.")
+    return {"message": "Cancelado", "task_id": task_id, "status": "cancelled"}
+
 @router.get("/notifications")
 def list_youtube_notifications(limit: int = 20, status: Optional[str] = None, _admin=Depends(get_current_admin_user)):
     db = SessionLocal()
@@ -3034,9 +3049,18 @@ def process_video_generation(request: VideoRequest, task_id):
     # Lazy import VideoGenerator (moviepy/PIL/numpy) para reduzir memória no startup
     from app.services.video_generator import VideoGenerator
 
+    class _TaskCancelled(Exception):
+        pass
+
+    def _raise_if_cancelled():
+        t = get_task(task_id) or {}
+        if str((t.get("status") or "")).lower() == "cancelled":
+            raise _TaskCancelled()
+
     redis_lock = None
     file_lock = None
     try:
+        _raise_if_cancelled()
         os.environ.setdefault("OMP_NUM_THREADS", "1")
         os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -3070,6 +3094,7 @@ def process_video_generation(request: VideoRequest, task_id):
         
         # 1. Gerar Roteiro
         update_task(task_id, progress=10, message="Estruturando roteiro com IA...")
+        _raise_if_cancelled()
         
         if request.mode == 'story' and request.story_content:
             script = ai_service.generate_script_from_text(request.story_content, request.duration)
@@ -3079,6 +3104,7 @@ def process_video_generation(request: VideoRequest, task_id):
             script = ai_service.generate_motivational_script(topic, request.duration)
             
         print("Roteiro gerado/estruturado.")
+        _raise_if_cancelled()
 
         if isinstance(script, dict):
             try:
@@ -3112,9 +3138,11 @@ def process_video_generation(request: VideoRequest, task_id):
             # Mapeia progresso do vídeo (0-100) para progresso da tarefa (20-90)
             task_progress = 20 + int(progress * 0.7)
             update_task(task_id, progress=task_progress, message=message)
+            _raise_if_cancelled()
             
         video_result = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback)
         video_path = video_result["video_url"]
+        _raise_if_cancelled()
         
         # Path absoluto para upload (compatível com Docker e /data/media)
         from app.config import absolute_path_for_video
@@ -3196,6 +3224,16 @@ def process_video_generation(request: VideoRequest, task_id):
                 except Exception:
                     pass
             
+    except _TaskCancelled:
+        try:
+            t = get_task(task_id) or {}
+            try:
+                current_progress = int(t.get("progress") or 0)
+            except Exception:
+                current_progress = 0
+            update_task(task_id, status="cancelled", progress=current_progress, message="Cancelado pelo usuário.")
+        except Exception:
+            pass
     except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
