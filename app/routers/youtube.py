@@ -51,6 +51,7 @@ from app.routers.auth import get_current_admin_user
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
 _CANCEL_ALL_KEY = "codexia:video_cancel_all"
+_CANCEL_ALL_TTL_SECONDS = 90
 # Lock file para quando Redis não está disponível (garante 1 job por vez)
 _lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
 _FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
@@ -2810,6 +2811,9 @@ def post_community_reply(req: CommunityReplyRequest, db: Session = Depends(get_d
 def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     """Gera um vídeo motivacional e opcionalmente faz upload"""
     
+    if _cancel_all_active():
+        raise HTTPException(status_code=409, detail="Encerramento geral em andamento no servidor. Aguarde ~1 minuto e tente novamente.")
+
     try:
         payload = request.model_dump()  # type: ignore[attr-defined]
     except Exception:
@@ -2901,7 +2905,7 @@ def cancel_task(task_id: str):
 def cancel_all_tasks(_admin=Depends(get_current_admin_user)):
     if conn:
         try:
-            conn.set(_CANCEL_ALL_KEY, "1", ex=15 * 60)
+            conn.set(_CANCEL_ALL_KEY, "1", ex=_CANCEL_ALL_TTL_SECONDS)
         except Exception:
             pass
         try:
@@ -2932,7 +2936,7 @@ def cancel_all_tasks(_admin=Depends(get_current_admin_user)):
     finally:
         db.close()
 
-    return {"status": "ok", "message": "Solicitação enviada. As tarefas serão encerradas assim que atingirem o próximo checkpoint."}
+    return {"status": "ok", "message": "Solicitação enviada. Aguarde ~1 minuto para o servidor encerrar as tarefas em andamento e liberar a produção."}
 
 @router.get("/notifications")
 def list_youtube_notifications(limit: int = 20, status: Optional[str] = None, _admin=Depends(get_current_admin_user)):
