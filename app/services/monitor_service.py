@@ -243,7 +243,12 @@ class MonitorService:
 
                     is_mock = (rq_queue.__class__.__name__ == "MockQueue")
                     if redis_conn is not None and workers_ok and (not is_mock):
-                        rq_queue.enqueue(process_scheduled_video, next_video.id)
+                        try:
+                            timeout_raw = (os.getenv("RQ_VIDEO_TIMEOUT") or os.getenv("RQ_DEFAULT_TIMEOUT") or "").strip()
+                            job_timeout = int(timeout_raw) if timeout_raw else 14400
+                        except Exception:
+                            job_timeout = 14400
+                        rq_queue.enqueue(process_scheduled_video, next_video.id, job_timeout=max(600, job_timeout))
                         logger.info(f"Enfileirado para worker: vídeo {next_video.id}.")
                         return
 

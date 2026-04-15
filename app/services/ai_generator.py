@@ -912,15 +912,15 @@ class AIContentGenerator:
             prompts = []
             for i in range(count):
                 prompts.append(
-                    f"Cinematic digital art illustration inspired by this {safe_kind} message: {base}. "
-                    f"{styles[i % len(styles)]}. No text, no watermark, no logo."
+                    f"Photorealistic cinematic photography inspired by this {safe_kind} message: {base}. "
+                    f"{styles[i % len(styles)]}. Realistic humans (no dolls), natural skin, pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
                 )
             return prompts
 
         import json
 
         prompt = f"""
-        Crie {count} prompts de imagem DISTINTOS em INGLÊS, para gerar ilustrações por IA,
+        Crie {count} prompts de imagem DISTINTOS em INGLÊS, para gerar imagens por IA,
         com base no texto abaixo (um(a) {('história' if safe_kind == 'story' else 'devocional')} para narração).
 
         TEXTO (resumo/ideia central):
@@ -930,6 +930,9 @@ class AIContentGenerator:
         - Cada prompt deve ser uma descrição visual rica (sem texto na imagem).
         - Varie composição, ângulo de câmera, cenário e momento (para evitar imagens repetidas).
         - Não inclua nomes de marcas, logos, marcas d'água nem "text overlay".
+        - Estilo preferido: fotografia cinematográfica fotorrealista, iluminação natural e agradável.
+        - Pessoas: aparência humana realista, proporções naturais, expressão serena (evitar "doll-like", "uncanny", "creepy").
+        - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, texto na imagem.
         - Retorne APENAS um JSON válido:
           {{ "prompts": ["...", "..."] }}
         """
@@ -952,8 +955,8 @@ class AIContentGenerator:
         while len(prompts) < count:
             base = text.replace("\n", " ").strip()[:320]
             prompts.append(
-                f"Cinematic digital art illustration inspired by this {safe_kind} message: {base}. "
-                "No text, no watermark, no logo."
+                f"Photorealistic cinematic photography inspired by this {safe_kind} message: {base}. "
+                "Realistic humans (no dolls), pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
             )
 
         clean = []
@@ -961,7 +964,7 @@ class AIContentGenerator:
             if isinstance(p, str) and p.strip():
                 clean.append(p.strip()[:900])
         while len(clean) < count:
-            clean.append(f"Cinematic digital art illustration inspired by this {safe_kind} message.")
+            clean.append(f"Photorealistic cinematic photography inspired by this {safe_kind} message. Pleasant mood, no horror, no monsters, no gore. No text.")
         return clean[:count]
 
     def enrich_scenes_with_image_prompts(self, plan: dict) -> dict:
@@ -1006,7 +1009,10 @@ class AIContentGenerator:
 
         Para CADA cena acima, crie UMA descrição visual (image_prompt) em INGLÊS com as regras:
         - Representar fielmente a ideia e o clima da narração.
-        - Estilo: ilustração digital autoral, concept art cinematográfica, composição artística exclusiva, alta definição.
+        - Estilo: fotografia cinematográfica fotorrealista, alta definição, composição profissional.
+        - Pessoas: humanas realistas (evitar bonecos/uncanny), proporções naturais, expressão serena.
+        - Paisagens: realistas, sem aparência de IA assustadora, cores naturais.
+        - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, texto na imagem.
         - Uma frase detalhada (30-80 palavras): cenário, iluminação, atmosfera, composição.
         - PROIBIDO: foto de banco de imagens, logos, marcas, text, watermark, personagens famosos.
         - Se a narração for abstrata, use metáforas visuais claras que expressem o sentido da mensagem.

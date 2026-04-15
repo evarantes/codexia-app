@@ -121,7 +121,12 @@ class VideoFactory:
             try:
                 # Import local para evitar ciclo
                 from app.tasks import process_job_task
-                queue.enqueue(process_job_task, job.id, job_id=f"video_job_{job.id}")
+                try:
+                    timeout_raw = (os.getenv("RQ_VIDEO_TIMEOUT") or os.getenv("RQ_DEFAULT_TIMEOUT") or "").strip()
+                    job_timeout = int(timeout_raw) if timeout_raw else 14400
+                except Exception:
+                    job_timeout = 14400
+                queue.enqueue(process_job_task, job.id, job_id=f"video_job_{job.id}", job_timeout=max(600, job_timeout))
                 print(f"Job {job.id} enfileirado no Redis.")
             except Exception as e:
                 print(f"Erro ao enfileirar job {job.id}: {e}")

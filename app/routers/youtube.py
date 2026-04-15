@@ -65,6 +65,14 @@ def _cancel_all_active() -> bool:
     except Exception:
         return False
 
+def _rq_video_timeout_seconds() -> int:
+    raw = (os.getenv("RQ_VIDEO_TIMEOUT") or os.getenv("RQ_DEFAULT_TIMEOUT") or "").strip()
+    try:
+        v = int(raw) if raw else 14400
+    except Exception:
+        v = 14400
+    return max(600, v)
+
 def _rq_workers_online() -> bool:
     """Retorna True quando há pelo menos um worker RQ ouvindo a fila."""
     if not conn or not RQ_AVAILABLE or Worker is None:
@@ -1626,7 +1634,7 @@ def generate_story_shorts_task(request: StoryShortsRequest, background_tasks: Ba
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...")
     use_rq = conn is not None and _rq_workers_online()
     if use_rq:
-        rq_queue.enqueue(process_story_shorts_generation, request.model_dump() if hasattr(request, "model_dump") else request.dict(), task_id)
+        rq_queue.enqueue(process_story_shorts_generation, request.model_dump() if hasattr(request, "model_dump") else request.dict(), task_id, job_timeout=_rq_video_timeout_seconds())
     else:
         allow_inline = (os.getenv("ALLOW_INLINE_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
         if not allow_inline:
@@ -2833,7 +2841,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         if conn is None or not _rq_workers_online():
             raise HTTPException(status_code=503, detail="Geração em segundo plano indisponível: inicie o worker RQ e configure REDIS_URL.")
         try:
-            rq_queue.enqueue(process_video_generation_payload, payload, task_id)
+            rq_queue.enqueue(process_video_generation_payload, payload, task_id, job_timeout=_rq_video_timeout_seconds())
             update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq"})
             return {"message": "Processo iniciado", "task_id": task_id}
         except Exception as e:

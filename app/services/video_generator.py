@@ -507,8 +507,9 @@ class VideoGenerator:
         import urllib.parse
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
         safe_prompt = urllib.parse.quote(
-            f"{prompt} original ai illustration cinematic concept art "
-            "highly detailed digital painting no text no watermark"
+            f"{prompt} photorealistic cinematic photography realistic humans natural skin "
+            "pleasant mood no horror no monsters no gore no blood no doll uncanny "
+            "highly detailed no text no watermark"
         )
         seed = uuid.uuid4()
         return f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={seed}&enhance=false&model=flux"
@@ -538,7 +539,7 @@ class VideoGenerator:
                     pass
 
         if not prompt and text_fallback:
-            prompt = f"Exclusive AI illustration representing this narration: {text_fallback[:220]}"
+            prompt = f"Photorealistic cinematic photography representing this narration: {text_fallback[:220]}"
 
         base_prompt = (prompt or "").strip()
         if not base_prompt:
@@ -551,7 +552,10 @@ class VideoGenerator:
         ]
         final_prompt = (
             f"{base_prompt}. Must align with the narration context. "
-            "Exclusive original artwork, no stock photo, no text, no watermark."
+            "Photorealistic cinematic photography, natural lighting, pleasant mood. "
+            "Realistic humans (no dolls), natural skin, proportional anatomy. "
+            "No horror, no monsters, no gore, no blood, no disfigured faces, no uncanny. "
+            "No text, no watermark, no logo."
         )
 
         for round_idx in range(1, rounds + 1):
@@ -795,7 +799,7 @@ class VideoGenerator:
                         continue
 
                     if not scene_prompt and scene_text:
-                        scene_prompt = f"Cinematic digital art representing: {scene_text[:140]}"
+                        scene_prompt = f"Photorealistic cinematic photography representing: {scene_text[:140]}"
 
                     split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "320").strip() or "320")
                     target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "240").strip() or "240")
@@ -908,7 +912,7 @@ class VideoGenerator:
                         first_txt = str(s0).strip()
                     bg_prompt = (
                         plan.get("background_prompt")
-                        or f"{title}. Cinematic digital art background representing the story. {first_txt[:260]}"
+                        or f"{title}. Photorealistic cinematic background representing the story. {first_txt[:260]}"
                     )
                     def _bg_status(message: str):
                         if progress_callback:
@@ -924,7 +928,7 @@ class VideoGenerator:
                     if not video_bg_path:
                         try:
                             direct_url = self._pollinations_direct_url(
-                                bg_prompt or f"Cinematic digital art background for: {title}",
+                                bg_prompt or f"Photorealistic cinematic background for: {title}",
                                 aspect_ratio
                             )
                             video_bg_path = self.download_image(direct_url, retries=2, timeout=90)
@@ -1111,7 +1115,7 @@ class VideoGenerator:
                 if isinstance(scene, str):
                     text = scene
                     # Auto-generate prompt for text-only scenes to ensure visuals
-                    image_prompt = f"Cinematic digital art representing: {text[:100]}"
+                    image_prompt = f"Photorealistic cinematic photography representing: {text[:100]}"
                 else:
                     text = scene.get('text', '')
                     image_prompt = scene.get('image_prompt', '')
@@ -1119,7 +1123,7 @@ class VideoGenerator:
                     # Fallback: Se não houver prompt de imagem, cria um baseado no texto
                     if not image_prompt and text:
                         print(f"Aviso: Cena {i+1} sem image_prompt. Criando a partir do texto.")
-                        image_prompt = f"Cinematic digital art representing: {text[:100]}"
+                        image_prompt = f"Photorealistic cinematic photography representing: {text[:100]}"
 
                 # Limpeza de segurança para evitar metadados no vídeo
                 clean_text = self._clean_text(text)
