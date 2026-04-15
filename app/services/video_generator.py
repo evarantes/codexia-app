@@ -1052,7 +1052,7 @@ class VideoGenerator:
                         codec='libx264',
                         audio_codec='aac',
                         threads=1,
-                        preset='ultrafast'
+                        ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"]
                     )
                     
                     # Cleanup
@@ -1423,7 +1423,7 @@ class VideoGenerator:
             print(f"Renderizando vídeo para: {output_path}")
             final_clip.write_videofile(
                 output_path, fps=24, codec="libx264", audio_codec="aac", threads=1,
-                ffmpeg_params=["-preset", "ultrafast"],
+                ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
                 **logger_kw
             )
             
@@ -1538,7 +1538,7 @@ class VideoGenerator:
                 codec="libx264",
                 audio_codec="aac",
                 threads=1,
-                ffmpeg_params=["-preset", "ultrafast"],
+                ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
                 logger=None
             )
             for c in clips:
