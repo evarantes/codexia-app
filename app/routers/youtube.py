@@ -44,10 +44,10 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
-from app.routers.auth import get_current_admin_user
+from app.routers.auth import get_current_admin_user, SECRET_KEY as _AUTH_SECRET_KEY, ALGORITHM as _AUTH_ALGORITHM
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
 _CANCEL_ALL_KEY = "codexia:video_cancel_all"
@@ -81,6 +81,22 @@ def _rq_workers_online() -> bool:
         return Worker.count(conn) > 0
     except Exception:
         return False
+
+def _require_user_from_query_token(token: Optional[str], db: Session) -> User:
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        from jose import JWTError, jwt
+        payload = jwt.decode(token, _AUTH_SECRET_KEY, algorithms=[_AUTH_ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = db.query(User).filter(User.email == username).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
 
 def process_jobs_background():
     """Background task to process video generation jobs. Um vídeo por vez."""
@@ -2895,7 +2911,8 @@ def get_task_status(task_id: str):
     return task
 
 @router.get("/task/{task_id}/watch", response_class=HTMLResponse)
-def watch_task_video(task_id: str, _admin=Depends(get_current_admin_user)):
+def watch_task_video(task_id: str, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    _require_user_from_query_token(token, db)
     task = get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")

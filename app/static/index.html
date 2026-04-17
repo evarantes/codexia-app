@@ -1111,6 +1111,9 @@
                         <div class="aspect-w-16 aspect-h-9 bg-black rounded flex items-center justify-center overflow-hidden">
                             <video :src="ytStoryVideoUrl" controls class="w-full h-full"></video>
                         </div>
+                        <div v-if="ytStoryVideoHealth" class="mt-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                            {{ ytStoryVideoHealth }}
+                        </div>
                         <div v-if="ytStoryTask && String(ytStoryTask.status || '').toLowerCase() === 'completed' && !ytStoryAutoUpload" class="mt-4 flex flex-col md:flex-row gap-3">
                             <button @click="openStoryVideoPlayer" :disabled="!ytStoryTaskId" class="bg-gray-800 text-white px-4 py-2 rounded hover:bg-black flex justify-center items-center gap-2 disabled:opacity-50">
                                 <span><i class="fas fa-play"></i> Assistir no sistema</span>
@@ -2654,6 +2657,7 @@
                     ytStoryAssistLoading: false,
                     ytStoryAssistReport: null,
                     ytStoryVideoUrl: null,
+                    ytStoryVideoHealth: null,
                     ytStoryScheduledId: null,
                     ytStoryQueueLoading: false,
                     ytStoryPublishNowLoading: false,
@@ -4137,8 +4141,27 @@
                     try {
                         if (!this.ytStoryTaskId) return;
                         const url = `/youtube/task/${encodeURIComponent(this.ytStoryTaskId)}/watch`;
-                        window.open(url, '_blank', 'noopener');
+                        window.open(this.appendTokenToInternalUrl(url), '_blank', 'noopener');
                     } catch (e) {}
+                },
+                async checkYtStoryVideoHealth(url) {
+                    try {
+                        const raw = (url || '').toString().trim();
+                        if (!raw) return;
+                        const res = await fetch(raw, { method: 'HEAD', cache: 'no-store' });
+                        if (!res.ok) {
+                            this.ytStoryVideoHealth = `Arquivo não encontrado no servidor (HTTP ${res.status}). Isso geralmente acontece quando o WEB e o WORKER não compartilham o volume /data.`;
+                            return;
+                        }
+                        const len = Number(res.headers.get('content-length') || '0');
+                        if (len > 0 && len < 1024 * 50) {
+                            this.ytStoryVideoHealth = `Arquivo gerado muito pequeno (${len} bytes). Provável falha no render.`;
+                            return;
+                        }
+                        this.ytStoryVideoHealth = null;
+                    } catch (e) {
+                        this.ytStoryVideoHealth = 'Não foi possível validar o arquivo do vídeo (falha de rede).';
+                    }
                 },
                 async pollStoryTask(taskId) {
                     try {
@@ -4153,6 +4176,8 @@
                             const videoUrl = data.result && (data.result.video_url || data.result.videoUrl);
                             if (videoUrl) {
                                 this.ytStoryVideoUrl = this.normalizePlayableVideoUrl(videoUrl);
+                                this.ytStoryVideoHealth = null;
+                                this.checkYtStoryVideoHealth(this.ytStoryVideoUrl);
                             }
                             this.ytStoryScheduledId = null;
                             this.ytStoryVideoLoading = false;
