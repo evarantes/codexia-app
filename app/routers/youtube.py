@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import requests
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 try:
@@ -2893,6 +2893,41 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return task
+
+@router.get("/task/{task_id}/watch", response_class=HTMLResponse)
+def watch_task_video(task_id: str, _admin=Depends(get_current_admin_user)):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    status = str((task.get("status") or "")).lower()
+    if status != "completed":
+        raise HTTPException(status_code=409, detail="Tarefa ainda não concluída.")
+    result = task.get("result") or {}
+    video_url = None
+    if isinstance(result, dict):
+        video_url = result.get("video_url") or result.get("videoUrl")
+    video_url = _normalize_video_url_for_client(video_url)
+    if not video_url:
+        raise HTTPException(status_code=404, detail="URL do vídeo não encontrada.")
+    html = f"""<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Assistir vídeo</title>
+  <style>
+    body {{ margin: 0; background: #000; }}
+    .wrap {{ width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }}
+    video {{ width: 100%; height: 100%; max-width: 1280px; max-height: 100vh; background: #000; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <video controls autoplay playsinline src="{video_url}"></video>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 @router.post("/task/{task_id}/cancel")
 def cancel_task(task_id: str):

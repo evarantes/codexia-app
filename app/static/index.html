@@ -1112,6 +1112,9 @@
                             <video :src="ytStoryVideoUrl" controls class="w-full h-full"></video>
                         </div>
                         <div v-if="ytStoryTask && String(ytStoryTask.status || '').toLowerCase() === 'completed' && !ytStoryAutoUpload" class="mt-4 flex flex-col md:flex-row gap-3">
+                            <button @click="openStoryVideoPlayer" :disabled="!ytStoryTaskId" class="bg-gray-800 text-white px-4 py-2 rounded hover:bg-black flex justify-center items-center gap-2 disabled:opacity-50">
+                                <span><i class="fas fa-play"></i> Assistir no sistema</span>
+                            </button>
                             <button @click="queueGeneratedStoryVideo" :disabled="ytStoryQueueLoading || ytStoryPublishNowLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex justify-center items-center gap-2 disabled:opacity-50">
                                 <i v-if="ytStoryQueueLoading" class="fas fa-spinner fa-spin"></i>
                                 <span v-else><i class="fas fa-save"></i> Guardar para decidir depois</span>
@@ -4129,6 +4132,13 @@
                     } catch (e) {
                         alert("Erro ao encerrar no servidor: " + (e.message || e));
                     }
+                },
+                openStoryVideoPlayer() {
+                    try {
+                        if (!this.ytStoryTaskId) return;
+                        const url = `/youtube/task/${encodeURIComponent(this.ytStoryTaskId)}/watch`;
+                        window.open(url, '_blank', 'noopener');
+                    } catch (e) {}
                 },
                 async pollStoryTask(taskId) {
                     try {
