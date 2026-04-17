@@ -26,6 +26,60 @@ class VideoGenerator:
         }
         # self._ensure_fallback_music() removido do init para evitar delay no startup
 
+    def _ffprobe_duration_seconds(self, path: str) -> float:
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if r.returncode != 0:
+                return 0.0
+            s = (r.stdout or "").strip()
+            try:
+                return float(s) if s else 0.0
+            except Exception:
+                return 0.0
+        except Exception:
+            return 0.0
+
+    def _ensure_playable_mp4(self, path: str) -> str:
+        try:
+            if not path or not os.path.exists(path):
+                raise Exception("Arquivo de vídeo não encontrado.")
+            if os.path.getsize(path) < 1024 * 50:
+                raise Exception("Arquivo de vídeo muito pequeno (provável falha no render).")
+        except Exception:
+            raise
+
+        dur = self._ffprobe_duration_seconds(path)
+        if dur >= 0.5:
+            return path
+
+        try:
+            import subprocess
+            fixed = f"{path}.fixed.mp4"
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", path, "-c", "copy", "-movflags", "+faststart", "-pix_fmt", "yuv420p", fixed],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if r.returncode == 0 and os.path.exists(fixed) and os.path.getsize(fixed) > 1024 * 50:
+                dur2 = self._ffprobe_duration_seconds(fixed)
+                if dur2 >= 0.5:
+                    try:
+                        os.replace(fixed, path)
+                    except Exception:
+                        return fixed
+                    return path
+        except Exception:
+            pass
+
+        raise Exception("Vídeo gerado inválido (duração 0s). Verifique ffmpeg e armazenamento /data.")
+
     def _ensure_fallback_music(self):
         """Baixa músicas de fallback se a pasta estiver vazia"""
         try:
@@ -1054,6 +1108,7 @@ class VideoGenerator:
                         threads=1,
                         ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"]
                     )
+                    output_path = self._ensure_playable_mp4(output_path)
                     
                     # Cleanup
                     try:
@@ -1426,6 +1481,7 @@ class VideoGenerator:
                 ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
                 **logger_kw
             )
+            output_path = self._ensure_playable_mp4(output_path)
             
             abs_path = os.path.abspath(output_path)
             print(f"Vídeo salvo com sucesso em: {abs_path} (Size: {os.path.getsize(output_path)} bytes)")
@@ -1541,6 +1597,7 @@ class VideoGenerator:
                 ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
                 logger=None
             )
+            output_path = self._ensure_playable_mp4(output_path)
             for c in clips:
                 try:
                     c.close()

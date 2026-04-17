@@ -515,7 +515,7 @@ def serve_video_media(filename: str):
     filepath = _resolve_video_path(safe_name)
     if not filepath:
         raise HTTPException(status_code=404, detail="Not Found")
-    return FileResponse(filepath, media_type="video/mp4")
+    return FileResponse(filepath, media_type="video/mp4", headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
 
 @app.get("/static/videos/{filename:path}", response_class=FileResponse)
 def serve_video_static(filename: str):
@@ -526,7 +526,7 @@ def serve_video_static(filename: str):
     filepath = _resolve_video_path(safe_name)
     if not filepath:
         raise HTTPException(status_code=404, detail="Not Found")
-    return FileResponse(filepath, media_type="video/mp4")
+    return FileResponse(filepath, media_type="video/mp4", headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
 
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
