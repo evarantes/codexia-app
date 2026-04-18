@@ -3365,10 +3365,57 @@ def process_video_generation(request: VideoRequest, task_id):
 @router.get("/community/all-comments")
 def get_all_community_comments(
     classify: bool = Query(False),
+    status: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Retorna todos os comentários salvos no banco, de todos os vídeos."""
-    comments = db.query(CommunityComment).order_by(CommunityComment.created_at.desc()).limit(200).all()
+    q = db.query(CommunityComment)
+    if status:
+        st = (status or "").strip().lower()
+        if st in {"new", "reviewed", "replied"}:
+            q = q.filter(CommunityComment.status == st)
+        elif st == "pending":
+            q = q.filter(CommunityComment.status != "replied")
+    comments = q.order_by(CommunityComment.created_at.desc()).limit(300).all()
+
+    if classify:
+        ai = AIContentGenerator()
+        updated = 0
+        for c in comments:
+            if updated >= 10:
+                break
+            if c.youtube_parent_id:
+                continue
+            if c.status == "replied":
+                continue
+            missing = (not (c.label or "").strip()) or (not (c.reply_draft or "").strip())
+            if not missing:
+                continue
+            try:
+                sys = "Você é um assistente pastoral. Classifique e redija resposta empática, breve e bíblica quando apropriado."
+                prompt = f"""
+Analise o comentário abaixo e devolva JSON com as chaves:
+- label: uma de [elogio, duvida, critica, pedido_oracao, testemunho, sugestao_tema, spam, toxico]
+- sentiment: positive|neutral|negative
+- urgency: low|medium|high
+- draft_reply: texto breve (PT-BR), respeitoso, sem promessas irreais, citando referência bíblica opcional.
+
+Comentário: \"\"\"{(c.text or '').strip()}\"\"\"
+"""
+                raw = ai._generate_text(prompt, system_prompt=sys, json_mode=True)
+                data = json.loads(raw or "{}")
+                c.label = (data.get("label") or "").strip() or c.label
+                c.sentiment = (data.get("sentiment") or "").strip() or c.sentiment
+                c.urgency = (data.get("urgency") or "").strip() or c.urgency
+                if (data.get("draft_reply") or "").strip():
+                    c.reply_draft = (data.get("draft_reply") or "").strip()
+                if c.status in {None, "", "new"}:
+                    c.status = "reviewed"
+                updated += 1
+            except Exception:
+                pass
+        if updated:
+            db.commit()
     items = []
     for c in comments:
         items.append({

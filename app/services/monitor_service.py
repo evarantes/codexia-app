@@ -62,12 +62,17 @@ class MonitorService:
             # E agendar para rodar a cada 30 minutos para pegar arquivos deletados (ephemeral storage)
             self.scheduler.add_job(self.check_file_integrity, 'interval', minutes=30)
 
+            try:
+                comments_minutes = int((os.getenv("COMMENTS_CHECK_INTERVAL_MINUTES") or "").strip() or "2")
+            except Exception:
+                comments_minutes = 2
+            comments_minutes = max(1, min(60, comments_minutes))
             self.comments_job = self.scheduler.add_job(
                 self.check_new_comments,
                 "interval",
-                minutes=10,
+                minutes=comments_minutes,
                 max_instances=1,
-                next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
+                next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=1)
             )
             self.insights_job = self.scheduler.add_job(
                 self.check_subscriber_insights,
@@ -422,14 +427,33 @@ class MonitorService:
             if not yt.service:
                 return
 
-            videos = yt.get_recent_videos_performance(max_results=8) or []
+            try:
+                scan_limit = int((os.getenv("COMMENTS_SCAN_LIMIT") or "").strip() or "50")
+            except Exception:
+                scan_limit = 50
+            scan_limit = max(1, min(200, scan_limit))
+
+            try:
+                max_per_video = int((os.getenv("COMMENTS_MAX_PER_VIDEO") or "").strip() or "80")
+            except Exception:
+                max_per_video = 80
+            max_per_video = max(10, min(200, max_per_video))
+
+            published_rows = (
+                db.query(ScheduledVideo)
+                .filter(ScheduledVideo.youtube_video_id.isnot(None))
+                .order_by(ScheduledVideo.uploaded_at.desc(), ScheduledVideo.id.desc())
+                .limit(scan_limit)
+                .all()
+            )
+            videos = [{"videoId": r.youtube_video_id} for r in published_rows if r.youtube_video_id]
             new_items = []
-            for v in videos[:5]:
+            for v in videos:
                 yid = (v or {}).get("videoId")
                 if not yid:
                     continue
                 try:
-                    raw = yt.list_video_comments(yid, max_results=80)
+                    raw = yt.list_video_comments(yid, max_results=max_per_video)
                 except Exception:
                     continue
 
@@ -463,7 +487,7 @@ class MonitorService:
                     db.add(item)
                     new_items.append(item)
 
-                    if len(new_items) <= 5:
+                    if len(new_items) <= 10:
                         msg = (item.text or "")[:240]
                         payload = {
                             "youtube_video_id": item.youtube_video_id,

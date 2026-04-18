@@ -930,9 +930,9 @@ class AIContentGenerator:
         - Cada prompt deve ser uma descrição visual rica (sem texto na imagem).
         - Varie composição, ângulo de câmera, cenário e momento (para evitar imagens repetidas).
         - Não inclua nomes de marcas, logos, marcas d'água nem "text overlay".
-        - Estilo preferido: fotografia cinematográfica fotorrealista, iluminação natural e agradável.
+        - Estilo preferido: fotografia cinematográfica fotorrealista, iluminação natural e agradável, clima esperançoso e sereno.
         - Pessoas: aparência humana realista, proporções naturais, expressão serena (evitar "doll-like", "uncanny", "creepy").
-        - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, texto na imagem.
+        - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, assustador, grotesco, distópico, apocalíptico, sombrio.
         - Retorne APENAS um JSON válido:
           {{ "prompts": ["...", "..."] }}
         """
@@ -1011,8 +1011,8 @@ class AIContentGenerator:
         - Representar fielmente a ideia e o clima da narração.
         - Estilo: fotografia cinematográfica fotorrealista, alta definição, composição profissional.
         - Pessoas: humanas realistas (evitar bonecos/uncanny), proporções naturais, expressão serena.
-        - Paisagens: realistas, sem aparência de IA assustadora, cores naturais.
-        - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, texto na imagem.
+        - Paisagens: realistas, sem aparência de IA assustadora, cores naturais, clima agradável.
+        - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, assustador, grotesco, distópico, apocalíptico, sombrio, texto na imagem.
         - Uma frase detalhada (30-80 palavras): cenário, iluminação, atmosfera, composição.
         - PROIBIDO: foto de banco de imagens, logos, marcas, text, watermark, personagens famosos.
         - Se a narração for abstrata, use metáforas visuais claras que expressem o sentido da mensagem.

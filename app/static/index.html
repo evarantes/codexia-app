@@ -1451,10 +1451,25 @@
                             <h2 class="text-xl font-bold text-indigo-900 flex items-center gap-2">
                                 <i class="fas fa-comments"></i> Comentários da Comunidade
                             </h2>
-                            <button @click="loadCommunityComments" :disabled="communityLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2 text-sm disabled:opacity-50">
-                                <i v-if="communityLoading" class="fas fa-spinner fa-spin"></i>
-                                <span v-else>Carregar comentários</span>
-                            </button>
+                            <div class="flex flex-wrap gap-2 items-center justify-end">
+                                <button @click="communityFeed='pending'; loadCommunityComments()" class="px-3 py-2 rounded text-sm font-semibold border" :class="communityFeed==='pending' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700'">
+                                    A responder
+                                </button>
+                                <button @click="communityFeed='replied'; loadCommunityComments()" class="px-3 py-2 rounded text-sm font-semibold border" :class="communityFeed==='replied' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700'">
+                                    Respondidos
+                                </button>
+                                <button @click="communityFeed='all'; loadCommunityComments()" class="px-3 py-2 rounded text-sm font-semibold border" :class="communityFeed==='all' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700'">
+                                    Todos
+                                </button>
+                                <label class="flex items-center gap-2 text-sm font-semibold px-3 py-2 rounded border bg-white">
+                                    <input type="checkbox" v-model="communityAutoRefresh" class="w-4 h-4 text-indigo-600">
+                                    <span>Auto</span>
+                                </label>
+                                <button @click="loadCommunityComments" :disabled="communityLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2 text-sm disabled:opacity-50">
+                                    <i v-if="communityLoading" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>Atualizar</span>
+                                </button>
+                            </div>
                         </div>
 
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2716,6 +2731,9 @@
                     communityReplies: {},
                     communityError: '',
                     communityClassify: true,
+                    communityFeed: 'pending',
+                    communityAutoRefresh: true,
+                    communityLastLoadAt: 0,
                     replySendingId: null,
                     communityPosts: [],
                     communityPostsLoading: false,
@@ -3045,6 +3063,12 @@
                         this.fetchStoryDrafts();
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
+                        if (this.youtubeSubTab === 'community' && this.communityAutoRefresh) {
+                            const now = Date.now();
+                            if (!this.communityLoading && (now - Number(this.communityLastLoadAt || 0)) > 30000) {
+                                this.loadCommunityComments({ silent: true });
+                            }
+                        }
                     }
                 }, 5000); // 5s para atualizar fila e manter processamento em andamento
             },
@@ -3464,16 +3488,17 @@
                     } catch (e) { console.error("Erro ao buscar agenda:", e); }
                 },
                 async loadCommunityComments() {
+                    const opts = arguments && arguments[0] ? arguments[0] : {};
                     if (!this.communitySelectedYoutubeId) {
-                        alert("Selecione um vídeo publicado.");
-                        return;
+                        this.communitySelectedYoutubeId = '__all__';
                     }
-                    this.communityLoading = true;
                     this.communityError = '';
+                    if (!opts.silent) this.communityLoading = true;
                     try {
                         let url;
                         if (this.communitySelectedYoutubeId === '__all__') {
-                            url = `/youtube/community/all-comments?classify=${this.communityClassify ? 'true' : 'false'}`;
+                            const st = (this.communityFeed === 'pending') ? 'pending' : (this.communityFeed === 'replied' ? 'replied' : '');
+                            url = `/youtube/community/all-comments?classify=${this.communityClassify ? 'true' : 'false'}${st ? `&status=${encodeURIComponent(st)}` : ''}`;
                         } else {
                             url = `/youtube/community/comments?youtube_video_id=${encodeURIComponent(this.communitySelectedYoutubeId)}&classify=${this.communityClassify ? 'true' : 'false'}`;
                         }
@@ -3484,17 +3509,30 @@
                         }
                         const data = await res.json();
                         const allItems = data.items || [];
-                        this.communityItems = allItems.filter(it => !it.youtube_parent_id);
+                        const prevDrafts = {};
+                        (this.communityItems || []).forEach(it => {
+                            if (it && it.youtube_comment_id && it.reply_draft) {
+                                prevDrafts[it.youtube_comment_id] = it.reply_draft;
+                            }
+                        });
+                        const nextTop = allItems.filter(it => !it.youtube_parent_id);
+                        nextTop.forEach(it => {
+                            if (it && it.youtube_comment_id && (!it.reply_draft || !String(it.reply_draft).trim()) && prevDrafts[it.youtube_comment_id]) {
+                                it.reply_draft = prevDrafts[it.youtube_comment_id];
+                            }
+                        });
+                        this.communityItems = nextTop;
                         const replies = {};
                         allItems.filter(it => it.youtube_parent_id).forEach(reply => {
                             if (!replies[reply.youtube_parent_id]) replies[reply.youtube_parent_id] = [];
                             replies[reply.youtube_parent_id].push(reply);
                         });
                         this.communityReplies = replies;
+                        this.communityLastLoadAt = Date.now();
                     } catch (e) {
                         this.communityError = e.message || String(e);
                     } finally {
-                        this.communityLoading = false;
+                        if (!opts.silent) this.communityLoading = false;
                     }
                 },
                 async sendCommunityReply(item) {

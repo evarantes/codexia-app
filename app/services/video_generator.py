@@ -608,7 +608,7 @@ class VideoGenerator:
             f"{base_prompt}. Must align with the narration context. "
             "Photorealistic cinematic photography, natural lighting, pleasant mood. "
             "Realistic humans (no dolls), natural skin, proportional anatomy. "
-            "No horror, no monsters, no gore, no blood, no disfigured faces, no uncanny. "
+            "No horror, no monsters, no gore, no blood, no disfigured faces, no uncanny, no creepy, no dystopian, no apocalyptic. "
             "No text, no watermark, no logo."
         )
 
@@ -791,6 +791,7 @@ class VideoGenerator:
         fallback_bg_path = None
         use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "true").strip().lower() in {"1", "true", "yes", "on"}
         video_bg_path = None
+        video_bg_paths = []
         video_bg_frame = None
         used_image_urls = []
         used_image_url_set = set()
@@ -964,40 +965,90 @@ class VideoGenerator:
                         first_txt = (s0.get("text") or "").strip()
                     else:
                         first_txt = str(s0).strip()
-                    bg_prompt = (
-                        plan.get("background_prompt")
-                        or f"{title}. Photorealistic cinematic background representing the story. {first_txt[:260]}"
-                    )
+
+                    pool_size_raw = (os.getenv("VIDEO_BG_POOL_SIZE") or "").strip()
+                    try:
+                        pool_size = int(pool_size_raw) if pool_size_raw else 3
+                    except Exception:
+                        pool_size = 3
+                    pool_size = max(1, min(5, pool_size))
+
+                    base_for_bg = ((title or "") + "\n\n" + (first_txt or "")).strip()
+                    if isinstance(plan, dict) and isinstance(plan.get("description"), str) and plan.get("description").strip():
+                        base_for_bg = (base_for_bg + "\n\n" + plan.get("description").strip()).strip()
+
+                    prompts = []
+                    bg_prompt = plan.get("background_prompt") if isinstance(plan, dict) else None
+                    if isinstance(bg_prompt, str) and bg_prompt.strip():
+                        prompts = [bg_prompt.strip()]
+                    elif self.ai_service and hasattr(self.ai_service, "generate_image_prompts_from_text"):
+                        try:
+                            prompts = self.ai_service.generate_image_prompts_from_text(
+                                base_for_bg or title or first_txt or "",
+                                count=pool_size,
+                                kind=(plan.get("kind") if isinstance(plan, dict) else None),
+                            )
+                        except Exception:
+                            prompts = []
+                    if not prompts:
+                        prompts = [
+                            f"{title}. Photorealistic cinematic background representing the story. Warm natural light, pleasant mood. {first_txt[:220]}",
+                            f"{title}. Photorealistic cinematic landscape illustrating the message. Realistic, peaceful, uplifting atmosphere. {first_txt[:220]}",
+                            f"{title}. Photorealistic cinematic scene with realistic people, kind expressions, hopeful mood. {first_txt[:220]}",
+                        ][:pool_size]
+
                     def _bg_status(message: str):
                         if progress_callback:
                             progress_callback(8, f"Fundo do vídeo: {message}")
-                    video_bg_path = self._ensure_image_for_scene(
-                        bg_prompt,
-                        text_fallback=(first_txt or title)[:220],
-                        aspect_ratio=aspect_ratio,
-                        status_callback=_bg_status,
-                        max_rounds=image_max_rounds,
-                        allow_non_ai_fallback=allow_non_ai_fallback,
-                    )
-                    if not video_bg_path:
-                        try:
-                            direct_url = self._pollinations_direct_url(
-                                bg_prompt or f"Photorealistic cinematic background for: {title}",
-                                aspect_ratio
-                            )
-                            video_bg_path = self.download_image(direct_url, retries=2, timeout=90)
-                            if not (video_bg_path and os.path.exists(video_bg_path) and os.path.getsize(video_bg_path) > 1000):
-                                video_bg_path = None
-                        except Exception:
-                            video_bg_path = None
-                    if not video_bg_path:
+
+                    video_bg_paths = []
+                    for pidx, ptxt in enumerate(prompts[:pool_size]):
+                        _bg_status(f"Gerando fundo {pidx+1}/{pool_size}...")
+                        path = self._ensure_image_for_scene(
+                            ptxt,
+                            text_fallback=(first_txt or title)[:220],
+                            aspect_ratio=aspect_ratio,
+                            status_callback=_bg_status,
+                            max_rounds=image_max_rounds,
+                            allow_non_ai_fallback=allow_non_ai_fallback,
+                        )
+                        if not path:
+                            try:
+                                direct_url = self._pollinations_direct_url(
+                                    ptxt or f"Photorealistic cinematic background for: {title}",
+                                    aspect_ratio,
+                                )
+                                path = self.download_image(direct_url, retries=2, timeout=90)
+                                if not (path and os.path.exists(path) and os.path.getsize(path) > 1000):
+                                    path = None
+                            except Exception:
+                                path = None
+                        if path:
+                            video_bg_paths.append(path)
+                            _track_image_path(path)
+
+                    if not video_bg_paths:
                         video_bg_path = self._generate_fallback_background(video_size)
-                    if video_bg_path:
-                        video_bg_frame = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=video_bg_path)
-                        _track_image_path(video_bg_path)
+                        if video_bg_path:
+                            video_bg_paths = [video_bg_path]
+                            _track_image_path(video_bg_path)
+
+                    if video_bg_paths:
+                        video_bg_path = video_bg_paths[0]
+                        if len(video_bg_paths) == 1:
+                            video_bg_frame = self.create_text_image(
+                                "",
+                                size=video_size,
+                                bg_color=(20, 20, 20),
+                                text_color=(255, 255, 255),
+                                bg_image_path=video_bg_path,
+                            )
+                        else:
+                            video_bg_frame = None
                 except Exception:
                     video_bg_path = None
                     video_bg_frame = None
+                    video_bg_paths = []
 
             # --- MODO MÚSICA ---
             if music_file_path and os.path.exists(music_file_path):
@@ -1192,8 +1243,12 @@ class VideoGenerator:
                 prompt_key = None
                 if selected_image_paths:
                     bg_image_path = selected_image_paths[i % len(selected_image_paths)]
-                elif use_single_bg and video_bg_path:
-                    bg_image_path = video_bg_path
+                elif use_single_bg and video_bg_paths:
+                    try:
+                        import random
+                        bg_image_path = random.choice(video_bg_paths)
+                    except Exception:
+                        bg_image_path = video_bg_paths[0]
                 else:
                     prompt_key = (
                         str(aspect_ratio).strip(),
