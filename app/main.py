@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
@@ -506,9 +506,58 @@ def _resolve_video_path(safe_name: str):
                 return filepath
     return None
 
-@app.get("/media/videos/{filename:path}", response_class=FileResponse)
-def serve_video_media(filename: str):
+def _video_file_response(request: Request, filepath: str):
+    range_header = request.headers.get("range")
+    file_size = os.path.getsize(filepath)
+    common_headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+
+    if not range_header:
+        return FileResponse(filepath, media_type="video/mp4", headers=common_headers)
+
+    try:
+        units, rng = range_header.split("=", 1)
+        if units.strip().lower() != "bytes":
+            return FileResponse(filepath, media_type="video/mp4", headers=common_headers)
+        start_s, end_s = (rng.split("-", 1) + [""])[:2]
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else file_size - 1
+        start = max(0, min(start, file_size - 1))
+        end = max(start, min(end, file_size - 1))
+    except Exception:
+        return FileResponse(filepath, media_type="video/mp4", headers=common_headers)
+
+    def _iterfile(path: str, start_pos: int, end_pos: int, chunk_size: int = 1024 * 1024):
+        with open(path, "rb") as f:
+            f.seek(start_pos)
+            remaining = end_pos - start_pos + 1
+            while remaining > 0:
+                chunk = f.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    content_length = end - start + 1
+    headers = {
+        **common_headers,
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(content_length),
+    }
+    return StreamingResponse(_iterfile(filepath, start, end), status_code=206, media_type="video/mp4", headers=headers)
+
+@app.get("/media/videos/{filename:path}")
+def serve_video_media(filename: str, request: Request):
     """Serve vídeo do diretório configurado ou fallback em app/static/videos."""
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_video_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _video_file_response(request, filepath)
+
+@app.head("/media/videos/{filename:path}")
+def head_video_media(filename: str):
     safe_name = os.path.basename(filename).strip()
     if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
         raise HTTPException(status_code=404, detail="Not Found")
@@ -517,9 +566,19 @@ def serve_video_media(filename: str):
         raise HTTPException(status_code=404, detail="Not Found")
     return FileResponse(filepath, media_type="video/mp4", headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
 
-@app.get("/static/videos/{filename:path}", response_class=FileResponse)
-def serve_video_static(filename: str):
+@app.get("/static/videos/{filename:path}")
+def serve_video_static(filename: str, request: Request):
     """Serve vídeo em URLs /static/videos/... (mesmo arquivo em VIDEO_OUTPUT_DIR ou fallback)."""
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_video_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _video_file_response(request, filepath)
+
+@app.head("/static/videos/{filename:path}")
+def head_video_static(filename: str):
     safe_name = os.path.basename(filename).strip()
     if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
         raise HTTPException(status_code=404, detail="Not Found")

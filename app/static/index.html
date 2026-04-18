@@ -4148,14 +4148,21 @@
                     try {
                         const raw = (url || '').toString().trim();
                         if (!raw) return;
-                        const res = await fetch(raw, { method: 'HEAD', cache: 'no-store' });
+                        const res = await fetch(raw, { method: 'GET', cache: 'no-store', headers: { 'Range': 'bytes=0-1' } });
                         if (!res.ok) {
                             this.ytStoryVideoHealth = `Arquivo não encontrado no servidor (HTTP ${res.status}). Isso geralmente acontece quando o WEB e o WORKER não compartilham o volume /data.`;
                             return;
                         }
+                        const cr = (res.headers.get('content-range') || '').toString();
+                        let total = 0;
+                        if (cr && cr.includes('/')) {
+                            const t = Number(cr.split('/').pop());
+                            if (!Number.isNaN(t)) total = t;
+                        }
                         const len = Number(res.headers.get('content-length') || '0');
-                        if (len > 0 && len < 1024 * 50) {
-                            this.ytStoryVideoHealth = `Arquivo gerado muito pequeno (${len} bytes). Provável falha no render.`;
+                        const size = total || len || 0;
+                        if (size > 0 && size < 1024 * 50) {
+                            this.ytStoryVideoHealth = `Arquivo gerado muito pequeno (${size} bytes). Provável falha no render.`;
                             return;
                         }
                         this.ytStoryVideoHealth = null;
