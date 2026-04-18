@@ -2720,6 +2720,16 @@ def get_community_comments(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    reply_by_owner = {}
+    for c in raw_comments or []:
+        try:
+            if c.get("youtube_parent_id") and c.get("author_is_channel_owner"):
+                pid = c.get("youtube_parent_id")
+                if pid and pid not in reply_by_owner:
+                    reply_by_owner[pid] = c
+        except Exception:
+            continue
+
     results = []
     for c in raw_comments:
         top_level = c.get("youtube_parent_id") is None
@@ -2728,6 +2738,8 @@ def get_community_comments(
         urgency = None
         draft = None
         status = "new"
+        reply_text = None
+        reply_sent_at = None
 
         existing = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == c["youtube_comment_id"]).first()
         if existing:
@@ -2736,6 +2748,8 @@ def get_community_comments(
             urgency = existing.urgency
             draft = existing.reply_draft
             status = existing.status
+            reply_text = existing.reply_text
+            reply_sent_at = existing.reply_sent_at.isoformat() if getattr(existing, "reply_sent_at", None) else None
 
         if classify and top_level:
             try:
@@ -2765,6 +2779,17 @@ Comentário: \"\"\"{(c.get('text') or '').strip()}\"\"\"
             except Exception:
                 return None
 
+        if top_level:
+            try:
+                rep = reply_by_owner.get(c.get("youtube_comment_id"))
+                if rep:
+                    status = "replied"
+                    reply_text = (rep.get("text") or "").strip() or reply_text
+                    dt = _parse_dt(rep.get("published_at"))
+                    reply_sent_at = dt.isoformat() if dt else reply_sent_at
+            except Exception:
+                pass
+
         if existing:
             existing.youtube_parent_id = c.get("youtube_parent_id")
             existing.youtube_video_id = c.get("youtube_video_id")
@@ -2779,6 +2804,13 @@ Comentário: \"\"\"{(c.get('text') or '').strip()}\"\"\"
                 existing.reply_draft = draft
             if status:
                 existing.status = status
+            if top_level and status == "replied":
+                if reply_text:
+                    existing.reply_text = reply_text
+                try:
+                    existing.reply_sent_at = _parse_dt(reply_sent_at) if isinstance(reply_sent_at, str) else existing.reply_sent_at
+                except Exception:
+                    pass
         else:
             rec = CommunityComment(
                 youtube_comment_id=c.get("youtube_comment_id"),
@@ -2793,7 +2825,9 @@ Comentário: \"\"\"{(c.get('text') or '').strip()}\"\"\"
                 sentiment=sentiment,
                 label=label,
                 urgency=urgency,
-                reply_draft=draft
+                reply_draft=draft,
+                reply_text=reply_text if (top_level and status == "replied") else None,
+                reply_sent_at=_parse_dt(reply_sent_at) if (top_level and status == "replied") else None,
             )
             db.add(rec)
         results.append({
@@ -2809,6 +2843,8 @@ Comentário: \"\"\"{(c.get('text') or '').strip()}\"\"\"
             "sentiment": sentiment,
             "urgency": urgency,
             "reply_draft": draft,
+            "reply_text": reply_text,
+            "reply_sent_at": reply_sent_at,
         })
     db.commit()
     return {"youtube_video_id": yid, "count": len(results), "items": results}

@@ -457,6 +457,34 @@ class MonitorService:
                 except Exception:
                     continue
 
+                reply_by_owner = {}
+                for c in raw or []:
+                    try:
+                        if c.get("youtube_parent_id") and c.get("author_is_channel_owner"):
+                            pid = c.get("youtube_parent_id")
+                            if pid and pid not in reply_by_owner:
+                                reply_by_owner[pid] = c
+                    except Exception:
+                        continue
+
+                for pid, rep in reply_by_owner.items():
+                    try:
+                        top = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == pid).first()
+                        if top and top.status != "replied":
+                            top.status = "replied"
+                            txt = (rep.get("text") or "").strip()
+                            if txt:
+                                top.reply_text = txt
+                            try:
+                                s = (rep.get("published_at") or "").strip()
+                                if s:
+                                    s = s.replace("Z", "+00:00")
+                                    top.reply_sent_at = datetime.datetime.fromisoformat(s)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
                 for c in raw or []:
                     cid = (c or {}).get("youtube_comment_id")
                     if not cid:
@@ -484,6 +512,18 @@ class MonitorService:
                         published_at=published_at,
                         status="new",
                     )
+                    if item.youtube_parent_id is None and item.youtube_comment_id in reply_by_owner:
+                        item.status = "replied"
+                        txt = (reply_by_owner[item.youtube_comment_id].get("text") or "").strip()
+                        if txt:
+                            item.reply_text = txt
+                        try:
+                            s = (reply_by_owner[item.youtube_comment_id].get("published_at") or "").strip()
+                            if s:
+                                s = s.replace("Z", "+00:00")
+                                item.reply_sent_at = datetime.datetime.fromisoformat(s)
+                        except Exception:
+                            pass
                     db.add(item)
                     new_items.append(item)
 

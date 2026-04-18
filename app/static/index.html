@@ -3521,7 +3521,14 @@
                                 it.reply_draft = prevDrafts[it.youtube_comment_id];
                             }
                         });
-                        this.communityItems = nextTop;
+                        const feed = String(this.communityFeed || 'pending').toLowerCase();
+                        let filteredTop = nextTop;
+                        if (feed === 'pending') {
+                            filteredTop = nextTop.filter(it => String((it && it.status) || '').toLowerCase() !== 'replied');
+                        } else if (feed === 'replied') {
+                            filteredTop = nextTop.filter(it => String((it && it.status) || '').toLowerCase() === 'replied');
+                        }
+                        this.communityItems = filteredTop;
                         const replies = {};
                         allItems.filter(it => it.youtube_parent_id).forEach(reply => {
                             if (!replies[reply.youtube_parent_id]) replies[reply.youtube_parent_id] = [];

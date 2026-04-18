@@ -23,7 +23,24 @@ class YouTubeService:
         self.service = None
         self.auth_source = None
         self.auth_error = None
+        self._cached_my_channel_id = None
         self._load_credentials()
+
+    def _get_my_channel_id(self):
+        if self._cached_my_channel_id:
+            return self._cached_my_channel_id
+        if not self.service:
+            return None
+        try:
+            request = self.service.channels().list(part="id", mine=True)
+            response = request.execute()
+            items = response.get("items") or []
+            if items:
+                self._cached_my_channel_id = items[0].get("id")
+                return self._cached_my_channel_id
+        except Exception:
+            return None
+        return None
 
     def _read_env_youtube_creds(self):
         client_id = (os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
@@ -151,6 +168,7 @@ class YouTubeService:
         """Lista comentários (threads) de um vídeo. Retorna lista achatada de comentários (top-level e replies)."""
         if not self.service:
             raise RuntimeError(self.auth_error or "Serviço do YouTube não inicializado.")
+        my_channel_id = self._get_my_channel_id()
         items = []
         try:
             page_token = None
@@ -168,22 +186,30 @@ class YouTubeService:
                     top = th.get("snippet", {}).get("topLevelComment", {})
                     s = top.get("snippet", {}) if top else {}
                     if top:
+                        author_channel_id = ((s.get("authorChannelId") or {}) if isinstance(s, dict) else {}).get("value")
+                        is_owner = bool(author_channel_id and my_channel_id and author_channel_id == my_channel_id)
                         items.append({
                             "youtube_comment_id": top.get("id"),
                             "youtube_parent_id": None,
                             "youtube_video_id": youtube_video_id,
                             "author": s.get("authorDisplayName"),
+                            "author_channel_id": author_channel_id,
+                            "author_is_channel_owner": is_owner,
                             "text": s.get("textDisplay") or s.get("textOriginal"),
                             "like_count": s.get("likeCount", 0),
                             "published_at": s.get("publishedAt"),
                         })
                     for rep in (th.get("replies", {}) or {}).get("comments", []) or []:
                         rs = rep.get("snippet", {}) if rep else {}
+                        author_channel_id = ((rs.get("authorChannelId") or {}) if isinstance(rs, dict) else {}).get("value")
+                        is_owner = bool(author_channel_id and my_channel_id and author_channel_id == my_channel_id)
                         items.append({
                             "youtube_comment_id": rep.get("id"),
                             "youtube_parent_id": top.get("id") if top else None,
                             "youtube_video_id": youtube_video_id,
                             "author": rs.get("authorDisplayName"),
+                            "author_channel_id": author_channel_id,
+                            "author_is_channel_owner": is_owner,
                             "text": rs.get("textDisplay") or rs.get("textOriginal"),
                             "like_count": rs.get("likeCount", 0),
                             "published_at": rs.get("publishedAt"),
