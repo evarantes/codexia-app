@@ -2622,6 +2622,46 @@
             </div>
         </div>
 
+        <!-- Video Player Modal -->
+        <div v-if="videoPlayerOpen" class="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4" @click.self="closeVideoPlayer">
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl overflow-hidden">
+                <div class="flex items-center justify-between px-4 py-3 border-b">
+                    <div class="font-semibold text-gray-800 truncate pr-3">{{ videoPlayerTitle || 'Vídeo' }}</div>
+                    <button @click="closeVideoPlayer" class="text-gray-600 hover:text-gray-900 px-2 py-1">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="bg-black">
+                    <iframe
+                        v-if="videoPlayerType === 'youtube' && videoPlayerEmbedUrl"
+                        :src="videoPlayerEmbedUrl"
+                        class="w-full"
+                        style="height: 70vh;"
+                        frameborder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowfullscreen
+                    ></iframe>
+                    <video
+                        v-else
+                        :src="videoPlayerUrl"
+                        class="w-full"
+                        style="max-height: 70vh;"
+                        controls
+                        autoplay
+                        playsinline
+                    ></video>
+                </div>
+                <div class="px-4 py-3 border-t flex items-center justify-end gap-2">
+                    <a v-if="videoPlayerUrl && videoPlayerType !== 'youtube'" :href="videoPlayerUrl" target="_blank" class="text-sm text-indigo-600 hover:text-indigo-800">
+                        Abrir em nova aba
+                    </a>
+                    <button @click="closeVideoPlayer" class="bg-gray-800 text-white px-4 py-2 rounded hover:bg-gray-900 text-sm">
+                        Fechar
+                    </button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -2668,6 +2708,9 @@
                     ytStoryVideoLoading: false,
                     ytStoryTask: null,
                     ytStoryTaskId: null,
+                    ytActiveVideoTasksLoading: false,
+                    ytActiveVideoTasksLastLoadAt: 0,
+                    ytActiveVideoTasks: [],
                     ytStoryTaskPollFails: {},
                     ytStoryAssistLoading: false,
                     ytStoryAssistReport: null,
@@ -2816,6 +2859,11 @@
                     generatedVideoUrl: null,
                     socialPublishing: false,
                     socialPublishResult: null,
+                    videoPlayerOpen: false,
+                    videoPlayerTitle: '',
+                    videoPlayerUrl: '',
+                    videoPlayerType: 'mp4',
+                    videoPlayerEmbedUrl: '',
 
                     // Música e Clipe
                     musicLyricsTheme: '',
@@ -3054,6 +3102,9 @@
                         this.pollStoryTask(saved);
                     }
                 } catch (e) {}
+                try {
+                    await this.fetchActiveVideoTasks({ silent: true });
+                } catch (e) {}
                 
                 // Polling for updates
                 setInterval(() => {
@@ -3063,6 +3114,7 @@
                         this.fetchStoryDrafts();
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
+                        this.fetchActiveVideoTasks({ silent: true });
                         if (this.youtubeSubTab === 'community' && this.communityAutoRefresh) {
                             const now = Date.now();
                             if (!this.communityLoading && (now - Number(this.communityLastLoadAt || 0)) > 30000) {
@@ -3073,6 +3125,33 @@
                 }, 5000); // 5s para atualizar fila e manter processamento em andamento
             },
             methods: {
+                async fetchActiveVideoTasks({ silent } = {}) {
+                    try {
+                        const now = Date.now();
+                        const last = Number(this.ytActiveVideoTasksLastLoadAt || 0);
+                        if ((now - last) < 15000) return;
+                        this.ytActiveVideoTasksLastLoadAt = now;
+                        if (!silent) this.ytActiveVideoTasksLoading = true;
+                        const res = await this.authFetch('/youtube/tasks/active?limit=10');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) return;
+                        const items = (data && data.items && Array.isArray(data.items)) ? data.items : [];
+                        this.ytActiveVideoTasks = items;
+                        if (!this.ytStoryTaskId && items.length) {
+                            const pick = items.find(t => String((t.status || '')).toLowerCase() === 'processing') || items[0];
+                            if (pick && pick.task_id) {
+                                this.ytStoryTaskId = String(pick.task_id);
+                                try { localStorage.setItem('ytStoryTaskId', String(pick.task_id)); } catch (e) {}
+                                this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                                this.ytStoryTaskPollFails[String(pick.task_id)] = 0;
+                                this.pollStoryTask(String(pick.task_id));
+                            }
+                        }
+                    } catch (e) {
+                    } finally {
+                        this.ytActiveVideoTasksLoading = false;
+                    }
+                },
                 async runDiagnostics() {
                     this.diagnosticLoading = true;
                     this.diagnosticReport = null;
@@ -4185,8 +4264,8 @@
                 openStoryVideoPlayer() {
                     try {
                         if (!this.ytStoryTaskId) return;
-                        const url = `/youtube/task/${encodeURIComponent(this.ytStoryTaskId)}/watch`;
-                        window.open(this.appendTokenToInternalUrl(url), '_blank', 'noopener');
+                        const url = `/youtube/task/${encodeURIComponent(this.ytStoryTaskId)}/media`;
+                        this.openVideoPlayer({ title: 'Prévia do vídeo', url: this.appendTokenToInternalUrl(url) });
                     } catch (e) {}
                 },
                 async checkYtStoryVideoHealth(url) {
@@ -4670,15 +4749,47 @@
                 buildScheduledDownloadUrl(videoId) {
                     return this.appendTokenToInternalUrl(`/youtube/schedule/${videoId}/download`);
                 },
+                buildScheduledWatchUrl(videoId) {
+                    return this.appendTokenToInternalUrl(`/youtube/schedule/${videoId}/watch`);
+                },
                 buildProductionWatchUrl(videoId) {
                     return this.appendTokenToInternalUrl(`/youtube/videos/${videoId}/watch`);
+                },
+                openVideoPlayer({ title, url, youtubeId } = {}) {
+                    const finalTitle = (title || '').toString().trim();
+                    const ytId = (youtubeId || '').toString().trim();
+                    if (ytId && !ytId.startsWith('mock_')) {
+                        this.videoPlayerType = 'youtube';
+                        this.videoPlayerTitle = finalTitle || 'YouTube';
+                        this.videoPlayerUrl = '';
+                        this.videoPlayerEmbedUrl = `https://www.youtube.com/embed/${encodeURIComponent(ytId)}?autoplay=1&rel=0`;
+                        this.videoPlayerOpen = true;
+                        return;
+                    }
+                    const finalUrl = this.normalizePlayableVideoUrl(url);
+                    if (!finalUrl) {
+                        alert("URL do vídeo não disponível.");
+                        return;
+                    }
+                    this.videoPlayerType = 'mp4';
+                    this.videoPlayerTitle = finalTitle || 'Vídeo';
+                    this.videoPlayerEmbedUrl = '';
+                    this.videoPlayerUrl = finalUrl;
+                    this.videoPlayerOpen = true;
+                },
+                closeVideoPlayer() {
+                    this.videoPlayerOpen = false;
+                    this.videoPlayerTitle = '';
+                    this.videoPlayerUrl = '';
+                    this.videoPlayerEmbedUrl = '';
+                    this.videoPlayerType = 'mp4';
                 },
                 watchProductionVideo(video) {
                     if (!video || !video.id) {
                         alert("Vídeo inválido para visualização.");
                         return;
                     }
-                    window.open(this.buildProductionWatchUrl(video.id), '_blank');
+                    this.openVideoPlayer({ title: video.title, url: this.buildProductionWatchUrl(video.id) });
                 },
                 async pauseProductionVideo(video) {
                     if (!video || !video.id) return;
@@ -4923,18 +5034,18 @@
                     } catch (e) { alert("Erro: " + e); }
                 },
                 watchScheduledVideo(video) {
-                     if (video && video.id) {
-                        window.open(this.buildScheduledDownloadUrl(video.id), '_blank');
-                     } else {
-                         alert("URL do vídeo não disponível.");
-                     }
+                    if (!video || !video.id) {
+                        alert("Vídeo inválido para visualização.");
+                        return;
+                    }
+                    this.openVideoPlayer({ title: video.title, url: this.buildScheduledWatchUrl(video.id) });
                 },
                 viewPublishedVideo(video) {
                     const ytId = (video.youtube_video_id || '').toString();
                     if (ytId && !ytId.startsWith('mock_')) {
-                        window.open('https://www.youtube.com/watch?v=' + video.youtube_video_id, '_blank');
+                        this.openVideoPlayer({ title: video.title, youtubeId: ytId });
                     } else if (video && video.id) {
-                        window.open(this.buildScheduledDownloadUrl(video.id), '_blank');
+                        this.openVideoPlayer({ title: video.title, url: this.buildScheduledWatchUrl(video.id) });
                     } else {
                         alert("Link do vídeo não disponível.");
                     }

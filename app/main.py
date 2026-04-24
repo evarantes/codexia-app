@@ -52,6 +52,32 @@ except Exception as e:
 def run_migrations(engine):
     try:
         inspector = inspect(engine)
+
+        if "settings" in inspector.get_table_names():
+            try:
+                columns = [c["name"] for c in inspector.get_columns("settings")]
+                if "youtube_comments_last_sync_at" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN youtube_comments_last_sync_at DATETIME"))
+                        conn.commit()
+            except Exception as e:
+                print(f"Failed to migrate settings table: {e}")
+
+        if "video_tasks" in inspector.get_table_names():
+            try:
+                columns = [c["name"] for c in inspector.get_columns("video_tasks")]
+                missing = []
+                if "created_at" not in columns:
+                    missing.append(("created_at", "DATETIME"))
+                if "updated_at" not in columns:
+                    missing.append(("updated_at", "DATETIME"))
+                if missing:
+                    with engine.connect() as conn:
+                        for name, kind in missing:
+                            conn.execute(text(f"ALTER TABLE video_tasks ADD COLUMN {name} {kind}"))
+                        conn.commit()
+            except Exception as e:
+                print(f"Failed to migrate video_tasks table: {e}")
         
         # Books table migration
         if "books" in inspector.get_table_names():

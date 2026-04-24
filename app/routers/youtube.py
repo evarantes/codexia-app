@@ -6,7 +6,7 @@ import uuid
 import threading
 import sys
 import multiprocessing
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 try:
     from filelock import FileLock, Timeout
 except Exception:
@@ -28,8 +28,8 @@ except Exception:
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import requests
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 try:
@@ -208,6 +208,47 @@ def _normalize_video_url_for_client(raw_url: Optional[str]) -> Optional[str]:
     except Exception:
         pass
     return value
+
+def _video_range_response(request: Request, filepath: str, inline_filename: Optional[str] = None):
+    range_header = request.headers.get("range")
+    file_size = os.path.getsize(filepath)
+    headers: Dict[str, str] = {"Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+    if inline_filename:
+        headers["Content-Disposition"] = f'inline; filename="{inline_filename}"'
+
+    if not range_header:
+        return FileResponse(filepath, media_type="video/mp4", headers=headers)
+
+    try:
+        units, rng = range_header.split("=", 1)
+        if units.strip().lower() != "bytes":
+            return FileResponse(filepath, media_type="video/mp4", headers=headers)
+        start_s, end_s = (rng.split("-", 1) + [""])[:2]
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else file_size - 1
+        start = max(0, min(start, file_size - 1))
+        end = max(start, min(end, file_size - 1))
+    except Exception:
+        return FileResponse(filepath, media_type="video/mp4", headers=headers)
+
+    def _iterfile(path: str, start_pos: int, end_pos: int, chunk_size: int = 1024 * 1024):
+        with open(path, "rb") as f:
+            f.seek(start_pos)
+            remaining = end_pos - start_pos + 1
+            while remaining > 0:
+                chunk = f.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    content_length = end - start + 1
+    headers = {
+        **headers,
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(content_length),
+    }
+    return StreamingResponse(_iterfile(filepath, start, end), status_code=206, media_type="video/mp4", headers=headers)
 
 def _latest_final_asset_path(db: Session, video_id: int) -> str:
     """Retorna o caminho existente do asset FINAL mais recente do vídeo."""
@@ -989,7 +1030,7 @@ def download_video(video_id: int, token: Optional[str] = Query(None), db: Sessio
     return FileResponse(final_path, media_type="video/mp4", filename=os.path.basename(final_path))
 
 @router.get("/videos/{video_id}/watch")
-def watch_video(video_id: int, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
+def watch_video(video_id: int, request: Request, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """Abre/streama o vídeo final da fila de produção no navegador."""
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
@@ -1001,7 +1042,20 @@ def watch_video(video_id: int, token: Optional[str] = Query(None), db: Session =
     if not final_path:
         raise HTTPException(status_code=404, detail="Video file not found")
 
-    return FileResponse(final_path, media_type="video/mp4")
+    inline_name = os.path.basename(final_path) or f"video_{video_id}.mp4"
+    return _video_range_response(request, final_path, inline_filename=inline_name)
+
+@router.get("/schedule/{video_id}/watch")
+def watch_scheduled_video(video_id: int, request: Request, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    path = _resolve_video_file_path(video.video_url)
+    if not path:
+        raise HTTPException(status_code=404, detail="Video file not found")
+    inline_name = os.path.basename(path) or f"video_{video_id}.mp4"
+    return _video_range_response(request, path, inline_filename=inline_name)
 
 @router.post("/auto/process-job")
 def trigger_process_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -1155,8 +1209,10 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
         if not p:
             safe_kind = "story" if kind == "story" else "devotional"
             p = (
-                f"Cinematic digital art illustration of a scene inspired by this {safe_kind} excerpt: {chunk}. "
-                "High detail, cinematic lighting, expressive atmosphere, no text, no watermark, no logo."
+                f"Photorealistic cinematic photography of a scene inspired by this {safe_kind} excerpt: {chunk}. "
+                "Natural lighting, pleasant mood, realistic humans (no dolls), proportional anatomy, avoid close-up portraits. "
+                "No horror, no zombies, no monsters, no gore, no blood, no creepy, no uncanny. "
+                "No text, no watermark, no logo."
             )
         prompts.append(p[:900])
 
@@ -2944,7 +3000,65 @@ def get_task_status(task_id: str):
     task = get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    try:
+        status = str((task.get("status") or "")).lower()
+        if status in {"processing", "pending"}:
+            updated_at_s = (task.get("updated_at") or task.get("created_at") or "").strip()
+            if updated_at_s:
+                try:
+                    dt = datetime.fromisoformat(updated_at_s.replace("Z", "+00:00"))
+                    if getattr(dt, "tzinfo", None) is not None:
+                        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                except Exception:
+                    dt = None
+                if dt:
+                    try:
+                        stale_minutes = int((os.getenv("VIDEO_TASK_STALE_MINUTES") or "").strip() or "180")
+                    except Exception:
+                        stale_minutes = 180
+                    stale_minutes = max(30, min(7 * 24 * 60, stale_minutes))
+                    if datetime.utcnow() - dt > timedelta(minutes=stale_minutes):
+                        try:
+                            p = int(task.get("progress") or 0)
+                        except Exception:
+                            p = 0
+                        if 0 < p < 100:
+                            update_task(
+                                task_id,
+                                status="failed",
+                                progress=p,
+                                message=f"Tarefa travada: sem atualização há mais de {stale_minutes} min. Use 'Reiniciar tarefa' ou 'Encerrar no servidor'.",
+                            )
+                            task = get_task(task_id) or task
+    except Exception:
+        pass
     return task
+
+@router.get("/tasks/active")
+def list_active_tasks(limit: int = 10, _admin=Depends(get_current_admin_user)):
+    db = SessionLocal()
+    try:
+        lim = max(1, min(50, int(limit or 10)))
+        rows = (
+            db.query(VideoTask)
+            .filter(VideoTask.status.in_(["pending", "processing"]))
+            .order_by(VideoTask.updated_at.desc().nullslast(), VideoTask.created_at.desc().nullslast())
+            .limit(lim)
+            .all()
+        )
+        items = []
+        for r in rows:
+            items.append({
+                "task_id": r.id,
+                "status": r.status,
+                "progress": int(r.progress or 0),
+                "message": r.message,
+                "created_at": (r.created_at.isoformat() if getattr(r, "created_at", None) else None),
+                "updated_at": (r.updated_at.isoformat() if getattr(r, "updated_at", None) else None),
+            })
+        return {"count": len(items), "items": items}
+    finally:
+        db.close()
 
 @router.get("/task/{task_id}/watch", response_class=HTMLResponse)
 def watch_task_video(task_id: str, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
@@ -2981,6 +3095,32 @@ def watch_task_video(task_id: str, token: Optional[str] = Query(None), db: Sessi
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+@router.get("/task/{task_id}/media")
+def watch_task_video_media(task_id: str, request: Request, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    _require_user_from_query_token(token, db)
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    status = str((task.get("status") or "")).lower()
+    if status != "completed":
+        raise HTTPException(status_code=409, detail="Tarefa ainda não concluída.")
+    result = task.get("result") or {}
+    video_url = None
+    if isinstance(result, dict):
+        video_url = result.get("video_url") or result.get("videoUrl")
+    video_url = _normalize_video_url_for_client(video_url)
+    if not video_url:
+        raise HTTPException(status_code=404, detail="URL do vídeo não encontrada.")
+
+    if str(video_url).startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL do vídeo não é local ao servidor.")
+
+    path = _resolve_video_file_path(video_url)
+    if not path:
+        raise HTTPException(status_code=404, detail="Video file not found")
+    inline_name = os.path.basename(path) or f"task_{task_id}.mp4"
+    return _video_range_response(request, path, inline_filename=inline_name)
 
 @router.post("/task/{task_id}/cancel")
 def cancel_task(task_id: str):

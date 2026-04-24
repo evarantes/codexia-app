@@ -561,9 +561,14 @@ class VideoGenerator:
         import urllib.parse
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
         safe_prompt = urllib.parse.quote(
-            f"{prompt} photorealistic cinematic photography realistic humans natural skin "
-            "pleasant mood no horror no monsters no gore no blood no doll uncanny "
-            "highly detailed no text no watermark"
+            f"{prompt} photorealistic cinematic photography natural lighting pleasant mood "
+            "realistic humans natural skin texture proportional anatomy "
+            "avoid close-up portraits "
+            "no horror no monsters no zombies no undead no gore no blood "
+            "no creepy no uncanny no doll-like "
+            "no deformed no disfigured no mutated no bad anatomy no extra limbs "
+            "no bad hands no extra fingers no melted face no distorted faces "
+            "high detail sharp focus no text no watermark no logo"
         )
         seed = uuid.uuid4()
         return f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={seed}&enhance=false&model=flux"
@@ -608,7 +613,11 @@ class VideoGenerator:
             f"{base_prompt}. Must align with the narration context. "
             "Photorealistic cinematic photography, natural lighting, pleasant mood. "
             "Realistic humans (no dolls), natural skin, proportional anatomy. "
-            "No horror, no monsters, no gore, no blood, no disfigured faces, no uncanny, no creepy, no dystopian, no apocalyptic. "
+            "Avoid close-up portraits. "
+            "No horror, no monsters, no zombies, no undead, no gore, no blood. "
+            "No creepy, no uncanny, no doll-like. "
+            "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. "
+            "No dystopian, no apocalyptic. "
             "No text, no watermark, no logo."
         )
 

@@ -1738,12 +1738,22 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         dalle_size = "1024x1792" if is_portrait else "1792x1024"
 
         quality_tokens = [
-            "masterpiece", "unique artistic composition", "copyright free style",
-            "cinematic lighting", "highly detailed", "sharp focus",
-            "dramatic atmosphere", "award winning concept art", "digital painting",
-            "hand-drawn illustration", "original artwork",
+            "photorealistic cinematic photography",
+            "natural lighting",
+            "sharp focus",
+            "high detail",
+            "professional color grading",
+            "pleasant mood",
+            "realistic skin texture",
         ]
-        negative_constraints = "no text, no watermarks, no signatures, no logos, no branded characters, no distorted faces, no blur"
+        negative_constraints = (
+            "no text, no subtitles, no watermarks, no signatures, no logos, "
+            "no horror, no monsters, no zombies, no undead, no gore, no blood, "
+            "no creepy, no uncanny, no doll-like, "
+            "no deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, "
+            "no bad hands, no extra fingers, no melted face, no blurred face, "
+            "no lowres, no jpeg artifacts"
+        )
         enhanced_prompt = raw_prompt
         if len(raw_prompt) < 240 and not any(token in raw_prompt.lower() for token in quality_tokens[:3]):
             enhanced_prompt = f"{raw_prompt}, {' '.join(quality_tokens[:7])}"
@@ -1775,7 +1785,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     notify(f"Tentando {label}...")
                     full_prompt = (
                         f"{enhanced_prompt}. {negative_constraints}. "
-                        "Original AI-generated illustration, cinematic concept art, highly detailed."
+                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural and not distorted."
                     )
                     eden_provider = (os.getenv("EDENAI_IMAGE_PROVIDER") or "openai").strip()
                     headers = {"Authorization": f"Bearer {self.edenai_key.strip()}"}
@@ -1819,7 +1829,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     notify(f"Tentando {label}...")
                     full_prompt = (
                         f"{enhanced_prompt}. {negative_constraints}. "
-                        "Original AI-generated illustration, cinematic concept art, highly detailed."
+                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural and not distorted."
                     )
                     url = None
                     model = (os.getenv("OPENAI_IMAGE_MODEL") or "dall-e-3").strip() or "dall-e-3"
@@ -1862,7 +1872,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     notify(f"Tentando {label}...")
                     full_prompt = (
                         f"{enhanced_prompt}. {negative_constraints}. "
-                        "Original AI-generated illustration, cinematic concept art, highly detailed."
+                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural and not distorted."
                     )
                     model_id = (self.leonardo_model_id or "").strip() or (os.getenv("LEONARDO_MODEL_ID") or "").strip() or None
                     out_w, out_h = (576, 1024) if is_portrait else (1024, 576)

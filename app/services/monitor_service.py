@@ -420,6 +420,7 @@ class MonitorService:
 
     def check_new_comments(self):
         from app.services.youtube_service import YouTubeService
+        from app.models import Settings
 
         db = SessionLocal()
         try:
@@ -428,123 +429,131 @@ class MonitorService:
                 return
 
             try:
-                scan_limit = int((os.getenv("COMMENTS_SCAN_LIMIT") or "").strip() or "50")
+                max_results = int((os.getenv("COMMENTS_CHANNEL_MAX_RESULTS") or "").strip() or "200")
             except Exception:
-                scan_limit = 50
-            scan_limit = max(1, min(200, scan_limit))
+                max_results = 200
+            max_results = max(10, min(500, max_results))
 
             try:
-                max_per_video = int((os.getenv("COMMENTS_MAX_PER_VIDEO") or "").strip() or "80")
+                initial_lookback_hours = int((os.getenv("COMMENTS_INITIAL_LOOKBACK_HOURS") or "").strip() or "48")
             except Exception:
-                max_per_video = 80
-            max_per_video = max(10, min(200, max_per_video))
+                initial_lookback_hours = 48
+            initial_lookback_hours = max(1, min(24 * 30, initial_lookback_hours))
 
-            published_rows = (
-                db.query(ScheduledVideo)
-                .filter(ScheduledVideo.youtube_video_id.isnot(None))
-                .order_by(ScheduledVideo.uploaded_at.desc(), ScheduledVideo.id.desc())
-                .limit(scan_limit)
-                .all()
-            )
-            videos = [{"videoId": r.youtube_video_id} for r in published_rows if r.youtube_video_id]
-            new_items = []
-            for v in videos:
-                yid = (v or {}).get("videoId")
-                if not yid:
-                    continue
+            settings = db.query(Settings).first()
+            if not settings:
+                settings = Settings()
+                db.add(settings)
+                db.commit()
+
+            last_sync = getattr(settings, "youtube_comments_last_sync_at", None)
+            if not last_sync:
+                last_sync = datetime.datetime.utcnow() - datetime.timedelta(hours=initial_lookback_hours)
+                settings.youtube_comments_last_sync_at = last_sync
+                db.commit()
+
+            def _parse_utc_naive(ts: str):
                 try:
-                    raw = yt.list_video_comments(yid, max_results=max_per_video)
+                    s = (ts or "").strip()
+                    if not s:
+                        return None
+                    s = s.replace("Z", "+00:00")
+                    dt = datetime.datetime.fromisoformat(s)
+                    if dt.tzinfo is not None:
+                        dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                    return dt
+                except Exception:
+                    return None
+
+            new_items = []
+            newest_seen = None
+            try:
+                raw = yt.list_channel_comments(max_results=max_results)
+            except Exception as e:
+                logger.error(f"Erro ao verificar comentários (YouTube API): {e}")
+                return
+
+            reply_by_owner = {}
+            for c in raw or []:
+                try:
+                    if c.get("youtube_parent_id") and c.get("author_is_channel_owner"):
+                        pid = c.get("youtube_parent_id")
+                        if pid and pid not in reply_by_owner:
+                            reply_by_owner[pid] = c
                 except Exception:
                     continue
 
-                reply_by_owner = {}
-                for c in raw or []:
-                    try:
-                        if c.get("youtube_parent_id") and c.get("author_is_channel_owner"):
-                            pid = c.get("youtube_parent_id")
-                            if pid and pid not in reply_by_owner:
-                                reply_by_owner[pid] = c
-                    except Exception:
-                        continue
-
-                for pid, rep in reply_by_owner.items():
-                    try:
-                        top = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == pid).first()
-                        if top and top.status != "replied":
-                            top.status = "replied"
-                            txt = (rep.get("text") or "").strip()
-                            if txt:
-                                top.reply_text = txt
-                            try:
-                                s = (rep.get("published_at") or "").strip()
-                                if s:
-                                    s = s.replace("Z", "+00:00")
-                                    top.reply_sent_at = datetime.datetime.fromisoformat(s)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                for c in raw or []:
-                    cid = (c or {}).get("youtube_comment_id")
-                    if not cid:
-                        continue
-                    exists = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == cid).first()
-                    if exists:
-                        continue
-
-                    published_at = None
-                    try:
-                        s = (c.get("published_at") or "").strip()
-                        if s:
-                            s = s.replace("Z", "+00:00")
-                            published_at = datetime.datetime.fromisoformat(s)
-                    except Exception:
-                        published_at = None
-
-                    item = CommunityComment(
-                        youtube_comment_id=cid,
-                        youtube_parent_id=c.get("youtube_parent_id"),
-                        youtube_video_id=c.get("youtube_video_id") or yid,
-                        author=c.get("author"),
-                        text=(c.get("text") or "").strip(),
-                        like_count=int(c.get("like_count", 0) or 0),
-                        published_at=published_at,
-                        status="new",
-                    )
-                    if item.youtube_parent_id is None and item.youtube_comment_id in reply_by_owner:
-                        item.status = "replied"
-                        txt = (reply_by_owner[item.youtube_comment_id].get("text") or "").strip()
+            for pid, rep in reply_by_owner.items():
+                try:
+                    top = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == pid).first()
+                    if top and top.status != "replied":
+                        top.status = "replied"
+                        txt = (rep.get("text") or "").strip()
                         if txt:
-                            item.reply_text = txt
-                        try:
-                            s = (reply_by_owner[item.youtube_comment_id].get("published_at") or "").strip()
-                            if s:
-                                s = s.replace("Z", "+00:00")
-                                item.reply_sent_at = datetime.datetime.fromisoformat(s)
-                        except Exception:
-                            pass
-                    db.add(item)
-                    new_items.append(item)
+                            top.reply_text = txt
+                        rep_dt = _parse_utc_naive(rep.get("published_at") or "")
+                        if rep_dt:
+                            top.reply_sent_at = rep_dt
+                except Exception:
+                    pass
 
-                    if len(new_items) <= 10:
-                        msg = (item.text or "")[:240]
-                        payload = {
-                            "youtube_video_id": item.youtube_video_id,
-                            "youtube_comment_id": item.youtube_comment_id,
-                            "youtube_parent_id": item.youtube_parent_id,
-                            "author": item.author,
-                        }
-                        db.add(SystemNotification(
-                            user_id=None,
-                            kind="youtube_comment",
-                            title="Novo comentário no YouTube",
-                            message=f"{(item.author or 'Usuário')}: {msg}",
-                            payload_json=json.dumps(payload, ensure_ascii=False),
-                            status="new",
-                        ))
+            for c in raw or []:
+                cid = (c or {}).get("youtube_comment_id")
+                if not cid:
+                    continue
 
-            if new_items:
+                published_dt = _parse_utc_naive((c.get("published_at") or ""))
+                if published_dt and published_dt <= last_sync:
+                    continue
+
+                exists = db.query(CommunityComment).filter(CommunityComment.youtube_comment_id == cid).first()
+                if exists:
+                    continue
+
+                item = CommunityComment(
+                    youtube_comment_id=cid,
+                    youtube_parent_id=c.get("youtube_parent_id"),
+                    youtube_video_id=c.get("youtube_video_id"),
+                    author=c.get("author"),
+                    text=(c.get("text") or "").strip(),
+                    like_count=int(c.get("like_count", 0) or 0),
+                    published_at=published_dt,
+                    status="new",
+                )
+                if item.youtube_parent_id is None and item.youtube_comment_id in reply_by_owner:
+                    item.status = "replied"
+                    txt = (reply_by_owner[item.youtube_comment_id].get("text") or "").strip()
+                    if txt:
+                        item.reply_text = txt
+                    rep_dt = _parse_utc_naive(reply_by_owner[item.youtube_comment_id].get("published_at") or "")
+                    if rep_dt:
+                        item.reply_sent_at = rep_dt
+                db.add(item)
+                new_items.append(item)
+                if published_dt and (newest_seen is None or published_dt > newest_seen):
+                    newest_seen = published_dt
+
+                if len(new_items) <= 10:
+                    msg = (item.text or "")[:240]
+                    payload = {
+                        "youtube_video_id": item.youtube_video_id,
+                        "youtube_comment_id": item.youtube_comment_id,
+                        "youtube_parent_id": item.youtube_parent_id,
+                        "author": item.author,
+                    }
+                    db.add(SystemNotification(
+                        user_id=None,
+                        kind="youtube_comment",
+                        title="Novo comentário no YouTube",
+                        message=f"{(item.author or 'Usuário')}: {msg}",
+                        payload_json=json.dumps(payload, ensure_ascii=False),
+                        status="new",
+                    ))
+
+            if newest_seen and (getattr(settings, "youtube_comments_last_sync_at", None) is None or newest_seen > (settings.youtube_comments_last_sync_at or datetime.datetime.min)):
+                settings.youtube_comments_last_sync_at = newest_seen
+
+            if new_items or reply_by_owner:
                 db.commit()
         except Exception as e:
             logger.error(f"Erro ao verificar comentários: {e}")

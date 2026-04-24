@@ -580,7 +580,10 @@ class VideoFactory:
             prompt = (
                 f"{visual_prompt}. "
                 f"This image must clearly match the narrated message: \"{narration[:260]}\". "
-                "Original AI-generated artwork, exclusive composition, no stock photo, no text, no watermark."
+                "Photorealistic cinematic photography, natural lighting, pleasant mood, realistic humans, proportional anatomy, medium shot, no close-up faces. "
+                "No text, no subtitles, no watermark, no logo. "
+                "No horror, no zombies, no gore, no uncanny, no dolls, no deformed faces, no extra fingers, no bad anatomy. "
+                "Exclusive composition."
             )
 
             base_progress = 55 + int(((idx - 1) / total) * 25)

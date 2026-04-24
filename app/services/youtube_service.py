@@ -1,5 +1,7 @@
 import os
 import json
+import time
+from typing import Optional
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -17,6 +19,44 @@ SCOPES = [
     'https://www.googleapis.com/auth/yt-analytics.readonly'
 ]
 
+_YT_CACHE = {
+    "my_channel_id": None,
+    "my_channel_id_expires_at": 0.0,
+    "my_channel": None,
+    "my_channel_expires_at": 0.0,
+}
+
+def _yt_cache_get(key: str):
+    try:
+        expires_at = float(_YT_CACHE.get(f"{key}_expires_at") or 0.0)
+        if expires_at and time.time() < expires_at:
+            return _YT_CACHE.get(key)
+    except Exception:
+        return None
+    return None
+
+def _yt_cache_set(key: str, value, ttl_seconds: int):
+    try:
+        _YT_CACHE[key] = value
+        _YT_CACHE[f"{key}_expires_at"] = float(time.time() + max(1, int(ttl_seconds)))
+    except Exception:
+        pass
+
+def _parse_http_error_reason(e: Exception) -> Optional[str]:
+    try:
+        if isinstance(e, HttpError) and getattr(e, "content", None):
+            raw = e.content.decode("utf-8", errors="ignore") if isinstance(e.content, (bytes, bytearray)) else str(e.content)
+            data = json.loads(raw) if raw else {}
+            err = (data or {}).get("error") or {}
+            errors = err.get("errors") or []
+            if errors and isinstance(errors[0], dict):
+                reason = errors[0].get("reason")
+                if reason:
+                    return str(reason)
+    except Exception:
+        return None
+    return None
+
 class YouTubeService:
     def __init__(self):
         self.credentials = None
@@ -27,7 +67,12 @@ class YouTubeService:
         self._load_credentials()
 
     def _get_my_channel_id(self):
+        cached = _yt_cache_get("my_channel_id")
+        if cached:
+            self._cached_my_channel_id = cached
+            return cached
         if self._cached_my_channel_id:
+            _yt_cache_set("my_channel_id", self._cached_my_channel_id, ttl_seconds=6 * 3600)
             return self._cached_my_channel_id
         if not self.service:
             return None
@@ -37,6 +82,8 @@ class YouTubeService:
             items = response.get("items") or []
             if items:
                 self._cached_my_channel_id = items[0].get("id")
+                if self._cached_my_channel_id:
+                    _yt_cache_set("my_channel_id", self._cached_my_channel_id, ttl_seconds=6 * 3600)
                 return self._cached_my_channel_id
         except Exception:
             return None
@@ -221,6 +268,67 @@ class YouTubeService:
             raise RuntimeError(f"Erro YouTube API (comments): {e}")
         return items
 
+    def list_channel_comments(self, max_results: int = 200):
+        if not self.service:
+            raise RuntimeError(self.auth_error or "Serviço do YouTube não inicializado.")
+        my_channel_id = self._get_my_channel_id()
+        if not my_channel_id:
+            raise RuntimeError("Não foi possível descobrir o channelId do canal autenticado.")
+        items = []
+        try:
+            page_token = None
+            while True:
+                req = self.service.commentThreads().list(
+                    part="snippet,replies",
+                    allThreadsRelatedToChannelId=my_channel_id,
+                    maxResults=min(max_results, 100),
+                    order="time",
+                    textFormat="plainText",
+                    pageToken=page_token,
+                )
+                resp = req.execute()
+                for th in resp.get("items", []):
+                    top = th.get("snippet", {}).get("topLevelComment", {})
+                    s = top.get("snippet", {}) if top else {}
+                    video_id = (th.get("snippet", {}) or {}).get("videoId")
+                    if top:
+                        author_channel_id = ((s.get("authorChannelId") or {}) if isinstance(s, dict) else {}).get("value")
+                        is_owner = bool(author_channel_id and my_channel_id and author_channel_id == my_channel_id)
+                        items.append({
+                            "youtube_comment_id": top.get("id"),
+                            "youtube_parent_id": None,
+                            "youtube_video_id": video_id,
+                            "author": s.get("authorDisplayName"),
+                            "author_channel_id": author_channel_id,
+                            "author_is_channel_owner": is_owner,
+                            "text": s.get("textDisplay") or s.get("textOriginal"),
+                            "like_count": s.get("likeCount", 0),
+                            "published_at": s.get("publishedAt"),
+                        })
+                    for rep in (th.get("replies", {}) or {}).get("comments", []) or []:
+                        rs = rep.get("snippet", {}) if rep else {}
+                        author_channel_id = ((rs.get("authorChannelId") or {}) if isinstance(rs, dict) else {}).get("value")
+                        is_owner = bool(author_channel_id and my_channel_id and author_channel_id == my_channel_id)
+                        items.append({
+                            "youtube_comment_id": rep.get("id"),
+                            "youtube_parent_id": top.get("id") if top else None,
+                            "youtube_video_id": video_id,
+                            "author": rs.get("authorDisplayName"),
+                            "author_channel_id": author_channel_id,
+                            "author_is_channel_owner": is_owner,
+                            "text": rs.get("textDisplay") or rs.get("textOriginal"),
+                            "like_count": rs.get("likeCount", 0),
+                            "published_at": rs.get("publishedAt"),
+                        })
+                if len(items) >= int(max_results):
+                    break
+                page_token = resp.get("nextPageToken")
+                if not page_token:
+                    break
+        except HttpError as e:
+            raise RuntimeError(f"Erro YouTube API (channel comments): {e}")
+        return items[: int(max_results)]
+
     def reply_to_comment(self, parent_comment_id: str, text: str):
         """Responde a um comentário (parentId = comentário top-level)."""
         if not self.service:
@@ -399,12 +507,16 @@ class YouTubeService:
             db.close()
 
 
-    def _get_my_channel(self):
+    def _get_my_channel(self, use_cache: bool = True):
         """Helper para buscar o canal autenticado"""
         if not self.service:
             return None
             
         try:
+            if use_cache:
+                cached = _yt_cache_get("my_channel")
+                if cached:
+                    return cached
             request = self.service.channels().list(
                 part="snippet,statistics,brandingSettings,contentDetails",
                 mine=True
@@ -412,7 +524,10 @@ class YouTubeService:
             response = request.execute()
             
             if response['items']:
-                return response['items'][0]
+                ch = response['items'][0]
+                if use_cache:
+                    _yt_cache_set("my_channel", ch, ttl_seconds=180)
+                return ch
         except Exception as e:
             print(f"Erro no helper _get_my_channel: {e}")
             raise e
@@ -480,7 +595,7 @@ class YouTubeService:
             return {"connected": False, "error": reason}
         
         try:
-            channel = self._get_my_channel()
+            channel = self._get_my_channel(use_cache=True)
             if channel:
                 stats = channel['statistics']
                 snippet = channel['snippet']
@@ -494,6 +609,12 @@ class YouTubeService:
                 }
             return {"connected": False, "error": "Nenhum canal encontrado"}
         except HttpError as e:
+            reason = _parse_http_error_reason(e)
+            if (e.resp.status == 403) and reason in {"quotaExceeded", "dailyLimitExceeded", "userRateLimitExceeded"}:
+                return {
+                    "connected": False,
+                    "error": "Limite diário da API do YouTube excedido (quotaExceeded). Aguarde a renovação da quota ou solicite aumento no Google Cloud Console.",
+                }
             if e.resp.status == 403 and "accessNotConfigured" in str(e):
                 return {
                     "connected": False, 
