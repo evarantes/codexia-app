@@ -52,13 +52,15 @@ except Exception as e:
 def run_migrations(engine):
     try:
         inspector = inspect(engine)
+        dialect = (getattr(getattr(engine, "dialect", None), "name", "") or "").lower()
+        datetime_type = "TIMESTAMP" if dialect in ("postgresql", "postgres") else "DATETIME"
 
         if "settings" in inspector.get_table_names():
             try:
                 columns = [c["name"] for c in inspector.get_columns("settings")]
                 if "youtube_comments_last_sync_at" not in columns:
                     with engine.connect() as conn:
-                        conn.execute(text("ALTER TABLE settings ADD COLUMN youtube_comments_last_sync_at DATETIME"))
+                        conn.execute(text(f"ALTER TABLE settings ADD COLUMN youtube_comments_last_sync_at {datetime_type}"))
                         conn.commit()
             except Exception as e:
                 print(f"Failed to migrate settings table: {e}")
@@ -68,9 +70,9 @@ def run_migrations(engine):
                 columns = [c["name"] for c in inspector.get_columns("video_tasks")]
                 missing = []
                 if "created_at" not in columns:
-                    missing.append(("created_at", "DATETIME"))
+                    missing.append(("created_at", datetime_type))
                 if "updated_at" not in columns:
-                    missing.append(("updated_at", "DATETIME"))
+                    missing.append(("updated_at", datetime_type))
                 if missing:
                     with engine.connect() as conn:
                         for name, kind in missing:
