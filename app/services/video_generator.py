@@ -6,6 +6,9 @@ import threading
 import asyncio
 import re
 import time
+import difflib
+import unicodedata
+from typing import Optional
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
@@ -1588,7 +1591,7 @@ class VideoGenerator:
             except Exception:
                 pass
 
-    def create_music_video(self, music_path, scenes, title="Música", aspect_ratio="9:16"):
+    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
         try:
             from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
@@ -1598,49 +1601,190 @@ class VideoGenerator:
         if not os.path.exists(music_path):
             raise FileNotFoundError(f"Arquivo de música não encontrado: {music_path}")
         video_size = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
-        allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
+        allow_non_ai_fallback = False
         clips = []
         try:
             audio_clip = AudioFileClip(music_path)
             total_duration = audio_clip.duration
-            n = max(1, len(scenes))
-            segment_duration = total_duration / n
-            for i, scene in enumerate(scenes):
-                text = scene.get("text", "") if isinstance(scene, dict) else str(scene)
-                image_prompt = scene.get("image_prompt", "") if isinstance(scene, dict) else ""
-                # Usa Pexels/Pixabay primeiro, depois IA (Música e Clipe)
-                def _clip_status(message, scene_idx=i, total=n):
-                    # progresso local simples para dar feedback no log da API
+            if scenes is None:
+                scenes = []
+
+            lyric_text = lyrics
+            if isinstance(scenes, dict):
+                lyric_text = lyric_text or scenes.get("lyrics")
+                scenes = scenes.get("scenes") or []
+            if not isinstance(scenes, list):
+                scenes = []
+
+            def _normalize(s: str) -> str:
+                t = (s or "").strip().lower()
+                if not t:
+                    return ""
+                t = unicodedata.normalize("NFKD", t)
+                t = "".join(ch for ch in t if not unicodedata.combining(ch))
+                t = re.sub(r"[^a-z0-9\s]", " ", t)
+                t = re.sub(r"\s+", " ", t).strip()
+                return t
+
+            def _is_label_line(line: str) -> bool:
+                if not line:
+                    return False
+                return bool(re.match(r"^(verso|refr[aã]o|pr[eé]-?refr[aã]o|ponte|intro|outro|coro|bridge|chorus)\b", line.strip(), flags=re.IGNORECASE))
+
+            def _clean_lyrics_lines(lyrics_raw: str):
+                raw = [l.strip() for l in (lyrics_raw or "").splitlines() if l.strip()]
+                out = []
+                for l in raw:
+                    if _is_label_line(l):
+                        continue
+                    l2 = re.sub(r"^\[.*?\]\s*", "", l).strip()
+                    if not l2:
+                        continue
+                    out.append(l2)
+                return out
+
+            lyrics_lines = _clean_lyrics_lines(lyric_text or "")
+
+            max_scenes_env = os.getenv("MUSIC_CLIP_MAX_SCENES", "").strip()
+            try:
+                max_scenes = int(max_scenes_env) if max_scenes_env else 18
+            except Exception:
+                max_scenes = 18
+            max_scenes = max(6, min(max_scenes, 40))
+
+            segments = None
+            if self.ai_service and lyrics_lines:
+                try:
+                    segments = self.ai_service.transcribe_audio_segments(music_path, language="pt")
+                except Exception:
+                    segments = None
+            if lyrics_lines and not segments:
+                raise Exception("Sincronização perfeita requer transcrição do áudio. Configure OPENAI_API_KEY (ou openai_api_key em Configurações) para usar Whisper e sincronizar a legenda com a fala.")
+
+            timeline = []
+            if segments and isinstance(segments, list) and lyrics_lines:
+                segs = []
+                for s in segments:
+                    if not isinstance(s, dict):
+                        continue
+                    try:
+                        st = float(s.get("start"))
+                        en = float(s.get("end"))
+                    except Exception:
+                        continue
+                    if en <= st:
+                        continue
+                    txt = str(s.get("text") or "").strip()
+                    if not txt:
+                        continue
+                    segs.append({"start": max(0.0, st), "end": en, "text": txt})
+                segs.sort(key=lambda x: x["start"])
+                if segs:
+                    if segs[0]["start"] > 0.25:
+                        segs[0]["start"] = 0.0
+                    if segs[-1]["end"] < (total_duration - 0.2):
+                        segs[-1]["end"] = float(total_duration)
+
+                pointer = 0
+                for s in segs:
+                    window = lyrics_lines[pointer : pointer + 10]
+                    seg_norm = _normalize(s["text"])
+                    best_idx = None
+                    best_score = 0.0
+                    for j, line in enumerate(window):
+                        score = difflib.SequenceMatcher(None, seg_norm, _normalize(line)).ratio()
+                        if score > best_score:
+                            best_score = score
+                            best_idx = j
+                    if best_idx is not None and best_score >= 0.45:
+                        chosen = window[best_idx]
+                        pointer = pointer + best_idx + 1
+                    else:
+                        chosen = lyrics_lines[pointer] if pointer < len(lyrics_lines) else s["text"]
+                        if pointer < len(lyrics_lines):
+                            pointer += 1
+                    timeline.append({"start": s["start"], "end": s["end"], "caption": chosen})
+
+                merged = []
+                for it in timeline:
+                    if not merged:
+                        merged.append(it)
+                        continue
+                    if merged[-1]["caption"] == it["caption"] and it["start"] <= (merged[-1]["end"] + 0.12):
+                        merged[-1]["end"] = max(merged[-1]["end"], it["end"])
+                    else:
+                        merged.append(it)
+                timeline = merged
+            elif lyrics_lines:
+                n = min(max_scenes, len(lyrics_lines))
+                if n <= 0:
+                    n = 1
+                seg_dur = float(total_duration) / float(n)
+                t = 0.0
+                for i in range(n):
+                    start = t
+                    end = float(total_duration) if i == (n - 1) else min(float(total_duration), start + seg_dur)
+                    t = end
+                    cap = lyrics_lines[min(i, len(lyrics_lines) - 1)]
+                    timeline.append({"start": start, "end": end, "caption": cap})
+            else:
+                n = max(1, len(scenes)) if scenes else 1
+                seg_dur = float(total_duration) / float(n)
+                for i in range(n):
+                    start = float(i) * seg_dur
+                    end = float(total_duration) if i == (n - 1) else float(i + 1) * seg_dur
+                    sc = scenes[i] if i < len(scenes) else {}
+                    cap = sc.get("text") if isinstance(sc, dict) else str(sc)
+                    timeline.append({"start": start, "end": end, "caption": str(cap or "").strip()})
+
+            if len(timeline) > max_scenes:
+                timeline = timeline[:max_scenes]
+                timeline[-1]["end"] = float(total_duration)
+
+            sum_prev = 0.0
+            for it in timeline:
+                dur = max(0.6, float(it["end"]) - float(it["start"]))
+                it["duration"] = dur
+                sum_prev += dur
+            if timeline:
+                drift = float(total_duration) - float(sum_prev)
+                if abs(drift) > 0.35:
+                    timeline[-1]["duration"] = max(0.8, float(timeline[-1]["duration"]) + drift)
+
+            def _prompt_for_caption(caption: str) -> str:
+                cap = (caption or "").strip()
+                if not cap:
+                    return "cinematic music video scene"
+                return (
+                    f"Photorealistic cinematic scene that matches this sung lyric exactly (Portuguese): \"{cap[:260]}\". "
+                    f"Music video for: {title or 'Song'}. "
+                    "No text, no subtitles, no watermark, no logo."
+                )
+
+            for i, it in enumerate(timeline):
+                caption = (it.get("caption") or "").strip()
+                duration = float(it.get("duration") or 0)
+                if duration <= 0:
+                    continue
+                image_prompt = _prompt_for_caption(caption)
+
+                def _clip_status(message, scene_idx=i, total=len(timeline)):
                     print(f"[Clip][Cena {scene_idx+1}/{total}] {message}")
 
                 bg_image_path = self._ensure_image_for_scene(
                     image_prompt,
-                    text_fallback=text[:80],
+                    text_fallback=caption[:120],
                     aspect_ratio=aspect_ratio,
                     status_callback=_clip_status,
                     allow_non_ai_fallback=allow_non_ai_fallback
-                ) if image_prompt else None
-                if image_prompt and not bg_image_path:
-                    try:
-                        direct_url = self._pollinations_direct_url(
-                            image_prompt or f"Cinematic scene for music clip: {text[:80]}",
-                            aspect_ratio
-                        )
-                        bg_image_path = self.download_image(direct_url, retries=2, timeout=90)
-                        if not (bg_image_path and os.path.exists(bg_image_path) and os.path.getsize(bg_image_path) > 1000):
-                            bg_image_path = None
-                    except Exception:
-                        bg_image_path = None
-                if image_prompt and not bg_image_path:
-                    bg_image_path = self._generate_fallback_background(video_size)
-                    if bg_image_path:
-                        print(f"[Clip][Cena {i+1}/{n}] IA de imagem indisponível; usando fundo local.")
-                if image_prompt and not bg_image_path:
+                )
+                if not bg_image_path:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
                 bg_color = bg_colors[i % len(bg_colors)]
-                img = self.create_text_image(self._clean_text(text), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
-                clip = ImageClip(img).with_duration(segment_duration)
+                img = self.create_text_image(self._clean_text(caption), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                clip = ImageClip(img)
+                clip = self._set_clip_duration(clip, duration)
                 clips.append(clip)
                 if bg_image_path and "temp_" in bg_image_path:
                     try:
@@ -1649,7 +1793,7 @@ class VideoGenerator:
                         pass
                 gc.collect()
             final = concatenate_videoclips(clips)
-            final = final.with_audio(audio_clip)
+            final = self._set_clip_audio(final, audio_clip)
             filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
             output_path = os.path.join(self.output_dir, filename)
             final.write_videofile(

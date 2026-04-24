@@ -2,7 +2,7 @@ import os
 import uuid
 import openai
 import requests
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app.models import Settings
@@ -1393,6 +1393,53 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 ]
             }
 
+    def transcribe_audio_segments(self, audio_path: str, language: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        self._load_config()
+        api_key = (self.api_key or "").strip() if self.api_key else ""
+        if not api_key:
+            return None
+        if not audio_path or not os.path.exists(audio_path):
+            return None
+        client = openai.OpenAI(api_key=api_key)
+        try:
+            with open(audio_path, "rb") as f:
+                kwargs: Dict[str, Any] = {
+                    "model": "whisper-1",
+                    "file": f,
+                    "response_format": "verbose_json",
+                }
+                if language:
+                    kwargs["language"] = language
+                res = client.audio.transcriptions.create(**kwargs)
+        except Exception:
+            return None
+
+        segments = None
+        if hasattr(res, "segments"):
+            segments = getattr(res, "segments")
+        elif isinstance(res, dict):
+            segments = res.get("segments")
+        if not isinstance(segments, list):
+            return None
+
+        out: List[Dict[str, Any]] = []
+        for s in segments:
+            if not isinstance(s, dict):
+                continue
+            start = s.get("start")
+            end = s.get("end")
+            text = s.get("text")
+            try:
+                start_f = float(start)
+                end_f = float(end)
+            except Exception:
+                continue
+            t = str(text or "").strip()
+            if not t:
+                continue
+            out.append({"start": start_f, "end": end_f, "text": t})
+        return out or None
+
     def generate_hotmart_suggestions(self, book_data):
         """
         Analisa um livro e gera sugestões otimizadas para publicação na Hotmart:
@@ -2184,17 +2231,16 @@ Retorne APENAS o prompt, sem aspas."""
     def lyrics_to_clip_scenes(self, lyrics: str, title: str = ""):
         """Converte letra em cenas (texto + image_prompt) para clipe."""
         self._load_config()
-        lines = [l.strip() for l in lyrics.strip().split("\n") if l.strip()]
+        import re
+        lines = [l.strip() for l in (lyrics or "").strip().split("\n") if l.strip()]
+        label_re = re.compile(r"^(verso|refr[aã]o|pr[eé]-?refr[aã]o|ponte|intro|outro|coro|bridge|chorus)\b", re.IGNORECASE)
+        lines = [l for l in lines if not label_re.match(l)]
         if not lines:
             return [{"text": title or "Música", "image_prompt": "abstract music visual"}]
         scenes = []
-        chunk = 3
-        for i in range(0, len(lines), chunk):
-            block = "\n".join(lines[i : i + chunk])
-            if not block:
-                continue
+        for block in lines:
             if self.openrouter_key:
-                prompt = f"""Letra: "{block[:400]}". Título: {title or 'Música'}. Gere UM image_prompt em inglês para cena de clipe (visual artístico, sem texto na imagem). Uma frase."""
+                prompt = f"""Lyric line (Portuguese): "{block[:260]}". Song title: {title or 'Song'}. Create ONE image prompt in English for a photorealistic cinematic music video scene that matches the lyric literally. No text in image. One sentence."""
                 try:
                     ip = self._generate_text(prompt, system_prompt="Output only the image prompt.", temperature=0.7)
                     image_prompt = (ip or "").strip()[:250] or "cinematic music video scene"

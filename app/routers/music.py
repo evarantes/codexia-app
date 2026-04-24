@@ -333,11 +333,13 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         from app.services.video_generator import VideoGenerator
         ai = AIContentGenerator()
         video_gen = VideoGenerator(ai_service=ai)
-        scenes = ai.lyrics_to_clip_scenes(request.lyrics, request.title)
-        result = video_gen.create_music_video(music_path, scenes, title=request.title, aspect_ratio="9:16")
+        result = video_gen.create_music_video(music_path, title=request.title, aspect_ratio="9:16", lyrics=request.lyrics)
         return {
             "video_url": result["video_url"],
             "message": "Clipe gerado com sucesso."
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao gerar clipe: {str(e)}")
+        msg = str(e)
+        if "Sincronização perfeita requer transcrição do áudio" in msg:
+            raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar clipe: {msg}")
