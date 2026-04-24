@@ -2876,6 +2876,10 @@
                     musicGenre: '',
                     musicVocalGender: '',
                     musicLoading: false,
+                    musicTaskId: null,
+                    musicTaskStatus: null,
+                    musicTaskProgress: 0,
+                    musicTaskMessage: '',
                     musicUrl: null,
                     musicFilename: null,
                     clipLoading: false,
@@ -5572,6 +5576,10 @@
                     this.musicLoading = true;
                     this.musicUrl = null;
                     this.musicFilename = null;
+                    this.musicTaskId = null;
+                    this.musicTaskStatus = null;
+                    this.musicTaskProgress = 0;
+                    this.musicTaskMessage = '';
                     try {
                         const res = await this.authFetch('/music/generate', {
                             method: 'POST',
@@ -5588,13 +5596,53 @@
                         if (res.ok && data.music_url) {
                             this.musicUrl = data.music_url;
                             this.musicFilename = data.music_filename;
+                        } else if (res.ok && data.task_id) {
+                            this.musicTaskId = String(data.task_id);
+                            await this.pollMusicTask(this.musicTaskId);
                         } else {
                             alert(data.detail || data.message || "Erro ao gerar música.");
                         }
                     } catch (e) {
                         alert("Erro ao gerar música: " + (e.message || e));
                     } finally {
+                        if (!this.musicTaskId) this.musicLoading = false;
+                    }
+                },
+                async pollMusicTask(taskId) {
+                    const id = String(taskId || '').trim();
+                    if (!id) {
                         this.musicLoading = false;
+                        return;
+                    }
+                    try {
+                        const res = await this.authFetch(`/music/task/${encodeURIComponent(id)}`);
+                        let data = {};
+                        try { data = await res.json(); } catch (_) { data = {}; }
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || "Falha ao consultar status da música.");
+                        }
+                        this.musicTaskStatus = data.status || null;
+                        this.musicTaskProgress = Number(data.progress || 0);
+                        this.musicTaskMessage = data.message || '';
+
+                        if (data.status === 'completed') {
+                            const result = data.result || {};
+                            const url = result.music_url || result.musicUrl || null;
+                            const filename = result.music_filename || result.musicFilename || null;
+                            if (url) this.musicUrl = url;
+                            if (filename) this.musicFilename = filename;
+                            this.musicLoading = false;
+                            return;
+                        }
+                        if (data.status === 'failed') {
+                            this.musicLoading = false;
+                            this.musicTaskId = null;
+                            alert(data.message || "Falha ao gerar música.");
+                            return;
+                        }
+                        setTimeout(() => this.pollMusicTask(id), 1500);
+                    } catch (e) {
+                        setTimeout(() => this.pollMusicTask(id), 2500);
                     }
                 },
                 async generateLyrics() {

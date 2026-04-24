@@ -4,13 +4,23 @@ Com Suno API: música com voz cantada. Sem Suno: instrumental (MusicGen).
 """
 import os
 import uuid
+import threading
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from app.services.suno_service import generate_song_with_vocals
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.services.suno_service import (
+    generate_song_with_vocals,
+    get_suno_api_key,
+    create_suno_task,
+    poll_suno_task,
+    download_suno_audio,
+)
 from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
-from app.models import User
+from app.models import User, VideoTask
+from app.services.task_manager import create_task, update_task, get_task
 
 router = APIRouter(prefix="/music", tags=["music"])
 
@@ -72,22 +82,81 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
     if not request.lyrics or not request.lyrics.strip():
         raise HTTPException(status_code=400, detail="Envie a letra da música.")
     try:
-        # 1. Tentar Suno (voz cantada) se a chave estiver configurada
-        result = generate_song_with_vocals(
-            lyrics=request.lyrics.strip(),
-            title=request.title or "Música",
-            style=request.genre or "Pop",
-            vocal_gender=request.vocal_gender,
-        )
-        if result.get("success") and result.get("music_url"):
+        api_key = get_suno_api_key()
+        if api_key:
+            task_id = create_task(user_id=user.id)
+            update_task(
+                task_id,
+                status="processing",
+                progress=5,
+                message="Enviando para o Suno...",
+                result={"provider": "suno", "title": request.title or "Música"},
+            )
+
+            lyrics = request.lyrics.strip()
+            title = request.title or "Música"
+            style = request.genre or "Pop"
+            vocal_gender = request.vocal_gender
+
+            created = create_suno_task(
+                api_key=api_key,
+                lyrics=lyrics,
+                title=title,
+                style=style,
+                vocal_gender=vocal_gender,
+            )
+            if not created.get("success"):
+                update_task(task_id, status="failed", progress=100, message=created.get("error") or "Suno falhou.")
+                raise HTTPException(status_code=503, detail=created.get("error", "Suno falhou."))
+            suno_task_id = str(created.get("task_id") or "")
+            update_task(
+                task_id,
+                status="processing",
+                progress=12,
+                message="Suno processando...",
+                result={"provider": "suno", "suno_task_id": suno_task_id, "title": title},
+            )
+
+            def _run():
+                try:
+                    update_task(task_id, status="processing", progress=20, message="Aguardando áudio do Suno...")
+                    polled = poll_suno_task(api_key=api_key, task_id=suno_task_id, max_wait_seconds=12 * 60, step_seconds=6)
+                    if not polled.get("success"):
+                        update_task(task_id, status="failed", progress=100, message=polled.get("error") or "Suno falhou.")
+                        return
+                    audio_url = str(polled.get("audio_url") or "")
+                    if not audio_url:
+                        update_task(task_id, status="failed", progress=100, message="Suno não retornou URL do áudio.")
+                        return
+                    update_task(task_id, status="processing", progress=85, message="Baixando áudio...")
+                    dl = download_suno_audio(audio_url)
+                    if not dl.get("success"):
+                        update_task(task_id, status="failed", progress=100, message=dl.get("error") or "Falha ao baixar áudio.")
+                        return
+                    update_task(
+                        task_id,
+                        status="completed",
+                        progress=100,
+                        message="Música com voz cantada gerada (Suno).",
+                        result={
+                            "provider": "suno",
+                            "suno_task_id": suno_task_id,
+                            "audio_url": audio_url,
+                            "music_url": dl.get("music_url"),
+                            "music_filename": dl.get("music_filename"),
+                            "with_vocals": True,
+                            "title": title,
+                        },
+                    )
+                except Exception as e:
+                    update_task(task_id, status="failed", progress=100, message=str(e))
+
+            threading.Thread(target=_run, daemon=True).start()
             return {
-                "music_url": result["music_url"],
-                "music_filename": result["music_filename"],
-                "message": "Música com voz cantada gerada (Suno). Use 'Gerar Clipe' para criar o vídeo.",
+                "task_id": task_id,
+                "message": "Geração iniciada (Suno). Aguarde a finalização.",
                 "with_vocals": True,
             }
-        if result.get("success") is False and "não configurada" not in (result.get("error") or "").lower():
-            raise HTTPException(status_code=503, detail=result.get("error", "Suno falhou."))
 
         # 2. Fallback: instrumental (MusicGen)
         ai = AIContentGenerator()
@@ -114,6 +183,18 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao gerar música: {str(e)}")
+
+@router.get("/task/{task_id}")
+def get_music_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    if row.user_id and row.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para acessar esta tarefa.")
+    data = get_task(task_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    return data
 
 
 @router.post("/clip")
