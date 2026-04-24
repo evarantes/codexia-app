@@ -484,6 +484,18 @@
                                 <textarea v-model="musicLyrics" class="w-full border p-3 rounded" rows="12" placeholder="Cole ou digite a letra aqui...&#10;&#10;Verso 1&#10;Linha 1&#10;Linha 2&#10;&#10;Refrão&#10;..."></textarea>
                             </div>
                             <div class="flex gap-3">
+                                <button @click="saveLyricsToLibrary" :disabled="savedMusicSaving || !musicLyrics.trim()" class="flex-1 bg-gray-900 text-white py-2 rounded hover:bg-black flex items-center justify-center gap-2">
+                                    <i v-if="savedMusicSaving" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-save"></i>
+                                    Salvar Letra
+                                </button>
+                                <button @click="fetchSavedMusicLibrary" :disabled="savedMusicLoading" class="px-4 bg-white border py-2 rounded hover:bg-gray-50 flex items-center justify-center gap-2">
+                                    <i v-if="savedMusicLoading" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-archive"></i>
+                                    Biblioteca
+                                </button>
+                            </div>
+                            <div class="flex gap-3">
                                 <button @click="generateMusic" :disabled="musicLoading || !musicLyrics.trim()" class="flex-1 bg-purple-600 text-white py-2 rounded hover:bg-purple-700 flex items-center justify-center gap-2">
                                     <i v-if="musicLoading" class="fas fa-spinner fa-spin"></i>
                                     <i v-else class="fas fa-music"></i>
@@ -503,6 +515,17 @@
                             <h2 class="text-xl font-bold mb-4">2. Música gerada</h2>
                             <div v-if="musicUrl" class="bg-gray-50 p-4 rounded border">
                                 <audio :src="musicUrl" controls class="w-full"></audio>
+                                <div class="mt-3 flex gap-3">
+                                    <button @click="saveMusicToLibrary" :disabled="savedMusicSaving || !musicUrl" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
+                                        <i v-if="savedMusicSaving" class="fas fa-spinner fa-spin"></i>
+                                        <i v-else class="fas fa-save"></i>
+                                        Salvar Música
+                                    </button>
+                                    <a :href="musicUrl" target="_blank" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                                        <i class="fas fa-external-link-alt"></i>
+                                        Abrir
+                                    </a>
+                                </div>
                                 <p class="text-sm text-gray-500 mt-2">Use "Gerar Clipe" para criar o vídeo com esta música.</p>
                             </div>
                             <div v-else class="h-24 bg-gray-100 rounded flex items-center justify-center text-gray-400">
@@ -514,8 +537,57 @@
                             <div v-if="clipVideoUrl" class="aspect-[9/16] max-h-[480px] bg-black rounded flex items-center justify-center mx-auto">
                                 <video :src="clipVideoUrl" controls class="w-full h-full object-contain"></video>
                             </div>
+                            <div v-if="clipVideoUrl" class="mt-3 flex gap-3">
+                                <button @click="saveClipToLibrary" :disabled="savedMusicSaving || !clipVideoUrl" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
+                                    <i v-if="savedMusicSaving" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-save"></i>
+                                    Salvar Clipe
+                                </button>
+                                <a :href="clipVideoUrl" target="_blank" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                                    <i class="fas fa-external-link-alt"></i>
+                                    Abrir
+                                </a>
+                            </div>
                             <div v-else class="h-48 bg-gray-100 rounded flex items-center justify-center text-gray-400">
                                 O clipe aparecerá aqui após gerar
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between gap-4">
+                        <h2 class="text-xl font-bold">Biblioteca de Música</h2>
+                        <button @click="fetchSavedMusicLibrary" :disabled="savedMusicLoading" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                            <i v-if="savedMusicLoading" class="fas fa-spinner fa-spin"></i>
+                            <i v-else class="fas fa-sync"></i>
+                            Atualizar
+                        </button>
+                    </div>
+                    <p v-if="savedMusicError" class="text-sm text-red-600 mt-2">{{ savedMusicError }}</p>
+                    <div v-if="!savedMusicLoading && (!savedMusicItems || !savedMusicItems.length)" class="mt-4 text-gray-500 text-sm">
+                        Nenhum item salvo ainda.
+                    </div>
+                    <div v-else class="mt-4 space-y-3">
+                        <div v-for="item in savedMusicItems" :key="'sm-'+item.id" class="border rounded p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="font-bold truncate">{{ item.title || 'Música' }}</div>
+                                <div class="text-xs text-gray-500">
+                                    <span v-if="item.created_at">{{ new Date(item.created_at).toLocaleString() }}</span>
+                                    <span v-if="item.genre"> • {{ item.genre }}</span>
+                                    <span v-if="item.music_url"> • música</span>
+                                    <span v-if="item.clip_url"> • clipe</span>
+                                    <span v-if="item.lyrics"> • letra</span>
+                                </div>
+                            </div>
+                            <div class="flex gap-2 flex-wrap">
+                                <button @click="loadSavedMusicItem(item)" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
+                                    <i class="fas fa-upload"></i>
+                                    Usar
+                                </button>
+                                <button @click="deleteSavedMusicItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                    <i class="fas fa-trash"></i>
+                                    Excluir
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -2880,10 +2952,15 @@
                     musicTaskStatus: null,
                     musicTaskProgress: 0,
                     musicTaskMessage: '',
+                    musicWithVocals: null,
                     musicUrl: null,
                     musicFilename: null,
                     clipLoading: false,
                     clipVideoUrl: null,
+                    savedMusicLoading: false,
+                    savedMusicSaving: false,
+                    savedMusicItems: [],
+                    savedMusicError: '',
 
                     // Books
                     showAddBookModal: false,
@@ -3073,6 +3150,7 @@
                 },
                 currentTab(tab) {
                     if (tab === 'book_factory') this.fetchFactoryDrafts();
+                    if (tab === 'music_clip') this.fetchSavedMusicLibrary();
                 }
             },
             async mounted() {
@@ -5580,6 +5658,7 @@
                     this.musicTaskStatus = null;
                     this.musicTaskProgress = 0;
                     this.musicTaskMessage = '';
+                    this.musicWithVocals = null;
                     try {
                         const res = await this.authFetch('/music/generate', {
                             method: 'POST',
@@ -5596,6 +5675,7 @@
                         if (res.ok && data.music_url) {
                             this.musicUrl = data.music_url;
                             this.musicFilename = data.music_filename;
+                            this.musicWithVocals = data.with_vocals === true;
                         } else if (res.ok && data.task_id) {
                             this.musicTaskId = String(data.task_id);
                             await this.pollMusicTask(this.musicTaskId);
@@ -5631,6 +5711,7 @@
                             const filename = result.music_filename || result.musicFilename || null;
                             if (url) this.musicUrl = url;
                             if (filename) this.musicFilename = filename;
+                            this.musicWithVocals = result.with_vocals === true;
                             this.musicLoading = false;
                             return;
                         }
@@ -5699,6 +5780,142 @@
                         alert("Erro ao gerar clipe: " + (e.message || e));
                     } finally {
                         this.clipLoading = false;
+                    }
+                },
+                _filenameFromUrl(url) {
+                    try {
+                        const u = String(url || '');
+                        const clean = u.split('?')[0].split('#')[0];
+                        const parts = clean.split('/');
+                        const last = parts[parts.length - 1] || '';
+                        return last || null;
+                    } catch (e) {
+                        return null;
+                    }
+                },
+                async fetchSavedMusicLibrary() {
+                    this.savedMusicLoading = true;
+                    this.savedMusicError = '';
+                    try {
+                        const res = await this.authFetch('/music/saved?limit=100');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar biblioteca.');
+                        this.savedMusicItems = Array.isArray(data.items) ? data.items : [];
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                    } finally {
+                        this.savedMusicLoading = false;
+                    }
+                },
+                async saveLyricsToLibrary() {
+                    if (!this.musicLyrics || !this.musicLyrics.trim()) return;
+                    this.savedMusicSaving = true;
+                    this.savedMusicError = '';
+                    try {
+                        const res = await this.authFetch('/music/saved', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                title: this.musicTitle || 'Música',
+                                lyrics: this.musicLyrics,
+                                genre: this.musicGenre || '',
+                                vocal_gender: this.musicVocalGender || null
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao salvar letra.');
+                        await this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async saveMusicToLibrary() {
+                    if (!this.musicUrl) return;
+                    this.savedMusicSaving = true;
+                    this.savedMusicError = '';
+                    try {
+                        const res = await this.authFetch('/music/saved', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                title: this.musicTitle || 'Música',
+                                lyrics: this.musicLyrics || '',
+                                genre: this.musicGenre || '',
+                                vocal_gender: this.musicVocalGender || null,
+                                with_vocals: this.musicWithVocals === true,
+                                music_url: this.musicUrl,
+                                music_filename: this.musicFilename || this._filenameFromUrl(this.musicUrl)
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao salvar música.');
+                        await this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async saveClipToLibrary() {
+                    if (!this.clipVideoUrl) return;
+                    this.savedMusicSaving = true;
+                    this.savedMusicError = '';
+                    try {
+                        const res = await this.authFetch('/music/saved', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                title: this.musicTitle || 'Música',
+                                lyrics: this.musicLyrics || '',
+                                genre: this.musicGenre || '',
+                                vocal_gender: this.musicVocalGender || null,
+                                with_vocals: this.musicWithVocals === true,
+                                clip_url: this.clipVideoUrl,
+                                clip_filename: this._filenameFromUrl(this.clipVideoUrl),
+                                music_url: this.musicUrl || null,
+                                music_filename: this.musicFilename || this._filenameFromUrl(this.musicUrl)
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao salvar clipe.');
+                        await this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                loadSavedMusicItem(item) {
+                    const it = item || {};
+                    if (it.title) this.musicTitle = it.title;
+                    if (it.genre) this.musicGenre = it.genre;
+                    if (it.vocal_gender) this.musicVocalGender = it.vocal_gender;
+                    if (it.lyrics) this.musicLyrics = it.lyrics;
+                    this.musicUrl = it.music_url || null;
+                    this.musicFilename = it.music_filename || this._filenameFromUrl(this.musicUrl);
+                    this.clipVideoUrl = it.clip_url || null;
+                },
+                async deleteSavedMusicItem(item) {
+                    const id = item && item.id ? Number(item.id) : null;
+                    if (!id) return;
+                    if (!confirm('Excluir este item da biblioteca?')) return;
+                    this.savedMusicSaving = true;
+                    this.savedMusicError = '';
+                    try {
+                        const res = await this.authFetch(`/music/saved/${encodeURIComponent(String(id))}`, { method: 'DELETE' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao excluir.');
+                        await this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
+                    } finally {
+                        this.savedMusicSaving = false;
                     }
                 },
                 

@@ -291,6 +291,23 @@ class VideoTask(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class SavedMusic(Base):
+    __tablename__ = "saved_music"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    title = Column(String, default="Música")
+    lyrics = Column(Text, nullable=True)
+    genre = Column(String, nullable=True)
+    vocal_gender = Column(String, nullable=True)
+    with_vocals = Column(Boolean, default=False)
+    music_url = Column(String, nullable=True)
+    music_filename = Column(String, nullable=True)
+    clip_url = Column(String, nullable=True)
+    clip_filename = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class ChannelInsight(Base):
     __tablename__ = "channel_insights"
 

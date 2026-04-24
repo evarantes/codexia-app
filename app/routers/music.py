@@ -11,7 +11,6 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.suno_service import (
-    generate_song_with_vocals,
     get_suno_api_key,
     create_suno_task,
     poll_suno_task,
@@ -19,7 +18,7 @@ from app.services.suno_service import (
 )
 from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
-from app.models import User, VideoTask
+from app.models import User, VideoTask, SavedMusic
 from app.services.task_manager import create_task, update_task, get_task
 
 router = APIRouter(prefix="/music", tags=["music"])
@@ -44,6 +43,18 @@ class GenerateLyricsRequest(BaseModel):
     language: str = "pt-BR"
     style: str = ""
     genre: str = ""
+
+
+class SaveMusicRequest(BaseModel):
+    title: str = "Música"
+    lyrics: Optional[str] = None
+    genre: Optional[str] = None
+    vocal_gender: Optional[str] = None
+    with_vocals: Optional[bool] = None
+    music_url: Optional[str] = None
+    music_filename: Optional[str] = None
+    clip_url: Optional[str] = None
+    clip_filename: Optional[str] = None
 
 
 @router.post("/lyrics")
@@ -195,6 +206,104 @@ def get_music_task(task_id: str, user: User = Depends(get_current_user), db: Ses
     if not data:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
     return data
+
+
+@router.post("/saved")
+def save_music_item(request: SaveMusicRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    has_any = bool((request.lyrics and request.lyrics.strip()) or (request.music_url and request.music_url.strip()) or (request.clip_url and request.clip_url.strip()))
+    if not has_any:
+        raise HTTPException(status_code=400, detail="Informe ao menos a letra, a música ou o clipe para salvar.")
+    item = SavedMusic(
+        user_id=user.id,
+        title=(request.title or "Música")[:200],
+        lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
+        genre=(request.genre.strip() if request.genre and request.genre.strip() else None),
+        vocal_gender=(request.vocal_gender.strip() if request.vocal_gender and request.vocal_gender.strip() else None),
+        with_vocals=bool(request.with_vocals) if request.with_vocals is not None else False,
+        music_url=(request.music_url.strip() if request.music_url and request.music_url.strip() else None),
+        music_filename=(request.music_filename.strip() if request.music_filename and request.music_filename.strip() else None),
+        clip_url=(request.clip_url.strip() if request.clip_url and request.clip_url.strip() else None),
+        clip_filename=(request.clip_filename.strip() if request.clip_filename and request.clip_filename.strip() else None),
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {
+        "id": item.id,
+        "title": item.title,
+        "lyrics": item.lyrics,
+        "genre": item.genre,
+        "vocal_gender": item.vocal_gender,
+        "with_vocals": item.with_vocals,
+        "music_url": item.music_url,
+        "music_filename": item.music_filename,
+        "clip_url": item.clip_url,
+        "clip_filename": item.clip_filename,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+@router.get("/saved")
+def list_saved_music(limit: int = 50, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        lim = int(limit)
+    except Exception:
+        lim = 50
+    lim = max(1, min(lim, 200))
+    q = db.query(SavedMusic).filter(SavedMusic.user_id == user.id).order_by(SavedMusic.created_at.desc()).limit(lim)
+    items = q.all()
+    return {
+        "items": [
+            {
+                "id": i.id,
+                "title": i.title,
+                "lyrics": i.lyrics,
+                "genre": i.genre,
+                "vocal_gender": i.vocal_gender,
+                "with_vocals": i.with_vocals,
+                "music_url": i.music_url,
+                "music_filename": i.music_filename,
+                "clip_url": i.clip_url,
+                "clip_filename": i.clip_filename,
+                "created_at": i.created_at.isoformat() if i.created_at else None,
+            }
+            for i in items
+        ]
+    }
+
+
+@router.get("/saved/{item_id}")
+def get_saved_music(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para acessar este item.")
+    return {
+        "id": item.id,
+        "title": item.title,
+        "lyrics": item.lyrics,
+        "genre": item.genre,
+        "vocal_gender": item.vocal_gender,
+        "with_vocals": item.with_vocals,
+        "music_url": item.music_url,
+        "music_filename": item.music_filename,
+        "clip_url": item.clip_url,
+        "clip_filename": item.clip_filename,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+@router.delete("/saved/{item_id}")
+def delete_saved_music(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para excluir este item.")
+    db.delete(item)
+    db.commit()
+    return {"success": True}
 
 
 @router.post("/clip")
