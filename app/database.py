@@ -19,20 +19,48 @@ else:
         # Tenta usar /data (persistente no Coolify) se possível/existir
         # Caso contrário (local/dev), usa diretório local
         DATA_DIR = "/data"
+        SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "").strip()
         
         # Verifica se /data existe e é gravável ou se estamos em Linux (container)
         use_data_dir = False
         if os.name == 'posix':
-            if os.path.isdir(DATA_DIR):
-                if os.access(DATA_DIR, os.W_OK):
-                    use_data_dir = True
-            else:
-                # Tenta criar /data se tiver permissão (root)
+            def _can_write_dir(p: str) -> bool:
                 try:
-                    os.makedirs(DATA_DIR, exist_ok=True)
-                    use_data_dir = True
+                    if not os.path.isdir(p):
+                        return False
+                    test_path = os.path.join(p, f".__writetest__{os.getpid()}")
+                    with open(test_path, "wb") as f:
+                        f.write(b"1")
+                    try:
+                        os.remove(test_path)
+                    except Exception:
+                        pass
+                    return True
                 except Exception:
-                    pass
+                    return False
+
+            if SQLITE_DB_PATH:
+                if SQLITE_DB_PATH.startswith("/"):
+                    SQLALCHEMY_DATABASE_URL = f"sqlite:////{SQLITE_DB_PATH.lstrip('/')}"
+                else:
+                    SQLALCHEMY_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
+                DATABASE_DISPLAY = f"SQLite (Custom: {SQLITE_DB_PATH})"
+                use_data_dir = False
+            else:
+                if os.path.isdir(DATA_DIR):
+                    if _can_write_dir(DATA_DIR):
+                        use_data_dir = True
+                else:
+                    try:
+                        os.makedirs(DATA_DIR, exist_ok=True)
+                        if _can_write_dir(DATA_DIR):
+                            use_data_dir = True
+                    except Exception:
+                        pass
+        elif SQLITE_DB_PATH:
+            SQLALCHEMY_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
+            DATABASE_DISPLAY = f"SQLite (Custom: {SQLITE_DB_PATH})"
+            use_data_dir = False
 
         if use_data_dir:
             DB_PATH = "/data/vibraface.db"

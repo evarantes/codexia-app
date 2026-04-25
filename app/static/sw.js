@@ -1,4 +1,4 @@
-const CACHE_NAME = 'codexia-v2';
+const CACHE_NAME = 'codexia-v3';
 const urlsToCache = [
   '/',
   '/static/index.html',
@@ -43,9 +43,31 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
-  // Ignora requisições de API e POST para não cachear dados dinâmicos
-  if (event.request.method !== 'GET' || event.request.url.includes('/api/') || event.request.url.includes('/auth/')) {
-      return;
+  if (event.request.method !== 'GET') return;
+
+  try {
+    const url = new URL(event.request.url);
+    const auth = event.request.headers.get('authorization') || event.request.headers.get('Authorization');
+    if (auth) return;
+
+    if (url.origin === self.location.origin) {
+      const p = url.pathname || '';
+      if (
+        p.startsWith('/api/') ||
+        p.startsWith('/auth/') ||
+        p.startsWith('/music/') ||
+        p.startsWith('/youtube/') ||
+        p.startsWith('/factory') ||
+        p.startsWith('/books') ||
+        p.startsWith('/token') ||
+        p.startsWith('/task/') ||
+        p.startsWith('/settings')
+      ) {
+        return;
+      }
+    }
+  } catch (e) {
+    return;
   }
 
   event.respondWith(
