@@ -37,6 +37,8 @@ class GenerateClipRequest(BaseModel):
     lyrics: str
     title: str = "Música"
     music_filename: Optional[str] = None
+    author_text: Optional[str] = None
+    watermark_enabled: Optional[bool] = True
 
 
 class GenerateLyricsRequest(BaseModel):
@@ -465,7 +467,16 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         from app.services.video_generator import VideoGenerator
         ai = AIContentGenerator()
         video_gen = VideoGenerator(ai_service=ai)
-        result = video_gen.create_music_video(music_path, title=request.title, aspect_ratio="9:16", lyrics=request.lyrics)
+        author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
+        watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
+        result = video_gen.create_music_video(
+            music_path,
+            title=request.title,
+            aspect_ratio="9:16",
+            lyrics=request.lyrics,
+            author_text=author,
+            watermark_enabled=watermark_enabled,
+        )
         return {
             "video_url": result["video_url"],
             "message": "Clipe gerado com sucesso."

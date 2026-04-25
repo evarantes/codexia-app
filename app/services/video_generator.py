@@ -107,7 +107,7 @@ class VideoGenerator:
         except Exception as e:
             print(f"Erro no setup de músicas: {e}")
 
-    def create_text_image(self, text, size=(1080, 1920), bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=None):
+    def create_text_image(self, text, size=(1080, 1920), bg_color=(20, 20, 20), text_color=(255, 255, 255), bg_image_path=None, footer_text: Optional[str] = None):
         from PIL import Image, ImageEnhance
         import numpy as np
 
@@ -140,7 +140,7 @@ class VideoGenerator:
             except Exception:
                 pass
 
-        overlay = self.create_text_overlay(text, size=size, text_color=text_color)
+        overlay = self.create_text_overlay(text, size=size, text_color=text_color, footer_text=footer_text)
         base = bg.convert("RGBA")
         try:
             base.alpha_composite(Image.fromarray(overlay, mode="RGBA"))
@@ -149,7 +149,7 @@ class VideoGenerator:
             return np.array(base)
         return np.array(base.convert("RGB"))
 
-    def create_text_overlay(self, text, size=(1080, 1920), text_color=(255, 255, 255)):
+    def create_text_overlay(self, text, size=(1080, 1920), text_color=(255, 255, 255), footer_text: Optional[str] = None):
         from PIL import Image, ImageDraw, ImageFont
         import numpy as np
 
@@ -273,6 +273,43 @@ class VideoGenerator:
                 draw.text((x + off[0], y + off[1]), line, font=chosen_font, fill=outline)
             draw.text((x, y), line, font=chosen_font, fill=fill)
             y += chosen_line_h
+
+        footer = (footer_text or "").strip()
+        if footer:
+            footer_fs = max(14, min(34, int(w * 0.028)))
+            footer_font = None
+            for fp in font_candidates:
+                try:
+                    footer_font = ImageFont.truetype(fp, footer_fs)
+                    break
+                except Exception:
+                    continue
+            if footer_font is None:
+                footer_font = ImageFont.load_default()
+
+            try:
+                fb = draw.textbbox((0, 0), footer, font=footer_font)
+                ftw = fb[2] - fb[0]
+                fth = fb[3] - fb[1]
+            except Exception:
+                ftw = int(measure(footer, footer_font))
+                fth = int(footer_fs * 1.2)
+
+            pad_x = int(w * 0.03)
+            pad_y = int(max(8, h * 0.010))
+            fx = int((w - ftw) / 2)
+            fy = int(h - pad_y - fth - int(h * 0.02))
+
+            rect = (
+                max(0, fx - pad_x),
+                max(0, fy - int(pad_y * 0.7)),
+                min(w, fx + ftw + pad_x),
+                min(h, fy + fth + int(pad_y * 0.7)),
+            )
+            draw.rectangle(rect, fill=(0, 0, 0, 150))
+            for off in [(1, 1), (-1, -1), (1, -1), (-1, 1)]:
+                draw.text((fx + off[0], fy + off[1]), footer, font=footer_font, fill=(0, 0, 0, 255))
+            draw.text((fx, fy), footer, font=footer_font, fill=(255, 255, 255, 230))
 
         return np.array(img)
 
@@ -1591,7 +1628,7 @@ class VideoGenerator:
             except Exception:
                 pass
 
-    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None):
+    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
         try:
             from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
@@ -1615,6 +1652,14 @@ class VideoGenerator:
                 scenes = scenes.get("scenes") or []
             if not isinstance(scenes, list):
                 scenes = []
+
+            credit = None
+            if watermark_enabled:
+                at = (author_text or "").strip()
+                if at:
+                    credit = f"Autor: {at} • © {time.strftime('%Y')}"
+                else:
+                    credit = f"© {time.strftime('%Y')}"
 
             def _normalize(s: str) -> str:
                 t = (s or "").strip().lower()
@@ -1782,7 +1827,7 @@ class VideoGenerator:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
                 bg_color = bg_colors[i % len(bg_colors)]
-                img = self.create_text_image(self._clean_text(caption), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
+                img = self.create_text_image(self._clean_text(caption), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
                 clip = ImageClip(img)
                 clip = self._set_clip_duration(clip, duration)
                 clips.append(clip)
@@ -1796,13 +1841,22 @@ class VideoGenerator:
             final = self._set_clip_audio(final, audio_clip)
             filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
             output_path = os.path.join(self.output_dir, filename)
+            ffmpeg_params = ["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"]
+            at = (author_text or "").strip()
+            if watermark_enabled and at:
+                year = time.strftime("%Y")
+                ffmpeg_params += [
+                    "-metadata", f"artist={at}",
+                    "-metadata", f"copyright=© {year} {at}",
+                    "-metadata", "comment=Video criado no Codexia",
+                ]
             final.write_videofile(
                 output_path,
                 fps=24,
                 codec="libx264",
                 audio_codec="aac",
                 threads=1,
-                ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
+                ffmpeg_params=ffmpeg_params,
                 logger=None
             )
             output_path = self._ensure_playable_mp4(output_path)

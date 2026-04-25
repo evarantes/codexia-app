@@ -563,6 +563,20 @@
                         </div>
                         <div>
                             <h2 class="text-xl font-bold mb-4">3. Clipe (vídeo)</h2>
+                            <div class="bg-gray-50 p-4 rounded border mb-4">
+                                <div class="font-bold mb-2">Proteção / autoria</div>
+                                <div class="grid md:grid-cols-3 gap-3">
+                                    <div class="md:col-span-2">
+                                        <label class="block text-sm font-semibold text-gray-700">Assinatura (autor)</label>
+                                        <input v-model="clipAuthorText" class="w-full border p-2 rounded mt-1" placeholder="Ex: Seu Nome / Nome do Canal">
+                                    </div>
+                                    <label class="inline-flex items-center gap-2 text-sm text-gray-700 mt-6">
+                                        <input type="checkbox" v-model="clipWatermarkEnabled">
+                                        <span>Adicionar marca d'água</span>
+                                    </label>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-2">Inclui uma assinatura visual no clipe e metadados no arquivo do vídeo.</p>
+                            </div>
                             <div v-if="clipVideoUrl" class="aspect-[9/16] max-h-[480px] bg-black rounded flex items-center justify-center mx-auto">
                                 <video :src="clipVideoUrl" controls class="w-full h-full object-contain"></video>
                             </div>
@@ -2995,6 +3009,8 @@
                     importMusicSourceUrl: '',
                     importMusicFile: null,
                     importMusicWithVocals: false,
+                    clipAuthorText: '',
+                    clipWatermarkEnabled: true,
 
                     // Books
                     showAddBookModal: false,
@@ -3333,6 +3349,9 @@
                         if (res.ok) {
                             const data = await res.json();
                             this.user = data;
+                            if (!(this.clipAuthorText || '').trim()) {
+                                this.clipAuthorText = (data && (data.name || data.email) ? (data.name || data.email) : '') || '';
+                            }
                             if (data.must_change_password) {
                                 this.mustChangePassword = true;
                                 this.showChangePasswordModal = true;
@@ -5800,7 +5819,9 @@
                             body: JSON.stringify({
                                 lyrics: this.musicLyrics,
                                 title: this.musicTitle,
-                                music_filename: this.musicFilename
+                                music_filename: this.musicFilename,
+                                author_text: (this.clipAuthorText || '').trim() || null,
+                                watermark_enabled: this.clipWatermarkEnabled === true
                             })
                         });
                         let data = {};
