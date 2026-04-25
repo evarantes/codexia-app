@@ -8,7 +8,7 @@ import re
 import time
 import difflib
 import unicodedata
-from typing import Optional
+from typing import Optional, Callable
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
@@ -654,6 +654,7 @@ class VideoGenerator:
             "Photorealistic cinematic photography, natural lighting, pleasant mood. "
             "Realistic humans (no dolls), natural skin, proportional anatomy. "
             "Avoid close-up portraits. "
+            "No sci-fi, no futuristic, no cyberpunk, no robots, no androids, no cyborgs, no machinery, no laboratory, no wires. "
             "No horror, no monsters, no zombies, no undead, no gore, no blood. "
             "No creepy, no uncanny, no doll-like. "
             "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. "
@@ -1628,7 +1629,7 @@ class VideoGenerator:
             except Exception:
                 pass
 
-    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto"):
+    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto", progress_callback: Optional[Callable[[int, str], None]] = None):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
         try:
             from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
@@ -1643,6 +1644,11 @@ class VideoGenerator:
         try:
             audio_clip = AudioFileClip(music_path)
             total_duration = audio_clip.duration
+            if progress_callback:
+                try:
+                    progress_callback(5, "Preparando áudio...")
+                except Exception:
+                    pass
             if scenes is None:
                 scenes = []
 
@@ -1726,6 +1732,11 @@ class VideoGenerator:
                 if transcribe_error:
                     raise Exception(f"Para sincronização perfeita, falhou ao transcrever o áudio na OpenAI: {transcribe_error}")
                 raise Exception("Para sincronização perfeita, não foi possível transcrever o áudio na OpenAI.")
+            if progress_callback:
+                try:
+                    progress_callback(18, "Sincronizando letra e áudio...")
+                except Exception:
+                    pass
 
             def _merge_segments(segs):
                 blocks = []
@@ -1879,16 +1890,66 @@ class VideoGenerator:
                 drift = float(total_duration) - float(sum_prev)
                 if abs(drift) > 0.35:
                     timeline[-1]["duration"] = max(0.8, float(timeline[-1]["duration"]) + drift)
+            if progress_callback:
+                try:
+                    progress_callback(22, "Planejando cenas...")
+                except Exception:
+                    pass
 
             def _prompt_for_caption(caption: str) -> str:
                 cap = (caption or "").strip()
                 if not cap:
                     return "cinematic music video scene"
-                return (
-                    f"Photorealistic cinematic scene that matches this sung lyric exactly (Portuguese): \"{cap[:260]}\". "
-                    f"Music video for: {title or 'Song'}. "
-                    "No text, no subtitles, no watermark, no logo."
-                )
+                norm_full = _normalize(lyric_text or "")
+                norm_cap = _normalize(cap)
+                is_christian = any(k in norm_full for k in [
+                    "jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "ressurreicao",
+                    "tumulo", "sepulcro", "sangue", "redencao", "salvacao", "mestre",
+                    "coroa", "espinhos", "pregos", "cravo", "veu"
+                ]) or any(k in norm_cap for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "sepulcro", "redencao", "salvacao"])
+
+                def _scene_hint() -> str:
+                    if any(k in norm_cap for k in ["calvario", "golgota"]):
+                        return "A man carrying a wooden cross on a dusty road toward a hill outside ancient Jerusalem, Roman era, wide shot, dramatic sky, reverent."
+                    if ("cruz" in norm_cap) and any(k in norm_cap for k in ["vitoria", "venceu", "morte", "paz"]):
+                        return "A cross silhouette on a hill at sunrise, rays of light breaking through clouds, hope and victory, wide cinematic landscape."
+                    if any(k in norm_cap for k in ["pregos", "cravo", "cravos"]):
+                        return "Close shot of iron nails and a wooden beam on the ground, symbolic and reverent, no violence, soft dramatic light."
+                    if ("coroa" in norm_cap and "espinh" in norm_cap):
+                        return "A crown of thorns resting on rough stone, warm backlight, reverent still life, cinematic."
+                    if ("veu" in norm_cap and any(k in norm_cap for k in ["rasgou", "rasgado", "rasgando"])):
+                        return "Inside the ancient temple, a large curtain tearing from top to bottom, a beam of light shining through, awe and reverence."
+                    if any(k in norm_cap for k in ["tumulo", "sepulcro", "ressuscitou", "vazio"]):
+                        return "An empty tomb with the stone rolled away at dawn, gentle golden light, peaceful and triumphant, biblical era."
+                    if "multidao" in norm_cap or "gritava" in norm_cap:
+                        return "A crowd in ancient Jerusalem watching in tension on a stone street, Roman era, wide shot, cinematic."
+                    if any(k in norm_cap for k in ["liberto", "liberdade", "cura", "libertacao", "adoracao"]):
+                        return "A modern worship scene with hands raised and a cross in the background, soft light, uplifting, cinematic, no text."
+                    return ""
+
+                base_style = "Photorealistic cinematic photography, natural lighting, wide shot, high detail, reverent, inspiring."
+                if is_christian:
+                    hint = _scene_hint() or "Reverent Christian biblical imagery about the crucifixion and resurrection, symbolic and non-graphic."
+                    llm_scene = None
+                    try:
+                        if self.ai_service and hasattr(self.ai_service, "_load_config"):
+                            try:
+                                self.ai_service._load_config()
+                            except Exception:
+                                pass
+                        can_llm = bool(getattr(self.ai_service, "openrouter_key", None)) and hasattr(self.ai_service, "_generate_text")
+                        if can_llm:
+                            sys_p = "Você é um diretor de fotografia. Gere apenas UMA frase em inglês descrevendo uma tomada cinematográfica para um videoclipe, alinhada à letra. Proibido gore/violência gráfica. Sem texto na imagem."
+                            user_p = f"LETRA (pt-BR): {cap}\nGere a tomada (1 frase), estilo fotorealista, era bíblica quando aplicável."
+                            out = (self.ai_service._generate_text(user_p, system_prompt=sys_p, temperature=0.3, json_mode=False) or "").strip()
+                            if out and ("Simulação" not in out) and len(out) <= 260:
+                                llm_scene = out
+                    except Exception:
+                        llm_scene = None
+                    scene = llm_scene or hint
+                    return f"{scene} {base_style} No text, no watermark, no logo."
+
+                return f"Scene inspired by this lyric line (Portuguese): {cap[:180]}. {base_style} No text, no watermark, no logo."
 
             for i, it in enumerate(timeline):
                 caption = (it.get("caption") or "").strip()
@@ -1896,6 +1957,13 @@ class VideoGenerator:
                 if duration <= 0:
                     continue
                 image_prompt = _prompt_for_caption(caption)
+                if progress_callback:
+                    try:
+                        total = max(1, len(timeline))
+                        p = 25 + int((float(i) / float(total)) * 60.0)
+                        progress_callback(min(90, max(0, p)), f"Gerando cena {i+1}/{total}...")
+                    except Exception:
+                        pass
 
                 def _clip_status(message, scene_idx=i, total=len(timeline)):
                     print(f"[Clip][Cena {scene_idx+1}/{total}] {message}")
@@ -1915,12 +1983,24 @@ class VideoGenerator:
                 clip = ImageClip(img)
                 clip = self._set_clip_duration(clip, duration)
                 clips.append(clip)
+                if progress_callback:
+                    try:
+                        total = max(1, len(timeline))
+                        p = 30 + int((float(i + 1) / float(total)) * 60.0)
+                        progress_callback(min(92, max(0, p)), f"Cena {i+1}/{total} pronta.")
+                    except Exception:
+                        pass
                 if bg_image_path and "temp_" in bg_image_path:
                     try:
                         os.remove(bg_image_path)
                     except Exception:
                         pass
                 gc.collect()
+            if progress_callback:
+                try:
+                    progress_callback(95, "Renderizando vídeo...")
+                except Exception:
+                    pass
             final = concatenate_videoclips(clips)
             final = self._set_clip_audio(final, audio_clip)
             filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"

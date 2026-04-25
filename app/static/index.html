@@ -501,7 +501,7 @@
                                     <i v-else class="fas fa-music"></i>
                                     Gerar Música
                                 </button>
-                                <button @click="generateClip" :disabled="clipLoading || !musicFilename || (clipPerfectSync && !musicLyrics.trim())" class="flex-1 bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 flex items-center justify-center gap-2">
+                                <button @click="generateClip" :disabled="clipLoading || !musicFilename || (clipPerfectSync && !musicLyrics.trim()) || (clipTaskStatus === 'processing' || clipTaskStatus === 'pending')" class="flex-1 bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 flex items-center justify-center gap-2">
                                     <i v-if="clipLoading" class="fas fa-spinner fa-spin"></i>
                                     <i v-else class="fas fa-video"></i>
                                     Gerar Clipe
@@ -579,10 +579,36 @@
                                     <input type="checkbox" v-model="clipPerfectSync">
                                     <span>Sincronização perfeita (requer OpenAI)</span>
                                 </label>
+                                <div class="grid md:grid-cols-3 gap-3 mt-3">
+                                    <div class="md:col-span-2">
+                                        <label class="block text-sm font-semibold text-gray-700">Formato do vídeo</label>
+                                        <select v-model="clipAspectRatio" class="w-full border p-2 rounded mt-1">
+                                            <option value="9:16">Vertical (9:16) - Reels/Shorts</option>
+                                            <option value="16:9">Horizontal (16:9) - YouTube</option>
+                                        </select>
+                                    </div>
+                                    <label class="inline-flex items-center gap-2 text-sm text-gray-700 mt-6">
+                                        <input type="checkbox" v-model="clipAutoUploadYoutube">
+                                        <span>Auto-publicar no YouTube</span>
+                                    </label>
+                                </div>
                                 <p class="text-xs text-gray-500 mt-2">Inclui uma assinatura visual no clipe e metadados no arquivo do vídeo.</p>
                             </div>
-                            <div v-if="clipVideoUrl" class="aspect-[9/16] max-h-[480px] bg-black rounded flex items-center justify-center mx-auto">
+                            <div v-if="clipTaskId && (clipTaskStatus === 'processing' || clipTaskStatus === 'pending')" class="bg-white border rounded p-4 mb-4">
+                                <div class="flex items-center justify-between text-sm">
+                                    <div class="font-semibold">Gerando clipe</div>
+                                    <div class="text-gray-600">{{ Number(clipTaskProgress || 0) }}%</div>
+                                </div>
+                                <div class="w-full h-3 bg-gray-200 rounded mt-2 overflow-hidden">
+                                    <div class="h-3 bg-indigo-600" :style="{ width: Math.min(100, Math.max(0, Number(clipTaskProgress || 0))) + '%' }"></div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-2">{{ clipTaskMessage }}</div>
+                            </div>
+                            <div v-if="clipVideoUrl" :class="[(clipAspectRatio === '16:9' ? 'aspect-video' : 'aspect-[9/16]'), 'max-h-[480px] bg-black rounded flex items-center justify-center mx-auto']">
                                 <video :src="clipVideoUrl" controls class="w-full h-full object-contain"></video>
+                            </div>
+                            <div v-if="clipYoutubeUrl" class="mt-2 text-sm">
+                                <a :href="clipYoutubeUrl" target="_blank" class="text-indigo-700 font-semibold">Abrir no YouTube</a>
                             </div>
                             <div v-if="clipVideoUrl" class="mt-3 flex gap-3">
                                 <button @click="saveClipToLibrary" :disabled="savedMusicSaving || !clipVideoUrl" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
@@ -597,6 +623,29 @@
                             </div>
                             <div v-else class="h-48 bg-gray-100 rounded flex items-center justify-center text-gray-400">
                                 O clipe aparecerá aqui após gerar
+                            </div>
+                            <div v-if="clipTasks && clipTasks.length" class="mt-4 bg-gray-50 p-4 rounded border">
+                                <div class="flex items-center justify-between gap-3 mb-2">
+                                    <div class="font-bold">Tarefas recentes</div>
+                                    <button @click="fetchMusicTasks()" :disabled="musicTasksLoading" class="text-xs text-indigo-700 font-semibold">
+                                        Atualizar
+                                    </button>
+                                </div>
+                                <div class="space-y-2">
+                                    <div v-for="t in clipTasks" :key="'ct-'+t.task_id" class="flex items-center justify-between gap-3">
+                                        <div class="min-w-0">
+                                            <div class="text-sm font-semibold truncate">{{ (t.result && t.result.title) ? t.result.title : 'Clipe' }}</div>
+                                            <div class="text-xs text-gray-600 truncate">{{ t.message || '' }}</div>
+                                        </div>
+                                        <div class="text-xs text-gray-600 whitespace-nowrap">{{ Number(t.progress || 0) }}%</div>
+                                        <a v-if="t.status === 'completed' && t.result && t.result.video_url" :href="t.result.video_url" target="_blank" class="text-indigo-700 text-xs font-semibold">
+                                            Abrir
+                                        </a>
+                                        <button v-else-if="t.status === 'processing' || t.status === 'pending'" @click="resumeClipTask(t.task_id)" class="text-indigo-700 text-xs font-semibold">
+                                            Ver
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -630,6 +679,14 @@
                                 <button @click="loadSavedMusicItem(item)" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
                                     <i class="fas fa-upload"></i>
                                     Usar
+                                </button>
+                                <button v-if="item.clip_url" @click="previewSavedClip(item)" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
+                                    <i class="fas fa-play"></i>
+                                    Assistir
+                                </button>
+                                <button v-if="item.clip_url" @click="publishSavedClipToYouTube(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                    <i class="fab fa-youtube"></i>
+                                    Publicar
                                 </button>
                                 <button @click="deleteSavedMusicItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
                                     <i class="fas fa-trash"></i>
@@ -3016,6 +3073,17 @@
                     clipAuthorText: '',
                     clipWatermarkEnabled: true,
                     clipPerfectSync: false,
+                    clipAspectRatio: '9:16',
+                    clipAutoUploadYoutube: false,
+                    clipYoutubeUrl: null,
+                    clipTaskId: null,
+                    clipTaskStatus: null,
+                    clipTaskProgress: 0,
+                    clipTaskMessage: '',
+                    musicTasksLoading: false,
+                    musicTasks: [],
+                    musicNotificationsLoading: false,
+                    musicNotifications: [],
 
                     // Books
                     showAddBookModal: false,
@@ -3121,6 +3189,16 @@
                 productionReadyVideos() {
                     return this.productionVideos.filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status));
                 },
+                clipTasks() {
+                    try {
+                        const items = Array.isArray(this.musicTasks) ? this.musicTasks : [];
+                        return items
+                            .filter(t => t && t.result && typeof t.result === 'object' && t.result.kind === 'music_clip')
+                            .slice(0, 10);
+                    } catch (e) {
+                        return [];
+                    }
+                },
                 readyVideos() {
                     const scheduledReady = this.scheduledVideos
                         .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
@@ -3205,7 +3283,11 @@
                 },
                 currentTab(tab) {
                     if (tab === 'book_factory') this.fetchFactoryDrafts();
-                    if (tab === 'music_clip') this.fetchSavedMusicLibrary();
+                    if (tab === 'music_clip') {
+                        this.fetchSavedMusicLibrary();
+                        this.fetchMusicTasks({ silent: true });
+                        this.fetchMusicNotifications({ silent: true });
+                    }
                 }
             },
             async mounted() {
@@ -3241,6 +3323,17 @@
                 } catch (e) {}
                 try {
                     await this.fetchActiveVideoTasks({ silent: true });
+                } catch (e) {}
+                try {
+                    const savedClipTask = localStorage.getItem('musicClipTaskId');
+                    if (savedClipTask) {
+                        this.clipTaskId = String(savedClipTask);
+                        this.pollClipTask(String(savedClipTask));
+                    }
+                } catch (e) {}
+                try {
+                    await this.fetchMusicTasks({ silent: true });
+                    await this.fetchMusicNotifications({ silent: true });
                 } catch (e) {}
                 
                 // Polling for updates
@@ -5817,8 +5910,9 @@
                 async generateClip() {
                     this.clipLoading = true;
                     this.clipVideoUrl = null;
+                    this.clipYoutubeUrl = null;
                     try {
-                        const res = await this.authFetch('/music/clip', {
+                        const res = await this.authFetch('/music/clip/task', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
@@ -5827,13 +5921,26 @@
                                 music_filename: this.musicFilename,
                                 author_text: (this.clipAuthorText || '').trim() || null,
                                 watermark_enabled: this.clipWatermarkEnabled === true,
-                                sync_mode: this.clipPerfectSync === true ? 'perfect' : 'auto'
+                                sync_mode: this.clipPerfectSync === true ? 'perfect' : 'auto',
+                                aspect_ratio: this.clipAspectRatio || '9:16',
+                                auto_upload_youtube: this.clipAutoUploadYoutube === true
                             })
                         });
                         let data = {};
                         try { data = await res.json(); } catch (_) { data = {}; }
-                        if (res.ok && data.video_url) {
-                            this.clipVideoUrl = data.video_url;
+                        if (res.ok && data.task_id) {
+                            this.clipTaskId = String(data.task_id);
+                            this.clipTaskStatus = 'processing';
+                            this.clipTaskProgress = 0;
+                            this.clipTaskMessage = data.message || 'Processo iniciado';
+                            try {
+                                if (window && window.Notification && Notification.permission === 'default') {
+                                    Notification.requestPermission().catch(() => {});
+                                }
+                            } catch (e) {}
+                            try { localStorage.setItem('musicClipTaskId', String(data.task_id)); } catch (e) {}
+                            this.pollClipTask(String(data.task_id));
+                            this.fetchMusicTasks({ silent: true });
                         } else {
                             alert(data.detail || data.message || "Gere a música primeiro (Gerar Música) e depois clique em Gerar Clipe.");
                         }
@@ -5841,6 +5948,166 @@
                         alert("Erro ao gerar clipe: " + (e.message || e));
                     } finally {
                         this.clipLoading = false;
+                    }
+                },
+                resumeClipTask(taskId) {
+                    const id = String(taskId || '').trim();
+                    if (!id) return;
+                    this.clipTaskId = id;
+                    try { localStorage.setItem('musicClipTaskId', id); } catch (e) {}
+                    this.pollClipTask(id);
+                },
+                async pollClipTask(taskId) {
+                    const id = String(taskId || '').trim();
+                    if (!id) return;
+                    try {
+                        const res = await this.authFetch(`/music/task/${encodeURIComponent(id)}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao consultar status do clipe.');
+                        this.clipTaskStatus = data.status || null;
+                        this.clipTaskProgress = Number(data.progress || 0);
+                        this.clipTaskMessage = data.message || '';
+                        if (data.status === 'completed') {
+                            const result = data.result || {};
+                            const url = result.video_url || result.videoUrl || null;
+                            if (url) this.clipVideoUrl = url;
+                            this.clipYoutubeUrl = (result && result.youtube && result.youtube.youtube_url) ? String(result.youtube.youtube_url) : null;
+                            try {
+                                const title = (result && result.title) ? String(result.title) : 'Clipe pronto';
+                                this.maybeBrowserNotify('Codexia', `${title} concluído`);
+                            } catch (e) {}
+                            try {
+                                const saved = localStorage.getItem('musicClipTaskId');
+                                if (saved && String(saved) === id) localStorage.removeItem('musicClipTaskId');
+                            } catch (e) {}
+                            this.fetchMusicTasks({ silent: true });
+                            return;
+                        }
+                        if (data.status === 'failed') {
+                            try {
+                                const saved = localStorage.getItem('musicClipTaskId');
+                                if (saved && String(saved) === id) localStorage.removeItem('musicClipTaskId');
+                            } catch (e) {}
+                            this.fetchMusicTasks({ silent: true });
+                            alert(data.message || 'Falha ao gerar clipe.');
+                            return;
+                        }
+                        setTimeout(() => this.pollClipTask(id), 1500);
+                    } catch (e) {
+                        setTimeout(() => this.pollClipTask(id), 2500);
+                    }
+                },
+                previewSavedClip(item) {
+                    const it = item || {};
+                    if (it.clip_url) {
+                        this.clipVideoUrl = it.clip_url;
+                        this.clipYoutubeUrl = null;
+                    }
+                },
+                async publishSavedClipToYouTube(item) {
+                    const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    if (!confirm('Publicar este clipe no YouTube agora?')) return;
+                    this.savedMusicSaving = true;
+                    try {
+                        const res = await this.authFetch(`/music/saved/${encodeURIComponent(String(id))}/publish_youtube`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ title: it.title || this.musicTitle || 'Clipe', description: (it.lyrics || '').trim() || null })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao publicar no YouTube.');
+                        if (data.youtube_url) {
+                            this.clipYoutubeUrl = String(data.youtube_url);
+                            window.open(data.youtube_url, '_blank');
+                        } else {
+                            alert('Upload concluído. Confira no seu canal.');
+                        }
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async fetchMusicTasks({ silent } = {}) {
+                    if (!silent) this.musicTasksLoading = true;
+                    try {
+                        const res = await this.authFetch('/music/tasks?limit=30');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) return;
+                        const items = (data && Array.isArray(data.items)) ? data.items : [];
+                        this.musicTasks = items;
+                        const active = items.find(t => t && (t.status === 'processing' || t.status === 'pending') && t.result && typeof t.result === 'object' && t.result.kind === 'music_clip');
+                        if (active && active.task_id) {
+                            const id = String(active.task_id);
+                            if (!this.clipTaskId || (this.clipTaskStatus !== 'processing' && this.clipTaskStatus !== 'pending')) {
+                                this.clipTaskId = id;
+                                this.clipTaskStatus = active.status || null;
+                                this.clipTaskProgress = Number(active.progress || 0);
+                                this.clipTaskMessage = active.message || '';
+                                try { localStorage.setItem('musicClipTaskId', id); } catch (e) {}
+                                this.pollClipTask(id);
+                            }
+                        }
+                    } catch (e) {
+                    } finally {
+                        if (!silent) this.musicTasksLoading = false;
+                    }
+                },
+                async fetchMusicNotifications({ silent } = {}) {
+                    if (!silent) this.musicNotificationsLoading = true;
+                    try {
+                        const res = await this.authFetch('/music/notifications?status=new&limit=20');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) return;
+                        const items = (data && Array.isArray(data.items)) ? data.items : [];
+                        this.musicNotifications = items;
+                        for (const n of items) {
+                            const kind = String((n && n.kind) || '');
+                            const title = String((n && n.title) || 'Notificação');
+                            const msg = String((n && n.message) || '');
+                            if (kind === 'music_clip_ready') {
+                                this.maybeBrowserNotify('Codexia', msg || title);
+                                if (!(window && window.Notification && Notification.permission === 'granted')) {
+                                    alert(msg || title);
+                                }
+                            }
+                            if (kind === 'music_clip_failed') {
+                                if (!(window && window.Notification && Notification.permission === 'granted')) {
+                                    alert(msg || title);
+                                } else {
+                                    this.maybeBrowserNotify('Codexia', msg || title);
+                                }
+                            }
+                            if (n && n.id) {
+                                this.markMusicNotificationRead(n.id);
+                            }
+                        }
+                    } catch (e) {
+                    } finally {
+                        if (!silent) this.musicNotificationsLoading = false;
+                    }
+                },
+                async markMusicNotificationRead(notificationId) {
+                    const id = Number(notificationId || 0);
+                    if (!id) return;
+                    try {
+                        await this.authFetch(`/music/notifications/${encodeURIComponent(String(id))}/read`, { method: 'POST' });
+                    } catch (e) {
+                    }
+                },
+                maybeBrowserNotify(title, body) {
+                    try {
+                        if (!(window && window.Notification)) return;
+                        const t = String(title || 'Codexia');
+                        const b = String(body || '');
+                        if (Notification.permission === 'granted') {
+                            new Notification(t, { body: b });
+                            return;
+                        }
+                    } catch (e) {
                     }
                 },
                 _filenameFromUrl(url) {

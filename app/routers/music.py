@@ -6,11 +6,13 @@ import os
 import uuid
 import threading
 import requests
+import json
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.database import get_db, SessionLocal
 from app.services.suno_service import (
     get_suno_api_key,
     create_suno_task,
@@ -19,7 +21,7 @@ from app.services.suno_service import (
 )
 from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
-from app.models import User, VideoTask, SavedMusic
+from app.models import User, VideoTask, SavedMusic, SystemNotification
 from app.services.task_manager import create_task, update_task, get_task
 from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music
 
@@ -40,6 +42,8 @@ class GenerateClipRequest(BaseModel):
     author_text: Optional[str] = None
     watermark_enabled: Optional[bool] = True
     sync_mode: Optional[str] = "auto"
+    aspect_ratio: Optional[str] = "9:16"  # "9:16" (vertical) ou "16:9" (YouTube)
+    auto_upload_youtube: Optional[bool] = False
 
 
 class GenerateLyricsRequest(BaseModel):
@@ -60,6 +64,12 @@ class SaveMusicRequest(BaseModel):
     music_filename: Optional[str] = None
     clip_url: Optional[str] = None
     clip_filename: Optional[str] = None
+
+
+class PublishSavedClipRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[str] = None  # vírgula-separado
 
 
 def _parse_bool(v) -> Optional[bool]:
@@ -436,6 +446,56 @@ def delete_saved_music(item_id: int, user: User = Depends(get_current_user), db:
     return {"success": True}
 
 
+@router.post("/saved/{item_id}/publish_youtube")
+def publish_saved_clip_youtube(item_id: int, request: PublishSavedClipRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para publicar este item.")
+    if not item.clip_url:
+        raise HTTPException(status_code=400, detail="Este item não possui clipe para publicar.")
+
+    from app.config import absolute_path_for_video
+    abs_video_path = absolute_path_for_video(item.clip_url)
+    if not abs_video_path or not os.path.exists(abs_video_path):
+        raise HTTPException(status_code=503, detail="Arquivo do clipe não encontrado no servidor.")
+
+    title = (request.title or item.title or "Clipe")[:100]
+    description = (request.description or item.lyrics or "").strip()[:4000] or "Clipe gerado automaticamente por Codexia."
+    tags = []
+    if request.tags and request.tags.strip():
+        tags = [t.strip() for t in str(request.tags).split(",") if t.strip()][:20]
+
+    from app.services.youtube_service import YouTubeService
+    service = YouTubeService()
+    upload_result = service.upload_video(abs_video_path, title=title, description=description, tags=tags)
+
+    youtube_id = None
+    if isinstance(upload_result, dict):
+        youtube_id = upload_result.get("id") or upload_result.get("videoId") or upload_result.get("youtube_video_id")
+        if upload_result.get("error") or upload_result.get("status") == "not_connected":
+            raise HTTPException(status_code=502, detail=upload_result.get("error") or "Canal não conectado ao YouTube.")
+    elif upload_result:
+        youtube_id = str(upload_result)
+
+    youtube_url = (f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else None)
+    try:
+        db.add(SystemNotification(
+            user_id=user.id,
+            kind="music_clip_published",
+            title="Publicado no YouTube",
+            message=f"O clipe '{title}' foi publicado no YouTube.",
+            payload_json=json.dumps({"item_id": item.id, "youtube_video_id": youtube_id, "youtube_url": youtube_url}, ensure_ascii=False),
+            status="new",
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    return {"status": "published", "youtube_video_id": youtube_id, "youtube_url": youtube_url, "upload_result": upload_result}
+
+
 @router.post("/clip")
 def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_current_user)):
     """
@@ -469,10 +529,13 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
         watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
         sync_mode = (request.sync_mode or "auto").strip().lower()
+        aspect_ratio = (request.aspect_ratio or "9:16").strip()
+        if aspect_ratio not in ("9:16", "16:9"):
+            aspect_ratio = "9:16"
         result = video_gen.create_music_video(
             music_path,
             title=request.title,
-            aspect_ratio="9:16",
+            aspect_ratio=aspect_ratio,
             lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
             author_text=author,
             watermark_enabled=watermark_enabled,
@@ -487,3 +550,216 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         if msg.startswith("Para sincronização perfeita,"):
             raise HTTPException(status_code=400, detail=msg)
         raise HTTPException(status_code=500, detail=f"Erro ao gerar clipe: {msg}")
+
+
+@router.post("/clip/task")
+def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(get_current_user)):
+    music_filename = request.music_filename
+    if not music_filename:
+        music_dir = MUSIC_OUTPUT_DIR
+        if os.path.exists(music_dir):
+            songs = [
+                f
+                for f in os.listdir(music_dir)
+                if (f.startswith("song_") or f.startswith("import_"))
+                and (f.endswith(".wav") or f.endswith(".mp3") or f.endswith(".m4a") or f.endswith(".aac") or f.endswith(".ogg"))
+            ]
+            songs.sort(key=lambda f: os.path.getmtime(os.path.join(music_dir, f)), reverse=True)
+            if songs:
+                music_filename = songs[0]
+    if not music_filename:
+        raise HTTPException(status_code=400, detail="Gere a música primeiro (botão 'Gerar Música') ou informe music_filename.")
+    music_path = absolute_path_for_music(music_filename)
+    if not os.path.exists(music_path):
+        raise HTTPException(status_code=404, detail="Arquivo de música não encontrado. Gere a música novamente.")
+
+    task_id = create_task(user_id=user.id)
+    sync_mode = (request.sync_mode or "auto").strip().lower()
+    watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
+    author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
+    aspect_ratio = (request.aspect_ratio or "9:16").strip()
+    if aspect_ratio not in ("9:16", "16:9"):
+        aspect_ratio = "9:16"
+    auto_upload_youtube = bool(request.auto_upload_youtube) if request.auto_upload_youtube is not None else False
+    payload = {
+        "kind": "music_clip",
+        "title": (request.title or "Música"),
+        "music_filename": music_filename,
+        "sync_mode": sync_mode,
+        "aspect_ratio": aspect_ratio,
+        "auto_upload_youtube": auto_upload_youtube,
+        "watermark_enabled": watermark_enabled,
+        "author_text": author,
+        "requested_at": datetime.utcnow().isoformat(),
+    }
+    update_task(task_id, status="processing", progress=1, message="Iniciando geração do clipe...", result=payload)
+
+    def _run():
+        try:
+            from app.services.video_generator import VideoGenerator
+            ai = AIContentGenerator()
+            video_gen = VideoGenerator(ai_service=ai)
+
+            def _progress(p: int, m: str):
+                update_task(task_id, status="processing", progress=max(0, min(99, int(p or 0))), message=str(m or "Processando..."))
+
+            result = video_gen.create_music_video(
+                music_path,
+                title=request.title,
+                aspect_ratio=aspect_ratio,
+                lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
+                author_text=author,
+                watermark_enabled=watermark_enabled,
+                sync_mode=sync_mode,
+                progress_callback=_progress,
+            )
+            video_url = result.get("video_url") if isinstance(result, dict) else None
+            if not video_url:
+                raise Exception("Falha ao gerar o clipe (sem URL).")
+
+            youtube_info = None
+            if auto_upload_youtube:
+                try:
+                    from app.services.youtube_service import YouTubeService
+                    from app.config import absolute_path_for_video
+
+                    update_task(task_id, status="processing", progress=96, message="Iniciando upload para o YouTube...")
+                    abs_video_path = absolute_path_for_video(video_url)
+                    service = YouTubeService()
+                    upload_result = service.upload_video(
+                        abs_video_path,
+                        title=(request.title or "Clipe"),
+                        description=(request.lyrics or "").strip()[:4000] or "Clipe gerado automaticamente por Codexia.",
+                        tags=["música", "gospel"] if "16:9" == aspect_ratio else ["shorts", "música"],
+                    )
+                    youtube_id = None
+                    if isinstance(upload_result, dict):
+                        youtube_id = upload_result.get("id") or upload_result.get("videoId") or upload_result.get("youtube_video_id")
+                    elif upload_result:
+                        youtube_id = str(upload_result)
+                    youtube_url = (f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else None)
+                    youtube_info = {
+                        "upload_result": upload_result,
+                        "youtube_video_id": youtube_id,
+                        "youtube_url": youtube_url,
+                        "published": bool(youtube_id),
+                        "status": "published" if youtube_id else "failed",
+                    }
+                except Exception as e:
+                    youtube_info = {"error": str(e), "published": False, "status": "failed"}
+
+            update_task(
+                task_id,
+                status="completed",
+                progress=100,
+                message=("Clipe gerado e publicado no YouTube." if (youtube_info and youtube_info.get("published")) else "Clipe gerado com sucesso."),
+                result={**payload, "video_url": video_url, "youtube": youtube_info},
+            )
+            db2 = SessionLocal()
+            try:
+                note_payload = {"task_id": task_id, "video_url": video_url}
+                if youtube_info:
+                    note_payload["youtube"] = youtube_info
+                db2.add(SystemNotification(
+                    user_id=user.id,
+                    kind="music_clip_ready",
+                    title="Clipe pronto",
+                    message=f"Seu clipe '{(request.title or 'Música')[:80]}' foi concluído.",
+                    payload_json=json.dumps(note_payload, ensure_ascii=False),
+                    status="new",
+                ))
+                db2.commit()
+            except Exception:
+                db2.rollback()
+            finally:
+                db2.close()
+        except Exception as e:
+            msg = str(e)
+            update_task(task_id, status="failed", progress=100, message=msg, result=payload)
+            db2 = SessionLocal()
+            try:
+                db2.add(SystemNotification(
+                    user_id=user.id,
+                    kind="music_clip_failed",
+                    title="Falha ao gerar clipe",
+                    message=(msg or "Erro desconhecido")[:500],
+                    payload_json=json.dumps({"task_id": task_id}, ensure_ascii=False),
+                    status="new",
+                ))
+                db2.commit()
+            except Exception:
+                db2.rollback()
+            finally:
+                db2.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"message": "Processo iniciado", "task_id": task_id}
+
+
+@router.get("/tasks")
+def list_my_music_tasks(limit: int = 20, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    lim = max(1, min(100, int(limit or 20)))
+    rows = (
+        db.query(VideoTask)
+        .filter(VideoTask.user_id == user.id)
+        .order_by(VideoTask.updated_at.desc().nullslast(), VideoTask.created_at.desc().nullslast())
+        .limit(lim)
+        .all()
+    )
+    items = []
+    for r in rows:
+        payload2 = None
+        if r.result_json:
+            try:
+                payload2 = json.loads(r.result_json)
+            except Exception:
+                payload2 = r.result_json
+        items.append({
+            "task_id": r.id,
+            "status": r.status,
+            "progress": int(r.progress or 0),
+            "message": r.message,
+            "result": payload2,
+            "created_at": (r.created_at.isoformat() if getattr(r, "created_at", None) else None),
+            "updated_at": (r.updated_at.isoformat() if getattr(r, "updated_at", None) else None),
+        })
+    return {"count": len(items), "items": items}
+
+
+@router.get("/notifications")
+def list_my_music_notifications(limit: int = 20, status: Optional[str] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    lim = max(1, min(100, int(limit or 20)))
+    q = db.query(SystemNotification).filter(SystemNotification.user_id == user.id)
+    if status:
+        q = q.filter(SystemNotification.status == str(status).strip())
+    rows = q.order_by(SystemNotification.created_at.desc()).limit(lim).all()
+    items = []
+    for n in rows:
+        payload2 = None
+        if n.payload_json:
+            try:
+                payload2 = json.loads(n.payload_json)
+            except Exception:
+                payload2 = n.payload_json
+        items.append({
+            "id": n.id,
+            "kind": n.kind,
+            "title": n.title,
+            "message": n.message,
+            "status": n.status,
+            "created_at": (n.created_at.isoformat() if n.created_at else None),
+            "read_at": (n.read_at.isoformat() if n.read_at else None),
+            "payload": payload2,
+        })
+    return {"count": len(items), "items": items}
+
+
+@router.post("/notifications/{notification_id}/read")
+def mark_music_notification_read(notification_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    n = db.query(SystemNotification).filter(SystemNotification.id == notification_id, SystemNotification.user_id == user.id).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="Notificação não encontrada")
+    n.status = "read"
+    n.read_at = datetime.utcnow()
+    db.commit()
+    return {"status": "read", "id": n.id}
