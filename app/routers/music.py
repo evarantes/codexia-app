@@ -5,7 +5,8 @@ Com Suno API: música com voz cantada. Sem Suno: instrumental (MusicGen).
 import os
 import uuid
 import threading
-from fastapi import APIRouter, HTTPException, Depends
+import requests
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -56,6 +57,19 @@ class SaveMusicRequest(BaseModel):
     music_filename: Optional[str] = None
     clip_url: Optional[str] = None
     clip_filename: Optional[str] = None
+
+
+def _parse_bool(v) -> Optional[bool]:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("1", "true", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "no", "n", "off"):
+        return False
+    return None
 
 
 @router.post("/lyrics")
@@ -244,6 +258,118 @@ def save_music_item(request: SaveMusicRequest, user: User = Depends(get_current_
     }
 
 
+@router.post("/import")
+async def import_music(
+    title: str = Form("Música"),
+    source_url: Optional[str] = Form(None),
+    lyrics: Optional[str] = Form(None),
+    genre: Optional[str] = Form(None),
+    vocal_gender: Optional[str] = Form(None),
+    with_vocals: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    src = (source_url or "").strip()
+    if not file and not src:
+        raise HTTPException(status_code=400, detail="Envie um arquivo de áudio ou informe uma URL.")
+
+    allowed_exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg"}
+    max_bytes = 200 * 1024 * 1024
+    min_bytes = 50 * 1024
+
+    os.makedirs(MUSIC_OUTPUT_DIR, exist_ok=True)
+
+    ext = ""
+    original_name = ""
+    if file and file.filename:
+        original_name = str(file.filename)
+        ext = os.path.splitext(original_name)[1].lower()
+    if not ext and src:
+        try:
+            clean = src.split("?", 1)[0].split("#", 1)[0]
+            ext = os.path.splitext(clean)[1].lower()
+        except Exception:
+            ext = ""
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Formato inválido. Envie mp3, wav, m4a, aac ou ogg.")
+
+    filename = f"import_{uuid.uuid4().hex[:12]}{ext}"
+    path = os.path.join(MUSIC_OUTPUT_DIR, filename)
+    total = 0
+
+    try:
+        if file:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=400, detail="Arquivo muito grande (limite 200MB).")
+                with open(path, "ab") as f:
+                    f.write(chunk)
+        else:
+            if not (src.startswith("http://") or src.startswith("https://")):
+                raise HTTPException(status_code=400, detail="URL inválida.")
+            r = requests.get(src, stream=True, timeout=90, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Falha ao baixar a URL (HTTP {r.status_code}).")
+            with open(path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise HTTPException(status_code=400, detail="Arquivo muito grande (limite 200MB).")
+                    f.write(chunk)
+
+        if total < min_bytes:
+            raise HTTPException(status_code=400, detail="Arquivo muito pequeno; verifique se o áudio é válido.")
+
+        item = SavedMusic(
+            user_id=user.id,
+            title=(title or "Música")[:200],
+            lyrics=(lyrics.strip() if lyrics and lyrics.strip() else None),
+            genre=(genre.strip() if genre and genre.strip() else None),
+            vocal_gender=(vocal_gender.strip() if vocal_gender and vocal_gender.strip() else None),
+            with_vocals=bool(_parse_bool(with_vocals)) if _parse_bool(with_vocals) is not None else False,
+            music_url=f"{MUSIC_URL_PREFIX}/{filename}",
+            music_filename=filename,
+        )
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+
+        return {
+            "id": item.id,
+            "title": item.title,
+            "lyrics": item.lyrics,
+            "genre": item.genre,
+            "vocal_gender": item.vocal_gender,
+            "with_vocals": item.with_vocals,
+            "music_url": item.music_url,
+            "music_filename": item.music_filename,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "original_filename": original_name or None,
+            "bytes": total,
+        }
+    except HTTPException:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Erro ao importar música: {str(e)}")
+
+
 @router.get("/saved")
 def list_saved_music(limit: int = 50, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
@@ -318,7 +444,12 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
     if not music_filename:
         music_dir = MUSIC_OUTPUT_DIR
         if os.path.exists(music_dir):
-            songs = [f for f in os.listdir(music_dir) if f.startswith("song_") and (f.endswith(".wav") or f.endswith(".mp3"))]
+            songs = [
+                f
+                for f in os.listdir(music_dir)
+                if (f.startswith("song_") or f.startswith("import_"))
+                and (f.endswith(".wav") or f.endswith(".mp3") or f.endswith(".m4a") or f.endswith(".aac") or f.endswith(".ogg"))
+            ]
             songs.sort(key=lambda f: os.path.getmtime(os.path.join(music_dir, f)), reverse=True)
             if songs:
                 music_filename = songs[0]

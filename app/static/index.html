@@ -531,6 +531,35 @@
                             <div v-else class="h-24 bg-gray-100 rounded flex items-center justify-center text-gray-400">
                                 A música aparecerá aqui após gerar
                             </div>
+                            <div class="mt-4 bg-gray-50 p-4 rounded border">
+                                <div class="font-bold mb-2">Importar música</div>
+                                <div class="grid md:grid-cols-3 gap-3">
+                                    <div class="md:col-span-2">
+                                        <label class="block text-sm font-semibold text-gray-700">URL do áudio (opcional)</label>
+                                        <input v-model="importMusicSourceUrl" class="w-full border p-2 rounded mt-1" placeholder="Cole aqui a URL direta do mp3/wav/m4a...">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-semibold text-gray-700">Arquivo (opcional)</label>
+                                        <input type="file" accept="audio/*" @change="onImportMusicFileChange" class="w-full border p-2 rounded mt-1 bg-white">
+                                    </div>
+                                </div>
+                                <div class="grid md:grid-cols-3 gap-3 mt-3">
+                                    <div class="md:col-span-2">
+                                        <label class="block text-sm font-semibold text-gray-700">Título</label>
+                                        <input v-model="importMusicTitle" class="w-full border p-2 rounded mt-1" placeholder="Ex: Minha música do Suno">
+                                    </div>
+                                    <label class="inline-flex items-center gap-2 text-sm text-gray-700 mt-6">
+                                        <input type="checkbox" v-model="importMusicWithVocals">
+                                        <span>Com voz</span>
+                                    </label>
+                                </div>
+                                <button @click="importMusicToLibrary" :disabled="importMusicLoading || (!importMusicSourceUrl.trim() && !importMusicFile)" class="mt-3 w-full bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 flex items-center justify-center gap-2">
+                                    <i v-if="importMusicLoading" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-file-import"></i>
+                                    Importar para Biblioteca
+                                </button>
+                                <p class="text-xs text-gray-500 mt-2">A música importada fica armazenada no mesmo local das geradas e pode ser usada para criar clipes.</p>
+                            </div>
                         </div>
                         <div>
                             <h2 class="text-xl font-bold mb-4">3. Clipe (vídeo)</h2>
@@ -2961,6 +2990,11 @@
                     savedMusicSaving: false,
                     savedMusicItems: [],
                     savedMusicError: '',
+                    importMusicLoading: false,
+                    importMusicTitle: '',
+                    importMusicSourceUrl: '',
+                    importMusicFile: null,
+                    importMusicWithVocals: false,
 
                     // Books
                     showAddBookModal: false,
@@ -5791,6 +5825,45 @@
                         return last || null;
                     } catch (e) {
                         return null;
+                    }
+                },
+                onImportMusicFileChange(e) {
+                    try {
+                        const f = e && e.target && e.target.files && e.target.files.length ? e.target.files[0] : null;
+                        this.importMusicFile = f || null;
+                    } catch (_) {
+                        this.importMusicFile = null;
+                    }
+                },
+                async importMusicToLibrary() {
+                    if (!((this.importMusicSourceUrl || '').trim()) && !this.importMusicFile) return;
+                    this.importMusicLoading = true;
+                    this.savedMusicError = '';
+                    try {
+                        const fd = new FormData();
+                        fd.append('title', (this.importMusicTitle || this.musicTitle || 'Música'));
+                        if ((this.importMusicSourceUrl || '').trim()) fd.append('source_url', this.importMusicSourceUrl.trim());
+                        if (this.importMusicFile) fd.append('file', this.importMusicFile, this.importMusicFile.name || 'audio');
+                        fd.append('with_vocals', this.importMusicWithVocals ? 'true' : 'false');
+                        if ((this.musicLyrics || '').trim()) fd.append('lyrics', this.musicLyrics);
+                        if ((this.musicGenre || '').trim()) fd.append('genre', this.musicGenre);
+                        if ((this.musicVocalGender || '').trim()) fd.append('vocal_gender', this.musicVocalGender);
+                        const res = await this.authFetch('/music/import', { method: 'POST', body: fd });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao importar música.');
+                        this.musicUrl = data.music_url || null;
+                        this.musicFilename = data.music_filename || this._filenameFromUrl(this.musicUrl);
+                        if (data.title) this.musicTitle = data.title;
+                        this.musicWithVocals = data.with_vocals === true;
+                        this.importMusicTitle = '';
+                        this.importMusicSourceUrl = '';
+                        this.importMusicFile = null;
+                        await this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
+                    } finally {
+                        this.importMusicLoading = false;
                     }
                 },
                 async fetchSavedMusicLibrary() {
