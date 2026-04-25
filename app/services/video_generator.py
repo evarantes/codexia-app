@@ -1738,7 +1738,7 @@ class VideoGenerator:
                 except Exception:
                     pass
 
-            def _merge_segments(segs):
+            def _merge_segments(segs, strict: bool = False):
                 blocks = []
                 cur = None
                 for s in (segs or []):
@@ -1760,6 +1760,11 @@ class VideoGenerator:
                         cur["end"] = en
                         cur["text"] = (cur["text"] + " " + txt).strip()
                     dur = float(cur["end"]) - float(cur["start"])
+                    if strict:
+                        if dur >= 1.8 or len(cur["text"]) >= 44:
+                            blocks.append(cur)
+                            cur = None
+                            continue
                     if dur >= 3.6 or len(cur["text"]) >= 84:
                         blocks.append(cur)
                         cur = None
@@ -1844,17 +1849,105 @@ class VideoGenerator:
                         break
                     pi, pj, action = step
                     if action == "match":
-                        mapping[pi] = l[pj]
+                        mapping[pi] = pj
                     i, j = pi, pj
                 return mapping
 
             timeline = []
-            if segments and isinstance(segments, list) and lyrics_lines:
-                blocks = _merge_segments(segments)
+            if strict_sync and segments and isinstance(segments, list) and lyrics_lines:
+                blocks = _merge_segments(segments, strict=True)
                 mapping = _align_blocks_to_lyrics(blocks, lyrics_lines)
-                for idx, b in enumerate(blocks):
-                    cap = mapping.get(idx) or lyrics_lines[min(idx, len(lyrics_lines) - 1)]
-                    timeline.append({"start": b["start"], "end": b["end"], "caption": cap})
+
+                line_spans = {}
+                for b_idx, line_idx in (mapping or {}).items():
+                    if b_idx is None or line_idx is None:
+                        continue
+                    if b_idx < 0 or b_idx >= len(blocks):
+                        continue
+                    if line_idx < 0 or line_idx >= len(lyrics_lines):
+                        continue
+                    b = blocks[b_idx]
+                    st = float(b.get("start") or 0.0)
+                    en = float(b.get("end") or 0.0)
+                    if en <= st:
+                        continue
+                    span = line_spans.get(line_idx)
+                    if not span:
+                        line_spans[line_idx] = {"start": st, "end": en}
+                    else:
+                        span["start"] = min(float(span["start"]), st)
+                        span["end"] = max(float(span["end"]), en)
+
+                spans = [None] * len(lyrics_lines)
+                for li, sp in line_spans.items():
+                    spans[li] = sp
+
+                def _fill_range(start_idx: int, end_idx: int, start_t: float, end_t: float):
+                    count = (end_idx - start_idx) + 1
+                    if count <= 0:
+                        return
+                    start_t = max(0.0, float(start_t or 0.0))
+                    end_t = min(float(total_duration), float(end_t or 0.0))
+                    if end_t <= start_t:
+                        seg = 0.8
+                        t0 = start_t
+                        for k in range(count):
+                            spans[start_idx + k] = {"start": t0, "end": min(float(total_duration), t0 + seg)}
+                            t0 = min(float(total_duration), t0 + seg)
+                        return
+                    step = (end_t - start_t) / float(count)
+                    t0 = start_t
+                    for k in range(count):
+                        st = t0
+                        en = end_t if k == (count - 1) else (st + step)
+                        spans[start_idx + k] = {"start": st, "end": en}
+                        t0 = en
+
+                first_known = None
+                last_known = None
+                for i in range(len(spans)):
+                    if spans[i] is not None:
+                        first_known = i
+                        break
+                for i in range(len(spans) - 1, -1, -1):
+                    if spans[i] is not None:
+                        last_known = i
+                        break
+
+                if first_known is None or last_known is None:
+                    n = min(max_scenes, len(lyrics_lines))
+                    if n <= 0:
+                        n = 1
+                    seg_dur = float(total_duration) / float(n)
+                    t = 0.0
+                    for i in range(n):
+                        start = t
+                        end = float(total_duration) if i == (n - 1) else min(float(total_duration), start + seg_dur)
+                        t = end
+                        cap = lyrics_lines[min(i, len(lyrics_lines) - 1)]
+                        timeline.append({"start": start, "end": end, "caption": cap})
+                else:
+                    if first_known > 0:
+                        _fill_range(0, first_known - 1, 0.0, float(spans[first_known]["start"]))
+                    if last_known < (len(spans) - 1):
+                        _fill_range(last_known + 1, len(spans) - 1, float(spans[last_known]["end"]), float(total_duration))
+                    for i in range(first_known, last_known + 1):
+                        if spans[i] is not None:
+                            continue
+                        j = i - 1
+                        while j >= 0 and spans[j] is None:
+                            j -= 1
+                        k = i + 1
+                        while k < len(spans) and spans[k] is None:
+                            k += 1
+                        if j >= 0 and k < len(spans) and spans[j] is not None and spans[k] is not None:
+                            _fill_range(i, k - 1, float(spans[j]["end"]), float(spans[k]["start"]))
+
+                    for idx, cap in enumerate(lyrics_lines):
+                        sp = spans[idx]
+                        if not sp:
+                            continue
+                        timeline.append({"start": float(sp["start"]), "end": float(sp["end"]), "caption": cap})
             elif lyrics_lines:
                 n = min(max_scenes, len(lyrics_lines))
                 if n <= 0:
