@@ -1429,11 +1429,28 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
 
         out: List[Dict[str, Any]] = []
         for s in segments:
-            if not isinstance(s, dict):
-                continue
-            start = s.get("start")
-            end = s.get("end")
-            text = s.get("text")
+            start = None
+            end = None
+            text = None
+            if isinstance(s, dict):
+                start = s.get("start")
+                end = s.get("end")
+                text = s.get("text")
+            elif hasattr(s, "model_dump"):
+                try:
+                    d = s.model_dump()
+                    if isinstance(d, dict):
+                        start = d.get("start")
+                        end = d.get("end")
+                        text = d.get("text")
+                except Exception:
+                    start = getattr(s, "start", None)
+                    end = getattr(s, "end", None)
+                    text = getattr(s, "text", None)
+            else:
+                start = getattr(s, "start", None)
+                end = getattr(s, "end", None)
+                text = getattr(s, "text", None)
             try:
                 start_f = float(start)
                 end_f = float(end)
