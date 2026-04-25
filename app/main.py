@@ -523,11 +523,19 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 # Servir vídeos: tenta VIDEO_OUTPUT_DIR e depois app/static/videos (Render e múltiplas instâncias)
-from app.config import VIDEO_OUTPUT_DIR, STATIC_DIR
+from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, STATIC_DIR
 
 def _resolve_video_path(safe_name: str):
     """Retorna o path absoluto do vídeo, procurando em VIDEO_OUTPUT_DIR e em app/static/videos."""
     for directory in (VIDEO_OUTPUT_DIR, str(STATIC_DIR / "videos")):
+        if directory:
+            filepath = os.path.join(directory, safe_name)
+            if os.path.isfile(filepath):
+                return filepath
+    return None
+
+def _resolve_music_path(safe_name: str):
+    for directory in (MUSIC_OUTPUT_DIR, str(STATIC_DIR / "music"), os.path.join("app", "static", "music")):
         if directory:
             filepath = os.path.join(directory, safe_name)
             if os.path.isfile(filepath):
@@ -615,14 +623,6 @@ def head_video_static(filename: str):
         raise HTTPException(status_code=404, detail="Not Found")
     return FileResponse(filepath, media_type="video/mp4", headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
 
-def _resolve_music_path(safe_name: str):
-    for directory in (str(STATIC_DIR / "music"), "app/static/music"):
-        if directory:
-            filepath = os.path.join(directory, safe_name)
-            if os.path.isfile(filepath):
-                return filepath
-    return None
-
 def _guess_audio_media_type(filename: str) -> str:
     ext = os.path.splitext(filename or "")[1].lower()
     if ext == ".mp3":
@@ -698,12 +698,36 @@ def head_music_static(filename: str):
     media_type = _guess_audio_media_type(safe_name)
     return FileResponse(filepath, media_type=media_type, headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
 
+@app.get("/media/music/{filename:path}")
+def serve_music_media(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_music_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    media_type = _guess_audio_media_type(safe_name)
+    return _media_file_response(request, filepath, media_type)
+
+@app.head("/media/music/{filename:path}")
+def head_music_media(filename: str):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_music_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    media_type = _guess_audio_media_type(safe_name)
+    return FileResponse(filepath, media_type=media_type, headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
+
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
 # Garantir que os diretórios de vídeos existem
 if os.path.isdir("/data"):
     os.makedirs("/data/media/videos", exist_ok=True)
+    os.makedirs("/data/media/music", exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "videos"), exist_ok=True)
+os.makedirs(os.path.join(STATIC_DIR, "music"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "image_bank"), exist_ok=True)
 # NOTA: Não montamos /media como StaticFiles porque temos rotas específicas (/media/videos/{filename})
 # que servem vídeos de VIDEO_OUTPUT_DIR. O mount genérico interceptaria essas rotas.

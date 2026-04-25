@@ -58,3 +58,26 @@ def absolute_path_for_video(url_path: str) -> str:
 _use_data_volume = os.path.isdir("/data") and os.getenv("USE_STATIC_VIDEOS", "").lower() not in ("1", "true", "yes")
 VIDEO_OUTPUT_DIR = "/data/media/videos" if _use_data_volume else str(STATIC_DIR / "videos")
 VIDEO_URL_PREFIX = "/media/videos" if _use_data_volume else "/static/videos"
+
+# Diretório de saída para músicas (Suno/MusicGen).
+# Com volume /data (Coolify etc.): usar /data/media/music para persistir e compartilhar entre instâncias.
+_use_data_volume_music = os.path.isdir("/data") and os.getenv("USE_STATIC_MUSIC", "").lower() not in ("1", "true", "yes")
+MUSIC_OUTPUT_DIR = "/data/media/music" if _use_data_volume_music else str(STATIC_DIR / "music")
+MUSIC_URL_PREFIX = "/media/music" if _use_data_volume_music else "/static/music"
+
+def absolute_path_for_music(filename_or_url: str) -> str:
+    if not filename_or_url:
+        return ""
+    clean = (filename_or_url or "").strip().split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    name = os.path.basename(clean)
+    if not name:
+        name = clean
+    candidates = [
+        os.path.join(MUSIC_OUTPUT_DIR, name),
+        str(STATIC_DIR / "music" / name),
+        os.path.join("app", "static", "music", name),
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+    return os.path.join(MUSIC_OUTPUT_DIR, name)

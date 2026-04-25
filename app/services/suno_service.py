@@ -9,6 +9,7 @@ import requests
 from typing import Optional, List, Dict, Any, Tuple
 from app.database import SessionLocal
 from app.models import Settings
+from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX
 
 
 SUNO_BASE = "https://api.sunoapi.org/api/v1"
@@ -152,7 +153,7 @@ def poll_suno_task(
 def download_suno_audio(audio_url: str) -> Dict[str, Any]:
     if not audio_url or not isinstance(audio_url, str):
         return {"success": False, "error": "URL de áudio inválida."}
-    music_dir = "app/static/music"
+    music_dir = MUSIC_OUTPUT_DIR
     os.makedirs(music_dir, exist_ok=True)
     filename = f"song_{uuid.uuid4().hex[:10]}.mp3"
     path = os.path.join(music_dir, filename)
@@ -175,7 +176,7 @@ def download_suno_audio(audio_url: str) -> Dict[str, Any]:
             except Exception:
                 pass
             return {"success": False, "error": "Áudio baixado muito pequeno; provável falha/URL inválida."}
-        return {"success": True, "music_url": f"/static/music/{filename}", "music_filename": filename, "bytes": total}
+        return {"success": True, "music_url": f"{MUSIC_URL_PREFIX}/{filename}", "music_filename": filename, "bytes": total}
     except Exception as e:
         try:
             if os.path.exists(path):

@@ -20,6 +20,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
 from app.models import User, VideoTask, SavedMusic
 from app.services.task_manager import create_task, update_task, get_task
+from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music
 
 router = APIRouter(prefix="/music", tags=["music"])
 
@@ -178,14 +179,14 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
                 status_code=503,
                 detail="Não foi possível gerar a música. Configure a Suno API Key em Configurações para voz cantada, ou o token Hugging Face para instrumental."
             )
-        music_dir = "app/static/music"
+        music_dir = MUSIC_OUTPUT_DIR
         os.makedirs(music_dir, exist_ok=True)
         filename = f"song_{uuid.uuid4().hex[:10]}.wav"
         path = os.path.join(music_dir, filename)
         with open(path, "wb") as f:
             f.write(raw_audio)
         return {
-            "music_url": f"/static/music/{filename}",
+            "music_url": f"{MUSIC_URL_PREFIX}/{filename}",
             "music_filename": filename,
             "message": "Música instrumental gerada. Para voz cantada, configure a Suno API Key em Configurações.",
             "with_vocals": False,
@@ -315,7 +316,7 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         raise HTTPException(status_code=400, detail="Envie a letra da música.")
     music_filename = request.music_filename
     if not music_filename:
-        music_dir = "app/static/music"
+        music_dir = MUSIC_OUTPUT_DIR
         if os.path.exists(music_dir):
             songs = [f for f in os.listdir(music_dir) if f.startswith("song_") and (f.endswith(".wav") or f.endswith(".mp3"))]
             songs.sort(key=lambda f: os.path.getmtime(os.path.join(music_dir, f)), reverse=True)
@@ -326,7 +327,7 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
             status_code=400,
             detail="Gere a música primeiro (botão 'Gerar Música') ou informe music_filename."
         )
-    music_path = os.path.join("app/static/music", music_filename)
+    music_path = absolute_path_for_music(music_filename)
     if not os.path.exists(music_path):
         raise HTTPException(status_code=404, detail="Arquivo de música não encontrado. Gere a música novamente.")
     try:
