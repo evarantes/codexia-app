@@ -1628,7 +1628,7 @@ class VideoGenerator:
             except Exception:
                 pass
 
-    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True):
+    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto"):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
         try:
             from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
@@ -1697,6 +1697,10 @@ class VideoGenerator:
                 max_scenes = 18
             max_scenes = max(6, min(max_scenes, 40))
 
+            strict_sync = (sync_mode or "auto").strip().lower() in {"perfect", "precise", "strict"}
+            if strict_sync and not lyrics_lines:
+                raise Exception("Para sincronização perfeita, informe a letra da música.")
+
             segments = None
             if self.ai_service and lyrics_lines:
                 try:
@@ -1704,10 +1708,13 @@ class VideoGenerator:
                 except Exception:
                     segments = None
 
-            timeline = []
-            if segments and isinstance(segments, list) and lyrics_lines:
-                segs = []
-                for s in segments:
+            if strict_sync and not segments:
+                raise Exception("Para sincronização perfeita, configure a OpenAI API Key (openai_api_key em Configurações) para transcrever o áudio e sincronizar com a letra.")
+
+            def _merge_segments(segs):
+                blocks = []
+                cur = None
+                for s in (segs or []):
                     if not isinstance(s, dict):
                         continue
                     try:
@@ -1720,44 +1727,107 @@ class VideoGenerator:
                     txt = str(s.get("text") or "").strip()
                     if not txt:
                         continue
-                    segs.append({"start": max(0.0, st), "end": en, "text": txt})
-                segs.sort(key=lambda x: x["start"])
-                if segs:
-                    if segs[0]["start"] > 0.25:
-                        segs[0]["start"] = 0.0
-                    if segs[-1]["end"] < (total_duration - 0.2):
-                        segs[-1]["end"] = float(total_duration)
-
-                pointer = 0
-                for s in segs:
-                    window = lyrics_lines[pointer : pointer + 10]
-                    seg_norm = _normalize(s["text"])
-                    best_idx = None
-                    best_score = 0.0
-                    for j, line in enumerate(window):
-                        score = difflib.SequenceMatcher(None, seg_norm, _normalize(line)).ratio()
-                        if score > best_score:
-                            best_score = score
-                            best_idx = j
-                    if best_idx is not None and best_score >= 0.45:
-                        chosen = window[best_idx]
-                        pointer = pointer + best_idx + 1
+                    if cur is None:
+                        cur = {"start": max(0.0, st), "end": en, "text": txt}
                     else:
-                        chosen = lyrics_lines[pointer] if pointer < len(lyrics_lines) else s["text"]
-                        if pointer < len(lyrics_lines):
-                            pointer += 1
-                    timeline.append({"start": s["start"], "end": s["end"], "caption": chosen})
+                        cur["end"] = en
+                        cur["text"] = (cur["text"] + " " + txt).strip()
+                    dur = float(cur["end"]) - float(cur["start"])
+                    if dur >= 3.6 or len(cur["text"]) >= 84:
+                        blocks.append(cur)
+                        cur = None
+                if cur is not None:
+                    blocks.append(cur)
+                if blocks:
+                    if blocks[0]["start"] > 0.25:
+                        blocks[0]["start"] = 0.0
+                    if blocks[-1]["end"] < (total_duration - 0.2):
+                        blocks[-1]["end"] = float(total_duration)
+                return blocks
 
-                merged = []
-                for it in timeline:
-                    if not merged:
-                        merged.append(it)
-                        continue
-                    if merged[-1]["caption"] == it["caption"] and it["start"] <= (merged[-1]["end"] + 0.12):
-                        merged[-1]["end"] = max(merged[-1]["end"], it["end"])
+            def _align_blocks_to_lyrics(blocks, lines):
+                if not blocks or not lines:
+                    return {}
+                b = blocks[:]
+                l = lines[:]
+                if len(b) > 120:
+                    b = b[:120]
+                    b[-1]["end"] = float(total_duration)
+                if len(l) > 180:
+                    l = l[:180]
+                m = len(b)
+                n = len(l)
+                skip_block = 0.55
+                skip_line = 0.25
+                neg_inf = -1e18
+                dp = [[neg_inf] * (n + 1) for _ in range(m + 1)]
+                prev = [[None] * (n + 1) for _ in range(m + 1)]
+                dp[0][0] = 0.0
+
+                score_cache = {}
+
+                def _score(i, j):
+                    key = (i, j)
+                    if key in score_cache:
+                        return score_cache[key]
+                    s1 = _normalize(b[i]["text"])
+                    s2 = _normalize(l[j])
+                    if not s1 or not s2:
+                        sc = 0.0
                     else:
-                        merged.append(it)
-                timeline = merged
+                        sc = difflib.SequenceMatcher(None, s1, s2).ratio()
+                    score_cache[key] = sc
+                    return sc
+
+                for i in range(m + 1):
+                    for j in range(n + 1):
+                        base = dp[i][j]
+                        if base <= neg_inf / 2:
+                            continue
+                        if i < m:
+                            cand = base - skip_block
+                            if cand > dp[i + 1][j]:
+                                dp[i + 1][j] = cand
+                                prev[i + 1][j] = (i, j, "skip_block")
+                        if j < n:
+                            cand = base - skip_line
+                            if cand > dp[i][j + 1]:
+                                dp[i][j + 1] = cand
+                                prev[i][j + 1] = (i, j, "skip_line")
+                        if i < m and j < n:
+                            sc = _score(i, j)
+                            cand = base + sc
+                            if cand > dp[i + 1][j + 1]:
+                                dp[i + 1][j + 1] = cand
+                                prev[i + 1][j + 1] = (i, j, "match")
+
+                best_j = 0
+                best_val = neg_inf
+                for j in range(n + 1):
+                    if dp[m][j] > best_val:
+                        best_val = dp[m][j]
+                        best_j = j
+
+                mapping = {}
+                i = m
+                j = best_j
+                while i > 0 or j > 0:
+                    step = prev[i][j]
+                    if not step:
+                        break
+                    pi, pj, action = step
+                    if action == "match":
+                        mapping[pi] = l[pj]
+                    i, j = pi, pj
+                return mapping
+
+            timeline = []
+            if segments and isinstance(segments, list) and lyrics_lines:
+                blocks = _merge_segments(segments)
+                mapping = _align_blocks_to_lyrics(blocks, lyrics_lines)
+                for idx, b in enumerate(blocks):
+                    cap = mapping.get(idx) or lyrics_lines[min(idx, len(lyrics_lines) - 1)]
+                    timeline.append({"start": b["start"], "end": b["end"], "caption": cap})
             elif lyrics_lines:
                 n = min(max_scenes, len(lyrics_lines))
                 if n <= 0:

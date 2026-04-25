@@ -501,7 +501,7 @@
                                     <i v-else class="fas fa-music"></i>
                                     Gerar Música
                                 </button>
-                                <button @click="generateClip" :disabled="clipLoading || !musicFilename" class="flex-1 bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 flex items-center justify-center gap-2">
+                                <button @click="generateClip" :disabled="clipLoading || !musicFilename || (clipPerfectSync && !musicLyrics.trim())" class="flex-1 bg-indigo-600 text-white py-2 rounded hover:bg-indigo-700 flex items-center justify-center gap-2">
                                     <i v-if="clipLoading" class="fas fa-spinner fa-spin"></i>
                                     <i v-else class="fas fa-video"></i>
                                     Gerar Clipe
@@ -575,6 +575,10 @@
                                         <span>Adicionar marca d'água</span>
                                     </label>
                                 </div>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700 mt-3">
+                                    <input type="checkbox" v-model="clipPerfectSync">
+                                    <span>Sincronização perfeita (requer OpenAI)</span>
+                                </label>
                                 <p class="text-xs text-gray-500 mt-2">Inclui uma assinatura visual no clipe e metadados no arquivo do vídeo.</p>
                             </div>
                             <div v-if="clipVideoUrl" class="aspect-[9/16] max-h-[480px] bg-black rounded flex items-center justify-center mx-auto">
@@ -3011,6 +3015,7 @@
                     importMusicWithVocals: false,
                     clipAuthorText: '',
                     clipWatermarkEnabled: true,
+                    clipPerfectSync: false,
 
                     // Books
                     showAddBookModal: false,
@@ -5821,7 +5826,8 @@
                                 title: this.musicTitle,
                                 music_filename: this.musicFilename,
                                 author_text: (this.clipAuthorText || '').trim() || null,
-                                watermark_enabled: this.clipWatermarkEnabled === true
+                                watermark_enabled: this.clipWatermarkEnabled === true,
+                                sync_mode: this.clipPerfectSync === true ? 'perfect' : 'auto'
                             })
                         });
                         let data = {};

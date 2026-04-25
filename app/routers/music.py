@@ -39,6 +39,7 @@ class GenerateClipRequest(BaseModel):
     music_filename: Optional[str] = None
     author_text: Optional[str] = None
     watermark_enabled: Optional[bool] = True
+    sync_mode: Optional[str] = "auto"
 
 
 class GenerateLyricsRequest(BaseModel):
@@ -467,6 +468,7 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         video_gen = VideoGenerator(ai_service=ai)
         author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
         watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
+        sync_mode = (request.sync_mode or "auto").strip().lower()
         result = video_gen.create_music_video(
             music_path,
             title=request.title,
@@ -474,6 +476,7 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
             lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
             author_text=author,
             watermark_enabled=watermark_enabled,
+            sync_mode=sync_mode,
         )
         return {
             "video_url": result["video_url"],
@@ -481,6 +484,6 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         }
     except Exception as e:
         msg = str(e)
-        if "Sincronização perfeita requer transcrição do áudio" in msg:
+        if msg.startswith("Para sincronização perfeita,"):
             raise HTTPException(status_code=400, detail=msg)
         raise HTTPException(status_code=500, detail=f"Erro ao gerar clipe: {msg}")
