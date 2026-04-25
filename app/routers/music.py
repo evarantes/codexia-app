@@ -34,7 +34,7 @@ class GenerateMusicRequest(BaseModel):
 
 
 class GenerateClipRequest(BaseModel):
-    lyrics: str
+    lyrics: Optional[str] = None
     title: str = "Música"
     music_filename: Optional[str] = None
     author_text: Optional[str] = None
@@ -440,8 +440,6 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
     """
     Gera clipe (vídeo) da música: cenas baseadas na letra + áudio da música gerada.
     """
-    if not request.lyrics or not request.lyrics.strip():
-        raise HTTPException(status_code=400, detail="Envie a letra da música.")
     music_filename = request.music_filename
     if not music_filename:
         music_dir = MUSIC_OUTPUT_DIR
@@ -473,7 +471,7 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
             music_path,
             title=request.title,
             aspect_ratio="9:16",
-            lyrics=request.lyrics,
+            lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
             author_text=author,
             watermark_enabled=watermark_enabled,
         )

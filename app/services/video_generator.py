@@ -1703,8 +1703,6 @@ class VideoGenerator:
                     segments = self.ai_service.transcribe_audio_segments(music_path, language="pt")
                 except Exception:
                     segments = None
-            if lyrics_lines and not segments:
-                raise Exception("Sincronização perfeita requer transcrição do áudio. Configure OPENAI_API_KEY (ou openai_api_key em Configurações) para usar Whisper e sincronizar a legenda com a fala.")
 
             timeline = []
             if segments and isinstance(segments, list) and lyrics_lines:
