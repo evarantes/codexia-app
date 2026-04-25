@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.database import get_db, SessionLocal
 from app.services.suno_service import (
     get_suno_api_key,
@@ -23,7 +24,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
 from app.models import User, VideoTask, SavedMusic, SystemNotification
 from app.services.task_manager import create_task, update_task, get_task
-from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music
+from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, VIDEO_OUTPUT_DIR, STATIC_DIR
 
 router = APIRouter(prefix="/music", tags=["music"])
 
@@ -234,6 +235,100 @@ def get_music_task(task_id: str, user: User = Depends(get_current_user), db: Ses
     if not data:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
     return data
+
+
+@router.delete("/task/{task_id}")
+def delete_music_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    if row.user_id and row.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para excluir esta tarefa.")
+
+    payload = None
+    if row.result_json:
+        try:
+            payload = json.loads(row.result_json)
+        except Exception:
+            payload = None
+
+    def _extract_video_url(obj):
+        if not obj:
+            return None
+        if isinstance(obj, dict):
+            for k in ("video_url", "clip_url", "videoUrl", "clipUrl"):
+                v = obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        return None
+
+    video_url = _extract_video_url(payload)
+    if not video_url:
+        video_url = _extract_video_url(get_task(task_id) or {})
+
+    deleted_file = False
+    deleted_path = None
+    filename = None
+
+    if video_url and isinstance(video_url, str):
+        clean = video_url.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip()
+        filename = os.path.basename(clean) if clean else None
+        try:
+            abs_path = absolute_path_for_video(clean)
+        except Exception:
+            abs_path = ""
+
+        def _is_allowed_path(p: str) -> bool:
+            if not p or not isinstance(p, str):
+                return False
+            try:
+                ap = os.path.normcase(os.path.abspath(p))
+                roots = []
+                for r in [VIDEO_OUTPUT_DIR, str(STATIC_DIR / "videos"), os.path.join("/data", "media", "videos")]:
+                    if not r:
+                        continue
+                    roots.append(os.path.normcase(os.path.abspath(str(r))))
+                return any(ap.startswith(rt) for rt in roots)
+            except Exception:
+                return False
+
+        if abs_path and os.path.exists(abs_path) and _is_allowed_path(abs_path):
+            try:
+                os.remove(abs_path)
+                deleted_file = True
+                deleted_path = abs_path
+            except Exception:
+                deleted_file = False
+
+    if deleted_file and filename:
+        try:
+            items = db.query(SavedMusic).filter(
+                SavedMusic.user_id == user.id,
+                or_(
+                    SavedMusic.clip_filename == filename,
+                    SavedMusic.clip_url.like(f"%{filename}%"),
+                ),
+            ).all()
+            for it in items:
+                it.clip_url = None
+                it.clip_filename = None
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    try:
+        db.delete(row)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Falha ao excluir tarefa.")
+
+    return {
+        "deleted_task": True,
+        "deleted_file": deleted_file,
+        "deleted_path": deleted_path,
+        "filename": filename,
+    }
 
 
 @router.post("/saved")

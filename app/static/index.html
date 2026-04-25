@@ -644,6 +644,9 @@
                                         <button v-else-if="t.status === 'processing' || t.status === 'pending'" @click="resumeClipTask(t.task_id)" class="text-indigo-700 text-xs font-semibold">
                                             Ver
                                         </button>
+                                        <button v-else @click="deleteClipTask(t.task_id)" class="text-red-700 text-xs font-semibold">
+                                            Excluir
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -5956,6 +5959,34 @@
                     this.clipTaskId = id;
                     try { localStorage.setItem('musicClipTaskId', id); } catch (e) {}
                     this.pollClipTask(id);
+                },
+                async deleteClipTask(taskId) {
+                    const id = String(taskId || '').trim();
+                    if (!id) return;
+                    if (!confirm('Excluir esta tarefa e apagar o arquivo do clipe (para liberar espaço)?')) return;
+                    try {
+                        const res = await this.authFetch(`/music/task/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao excluir.');
+                        try {
+                            const deletedName = data && data.filename ? String(data.filename) : '';
+                            if (deletedName && this.clipVideoUrl && this.clipVideoUrl.includes(deletedName)) {
+                                this.clipVideoUrl = null;
+                                this.clipYoutubeUrl = null;
+                            }
+                        } catch (e) {}
+                        if (this.clipTaskId && String(this.clipTaskId) === id) {
+                            this.clipTaskId = null;
+                            this.clipTaskStatus = null;
+                            this.clipTaskProgress = 0;
+                            this.clipTaskMessage = '';
+                            try { localStorage.removeItem('musicClipTaskId'); } catch (e) {}
+                        }
+                        this.fetchMusicTasks({ silent: true });
+                        this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    }
                 },
                 async pollClipTask(taskId) {
                     const id = String(taskId || '').trim();
