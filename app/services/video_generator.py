@@ -1856,6 +1856,13 @@ class VideoGenerator:
 
             timeline = []
             if strict_sync and segments and isinstance(segments, list) and lyrics_lines:
+                lead_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_LEAD_MS") or "").strip()
+                try:
+                    lead_ms = float(lead_ms_raw) if lead_ms_raw else 220.0
+                except Exception:
+                    lead_ms = 220.0
+                lead_sec = max(0.0, min(0.9, lead_ms / 1000.0))
+
                 blocks = _merge_segments(segments, strict=True)
                 mapping = _align_blocks_to_lyrics(blocks, lyrics_lines)
 
@@ -1881,7 +1888,14 @@ class VideoGenerator:
 
                 spans = [None] * len(lyrics_lines)
                 for li, sp in line_spans.items():
-                    spans[li] = sp
+                    if not sp:
+                        continue
+                    sst = float(sp.get("start") or 0.0)
+                    een = float(sp.get("end") or 0.0)
+                    if lead_sec > 0.0:
+                        sst = max(0.0, sst - lead_sec)
+                        een = max(sst + 0.25, een - lead_sec)
+                    spans[li] = {"start": sst, "end": een}
 
                 def _fill_range(start_idx: int, end_idx: int, start_t: float, end_t: float):
                     count = (end_idx - start_idx) + 1
@@ -2005,14 +2019,17 @@ class VideoGenerator:
                 is_christian = any(k in norm_full for k in [
                     "jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "ressurreicao",
                     "tumulo", "sepulcro", "sangue", "redencao", "salvacao", "mestre",
-                    "coroa", "espinhos", "pregos", "cravo", "veu"
-                ]) or any(k in norm_cap for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "sepulcro", "redencao", "salvacao"])
+                    "coroa", "espinhos", "pregos", "cravo", "veu",
+                    "pecado", "sacrificio", "agonia", "penalidade", "perdao", "paz", "vitoria",
+                ]) or any(k in norm_cap for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "sepulcro", "redencao", "salvacao", "pecado", "sacrificio"])
 
                 def _scene_hint() -> str:
                     if any(k in norm_cap for k in ["calvario", "golgota"]):
                         return "A man carrying a wooden cross on a dusty road toward a hill outside ancient Jerusalem, Roman era, wide shot, dramatic sky, reverent."
                     if ("cruz" in norm_cap) and any(k in norm_cap for k in ["vitoria", "venceu", "morte", "paz"]):
                         return "A cross silhouette on a hill at sunrise, rays of light breaking through clouds, hope and victory, wide cinematic landscape."
+                    if ("cruz" in norm_cap) and any(k in norm_cap for k in ["castigo", "paz", "perdao", "salvacao", "redencao"]):
+                        return "A wooden cross on a hill with soft golden light, peaceful atmosphere, symbolism of salvation and redemption, wide cinematic landscape."
                     if any(k in norm_cap for k in ["pregos", "cravo", "cravos"]):
                         return "Close shot of iron nails and a wooden beam on the ground, symbolic and reverent, no violence, soft dramatic light."
                     if ("coroa" in norm_cap and "espinh" in norm_cap):
@@ -2023,6 +2040,10 @@ class VideoGenerator:
                         return "An empty tomb with the stone rolled away at dawn, gentle golden light, peaceful and triumphant, biblical era."
                     if "multidao" in norm_cap or "gritava" in norm_cap:
                         return "A crowd in ancient Jerusalem watching in tension on a stone street, Roman era, wide shot, cinematic."
+                    if any(k in norm_cap for k in ["pecado", "pena", "castigo", "condenacao"]):
+                        return "A person kneeling in darkness with a soft beam of light and a cross in the distance, symbolism of forgiveness and grace, cinematic."
+                    if "inferno" in norm_cap:
+                        return "Chains breaking in a dark cave as bright light forms a cross shape, symbolism of victory over darkness, cinematic, non-graphic."
                     if any(k in norm_cap for k in ["liberto", "liberdade", "cura", "libertacao", "adoracao"]):
                         return "A modern worship scene with hands raised and a cross in the background, soft light, uplifting, cinematic, no text."
                     return ""
@@ -2056,7 +2077,18 @@ class VideoGenerator:
                 duration = float(it.get("duration") or 0)
                 if duration <= 0:
                     continue
-                image_prompt = _prompt_for_caption(caption)
+                if i == 0 and strict_sync and not caption:
+                    norm_full = _normalize(lyric_text or "")
+                    is_christian_song = any(k in norm_full for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "redencao", "salvacao", "sangue", "pecado", "sacrificio"])
+                    opening = (
+                        f"Cinematic opening shot for a Christian music video titled '{(title or 'Song')[:80]}'. "
+                        "A wooden cross silhouette on a hill at sunrise, gentle rays of light, reverent, hopeful, non-graphic."
+                        if is_christian_song
+                        else f"Cinematic opening shot for a music video titled '{(title or 'Song')[:80]}', symbolic, inspiring, wide shot, non-graphic."
+                    )
+                    image_prompt = opening + " No text, no watermark, no logo."
+                else:
+                    image_prompt = _prompt_for_caption(caption)
                 if progress_callback:
                     try:
                         total = max(1, len(timeline))
@@ -2079,7 +2111,17 @@ class VideoGenerator:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
                 bg_color = bg_colors[i % len(bg_colors)]
-                img = self.create_text_image(self._clean_text(caption), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
+                if i == 0 and strict_sync and not caption:
+                    title_text = (title or "Música").strip()
+                    if title_text and len(title_text) > 110:
+                        title_text = title_text[:107] + "..."
+                    if watermark_enabled and (author_text or "").strip():
+                        title_screen = f"{title_text}\n\n{(author_text or '').strip()}"
+                    else:
+                        title_screen = title_text
+                    img = self.create_text_image(self._clean_text(title_screen), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
+                else:
+                    img = self.create_text_image(self._clean_text(caption), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
                 clip = ImageClip(img)
                 clip = self._set_clip_duration(clip, duration)
                 clips.append(clip)
