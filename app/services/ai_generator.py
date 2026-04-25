@@ -34,7 +34,7 @@ class AIContentGenerator:
         db = SessionLocal()
         settings = None
         try:
-            settings = db.query(Settings).first()
+            settings = db.query(Settings).order_by(Settings.id.desc()).first()
         except OperationalError as e:
             print(f"AVISO: Falha ao carregar Settings do banco (migração pendente?): {e}")
         except SQLAlchemyError as e:
@@ -1394,12 +1394,17 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             }
 
     def transcribe_audio_segments(self, audio_path: str, language: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        info = self.transcribe_audio_segments_detailed(audio_path=audio_path, language=language)
+        segs = info.get("segments") if isinstance(info, dict) else None
+        return segs if isinstance(segs, list) else None
+
+    def transcribe_audio_segments_detailed(self, audio_path: str, language: Optional[str] = None) -> Dict[str, Any]:
         self._load_config()
         api_key = (self.api_key or "").strip() if self.api_key else ""
         if not api_key:
-            return None
+            return {"segments": None, "error": "missing_api_key"}
         if not audio_path or not os.path.exists(audio_path):
-            return None
+            return {"segments": None, "error": "file_not_found"}
         client = openai.OpenAI(api_key=api_key)
         try:
             with open(audio_path, "rb") as f:
@@ -1411,8 +1416,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 if language:
                     kwargs["language"] = language
                 res = client.audio.transcriptions.create(**kwargs)
-        except Exception:
-            return None
+        except Exception as e:
+            return {"segments": None, "error": str(e)}
 
         segments = None
         if hasattr(res, "segments"):
@@ -1420,7 +1425,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         elif isinstance(res, dict):
             segments = res.get("segments")
         if not isinstance(segments, list):
-            return None
+            return {"segments": None, "error": "no_segments"}
 
         out: List[Dict[str, Any]] = []
         for s in segments:
@@ -1438,7 +1443,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             if not t:
                 continue
             out.append({"start": start_f, "end": end_f, "text": t})
-        return out or None
+        return {"segments": out or None, "error": None if out else "empty_segments"}
 
     def generate_hotmart_suggestions(self, book_data):
         """

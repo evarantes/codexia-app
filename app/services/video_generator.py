@@ -1702,14 +1702,30 @@ class VideoGenerator:
                 raise Exception("Para sincronização perfeita, informe a letra da música.")
 
             segments = None
+            transcribe_error = None
             if self.ai_service and lyrics_lines:
                 try:
-                    segments = self.ai_service.transcribe_audio_segments(music_path, language="pt")
-                except Exception:
+                    if hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
+                        info = self.ai_service.transcribe_audio_segments_detailed(music_path, language="pt")
+                        if isinstance(info, dict):
+                            segments = info.get("segments")
+                            transcribe_error = info.get("error")
+                        else:
+                            segments = None
+                    else:
+                        segments = self.ai_service.transcribe_audio_segments(music_path, language="pt")
+                except Exception as e:
                     segments = None
+                    transcribe_error = str(e)
 
             if strict_sync and not segments:
-                raise Exception("Para sincronização perfeita, configure a OpenAI API Key (openai_api_key em Configurações) para transcrever o áudio e sincronizar com a letra.")
+                if transcribe_error == "missing_api_key":
+                    raise Exception("Para sincronização perfeita, configure a OpenAI API Key (openai_api_key em Configurações) para transcrever o áudio e sincronizar com a letra.")
+                if transcribe_error == "file_not_found":
+                    raise Exception("Para sincronização perfeita, o arquivo de áudio não foi encontrado no servidor.")
+                if transcribe_error:
+                    raise Exception(f"Para sincronização perfeita, falhou ao transcrever o áudio na OpenAI: {transcribe_error}")
+                raise Exception("Para sincronização perfeita, não foi possível transcrever o áudio na OpenAI.")
 
             def _merge_segments(segs):
                 blocks = []

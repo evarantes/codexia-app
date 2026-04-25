@@ -54,7 +54,7 @@ class SettingsUpdate(BaseModel):
 
 @router.get("/")
 def get_settings(db: Session = Depends(get_db)):
-    settings = db.query(Settings).first()
+    settings = db.query(Settings).order_by(Settings.id.desc()).first()
     if not settings:
         # Criar configurações padrão se não existirem
         settings = Settings()
@@ -65,13 +65,14 @@ def get_settings(db: Session = Depends(get_db)):
 
 @router.post("/")
 def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_db)):
-    settings = db.query(Settings).first()
+    settings = db.query(Settings).order_by(Settings.id.desc()).first()
     if not settings:
         settings = Settings()
         db.add(settings)
     
     if settings_update.openai_api_key is not None:
-        settings.openai_api_key = settings_update.openai_api_key
+        v = str(settings_update.openai_api_key).strip()
+        settings.openai_api_key = v or None
     if settings_update.leonardo_api_key is not None:
         v = str(settings_update.leonardo_api_key).strip()
         settings.leonardo_api_key = v or None
