@@ -638,15 +638,17 @@
                                             <div class="text-xs text-gray-600 truncate">{{ t.message || '' }}</div>
                                         </div>
                                         <div class="text-xs text-gray-600 whitespace-nowrap">{{ Number(t.progress || 0) }}%</div>
-                                        <a v-if="t.status === 'completed' && t.result && t.result.video_url" :href="t.result.video_url" target="_blank" class="text-indigo-700 text-xs font-semibold">
-                                            Abrir
-                                        </a>
-                                        <button v-else-if="t.status === 'processing' || t.status === 'pending'" @click="resumeClipTask(t.task_id)" class="text-indigo-700 text-xs font-semibold">
-                                            Ver
-                                        </button>
-                                        <button v-else @click="deleteClipTask(t.task_id)" class="text-red-700 text-xs font-semibold">
-                                            Excluir
-                                        </button>
+                                        <div class="flex items-center gap-3">
+                                            <a v-if="t.status === 'completed' && t.result && t.result.video_url" :href="t.result.video_url" target="_blank" class="text-indigo-700 text-xs font-semibold">
+                                                Abrir
+                                            </a>
+                                            <button v-if="t.status === 'processing' || t.status === 'pending'" @click="resumeClipTask(t.task_id)" class="text-indigo-700 text-xs font-semibold">
+                                                Ver
+                                            </button>
+                                            <button v-else @click="deleteClipTask(t.task_id)" class="text-red-700 text-xs font-semibold">
+                                                Excluir
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
