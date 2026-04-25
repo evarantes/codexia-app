@@ -1,4 +1,4 @@
-const CACHE_NAME = 'codexia-v3';
+const CACHE_NAME = 'codexia-v4';
 const urlsToCache = [
   '/',
   '/static/index.html',
@@ -49,6 +49,8 @@ self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
     const auth = event.request.headers.get('authorization') || event.request.headers.get('Authorization');
     if (auth) return;
+    const range = event.request.headers.get('range') || event.request.headers.get('Range');
+    if (range) return;
 
     if (url.origin === self.location.origin) {
       const p = url.pathname || '';
@@ -61,10 +63,12 @@ self.addEventListener('fetch', event => {
         p.startsWith('/books') ||
         p.startsWith('/token') ||
         p.startsWith('/task/') ||
-        p.startsWith('/settings')
+        p.startsWith('/settings') ||
+        p.startsWith('/static/music/')
       ) {
         return;
       }
+      if (/\.(mp3|wav|m4a|aac|ogg|mp4|webm)$/i.test(p)) return;
     }
   } catch (e) {
     return;
