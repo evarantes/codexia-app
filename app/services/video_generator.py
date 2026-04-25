@@ -1771,10 +1771,11 @@ class VideoGenerator:
                 if cur is not None:
                     blocks.append(cur)
                 if blocks:
-                    if blocks[0]["start"] > 0.25:
-                        blocks[0]["start"] = 0.0
-                    if blocks[-1]["end"] < (total_duration - 0.2):
-                        blocks[-1]["end"] = float(total_duration)
+                    if not strict:
+                        if blocks[0]["start"] > 0.25:
+                            blocks[0]["start"] = 0.0
+                        if blocks[-1]["end"] < (total_duration - 0.2):
+                            blocks[-1]["end"] = float(total_duration)
                 return blocks
 
             def _align_blocks_to_lyrics(blocks, lines):
@@ -1927,8 +1928,9 @@ class VideoGenerator:
                         cap = lyrics_lines[min(i, len(lyrics_lines) - 1)]
                         timeline.append({"start": start, "end": end, "caption": cap})
                 else:
-                    if first_known > 0:
-                        _fill_range(0, first_known - 1, 0.0, float(spans[first_known]["start"]))
+                    intro_end = float(spans[first_known]["start"])
+                    if intro_end > 0.35:
+                        timeline.append({"start": 0.0, "end": intro_end, "caption": ""})
                     if last_known < (len(spans) - 1):
                         _fill_range(last_known + 1, len(spans) - 1, float(spans[last_known]["end"]), float(total_duration))
                     for i in range(first_known, last_known + 1):
@@ -1944,6 +1946,8 @@ class VideoGenerator:
                             _fill_range(i, k - 1, float(spans[j]["end"]), float(spans[k]["start"]))
 
                     for idx, cap in enumerate(lyrics_lines):
+                        if idx < first_known:
+                            continue
                         sp = spans[idx]
                         if not sp:
                             continue
@@ -1970,8 +1974,11 @@ class VideoGenerator:
                     cap = sc.get("text") if isinstance(sc, dict) else str(sc)
                     timeline.append({"start": start, "end": end, "caption": str(cap or "").strip()})
 
-            if len(timeline) > max_scenes:
-                timeline = timeline[:max_scenes]
+            limit = max_scenes
+            if strict_sync and timeline and not str(timeline[0].get("caption") or "").strip():
+                limit = min(60, max_scenes + 1)
+            if len(timeline) > limit:
+                timeline = timeline[:limit]
                 timeline[-1]["end"] = float(total_duration)
 
             sum_prev = 0.0
