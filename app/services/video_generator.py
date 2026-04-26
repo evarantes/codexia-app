@@ -657,18 +657,29 @@ class VideoGenerator:
             "edenai", "openai_direct", "leonardo",
             "pollinations_flux", "pollinations_turbo", "pollinations",
         ]
-        final_prompt = (
-            f"{base_prompt}. Must align with the narration context. "
-            "Photorealistic cinematic photography, natural lighting, pleasant mood. "
-            "Realistic humans (no dolls), natural skin, proportional anatomy. "
-            "Avoid close-up portraits. "
-            "No sci-fi, no futuristic, no cyberpunk, no robots, no androids, no cyborgs, no machinery, no laboratory, no wires. "
-            "No horror, no monsters, no zombies, no undead, no gore, no blood. "
-            "No creepy, no uncanny, no doll-like. "
-            "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. "
-            "No dystopian, no apocalyptic. "
-            "No text, no watermark, no logo."
-        )
+        norm_bp = (base_prompt or "").strip().lower()
+        strict_worship = any(k in norm_bp for k in ["christian", "worship", "gospel", "louvor", "jesus", "cristo", "cruz", "calvario", "golgota"])
+        parts = [
+            f"{base_prompt}. Must align with the narration context. ",
+            "Photorealistic cinematic photography, natural lighting, pleasant mood. ",
+        ]
+        if strict_worship:
+            parts.append("Bright, warm, uplifting, peaceful, family-friendly, G-rated. ")
+        parts += [
+            "Realistic humans (no dolls), natural skin, proportional anatomy. ",
+            "Avoid close-up portraits. ",
+            "No sci-fi, no futuristic, no cyberpunk, no robots, no androids, no cyborgs, no machinery, no laboratory, no wires. ",
+            "No horror, no monsters, no zombies, no undead, no gore, no blood. ",
+        ]
+        if strict_worship:
+            parts.append("No macabre, no creepy, no occult, no satanic symbols, no pentagrams, no demons, no skulls, no cemetery, no graves, no dark mood, no scary lighting. ")
+        parts += [
+            "No creepy, no uncanny, no doll-like. ",
+            "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. ",
+            "No dystopian, no apocalyptic. ",
+            "No text, no watermark, no logo.",
+        ]
+        final_prompt = "".join(parts)
 
         for round_idx in range(1, rounds + 1):
             notify(f"Tentando gerar imagem ({round_idx}/{rounds})...")
@@ -2054,50 +2065,37 @@ class VideoGenerator:
 
                 def _scene_hint() -> str:
                     if any(k in norm_cap for k in ["calvario", "golgota"]):
-                        return "A man carrying a wooden cross on a dusty road toward a hill outside ancient Jerusalem, Roman era, wide shot, dramatic sky, reverent."
+                        return "A man carrying a wooden cross on a dusty road toward a hill outside ancient Jerusalem, Roman era, wide shot, reverent, non-graphic."
                     if ("cruz" in norm_cap) and any(k in norm_cap for k in ["vitoria", "venceu", "morte", "paz"]):
                         return "A cross silhouette on a hill at sunrise, rays of light breaking through clouds, hope and victory, wide cinematic landscape."
                     if ("cruz" in norm_cap) and any(k in norm_cap for k in ["castigo", "paz", "perdao", "salvacao", "redencao"]):
                         return "A wooden cross on a hill with soft golden light, peaceful atmosphere, symbolism of salvation and redemption, wide cinematic landscape."
                     if any(k in norm_cap for k in ["pregos", "cravo", "cravos"]):
-                        return "Close shot of iron nails and a wooden beam on the ground, symbolic and reverent, no violence, soft dramatic light."
+                        return "Close shot of iron nails and a wooden beam on the ground, symbolic and reverent, no wounds, no blood, soft warm light."
                     if ("coroa" in norm_cap and "espinh" in norm_cap):
                         return "A crown of thorns resting on rough stone, warm backlight, reverent still life, cinematic."
                     if ("veu" in norm_cap and any(k in norm_cap for k in ["rasgou", "rasgado", "rasgando"])):
                         return "Inside the ancient temple, a large curtain tearing from top to bottom, a beam of light shining through, awe and reverence."
                     if any(k in norm_cap for k in ["tumulo", "sepulcro", "ressuscitou", "vazio"]):
-                        return "An empty tomb with the stone rolled away at dawn, gentle golden light, peaceful and triumphant, biblical era."
+                        return "An empty tomb with the stone rolled away at dawn, gentle golden sunlight, peaceful and triumphant, biblical era, not scary."
                     if "multidao" in norm_cap or "gritava" in norm_cap:
                         return "A crowd in ancient Jerusalem watching in tension on a stone street, Roman era, wide shot, cinematic."
                     if any(k in norm_cap for k in ["pecado", "pena", "castigo", "condenacao"]):
-                        return "A person kneeling in darkness with a soft beam of light and a cross in the distance, symbolism of forgiveness and grace, cinematic."
+                        return "A person kneeling in warm sunlight with a gentle beam of light and a cross in the distance, symbolism of forgiveness and grace, cinematic, peaceful."
                     if "inferno" in norm_cap:
-                        return "Chains breaking in a dark cave as bright light forms a cross shape, symbolism of victory over darkness, cinematic, non-graphic."
+                        return "Chains breaking in bright daylight as warm light forms a cross-like glow, symbolism of victory and freedom, cinematic, peaceful, non-graphic."
                     if any(k in norm_cap for k in ["liberto", "liberdade", "cura", "libertacao", "adoracao"]):
                         return "A modern worship scene with hands raised and a cross in the background, soft light, uplifting, cinematic, no text."
                     return ""
 
-                base_style = "Photorealistic cinematic photography, natural lighting, wide shot, high detail, reverent, inspiring."
+                base_style = "Photorealistic cinematic photography, warm natural lighting, bright color palette, wide shot, high detail, reverent, uplifting, family-friendly."
                 if is_christian:
-                    hint = _scene_hint() or "Reverent Christian biblical imagery about the crucifixion and resurrection, symbolic and non-graphic."
-                    llm_scene = None
-                    try:
-                        if self.ai_service and hasattr(self.ai_service, "_load_config"):
-                            try:
-                                self.ai_service._load_config()
-                            except Exception:
-                                pass
-                        can_llm = bool(getattr(self.ai_service, "openrouter_key", None)) and hasattr(self.ai_service, "_generate_text")
-                        if can_llm:
-                            sys_p = "Você é um diretor de fotografia. Gere apenas UMA frase em inglês descrevendo uma tomada cinematográfica para um videoclipe, alinhada à letra. Proibido gore/violência gráfica. Sem texto na imagem."
-                            user_p = f"LETRA (pt-BR): {cap}\nGere a tomada (1 frase), estilo fotorealista, era bíblica quando aplicável."
-                            out = (self.ai_service._generate_text(user_p, system_prompt=sys_p, temperature=0.3, json_mode=False) or "").strip()
-                            if out and ("Simulação" not in out) and len(out) <= 260:
-                                llm_scene = out
-                    except Exception:
-                        llm_scene = None
-                    scene = llm_scene or hint
-                    return f"{scene} {base_style} No text, no watermark, no logo."
+                    hint = _scene_hint() or "A peaceful Christian worship scene with warm sunlight and a cross in the distance, symbolic and non-graphic."
+                    safety = (
+                        "No macabre, no horror, no creepy, no occult, no satanic, no demons, no skulls, no cemetery, no graves, no darkness, "
+                        "no scary faces, no violence, no blood, no wounds, no weapons."
+                    )
+                    return f"Christian worship music video (louvor). Lyric meaning: \"{cap[:220]}\". {hint} {base_style} {safety} No text, no watermark, no logo."
 
                 return f"Scene inspired by this lyric line (Portuguese): {cap[:180]}. {base_style} No text, no watermark, no logo."
 
