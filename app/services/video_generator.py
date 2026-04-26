@@ -382,6 +382,14 @@ class VideoGenerator:
 
         return text.strip()
 
+    def _clean_title(self, title: str) -> str:
+        t = (title or "").strip()
+        if not t:
+            return "Música"
+        t = re.sub(r"\s*[-–—|:]\s*$", "", t).strip()
+        t = re.sub(r"(\s*[-–—|:]?\s*E\.?MA\.?\s*)$", "", t, flags=re.IGNORECASE).strip()
+        return t or "Música"
+
     def generate_audio(self, text, lang='pt', voice_style=None, voice_gender=None):
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text or not text.strip(): 
@@ -1629,7 +1637,7 @@ class VideoGenerator:
             except Exception:
                 pass
 
-    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto", progress_callback: Optional[Callable[[int, str], None]] = None):
+    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto", captions_enabled: bool = True, progress_callback: Optional[Callable[[int, str], None]] = None):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
         try:
             from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
@@ -1658,6 +1666,8 @@ class VideoGenerator:
                 scenes = scenes.get("scenes") or []
             if not isinstance(scenes, list):
                 scenes = []
+
+            clean_title = self._clean_title(title)
 
             credit = None
             if watermark_enabled:
@@ -1858,10 +1868,22 @@ class VideoGenerator:
             if strict_sync and segments and isinstance(segments, list) and lyrics_lines:
                 lead_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_LEAD_MS") or "").strip()
                 try:
-                    lead_ms = float(lead_ms_raw) if lead_ms_raw else 80.0
+                    lead_ms = float(lead_ms_raw) if lead_ms_raw else 0.0
                 except Exception:
-                    lead_ms = 80.0
+                    lead_ms = 0.0
                 lead_sec = max(-0.9, min(0.9, lead_ms / 1000.0))
+                early_delay_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_EARLY_DELAY_MS") or "").strip()
+                try:
+                    early_delay_ms = float(early_delay_ms_raw) if early_delay_ms_raw else 180.0
+                except Exception:
+                    early_delay_ms = 180.0
+                early_delay_sec = max(0.0, min(1.2, early_delay_ms / 1000.0))
+                early_win_raw = (os.getenv("MUSIC_CLIP_CAPTION_EARLY_WINDOW_SEC") or "").strip()
+                try:
+                    early_window_sec = float(early_win_raw) if early_win_raw else 180.0
+                except Exception:
+                    early_window_sec = 180.0
+                early_window_sec = max(10.0, min(600.0, early_window_sec))
 
                 blocks = _merge_segments(segments, strict=True)
                 mapping = _align_blocks_to_lyrics(blocks, lyrics_lines)
@@ -1892,9 +1914,16 @@ class VideoGenerator:
                         continue
                     sst = float(sp.get("start") or 0.0)
                     een = float(sp.get("end") or 0.0)
-                    if lead_sec > 0.0:
+                    if abs(lead_sec) > 0.0001:
                         sst = max(0.0, sst - lead_sec)
                         een = max(sst + 0.25, een - lead_sec)
+                    if early_delay_sec > 0.0 and early_window_sec > 1.0:
+                        factor = max(0.0, min(1.0, 1.0 - (sst / early_window_sec)))
+                        if factor > 0.0:
+                            shift = early_delay_sec * factor
+                            sst = min(float(total_duration), sst + shift)
+                            een = min(float(total_duration), een + shift)
+                            een = max(sst + 0.25, een)
                     spans[li] = {"start": sst, "end": een}
 
                 def _fill_range(start_idx: int, end_idx: int, start_t: float, end_t: float):
@@ -2081,10 +2110,10 @@ class VideoGenerator:
                     norm_full = _normalize(lyric_text or "")
                     is_christian_song = any(k in norm_full for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "redencao", "salvacao", "sangue", "pecado", "sacrificio"])
                     opening = (
-                        f"Cinematic opening shot for a Christian music video titled '{(title or 'Song')[:80]}'. "
+                        f"Cinematic opening shot for a Christian music video titled '{clean_title[:80]}'. "
                         "A wooden cross silhouette on a hill at sunrise, gentle rays of light, reverent, hopeful, non-graphic."
                         if is_christian_song
-                        else f"Cinematic opening shot for a music video titled '{(title or 'Song')[:80]}', symbolic, inspiring, wide shot, non-graphic."
+                        else f"Cinematic opening shot for a music video titled '{clean_title[:80]}', symbolic, inspiring, wide shot, non-graphic."
                     )
                     image_prompt = opening + " No text, no watermark, no logo."
                 else:
@@ -2111,8 +2140,8 @@ class VideoGenerator:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
                 bg_color = bg_colors[i % len(bg_colors)]
-                if i == 0 and strict_sync and not caption:
-                    title_text = (title or "Música").strip()
+                if (i == 0 and strict_sync and not caption) or (i == 0 and not captions_enabled):
+                    title_text = clean_title.strip()
                     if title_text and len(title_text) > 110:
                         title_text = title_text[:107] + "..."
                     if watermark_enabled and (author_text or "").strip():
@@ -2121,7 +2150,10 @@ class VideoGenerator:
                         title_screen = title_text
                     img = self.create_text_image(self._clean_text(title_screen), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
                 else:
-                    img = self.create_text_image(self._clean_text(caption), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
+                    overlay_text = caption if captions_enabled else ""
+                    if i == 0 and captions_enabled and clean_title and caption:
+                        overlay_text = f"{clean_title}\n\n{caption}"
+                    img = self.create_text_image(self._clean_text(overlay_text), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
                 clip = ImageClip(img)
                 clip = self._set_clip_duration(clip, duration)
                 clips.append(clip)

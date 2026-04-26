@@ -579,6 +579,10 @@
                                     <input type="checkbox" v-model="clipPerfectSync">
                                     <span>Sincronização perfeita (requer OpenAI)</span>
                                 </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700 mt-3">
+                                    <input type="checkbox" v-model="clipCaptionsEnabled">
+                                    <span>Gerar com legenda</span>
+                                </label>
                                 <div class="grid md:grid-cols-3 gap-3 mt-3">
                                     <div class="md:col-span-2">
                                         <label class="block text-sm font-semibold text-gray-700">Formato do vídeo</label>
@@ -3078,6 +3082,7 @@
                     clipAuthorText: '',
                     clipWatermarkEnabled: true,
                     clipPerfectSync: false,
+                    clipCaptionsEnabled: true,
                     clipAspectRatio: '9:16',
                     clipAutoUploadYoutube: false,
                     clipYoutubeUrl: null,
@@ -5927,6 +5932,7 @@
                                 author_text: (this.clipAuthorText || '').trim() || null,
                                 watermark_enabled: this.clipWatermarkEnabled === true,
                                 sync_mode: this.clipPerfectSync === true ? 'perfect' : 'auto',
+                                captions_enabled: this.clipCaptionsEnabled === true,
                                 aspect_ratio: this.clipAspectRatio || '9:16',
                                 auto_upload_youtube: this.clipAutoUploadYoutube === true
                             })

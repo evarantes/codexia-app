@@ -7,6 +7,7 @@ import uuid
 import threading
 import requests
 import json
+import re
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
@@ -43,6 +44,7 @@ class GenerateClipRequest(BaseModel):
     author_text: Optional[str] = None
     watermark_enabled: Optional[bool] = True
     sync_mode: Optional[str] = "auto"
+    captions_enabled: Optional[bool] = True
     aspect_ratio: Optional[str] = "9:16"  # "9:16" (vertical) ou "16:9" (YouTube)
     auto_upload_youtube: Optional[bool] = False
 
@@ -84,6 +86,15 @@ def _parse_bool(v) -> Optional[bool]:
     if s in ("0", "false", "no", "n", "off"):
         return False
     return None
+
+
+def _sanitize_title(title: str) -> str:
+    t = (title or "").strip()
+    if not t:
+        return "Música"
+    t = re.sub(r"\s*[-–—|:]\s*$", "", t).strip()
+    t = re.sub(r"(\s*[-–—|:]?\s*E\.?MA\.?\s*)$", "", t, flags=re.IGNORECASE).strip()
+    return t or "Música"
 
 
 @router.post("/lyrics")
@@ -624,17 +635,20 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
         watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
         sync_mode = (request.sync_mode or "auto").strip().lower()
+        captions_enabled = bool(request.captions_enabled) if request.captions_enabled is not None else True
         aspect_ratio = (request.aspect_ratio or "9:16").strip()
         if aspect_ratio not in ("9:16", "16:9"):
             aspect_ratio = "9:16"
+        safe_title = _sanitize_title(request.title)
         result = video_gen.create_music_video(
             music_path,
-            title=request.title,
+            title=safe_title,
             aspect_ratio=aspect_ratio,
             lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
             author_text=author,
             watermark_enabled=watermark_enabled,
             sync_mode=sync_mode,
+            captions_enabled=captions_enabled,
         )
         return {
             "video_url": result["video_url"],
@@ -672,15 +686,18 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
     sync_mode = (request.sync_mode or "auto").strip().lower()
     watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
     author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
+    captions_enabled = bool(request.captions_enabled) if request.captions_enabled is not None else True
     aspect_ratio = (request.aspect_ratio or "9:16").strip()
     if aspect_ratio not in ("9:16", "16:9"):
         aspect_ratio = "9:16"
     auto_upload_youtube = bool(request.auto_upload_youtube) if request.auto_upload_youtube is not None else False
+    safe_title = _sanitize_title(request.title)
     payload = {
         "kind": "music_clip",
-        "title": (request.title or "Música"),
+        "title": safe_title,
         "music_filename": music_filename,
         "sync_mode": sync_mode,
+        "captions_enabled": captions_enabled,
         "aspect_ratio": aspect_ratio,
         "auto_upload_youtube": auto_upload_youtube,
         "watermark_enabled": watermark_enabled,
@@ -700,12 +717,13 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
 
             result = video_gen.create_music_video(
                 music_path,
-                title=request.title,
+                title=safe_title,
                 aspect_ratio=aspect_ratio,
                 lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
                 author_text=author,
                 watermark_enabled=watermark_enabled,
                 sync_mode=sync_mode,
+                captions_enabled=captions_enabled,
                 progress_callback=_progress,
             )
             video_url = result.get("video_url") if isinstance(result, dict) else None
@@ -723,7 +741,7 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
                     service = YouTubeService()
                     upload_result = service.upload_video(
                         abs_video_path,
-                        title=(request.title or "Clipe"),
+                        title=safe_title,
                         description=(request.lyrics or "").strip()[:4000] or "Clipe gerado automaticamente por Codexia.",
                         tags=["música", "gospel"] if "16:9" == aspect_ratio else ["shorts", "música"],
                     )
@@ -759,7 +777,7 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
                     user_id=user.id,
                     kind="music_clip_ready",
                     title="Clipe pronto",
-                    message=f"Seu clipe '{(request.title or 'Música')[:80]}' foi concluído.",
+                    message=f"Seu clipe '{safe_title[:80]}' foi concluído.",
                     payload_json=json.dumps(note_payload, ensure_ascii=False),
                     status="new",
                 ))
