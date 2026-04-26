@@ -1858,10 +1858,10 @@ class VideoGenerator:
             if strict_sync and segments and isinstance(segments, list) and lyrics_lines:
                 lead_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_LEAD_MS") or "").strip()
                 try:
-                    lead_ms = float(lead_ms_raw) if lead_ms_raw else 220.0
+                    lead_ms = float(lead_ms_raw) if lead_ms_raw else 80.0
                 except Exception:
-                    lead_ms = 220.0
-                lead_sec = max(0.0, min(0.9, lead_ms / 1000.0))
+                    lead_ms = 80.0
+                lead_sec = max(-0.9, min(0.9, lead_ms / 1000.0))
 
                 blocks = _merge_segments(segments, strict=True)
                 mapping = _align_blocks_to_lyrics(blocks, lyrics_lines)
