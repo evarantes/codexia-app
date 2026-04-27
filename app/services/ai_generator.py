@@ -1927,6 +1927,19 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 except Exception:
                     pass
 
+        def _timeout_env(name: str, default: int, min_v: int = 10, max_v: int = 180) -> int:
+            raw = (os.getenv(name) or "").strip()
+            try:
+                v = int(raw) if raw else int(default)
+            except Exception:
+                v = int(default)
+            return max(min_v, min(v, max_v))
+
+        eden_timeout = _timeout_env("EDENAI_IMAGE_TIMEOUT", 60, min_v=10, max_v=180)
+        leonardo_timeout = _timeout_env("LEONARDO_IMAGE_TIMEOUT", 60, min_v=10, max_v=180)
+        leonardo_poll_timeout = _timeout_env("LEONARDO_POLL_TIMEOUT", 30, min_v=10, max_v=120)
+        leonardo_deadline_sec = _timeout_env("LEONARDO_DEADLINE_SEC", 90, min_v=30, max_v=240)
+
         for provider in provider_order:
             label = provider_labels.get(provider, provider)
             try:
@@ -1946,7 +1959,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         "https://api.edenai.run/v2/image/generation",
                         headers=headers,
                         json=payload,
-                        timeout=120,
+                        timeout=eden_timeout,
                     )
                     if r.status_code >= 400:
                         raise Exception(f"HTTP {r.status_code}: {(r.text or '').strip()[:240]}")
@@ -2047,7 +2060,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         "https://cloud.leonardo.ai/api/rest/v1/generations",
                         headers=headers,
                         json=payload,
-                        timeout=120,
+                        timeout=leonardo_timeout,
                     )
                     if r.status_code >= 400:
                         raise Exception(f"HTTP {r.status_code}: {(r.text or '').strip()[:240]}")
@@ -2060,12 +2073,12 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         raise Exception("Sem generationId")
 
                     import time
-                    deadline = time.time() + 120
+                    deadline = time.time() + float(leonardo_deadline_sec)
                     while time.time() < deadline:
                         rr = requests.get(
                             f"https://cloud.leonardo.ai/api/rest/v1/generations/{generation_id}",
                             headers=headers,
-                            timeout=120,
+                            timeout=leonardo_poll_timeout,
                         )
                         if rr.status_code >= 400:
                             raise Exception(f"HTTP {rr.status_code}: {(rr.text or '').strip()[:240]}")

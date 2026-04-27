@@ -640,6 +640,14 @@ class VideoGenerator:
         """
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
         rounds = max(1, min(6, int(max_rounds or 2)))
+        import time
+        max_seconds_env = str(os.getenv("IMAGE_SCENE_TIMEOUT_SEC") or "").strip()
+        try:
+            max_seconds = int(max_seconds_env) if max_seconds_env else 180
+        except Exception:
+            max_seconds = 180
+        max_seconds = max(45, min(max_seconds, 600))
+        started_at = time.time()
 
         def notify(msg):
             if status_callback:
@@ -699,6 +707,9 @@ class VideoGenerator:
         for round_idx in range(1, rounds + 1):
             notify(f"Tentando gerar imagem ({round_idx}/{rounds})...")
             for provider in providers:
+                if (time.time() - started_at) > float(max_seconds):
+                    notify("Timeout ao gerar imagem desta cena; usando fallback local para continuar.")
+                    return self._generate_fallback_background((width, height))
                 url = None
                 if self.ai_service:
                     try:
@@ -724,6 +735,9 @@ class VideoGenerator:
 
         notify("Provedores configurados falharam. Tentando Pollinations direto como último recurso...")
         for attempt in range(3):
+            if (time.time() - started_at) > float(max_seconds):
+                notify("Timeout ao gerar imagem desta cena; usando fallback local para continuar.")
+                return self._generate_fallback_background((width, height))
             try:
                 url_prompt = _short_prompt_for_url(base_prompt) or _short_prompt_for_url(text_fallback) or "cinematic uplifting bright inspiring family-friendly"
                 direct_url = self._pollinations_direct_url(url_prompt, aspect_ratio)
@@ -733,7 +747,6 @@ class VideoGenerator:
                     return path
             except Exception as e:
                 notify(f"Pollinations direto tentativa {attempt+1} falhou: {str(e)[:100]}")
-            import time
             time.sleep(2)
 
         notify("Não foi possível gerar imagem personalizada após todas as tentativas.")
@@ -2254,6 +2267,12 @@ class VideoGenerator:
 
                 def _clip_status(message, scene_idx=i, total=len(timeline)):
                     print(f"[Clip][Cena {scene_idx+1}/{total}] {message}")
+                    if progress_callback:
+                        try:
+                            pct = 25 + int((float(scene_idx) / float(max(1, total))) * 60.0)
+                            progress_callback(min(90, max(0, pct)), f"Cena {scene_idx+1}/{total}: {str(message or '').strip()[:160]}")
+                        except Exception:
+                            pass
 
                 bg_image_path = self._ensure_image_for_scene(
                     image_prompt,
