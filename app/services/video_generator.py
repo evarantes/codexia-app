@@ -1683,6 +1683,7 @@ class VideoGenerator:
                 scenes = []
 
             clean_title = self._clean_title(title)
+            warnings = []
 
             credit = None
             if watermark_enabled:
@@ -1758,14 +1759,28 @@ class VideoGenerator:
                     transcribe_error = str(e)
 
             if explicit_strict and not segments:
+                te = str(transcribe_error or "").strip().lower()
                 if transcribe_error == "missing_api_key":
-                    raise Exception("Para sincronização perfeita, configure a OpenAI API Key (openai_api_key em Configurações) para transcrever o áudio e sincronizar com a letra.")
-                if transcribe_error == "file_not_found":
-                    raise Exception("Para sincronização perfeita, o arquivo de áudio não foi encontrado no servidor.")
-                if transcribe_error:
-                    raise Exception(f"Para sincronização perfeita, falhou ao transcrever o áudio na OpenAI: {transcribe_error}")
-                raise Exception("Para sincronização perfeita, não foi possível transcrever o áudio na OpenAI.")
+                    warnings.append("Sincronização perfeita indisponível (OpenAI não configurada). Gerando clipe sem legenda.")
+                elif "insufficient_quota" in te or "exceeded your current quota" in te:
+                    warnings.append("Sincronização perfeita indisponível (OpenAI sem saldo/quota). Gerando clipe sem legenda.")
+                elif transcribe_error == "file_not_found":
+                    warnings.append("Sincronização perfeita indisponível (arquivo de áudio não encontrado para transcrição). Gerando clipe sem legenda.")
+                elif te:
+                    warnings.append("Sincronização perfeita indisponível (falha ao transcrever na OpenAI). Gerando clipe sem legenda.")
+                else:
+                    warnings.append("Sincronização perfeita indisponível (não foi possível transcrever o áudio). Gerando clipe sem legenda.")
+                captions_enabled = False
+                lyrics_lines_for_captions = []
+                strict_sync = False
             if strict_sync and not segments:
+                te = str(transcribe_error or "").strip().lower()
+                if transcribe_error == "missing_api_key":
+                    warnings.append("Legendas desativadas: OpenAI não configurada para detecção de voz.")
+                elif "insufficient_quota" in te or "exceeded your current quota" in te:
+                    warnings.append("Legendas desativadas: OpenAI sem saldo/quota para detecção de voz.")
+                elif te:
+                    warnings.append("Legendas desativadas: falha ao transcrever o áudio para detecção de voz.")
                 captions_enabled = False
                 lyrics_lines_for_captions = []
                 strict_sync = False
@@ -2266,7 +2281,19 @@ class VideoGenerator:
                     pass
             final.close()
             audio_clip.close()
-            return {"video_url": f"{VIDEO_URL_PREFIX}/{filename}"}
+            out = {"video_url": f"{VIDEO_URL_PREFIX}/{filename}"}
+            if warnings:
+                uniq = []
+                seen = set()
+                for w in warnings:
+                    ww = str(w or "").strip()
+                    if not ww or ww in seen:
+                        continue
+                    seen.add(ww)
+                    uniq.append(ww)
+                if uniq:
+                    out["warning"] = " ".join(uniq)[:500]
+            return out
         except Exception as e:
             for c in clips:
                 try:

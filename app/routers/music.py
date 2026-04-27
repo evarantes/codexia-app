@@ -632,7 +632,7 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
         from app.services.video_generator import VideoGenerator
         ai = AIContentGenerator()
         video_gen = VideoGenerator(ai_service=ai)
-        author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
+        author = (request.author_text.strip() if request.author_text and request.author_text.strip() else "E.MA")
         watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
         sync_mode = (request.sync_mode or "auto").strip().lower()
         captions_enabled = bool(request.captions_enabled) if request.captions_enabled is not None else True
@@ -650,10 +650,11 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
             sync_mode=sync_mode,
             captions_enabled=captions_enabled,
         )
-        return {
-            "video_url": result["video_url"],
-            "message": "Clipe gerado com sucesso."
-        }
+        warning = (result.get("warning") if isinstance(result, dict) else None)
+        msg = "Clipe gerado com sucesso."
+        if isinstance(warning, str) and warning.strip():
+            msg = f"{msg} {warning.strip()}"
+        return {"video_url": result["video_url"], "message": msg}
     except Exception as e:
         msg = str(e)
         if msg.startswith("Para sincronização perfeita,"):
@@ -685,7 +686,7 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
     task_id = create_task(user_id=user.id)
     sync_mode = (request.sync_mode or "auto").strip().lower()
     watermark_enabled = bool(request.watermark_enabled) if request.watermark_enabled is not None else True
-    author = (request.author_text.strip() if request.author_text and request.author_text.strip() else (user.name or user.email or "").strip())
+    author = (request.author_text.strip() if request.author_text and request.author_text.strip() else "E.MA")
     captions_enabled = bool(request.captions_enabled) if request.captions_enabled is not None else True
     aspect_ratio = (request.aspect_ratio or "9:16").strip()
     if aspect_ratio not in ("9:16", "16:9"):
@@ -761,12 +762,16 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
                 except Exception as e:
                     youtube_info = {"error": str(e), "published": False, "status": "failed"}
 
+            warning = (result.get("warning") if isinstance(result, dict) else None)
             update_task(
                 task_id,
                 status="completed",
                 progress=100,
-                message=("Clipe gerado e publicado no YouTube." if (youtube_info and youtube_info.get("published")) else "Clipe gerado com sucesso."),
-                result={**payload, "video_url": video_url, "youtube": youtube_info},
+                message=(
+                    ("Clipe gerado e publicado no YouTube." if (youtube_info and youtube_info.get("published")) else "Clipe gerado com sucesso.")
+                    + (f" {warning.strip()}" if isinstance(warning, str) and warning.strip() else "")
+                ),
+                result={**payload, "video_url": video_url, "youtube": youtube_info, "warning": warning},
             )
             db2 = SessionLocal()
             try:
