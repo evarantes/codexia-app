@@ -1412,10 +1412,15 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     "model": "whisper-1",
                     "file": f,
                     "response_format": "verbose_json",
+                    "timestamp_granularities": ["word", "segment"],
                 }
                 if language:
                     kwargs["language"] = language
-                res = client.audio.transcriptions.create(**kwargs)
+                try:
+                    res = client.audio.transcriptions.create(**kwargs)
+                except TypeError:
+                    kwargs.pop("timestamp_granularities", None)
+                    res = client.audio.transcriptions.create(**kwargs)
         except Exception as e:
             return {"segments": None, "error": str(e)}
 
@@ -1432,10 +1437,12 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             start = None
             end = None
             text = None
+            words_raw = None
             if isinstance(s, dict):
                 start = s.get("start")
                 end = s.get("end")
                 text = s.get("text")
+                words_raw = s.get("words")
             elif hasattr(s, "model_dump"):
                 try:
                     d = s.model_dump()
@@ -1443,14 +1450,17 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         start = d.get("start")
                         end = d.get("end")
                         text = d.get("text")
+                        words_raw = d.get("words")
                 except Exception:
                     start = getattr(s, "start", None)
                     end = getattr(s, "end", None)
                     text = getattr(s, "text", None)
+                    words_raw = getattr(s, "words", None)
             else:
                 start = getattr(s, "start", None)
                 end = getattr(s, "end", None)
                 text = getattr(s, "text", None)
+                words_raw = getattr(s, "words", None)
             try:
                 start_f = float(start)
                 end_f = float(end)
@@ -1459,7 +1469,24 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             t = str(text or "").strip()
             if not t:
                 continue
-            out.append({"start": start_f, "end": end_f, "text": t})
+            words_out: Optional[List[Dict[str, Any]]] = None
+            if isinstance(words_raw, list) and words_raw:
+                w_items: List[Dict[str, Any]] = []
+                for w in words_raw:
+                    if not isinstance(w, dict):
+                        continue
+                    try:
+                        ws = float(w.get("start"))
+                        we = float(w.get("end"))
+                    except Exception:
+                        continue
+                    ww = str(w.get("word") or w.get("text") or "").strip()
+                    if not ww or we <= ws:
+                        continue
+                    w_items.append({"start": ws, "end": we, "word": ww})
+                if w_items:
+                    words_out = w_items
+            out.append({"start": start_f, "end": end_f, "text": t, "words": words_out})
         return {"segments": out or None, "error": None if out else "empty_segments"}
 
     def generate_hotmart_suggestions(self, book_data):
@@ -1806,8 +1833,21 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         width, height = (720, 1280) if is_portrait else (1280, 720)
         dalle_size = "1024x1792" if is_portrait else "1792x1024"
 
+        positive_style = [
+            "high quality",
+            "cinematic lighting",
+            "vibrant colors",
+            "bright",
+            "inspiring",
+            "family-friendly",
+        ]
         quality_tokens = [
             "photorealistic cinematic photography",
+            "cinematic lighting",
+            "vibrant colors",
+            "bright",
+            "inspiring",
+            "family-friendly",
             "natural lighting",
             "sharp focus",
             "high detail",
@@ -1816,16 +1856,21 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             "realistic skin texture",
         ]
         negative_constraints = (
-            "no text, no subtitles, no watermarks, no signatures, no logos, "
-            "no horror, no monsters, no zombies, no undead, no gore, no blood, "
-            "no creepy, no uncanny, no doll-like, "
-            "no deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, "
-            "no bad hands, no extra fingers, no melted face, no blurred face, "
+            "negative prompt: horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, distorted faces, demons, intense fear; "
+            "no text, no subtitles, no watermarks, no signatures, no logos; "
+            "no monsters, no undead; "
+            "no uncanny, no doll-like; "
+            "no deformed, no disfigured, no mutated, no bad anatomy, no extra limbs; "
+            "no bad hands, no extra fingers, no melted face, no blurred face; "
             "no lowres, no jpeg artifacts"
         )
+        raw_lower = raw_prompt.lower()
+        missing_style = [t for t in positive_style if t.lower() not in raw_lower]
         enhanced_prompt = raw_prompt
-        if len(raw_prompt) < 240 and not any(token in raw_prompt.lower() for token in quality_tokens[:3]):
-            enhanced_prompt = f"{raw_prompt}, {' '.join(quality_tokens[:7])}"
+        if missing_style:
+            enhanced_prompt = f"{enhanced_prompt}, {', '.join(missing_style)}"
+        if len(enhanced_prompt) < 240 and not any(token in enhanced_prompt.lower() for token in quality_tokens[:3]):
+            enhanced_prompt = f"{enhanced_prompt}, {' '.join(quality_tokens[:7])}"
 
         provider_order = providers or ["edenai", "openai_direct", "leonardo", "pollinations_flux", "pollinations_turbo", "pollinations"]
         provider_labels = {

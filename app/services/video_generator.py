@@ -609,10 +609,12 @@ class VideoGenerator:
         import urllib.parse
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
         safe_prompt = urllib.parse.quote(
-            f"{prompt} cinematic uplifting bright inspiring photorealistic cinematic photography warm natural lighting bright color palette pleasant mood "
+            f"{prompt} high quality cinematic lighting vibrant colors bright inspiring family-friendly photorealistic cinematic photography warm natural lighting bright color palette pleasant mood "
             "realistic humans natural skin texture proportional anatomy "
             "avoid close-up portraits "
-            "negative prompt: no macabre no horror no monsters no zombies no undead no gore no blood no disturbing no occult no satanic no demons no skulls no cemetery no graves "
+            "negative prompt: horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, distorted faces, demons, intense fear; "
+            "no monsters, no undead; no disturbing; no occult; "
+            "no skulls no cemetery no graves "
             "no dark mood no low key lighting "
             "no creepy no uncanny no doll-like "
             "no deformed no disfigured no mutated no bad anatomy no extra limbs "
@@ -679,7 +681,7 @@ class VideoGenerator:
             "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. ",
             "No dystopian, no apocalyptic. ",
             "No text, no watermark, no logo.",
-            "Negative prompt: macabre, horror, creepy, dark mood, low-key lighting, disturbing, occult, satanic, pentagram, demons, skulls, cemetery, graves, blood, gore, violence, weapons.",
+            "Negative prompt: (horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, distorted faces, demons, intense fear).",
         ]
         final_prompt = "".join(parts)
 
@@ -1717,7 +1719,9 @@ class VideoGenerator:
                     out.append(l2)
                 return out
 
-            lyrics_lines = _clean_lyrics_lines(lyric_text or "")
+            lyrics_lines_all = _clean_lyrics_lines(lyric_text or "")
+            lyrics_lines_for_timeline = lyrics_lines_all[:]
+            lyrics_lines_for_captions = lyrics_lines_all[:] if captions_enabled else []
 
             max_scenes_env = os.getenv("MUSIC_CLIP_MAX_SCENES", "").strip()
             try:
@@ -1726,15 +1730,19 @@ class VideoGenerator:
                 max_scenes = 18
             max_scenes = max(6, min(max_scenes, 40))
 
-            strict_sync = (sync_mode or "auto").strip().lower() in {"perfect", "precise", "strict"}
-            if strict_sync and not lyrics_lines:
+            mode_norm = (sync_mode or "auto").strip().lower()
+            explicit_strict = mode_norm in {"perfect", "precise", "strict"}
+            enforce_voice_sync_env = (os.getenv("MUSIC_CLIP_ENFORCE_VOICE_SYNC") or "1").strip().lower()
+            enforce_voice_sync = enforce_voice_sync_env not in {"0", "false", "no", "off"}
+            strict_sync = explicit_strict or (enforce_voice_sync and captions_enabled and bool(lyrics_lines_for_captions) and mode_norm in {"auto", ""})
+            if explicit_strict and not lyrics_lines_for_captions:
                 raise Exception("Para sincronização perfeita, informe a letra da música.")
-            if strict_sync and lyrics_lines:
-                max_scenes = max(max_scenes, min(len(lyrics_lines), 120))
+            if strict_sync and lyrics_lines_for_timeline:
+                max_scenes = max(max_scenes, min(len(lyrics_lines_for_timeline), 120))
 
             segments = None
             transcribe_error = None
-            if self.ai_service and lyrics_lines:
+            if self.ai_service and lyrics_lines_for_captions:
                 try:
                     if hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
                         info = self.ai_service.transcribe_audio_segments_detailed(music_path, language="pt")
@@ -1749,7 +1757,7 @@ class VideoGenerator:
                     segments = None
                     transcribe_error = str(e)
 
-            if strict_sync and not segments:
+            if explicit_strict and not segments:
                 if transcribe_error == "missing_api_key":
                     raise Exception("Para sincronização perfeita, configure a OpenAI API Key (openai_api_key em Configurações) para transcrever o áudio e sincronizar com a letra.")
                 if transcribe_error == "file_not_found":
@@ -1757,6 +1765,10 @@ class VideoGenerator:
                 if transcribe_error:
                     raise Exception(f"Para sincronização perfeita, falhou ao transcrever o áudio na OpenAI: {transcribe_error}")
                 raise Exception("Para sincronização perfeita, não foi possível transcrever o áudio na OpenAI.")
+            if strict_sync and not segments:
+                captions_enabled = False
+                lyrics_lines_for_captions = []
+                strict_sync = False
             if progress_callback:
                 try:
                     progress_callback(18, "Sincronizando letra e áudio...")
@@ -1766,6 +1778,7 @@ class VideoGenerator:
             def _merge_segments(segs, strict: bool = False):
                 blocks = []
                 cur = None
+                cur_words = None
                 for s in (segs or []):
                     if not isinstance(s, dict):
                         continue
@@ -1779,21 +1792,67 @@ class VideoGenerator:
                     txt = str(s.get("text") or "").strip()
                     if not txt:
                         continue
+                    wraw = s.get("words") if isinstance(s, dict) else None
+                    wlist = None
+                    if isinstance(wraw, list) and wraw:
+                        ww = []
+                        for w in wraw:
+                            if not isinstance(w, dict):
+                                continue
+                            try:
+                                ws = float(w.get("start"))
+                                we = float(w.get("end"))
+                            except Exception:
+                                continue
+                            wd = str(w.get("word") or w.get("text") or "").strip()
+                            if not wd or we <= ws:
+                                continue
+                            ww.append({"start": ws, "end": we, "word": wd})
+                        if ww:
+                            wlist = ww
                     if cur is None:
                         cur = {"start": max(0.0, st), "end": en, "text": txt}
+                        cur_words = wlist[:] if isinstance(wlist, list) else None
                     else:
                         cur["end"] = en
                         cur["text"] = (cur["text"] + " " + txt).strip()
+                        if isinstance(cur_words, list) and isinstance(wlist, list):
+                            cur_words.extend(wlist)
+                        elif cur_words is None and isinstance(wlist, list):
+                            cur_words = wlist[:]
                     dur = float(cur["end"]) - float(cur["start"])
                     if strict:
                         if dur >= 1.8 or len(cur["text"]) >= 44:
+                            if isinstance(cur_words, list) and cur_words:
+                                try:
+                                    cur["start"] = max(0.0, min(float(w.get("start")) for w in cur_words))
+                                    cur["end"] = max(float(cur["start"]) + 0.15, max(float(w.get("end")) for w in cur_words))
+                                except Exception:
+                                    pass
+                                cur["words"] = cur_words
                             blocks.append(cur)
                             cur = None
+                            cur_words = None
                             continue
                     if dur >= 3.6 or len(cur["text"]) >= 84:
+                        if isinstance(cur_words, list) and cur_words:
+                            try:
+                                cur["start"] = max(0.0, min(float(w.get("start")) for w in cur_words))
+                                cur["end"] = max(float(cur["start"]) + 0.15, max(float(w.get("end")) for w in cur_words))
+                            except Exception:
+                                pass
+                            cur["words"] = cur_words
                         blocks.append(cur)
                         cur = None
+                        cur_words = None
                 if cur is not None:
+                    if isinstance(cur_words, list) and cur_words:
+                        try:
+                            cur["start"] = max(0.0, min(float(w.get("start")) for w in cur_words))
+                            cur["end"] = max(float(cur["start"]) + 0.15, max(float(w.get("end")) for w in cur_words))
+                        except Exception:
+                            pass
+                        cur["words"] = cur_words
                     blocks.append(cur)
                 if blocks:
                     if not strict:
@@ -1880,7 +1939,7 @@ class VideoGenerator:
                 return mapping
 
             timeline = []
-            if strict_sync and segments and isinstance(segments, list) and lyrics_lines:
+            if strict_sync and segments and isinstance(segments, list) and lyrics_lines_for_captions:
                 lead_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_LEAD_MS") or "").strip()
                 try:
                     lead_ms = float(lead_ms_raw) if lead_ms_raw else 0.0
@@ -1889,7 +1948,7 @@ class VideoGenerator:
                 lead_sec = max(-0.9, min(0.9, lead_ms / 1000.0))
 
                 blocks = _merge_segments(segments, strict=True)
-                mapping = _align_blocks_to_lyrics(blocks, lyrics_lines)
+                mapping = _align_blocks_to_lyrics(blocks, lyrics_lines_for_captions)
 
                 line_spans = {}
                 for b_idx, line_idx in (mapping or {}).items():
@@ -1897,7 +1956,7 @@ class VideoGenerator:
                         continue
                     if b_idx < 0 or b_idx >= len(blocks):
                         continue
-                    if line_idx < 0 or line_idx >= len(lyrics_lines):
+                    if line_idx < 0 or line_idx >= len(lyrics_lines_for_captions):
                         continue
                     b = blocks[b_idx]
                     st = float(b.get("start") or 0.0)
@@ -1911,88 +1970,50 @@ class VideoGenerator:
                         span["start"] = min(float(span["start"]), st)
                         span["end"] = max(float(span["end"]), en)
 
-                spans = [None] * len(lyrics_lines)
-                for li, sp in line_spans.items():
-                    if not sp:
+                items = []
+                for li, sp in (line_spans or {}).items():
+                    if sp is None:
                         continue
-                    sst = float(sp.get("start") or 0.0)
-                    een = float(sp.get("end") or 0.0)
+                    try:
+                        sst = float(sp.get("start") or 0.0)
+                        een = float(sp.get("end") or 0.0)
+                    except Exception:
+                        continue
+                    if een <= sst:
+                        continue
                     if abs(lead_sec) > 0.0001:
                         sst = max(0.0, sst - lead_sec)
                         een = max(sst + 0.25, een - lead_sec)
-                    spans[li] = {"start": sst, "end": een}
+                    if li < 0 or li >= len(lyrics_lines_for_captions):
+                        continue
+                    cap = lyrics_lines_for_captions[li]
+                    if not str(cap or "").strip():
+                        continue
+                    items.append({"start": sst, "end": een, "caption": cap})
 
-                def _fill_range(start_idx: int, end_idx: int, start_t: float, end_t: float):
-                    count = (end_idx - start_idx) + 1
-                    if count <= 0:
-                        return
-                    start_t = max(0.0, float(start_t or 0.0))
-                    end_t = min(float(total_duration), float(end_t or 0.0))
-                    if end_t <= start_t:
-                        seg = 0.8
-                        t0 = start_t
-                        for k in range(count):
-                            spans[start_idx + k] = {"start": t0, "end": min(float(total_duration), t0 + seg)}
-                            t0 = min(float(total_duration), t0 + seg)
-                        return
-                    step = (end_t - start_t) / float(count)
-                    t0 = start_t
-                    for k in range(count):
-                        st = t0
-                        en = end_t if k == (count - 1) else (st + step)
-                        spans[start_idx + k] = {"start": st, "end": en}
-                        t0 = en
-
-                first_known = None
-                last_known = None
-                for i in range(len(spans)):
-                    if spans[i] is not None:
-                        first_known = i
-                        break
-                for i in range(len(spans) - 1, -1, -1):
-                    if spans[i] is not None:
-                        last_known = i
-                        break
-
-                if first_known is None or last_known is None:
-                    n = min(max_scenes, len(lyrics_lines))
-                    if n <= 0:
-                        n = 1
-                    seg_dur = float(total_duration) / float(n)
-                    t = 0.0
-                    for i in range(n):
-                        start = t
-                        end = float(total_duration) if i == (n - 1) else min(float(total_duration), start + seg_dur)
-                        t = end
-                        cap = lyrics_lines[min(i, len(lyrics_lines) - 1)]
-                        timeline.append({"start": start, "end": end, "caption": cap})
+                if not items:
+                    timeline.append({"start": 0.0, "end": float(total_duration), "caption": ""})
                 else:
-                    intro_end = float(spans[first_known]["start"])
-                    if intro_end > 0.35:
-                        timeline.append({"start": 0.0, "end": intro_end, "caption": ""})
-                    if last_known < (len(spans) - 1):
-                        _fill_range(last_known + 1, len(spans) - 1, float(spans[last_known]["end"]), float(total_duration))
-                    for i in range(first_known, last_known + 1):
-                        if spans[i] is not None:
+                    items.sort(key=lambda x: float(x.get("start") or 0.0))
+                    last_end = 0.0
+                    for it in items:
+                        st = max(0.0, float(it.get("start") or 0.0))
+                        en = min(float(total_duration), float(it.get("end") or 0.0))
+                        if st < last_end:
+                            st = last_end
+                        if en <= st:
                             continue
-                        j = i - 1
-                        while j >= 0 and spans[j] is None:
-                            j -= 1
-                        k = i + 1
-                        while k < len(spans) and spans[k] is None:
-                            k += 1
-                        if j >= 0 and k < len(spans) and spans[j] is not None and spans[k] is not None:
-                            _fill_range(i, k - 1, float(spans[j]["end"]), float(spans[k]["start"]))
-
-                    for idx, cap in enumerate(lyrics_lines):
-                        if idx < first_known:
-                            continue
-                        sp = spans[idx]
-                        if not sp:
-                            continue
-                        timeline.append({"start": float(sp["start"]), "end": float(sp["end"]), "caption": cap})
-            elif lyrics_lines:
-                n = min(max_scenes, len(lyrics_lines))
+                        if (st - last_end) > 0.35:
+                            timeline.append({"start": last_end, "end": st, "caption": ""})
+                        timeline.append({"start": st, "end": en, "caption": str(it.get("caption") or "").strip()})
+                        last_end = en
+                    if (float(total_duration) - last_end) > 0.35:
+                        timeline.append({"start": last_end, "end": float(total_duration), "caption": ""})
+                    if timeline:
+                        timeline[0]["start"] = 0.0
+                        timeline[-1]["end"] = float(total_duration)
+            elif lyrics_lines_for_timeline:
+                n = min(max_scenes, len(lyrics_lines_for_timeline))
                 if n <= 0:
                     n = 1
                 seg_dur = float(total_duration) / float(n)
@@ -2001,7 +2022,7 @@ class VideoGenerator:
                     start = t
                     end = float(total_duration) if i == (n - 1) else min(float(total_duration), start + seg_dur)
                     t = end
-                    cap = lyrics_lines[min(i, len(lyrics_lines) - 1)]
+                    cap = lyrics_lines_for_timeline[min(i, len(lyrics_lines_for_timeline) - 1)]
                     timeline.append({"start": start, "end": end, "caption": cap})
             else:
                 n = max(1, len(scenes)) if scenes else 1
@@ -2012,6 +2033,24 @@ class VideoGenerator:
                     sc = scenes[i] if i < len(scenes) else {}
                     cap = sc.get("text") if isinstance(sc, dict) else str(sc)
                     timeline.append({"start": start, "end": end, "caption": str(cap or "").strip()})
+
+            if timeline:
+                next_non_empty = ""
+                next_caption_by_idx = [""] * len(timeline)
+                for i in range(len(timeline) - 1, -1, -1):
+                    cap = str((timeline[i] or {}).get("caption") or "").strip()
+                    if cap:
+                        next_non_empty = cap
+                    next_caption_by_idx[i] = next_non_empty
+                prev_non_empty = ""
+                for i in range(len(timeline)):
+                    cap = str((timeline[i] or {}).get("caption") or "").strip()
+                    if cap:
+                        prev_non_empty = cap
+                        timeline[i]["prompt_text"] = cap
+                    else:
+                        fb = next_caption_by_idx[i] or prev_non_empty or str(lyric_text or "").strip()
+                        timeline[i]["prompt_text"] = fb[:280] if fb else ""
 
             limit = max_scenes
             if strict_sync and timeline and not str(timeline[0].get("caption") or "").strip():
@@ -2124,6 +2163,7 @@ class VideoGenerator:
 
             for i, it in enumerate(timeline):
                 caption = (it.get("caption") or "").strip()
+                prompt_caption = (it.get("prompt_text") or caption or "").strip()
                 duration = float(it.get("duration") or 0)
                 if duration <= 0:
                     continue
@@ -2138,7 +2178,7 @@ class VideoGenerator:
                     )
                     image_prompt = opening + " No text, no watermark, no logo."
                 else:
-                    image_prompt = _prompt_for_caption(caption)
+                    image_prompt = _prompt_for_caption(prompt_caption)
                 if progress_callback:
                     try:
                         total = max(1, len(timeline))
