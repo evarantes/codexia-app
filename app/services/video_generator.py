@@ -1771,12 +1771,22 @@ class VideoGenerator:
                     segments = None
                     transcribe_error = str(e)
 
+            def _transcribe_error_meta(err):
+                if isinstance(err, dict):
+                    et = str(err.get("type") or err.get("code") or "").strip().lower()
+                    em = str(err.get("message") or "").strip()
+                    es = err.get("status")
+                    te = f"{et} {em}".strip().lower()
+                    return et, em, es, te
+                s = str(err or "").strip()
+                return "", s, None, s.lower()
+
             if explicit_strict and not segments:
-                te = str(transcribe_error or "").strip().lower()
+                err_type, err_msg, err_status, te = _transcribe_error_meta(transcribe_error)
                 if transcribe_error == "missing_api_key":
                     warnings.append("Sincronização perfeita indisponível (OpenAI não configurada). Gerando clipe sem legenda.")
-                elif "insufficient_quota" in te or "exceeded your current quota" in te:
-                    warnings.append("Sincronização perfeita indisponível (OpenAI sem saldo/quota). Gerando clipe sem legenda.")
+                elif err_type == "insufficient_quota" or "insufficient_quota" in te or "exceeded your current quota" in te:
+                    warnings.append("Sincronização perfeita indisponível (OpenAI retornou insufficient_quota na transcrição). Gerando clipe sem legenda.")
                 elif transcribe_error == "file_not_found":
                     warnings.append("Sincronização perfeita indisponível (arquivo de áudio não encontrado para transcrição). Gerando clipe sem legenda.")
                 elif te:
@@ -1787,11 +1797,11 @@ class VideoGenerator:
                 lyrics_lines_for_captions = []
                 strict_sync = False
             if strict_sync and not segments:
-                te = str(transcribe_error or "").strip().lower()
+                err_type, err_msg, err_status, te = _transcribe_error_meta(transcribe_error)
                 if transcribe_error == "missing_api_key":
                     warnings.append("Legendas desativadas: OpenAI não configurada para detecção de voz.")
-                elif "insufficient_quota" in te or "exceeded your current quota" in te:
-                    warnings.append("Legendas desativadas: OpenAI sem saldo/quota para detecção de voz.")
+                elif err_type == "insufficient_quota" or "insufficient_quota" in te or "exceeded your current quota" in te:
+                    warnings.append("Legendas desativadas: OpenAI retornou insufficient_quota na detecção de voz.")
                 elif te:
                     warnings.append("Legendas desativadas: falha ao transcrever o áudio para detecção de voz.")
                 captions_enabled = False

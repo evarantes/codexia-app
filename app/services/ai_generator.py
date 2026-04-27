@@ -1406,6 +1406,44 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not audio_path or not os.path.exists(audio_path):
             return {"segments": None, "error": "file_not_found"}
         client = openai.OpenAI(api_key=api_key)
+        def _extract_openai_error(e: Exception) -> Dict[str, Any]:
+            info: Dict[str, Any] = {}
+            status = getattr(e, "status_code", None)
+            if status is None:
+                resp = getattr(e, "response", None)
+                status = getattr(resp, "status_code", None)
+            if status is not None:
+                info["status"] = status
+
+            body = getattr(e, "body", None)
+            if body is None:
+                resp = getattr(e, "response", None)
+                try:
+                    body = resp.json() if resp is not None else None
+                except Exception:
+                    body = None
+
+            if isinstance(body, str) and body.strip():
+                try:
+                    import json
+                    body = json.loads(body)
+                except Exception:
+                    pass
+
+            if isinstance(body, dict):
+                err = body.get("error")
+                if isinstance(err, dict):
+                    if err.get("type") is not None:
+                        info["type"] = err.get("type")
+                    if err.get("code") is not None:
+                        info["code"] = err.get("code")
+                    if err.get("message") is not None:
+                        info["message"] = err.get("message")
+
+            if not info.get("message"):
+                info["message"] = str(e)
+            return info
+
         try:
             with open(audio_path, "rb") as f:
                 kwargs: Dict[str, Any] = {
@@ -1422,7 +1460,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     kwargs.pop("timestamp_granularities", None)
                     res = client.audio.transcriptions.create(**kwargs)
         except Exception as e:
-            return {"segments": None, "error": str(e)}
+            return {"segments": None, "error": _extract_openai_error(e)}
 
         segments = None
         if hasattr(res, "segments"):
