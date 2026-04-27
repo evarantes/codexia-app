@@ -106,22 +106,33 @@ def _inject_pentecostal_structure_tags(lyrics: str) -> str:
         "[Outro: Final explosivo com metais]",
     ]).strip()
 
+def _strip_artist_refs(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"(?is)\b(sound\s+references?|referencias?\s+de\s+som|refer[eê]ncias?)\b\s*:.*$", "", t).strip()
+    banned = ["lauriete", "jorginho", "xerem", "xerém"]
+    for b in banned:
+        t = re.sub(rf"(?i)\b{re.escape(b)}\b", "", t)
+    t = re.sub(r"\s{2,}", " ", t).strip(" ,.-;:")
+    return t
+
 
 def _apply_style_preset(style: str, lyrics: str) -> Tuple[str, str]:
     raw_style = (style or "").strip()
     norm = _normalize_style_name(raw_style)
     is_pentecostal = any(k in norm for k in ["pentecostal", "corinho", "corinho de fogo", "fogo no pe", "fogo no pe'"])
     if not is_pentecostal:
-        return raw_style, (lyrics or "")
+        return _strip_artist_refs(raw_style), (lyrics or "")
 
     style_prompt = (
         "Brazilian Pentecostal, Corinho de Fogo, High energy, Fast tempo (150 BPM), "
         "Accordion, Heavy Brass Section, Trumpets, Slap Bass, Driving Drums, Powerful Vibrant Vocals"
     )
-    refs = "Sound references: Jorginho de Xerém, Lauriete, 'Fogo no Pé' vibe."
+    refs = "Classic Brazilian Pentecostal gospel energy, 'Fogo no Pé' vibe (no artist references)."
     enriched_style = f"Pentecostal / Corinho de Fogo. {style_prompt}. {refs}"
     enriched_lyrics = _inject_pentecostal_structure_tags(lyrics or "")
-    return enriched_style, enriched_lyrics
+    return _strip_artist_refs(enriched_style), enriched_lyrics
 
 def create_suno_task(
     api_key: str,
