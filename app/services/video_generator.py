@@ -656,6 +656,16 @@ class VideoGenerator:
             notify("Sem prompt de imagem válido para esta cena.")
             return None
 
+        def _short_prompt_for_url(p: str) -> str:
+            s = str(p or "").strip()
+            if not s:
+                return ""
+            s = re.sub(r"(?is)\bnegative\s+prompt\s*:\s*.*$", "", s).strip()
+            s = re.sub(r"\s+", " ", s).strip()
+            if len(s) > 240:
+                s = s[:240].rstrip(" ,.;:-")
+            return s
+
         providers = [
             "edenai", "openai_direct", "leonardo",
             "pollinations_flux", "pollinations_turbo", "pollinations",
@@ -714,7 +724,8 @@ class VideoGenerator:
         notify("Provedores configurados falharam. Tentando Pollinations direto como último recurso...")
         for attempt in range(3):
             try:
-                direct_url = self._pollinations_direct_url(base_prompt, aspect_ratio)
+                url_prompt = _short_prompt_for_url(base_prompt) or _short_prompt_for_url(text_fallback) or "cinematic uplifting bright inspiring family-friendly"
+                direct_url = self._pollinations_direct_url(url_prompt, aspect_ratio)
                 path = self.download_image(direct_url, retries=2, timeout=90)
                 if path and os.path.exists(path) and os.path.getsize(path) > 1000:
                     notify(f"Imagem obtida via Pollinations direto (tentativa {attempt+1}).")
@@ -728,7 +739,8 @@ class VideoGenerator:
         if allow_non_ai_fallback:
             notify("Aplicando fallback local por configuração do ambiente.")
             return self._generate_fallback_background((width, height))
-        return None
+        notify("Aplicando fallback local para evitar falha do clipe.")
+        return self._generate_fallback_background((width, height))
 
     def _set_clip_duration(self, clip, duration):
         """Compatível com MoviePy 1.x (set_duration) e 2.x (with_duration)."""
