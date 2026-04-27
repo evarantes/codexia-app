@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 import requests
+import re
 from typing import Optional, List, Dict, Any, Tuple
 from app.database import SessionLocal
 from app.models import Settings
@@ -70,6 +71,58 @@ def _parse_status_payload(status_data: Dict[str, Any]) -> Tuple[str, Dict[str, A
     status = str((data.get("status") or data.get("state") or "")).strip()
     return status.upper(), data
 
+
+def _normalize_style_name(style: str) -> str:
+    s = (style or "").strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    s = s.replace("ç", "c").replace("ã", "a").replace("á", "a").replace("à", "a").replace("â", "a")
+    s = s.replace("é", "e").replace("ê", "e")
+    s = s.replace("í", "i")
+    s = s.replace("ó", "o").replace("ô", "o").replace("õ", "o")
+    s = s.replace("ú", "u")
+    return s
+
+
+def _has_structure_tags(lyrics: str) -> bool:
+    t = (lyrics or "")
+    if not t:
+        return False
+    return bool(re.search(r"^\s*\[(intro|interlude|outro|verse|chorus|bridge|pre-chorus|refr[aã]o)[^\]]*\]\s*$", t, flags=re.IGNORECASE | re.MULTILINE))
+
+
+def _inject_pentecostal_structure_tags(lyrics: str) -> str:
+    base = (lyrics or "").strip()
+    if not base:
+        return base
+    if _has_structure_tags(base):
+        return base
+    return "\n".join([
+        "[Intro: Fast Accordion and Brass]",
+        "",
+        base,
+        "",
+        "[Interlude: Solo de Trompete]",
+        "",
+        "[Outro: Final explosivo com metais]",
+    ]).strip()
+
+
+def _apply_style_preset(style: str, lyrics: str) -> Tuple[str, str]:
+    raw_style = (style or "").strip()
+    norm = _normalize_style_name(raw_style)
+    is_pentecostal = any(k in norm for k in ["pentecostal", "corinho", "corinho de fogo", "fogo no pe", "fogo no pe'"])
+    if not is_pentecostal:
+        return raw_style, (lyrics or "")
+
+    style_prompt = (
+        "Brazilian Pentecostal, Corinho de Fogo, High energy, Fast tempo (150 BPM), "
+        "Accordion, Heavy Brass Section, Trumpets, Slap Bass, Driving Drums, Powerful Vibrant Vocals"
+    )
+    refs = "Sound references: Jorginho de Xerém, Lauriete, 'Fogo no Pé' vibe."
+    enriched_style = f"Pentecostal / Corinho de Fogo. {style_prompt}. {refs}"
+    enriched_lyrics = _inject_pentecostal_structure_tags(lyrics or "")
+    return enriched_style, enriched_lyrics
+
 def create_suno_task(
     api_key: str,
     lyrics: str,
@@ -78,6 +131,7 @@ def create_suno_task(
     model: str = "V4_5ALL",
     vocal_gender: Optional[str] = None,
 ) -> Dict[str, Any]:
+    style, lyrics = _apply_style_preset(style, lyrics)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

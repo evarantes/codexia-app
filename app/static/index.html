@@ -469,7 +469,13 @@
                             </div>
                             <div>
                                 <label class="block font-bold mb-2">Gênero / Estilo (opcional)</label>
-                                <input v-model="musicGenre" class="w-full border p-2 rounded" placeholder="Ex: pop, ballad, rock, eletrônica">
+                                <input v-model="musicGenre" list="musicGenreOptions" class="w-full border p-2 rounded" placeholder="Ex: pop, ballad, rock, eletrônica">
+                                <datalist id="musicGenreOptions">
+                                    <option value="Gospel"></option>
+                                    <option value="Pentecostal / Corinho de Fogo"></option>
+                                    <option value="Worship"></option>
+                                    <option value="Pop"></option>
+                                </datalist>
                             </div>
                             <div>
                                 <label class="block font-bold mb-2">Voz cantada (Suno)</label>
