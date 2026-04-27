@@ -8,7 +8,7 @@ import re
 import time
 import difflib
 import unicodedata
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
