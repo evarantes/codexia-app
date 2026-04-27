@@ -13,6 +13,79 @@ from app.models import VideoTask
 # Estrutura: {task_id: {status: str, progress: int, message: str, result: Any}}
 video_tasks: Dict[str, Dict[str, Any]] = {}
 _REDIS_PREFIX = "codexia:video_task:"
+_CONTROL_PREFIX = "codexia:video_task_control:"
+_task_controls: Dict[str, Dict[str, Any]] = {}
+
+def _control_get(task_id: str) -> Dict[str, Any]:
+    base = _task_controls.get(task_id) or {}
+    if not _redis_conn:
+        return dict(base)
+    try:
+        raw = _redis_conn.get(_CONTROL_PREFIX + task_id)
+        if not raw:
+            return dict(base)
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict):
+            merged = dict(base)
+            merged.update(data)
+            _task_controls[task_id] = merged
+            return merged
+    except Exception:
+        pass
+    return dict(base)
+
+def _control_set(task_id: str, data: Dict[str, Any]):
+    cur = _control_get(task_id)
+    cur.update({k: v for k, v in (data or {}).items()})
+    _task_controls[task_id] = cur
+    if not _redis_conn:
+        return
+    try:
+        _redis_conn.set(_CONTROL_PREFIX + task_id, json.dumps(cur), ex=60 * 60 * 24)
+    except Exception:
+        pass
+
+def is_task_deleted(task_id: str) -> bool:
+    c = _control_get(task_id)
+    return bool(c.get("deleted") is True)
+
+def is_task_cancel_requested(task_id: str) -> bool:
+    c = _control_get(task_id)
+    return bool(c.get("cancel") is True)
+
+def request_cancel_task(task_id: str, message: str = "Cancelado pelo usuário.") -> Optional[Dict[str, Any]]:
+    _control_set(task_id, {"cancel": True})
+    db = SessionLocal()
+    try:
+        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if not row:
+            return None
+        row.status = "cancelled"
+        row.message = message
+        db.commit()
+        current = _db_to_dict(row)
+        video_tasks[task_id] = current
+        _redis_set(task_id, current)
+        return current
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+def mark_task_deleted(task_id: str):
+    _control_set(task_id, {"deleted": True})
+    try:
+        if task_id in video_tasks:
+            video_tasks.pop(task_id, None)
+    except Exception:
+        pass
+    if not _redis_conn:
+        return
+    try:
+        _redis_conn.delete(_REDIS_PREFIX + task_id)
+    except Exception:
+        pass
 
 def _redis_get(task_id: str) -> Optional[Dict[str, Any]]:
     if not _redis_conn:
@@ -84,10 +157,20 @@ def create_task(user_id: Optional[int] = None):
     return task_id
 
 def update_task(task_id, status=None, progress=None, message=None, result=None):
+    if is_task_deleted(task_id):
+        return
+    if is_task_cancel_requested(task_id):
+        try:
+            if status and str(status).lower() not in {"cancelled"}:
+                return
+        except Exception:
+            return
     db = SessionLocal()
     try:
         row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
         if not row:
+            if is_task_deleted(task_id) or is_task_cancel_requested(task_id):
+                return
             row = VideoTask(
                 id=task_id,
                 status="processing",
@@ -99,6 +182,8 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
             db.commit()
             db.refresh(row)
 
+        if str((row.status or "")).lower() in {"cancelled"} and (not status or str(status).lower() != "cancelled"):
+            return
         if status:
             row.status = status
         if progress is not None:
@@ -143,6 +228,8 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
     _redis_set(task_id, current)
 
 def get_task(task_id):
+    if is_task_deleted(task_id):
+        return None
     db = SessionLocal()
     try:
         row = db.query(VideoTask).filter(VideoTask.id == task_id).first()

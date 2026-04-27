@@ -24,7 +24,7 @@ from app.services.suno_service import (
 from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
 from app.models import User, VideoTask, SavedMusic, SystemNotification
-from app.services.task_manager import create_task, update_task, get_task
+from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
 from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, VIDEO_OUTPUT_DIR, STATIC_DIR
 
 router = APIRouter(prefix="/music", tags=["music"])
@@ -248,6 +248,19 @@ def get_music_task(task_id: str, user: User = Depends(get_current_user), db: Ses
     return data
 
 
+@router.post("/task/{task_id}/cancel")
+def cancel_music_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    if row.user_id and row.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para cancelar esta tarefa.")
+    cur = request_cancel_task(task_id, message="Cancelado pelo usuário.")
+    if cur:
+        return cur
+    return {"task_id": task_id, "status": "cancelled", "progress": int(row.progress or 0), "message": "Cancelado pelo usuário.", "result": None}
+
+
 @router.delete("/task/{task_id}")
 def delete_music_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
@@ -328,6 +341,7 @@ def delete_music_task(task_id: str, user: User = Depends(get_current_user), db: 
             db.rollback()
 
     try:
+        mark_task_deleted(task_id)
         db.delete(row)
         db.commit()
     except Exception:
@@ -714,8 +728,19 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
             video_gen = VideoGenerator(ai_service=ai)
 
             def _progress(p: int, m: str):
-                update_task(task_id, status="processing", progress=max(0, min(99, int(p or 0))), message=str(m or "Processando..."))
+                if is_task_cancel_requested(task_id):
+                    raise Exception("cancelled_by_user")
+                update_task(
+                    task_id,
+                    status="processing",
+                    progress=max(0, min(99, int(p or 0))),
+                    message=str(m or "Processando..."),
+                    result=payload,
+                )
 
+            if is_task_cancel_requested(task_id):
+                update_task(task_id, status="cancelled", progress=0, message="Cancelado pelo usuário.", result=payload)
+                return
             result = video_gen.create_music_video(
                 music_path,
                 title=safe_title,
@@ -792,8 +817,16 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
             finally:
                 db2.close()
         except Exception as e:
-            msg = str(e)
-            update_task(task_id, status="failed", progress=100, message=msg, result=payload)
+            if is_task_cancel_requested(task_id) or str(e) == "cancelled_by_user":
+                current = get_task(task_id) or {}
+                try:
+                    p = int(current.get("progress") or 0)
+                except Exception:
+                    p = 0
+                update_task(task_id, status="cancelled", progress=max(0, min(99, p)), message="Cancelado pelo usuário.", result=payload)
+            else:
+                msg = str(e)
+                update_task(task_id, status="failed", progress=100, message=msg, result=payload)
             db2 = SessionLocal()
             try:
                 db2.add(SystemNotification(
