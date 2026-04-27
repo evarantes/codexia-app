@@ -609,10 +609,11 @@ class VideoGenerator:
         import urllib.parse
         width, height = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
         safe_prompt = urllib.parse.quote(
-            f"{prompt} photorealistic cinematic photography natural lighting pleasant mood "
+            f"{prompt} cinematic uplifting bright inspiring photorealistic cinematic photography warm natural lighting bright color palette pleasant mood "
             "realistic humans natural skin texture proportional anatomy "
             "avoid close-up portraits "
-            "no horror no monsters no zombies no undead no gore no blood "
+            "negative prompt: no macabre no horror no monsters no zombies no undead no gore no blood no disturbing no occult no satanic no demons no skulls no cemetery no graves "
+            "no dark mood no low key lighting "
             "no creepy no uncanny no doll-like "
             "no deformed no disfigured no mutated no bad anatomy no extra limbs "
             "no bad hands no extra fingers no melted face no distorted faces "
@@ -661,7 +662,7 @@ class VideoGenerator:
         strict_worship = any(k in norm_bp for k in ["christian", "worship", "gospel", "louvor", "jesus", "cristo", "cruz", "calvario", "golgota"])
         parts = [
             f"{base_prompt}. Must align with the narration context. ",
-            "Photorealistic cinematic photography, natural lighting, pleasant mood. ",
+            "Cinematic, uplifting, bright, inspiring. Photorealistic cinematic photography, warm natural lighting, bright color palette, pleasant peaceful mood. ",
         ]
         if strict_worship:
             parts.append("Bright, warm, uplifting, peaceful, family-friendly, G-rated. ")
@@ -678,6 +679,7 @@ class VideoGenerator:
             "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. ",
             "No dystopian, no apocalyptic. ",
             "No text, no watermark, no logo.",
+            "Negative prompt: macabre, horror, creepy, dark mood, low-key lighting, disturbing, occult, satanic, pentagram, demons, skulls, cemetery, graves, blood, gore, violence, weapons.",
         ]
         final_prompt = "".join(parts)
 
@@ -1727,6 +1729,8 @@ class VideoGenerator:
             strict_sync = (sync_mode or "auto").strip().lower() in {"perfect", "precise", "strict"}
             if strict_sync and not lyrics_lines:
                 raise Exception("Para sincronização perfeita, informe a letra da música.")
+            if strict_sync and lyrics_lines:
+                max_scenes = max(max_scenes, min(len(lyrics_lines), 120))
 
             segments = None
             transcribe_error = None
@@ -1883,18 +1887,6 @@ class VideoGenerator:
                 except Exception:
                     lead_ms = 0.0
                 lead_sec = max(-0.9, min(0.9, lead_ms / 1000.0))
-                early_delay_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_EARLY_DELAY_MS") or "").strip()
-                try:
-                    early_delay_ms = float(early_delay_ms_raw) if early_delay_ms_raw else 180.0
-                except Exception:
-                    early_delay_ms = 180.0
-                early_delay_sec = max(0.0, min(1.2, early_delay_ms / 1000.0))
-                early_win_raw = (os.getenv("MUSIC_CLIP_CAPTION_EARLY_WINDOW_SEC") or "").strip()
-                try:
-                    early_window_sec = float(early_win_raw) if early_win_raw else 180.0
-                except Exception:
-                    early_window_sec = 180.0
-                early_window_sec = max(10.0, min(600.0, early_window_sec))
 
                 blocks = _merge_segments(segments, strict=True)
                 mapping = _align_blocks_to_lyrics(blocks, lyrics_lines)
@@ -1928,13 +1920,6 @@ class VideoGenerator:
                     if abs(lead_sec) > 0.0001:
                         sst = max(0.0, sst - lead_sec)
                         een = max(sst + 0.25, een - lead_sec)
-                    if early_delay_sec > 0.0 and early_window_sec > 1.0:
-                        factor = max(0.0, min(1.0, 1.0 - (sst / early_window_sec)))
-                        if factor > 0.0:
-                            shift = early_delay_sec * factor
-                            sst = min(float(total_duration), sst + shift)
-                            een = min(float(total_duration), een + shift)
-                            een = max(sst + 0.25, een)
                     spans[li] = {"start": sst, "end": een}
 
                 def _fill_range(start_idx: int, end_idx: int, start_t: float, end_t: float):
@@ -2040,7 +2025,7 @@ class VideoGenerator:
                 dur = max(0.6, float(it["end"]) - float(it["start"]))
                 it["duration"] = dur
                 sum_prev += dur
-            if timeline:
+            if timeline and not strict_sync:
                 drift = float(total_duration) - float(sum_prev)
                 if abs(drift) > 0.35:
                     timeline[-1]["duration"] = max(0.8, float(timeline[-1]["duration"]) + drift)
@@ -2063,41 +2048,79 @@ class VideoGenerator:
                     "pecado", "sacrificio", "agonia", "penalidade", "perdao", "paz", "vitoria",
                 ]) or any(k in norm_cap for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "sepulcro", "redencao", "salvacao", "pecado", "sacrificio"])
 
-                def _scene_hint() -> str:
-                    if any(k in norm_cap for k in ["calvario", "golgota"]):
-                        return "A man carrying a wooden cross on a dusty road toward a hill outside ancient Jerusalem, Roman era, wide shot, reverent, non-graphic."
-                    if ("cruz" in norm_cap) and any(k in norm_cap for k in ["vitoria", "venceu", "morte", "paz"]):
-                        return "A cross silhouette on a hill at sunrise, rays of light breaking through clouds, hope and victory, wide cinematic landscape."
-                    if ("cruz" in norm_cap) and any(k in norm_cap for k in ["castigo", "paz", "perdao", "salvacao", "redencao"]):
-                        return "A wooden cross on a hill with soft golden light, peaceful atmosphere, symbolism of salvation and redemption, wide cinematic landscape."
-                    if any(k in norm_cap for k in ["pregos", "cravo", "cravos"]):
-                        return "Close shot of iron nails and a wooden beam on the ground, symbolic and reverent, no wounds, no blood, soft warm light."
-                    if ("coroa" in norm_cap and "espinh" in norm_cap):
-                        return "A crown of thorns resting on rough stone, warm backlight, reverent still life, cinematic."
-                    if ("veu" in norm_cap and any(k in norm_cap for k in ["rasgou", "rasgado", "rasgando"])):
-                        return "Inside the ancient temple, a large curtain tearing from top to bottom, a beam of light shining through, awe and reverence."
-                    if any(k in norm_cap for k in ["tumulo", "sepulcro", "ressuscitou", "vazio"]):
-                        return "An empty tomb with the stone rolled away at dawn, gentle golden sunlight, peaceful and triumphant, biblical era, not scary."
-                    if "multidao" in norm_cap or "gritava" in norm_cap:
-                        return "A crowd in ancient Jerusalem watching in tension on a stone street, Roman era, wide shot, cinematic."
-                    if any(k in norm_cap for k in ["pecado", "pena", "castigo", "condenacao"]):
-                        return "A person kneeling in warm sunlight with a gentle beam of light and a cross in the distance, symbolism of forgiveness and grace, cinematic, peaceful."
-                    if "inferno" in norm_cap:
-                        return "Chains breaking in bright daylight as warm light forms a cross-like glow, symbolism of victory and freedom, cinematic, peaceful, non-graphic."
-                    if any(k in norm_cap for k in ["liberto", "liberdade", "cura", "libertacao", "adoracao"]):
-                        return "A modern worship scene with hands raised and a cross in the background, soft light, uplifting, cinematic, no text."
-                    return ""
+                stop = {
+                    "a", "o", "os", "as", "um", "uma", "uns", "umas", "de", "da", "do", "das", "dos", "em", "no", "na", "nos", "nas",
+                    "para", "pra", "por", "com", "sem", "que", "se", "e", "ou", "ao", "aos", "à", "às", "me", "te", "seu", "sua", "seus", "suas",
+                    "meu", "minha", "meus", "minhas", "teu", "tua", "teus", "tuas", "lhe", "lhes", "eu", "tu", "ele", "ela", "nós", "nos", "vós",
+                    "você", "voces", "vocês", "eles", "elas", "isso", "isto", "aquilo", "aqui", "ali", "la", "lá", "hoje", "agora", "sempre", "nunca",
+                    "mais", "menos", "muito", "muita", "muitos", "muitas", "tão", "também", "ja", "já", "ainda", "entao", "então", "porque", "porquê",
+                    "quando", "onde", "como", "quem", "qual", "quais", "tudo", "todo", "toda", "todos", "todas",
+                }
 
-                base_style = "Photorealistic cinematic photography, warm natural lighting, bright color palette, wide shot, high detail, reverent, uplifting, family-friendly."
+                translate = {
+                    "jesus": "Jesus",
+                    "cristo": "Jesus Christ",
+                    "senhor": "the Lord",
+                    "deus": "God",
+                    "espirito": "Holy Spirit",
+                    "espírito": "Holy Spirit",
+                    "igreja": "church",
+                    "templo": "church",
+                    "altar": "altar",
+                    "cruz": "wooden cross",
+                    "calvario": "Calvary hill",
+                    "golgota": "Golgotha hill",
+                    "ressuscitou": "resurrection",
+                    "ressurreicao": "resurrection",
+                    "salvacao": "salvation",
+                    "redencao": "redemption",
+                    "perdao": "forgiveness",
+                    "graca": "grace",
+                    "gloria": "glorious light",
+                    "paz": "peace",
+                    "vitoria": "victory",
+                    "cura": "healing",
+                    "libertacao": "deliverance",
+                    "liberdade": "freedom",
+                    "adoracao": "worship",
+                    "louvor": "worship",
+                    "fogo": "holy fire energy (non-violent)",
+                    "avivamento": "revival",
+                }
+
+                def _keywords_pt(text: str) -> List[str]:
+                    raw = (text or "").strip()
+                    if not raw:
+                        return []
+                    t = unicodedata.normalize("NFKD", raw)
+                    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+                    t = re.sub(r"[^a-zA-Z0-9\s]", " ", t)
+                    t = re.sub(r"\s+", " ", t).strip().lower()
+                    words = [w for w in t.split(" ") if w and len(w) >= 3 and w not in stop]
+                    uniq = []
+                    seen = set()
+                    for w in words:
+                        if w in seen:
+                            continue
+                        seen.add(w)
+                        uniq.append(w)
+                        if len(uniq) >= 8:
+                            break
+                    return uniq
+
+                kws = _keywords_pt(cap)
+                if not kws:
+                    kws = _keywords_pt(lyric_text or "")
+                eng = [translate.get(k, k) for k in kws[:8]]
+                eng_list = ", ".join(eng) if eng else "worship, joy, faith, bright light"
+                base_style = "Cinematic, uplifting, bright, inspiring. Photorealistic cinematic photography, warm natural lighting, bright color palette, wide shot, high detail, peaceful mood."
+                safety = (
+                    "Negative prompt: horror, macabre, creepy, dark mood, low-key lighting, disturbing, occult, satanic, pentagram, demons, skulls, cemetery, graves, "
+                    "blood, gore, violence, weapons, scary faces, disfigured, mutated, deformed, uncanny, doll-like, dystopian, apocalyptic, text, watermark, logo."
+                )
                 if is_christian:
-                    hint = _scene_hint() or "A peaceful Christian worship scene with warm sunlight and a cross in the distance, symbolic and non-graphic."
-                    safety = (
-                        "No macabre, no horror, no creepy, no occult, no satanic, no demons, no skulls, no cemetery, no graves, no darkness, "
-                        "no scary faces, no violence, no blood, no wounds, no weapons."
-                    )
-                    return f"Christian worship music video (louvor). Lyric meaning: \"{cap[:220]}\". {hint} {base_style} {safety} No text, no watermark, no logo."
-
-                return f"Scene inspired by this lyric line (Portuguese): {cap[:180]}. {base_style} No text, no watermark, no logo."
+                    return f"Brazilian gospel worship music video. Scene/action keywords: {eng_list}. {base_style} {safety}"
+                return f"Music video scene. Scene/action keywords: {eng_list}. {base_style} {safety}"
 
             for i, it in enumerate(timeline):
                 caption = (it.get("caption") or "").strip()
