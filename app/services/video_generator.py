@@ -674,24 +674,25 @@ class VideoGenerator:
         strict_worship = any(k in norm_bp for k in ["christian", "worship", "gospel", "louvor", "jesus", "cristo", "cruz", "calvario", "golgota"])
         parts = [
             f"{base_prompt}. Must align with the narration context. ",
-            "Cinematic, uplifting, bright, inspiring. Photorealistic cinematic photography, warm natural lighting, bright color palette, pleasant peaceful mood. ",
+            "High quality, cinematic lighting, vibrant colors, bright, inspiring, family-friendly, G-rated. ",
+            "Photorealistic cinematic photography, warm natural lighting, bright color palette, pleasant peaceful hopeful mood. Wide shot. ",
         ]
         if strict_worship:
-            parts.append("Bright, warm, uplifting, peaceful, family-friendly, G-rated. ")
+            parts.append("Brazilian gospel worship context, respectful and reverent. ")
         parts += [
             "Realistic humans (no dolls), natural skin, proportional anatomy. ",
-            "Avoid close-up portraits. ",
+            "Avoid close-up portraits. No visible face details. Prefer back view or silhouettes. ",
             "No sci-fi, no futuristic, no cyberpunk, no robots, no androids, no cyborgs, no machinery, no laboratory, no wires. ",
             "No horror, no monsters, no zombies, no undead, no gore, no blood. ",
         ]
-        if strict_worship:
-            parts.append("No macabre, no creepy, no occult, no satanic symbols, no pentagrams, no demons, no skulls, no cemetery, no graves, no dark mood, no scary lighting. ")
+        parts.append("No macabre, no creepy, no occult, no satanic symbols, no pentagrams, no demons, no skulls, no skeletons, no cemetery, no graves, no dark mood, no scary lighting. ")
         parts += [
             "No creepy, no uncanny, no doll-like. ",
             "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. ",
+            "No masks, no face paint, no skull makeup, no halloween costume. ",
             "No dystopian, no apocalyptic. ",
             "No text, no watermark, no logo.",
-            "Negative prompt: (horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, distorted faces, demons, intense fear).",
+            "Negative prompt: (horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, distorted faces, demons, intense fear, skull, skeleton, corpse, mask, face paint).",
         ]
         final_prompt = "".join(parts)
 
@@ -2154,6 +2155,30 @@ class VideoGenerator:
                     "avivamento": "revival",
                 }
 
+                def _has_any(norm: str, keys: List[str]) -> bool:
+                    if not norm:
+                        return False
+                    for k in keys:
+                        if k and k in norm:
+                            return True
+                    return False
+
+                def _safe_scene_descriptor() -> str:
+                    n = f"{norm_full} {norm_cap}".strip()
+                    if _has_any(n, ["lodebar", "lodeba", "lodeb", "lo debar"]):
+                        return "Ancient biblical desert village at sunrise, warm golden light, hopeful, peaceful, family-friendly, wide shot, no faces."
+                    if _has_any(n, ["deserto", "solidao", "solidão", "vento", "areia"]):
+                        return "Peaceful desert landscape at sunrise, warm light, gentle wind, hopeful atmosphere, family-friendly, wide shot, no faces."
+                    if _has_any(n, ["crucifica", "crucificaçao", "crucificação", "calvario", "golgota", "pregos", "espinhos"]) or _has_any(n, ["cruz", "jesus", "cristo"]):
+                        return "Reverent Christian scene: Jesus on the cross on Calvary hill, non-graphic, no blood, no wounds, no suffering focus, glowing sunrise light, hopeful, family-friendly, wide shot, silhouettes only."
+                    if _has_any(n, ["sepulcro", "tumulo", "túmulo", "ressuscitou", "ressurreicao", "ressurreição", "ressuscita"]):
+                        return "Reverent Christian scene: the empty tomb at sunrise with gentle rays of light, peaceful and hopeful, family-friendly, wide shot, no scary elements, no faces."
+                    if _has_any(n, ["igreja", "culto", "adoracao", "adoração", "louvor", "altar"]):
+                        return "Joyful church worship service, people singing with joy, hands raised, warm bright lighting, family-friendly, wide shot, faces not visible."
+                    if _has_any(n, ["perdao", "perdão", "graca", "graça", "paz", "vitoria", "vitória", "cura", "libertacao", "libertação"]):
+                        return "Uplifting symbolic Christian scene with warm bright light, peaceful atmosphere, family-friendly, wide shot, no faces, no dark mood."
+                    return "Uplifting worship music video scene inspired by the lyrics, warm bright light, family-friendly, wide shot, no faces."
+
                 def _keywords_pt(text: str) -> List[str]:
                     raw = (text or "").strip()
                     if not raw:
@@ -2179,14 +2204,17 @@ class VideoGenerator:
                     kws = _keywords_pt(lyric_text or "")
                 eng = [translate.get(k, k) for k in kws[:8]]
                 eng_list = ", ".join(eng) if eng else "worship, joy, faith, bright light"
-                base_style = "Cinematic, uplifting, bright, inspiring. Photorealistic cinematic photography, warm natural lighting, bright color palette, wide shot, high detail, peaceful mood."
+                base_style = "High quality, cinematic lighting, vibrant colors, bright, inspiring, family-friendly, G-rated. Photorealistic cinematic photography, warm natural lighting, bright color palette, wide shot, peaceful hopeful mood. Avoid faces."
                 safety = (
-                    "Negative prompt: horror, macabre, creepy, dark mood, low-key lighting, disturbing, occult, satanic, pentagram, demons, skulls, cemetery, graves, "
-                    "blood, gore, violence, weapons, scary faces, disfigured, mutated, deformed, uncanny, doll-like, dystopian, apocalyptic, text, watermark, logo."
+                    "Negative prompt: horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, "
+                    "distorted faces, demons, intense fear, skull, skeleton, corpse, mask, face paint, halloween costume, "
+                    "dark mood, low-key lighting, disturbing, occult, satanic, pentagram, cemetery, graves, "
+                    "weapons, disfigured, mutated, deformed, uncanny, doll-like, dystopian, apocalyptic, text, watermark, logo."
                 )
+                scene_desc = _safe_scene_descriptor()
                 if is_christian:
-                    return f"Brazilian gospel worship music video. Scene/action keywords: {eng_list}. {base_style} {safety}"
-                return f"Music video scene. Scene/action keywords: {eng_list}. {base_style} {safety}"
+                    return f"Brazilian gospel worship music video. Scene: {scene_desc} Keywords: {eng_list}. {base_style} {safety}"
+                return f"Family-friendly music video scene. Scene: {scene_desc} Keywords: {eng_list}. {base_style} {safety}"
 
             for i, it in enumerate(timeline):
                 caption = (it.get("caption") or "").strip()
