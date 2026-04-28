@@ -106,6 +106,45 @@ def _inject_style_tag_at_start(lyrics: str, tag: str) -> str:
         return base
     return f"{t}\n\n{base}".strip()
 
+def _has_exact_tag(lyrics: str, tag: str) -> bool:
+    t = (lyrics or "")
+    if not t:
+        return False
+    needle = (tag or "").strip()
+    if not needle:
+        return False
+    return needle in t
+
+def _inject_tag_before_chorus_or_mid(lyrics: str, tag: str) -> str:
+    base = (lyrics or "").strip()
+    if not base:
+        return base
+    t = (tag or "").strip()
+    if not t:
+        return base
+    if _has_exact_tag(base, t):
+        return base
+
+    lines = base.splitlines()
+    chorus_idx = None
+    chorus_re = re.compile(r"^\s*(\[?\s*(chorus|refr[aã]o)\b)", flags=re.IGNORECASE)
+    for i, line in enumerate(lines):
+        if chorus_re.search(line or ""):
+            chorus_idx = i
+            break
+
+    if chorus_idx is None:
+        insert_at = max(1, len(lines) // 2)
+    else:
+        insert_at = chorus_idx
+
+    new_lines = list(lines)
+    new_lines.insert(insert_at, "")
+    new_lines.insert(insert_at + 1, t)
+    new_lines.insert(insert_at + 2, "")
+    out = "\n".join(new_lines).strip()
+    return out
+
 
 def _inject_pentecostal_structure_tags(lyrics: str) -> str:
     base = (lyrics or "").strip()
@@ -141,6 +180,18 @@ def _apply_style_preset(style: str, lyrics: str) -> Tuple[str, str]:
     is_pentecostal = any(k in norm for k in ["pentecostal", "corinho", "corinho de fogo", "fogo no pe", "fogo no pe'"])
     if not is_pentecostal:
         return _strip_artist_refs(raw_style), (lyrics or "")
+
+    is_corinho_trad = any(k in norm for k in ["corinho tradicional", "culto de oracao", "culto de oração"])
+    if is_corinho_trad:
+        style_prompt = (
+            "Fast-paced Christian March, Brazilian Pentecostal Rhythm, 150 BPM, "
+            "Strummed Acoustic Guitar, Sharp Pandeiro, Basic Acoustic Drums, Raw Congregational Vocals, "
+            "Percussive, No Steel Guitar, No Fiddle, No Accordion, No Piano. "
+            "No Country, No Sertanejo, No Banjo, No Electric Guitar Solos, No Ballad style"
+        )
+        enriched_lyrics = _inject_style_tag_at_start(lyrics or "", "[Style: Fast percussive march, only acoustic guitar and pandeiro]")
+        enriched_lyrics = _inject_tag_before_chorus_or_mid(enriched_lyrics, "[Break: Heavy Pandeiro and Foot Stomps]")
+        return _strip_artist_refs(style_prompt), enriched_lyrics
 
     is_pentecostal_raiz = ("pentecostal raiz" in norm) or (("pentecostal" in norm or "corinho" in norm) and "raiz" in norm)
     if is_pentecostal_raiz:
