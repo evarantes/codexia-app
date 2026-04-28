@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional
 
 import openai
 import requests
+import uuid
+
+from app.config import STATIC_DIR
 
 
 class OpenAIImageModule:
@@ -347,101 +350,97 @@ Regras para os campos:
         quality = (opts.get("quality") or "").strip() or "standard"
         response_format = (opts.get("response_format") or "").strip() or "b64_json"
 
-        def _openai_generate_image(prompt: str) -> Optional[str]:
-            api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
-            if not api_key:
+        out_dir = os.path.join(str(STATIC_DIR), "generated_images")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            pass
+
+        def _save_image_bytes(image_bytes: bytes, ext: str = "png") -> Optional[str]:
+            try:
+                b = image_bytes or b""
+                if not b:
+                    return None
+                safe_ext = (ext or "png").strip().lower()
+                if safe_ext not in {"png", "jpg", "jpeg", "webp"}:
+                    safe_ext = "png"
+                fname = f"lyrics_{uuid.uuid4().hex}.{safe_ext}"
+                path = os.path.join(out_dir, fname)
+                with open(path, "wb") as f:
+                    f.write(b)
+                return f"/static/generated_images/{fname}"
+            except Exception:
                 return None
 
-            def _url_to_data_url(url: str) -> Optional[str]:
-                u = (url or "").strip()
-                if not u.startswith("http"):
-                    return None
-                try:
-                    rr = requests.get(u, timeout=30)
-                    if rr.status_code >= 400:
-                        return None
-                    ct = (rr.headers.get("content-type") or "").strip().lower()
-                    if not ct.startswith("image/"):
-                        return None
-                    mime = ct.split(";")[0].strip() if ct else "image/png"
-                    b64 = base64.b64encode(rr.content or b"").decode("utf-8")
-                    if not b64:
-                        return None
-                    return f"data:{mime};base64,{b64}"
-                except Exception:
-                    return None
+        def _openai_http_generate(prompt: str, model_name: str) -> Dict[str, Optional[str]]:
+            api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
+            if not api_key:
+                return {"url": None, "error": "missing_api_key", "model": model_name}
             try:
-                if hasattr(openai, "OpenAI"):
-                    client = openai.OpenAI(api_key=api_key)
-                    resp = client.images.generate(
-                        model=model,
-                        prompt=prompt,
-                        size=size,
-                        quality=quality,
-                        n=1,
-                        response_format=response_format,
-                    )
-                    if resp and getattr(resp, "data", None) and resp.data:
-                        item0 = resp.data[0]
-                        b64 = getattr(item0, "b64_json", None)
-                        if isinstance(b64, str) and b64.strip():
-                            return f"data:image/png;base64,{b64.strip()}"
-                        url = getattr(item0, "url", None)
-                        if isinstance(url, str) and url.strip():
-                            data_url = _url_to_data_url(url.strip())
-                            return data_url or url.strip()
-                else:
-                    openai.api_key = api_key
-                    resp = openai.Image.create(
-                        prompt=prompt,
-                        size=size,
-                        n=1,
-                    )
-                    if isinstance(resp, dict) and resp.get("data"):
-                        url = resp["data"][0].get("url")
-                        if isinstance(url, str) and url.strip():
-                            data_url = _url_to_data_url(url.strip())
-                            return data_url or url.strip()
-            except Exception:
-                pass
-            if response_format != "url":
-                try:
-                    if hasattr(openai, "OpenAI"):
-                        client = openai.OpenAI(api_key=api_key)
-                        resp = client.images.generate(
-                            model=model,
-                            prompt=prompt,
-                            size=size,
-                            quality=quality,
-                            n=1,
-                            response_format="url",
-                        )
-                        if resp and getattr(resp, "data", None) and resp.data:
-                            url = getattr(resp.data[0], "url", None)
-                            if isinstance(url, str) and url.strip():
-                                data_url = _url_to_data_url(url.strip())
-                                return data_url or url.strip()
-                except Exception:
-                    pass
-            if response_format != "b64_json":
-                try:
-                    if hasattr(openai, "OpenAI"):
-                        client = openai.OpenAI(api_key=api_key)
-                        resp = client.images.generate(
-                            model=model,
-                            prompt=prompt,
-                            size=size,
-                            quality=quality,
-                            n=1,
-                            response_format="b64_json",
-                        )
-                        if resp and getattr(resp, "data", None) and resp.data:
-                            b64 = getattr(resp.data[0], "b64_json", None)
-                            if isinstance(b64, str) and b64.strip():
-                                return f"data:image/png;base64,{b64.strip()}"
-                except Exception:
-                    pass
-            return None
+                payload = {
+                    "model": model_name,
+                    "prompt": prompt,
+                    "size": size,
+                    "n": 1,
+                    "response_format": "b64_json" if response_format == "b64_json" else "url",
+                }
+                if quality:
+                    payload["quality"] = quality
+                r = requests.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=90,
+                )
+                data = r.json() if (r.headers.get("content-type") or "").startswith("application/json") else {}
+                if r.status_code >= 400:
+                    err = ""
+                    if isinstance(data, dict):
+                        msg = (data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else data.get("error")
+                        err = str(msg or data)[:400]
+                    err = err or (r.text or "")[:400] or f"HTTP {r.status_code}"
+                    return {"url": None, "error": err, "model": model_name}
+                if isinstance(data, dict) and isinstance(data.get("data"), list) and data["data"]:
+                    item0 = data["data"][0] if isinstance(data["data"][0], dict) else {}
+                    b64 = item0.get("b64_json")
+                    if isinstance(b64, str) and b64.strip():
+                        try:
+                            img_bytes = base64.b64decode(b64.strip())
+                        except Exception:
+                            img_bytes = b""
+                        url = _save_image_bytes(img_bytes, ext="png")
+                        return {"url": url, "error": None if url else "failed_to_save_image", "model": model_name}
+                    url0 = item0.get("url")
+                    if isinstance(url0, str) and url0.strip():
+                        return {"url": url0.strip(), "error": None, "model": model_name}
+                return {"url": None, "error": "empty_response", "model": model_name}
+            except Exception as e:
+                return {"url": None, "error": str(e)[:400], "model": model_name}
+
+        def _openai_generate_image(prompt: str) -> Dict[str, Optional[str]]:
+            api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
+            if not api_key:
+                return {"url": None, "error": "missing_api_key", "model": model}
+
+            tried = []
+            candidates = [model]
+            if model != "gpt-image-1":
+                candidates.append("gpt-image-1")
+            if model != "dall-e-3":
+                candidates.append("dall-e-3")
+
+            last = {"url": None, "error": None, "model": model}
+            for m in candidates:
+                if m in tried:
+                    continue
+                tried.append(m)
+                last = _openai_http_generate(prompt, m)
+                if last.get("url"):
+                    return last
+                err_txt = (last.get("error") or "").lower()
+                if any(k in err_txt for k in ["invalid_api_key", "incorrect api key", "missing_api_key", "insufficient_quota", "quota", "billing"]):
+                    return last
+            return last
 
         items: List[Dict[str, Any]] = []
         for idx, s in enumerate(allocated):
@@ -456,7 +455,10 @@ Regras para os campos:
                 ss["descricao_cena"] = (s.get("text") or "").strip()[:800]
             dalle_prompt = self.build_dalle_prompt(global_semantic, ss, opts, prompt_language)
             dalle_prompt = self.ai_service._sanitize_and_contextualize_image_prompt(dalle_prompt)
-            image_url = _openai_generate_image(dalle_prompt)
+            img_res = _openai_generate_image(dalle_prompt) or {}
+            image_url = img_res.get("url") if isinstance(img_res, dict) else None
+            image_error = img_res.get("error") if isinstance(img_res, dict) else None
+            model_used = img_res.get("model") if isinstance(img_res, dict) else None
             items.append(
                 {
                     "index": idx + 1,
@@ -471,6 +473,8 @@ Regras para os campos:
                     "prompt_language": prompt_language,
                     "prompt": dalle_prompt,
                     "image_url": image_url,
+                    "model_used": model_used,
+                    "error": image_error,
                 }
             )
 
