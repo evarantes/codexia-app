@@ -2284,6 +2284,33 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             )
             return {"title": title, "lyrics": lyrics}
 
+        combined = f"{style} {genre}".strip().lower()
+        combined = combined.replace("ç", "c").replace("ã", "a").replace("á", "a").replace("à", "a").replace("â", "a")
+        combined = combined.replace("é", "e").replace("ê", "e")
+        combined = combined.replace("í", "i")
+        combined = combined.replace("ó", "o").replace("ô", "o").replace("õ", "o")
+        combined = combined.replace("ú", "u")
+
+        extra_rules = ""
+        if any(k in combined for k in ["pentecostal", "corinho", "corinho de fogo", "fogo no pe", "fogo no pe'"]):
+            extra_rules = (
+                "\nRegras específicas do estilo (Corinho / Pentecostal):\n"
+                "- Linguagem de culto congregacional (igreja pequena), direta e simples.\n"
+                "- Frases curtas e rítmicas, fáceis de cantar em grupo.\n"
+                "- Refrão com chamada-e-resposta (com repetições) e energia alta.\n"
+                "- Evite romantização/sofrência e gírias seculares.\n"
+            )
+        if any(k in combined for k in ["corinho tradicional", "culto de oracao", "culto de oração"]):
+            extra_rules += (
+                "- Puxada de 'marcha pentecostal' (rápida), com temática de oração, vitória, fogo e comunhão.\n"
+                "- Evite totalmente sonoridade sertaneja/country (banjo, viola caipira, rodeio, sofrência).\n"
+            )
+        if "pentecostal raiz" in combined:
+            extra_rules += (
+                "- Clima 'raiz' e acústico (violão/pandeiro/bateria), mantendo simplicidade e impacto.\n"
+                "- Evite elementos modernos/eletro e metálicos; foque no percussivo.\n"
+            )
+
         prompt = f"""
 Crie uma letra de música ORIGINAL baseada no tema e na mensagem.
 
@@ -2299,6 +2326,7 @@ Regras:
 - Sem citar marcas, artistas ou músicas existentes.
 - Sem usar markdown.
 - Refrão deve repetir a mensagem de forma memorável.
+{extra_rules}
 
 Retorne APENAS um JSON válido no formato:
 {{

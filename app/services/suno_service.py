@@ -145,6 +145,25 @@ def _inject_tag_before_chorus_or_mid(lyrics: str, tag: str) -> str:
     out = "\n".join(new_lines).strip()
     return out
 
+def _inject_tag_between_stanzas(lyrics: str, tag: str) -> str:
+    base = (lyrics or "").strip()
+    if not base:
+        return base
+    t = (tag or "").strip()
+    if not t:
+        return base
+    if _has_exact_tag(base, t):
+        return base
+
+    parts = re.split(r"\n\s*\n", base)
+    if len(parts) < 2:
+        return _inject_tag_before_chorus_or_mid(base, t)
+    first = parts[0].strip()
+    rest = "\n\n".join(p.strip() for p in parts[1:] if p is not None).strip()
+    if not first or not rest:
+        return _inject_tag_before_chorus_or_mid(base, t)
+    return f"{first}\n\n{t}\n\n{rest}".strip()
+
 
 def _inject_pentecostal_structure_tags(lyrics: str) -> str:
     base = (lyrics or "").strip()
@@ -195,8 +214,18 @@ def _apply_style_preset(style: str, lyrics: str) -> Tuple[str, str]:
 
     is_pentecostal_raiz = ("pentecostal raiz" in norm) or (("pentecostal" in norm or "corinho" in norm) and "raiz" in norm)
     if is_pentecostal_raiz:
-        style_prompt = "Acoustic Brazilian Pentecostal, Acoustic Guitar rhythm, Pandeiro, Driving Drums, 150 BPM, Raw energy, No Brass, No Piano"
-        enriched_lyrics = _inject_style_tag_at_start(lyrics or "", "[Style: Acoustic and Percussive]")
+        style_prompt = (
+            "Fast Brazilian Pentecostal March, 155 BPM, Percussive Pandeiro, Sharp Snare Drum, "
+            "Aggressive Acoustic Guitar Strumming, High Energy, Rhythmic Foot Stomps, Raw Congregational Vocals, "
+            "No Accordion, No Steel Guitar, No Piano, No Country influence. "
+            "No Sertanejo, No Country, No Banjo, No Violin, No Fiddle, No Accordion, No Soft Pop, No Acoustic Ballad, No Slow Tempo"
+        )
+        enriched_lyrics = _inject_style_tag_at_start(
+            lyrics or "",
+            "[Style: Fast percussive march, focus on Pandeiro and rhythmic acoustic guitar, high energy worship]",
+        )
+        enriched_lyrics = _inject_tag_between_stanzas(enriched_lyrics, "[Break: Pandeiro and Drum Solo]")
+        enriched_lyrics = _inject_tag_before_chorus_or_mid(enriched_lyrics, "[Rhythmic Clapping]")
         return _strip_artist_refs(style_prompt), enriched_lyrics
 
     style_prompt = (
