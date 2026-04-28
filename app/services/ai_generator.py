@@ -968,10 +968,10 @@ class AIContentGenerator:
         return clean[:count]
 
     def _visual_global_style(self) -> str:
-        return "Cinematic photo-realistic, 8K, divine chiaroscuro, god rays, golden glow, celestial white highlights, deep blue atmosphere, warm fire tones, vibrant natural colors, epic perspective, deeply emotional expressions, high detail, high-definition"
+        return "Cinematic photo-realistic, 8K, divine chiaroscuro, god rays, golden glow, celestial white highlights, deep blue atmosphere, warm fire tones, vibrant natural colors, epic perspective, deeply emotional expressions, high detail, high-definition, divine light, golden illumination, heavenly atmosphere, reverent scene, cinematic lighting, epic composition, inspiring, uplifting, photorealistic art, holy presence"
 
     def _visual_global_negative(self) -> str:
-        return "(gore, explicit blood, extreme violence, death imagery, zombie, horror, macabre, dark and unsettling atmosphere, distorted faces, nightmare, intense fear)"
+        return "(terror, horror, scary, disturbing, gore, blood, zombie, dark spirits, creepy, unsettling, death, monstrosity, distorted faces, menacing, evil appearance, nightmares, intense fear, non-divine context, unholy)"
 
     def _normalize_for_rules(self, text: str) -> str:
         import unicodedata
@@ -1010,6 +1010,72 @@ class AIContentGenerator:
 
         extra = ", ".join(extra_common)
         return f"{base}, {extra}".strip().strip(",")
+
+    def _sanitize_and_contextualize_image_prompt(self, prompt: str) -> str:
+        import re
+        raw = (prompt or "").strip()
+        if not raw:
+            return raw
+
+        t = raw
+        t = re.sub(r"(?is)\bnegative\s*prompt\s*:\s*.*$", "", t).strip()
+        t = re.sub(r"\s+", " ", t).strip()
+
+        norm = self._normalize_for_rules(t)
+        is_revelation = any(k in norm for k in [
+            "apocalipse", "revelation", "joao", "john",
+            "candeeiro", "candelabro", "lampstand", "seven lamp",
+            "cabelos brancos", "white hair", "wool",
+            "espada saindo da boca", "sword from his mouth", "sword from mouth",
+            "olhos em chamas", "eyes like fire", "flames of fire", "eyes of fire",
+            "vestes de gloria", "robe of glory", "glorious robe",
+            "filho do homem", "son of man",
+        ])
+
+        banned_words = [
+            "monster", "monstrosity", "demon", "demonic", "devil", "satanic",
+            "horror", "terror", "scary", "creepy", "macabre", "disturbing", "unholy",
+            "evil", "menacing", "nightmare", "grotesque",
+        ]
+        if any(w in norm for w in banned_words):
+            for w in banned_words:
+                if w in norm:
+                    t = re.sub(rf"(?i)\b{re.escape(w)}\b", "", t)
+            t = re.sub(r"\s+", " ", t).strip()
+
+        if is_revelation:
+            t = (
+                f"Glorious cinematic sacred vision inspired by Revelation 1. {t}. "
+                "Interpret all visionary symbols as divine glory: hair white like wool as majestic and luminous, "
+                "eyes like flames as gentle radiant divine light (not frightening), "
+                "and 'sword from the mouth' as a symbolic beam of light shaped like a blade (not literal metal, not grotesque). "
+                "Include seven golden lampstands when relevant, golden illumination, heavenly atmosphere, god rays, "
+                "epic composition, vibrant colors, uplifting and inspiring mood, modest biblical attire, wide shot."
+            ).strip()
+        else:
+            if any(k in norm for k in ["olhos", "eyes"]) and any(k in norm for k in ["fogo", "fire", "flame"]):
+                t = (
+                    f"{t}. Interpret any 'eyes of fire' as gentle divine light reflecting like flames, holy and uplifting, not scary or menacing."
+                ).strip()
+            if any(k in norm for k in ["espada", "sword"]) and any(k in norm for k in ["boca", "mouth"]):
+                t = (
+                    f"{t}. Interpret any 'sword from the mouth' symbolically as a radiant beam of light shaped like a blade, not grotesque."
+                ).strip()
+
+        style = self._visual_global_style()
+        t_low = t.lower()
+        if "reverent" not in t_low and "holy" not in t_low and "heavenly" not in t_low:
+            t = f"{t}. Reverent holy scene, uplifting, inspiring."
+        if "cinematic" not in t_low and "photorealistic" not in t_low:
+            t = f"{t}. {style}"
+        else:
+            t = f"{t}. {style}"
+
+        t = (
+            f"{t}. Do not depict horror, terror, monsters, demons, disturbing atmosphere, or evil appearance. "
+            "Avoid close-up threatening faces; if faces appear, keep them serene, natural, and peaceful."
+        )
+        return re.sub(r"\s+", " ", t).strip()
 
     def generate_semantic_visual_prompts_from_lyrics(self, lyrics: str, caption_slots: list, title: str = "") -> list:
         self._load_config()
@@ -1062,6 +1128,7 @@ Regras invioláveis:
 - Sem texto na imagem, sem marcas d'água, sem logos, sem letras.
 - Conteúdo adequado para todas as idades. Bloqueio global obrigatório: {neg}.
 - Estética e tom: santidade, adoração, esperança; use luz celestial e contraste (chiaroscuro) para glória, não para medo. Evite paletas acinzentadas/fúnebres.
+- Interpretação contextual: jamais interpretar passagens bíblicas de forma literal e sombria; traduza descrições visionárias para glória divina, transcendência e luz cinematográfica, nunca para terror.
 - Proibido: macabro, terror, símbolos assustadores, demônios com estética gore, olhos totalmente pretos, expressões de pura maldade.
 - Substituição: se a letra mencionar morte/inferno/trevas, represente como sombras, deserto ou abismo distante, mantendo a vitória da luz em primeiro plano.
 - Modéstia: vestes modestas e condizentes com a época bíblica.
@@ -1116,9 +1183,9 @@ Cada prompt deve ser 1 frase em inglês (40-90 palavras), contendo: cenário, pr
         cleaned = []
         for p in prompts_list[:count]:
             if isinstance(p, str) and p.strip():
-                cleaned.append(_ensure_style(p.strip())[:900])
+                cleaned.append(self._sanitize_and_contextualize_image_prompt(_ensure_style(p.strip()))[:900])
             else:
-                cleaned.append(_ensure_style(f"Photorealistic cinematic film still. {style}. Safe, uplifting, no text.")[:900])
+                cleaned.append(self._sanitize_and_contextualize_image_prompt(_ensure_style(f"Photorealistic cinematic film still. {style}. Safe, uplifting, no text."))[:900])
 
         if any(k in norm for k in ["crucifica", "calvar", "golgota", "coroa de espinhos", "pregos", "cruz", "ressurreic", "sepulcro", "tumulo"]) and len(cleaned) >= 3:
             cleaned[-3] = _ensure_style("Reverent cinematic scene: an empty wooden cross silhouette on a hill at sunrise, warm illuminating light, hopeful atmosphere, wide shot, non-graphic, no blood, no text.")
@@ -1187,6 +1254,7 @@ Cada prompt deve ser 1 frase em inglês (40-90 palavras), contendo: cenário, pr
 
         Para CADA cena acima, crie UMA descrição visual (image_prompt) em INGLÊS com as regras:
         - Faça internamente uma leitura exegética: protagonista, cenário, ação/emoção principal; diferencie metáfora vs literal.
+        - Interpretação contextual: jamais interpretar passagens bíblicas de forma literal e sombria; traduza descrições visionárias para glória divina, transcendência e luz cinematográfica, nunca para terror.
         - Representar fielmente a ideia e o clima da narração, evitando genericidade.
         - Estilo obrigatório: {style}.
         - Estética e tom: santidade, adoração, esperança; luz celestial (god rays), brilho dourado, contraste (chiaroscuro) para glória, não para medo; paleta dourado/branco celestial/azul profundo/tons quentes.
@@ -1222,7 +1290,7 @@ Cada prompt deve ser 1 frase em inglês (40-90 palavras), contendo: cenário, pr
                 if k < len(prompts_list) and scene_idx < len(scenes):
                     prompt_text = (prompts_list[k] or "").strip()
                     if prompt_text and isinstance(scenes[scene_idx], dict):
-                        scenes[scene_idx]["image_prompt"] = prompt_text[:500]
+                        scenes[scene_idx]["image_prompt"] = self._sanitize_and_contextualize_image_prompt(prompt_text)[:500]
             plan["scenes"] = scenes
         except Exception as e:
             print(f"Erro ao enriquecer image_prompts com IA: {e}")
@@ -2049,6 +2117,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         raw_prompt = (prompt or "").strip()
         if not raw_prompt:
             return None
+        raw_prompt = self._sanitize_and_contextualize_image_prompt(raw_prompt)
 
         is_portrait = str(aspect_ratio).strip() == "9:16"
         width, height = (720, 1280) if is_portrait else (1280, 720)
@@ -2094,6 +2163,15 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             "no bad hands, no extra fingers, no melted face, no blurred face; "
             "no lowres, no jpeg artifacts"
         )
+        negative_prompt_plain = (
+            f"{neg}, "
+            "no text, no subtitles, no watermarks, no signatures, no logos, "
+            "no monsters, no undead, "
+            "no uncanny, no doll-like, "
+            "no deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, "
+            "no bad hands, no extra fingers, no melted face, no blurred face, "
+            "no lowres, no jpeg artifacts"
+        ).strip().strip(",")
         raw_lower = raw_prompt.lower()
         missing_style = [t for t in positive_style if t.lower() not in raw_lower]
         enhanced_prompt = raw_prompt
@@ -2141,8 +2219,9 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         continue
                     notify(f"Tentando {label}...")
                     full_prompt = (
-                        f"{enhanced_prompt}. {negative_constraints}. "
-                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural and not distorted."
+                        f"{enhanced_prompt}. "
+                        "Family-friendly, reverent, holy atmosphere, uplifting and inspiring. "
+                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural, serene, and not distorted."
                     )
                     eden_provider = (os.getenv("EDENAI_IMAGE_PROVIDER") or "openai").strip()
                     headers = {"Authorization": f"Bearer {self.edenai_key.strip()}"}
@@ -2185,8 +2264,9 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         continue
                     notify(f"Tentando {label}...")
                     full_prompt = (
-                        f"{enhanced_prompt}. {negative_constraints}. "
-                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural and not distorted."
+                        f"{enhanced_prompt}. "
+                        "Family-friendly, reverent, holy atmosphere, uplifting and inspiring. "
+                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural, serene, and not distorted."
                     )
                     url = None
                     model = (os.getenv("OPENAI_IMAGE_MODEL") or "dall-e-3").strip() or "dall-e-3"
@@ -2228,8 +2308,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         continue
                     notify(f"Tentando {label}...")
                     full_prompt = (
-                        f"{enhanced_prompt}. {negative_constraints}. "
-                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural and not distorted."
+                        f"{enhanced_prompt}. "
+                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural, serene, and not distorted."
                     )
                     model_id = (self.leonardo_model_id or "").strip() or (os.getenv("LEONARDO_MODEL_ID") or "").strip() or None
                     out_w, out_h = (576, 1024) if is_portrait else (1024, 576)
@@ -2240,7 +2320,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     }
                     payload = {
                         "prompt": full_prompt,
-                        "negative_prompt": negative_constraints,
+                        "negative_prompt": negative_prompt_plain,
                         "num_images": 1,
                         "width": out_w,
                         "height": out_h,
@@ -2296,7 +2376,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     model = "flux" if provider == "pollinations_flux" else ("turbo" if provider == "pollinations_turbo" else "")
                     notify(f"Tentando {label}...")
                     pollinations_prompt = (
-                        f"{enhanced_prompt}. {negative_constraints}. "
+                        f"{enhanced_prompt}. "
+                        "family-friendly, reverent, holy atmosphere, uplifting and inspiring, serene expressions, "
                         "photorealistic cinematic photography, warm illuminating light, epic perspective, high detail, high-definition, no text, no watermark, no logo"
                     )
                     safe_prompt = urllib.parse.quote(pollinations_prompt)
