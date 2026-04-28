@@ -5,6 +5,7 @@ import base64
 from typing import Any, Dict, List, Optional
 
 import openai
+import requests
 
 
 class OpenAIImageModule:
@@ -344,12 +345,31 @@ Regras para os campos:
         model = (opts.get("model") or "").strip() or (os.getenv("OPENAI_IMAGE_MODEL") or "").strip() or "gpt-image-1"
         size = (opts.get("size") or "1024x1024").strip() or "1024x1024"
         quality = (opts.get("quality") or "").strip() or "standard"
-        response_format = (opts.get("response_format") or "").strip() or ("b64_json" if model == "gpt-image-1" else "url")
+        response_format = (opts.get("response_format") or "").strip() or "b64_json"
 
         def _openai_generate_image(prompt: str) -> Optional[str]:
             api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
             if not api_key:
                 return None
+
+            def _url_to_data_url(url: str) -> Optional[str]:
+                u = (url or "").strip()
+                if not u.startswith("http"):
+                    return None
+                try:
+                    rr = requests.get(u, timeout=30)
+                    if rr.status_code >= 400:
+                        return None
+                    ct = (rr.headers.get("content-type") or "").strip().lower()
+                    if not ct.startswith("image/"):
+                        return None
+                    mime = ct.split(";")[0].strip() if ct else "image/png"
+                    b64 = base64.b64encode(rr.content or b"").decode("utf-8")
+                    if not b64:
+                        return None
+                    return f"data:{mime};base64,{b64}"
+                except Exception:
+                    return None
             try:
                 if hasattr(openai, "OpenAI"):
                     client = openai.OpenAI(api_key=api_key)
@@ -363,12 +383,13 @@ Regras para os campos:
                     )
                     if resp and getattr(resp, "data", None) and resp.data:
                         item0 = resp.data[0]
-                        url = getattr(item0, "url", None)
-                        if isinstance(url, str) and url.strip():
-                            return url.strip()
                         b64 = getattr(item0, "b64_json", None)
                         if isinstance(b64, str) and b64.strip():
                             return f"data:image/png;base64,{b64.strip()}"
+                        url = getattr(item0, "url", None)
+                        if isinstance(url, str) and url.strip():
+                            data_url = _url_to_data_url(url.strip())
+                            return data_url or url.strip()
                 else:
                     openai.api_key = api_key
                     resp = openai.Image.create(
@@ -379,7 +400,8 @@ Regras para os campos:
                     if isinstance(resp, dict) and resp.get("data"):
                         url = resp["data"][0].get("url")
                         if isinstance(url, str) and url.strip():
-                            return url.strip()
+                            data_url = _url_to_data_url(url.strip())
+                            return data_url or url.strip()
             except Exception:
                 pass
             if response_format != "url":
@@ -397,7 +419,8 @@ Regras para os campos:
                         if resp and getattr(resp, "data", None) and resp.data:
                             url = getattr(resp.data[0], "url", None)
                             if isinstance(url, str) and url.strip():
-                                return url.strip()
+                                data_url = _url_to_data_url(url.strip())
+                                return data_url or url.strip()
                 except Exception:
                     pass
             if response_format != "b64_json":
