@@ -1678,7 +1678,7 @@ class VideoGenerator:
             except Exception:
                 pass
 
-    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto", captions_enabled: bool = True, progress_callback: Optional[Callable[[int, str], None]] = None):
+    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto", captions_enabled: bool = True, progress_callback: Optional[Callable[[int, str], None]] = None, image_options: Optional[dict] = None):
         """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
         try:
             from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
@@ -2246,7 +2246,8 @@ class VideoGenerator:
                     semantic_prompts = self.ai_service.generate_semantic_visual_prompts_from_lyrics(
                         lyric_text or "",
                         prompt_slots,
-                        title=clean_title
+                        title=clean_title,
+                        options=image_options,
                     ) or []
                     if not isinstance(semantic_prompts, list):
                         semantic_prompts = []

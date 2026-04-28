@@ -1077,20 +1077,14 @@ class AIContentGenerator:
         )
         return re.sub(r"\s+", " ", t).strip()
 
-    def generate_semantic_visual_prompts_from_lyrics(self, lyrics: str, caption_slots: list, title: str = "") -> list:
+    def generate_semantic_visual_prompts_from_lyrics(self, lyrics: str, caption_slots: list, title: str = "", options: Optional[Dict[str, Any]] = None) -> list:
         self._load_config()
-        if not self.openrouter_key:
-            return []
-
         import re
         try:
             count = int(len(caption_slots or []))
         except Exception:
             count = 0
         count = max(1, min(60, count))
-        slots = caption_slots if isinstance(caption_slots, list) else []
-        if not slots:
-            slots = [(lyrics or "").strip()[:240]] * count
 
         raw_lyrics = (lyrics or "").strip()
         clean_lyrics = raw_lyrics
@@ -1099,115 +1093,47 @@ class AIContentGenerator:
         clean_lyrics = re.sub(r"(?m)^\s*\[\s*rhythmic\s+clapping\s*\]\s*$", "", clean_lyrics).strip()
         clean_lyrics = re.sub(r"\n{3,}", "\n\n", clean_lyrics).strip()
 
-        style = self._visual_global_style()
-        neg = self._visual_negative_for_text(f"{clean_lyrics}\n" + "\n".join([str(s or "") for s in (slots or [])]))
-        slots_desc = "\n".join([f"{i+1}. {str(s or '').strip()[:260]}" for i, s in enumerate(slots[:count])])
-        safe_title = (title or "").strip()[:120] or "Music Video"
-
-        import json
-        prompt = f"""
-Você é um diretor de fotografia e diretor de arte de cinema. Seu trabalho é criar prompts visuais fotorrealistas e coerentes para um clipe baseado em letra cantada.
-
-Tarefa de entendimento (faça internamente antes de escrever os prompts):
-- Quem é o personagem principal (ou grupo) e como mantê-lo consistente?
-- Qual é o cenário exato (local/época/atmosfera)?
-- Qual é a ação/emoção principal em cada momento?
-- O que é metáfora e o que é literal? Se for metáfora, traduza para uma metáfora visual clara (sem ficar genérico).
-
-Título: {safe_title}
-
-LETRA COMPLETA (contexto):
-{clean_lyrics[:4200]}
-
-SLOTS DE CENA (um por imagem, em ordem; use cada linha como guia do momento):
-{slots_desc}
-
-Regras invioláveis:
-- Narrativa coerente do início ao fim, com continuidade (mesmo protagonista/roupa/época, a menos que a letra indique mudança).
-- Estilo obrigatório: {style}.
-- Sem texto na imagem, sem marcas d'água, sem logos, sem letras.
-- Conteúdo adequado para todas as idades. Bloqueio global obrigatório: {neg}.
-- Estética e tom: santidade, adoração, esperança; use luz celestial e contraste (chiaroscuro) para glória, não para medo. Evite paletas acinzentadas/fúnebres.
-- Interpretação contextual: jamais interpretar passagens bíblicas de forma literal e sombria; traduza descrições visionárias para glória divina, transcendência e luz cinematográfica, nunca para terror.
-- Proibido: macabro, terror, símbolos assustadores, demônios com estética gore, olhos totalmente pretos, expressões de pura maldade.
-- Substituição: se a letra mencionar morte/inferno/trevas, represente como sombras, deserto ou abismo distante, mantendo a vitória da luz em primeiro plano.
-- Modéstia: vestes modestas e condizentes com a época bíblica.
-- Se o texto mencionar histórias bíblicas específicas, inclua detalhes obrigatórios:
-  - Raabe/Jericó/corda vermelha: a corda vermelha visível na janela, cidade murada ao fundo, família reunida em oração.
-  - Mefibosete/Lodebar: desolação do lugar e da pessoa, contraste com chegada de carruagens reais e honra à mesa do rei.
-  - Crucificação: não explícito, respeitoso e não-gráfico; a sequência deve culminar em Cruz Vazia, Sepulcro Vazio e Ressurreição (esperança e vitória).
-  - Apocalipse 1: "cabelos brancos como lã" deve parecer majestoso e glorioso (não assustador). "espada saindo da boca" deve ser simbólica (luz em forma de lâmina), não grotesca.
-  - Ezequiel (vale de ossos secos): ossos só se explicitamente for este texto; foque na reconstituição e vida surgindo, não na decomposição.
-
-Saída:
-Retorne APENAS um JSON válido:
-{{ "image_prompts": ["prompt cena 1...", "prompt cena 2...", ...] }}
-Cada prompt deve ser 1 frase em inglês (40-90 palavras), contendo: cenário, protagonistas, ação, emoção, iluminação, composição/câmera.
-"""
-
-        prompts_list = []
         try:
-            raw = self._generate_text(
-                prompt,
-                system_prompt="You are a senior cinematic art director. Output only valid JSON.",
-                temperature=0.55,
-                json_mode=True,
-            ) or "{}"
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            data = json.loads(raw) if raw else {}
-            prompts_list = data.get("image_prompts") if isinstance(data, dict) else None
-            if not isinstance(prompts_list, list):
-                prompts_list = []
+            from app.services.openai_image_module import OpenAIImageModule
         except Exception:
-            prompts_list = []
+            OpenAIImageModule = None
 
-        while len(prompts_list) < count:
-            base = (slots[len(prompts_list)] if len(slots) > len(prompts_list) else clean_lyrics) or safe_title
-            prompts_list.append(
-                f"Photorealistic cinematic film still illustrating: {str(base).strip()[:200]}. {style}. Safe, uplifting, no text."
-            )
+        opts = dict(options or {})
+        if OpenAIImageModule is None:
+            style = self._visual_global_style()
+            out = []
+            while len(out) < count:
+                out.append(self._sanitize_and_contextualize_image_prompt(f"Photorealistic cinematic film still. {style}. Safe, uplifting, no text.")[:900])
+            return out[:count]
 
-        norm_all = self._normalize_for_rules(clean_lyrics)
-        norm_all2 = self._normalize_for_rules(" ".join(str(s or "") for s in slots))
-        norm = f"{norm_all} {norm_all2}".strip()
+        mod = OpenAIImageModule(ai_service=self)
+        sections = mod.split_lyrics_into_sections(clean_lyrics or raw_lyrics)
+        allocated = mod._allocate_scenes(sections, count)
+        prompt_language = mod._coerce_prompt_language((opts.get("prompt_language") or "auto"), clean_lyrics or raw_lyrics)
+        semantic = mod.interpretar_letra(clean_lyrics or raw_lyrics, allocated, prompt_language=prompt_language) or {}
+        global_semantic = semantic if isinstance(semantic, dict) else {}
+        scene_semantics = global_semantic.get("cenas") if isinstance(global_semantic, dict) else None
+        if not isinstance(scene_semantics, list):
+            scene_semantics = []
 
-        def _ensure_style(p: str) -> str:
-            txt = (p or "").strip()
-            if not txt:
-                return txt
-            low = txt.lower()
-            if "cinematic" not in low and "photo-realistic" not in low and "photorealistic" not in low:
-                txt = f"{txt}. {style}"
-            return txt.strip()
+        safe_title = (title or "").strip()
+        if safe_title and isinstance(global_semantic, dict) and not global_semantic.get("titulo"):
+            global_semantic["titulo"] = safe_title
 
-        cleaned = []
-        for p in prompts_list[:count]:
-            if isinstance(p, str) and p.strip():
-                cleaned.append(self._sanitize_and_contextualize_image_prompt(_ensure_style(p.strip()))[:900])
-            else:
-                cleaned.append(self._sanitize_and_contextualize_image_prompt(_ensure_style(f"Photorealistic cinematic film still. {style}. Safe, uplifting, no text."))[:900])
+        prompts = []
+        for i, s in enumerate(allocated[:count]):
+            ss = scene_semantics[i] if i < len(scene_semantics) and isinstance(scene_semantics[i], dict) else {}
+            if not ss.get("trecho_titulo"):
+                ss["trecho_titulo"] = (s.get("title") or f"Trecho {i+1}").strip()
+            if not ss.get("descricao_cena"):
+                ss["descricao_cena"] = (s.get("text") or "").strip()[:900]
+            dalle_prompt = mod.build_dalle_prompt(global_semantic, ss, opts, prompt_language)
+            prompts.append(self._sanitize_and_contextualize_image_prompt(dalle_prompt)[:900])
 
-        if any(k in norm for k in ["crucifica", "calvar", "golgota", "coroa de espinhos", "pregos", "cruz", "ressurreic", "sepulcro", "tumulo"]) and len(cleaned) >= 3:
-            cleaned[-3] = _ensure_style("Reverent cinematic scene: an empty wooden cross silhouette on a hill at sunrise, warm illuminating light, hopeful atmosphere, wide shot, non-graphic, no blood, no text.")
-            cleaned[-2] = _ensure_style("Reverent cinematic scene: the empty tomb entrance at sunrise with gentle rays of light, peaceful and victorious mood, wide shot, non-graphic, no text.")
-            cleaned[-1] = _ensure_style("Cinematic triumphant resurrection symbolism: bright morning light breaking through clouds over a peaceful landscape, joyful congregational worship in the distance, hopeful victory, warm light, no text.")
-
-        if any(k in norm for k in ["raabe", "jerico", "jerico", "corda vermelha", "scarlet cord", "red cord"]) and not any("cord" in (p or "").lower() for p in cleaned):
-            cleaned[0] = _ensure_style(
-                "Cinematic biblical scene in ancient Jericho: Rahab at a window with a visible scarlet red rope hanging outside, the walled city in the background, her family gathered inside praying, warm illuminating light, epic perspective, deeply emotional expressions, non-violent, no text."
-            )
-
-        if any(k in norm for k in ["mefibosete", "mephibosheth", "lodebar", "lo debar"]) and len(cleaned) >= 2:
-            if not any("chariot" in (p or "").lower() for p in cleaned):
-                cleaned[-2] = _ensure_style(
-                    "Cinematic biblical contrast: desolate ancient village of Lo-debar with a lonely man in worn clothing, dusty streets, then royal chariots arriving in the distance bringing hope, warm light, epic perspective, non-violent, no text."
-                )
-            if not any("king" in (p or "").lower() and "table" in (p or "").lower() for p in cleaned):
-                cleaned[-1] = _ensure_style(
-                    "Cinematic biblical honor scene: a humble man welcomed to the king's table in a warm-lit palace hall, respectful and uplifting, joyful faces, wide shot, high detail, no text."
-                )
-
-        return cleaned[:count]
+        while len(prompts) < count:
+            style = self._visual_global_style()
+            prompts.append(self._sanitize_and_contextualize_image_prompt(f"Photorealistic cinematic film still. {style}. Safe, uplifting, no text.")[:900])
+        return prompts[:count]
 
     def enrich_scenes_with_image_prompts(self, plan: dict) -> dict:
         """

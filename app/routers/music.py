@@ -47,6 +47,12 @@ class GenerateClipRequest(BaseModel):
     captions_enabled: Optional[bool] = True
     aspect_ratio: Optional[str] = "9:16"  # "9:16" (vertical) ou "16:9" (YouTube)
     auto_upload_youtube: Optional[bool] = False
+    images_count: Optional[int] = None
+    visual_style: Optional[str] = None
+    spiritual_intensity: Optional[str] = None
+    prompt_language: Optional[str] = None
+    mode: Optional[str] = None
+    model: Optional[str] = None
 
 
 class GenerateLyricsRequest(BaseModel):
@@ -173,6 +179,7 @@ def generate_images_from_lyrics_openai(request: GenerateLyricsImagesRequest, use
         raise HTTPException(status_code=400, detail="Informe a letra.")
     try:
         ai = AIContentGenerator()
+        ai._load_config()
         if not (getattr(ai, "api_key", "") or "").strip():
             raise HTTPException(status_code=400, detail="Configure a OpenAI API Key em Configurações.")
         from app.services.openai_image_module import OpenAIImageModule
@@ -737,6 +744,14 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
             watermark_enabled=watermark_enabled,
             sync_mode=sync_mode,
             captions_enabled=captions_enabled,
+            image_options={
+                "images_count": request.images_count,
+                "visual_style": request.visual_style,
+                "spiritual_intensity": request.spiritual_intensity,
+                "prompt_language": request.prompt_language,
+                "mode": request.mode,
+                "model": request.model,
+            },
         )
         warning = (result.get("warning") if isinstance(result, dict) else None)
         msg = "Clipe gerado com sucesso."
@@ -825,6 +840,14 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
                 sync_mode=sync_mode,
                 captions_enabled=captions_enabled,
                 progress_callback=_progress,
+                image_options={
+                    "images_count": request.images_count,
+                    "visual_style": request.visual_style,
+                    "spiritual_intensity": request.spiritual_intensity,
+                    "prompt_language": request.prompt_language,
+                    "mode": request.mode,
+                    "model": request.model,
+                },
             )
             video_url = result.get("video_url") if isinstance(result, dict) else None
             if not video_url:
