@@ -980,6 +980,37 @@ class AIContentGenerator:
         t = "".join(ch for ch in t if not unicodedata.combining(ch))
         return t
 
+    def _visual_negative_for_text(self, text: str) -> str:
+        base = self._visual_global_negative()
+        norm = self._normalize_for_rules(text or "")
+        is_ezekiel_bones = any(k in norm for k in ["ezequiel", "ezekiel", "vale de ossos secos", "ossos secos", "valley of dry bones", "dry bones"])
+        extra_common = [
+            "no explicit blood",
+            "no excessive blood",
+            "no gore",
+            "no horror",
+            "no macabre",
+            "no terrifying symbols",
+            "no demonic symbols",
+            "no evil expression",
+            "no pure malice",
+            "no fully black eyes",
+            "no unsettling atmosphere",
+            "no creepy",
+            "no skulls",
+            "no skeletons",
+            "no bones",
+            "no corpse",
+            "no decomposition",
+            "no rot",
+        ]
+        if is_ezekiel_bones:
+            extra_common = [x for x in extra_common if x not in {"no skulls", "no skeletons", "no bones"}]
+            extra_common.append("if bones appear, focus on reconstitution and life, no decomposition")
+
+        extra = ", ".join(extra_common)
+        return f"{base}, {extra}".strip().strip(",")
+
     def generate_semantic_visual_prompts_from_lyrics(self, lyrics: str, caption_slots: list, title: str = "") -> list:
         self._load_config()
         if not self.openrouter_key:
@@ -1003,7 +1034,7 @@ class AIContentGenerator:
         clean_lyrics = re.sub(r"\n{3,}", "\n\n", clean_lyrics).strip()
 
         style = self._visual_global_style()
-        neg = self._visual_global_negative()
+        neg = self._visual_negative_for_text(f"{clean_lyrics}\n" + "\n".join([str(s or "") for s in (slots or [])]))
         slots_desc = "\n".join([f"{i+1}. {str(s or '').strip()[:260]}" for i, s in enumerate(slots[:count])])
         safe_title = (title or "").strip()[:120] or "Music Video"
 
@@ -1144,7 +1175,7 @@ Cada prompt deve ser 1 frase em inglês (40-90 palavras), contendo: cenário, pr
         title = plan.get("title") or "Vídeo"
 
         style = self._visual_global_style()
-        neg = self._visual_global_negative()
+        neg = self._visual_negative_for_text(scenes_desc)
 
         prompt = f"""
         Você é um diretor de arte e diretor de fotografia para vídeos narrados (YouTube, Shorts). Seu trabalho é criar descrições visuais para gerar imagens com IA que ilustrem exatamente o que está sendo dito, com continuidade narrativa.
@@ -2025,29 +2056,37 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
 
         positive_style = [
             "high quality",
-            "cinematic lighting",
-            "vibrant colors",
-            "bright",
-            "inspiring",
+            "photorealistic",
+            "epic biblical cinematography",
+            "divine chiaroscuro",
+            "god rays",
+            "golden glow",
+            "celestial light",
+            "vibrant natural colors",
             "family-friendly",
         ]
         quality_tokens = [
             "photorealistic cinematic photography",
-            "cinematic lighting",
-            "vibrant colors",
-            "bright",
-            "inspiring",
+            "8k",
+            "divine chiaroscuro lighting",
+            "god rays",
+            "golden glow",
+            "celestial white highlights",
+            "deep blue atmosphere",
+            "warm fire tones",
+            "vibrant natural colors",
+            "epic perspective",
+            "sacred and hopeful mood",
             "family-friendly",
-            "natural lighting",
             "sharp focus",
             "high detail",
             "professional color grading",
             "pleasant mood",
             "realistic skin texture",
         ]
+        neg = self._visual_negative_for_text(raw_prompt)
         negative_constraints = (
-            "negative prompt: (gore, explicit blood, extreme violence, death imagery, zombie, horror, macabre, dark and unsettling atmosphere, distorted faces, nightmare, intense fear); "
-            "no horror, no macabre, no zombie, no gore, no blood, no violence; "
+            f"negative prompt: {neg}; "
             "no text, no subtitles, no watermarks, no signatures, no logos; "
             "no monsters, no undead; "
             "no uncanny, no doll-like; "
