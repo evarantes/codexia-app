@@ -2239,6 +2239,21 @@ class VideoGenerator:
                     return f"Brazilian gospel worship music video. Scene: {scene_desc} Keywords: {eng_list}. {base_style} {safety}"
                 return f"Family-friendly music video scene. Scene: {scene_desc} Keywords: {eng_list}. {base_style} {safety}"
 
+            semantic_prompts = []
+            if self.ai_service and hasattr(self.ai_service, "generate_semantic_visual_prompts_from_lyrics"):
+                try:
+                    prompt_slots = [str((it or {}).get("prompt_text") or (it or {}).get("caption") or "").strip() for it in (timeline or [])]
+                    semantic_prompts = self.ai_service.generate_semantic_visual_prompts_from_lyrics(
+                        lyric_text or "",
+                        prompt_slots,
+                        title=clean_title
+                    ) or []
+                    if not isinstance(semantic_prompts, list):
+                        semantic_prompts = []
+                except Exception as e:
+                    print(f"Erro ao gerar storyboard semântico: {e}")
+                    semantic_prompts = []
+
             for i, it in enumerate(timeline):
                 caption = (it.get("caption") or "").strip()
                 prompt_caption = (it.get("prompt_text") or caption or "").strip()
@@ -2255,6 +2270,8 @@ class VideoGenerator:
                         else f"Cinematic opening shot for a music video titled '{clean_title[:80]}', symbolic, inspiring, wide shot, non-graphic."
                     )
                     image_prompt = opening + " No text, no watermark, no logo."
+                elif semantic_prompts and i < len(semantic_prompts) and str(semantic_prompts[i] or "").strip():
+                    image_prompt = str(semantic_prompts[i] or "").strip()
                 else:
                     image_prompt = _prompt_for_caption(prompt_caption)
                 if progress_callback:

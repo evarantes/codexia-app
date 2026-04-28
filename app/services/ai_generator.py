@@ -967,6 +967,144 @@ class AIContentGenerator:
             clean.append(f"Photorealistic cinematic photography inspired by this {safe_kind} message. Pleasant mood, no horror, no monsters, no gore. No text.")
         return clean[:count]
 
+    def _visual_global_style(self) -> str:
+        return "Cinematic photo-realistic, warm illuminating light, epic perspective, deeply emotional expressions, high detail, high-definition"
+
+    def _visual_global_negative(self) -> str:
+        return "(gore, explicit blood, extreme violence, death imagery, zombie, horror, macabre, dark and unsettling atmosphere, distorted faces, nightmare, intense fear)"
+
+    def _normalize_for_rules(self, text: str) -> str:
+        import unicodedata
+        t = (text or "").strip().lower()
+        t = unicodedata.normalize("NFKD", t)
+        t = "".join(ch for ch in t if not unicodedata.combining(ch))
+        return t
+
+    def generate_semantic_visual_prompts_from_lyrics(self, lyrics: str, caption_slots: list, title: str = "") -> list:
+        self._load_config()
+        if not self.openrouter_key:
+            return []
+
+        import re
+        try:
+            count = int(len(caption_slots or []))
+        except Exception:
+            count = 0
+        count = max(1, min(60, count))
+        slots = caption_slots if isinstance(caption_slots, list) else []
+        if not slots:
+            slots = [(lyrics or "").strip()[:240]] * count
+
+        raw_lyrics = (lyrics or "").strip()
+        clean_lyrics = raw_lyrics
+        clean_lyrics = re.sub(r"(?m)^\s*\[\s*style\s*:[^\]]*\]\s*$", "", clean_lyrics).strip()
+        clean_lyrics = re.sub(r"(?m)^\s*\[\s*break\s*:[^\]]*\]\s*$", "", clean_lyrics).strip()
+        clean_lyrics = re.sub(r"(?m)^\s*\[\s*rhythmic\s+clapping\s*\]\s*$", "", clean_lyrics).strip()
+        clean_lyrics = re.sub(r"\n{3,}", "\n\n", clean_lyrics).strip()
+
+        style = self._visual_global_style()
+        neg = self._visual_global_negative()
+        slots_desc = "\n".join([f"{i+1}. {str(s or '').strip()[:260]}" for i, s in enumerate(slots[:count])])
+        safe_title = (title or "").strip()[:120] or "Music Video"
+
+        import json
+        prompt = f"""
+Você é um diretor de fotografia e diretor de arte de cinema. Seu trabalho é criar prompts visuais fotorrealistas e coerentes para um clipe baseado em letra cantada.
+
+Tarefa de entendimento (faça internamente antes de escrever os prompts):
+- Quem é o personagem principal (ou grupo) e como mantê-lo consistente?
+- Qual é o cenário exato (local/época/atmosfera)?
+- Qual é a ação/emoção principal em cada momento?
+- O que é metáfora e o que é literal? Se for metáfora, traduza para uma metáfora visual clara (sem ficar genérico).
+
+Título: {safe_title}
+
+LETRA COMPLETA (contexto):
+{clean_lyrics[:4200]}
+
+SLOTS DE CENA (um por imagem, em ordem; use cada linha como guia do momento):
+{slots_desc}
+
+Regras invioláveis:
+- Narrativa coerente do início ao fim, com continuidade (mesmo protagonista/roupa/época, a menos que a letra indique mudança).
+- Estilo obrigatório: {style}.
+- Sem texto na imagem, sem marcas d'água, sem logos, sem letras.
+- Conteúdo adequado para todas as idades. Bloqueio global obrigatório: {neg}.
+- Se o texto mencionar histórias bíblicas específicas, inclua detalhes obrigatórios:
+  - Raabe/Jericó/corda vermelha: a corda vermelha visível na janela, cidade murada ao fundo, família reunida em oração.
+  - Mefibosete/Lodebar: desolação do lugar e da pessoa, contraste com chegada de carruagens reais e honra à mesa do rei.
+  - Crucificação: não explícito, respeitoso e não-gráfico; a sequência deve culminar em Cruz Vazia, Sepulcro Vazio e Ressurreição (esperança e vitória).
+
+Saída:
+Retorne APENAS um JSON válido:
+{{ "image_prompts": ["prompt cena 1...", "prompt cena 2...", ...] }}
+Cada prompt deve ser 1 frase em inglês (40-90 palavras), contendo: cenário, protagonistas, ação, emoção, iluminação, composição/câmera.
+"""
+
+        prompts_list = []
+        try:
+            raw = self._generate_text(
+                prompt,
+                system_prompt="You are a senior cinematic art director. Output only valid JSON.",
+                temperature=0.55,
+                json_mode=True,
+            ) or "{}"
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            data = json.loads(raw) if raw else {}
+            prompts_list = data.get("image_prompts") if isinstance(data, dict) else None
+            if not isinstance(prompts_list, list):
+                prompts_list = []
+        except Exception:
+            prompts_list = []
+
+        while len(prompts_list) < count:
+            base = (slots[len(prompts_list)] if len(slots) > len(prompts_list) else clean_lyrics) or safe_title
+            prompts_list.append(
+                f"Photorealistic cinematic film still illustrating: {str(base).strip()[:200]}. {style}. Safe, uplifting, no text."
+            )
+
+        norm_all = self._normalize_for_rules(clean_lyrics)
+        norm_all2 = self._normalize_for_rules(" ".join(str(s or "") for s in slots))
+        norm = f"{norm_all} {norm_all2}".strip()
+
+        def _ensure_style(p: str) -> str:
+            txt = (p or "").strip()
+            if not txt:
+                return txt
+            low = txt.lower()
+            if "cinematic" not in low and "photo-realistic" not in low and "photorealistic" not in low:
+                txt = f"{txt}. {style}"
+            return txt.strip()
+
+        cleaned = []
+        for p in prompts_list[:count]:
+            if isinstance(p, str) and p.strip():
+                cleaned.append(_ensure_style(p.strip())[:900])
+            else:
+                cleaned.append(_ensure_style(f"Photorealistic cinematic film still. {style}. Safe, uplifting, no text.")[:900])
+
+        if any(k in norm for k in ["crucifica", "calvar", "golgota", "coroa de espinhos", "pregos", "cruz", "ressurreic", "sepulcro", "tumulo"]) and len(cleaned) >= 3:
+            cleaned[-3] = _ensure_style("Reverent cinematic scene: an empty wooden cross silhouette on a hill at sunrise, warm illuminating light, hopeful atmosphere, wide shot, non-graphic, no blood, no text.")
+            cleaned[-2] = _ensure_style("Reverent cinematic scene: the empty tomb entrance at sunrise with gentle rays of light, peaceful and victorious mood, wide shot, non-graphic, no text.")
+            cleaned[-1] = _ensure_style("Cinematic triumphant resurrection symbolism: bright morning light breaking through clouds over a peaceful landscape, joyful congregational worship in the distance, hopeful victory, warm light, no text.")
+
+        if any(k in norm for k in ["raabe", "jerico", "jerico", "corda vermelha", "scarlet cord", "red cord"]) and not any("cord" in (p or "").lower() for p in cleaned):
+            cleaned[0] = _ensure_style(
+                "Cinematic biblical scene in ancient Jericho: Rahab at a window with a visible scarlet red rope hanging outside, the walled city in the background, her family gathered inside praying, warm illuminating light, epic perspective, deeply emotional expressions, non-violent, no text."
+            )
+
+        if any(k in norm for k in ["mefibosete", "mephibosheth", "lodebar", "lo debar"]) and len(cleaned) >= 2:
+            if not any("chariot" in (p or "").lower() for p in cleaned):
+                cleaned[-2] = _ensure_style(
+                    "Cinematic biblical contrast: desolate ancient village of Lo-debar with a lonely man in worn clothing, dusty streets, then royal chariots arriving in the distance bringing hope, warm light, epic perspective, non-violent, no text."
+                )
+            if not any("king" in (p or "").lower() and "table" in (p or "").lower() for p in cleaned):
+                cleaned[-1] = _ensure_style(
+                    "Cinematic biblical honor scene: a humble man welcomed to the king's table in a warm-lit palace hall, respectful and uplifting, joyful faces, wide shot, high detail, no text."
+                )
+
+        return cleaned[:count]
+
     def enrich_scenes_with_image_prompts(self, plan: dict) -> dict:
         """
         Gera image_prompt profissionais com base na narração de cada cena, para a IA
@@ -999,8 +1137,11 @@ class AIContentGenerator:
         scenes_desc = "\n".join([f"Cena {idx+1} (narração): {text}" for idx, text in need_prompts])
         title = plan.get("title") or "Vídeo"
 
+        style = self._visual_global_style()
+        neg = self._visual_global_negative()
+
         prompt = f"""
-        Você é um diretor de arte para vídeos narrados (YouTube, Shorts). Seu trabalho é criar descrições visuais para gerar imagens com IA (DALL-E/Flux) que ilustrem exatamente o que está sendo dito.
+        Você é um diretor de arte e diretor de fotografia para vídeos narrados (YouTube, Shorts). Seu trabalho é criar descrições visuais para gerar imagens com IA que ilustrem exatamente o que está sendo dito, com continuidade narrativa.
 
         Título do vídeo: {title}
 
@@ -1008,11 +1149,13 @@ class AIContentGenerator:
         {scenes_desc}
 
         Para CADA cena acima, crie UMA descrição visual (image_prompt) em INGLÊS com as regras:
-        - Representar fielmente a ideia e o clima da narração.
-        - Estilo: fotografia cinematográfica fotorrealista, alta definição, composição profissional.
+        - Faça internamente uma leitura exegética: protagonista, cenário, ação/emoção principal; diferencie metáfora vs literal.
+        - Representar fielmente a ideia e o clima da narração, evitando genericidade.
+        - Estilo obrigatório: {style}.
         - Pessoas: humanas realistas (evitar bonecos/uncanny), proporções naturais, expressão serena.
         - Paisagens: realistas, sem aparência de IA assustadora, cores naturais, clima agradável.
-        - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, assustador, grotesco, distópico, apocalíptico, sombrio, texto na imagem.
+        - Bloqueio global obrigatório: {neg}.
+        - Proibido: texto na imagem, marcas d'água, logos.
         - Uma frase detalhada (30-80 palavras): cenário, iluminação, atmosfera, composição.
         - PROIBIDO: foto de banco de imagens, logos, marcas, text, watermark, personagens famosos.
         - Se a narração for abstrata, use metáforas visuais claras que expressem o sentido da mensagem.
@@ -1894,7 +2037,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             "realistic skin texture",
         ]
         negative_constraints = (
-            "negative prompt: horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, distorted faces, demons, intense fear; "
+            "negative prompt: (gore, explicit blood, extreme violence, death imagery, zombie, horror, macabre, dark and unsettling atmosphere, distorted faces, nightmare, intense fear); "
+            "no horror, no macabre, no zombie, no gore, no blood, no violence; "
             "no text, no subtitles, no watermarks, no signatures, no logos; "
             "no monsters, no undead; "
             "no uncanny, no doll-like; "
@@ -1910,7 +2054,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if len(enhanced_prompt) < 240 and not any(token in enhanced_prompt.lower() for token in quality_tokens[:3]):
             enhanced_prompt = f"{enhanced_prompt}, {' '.join(quality_tokens[:7])}"
 
-        provider_order = providers or ["edenai", "openai_direct", "leonardo", "pollinations_flux", "pollinations_turbo", "pollinations"]
+        provider_order = providers or ["openai_direct", "leonardo", "edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
         provider_labels = {
             "edenai": "Eden AI",
             "openai_direct": "OpenAI Direto",
@@ -2104,8 +2248,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     model = "flux" if provider == "pollinations_flux" else ("turbo" if provider == "pollinations_turbo" else "")
                     notify(f"Tentando {label}...")
                     pollinations_prompt = (
-                        f"{enhanced_prompt} original ai illustration cinematic concept art "
-                        "highly detailed digital painting no text no watermark"
+                        f"{enhanced_prompt}. {negative_constraints}. "
+                        "photorealistic cinematic photography, warm illuminating light, epic perspective, high detail, high-definition, no text, no watermark, no logo"
                     )
                     safe_prompt = urllib.parse.quote(pollinations_prompt)
                     query = (
