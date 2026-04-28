@@ -512,6 +512,73 @@
                                         </button>
                                         <p class="text-xs text-gray-500 mt-2">Dica: peça métrica (escansão), rima rica e contexto bíblico. A IA ajusta o mínimo necessário para manter ritmo e coerência.</p>
                                     </div>
+                                    <div class="bg-gray-50 p-4 rounded border">
+                                        <div class="font-bold mb-2">Imagens da letra (OpenAI)</div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-sm font-semibold text-gray-700">Quantidade de imagens</label>
+                                                <input type="number" min="1" max="40" v-model.number="musicLyricsImagesCount" class="w-full border p-2 rounded mt-1">
+                                            </div>
+                                            <div>
+                                                <label class="block text-sm font-semibold text-gray-700">Estilo</label>
+                                                <select v-model="musicLyricsImagesStyle" class="w-full border p-2 rounded mt-1">
+                                                    <option value="cinematic">Cinematográfico</option>
+                                                    <option value="realista">Realista</option>
+                                                    <option value="artistico">Artístico</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="block text-sm font-semibold text-gray-700">Intensidade espiritual</label>
+                                                <select v-model="musicLyricsImagesIntensity" class="w-full border p-2 rounded mt-1">
+                                                    <option value="leve">Leve</option>
+                                                    <option value="forte">Forte</option>
+                                                    <option value="epico">Épico</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="block text-sm font-semibold text-gray-700">Idioma do prompt</label>
+                                                <select v-model="musicLyricsImagesPromptLanguage" class="w-full border p-2 rounded mt-1">
+                                                    <option value="auto">Automático</option>
+                                                    <option value="pt-BR">Português</option>
+                                                    <option value="en">Inglês</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="block text-sm font-semibold text-gray-700">Modo</label>
+                                                <select v-model="musicLyricsImagesMode" class="w-full border p-2 rounded mt-1">
+                                                    <option value="devocional">Devocional</option>
+                                                    <option value="epic">Épico</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="block text-sm font-semibold text-gray-700">Modelo</label>
+                                                <select v-model="musicLyricsImagesModel" class="w-full border p-2 rounded mt-1">
+                                                    <option value="dall-e-3">DALL·E 3</option>
+                                                    <option value="gpt-image-1">gpt-image-1</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <button @click="generateLyricsImages" :disabled="musicLyricsImagesLoading || !musicLyrics.trim()" class="mt-3 w-full bg-blue-700 text-white py-2 rounded hover:bg-blue-800 flex items-center justify-center gap-2">
+                                            <i v-if="musicLyricsImagesLoading" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-image"></i>
+                                            Gerar Imagens (IA)
+                                        </button>
+                                        <p class="text-xs text-gray-500 mt-2">Gera 1 imagem por trecho (verso/pré-refrão/refrão/ponte) quando possível e usa o contexto completo para evitar interpretações literais sombrias.</p>
+                                        <div v-if="musicLyricsImagesSummary" class="mt-3 text-xs text-gray-700 bg-white border rounded p-3">
+                                            <div class="font-semibold">Resumo semântico</div>
+                                            <div class="mt-1">Tema: {{ musicLyricsImagesSummary.tema || '-' }}</div>
+                                            <div>Emoção: {{ musicLyricsImagesSummary.emocao || '-' }}</div>
+                                            <div>Ambiente: {{ musicLyricsImagesSummary.ambiente || '-' }}</div>
+                                        </div>
+                                        <div v-if="musicLyricsImages && musicLyricsImages.length" class="mt-3 grid grid-cols-2 gap-2">
+                                            <div v-for="img in musicLyricsImages" :key="img.index" class="bg-white border rounded overflow-hidden">
+                                                <img :src="img.image_url" class="w-full h-40 object-cover" alt="Imagem gerada">
+                                                <div class="p-2 text-xs">
+                                                    <div class="font-semibold">{{ img.section_title }}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                             <div class="flex gap-3">
                                 <button @click="saveLyricsToLibrary" :disabled="savedMusicSaving || !musicLyrics.trim()" class="flex-1 bg-gray-900 text-white py-2 rounded hover:bg-black flex items-center justify-center gap-2">
                                     <i v-if="savedMusicSaving" class="fas fa-spinner fa-spin"></i>
@@ -3102,6 +3169,15 @@
                     musicLyrics: '',
                     musicLyricsImproveInstruction: '',
                     musicLyricsImproveLoading: false,
+                    musicLyricsImagesCount: 8,
+                    musicLyricsImagesStyle: 'cinematic',
+                    musicLyricsImagesIntensity: 'epico',
+                    musicLyricsImagesPromptLanguage: 'auto',
+                    musicLyricsImagesMode: 'epic',
+                    musicLyricsImagesModel: 'dall-e-3',
+                    musicLyricsImagesLoading: false,
+                    musicLyricsImages: [],
+                    musicLyricsImagesSummary: null,
                     musicTitle: 'Música',
                     musicGenre: '',
                     musicVocalGender: '',
@@ -5989,6 +6065,43 @@
                         alert("Erro ao melhorar letra: " + (e.message || e));
                     } finally {
                         this.musicLyricsImproveLoading = false;
+                    }
+                },
+                async generateLyricsImages() {
+                    this.musicLyricsImagesLoading = true;
+                    this.musicLyricsImages = [];
+                    this.musicLyricsImagesSummary = null;
+                    try {
+                        const res = await this.authFetch('/music/lyrics/images/openai', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                lyrics: this.musicLyrics,
+                                title: this.musicTitle,
+                                images_count: Number(this.musicLyricsImagesCount || 1),
+                                visual_style: this.musicLyricsImagesStyle,
+                                spiritual_intensity: this.musicLyricsImagesIntensity,
+                                prompt_language: this.musicLyricsImagesPromptLanguage,
+                                mode: this.musicLyricsImagesMode,
+                                size: '1024x1024',
+                                model: this.musicLyricsImagesModel,
+                                quality: 'standard'
+                            })
+                        });
+                        let data = {};
+                        try { data = await res.json(); } catch (_) { data = {}; }
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || "Erro ao gerar imagens.");
+                        }
+                        this.musicLyricsImagesSummary = data.summary || null;
+                        this.musicLyricsImages = Array.isArray(data.items) ? data.items : [];
+                        if (!this.musicLyricsImages.length) {
+                            alert("A IA não retornou imagens nesta rodada.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao gerar imagens: " + (e.message || e));
+                    } finally {
+                        this.musicLyricsImagesLoading = false;
                     }
                 },
                 async generateClip() {

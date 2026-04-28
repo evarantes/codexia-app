@@ -63,6 +63,18 @@ class ImproveLyricsRequest(BaseModel):
     style: str = ""
     genre: str = ""
 
+class GenerateLyricsImagesRequest(BaseModel):
+    lyrics: str
+    title: str = ""
+    images_count: int = 8
+    visual_style: str = "cinematic"
+    spiritual_intensity: str = "epic"
+    prompt_language: str = "auto"
+    mode: str = "epic"
+    size: str = "1024x1024"
+    model: str = ""
+    quality: str = "standard"
+
 
 class SaveMusicRequest(BaseModel):
     title: str = "Música"
@@ -154,6 +166,36 @@ def improve_lyrics(request: ImproveLyricsRequest, user: User = Depends(get_curre
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao melhorar letra: {str(e)}")
+
+@router.post("/lyrics/images/openai")
+def generate_images_from_lyrics_openai(request: GenerateLyricsImagesRequest, user: User = Depends(get_current_user)):
+    if not request.lyrics or not request.lyrics.strip():
+        raise HTTPException(status_code=400, detail="Informe a letra.")
+    try:
+        ai = AIContentGenerator()
+        if not (getattr(ai, "api_key", "") or "").strip():
+            raise HTTPException(status_code=400, detail="Configure a OpenAI API Key em Configurações.")
+        from app.services.openai_image_module import OpenAIImageModule
+
+        mod = OpenAIImageModule(ai_service=ai)
+        result = mod.generate_images_from_lyrics(
+            request.lyrics.strip(),
+            options={
+                "images_count": max(1, min(40, int(request.images_count or 1))),
+                "visual_style": (request.visual_style or "cinematic").strip(),
+                "spiritual_intensity": (request.spiritual_intensity or "epic").strip(),
+                "prompt_language": (request.prompt_language or "auto").strip(),
+                "mode": (request.mode or "epic").strip(),
+                "size": (request.size or "1024x1024").strip(),
+                "model": (request.model or "").strip(),
+                "quality": (request.quality or "standard").strip(),
+            },
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar imagens: {str(e)}")
 
 
 @router.post("/generate")
