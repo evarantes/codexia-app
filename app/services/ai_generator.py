@@ -968,7 +968,7 @@ class AIContentGenerator:
         return clean[:count]
 
     def _visual_global_style(self) -> str:
-        return "Cinematic photo-realistic, warm illuminating light, epic perspective, deeply emotional expressions, high detail, high-definition"
+        return "Cinematic photo-realistic, 8K, divine chiaroscuro, god rays, golden glow, celestial white highlights, deep blue atmosphere, warm fire tones, vibrant natural colors, epic perspective, deeply emotional expressions, high detail, high-definition"
 
     def _visual_global_negative(self) -> str:
         return "(gore, explicit blood, extreme violence, death imagery, zombie, horror, macabre, dark and unsettling atmosphere, distorted faces, nightmare, intense fear)"
@@ -1030,10 +1030,16 @@ Regras invioláveis:
 - Estilo obrigatório: {style}.
 - Sem texto na imagem, sem marcas d'água, sem logos, sem letras.
 - Conteúdo adequado para todas as idades. Bloqueio global obrigatório: {neg}.
+- Estética e tom: santidade, adoração, esperança; use luz celestial e contraste (chiaroscuro) para glória, não para medo. Evite paletas acinzentadas/fúnebres.
+- Proibido: macabro, terror, símbolos assustadores, demônios com estética gore, olhos totalmente pretos, expressões de pura maldade.
+- Substituição: se a letra mencionar morte/inferno/trevas, represente como sombras, deserto ou abismo distante, mantendo a vitória da luz em primeiro plano.
+- Modéstia: vestes modestas e condizentes com a época bíblica.
 - Se o texto mencionar histórias bíblicas específicas, inclua detalhes obrigatórios:
   - Raabe/Jericó/corda vermelha: a corda vermelha visível na janela, cidade murada ao fundo, família reunida em oração.
   - Mefibosete/Lodebar: desolação do lugar e da pessoa, contraste com chegada de carruagens reais e honra à mesa do rei.
   - Crucificação: não explícito, respeitoso e não-gráfico; a sequência deve culminar em Cruz Vazia, Sepulcro Vazio e Ressurreição (esperança e vitória).
+  - Apocalipse 1: "cabelos brancos como lã" deve parecer majestoso e glorioso (não assustador). "espada saindo da boca" deve ser simbólica (luz em forma de lâmina), não grotesca.
+  - Ezequiel (vale de ossos secos): ossos só se explicitamente for este texto; foque na reconstituição e vida surgindo, não na decomposição.
 
 Saída:
 Retorne APENAS um JSON válido:
@@ -1152,9 +1158,12 @@ Cada prompt deve ser 1 frase em inglês (40-90 palavras), contendo: cenário, pr
         - Faça internamente uma leitura exegética: protagonista, cenário, ação/emoção principal; diferencie metáfora vs literal.
         - Representar fielmente a ideia e o clima da narração, evitando genericidade.
         - Estilo obrigatório: {style}.
+        - Estética e tom: santidade, adoração, esperança; luz celestial (god rays), brilho dourado, contraste (chiaroscuro) para glória, não para medo; paleta dourado/branco celestial/azul profundo/tons quentes.
         - Pessoas: humanas realistas (evitar bonecos/uncanny), proporções naturais, expressão serena.
         - Paisagens: realistas, sem aparência de IA assustadora, cores naturais, clima agradável.
         - Bloqueio global obrigatório: {neg}.
+        - Proibido: macabro, terror, gore, símbolos de horror, olhos totalmente pretos, expressões de pura maldade; vestes indecentes.
+        - Se narrar morte/inferno/trevas: represente por sombras, desertos ou abismos distantes, com a luz vencendo as trevas.
         - Proibido: texto na imagem, marcas d'água, logos.
         - Uma frase detalhada (30-80 palavras): cenário, iluminação, atmosfera, composição.
         - PROIBIDO: foto de banco de imagens, logos, marcas, text, watermark, personagens famosos.
@@ -2500,6 +2509,90 @@ Retorne APENAS um JSON válido no formato:
             title = f"{theme.title()} - Mensagem"
             lyrics = f"Verso 1\n{theme}\n\nRefrão\n{message}\n"
             return {"title": title, "lyrics": lyrics}
+
+    def improve_song_lyrics(self, lyrics: str, instruction: str, language: str = "pt-BR", style: str = "", genre: str = ""):
+        self._load_config()
+        original = (lyrics or "").strip()
+        req = (instruction or "").strip()
+        lang = (language or "pt-BR").strip()
+        style = (style or "").strip()
+        genre = (genre or "").strip()
+
+        if not original or not req:
+            return {"lyrics": original}
+
+        if not self.openrouter_key:
+            return {"lyrics": original}
+
+        combined = f"{style} {genre}".strip().lower()
+        combined = combined.replace("ç", "c").replace("ã", "a").replace("á", "a").replace("à", "a").replace("â", "a")
+        combined = combined.replace("é", "e").replace("ê", "e")
+        combined = combined.replace("í", "i")
+        combined = combined.replace("ó", "o").replace("ô", "o").replace("õ", "o")
+        combined = combined.replace("ú", "u")
+
+        extra_rules = ""
+        if any(k in combined for k in ["pentecostal", "corinho", "corinho de fogo", "fogo no pe", "fogo no pe'"]):
+            extra_rules = (
+                "\nRegras específicas do estilo (Corinho / Pentecostal):\n"
+                "- Linguagem congregacional, simples e direta.\n"
+                "- Frases curtas, rítmicas e repetíveis.\n"
+                "- Refrão forte com chamada-e-resposta e energia alta.\n"
+                "- Evite romantização/sofrência e gírias seculares.\n"
+            )
+        if any(k in combined for k in ["corinho tradicional", "culto de oracao", "culto de oração"]):
+            extra_rules += (
+                "- Puxada de marcha pentecostal, temática de oração/vitória.\n"
+                "- Evite totalmente sonoridade sertaneja/country e linguagem associada.\n"
+            )
+        if "pentecostal raiz" in combined:
+            extra_rules += (
+                "- Clima 'raiz' e acústico (violão/pandeiro/bateria), simplicidade e impacto.\n"
+            )
+
+        import json
+        prompt = f"""
+Você é um revisor e compositor profissional de letras de música cristã em {lang}.
+
+OBJETIVO:
+Aplicar o pedido de melhoria do usuário na letra existente, mantendo o sentido, coerência, ritmo cantável e contexto teológico.
+
+PEDIDO DO USUÁRIO (execute com precisão):
+{req}
+
+LETRA ORIGINAL:
+{original[:5200]}
+
+REGRAS:
+- Preserve o tema, a mensagem e o contexto bíblico/teológico.
+- Preserve a estrutura (Verso/Refrão/Ponte etc.) e as quebras de linha. Não transforme em prosa.
+- Faça a escansão (métrica/ritmo das sílabas) internamente quando o pedido mencionar contagem de sílabas, sílabas tônicas, métrica ou "8 sílabas", e ajuste a(s) frase(s) para cumprir exatamente.
+- Se o pedido mencionar rima rica/consoante, garanta rimas ricas nas linhas relevantes sem forçar palavras estranhas.
+- Se o pedido mencionar substituir ou ajustar uma frase específica, altere apenas o mínimo necessário no restante da letra para manter fluidez e coerência.
+- Não inclua marcas, links, nomes de artistas, nem explicações.
+{extra_rules}
+
+Retorne APENAS um JSON válido no formato:
+{{ "lyrics": "Letra completa melhorada com quebras de linha" }}
+"""
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um compositor e revisor. Retorne somente JSON válido no formato solicitado.",
+                temperature=0.55,
+                json_mode=True,
+            )
+            if not content:
+                raise Exception("Resposta vazia da IA")
+            clean = content.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean) if clean else {}
+            improved = (data.get("lyrics") or "").strip() if isinstance(data, dict) else ""
+            if not improved:
+                raise Exception("Letra vazia")
+            return {"lyrics": improved}
+        except Exception as e:
+            print(f"Erro ao melhorar letra: {e}")
+            return {"lyrics": original}
 
     def lyrics_to_music_prompt(self, lyrics: str, title: str = "", genre: str = ""):
         """Converte letra em prompt para geração de música instrumental (MusicGen)."""

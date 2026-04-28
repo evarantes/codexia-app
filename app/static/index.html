@@ -501,6 +501,17 @@
                                 <label class="block font-bold mb-2">Letra da música</label>
                                 <textarea v-model="musicLyrics" class="w-full border p-3 rounded" rows="12" placeholder="Cole ou digite a letra aqui...&#10;&#10;Verso 1&#10;Linha 1&#10;Linha 2&#10;&#10;Refrão&#10;..."></textarea>
                             </div>
+                                    <div class="bg-gray-50 p-4 rounded border">
+                                        <div class="font-bold mb-2">Melhorias na letra (IA)</div>
+                                        <label class="block text-sm font-semibold text-gray-700">O que você quer melhorar?</label>
+                                        <textarea v-model="musicLyricsImproveInstruction" class="w-full border p-3 rounded mt-1" rows="4" placeholder="Ex: Ajuste a frase &quot;Sou o Último, o Eterno, o Rei da Glória&quot; para ter exatamente 8 sílabas tônicas, mantendo o contexto teológico de Apocalipse 1 e garantindo rima rica (consoante) com a linha anterior."></textarea>
+                                        <button @click="improveLyrics" :disabled="musicLyricsImproveLoading || !musicLyrics.trim() || !musicLyricsImproveInstruction.trim()" class="mt-3 w-full bg-amber-600 text-white py-2 rounded hover:bg-amber-700 flex items-center justify-center gap-2">
+                                            <i v-if="musicLyricsImproveLoading" class="fas fa-spinner fa-spin"></i>
+                                            <i v-else class="fas fa-magic"></i>
+                                            Melhorar Letra (IA)
+                                        </button>
+                                        <p class="text-xs text-gray-500 mt-2">Dica: peça métrica (escansão), rima rica e contexto bíblico. A IA ajusta o mínimo necessário para manter ritmo e coerência.</p>
+                                    </div>
                             <div class="flex gap-3">
                                 <button @click="saveLyricsToLibrary" :disabled="savedMusicSaving || !musicLyrics.trim()" class="flex-1 bg-gray-900 text-white py-2 rounded hover:bg-black flex items-center justify-center gap-2">
                                     <i v-if="savedMusicSaving" class="fas fa-spinner fa-spin"></i>
@@ -3089,6 +3100,8 @@
                     musicLyricsStyle: '',
                     musicLyricsLoading: false,
                     musicLyrics: '',
+                    musicLyricsImproveInstruction: '',
+                    musicLyricsImproveLoading: false,
                     musicTitle: 'Música',
                     musicGenre: '',
                     musicVocalGender: '',
@@ -5948,6 +5961,34 @@
                         alert("Erro ao gerar letra: " + (e.message || e));
                     } finally {
                         this.musicLyricsLoading = false;
+                    }
+                },
+                async improveLyrics() {
+                    this.musicLyricsImproveLoading = true;
+                    try {
+                        const chosenStyle = (this.musicLyricsStyle || '').trim() || (this.musicGenre || '').trim();
+                        const res = await this.authFetch('/music/lyrics/improve', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                lyrics: this.musicLyrics,
+                                instruction: this.musicLyricsImproveInstruction,
+                                language: this.musicLyricsLanguage,
+                                style: chosenStyle,
+                                genre: this.musicGenre
+                            })
+                        });
+                        let data = {};
+                        try { data = await res.json(); } catch (_) { data = {}; }
+                        if (res.ok && data.lyrics) {
+                            this.musicLyrics = data.lyrics;
+                        } else {
+                            alert(data.detail || data.message || "Erro ao melhorar letra.");
+                        }
+                    } catch (e) {
+                        alert("Erro ao melhorar letra: " + (e.message || e));
+                    } finally {
+                        this.musicLyricsImproveLoading = false;
                     }
                 },
                 async generateClip() {

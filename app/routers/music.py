@@ -56,6 +56,13 @@ class GenerateLyricsRequest(BaseModel):
     style: str = ""
     genre: str = ""
 
+class ImproveLyricsRequest(BaseModel):
+    lyrics: str
+    instruction: str
+    language: str = "pt-BR"
+    style: str = ""
+    genre: str = ""
+
 
 class SaveMusicRequest(BaseModel):
     title: str = "Música"
@@ -122,6 +129,31 @@ def generate_lyrics(request: GenerateLyricsRequest, user: User = Depends(get_cur
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao gerar letra: {str(e)}")
+
+@router.post("/lyrics/improve")
+def improve_lyrics(request: ImproveLyricsRequest, user: User = Depends(get_current_user)):
+    if not request.lyrics or not request.lyrics.strip():
+        raise HTTPException(status_code=400, detail="Informe a letra atual.")
+    if not request.instruction or not request.instruction.strip():
+        raise HTTPException(status_code=400, detail="Informe o que você quer melhorar.")
+    try:
+        ai = AIContentGenerator()
+        result = ai.improve_song_lyrics(
+            lyrics=request.lyrics.strip(),
+            instruction=request.instruction.strip(),
+            language=(request.language or "pt-BR").strip(),
+            style=(request.style or "").strip(),
+            genre=(request.genre or "").strip(),
+        )
+        improved = (result or {}).get("lyrics") if isinstance(result, dict) else None
+        improved = (improved or "").strip()
+        if not improved:
+            raise HTTPException(status_code=503, detail="Não foi possível melhorar a letra agora.")
+        return {"lyrics": improved}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao melhorar letra: {str(e)}")
 
 
 @router.post("/generate")
