@@ -89,6 +89,23 @@ def _has_structure_tags(lyrics: str) -> bool:
         return False
     return bool(re.search(r"^\s*\[(intro|interlude|outro|verse|chorus|bridge|pre-chorus|refr[aã]o)[^\]]*\]\s*$", t, flags=re.IGNORECASE | re.MULTILINE))
 
+def _has_style_tag(lyrics: str) -> bool:
+    t = (lyrics or "")
+    if not t:
+        return False
+    return bool(re.search(r"^\s*\[\s*style\s*:", t, flags=re.IGNORECASE))
+
+def _inject_style_tag_at_start(lyrics: str, tag: str) -> str:
+    base = (lyrics or "").strip()
+    if not base:
+        return base
+    if _has_style_tag(base):
+        return base
+    t = (tag or "").strip()
+    if not t:
+        return base
+    return f"{t}\n\n{base}".strip()
+
 
 def _inject_pentecostal_structure_tags(lyrics: str) -> str:
     base = (lyrics or "").strip()
@@ -124,6 +141,12 @@ def _apply_style_preset(style: str, lyrics: str) -> Tuple[str, str]:
     is_pentecostal = any(k in norm for k in ["pentecostal", "corinho", "corinho de fogo", "fogo no pe", "fogo no pe'"])
     if not is_pentecostal:
         return _strip_artist_refs(raw_style), (lyrics or "")
+
+    is_pentecostal_raiz = ("pentecostal raiz" in norm) or (("pentecostal" in norm or "corinho" in norm) and "raiz" in norm)
+    if is_pentecostal_raiz:
+        style_prompt = "Acoustic Brazilian Pentecostal, Acoustic Guitar rhythm, Pandeiro, Driving Drums, 150 BPM, Raw energy, No Brass, No Piano"
+        enriched_lyrics = _inject_style_tag_at_start(lyrics or "", "[Style: Acoustic and Percussive]")
+        return _strip_artist_refs(style_prompt), enriched_lyrics
 
     style_prompt = (
         "Brazilian Pentecostal, Corinho de Fogo, High energy, Fast tempo (150 BPM), "
