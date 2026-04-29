@@ -24,11 +24,14 @@ class CreateVideoRequest(BaseModel):
     duration: int = 1
     voice_style: Optional[str] = "human"
     voice_gender: Optional[str] = "female"
+    storyboard_quantity: int = 15
+    storyboard_images: Optional[List[str]] = None
 
 @router.post("/create")
 def create_video(request: CreateVideoRequest):
     # Lazy import para reduzir memória no startup (moviepy/PIL/numpy)
     from app.services.video_generator import VideoGenerator
+    from app.services.image_storyboard_service import generate_storyboard_images
     try:
         ai_service = AIContentGenerator()
         video_gen = VideoGenerator(ai_service=ai_service)
@@ -56,6 +59,24 @@ def create_video(request: CreateVideoRequest):
         else:
             script_plan = ai_service.generate_video_script(request.title, request.content, "drama")
             aspect_ratio = "16:9"
+
+        storyboard = None
+        provided = request.storyboard_images if isinstance(request.storyboard_images, list) else None
+        provided_urls = [str(u or "").strip() for u in (provided or []) if isinstance(u, str) and str(u or "").strip()]
+        if provided_urls:
+            script_plan["selected_images"] = provided_urls
+        else:
+            full_text = "\n".join(
+                [
+                    (script_plan.get("title") or request.title or "").strip(),
+                    "\n".join([str((s or {}).get("text") or "").strip() for s in (script_plan.get("scenes") or []) if isinstance(s, dict)]),
+                ]
+            ).strip()
+            storyboard = generate_storyboard_images(full_text, quantity=request.storyboard_quantity)
+            storyboard_urls = [str(it.get("url") or "").strip() for it in (storyboard.get("images") or []) if isinstance(it, dict)]
+            storyboard_urls = [u for u in storyboard_urls if u]
+            if storyboard_urls:
+                script_plan["selected_images"] = storyboard_urls
             
         # Generate Video (9:16 para Short, 16:9 para os demais)
         result = video_gen.create_video_from_plan(
@@ -65,7 +86,7 @@ def create_video(request: CreateVideoRequest):
             voice_gender=request.voice_gender
         )
         
-        return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit")}
+        return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit"), "storyboard": storyboard}
         
     except Exception as e:
         print(f"Erro ao criar vídeo ({request.mode}): {e}")
@@ -74,6 +95,7 @@ def create_video(request: CreateVideoRequest):
 @router.post("/generate")
 def generate_video(request: VideoRequest):
     from app.services.video_generator import VideoGenerator
+    from app.services.image_storyboard_service import generate_storyboard_images
     try:
         filename = f"{uuid.uuid4()}.mp4"
         # Tenta inicializar IA para melhores imagens/audio
@@ -96,6 +118,18 @@ def generate_video(request: VideoRequest):
             "title": request.title,
             "scenes": [{"text": line} for line in request.script if line.strip()]
         }
+
+        full_text = "\n".join(
+            [
+                (script_plan.get("title") or request.title or "").strip(),
+                "\n".join([str((s or {}).get("text") or "").strip() for s in (script_plan.get("scenes") or []) if isinstance(s, dict)]),
+            ]
+        ).strip()
+        storyboard = generate_storyboard_images(full_text, quantity=15)
+        storyboard_urls = [str(it.get("url") or "").strip() for it in (storyboard.get("images") or []) if isinstance(it, dict)]
+        storyboard_urls = [u for u in storyboard_urls if u]
+        if storyboard_urls:
+            script_plan["selected_images"] = storyboard_urls
         
         # Usa o pipeline moderno (create_video_from_plan) em vez do legado
         result = local_video_gen.create_video_from_plan(
@@ -113,6 +147,7 @@ def generate_video(request: VideoRequest):
 @router.post("/generate-auto")
 def generate_auto_video(request: AutoVideoRequest, db: Session = Depends(get_db)):
     from app.services.video_generator import VideoGenerator
+    from app.services.image_storyboard_service import generate_storyboard_images
     try:
         book = db.query(Book).filter(Book.id == request.book_id).first()
         if not book:
@@ -121,6 +156,18 @@ def generate_auto_video(request: AutoVideoRequest, db: Session = Depends(get_db)
         ai_service = AIContentGenerator()
         script_plan = ai_service.generate_video_script(book.title, book.synopsis, request.style)
         video_gen = VideoGenerator(ai_service=ai_service)
+
+        full_text = "\n".join(
+            [
+                (script_plan.get("title") or book.title or "").strip(),
+                "\n".join([str((s or {}).get("text") or "").strip() for s in (script_plan.get("scenes") or []) if isinstance(s, dict)]),
+            ]
+        ).strip()
+        storyboard = generate_storyboard_images(full_text, quantity=15)
+        storyboard_urls = [str(it.get("url") or "").strip() for it in (storyboard.get("images") or []) if isinstance(it, dict)]
+        storyboard_urls = [u for u in storyboard_urls if u]
+        if storyboard_urls:
+            script_plan["selected_images"] = storyboard_urls
         
         # Resolve caminho da capa se existir
         cover_path = None

@@ -842,6 +842,12 @@ class VideoGenerator:
             if os.path.exists(candidate):
                 return candidate
 
+        if v.startswith("/generated_assets/"):
+            rel = v.replace("/generated_assets/", "", 1).lstrip("/")
+            candidate = os.path.join("generated_assets", rel)
+            if os.path.exists(candidate):
+                return candidate
+
         if v.startswith("static/"):
             candidate = os.path.join("app", v)
             if os.path.exists(candidate):

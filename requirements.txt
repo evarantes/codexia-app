@@ -4,7 +4,7 @@ sqlalchemy
 python-multipart
 jinja2
 requests
-openai
+openai>=1.0.0
 google-generativeai
 python-dotenv
 moviepy>=2.0.0.dev2
@@ -54,7 +54,7 @@ jinja2
 mercadopago
 minio
 numpy
-openai
+openai>=1.0.0
 passlib[bcrypt]
 Pillow
 psycopg2-binary

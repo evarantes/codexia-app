@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Streamin
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
-from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, social_media
+from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, social_media, image_storyboard
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
 from app.modules.humor_factory import router as humor_factory
@@ -722,6 +722,8 @@ def head_music_media(filename: str):
 
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
+os.makedirs("generated_assets/storyboard_images", exist_ok=True)
+app.mount("/generated_assets", StaticFiles(directory="generated_assets"), name="generated_assets")
 # Garantir que os diretórios de vídeos existem
 if os.path.isdir("/data"):
     os.makedirs("/data/media/videos", exist_ok=True)
@@ -834,6 +836,7 @@ app.include_router(diagnostics.router)
 app.include_router(book_factory.router)
 app.include_router(hotmart.router)
 app.include_router(music.router)
+app.include_router(image_storyboard.router)
 app.include_router(admin.router)
 app.include_router(social_media.router)
 app.include_router(ai_factory.router)
