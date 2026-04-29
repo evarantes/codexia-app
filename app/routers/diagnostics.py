@@ -143,24 +143,26 @@ def test_ai_connection(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Connection Failed: {str(e)}")
 
-@router.post("/test-openai-image")
+
 def test_openai_image():
+    from openai import OpenAI
+    import os
+
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    result = client.images.generate(
+        model="gpt-image-1",
+        prompt="a simple golden sunrise over mountains, cinematic, no text",
+        size="1024x1024",
+    )
+
+    return result
+
+
+@router.post("/test-openai-image")
+def diagnostics_test_openai_image():
     try:
-        def _minimal_test():
-            from openai import OpenAI
-            import os
-
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-            result = client.images.generate(
-                model="gpt-image-1",
-                prompt="a simple golden sunrise over mountains, cinematic, no text",
-                size="1024x1024",
-            )
-
-            return result
-
-        result = _minimal_test()
+        result = test_openai_image()
         print("OPENAI IMAGE TEST RESULT (raw):")
         print(result)
         try:
@@ -169,14 +171,34 @@ def test_openai_image():
                 print(result.model_dump())
         except Exception:
             pass
-        return {"ok": True}
+        return {"ok": True, "result": result.model_dump() if hasattr(result, "model_dump") else str(result)}
     except Exception as e:
         import traceback
 
+        status = getattr(e, "status_code", None)
+        if status is None:
+            resp_obj = getattr(e, "response", None)
+            status = getattr(resp_obj, "status_code", None)
+        body = getattr(e, "body", None)
+        if body is None:
+            resp_obj = getattr(e, "response", None)
+            try:
+                body = resp_obj.json() if resp_obj is not None else None
+            except Exception:
+                body = None
+
         print("OPENAI IMAGE TEST EXCEPTION (raw):")
         print(repr(e))
+        if status is not None:
+            print(f"OPENAI IMAGE TEST EXCEPTION status_code={status}")
+        if body is not None:
+            print("OPENAI IMAGE TEST EXCEPTION body:")
+            print(body)
         traceback.print_exc()
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail={"exception": str(e), "status": status, "body": body},
+        )
 
 @router.post("/test-pdf-generation")
 def test_pdf_generation():
