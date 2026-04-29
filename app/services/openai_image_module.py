@@ -348,7 +348,6 @@ Regras para os campos:
         model = "gpt-image-1"
         size = (opts.get("size") or "1024x1024").strip() or "1024x1024"
         quality = "high"
-        response_format = "b64_json"
 
         out_dir = os.path.join(str(STATIC_DIR), "generated_images")
         try:
@@ -382,7 +381,6 @@ Regras para os campos:
                     "prompt": prompt,
                     "size": size,
                     "n": 1,
-                    "response_format": "b64_json" if response_format == "b64_json" else "url",
                 }
                 if quality:
                     payload["quality"] = quality
@@ -405,14 +403,30 @@ Regras para os campos:
                     b64 = item0.get("b64_json")
                     if isinstance(b64, str) and b64.strip():
                         try:
-                            img_bytes = base64.b64decode(b64.strip())
+                            b64_data = b64.strip()
+                            if b64_data.lower().startswith("data:") and "," in b64_data:
+                                b64_data = b64_data.split(",", 1)[1].strip()
+                            img_bytes = base64.b64decode(b64_data)
                         except Exception:
                             img_bytes = b""
                         url = _save_image_bytes(img_bytes, ext="png")
                         return {"url": url, "error": None if url else "failed_to_save_image", "model": model_name}
                     url0 = item0.get("url")
                     if isinstance(url0, str) and url0.strip():
-                        return {"url": url0.strip(), "error": None, "model": model_name}
+                        try:
+                            rr = requests.get(url0.strip(), timeout=120)
+                            if rr.status_code >= 400:
+                                raise Exception(f"HTTP {rr.status_code}")
+                            ct = (rr.headers.get("content-type") or "").lower()
+                            ext = "png"
+                            if "jpeg" in ct or "jpg" in ct:
+                                ext = "jpg"
+                            elif "webp" in ct:
+                                ext = "webp"
+                            saved = _save_image_bytes(rr.content or b"", ext=ext)
+                            return {"url": saved, "error": None if saved else "failed_to_save_image", "model": model_name}
+                        except Exception:
+                            return {"url": None, "error": "failed_to_download_image", "model": model_name}
                 return {"url": None, "error": "empty_response", "model": model_name}
             except Exception as e:
                 return {"url": None, "error": str(e)[:400], "model": model_name}

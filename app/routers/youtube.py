@@ -1219,53 +1219,6 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
     covers_dir = Path("app/static/covers")
     covers_dir.mkdir(parents=True, exist_ok=True)
 
-    def _local_fallback_image(aspect: str) -> str:
-        from PIL import Image, ImageDraw
-        import random
-
-        if str(aspect).strip() == "9:16":
-            width, height = (720, 1280)
-        else:
-            width, height = (1280, 720)
-
-        small_h = 256
-        small_w = max(1, int(width * (small_h / height)))
-        color_top = (random.randint(90, 150), random.randint(90, 160), random.randint(120, 210))
-        color_bottom = (random.randint(30, 90), random.randint(30, 90), random.randint(60, 130))
-
-        small_img = Image.new("RGB", (small_w, small_h))
-        small_draw = ImageDraw.Draw(small_img)
-        for y in range(small_h):
-            ratio = y / small_h
-            r = int(color_top[0] + (color_bottom[0] - color_top[0]) * ratio)
-            g = int(color_top[1] + (color_bottom[1] - color_top[1]) * ratio)
-            b = int(color_top[2] + (color_bottom[2] - color_top[2]) * ratio)
-            small_draw.line([(0, y), (small_w, y)], fill=(r, g, b))
-
-        img = small_img.resize((width, height), Image.LANCZOS)
-        draw = ImageDraw.Draw(img)
-        for _ in range(18):
-            x = random.randint(-int(width * 0.2), int(width * 1.2))
-            y = random.randint(-int(height * 0.2), int(height * 1.2))
-            radius = random.randint(int(min(width, height) * 0.06), int(min(width, height) * 0.22))
-            alpha = random.randint(10, 40)
-            overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-            o = ImageDraw.Draw(overlay)
-            o.ellipse([x - radius, y - radius, x + radius, y + radius], fill=(255, 255, 255, alpha))
-            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-            draw = ImageDraw.Draw(img)
-
-        filename = f"storyimg_{uuid.uuid4().hex}.png"
-        file_path = covers_dir / filename
-        img.save(file_path, format="PNG", optimize=True)
-        if not file_path.exists() or file_path.stat().st_size < 1024:
-            try:
-                file_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            return None
-        return filename
-
     images: List[Dict[str, Any]] = []
 
     all_prompts = prompts[:count]
@@ -1285,13 +1238,13 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
         except Exception:
             url = None
         if not url:
-            raise HTTPException(status_code=503, detail="Falha ao gerar imagem com OpenAI. Verifique OPENAI_API_KEY e billing.")
+            raise HTTPException(status_code=503, detail="Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.")
         images.append({"url": url, "prompt": prompt_text})
 
     if not images:
         raise HTTPException(
             status_code=503,
-            detail="OpenAI não retornou imagem. Verifique OPENAI_API_KEY e billing."
+            detail="Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
         )
 
     _progress(100, "Imagens prontas.")

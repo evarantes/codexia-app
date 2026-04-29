@@ -4489,7 +4489,7 @@
                         if (!res.ok || !data.task_id) throw new Error(data.detail || data.message || "Falha ao iniciar geração de imagens.");
                         await this.pollStoryImagesTask(data.task_id);
                     } catch (e) {
-                        alert("Erro ao gerar imagens: " + (e.message || e));
+                        alert("Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.");
                     } finally {
                         this.ytStoryImagesLoading = false;
                     }
@@ -6246,7 +6246,7 @@
                             alert("A IA não retornou imagens nesta rodada.");
                         }
                     } catch (e) {
-                        alert("Erro ao gerar imagens: " + (e.message || e));
+                        alert("Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.");
                     } finally {
                         this.musicLyricsImagesLoading = false;
                     }

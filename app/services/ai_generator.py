@@ -124,8 +124,6 @@ class AIContentGenerator:
                 "messages": messages,
                 "temperature": temperature,
             }
-            if json_mode and allow_json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
             response = client.chat.completions.create(**kwargs)
             return response.choices[0].message.content
 
@@ -1628,7 +1626,6 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 kwargs: Dict[str, Any] = {
                     "model": "whisper-1",
                     "file": f,
-                    "response_format": "verbose_json",
                     "timestamp_granularities": ["word", "segment"],
                 }
                 if language:
@@ -2073,6 +2070,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         base_dir.mkdir(parents=True, exist_ok=True)
         filename = f"img_{uuid.uuid4().hex}.png"
         out_path = base_dir / filename
+        friendly_error = "Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
 
         notify("Gerando imagem com OpenAI...")
         try:
@@ -2084,25 +2082,46 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                     size=size,
                     quality="high",
                     n=1,
-                    response_format="b64_json",
                 )
-                b64 = getattr(resp.data[0], "b64_json", None) if resp and getattr(resp, "data", None) else None
+                item0 = resp.data[0] if resp and getattr(resp, "data", None) else None
+                b64 = getattr(item0, "b64_json", None) if item0 is not None else None
+                url = getattr(item0, "url", None) if item0 is not None else None
             else:
                 raise Exception("SDK OpenAI desatualizado. Requer openai>=1.0.0.")
         except Exception as e:
-            raise Exception(f"Falha ao gerar imagem com OpenAI: {str(e)}")
-
-        if not isinstance(b64, str) or not b64.strip():
-            raise Exception("Falha ao gerar imagem com OpenAI: resposta vazia.")
+            print(f"OpenAI image error: {str(e)[:400]}")
+            raise Exception(friendly_error)
 
         try:
-            image_bytes = base64.b64decode(b64.strip())
-            with open(out_path, "wb") as f:
-                f.write(image_bytes)
+            if isinstance(b64, str) and b64.strip():
+                b64_data = b64.strip()
+                if b64_data.lower().startswith("data:") and "," in b64_data:
+                    b64_data = b64_data.split(",", 1)[1].strip()
+                image_bytes = base64.b64decode(b64_data)
+                if not image_bytes:
+                    raise Exception("empty_image_bytes")
+                with open(out_path, "wb") as f:
+                    f.write(image_bytes)
+                return f"/generated_assets/openai_images/{filename}"
         except Exception as e:
-            raise Exception(f"Falha ao salvar imagem gerada: {str(e)}")
+            print(f"OpenAI image decode/save error: {str(e)[:400]}")
+            raise Exception(friendly_error)
 
-        return f"/generated_assets/openai_images/{filename}"
+        try:
+            if isinstance(url, str) and url.strip().startswith("http"):
+                rr = requests.get(url.strip(), timeout=120)
+                if rr.status_code >= 400:
+                    raise Exception(f"HTTP {rr.status_code}")
+                with open(out_path, "wb") as f:
+                    f.write(rr.content or b"")
+                if not out_path.exists() or out_path.stat().st_size < 1024:
+                    raise Exception("Arquivo vazio")
+                return f"/generated_assets/openai_images/{filename}"
+        except Exception as e:
+            print(f"OpenAI image download/save error: {str(e)[:400]}")
+            raise Exception(friendly_error)
+
+        raise Exception(friendly_error)
 
     def generate_audio(self, text, voice="onyx"):
         """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""

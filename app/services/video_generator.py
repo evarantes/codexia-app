@@ -655,17 +655,21 @@ class VideoGenerator:
         if not self.ai_service:
             raise Exception("AI Service não inicializado para geração de imagem.")
 
-        url = self.ai_service.generate_image(
-            final_prompt,
-            aspect_ratio=aspect_ratio,
-            providers=["openai_direct"],
-            status_callback=notify,
-        )
+        friendly_error = "Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
+        try:
+            url = self.ai_service.generate_image(
+                final_prompt,
+                aspect_ratio=aspect_ratio,
+                providers=["openai_direct"],
+                status_callback=notify,
+            )
+        except Exception:
+            raise Exception(friendly_error)
         if not url:
-            raise Exception("OpenAI não retornou imagem.")
+            raise Exception(friendly_error)
         path = self._resolve_input_image_path(url)
         if not path or not os.path.exists(path) or os.path.getsize(path) < 1000:
-            raise Exception("Falha ao resolver/salvar imagem gerada pela OpenAI.")
+            raise Exception(friendly_error)
         return path
 
     def _set_clip_duration(self, clip, duration):
