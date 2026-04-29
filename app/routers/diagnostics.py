@@ -6,10 +6,6 @@ from app.models import Settings
 from app.services.ai_generator import AIContentGenerator
 import os
 import requests
-import uuid
-import base64
-from pathlib import Path
-import openai
 
 router = APIRouter(prefix="/diagnostics", tags=["System Diagnostics"])
 
@@ -149,87 +145,38 @@ def test_ai_connection(db: Session = Depends(get_db)):
 
 @router.post("/test-openai-image")
 def test_openai_image():
-    ai_service = AIContentGenerator()
-    ai_service._load_config()
-    api_key = (ai_service.api_key or "").strip()
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="OpenAI não configurada (OPENAI_API_KEY ausente).",
-        )
-
-    friendly_error = "Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
-    client = openai.OpenAI(api_key=api_key)
-    prompt = "Photorealistic cinematic landscape, bright uplifting mood, no text, no watermark."
     try:
-        resp = client.images.generate(
-            model="gpt-image-1",
-            prompt=prompt,
-            size="1536x1024",
-            quality="high",
-        )
-        item0 = resp.data[0] if resp and getattr(resp, "data", None) else None
-        b64 = getattr(item0, "b64_json", None) if item0 is not None else None
-        url = getattr(item0, "url", None) if item0 is not None else None
+        def _minimal_test():
+            from openai import OpenAI
+            import os
+
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+            result = client.images.generate(
+                model="gpt-image-1",
+                prompt="a simple golden sunrise over mountains, cinematic, no text",
+                size="1024x1024",
+            )
+
+            return result
+
+        result = _minimal_test()
+        print("OPENAI IMAGE TEST RESULT (raw):")
+        print(result)
+        try:
+            if hasattr(result, "model_dump"):
+                print("OPENAI IMAGE TEST RESULT (model_dump):")
+                print(result.model_dump())
+        except Exception:
+            pass
+        return {"ok": True}
     except Exception as e:
-        status = getattr(e, "status_code", None)
-        if status is None:
-            resp_obj = getattr(e, "response", None)
-            status = getattr(resp_obj, "status_code", None)
-        body = getattr(e, "body", None)
-        if body is None:
-            resp_obj = getattr(e, "response", None)
-            try:
-                body = resp_obj.json() if resp_obj is not None else None
-            except Exception:
-                body = None
-        if isinstance(body, str) and body.strip():
-            try:
-                import json
-                body = json.loads(body)
-            except Exception:
-                pass
-        err_type = None
-        err_code = None
-        if isinstance(body, dict):
-            err = body.get("error")
-            if isinstance(err, dict):
-                err_type = err.get("type")
-                err_code = err.get("code")
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "message": friendly_error,
-                "debug": {"status": status, "type": err_type, "code": err_code},
-            },
-        )
+        import traceback
 
-    out_dir = Path("generated_assets/diagnostics_images")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"diag_{uuid.uuid4().hex}.png"
-    out_path = out_dir / filename
-    try:
-        if isinstance(b64, str) and b64.strip():
-            b64_data = b64.strip()
-            if b64_data.lower().startswith("data:") and "," in b64_data:
-                b64_data = b64_data.split(",", 1)[1].strip()
-            img_bytes = base64.b64decode(b64_data)
-            if not img_bytes:
-                raise Exception("empty_image_bytes")
-            out_path.write_bytes(img_bytes)
-        elif isinstance(url, str) and url.strip().startswith("http"):
-            rr = requests.get(url.strip(), timeout=120)
-            if rr.status_code >= 400:
-                raise Exception(f"HTTP {rr.status_code}")
-            out_path.write_bytes(rr.content or b"")
-        else:
-            raise Exception("empty_response")
-        if not out_path.exists() or out_path.stat().st_size < 1024:
-            raise Exception("file_too_small")
-    except Exception:
-        raise HTTPException(status_code=503, detail=friendly_error)
-
-    return {"success": True, "url": f"/generated_assets/diagnostics_images/{filename}"}
+        print("OPENAI IMAGE TEST EXCEPTION (raw):")
+        print(repr(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=503, detail=str(e))
 
 @router.post("/test-pdf-generation")
 def test_pdf_generation():
