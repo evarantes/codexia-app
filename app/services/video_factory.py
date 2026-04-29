@@ -561,16 +561,7 @@ class VideoFactory:
         job.logs += "Iniciando geração de visuais exclusivos por IA...\n"
         scenes = self.db.query(Scene).filter(Scene.video_id == video.id).order_by(Scene.idx).all()
         total = max(1, len(scenes))
-        # Modo estrito opcional: quando true, falha a cena caso nenhum provedor de IA responda.
-        # Quando false (padrão), usa fallback contextual (texto/narração) para não travar a produção.
-        strict_ai_only = _is_truthy(os.getenv("STRICT_AI_IMAGE_ONLY"))
-        # Fallback local em gradiente deve ser somente opt-in, para evitar fundo genérico.
-        allow_local_gradient = _is_truthy(os.getenv("ALLOW_LOCAL_GRADIENT_FALLBACK"))
-        try:
-            max_rounds = max(1, min(12, int(os.getenv("AI_IMAGE_MAX_ROUNDS", "4"))))
-        except Exception:
-            max_rounds = 4
-        fallback_used = False
+        max_rounds = 1
 
         for idx, scene in enumerate(scenes, start=1):
             narration = (scene.narration_text or "").strip()
@@ -597,67 +588,11 @@ class VideoFactory:
                 aspect_ratio="16:9",
                 status_callback=scene_status,
                 max_rounds=max_rounds,
-                allow_non_ai_fallback=allow_local_gradient
+                allow_non_ai_fallback=False
             )
             source_type = "AI_EXCLUSIVE"
-            invalid_path = (not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) < 1000)
-            local_fallback = bool(filepath and os.path.basename(filepath).startswith("fallback_local_"))
-
-            if invalid_path or local_fallback:
-                scene_status("Provedores configurados falharam. Tentando Pollinations direto...")
-                try:
-                    direct_url = self.video_gen._pollinations_direct_url(
-                        visual_prompt or f"Cinematic illustration for: {narration[:140]}",
-                        "16:9"
-                    )
-                    direct_path = self.video_gen.download_image(direct_url, retries=2, timeout=90)
-                    if direct_path and os.path.exists(direct_path) and os.path.getsize(direct_path) > 1000:
-                        if filepath and os.path.exists(filepath) and os.path.basename(filepath).startswith("fallback_local_"):
-                            try:
-                                os.remove(filepath)
-                            except Exception:
-                                pass
-                        filepath = direct_path
-                        source_type = "POLLINATIONS_DIRECT"
-                        invalid_path = False
-                        local_fallback = False
-                        scene_status(f"Imagem obtida via Pollinations direto (cena {scene.idx}).")
-                except Exception as e:
-                    scene_status(f"Pollinations direto falhou: {str(e)[:100]}")
-
-            if invalid_path or local_fallback:
-                from PIL import Image
-                fallback_text = narration[:180] if narration else (scene.keywords or f"Cena {scene.idx}")
-                fallback_bg = self.video_gen._generate_fallback_background((1280, 720))
-                img_array = self.video_gen.create_text_image(
-                    fallback_text,
-                    size=(1280, 720),
-                    bg_color=(70, 90, 130),
-                    text_color=(245, 245, 245),
-                    bg_image_path=fallback_bg,
-                )
-                filename = f"scene_{video.id}_{scene.idx}_fallback_text.png"
-                fallback_path = os.path.join(VIDEO_OUTPUT_DIR, filename)
-                Image.fromarray(img_array).save(fallback_path)
-
-                if filepath and os.path.exists(filepath) and os.path.basename(filepath).startswith("fallback_local_"):
-                    try:
-                        os.remove(filepath)
-                    except Exception:
-                        pass
-                if fallback_bg and os.path.exists(fallback_bg):
-                    try:
-                        os.remove(fallback_bg)
-                    except Exception:
-                        pass
-
-                filepath = fallback_path
-                source_type = "TEXT_FALLBACK"
-                fallback_used = True
-                if strict_ai_only:
-                    scene_status("IA indisponível no modo estrito; aplicando fallback contextual para evitar falha.")
-                else:
-                    scene_status("IA indisponível no momento; usando arte contextual para não travar.")
+            if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) < 1000:
+                raise Exception(f"Falha ao gerar imagem da cena {scene.idx} com OpenAI.")
             scene_status(f"Imagem da cena {scene.idx} pronta.")
 
             s3_key = self.storage.upload_file(filepath)
@@ -671,12 +606,7 @@ class VideoFactory:
             self._set_job_progress(job, 55 + int((idx / total) * 25))
             
         self.db.commit()
-        if fallback_used:
-            job.logs += "Visuais concluídos com fallback contextual em cenas sem resposta de IA.\n"
-        elif strict_ai_only:
-            job.logs += "Visuais gerados por IA (modo estrito).\n"
-        else:
-            job.logs += "Visuais gerados por IA com fallback resiliente quando necessário.\n"
+        job.logs += "Visuais gerados por IA (OpenAI).\n"
 
     def _step_render(self, video: Video, job: Job):
         # Montar FFmpeg command

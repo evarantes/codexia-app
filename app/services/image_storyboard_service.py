@@ -91,24 +91,6 @@ Regras:
     return prompts[:quantity]
 
 
-def _image_model_candidates(preferred: str) -> List[str]:
-    pref = (preferred or "").strip() or "gpt-image-1"
-    out = [pref]
-    if pref != "gpt-image-1":
-        out.append("gpt-image-1")
-    if pref != "gpt-image-2":
-        out.append("gpt-image-2")
-    if "dall-e-3" not in out:
-        out.append("dall-e-3")
-    uniq = []
-    seen = set()
-    for m in out:
-        if m and m not in seen:
-            seen.add(m)
-            uniq.append(m)
-    return uniq
-
-
 def generate_image(prompt: str, index: int, model: str = "gpt-image-1") -> Dict[str, Any]:
     final_prompt = f"""
 {SYSTEM_STYLE}
@@ -125,46 +107,32 @@ Reforço obrigatório:
 - imagem cinematográfica horizontal para vídeo
 """.strip()
 
-    last_err: Optional[Exception] = None
-    for m in _image_model_candidates(model):
-        try:
-            if m == "dall-e-3":
-                result = client.images.generate(
-                    model="dall-e-3",
-                    prompt=final_prompt,
-                    size="1792x1024",
-                    quality="hd",
-                    n=1,
-                    response_format="b64_json",
-                )
-            else:
-                result = client.images.generate(
-                    model=m,
-                    prompt=final_prompt,
-                    size="1536x1024",
-                    quality="high",
-                    n=1,
-                    response_format="b64_json",
-                )
-            image_base64 = getattr(result.data[0], "b64_json", None) if result and getattr(result, "data", None) else None
-            if not isinstance(image_base64, str) or not image_base64.strip():
-                raise Exception("Resposta de imagem sem b64_json.")
-            image_bytes = base64.b64decode(image_base64)
-            filename = f"scene_{int(index):02d}_{uuid.uuid4().hex}.png"
-            path = BASE_DIR / filename
-            with open(path, "wb") as f:
-                f.write(image_bytes)
-            return {
-                "scene": int(index),
-                "prompt": (prompt or "").strip(),
-                "file": str(path),
-                "url": f"/generated_assets/storyboard_images/{filename}",
-                "model_used": m,
-            }
-        except Exception as e:
-            last_err = e
-            continue
-    raise last_err or Exception("Falha ao gerar imagem.")
+    try:
+        result = client.images.generate(
+            model="gpt-image-1",
+            prompt=final_prompt,
+            size="1536x1024",
+            quality="high",
+            n=1,
+            response_format="b64_json",
+        )
+        image_base64 = getattr(result.data[0], "b64_json", None) if result and getattr(result, "data", None) else None
+        if not isinstance(image_base64, str) or not image_base64.strip():
+            raise Exception("Resposta de imagem sem b64_json.")
+        image_bytes = base64.b64decode(image_base64)
+        filename = f"scene_{int(index):02d}_{uuid.uuid4().hex}.png"
+        path = BASE_DIR / filename
+        with open(path, "wb") as f:
+            f.write(image_bytes)
+        return {
+            "scene": int(index),
+            "prompt": (prompt or "").strip(),
+            "file": str(path),
+            "url": f"/generated_assets/storyboard_images/{filename}",
+            "model_used": "gpt-image-1",
+        }
+    except Exception as e:
+        raise Exception(f"Falha ao gerar imagem com OpenAI: {str(e)}")
 
 
 def generate_storyboard_images(text: str, quantity: int = 15) -> Dict[str, Any]:
@@ -186,4 +154,3 @@ def generate_storyboard_images(text: str, quantity: int = 15) -> Dict[str, Any]:
         "quantity": len(images),
         "images": images,
     }
-

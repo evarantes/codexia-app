@@ -1267,25 +1267,8 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
         return filename
 
     images: List[Dict[str, Any]] = []
-    forced_providers = ["openai_direct", "leonardo", "edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
-    extra_image_providers = ["openai_direct", "leonardo"]
-    has_openai_or_leonardo = bool((getattr(ai_service, "api_key", None) or "").strip() or (getattr(ai_service, "leonardo_key", None) or "").strip())
-    allow_non_ai_fallback = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
 
     all_prompts = prompts[:count]
-    if has_openai_or_leonardo:
-        try:
-            extra_prompt_list = ai_service.generate_story_image_prompts(
-                f"{story_content}\n\nFoco: a cena mais marcante e emocional.",
-                n=1,
-                kind=kind,
-            ) or []
-            extra_prompt = (extra_prompt_list[0] if isinstance(extra_prompt_list, list) and extra_prompt_list else "") if extra_prompt_list is not None else ""
-        except Exception:
-            extra_prompt = ""
-        extra_prompt = (extra_prompt or "").strip() or (all_prompts[-1] if all_prompts else "")
-        if extra_prompt:
-            all_prompts.append(extra_prompt[:900])
 
     total = max(1, len(all_prompts))
     for idx, p in enumerate(all_prompts):
@@ -1298,53 +1281,17 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
                 _progress(pct, f"Imagem {scene_idx+1}/{total}: {msg}")
 
             _progress(step_pct, f"Gerando imagem {idx+1}/{total}...")
-            providers = extra_image_providers if (has_openai_or_leonardo and idx == (len(all_prompts) - 1) and len(all_prompts) > count) else forced_providers
-            url = ai_service.generate_image(prompt_text, aspect_ratio=aspect_ratio, providers=providers, status_callback=_status)
+            url = ai_service.generate_image(prompt_text, aspect_ratio=aspect_ratio, providers=["openai_direct"], status_callback=_status)
         except Exception:
             url = None
         if not url:
-            if allow_non_ai_fallback:
-                _progress(step_pct, f"Imagem {idx+1}/{total}: IA indisponível; usando fundo local.")
-                filename = _local_fallback_image(aspect_ratio)
-                if filename:
-                    images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
-            else:
-                _progress(step_pct, f"Imagem {idx+1}/{total}: IA indisponível; pulando.")
-            continue
-
-        try:
-            resp = requests.get(url, timeout=120, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code >= 400:
-                raise Exception(f"HTTP {resp.status_code}")
-            content_type = (resp.headers.get("content-type") or "").lower()
-            ext = ".png"
-            if "jpeg" in content_type or "jpg" in content_type:
-                ext = ".jpg"
-            filename = f"storyimg_{uuid.uuid4().hex}{ext}"
-            file_path = covers_dir / filename
-            with open(file_path, "wb") as f:
-                f.write(resp.content or b"")
-            if not file_path.exists() or file_path.stat().st_size < 1024:
-                try:
-                    file_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-                raise Exception("Arquivo vazio")
-            images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
-        except Exception:
-            if allow_non_ai_fallback:
-                _progress(step_pct, f"Imagem {idx+1}/{total}: download falhou; usando fundo local.")
-                filename = _local_fallback_image(aspect_ratio)
-                if filename:
-                    images.append({"url": f"/static/covers/{filename}", "prompt": prompt_text})
-            else:
-                _progress(step_pct, f"Imagem {idx+1}/{total}: download falhou; pulando.")
-            continue
+            raise HTTPException(status_code=503, detail="Falha ao gerar imagem com OpenAI. Verifique OPENAI_API_KEY e billing.")
+        images.append({"url": url, "prompt": prompt_text})
 
     if not images:
         raise HTTPException(
             status_code=503,
-            detail="Nenhum provedor de IA retornou imagem. Configure OpenAI/Leonardo em Configurações."
+            detail="OpenAI não retornou imagem. Verifique OPENAI_API_KEY e billing."
         )
 
     _progress(100, "Imagens prontas.")

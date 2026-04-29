@@ -1,7 +1,9 @@
 import os
 import uuid
+import base64
 import openai
 import requests
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from app.database import SessionLocal
@@ -2036,85 +2038,14 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
 
     def generate_image(self, prompt, aspect_ratio: str = "9:16", providers: list = None, status_callback=None):
         """
-        Gera URL de imagem por cadeia de provedores de IA.
-        Retorna URL quando algum provedor aceita a solicitação.
+        Gera imagem usando APENAS OpenAI Images API.
+        Se falhar, levanta exceção e não tenta nenhum outro provedor.
         """
         self._load_config()
         raw_prompt = (prompt or "").strip()
         if not raw_prompt:
             return None
         raw_prompt = self._sanitize_and_contextualize_image_prompt(raw_prompt)
-
-        is_portrait = str(aspect_ratio).strip() == "9:16"
-        width, height = (720, 1280) if is_portrait else (1280, 720)
-        dalle_size = "1024x1792" if is_portrait else "1792x1024"
-
-        positive_style = [
-            "high quality",
-            "photorealistic",
-            "epic biblical cinematography",
-            "divine chiaroscuro",
-            "god rays",
-            "golden glow",
-            "celestial light",
-            "vibrant natural colors",
-            "family-friendly",
-        ]
-        quality_tokens = [
-            "photorealistic cinematic photography",
-            "8k",
-            "divine chiaroscuro lighting",
-            "god rays",
-            "golden glow",
-            "celestial white highlights",
-            "deep blue atmosphere",
-            "warm fire tones",
-            "vibrant natural colors",
-            "epic perspective",
-            "sacred and hopeful mood",
-            "family-friendly",
-            "sharp focus",
-            "high detail",
-            "professional color grading",
-            "pleasant mood",
-            "realistic skin texture",
-        ]
-        neg = self._visual_negative_for_text(raw_prompt)
-        negative_constraints = (
-            f"negative prompt: {neg}; "
-            "no text, no subtitles, no watermarks, no signatures, no logos; "
-            "no monsters, no undead; "
-            "no uncanny, no doll-like; "
-            "no deformed, no disfigured, no mutated, no bad anatomy, no extra limbs; "
-            "no bad hands, no extra fingers, no melted face, no blurred face; "
-            "no lowres, no jpeg artifacts"
-        )
-        negative_prompt_plain = (
-            f"{neg}, "
-            "no text, no subtitles, no watermarks, no signatures, no logos, "
-            "no monsters, no undead, "
-            "no uncanny, no doll-like, "
-            "no deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, "
-            "no bad hands, no extra fingers, no melted face, no blurred face, "
-            "no lowres, no jpeg artifacts"
-        ).strip().strip(",")
-        raw_lower = raw_prompt.lower()
-        missing_style = [t for t in positive_style if t.lower() not in raw_lower]
-        enhanced_prompt = raw_prompt
-        if missing_style:
-            enhanced_prompt = f"{enhanced_prompt}, {', '.join(missing_style)}"
-        if len(enhanced_prompt) < 240 and not any(token in enhanced_prompt.lower() for token in quality_tokens[:3]):
-            enhanced_prompt = f"{enhanced_prompt}, {' '.join(quality_tokens[:7])}"
-
-        provider_order = providers or ["openai_direct", "leonardo", "edenai", "pollinations_flux", "pollinations_turbo", "pollinations"]
-        provider_labels = {
-            "edenai": "Eden AI",
-            "openai_direct": "OpenAI Direto",
-            "leonardo": "Leonardo.AI",
-            "pollinations_flux": "Pollinations Flux",
-            "pollinations_turbo": "Pollinations Turbo",
-            "pollinations": "Pollinations Base",
-        }
 
         def notify(message: str):
             if status_callback:
@@ -2123,205 +2054,55 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 except Exception:
                     pass
 
-        def _timeout_env(name: str, default: int, min_v: int = 10, max_v: int = 180) -> int:
-            raw = (os.getenv(name) or "").strip()
-            try:
-                v = int(raw) if raw else int(default)
-            except Exception:
-                v = int(default)
-            return max(min_v, min(v, max_v))
+        if not (self.api_key or "").strip():
+            raise Exception("OpenAI não configurada (OPENAI_API_KEY ausente).")
 
-        eden_timeout = _timeout_env("EDENAI_IMAGE_TIMEOUT", 60, min_v=10, max_v=180)
-        leonardo_timeout = _timeout_env("LEONARDO_IMAGE_TIMEOUT", 60, min_v=10, max_v=180)
-        leonardo_poll_timeout = _timeout_env("LEONARDO_POLL_TIMEOUT", 30, min_v=10, max_v=120)
-        leonardo_deadline_sec = _timeout_env("LEONARDO_DEADLINE_SEC", 90, min_v=30, max_v=240)
+        is_portrait = str(aspect_ratio).strip() == "9:16"
+        size = "1024x1536" if is_portrait else "1536x1024"
 
-        for provider in provider_order:
-            label = provider_labels.get(provider, provider)
-            try:
-                if provider == "edenai":
-                    if not (self.edenai_key or "").strip():
-                        notify(f"{label} sem chave configurada; tentando próximo provedor.")
-                        continue
-                    notify(f"Tentando {label}...")
-                    full_prompt = (
-                        f"{enhanced_prompt}. "
-                        "Family-friendly, reverent, holy atmosphere, uplifting and inspiring. "
-                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural, serene, and not distorted."
-                    )
-                    eden_provider = (os.getenv("EDENAI_IMAGE_PROVIDER") or "openai").strip()
-                    headers = {"Authorization": f"Bearer {self.edenai_key.strip()}"}
-                    payload = {"providers": eden_provider, "text": full_prompt, "resolution": dalle_size}
-                    r = requests.post(
-                        "https://api.edenai.run/v2/image/generation",
-                        headers=headers,
-                        json=payload,
-                        timeout=eden_timeout,
-                    )
-                    if r.status_code >= 400:
-                        raise Exception(f"HTTP {r.status_code}: {(r.text or '').strip()[:240]}")
-                    data = r.json() if (r.headers.get("content-type") or "").startswith("application/json") else {}
-                    provider_payload = data.get(eden_provider) if isinstance(data, dict) else None
-                    if not isinstance(provider_payload, dict):
-                        provider_payload = None
-                        if isinstance(data, dict):
-                            for _, v in data.items():
-                                if isinstance(v, dict) and (
-                                    v.get("image_resource_url") or v.get("image_url") or v.get("url")
-                                ):
-                                    provider_payload = v
-                                    break
-                    url = None
-                    if isinstance(provider_payload, dict):
-                        url = (
-                            provider_payload.get("image_resource_url")
-                            or provider_payload.get("image_url")
-                            or provider_payload.get("url")
-                        )
-                    if isinstance(url, str) and url.strip():
-                        notify(f"{label} respondeu com sucesso.")
-                        return url.strip()
-                    notify(f"{label} não retornou URL válida; tentando próximo.")
-                    continue
+        neg = self._visual_negative_for_text(raw_prompt)
+        full_prompt = (
+            f"{raw_prompt}. "
+            "Cinematic, epic, high quality, dramatic lighting, professional composition. "
+            "Photorealistic cinematic photography. "
+            "No text, no letters, no numbers, no captions, no subtitles, no signage, no watermarks, no logos. "
+            f"Negative prompt: {neg}."
+        ).strip()
 
-                if provider == "openai_direct":
-                    if not (self.api_key or "").strip():
-                        notify(f"{label} sem chave configurada; tentando próximo provedor.")
-                        continue
-                    notify(f"Tentando {label}...")
-                    full_prompt = (
-                        f"{enhanced_prompt}. "
-                        "Family-friendly, reverent, holy atmosphere, uplifting and inspiring. "
-                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural, serene, and not distorted."
-                    )
-                    url = None
-                    model = (os.getenv("OPENAI_IMAGE_MODEL") or "dall-e-3").strip() or "dall-e-3"
-                    try:
-                        # Novo SDK (>=1.x)
-                        if hasattr(openai, "OpenAI"):
-                            client = openai.OpenAI(api_key=(self.api_key or "").strip())
-                            resp = client.images.generate(
-                                model=model,
-                                prompt=full_prompt,
-                                size=dalle_size,
-                                quality="standard",
-                                n=1,
-                                response_format="url",
-                            )
-                            if resp and getattr(resp, "data", None) and resp.data:
-                                url = getattr(resp.data[0], "url", None)
-                        else:
-                            # SDK antigo (0.x)
-                            openai.api_key = (self.api_key or "").strip()
-                            resp = openai.Image.create(
-                                prompt=full_prompt,
-                                size=dalle_size,
-                                n=1,
-                            )
-                            if isinstance(resp, dict) and resp.get("data"):
-                                url = resp["data"][0].get("url")
-                    except Exception:
-                        url = None
-                    if isinstance(url, str) and url.strip():
-                        notify(f"{label} respondeu com sucesso.")
-                        return url.strip()
-                    notify(f"{label} não retornou URL válida; tentando próximo.")
-                    continue
+        base_dir = Path("generated_assets/openai_images")
+        base_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"img_{uuid.uuid4().hex}.png"
+        out_path = base_dir / filename
 
-                if provider == "leonardo":
-                    if not (self.leonardo_key or "").strip():
-                        notify(f"{label} sem chave configurada; tentando próximo provedor.")
-                        continue
-                    notify(f"Tentando {label}...")
-                    full_prompt = (
-                        f"{enhanced_prompt}. "
-                        "Photorealistic cinematic photography. Avoid close-up portraits; if people appear, keep faces natural, serene, and not distorted."
-                    )
-                    model_id = (self.leonardo_model_id or "").strip() or (os.getenv("LEONARDO_MODEL_ID") or "").strip() or None
-                    out_w, out_h = (576, 1024) if is_portrait else (1024, 576)
-                    headers = {
-                        "Authorization": f"Bearer {(self.leonardo_key or '').strip()}",
-                        "Content-Type": "application/json",
-                        "accept": "application/json",
-                    }
-                    payload = {
-                        "prompt": full_prompt,
-                        "negative_prompt": negative_prompt_plain,
-                        "num_images": 1,
-                        "width": out_w,
-                        "height": out_h,
-                    }
-                    if model_id:
-                        payload["modelId"] = model_id
+        notify("Gerando imagem com OpenAI...")
+        try:
+            if hasattr(openai, "OpenAI"):
+                client = openai.OpenAI(api_key=(self.api_key or "").strip())
+                resp = client.images.generate(
+                    model="gpt-image-1",
+                    prompt=full_prompt,
+                    size=size,
+                    quality="high",
+                    n=1,
+                    response_format="b64_json",
+                )
+                b64 = getattr(resp.data[0], "b64_json", None) if resp and getattr(resp, "data", None) else None
+            else:
+                raise Exception("SDK OpenAI desatualizado. Requer openai>=1.0.0.")
+        except Exception as e:
+            raise Exception(f"Falha ao gerar imagem com OpenAI: {str(e)}")
 
-                    r = requests.post(
-                        "https://cloud.leonardo.ai/api/rest/v1/generations",
-                        headers=headers,
-                        json=payload,
-                        timeout=leonardo_timeout,
-                    )
-                    if r.status_code >= 400:
-                        raise Exception(f"HTTP {r.status_code}: {(r.text or '').strip()[:240]}")
-                    data = r.json() if (r.headers.get("content-type") or "").startswith("application/json") else {}
-                    generation_id = None
-                    if isinstance(data, dict):
-                        job = data.get("sdGenerationJob") or {}
-                        generation_id = job.get("generationId") or data.get("generationId") or data.get("id")
-                    if not generation_id:
-                        raise Exception("Sem generationId")
+        if not isinstance(b64, str) or not b64.strip():
+            raise Exception("Falha ao gerar imagem com OpenAI: resposta vazia.")
 
-                    import time
-                    deadline = time.time() + float(leonardo_deadline_sec)
-                    while time.time() < deadline:
-                        rr = requests.get(
-                            f"https://cloud.leonardo.ai/api/rest/v1/generations/{generation_id}",
-                            headers=headers,
-                            timeout=leonardo_poll_timeout,
-                        )
-                        if rr.status_code >= 400:
-                            raise Exception(f"HTTP {rr.status_code}: {(rr.text or '').strip()[:240]}")
-                        out = rr.json() if (rr.headers.get("content-type") or "").startswith("application/json") else {}
-                        node = None
-                        if isinstance(out, dict):
-                            node = out.get("generations_by_pk") or out.get("generation") or out.get("sdGenerationJob") or out
-                        images = None
-                        if isinstance(node, dict):
-                            images = node.get("generated_images") or node.get("images") or []
-                        if isinstance(images, list) and images:
-                            item0 = images[0]
-                            if isinstance(item0, dict):
-                                url = item0.get("url") or item0.get("imageUrl") or item0.get("image_url")
-                                if isinstance(url, str) and url.strip().startswith("http"):
-                                    notify(f"{label} respondeu com sucesso.")
-                                    return url.strip()
-                        time.sleep(2)
-                    raise Exception("Timeout aguardando imagem")
+        try:
+            image_bytes = base64.b64decode(b64.strip())
+            with open(out_path, "wb") as f:
+                f.write(image_bytes)
+        except Exception as e:
+            raise Exception(f"Falha ao salvar imagem gerada: {str(e)}")
 
-                if provider in {"pollinations_flux", "pollinations_turbo", "pollinations"}:
-                    import urllib.parse
-                    model = "flux" if provider == "pollinations_flux" else ("turbo" if provider == "pollinations_turbo" else "")
-                    notify(f"Tentando {label}...")
-                    pollinations_prompt = (
-                        f"{enhanced_prompt}. "
-                        "family-friendly, reverent, holy atmosphere, uplifting and inspiring, serene expressions, "
-                        "photorealistic cinematic photography, warm illuminating light, epic perspective, high detail, high-definition, no text, no watermark, no logo"
-                    )
-                    safe_prompt = urllib.parse.quote(pollinations_prompt)
-                    query = (
-                        f"width={width}&height={height}&nologo=true&seed={uuid.uuid4()}&enhance=false"
-                    )
-                    if model:
-                        query += f"&model={model}"
-                    return f"https://image.pollinations.ai/prompt/{safe_prompt}?{query}"
-            except Exception as e:
-                reason = str(e).strip().replace("\n", " ")
-                if len(reason) > 180:
-                    reason = reason[:177] + "..."
-                notify(f"{label} falhou ({reason}); tentando próximo provedor.")
-                continue
-
-        notify("Todos os provedores de imagem falharam nesta rodada.")
-        return None
+        return f"/generated_assets/openai_images/{filename}"
 
     def generate_audio(self, text, voice="onyx"):
         """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""

@@ -602,8 +602,7 @@
                                             <div>
                                                 <label class="block text-sm font-semibold text-gray-700">Modelo</label>
                                                 <select v-model="musicLyricsImagesModel" class="w-full border p-2 rounded mt-1">
-                                                    <option value="dall-e-3">DALL·E 3</option>
-                                                    <option value="gpt-image-1">gpt-image-1</option>
+                                                    <option value="gpt-image-1">OpenAI (qualidade máxima)</option>
                                                 </select>
                                             </div>
                                         </div>
@@ -2718,30 +2717,15 @@
                         <h3 class="text-lg font-bold mb-4 text-indigo-700">Mídias e Voz (Stock & TTS)</h3>
                         
                         <div class="mb-4">
-                            <label class="block font-bold mb-2">Eden AI API Key (Imagens, vídeos e TTS)</label>
+                            <label class="block font-bold mb-2">Eden AI API Key (TTS e Stock Media)</label>
                             <input v-model="settings.edenai_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="Sua chave da Eden AI">
                             <p class="text-xs text-gray-500 mt-1">Obtenha em <a href="https://www.edenai.co/" target="_blank" class="text-blue-600 underline">Eden AI</a></p>
                         </div>
 
                         <div class="mb-4">
-                            <label class="block font-bold mb-2">OpenAI API Key (fallback de imagens)</label>
+                            <label class="block font-bold mb-2">OpenAI API Key (OpenAI - qualidade máxima)</label>
                             <input v-model="settings.openai_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
-                            <p class="text-xs text-gray-500 mt-1">Usada quando EdenAI/Pollinations falharem na geração de imagens.</p>
-                        </div>
-
-                        <div class="mb-4 bg-gray-50 p-4 rounded border">
-                            <h4 class="font-bold mb-2">Leonardo.AI (Imagens)</h4>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <div>
-                                    <label class="block font-bold mb-1 text-sm">Leonardo API Key</label>
-                                    <input v-model="settings.leonardo_api_key" type="password" class="w-full border p-2 rounded bg-white" placeholder="Cole sua chave">
-                                </div>
-                                <div>
-                                    <label class="block font-bold mb-1 text-sm">Model ID (opcional)</label>
-                                    <input v-model="settings.leonardo_model_id" class="w-full border p-2 rounded bg-white" placeholder="Ex: 1e7737d7-...">
-                                </div>
-                            </div>
-                            <p class="text-xs text-gray-500 mt-2">Entrará na fila de tentativas de geração de imagens.</p>
+                            <p class="text-xs text-gray-500 mt-1">Usada para geração de imagens cinematográficas e vídeos.</p>
                         </div>
 
                         <div class="mb-4">
@@ -3261,7 +3245,7 @@
                     musicLyricsImagesIntensity: 'epico',
                     musicLyricsImagesPromptLanguage: 'auto',
                     musicLyricsImagesMode: 'epic',
-                    musicLyricsImagesModel: 'dall-e-3',
+                    musicLyricsImagesModel: 'gpt-image-1',
                     musicLyricsImagesLoading: false,
                     musicLyricsImages: [],
                     musicLyricsImagesSummary: null,

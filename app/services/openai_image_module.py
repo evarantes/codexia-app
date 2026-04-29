@@ -345,10 +345,10 @@ Regras para os campos:
         if not isinstance(scene_semantics, list):
             scene_semantics = []
 
-        model = (opts.get("model") or "").strip() or (os.getenv("OPENAI_IMAGE_MODEL") or "").strip() or "gpt-image-1"
+        model = "gpt-image-1"
         size = (opts.get("size") or "1024x1024").strip() or "1024x1024"
-        quality = (opts.get("quality") or "").strip() or "standard"
-        response_format = (opts.get("response_format") or "").strip() or "b64_json"
+        quality = "high"
+        response_format = "b64_json"
 
         out_dir = os.path.join(str(STATIC_DIR), "generated_images")
         try:
@@ -421,26 +421,7 @@ Regras para os campos:
             api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
             if not api_key:
                 return {"url": None, "error": "missing_api_key", "model": model}
-
-            tried = []
-            candidates = [model]
-            if model != "gpt-image-1":
-                candidates.append("gpt-image-1")
-            if model != "dall-e-3":
-                candidates.append("dall-e-3")
-
-            last = {"url": None, "error": None, "model": model}
-            for m in candidates:
-                if m in tried:
-                    continue
-                tried.append(m)
-                last = _openai_http_generate(prompt, m)
-                if last.get("url"):
-                    return last
-                err_txt = (last.get("error") or "").lower()
-                if any(k in err_txt for k in ["invalid_api_key", "incorrect api key", "missing_api_key", "insufficient_quota", "quota", "billing"]):
-                    return last
-            return last
+            return _openai_http_generate(prompt, model)
 
         items: List[Dict[str, Any]] = []
         for idx, s in enumerate(allocated):
