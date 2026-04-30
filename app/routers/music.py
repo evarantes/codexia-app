@@ -637,67 +637,132 @@ def get_saved_music(item_id: int, user: User = Depends(get_current_user), db: Se
 
 
 @router.get("/saved/{item_id}/watch", response_class=HTMLResponse)
-def watch_saved_music(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from html import escape
+def watch_saved_music(item_id: int):
+    safe_id = int(item_id)
+    html = f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Biblioteca • Codexia</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+  <div class="max-w-4xl mx-auto p-4">
+    <div class="flex items-start justify-between gap-4">
+      <div class="min-w-0">
+        <h1 id="title" class="text-2xl font-bold truncate">Carregando...</h1>
+        <div id="meta" class="text-sm text-gray-600"></div>
+      </div>
+      <div class="flex gap-2 flex-wrap justify-end">
+        <a class="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 text-sm font-semibold" href="/static/index.html#use_saved_music={safe_id}">Usar</a>
+        <a class="px-3 py-2 rounded bg-white border hover:bg-gray-50 text-sm font-semibold" href="/static/index.html#">Voltar</a>
+      </div>
+    </div>
 
-    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item não encontrado.")
-    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
-        raise HTTPException(status_code=403, detail="Sem permissão para acessar este item.")
+    <div id="content" class="mt-4 space-y-4"></div>
+    <div id="error" class="mt-4 hidden bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm"></div>
+  </div>
 
-    title = escape((item.title or "Música")[:200])
-    genre = escape((item.genre or "").strip()[:80])
-    created_at = item.created_at.isoformat(sep=" ", timespec="seconds") if item.created_at else ""
-    created_at_html = escape(created_at)
-    clip_url = (item.clip_url or "").strip()
-    music_url = (item.music_url or "").strip()
-    lyrics = (item.lyrics or "").strip()
-    lyrics_html = escape(lyrics) if lyrics else ""
+  <script>
+    (function() {{
+      const itemId = {safe_id};
+      const token = localStorage.getItem("access_token");
+      const titleEl = document.getElementById("title");
+      const metaEl = document.getElementById("meta");
+      const contentEl = document.getElementById("content");
+      const errorEl = document.getElementById("error");
 
-    parts = []
-    parts.append("<!doctype html><html lang='pt-BR'><head><meta charset='utf-8' />")
-    parts.append("<meta name='viewport' content='width=device-width, initial-scale=1' />")
-    parts.append(f"<title>{title} • Codexia</title>")
-    parts.append("<script src='https://cdn.tailwindcss.com'></script>")
-    parts.append("</head><body class='bg-gray-50'>")
-    parts.append("<div class='max-w-4xl mx-auto p-4'>")
-    parts.append("<div class='flex items-start justify-between gap-4'>")
-    parts.append("<div class='min-w-0'>")
-    parts.append(f"<h1 class='text-2xl font-bold truncate'>{title}</h1>")
-    parts.append("<div class='text-sm text-gray-600'>")
-    if created_at_html:
-        parts.append(f"<span>{created_at_html}</span>")
-    if genre:
-        parts.append(f"<span> • {genre}</span>")
-    parts.append("</div></div>")
-    parts.append("<div class='flex gap-2 flex-wrap justify-end'>")
-    parts.append(f"<a class='px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 text-sm font-semibold' href='/static/index.html#use_saved_music={item.id}'>Usar</a>")
-    parts.append("<a class='px-3 py-2 rounded bg-white border hover:bg-gray-50 text-sm font-semibold' href='/static/index.html#'>Voltar</a>")
-    parts.append("</div></div>")
+      function showError(msg) {{
+        errorEl.textContent = String(msg || "Erro ao carregar.");
+        errorEl.classList.remove("hidden");
+      }}
 
-    if clip_url:
-        safe_clip = escape(clip_url, quote=True)
-        parts.append("<div class='mt-4 bg-black rounded overflow-hidden'>")
-        parts.append(f"<video src='{safe_clip}' controls class='w-full h-full'></video>")
-        parts.append("</div>")
-    if music_url:
-        safe_music = escape(music_url, quote=True)
-        parts.append("<div class='mt-4 bg-white border rounded p-3'>")
-        parts.append("<div class='text-sm font-semibold mb-2'>Música</div>")
-        parts.append(f"<audio src='{safe_music}' controls class='w-full'></audio>")
-        parts.append("</div>")
-    if lyrics_html:
-        parts.append("<div class='mt-4 bg-white border rounded p-3'>")
-        parts.append("<div class='text-sm font-semibold mb-2'>Letra</div>")
-        parts.append(f"<pre class='whitespace-pre-wrap text-sm text-gray-800'>{lyrics_html}</pre>")
-        parts.append("</div>")
+      function addBlock(label, node) {{
+        const wrap = document.createElement("div");
+        wrap.className = "bg-white border rounded p-3";
+        if (label) {{
+          const h = document.createElement("div");
+          h.className = "text-sm font-semibold mb-2";
+          h.textContent = label;
+          wrap.appendChild(h);
+        }}
+        wrap.appendChild(node);
+        contentEl.appendChild(wrap);
+      }}
 
-    if not clip_url and not music_url and not lyrics_html:
-        parts.append("<div class='mt-4 bg-white border rounded p-3 text-gray-600'>Nada para exibir.</div>")
+      if (!token) {{
+        titleEl.textContent = "Não autenticado";
+        showError("Faça login para assistir este item.");
+        const a = document.createElement("a");
+        a.href = "/static/login.html";
+        a.className = "inline-block mt-2 px-3 py-2 rounded bg-gray-900 text-white hover:bg-black text-sm font-semibold";
+        a.textContent = "Ir para login";
+        contentEl.appendChild(a);
+        return;
+      }}
 
-    parts.append("</div></body></html>")
-    return HTMLResponse("".join(parts))
+      fetch(`/music/saved/${{encodeURIComponent(String(itemId))}}`, {{
+        headers: {{ "Authorization": `Bearer ${{token}}` }}
+      }})
+      .then(async (res) => {{
+        const data = await res.json().catch(() => ({{}}));
+        if (!res.ok) {{
+          throw new Error(data.detail || data.message || "Falha ao carregar item.");
+        }}
+        return data;
+      }})
+      .then((it) => {{
+        const t = String(it.title || "Música");
+        titleEl.textContent = t;
+        const created = it.created_at ? new Date(it.created_at).toLocaleString() : "";
+        const genre = it.genre ? String(it.genre) : "";
+        metaEl.textContent = [created, genre].filter(Boolean).join(" • ");
+
+        const clipUrl = it.clip_url ? String(it.clip_url) : "";
+        const musicUrl = it.music_url ? String(it.music_url) : "";
+        const lyrics = it.lyrics ? String(it.lyrics) : "";
+
+        if (clipUrl) {{
+          const v = document.createElement("video");
+          v.src = clipUrl;
+          v.controls = true;
+          v.className = "w-full h-full object-contain";
+          const wrap = document.createElement("div");
+          wrap.className = "bg-black rounded overflow-hidden";
+          wrap.appendChild(v);
+          contentEl.appendChild(wrap);
+        }}
+        if (musicUrl) {{
+          const a = document.createElement("audio");
+          a.src = musicUrl;
+          a.controls = true;
+          a.className = "w-full";
+          addBlock("Música", a);
+        }}
+        if (lyrics) {{
+          const pre = document.createElement("pre");
+          pre.className = "whitespace-pre-wrap text-sm text-gray-800";
+          pre.textContent = lyrics;
+          addBlock("Letra", pre);
+        }}
+
+        if (!clipUrl && !musicUrl && !lyrics) {{
+          const d = document.createElement("div");
+          d.className = "bg-white border rounded p-3 text-gray-600";
+          d.textContent = "Nada para exibir.";
+          contentEl.appendChild(d);
+        }}
+      }})
+      .catch((e) => {{
+        titleEl.textContent = "Erro";
+        showError(e && e.message ? e.message : String(e));
+      }});
+    }})();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(html)
 
 
 @router.delete("/saved/{item_id}")
