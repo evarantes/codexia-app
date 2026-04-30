@@ -2054,8 +2054,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not (self.api_key or "").strip():
             raise Exception("OpenAI não configurada (OPENAI_API_KEY ausente).")
 
-        is_portrait = str(aspect_ratio).strip() == "9:16"
-        size = "1024x1536" if is_portrait else "1536x1024"
+        size = "1024x1024"
 
         neg = self._visual_negative_for_text(raw_prompt)
         full_prompt = (
@@ -2076,52 +2075,32 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         try:
             if hasattr(openai, "OpenAI"):
                 client = openai.OpenAI(api_key=(self.api_key or "").strip())
-                resp = client.images.generate(
+                result = client.images.generate(
                     model="gpt-image-1",
                     prompt=full_prompt,
                     size=size,
-                    quality="high",
-                    n=1,
                 )
-                item0 = resp.data[0] if resp and getattr(resp, "data", None) else None
-                b64 = getattr(item0, "b64_json", None) if item0 is not None else None
-                url = getattr(item0, "url", None) if item0 is not None else None
+                item0 = result.data[0] if result and getattr(result, "data", None) else None
+                image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
             else:
                 raise Exception("SDK OpenAI desatualizado. Requer openai>=1.0.0.")
         except Exception as e:
-            print(f"OpenAI image error: {str(e)[:400]}")
+            print("OPENAI IMAGE ERROR RAW:", repr(e))
             raise Exception(friendly_error)
 
         try:
-            if isinstance(b64, str) and b64.strip():
-                b64_data = b64.strip()
-                if b64_data.lower().startswith("data:") and "," in b64_data:
-                    b64_data = b64_data.split(",", 1)[1].strip()
-                image_bytes = base64.b64decode(b64_data)
-                if not image_bytes:
-                    raise Exception("empty_image_bytes")
-                with open(out_path, "wb") as f:
-                    f.write(image_bytes)
-                return f"/generated_assets/openai_images/{filename}"
+            image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
+            if not image_base64:
+                raise Exception("OpenAI não retornou b64_json na imagem.")
+            image_bytes = base64.b64decode(image_base64)
+            with open(out_path, "wb") as f:
+                f.write(image_bytes)
+            if not out_path.exists() or out_path.stat().st_size < 1024:
+                raise Exception("OpenAI não retornou bytes válidos para a imagem.")
+            return f"/generated_assets/openai_images/{filename}"
         except Exception as e:
-            print(f"OpenAI image decode/save error: {str(e)[:400]}")
+            print("OPENAI IMAGE ERROR RAW:", repr(e))
             raise Exception(friendly_error)
-
-        try:
-            if isinstance(url, str) and url.strip().startswith("http"):
-                rr = requests.get(url.strip(), timeout=120)
-                if rr.status_code >= 400:
-                    raise Exception(f"HTTP {rr.status_code}")
-                with open(out_path, "wb") as f:
-                    f.write(rr.content or b"")
-                if not out_path.exists() or out_path.stat().st_size < 1024:
-                    raise Exception("Arquivo vazio")
-                return f"/generated_assets/openai_images/{filename}"
-        except Exception as e:
-            print(f"OpenAI image download/save error: {str(e)[:400]}")
-            raise Exception(friendly_error)
-
-        raise Exception(friendly_error)
 
     def generate_audio(self, text, voice="onyx"):
         """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""

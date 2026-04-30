@@ -187,8 +187,7 @@ def diagnostics_test_openai_image():
             except Exception:
                 body = None
 
-        print("OPENAI IMAGE TEST EXCEPTION (raw):")
-        print(repr(e))
+        print("OPENAI IMAGE ERROR RAW:", repr(e))
         if status is not None:
             print(f"OPENAI IMAGE TEST EXCEPTION status_code={status}")
         if body is not None:

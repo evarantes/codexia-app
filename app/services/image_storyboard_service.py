@@ -112,33 +112,19 @@ Reforço obrigatório:
         result = client.images.generate(
             model="gpt-image-1",
             prompt=final_prompt,
-            size="1536x1024",
-            quality="high",
-            n=1,
+            size="1024x1024",
         )
         friendly_error = "Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
         item0 = result.data[0] if result and getattr(result, "data", None) else None
         image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
-        url = getattr(item0, "url", None) if item0 is not None else None
         filename = f"scene_{int(index):02d}_{uuid.uuid4().hex}.png"
         path = BASE_DIR / filename
-        if isinstance(image_base64, str) and image_base64.strip():
-            b64_data = image_base64.strip()
-            if b64_data.lower().startswith("data:") and "," in b64_data:
-                b64_data = b64_data.split(",", 1)[1].strip()
-            image_bytes = base64.b64decode(b64_data)
-            if not image_bytes:
-                raise Exception(friendly_error)
-            with open(path, "wb") as f:
-                f.write(image_bytes)
-        elif isinstance(url, str) and url.strip().startswith("http"):
-            rr = requests.get(url.strip(), timeout=120)
-            if rr.status_code >= 400:
-                raise Exception(f"HTTP {rr.status_code}")
-            with open(path, "wb") as f:
-                f.write(rr.content or b"")
-        else:
-            raise Exception(friendly_error)
+        image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
+        if not image_base64:
+            raise Exception("OpenAI não retornou b64_json na imagem.")
+        image_bytes = base64.b64decode(image_base64)
+        with open(path, "wb") as f:
+            f.write(image_bytes)
         if not path.exists() or path.stat().st_size < 1024:
             raise Exception(friendly_error)
         return {
@@ -149,7 +135,7 @@ Reforço obrigatório:
             "model_used": "gpt-image-1",
         }
     except Exception as e:
-        print(f"OpenAI storyboard image error: {str(e)[:400]}")
+        print("OPENAI IMAGE ERROR RAW:", repr(e))
         raise Exception("Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.")
 
 

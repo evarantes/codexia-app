@@ -346,8 +346,7 @@ Regras para os campos:
             scene_semantics = []
 
         model = "gpt-image-1"
-        size = (opts.get("size") or "1024x1024").strip() or "1024x1024"
-        quality = "high"
+        size = "1024x1024"
 
         out_dir = os.path.join(str(STATIC_DIR), "generated_images")
         try:
@@ -371,71 +370,30 @@ Regras para os campos:
             except Exception:
                 return None
 
-        def _openai_http_generate(prompt: str, model_name: str) -> Dict[str, Optional[str]]:
-            api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
-            if not api_key:
-                return {"url": None, "error": "missing_api_key", "model": model_name}
-            try:
-                payload = {
-                    "model": model_name,
-                    "prompt": prompt,
-                    "size": size,
-                    "n": 1,
-                }
-                if quality:
-                    payload["quality"] = quality
-                r = requests.post(
-                    "https://api.openai.com/v1/images/generations",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json=payload,
-                    timeout=90,
-                )
-                data = r.json() if (r.headers.get("content-type") or "").startswith("application/json") else {}
-                if r.status_code >= 400:
-                    err = ""
-                    if isinstance(data, dict):
-                        msg = (data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else data.get("error")
-                        err = str(msg or data)[:400]
-                    err = err or (r.text or "")[:400] or f"HTTP {r.status_code}"
-                    return {"url": None, "error": err, "model": model_name}
-                if isinstance(data, dict) and isinstance(data.get("data"), list) and data["data"]:
-                    item0 = data["data"][0] if isinstance(data["data"][0], dict) else {}
-                    b64 = item0.get("b64_json")
-                    if isinstance(b64, str) and b64.strip():
-                        try:
-                            b64_data = b64.strip()
-                            if b64_data.lower().startswith("data:") and "," in b64_data:
-                                b64_data = b64_data.split(",", 1)[1].strip()
-                            img_bytes = base64.b64decode(b64_data)
-                        except Exception:
-                            img_bytes = b""
-                        url = _save_image_bytes(img_bytes, ext="png")
-                        return {"url": url, "error": None if url else "failed_to_save_image", "model": model_name}
-                    url0 = item0.get("url")
-                    if isinstance(url0, str) and url0.strip():
-                        try:
-                            rr = requests.get(url0.strip(), timeout=120)
-                            if rr.status_code >= 400:
-                                raise Exception(f"HTTP {rr.status_code}")
-                            ct = (rr.headers.get("content-type") or "").lower()
-                            ext = "png"
-                            if "jpeg" in ct or "jpg" in ct:
-                                ext = "jpg"
-                            elif "webp" in ct:
-                                ext = "webp"
-                            saved = _save_image_bytes(rr.content or b"", ext=ext)
-                            return {"url": saved, "error": None if saved else "failed_to_save_image", "model": model_name}
-                        except Exception:
-                            return {"url": None, "error": "failed_to_download_image", "model": model_name}
-                return {"url": None, "error": "empty_response", "model": model_name}
-            except Exception as e:
-                return {"url": None, "error": str(e)[:400], "model": model_name}
-
         def _openai_generate_image(prompt: str) -> Dict[str, Optional[str]]:
             api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
             if not api_key:
                 return {"url": None, "error": "missing_api_key", "model": model}
-            return _openai_http_generate(prompt, model)
+            try:
+                client = openai.OpenAI(api_key=api_key)
+                result = client.images.generate(
+                    model="gpt-image-1",
+                    prompt=prompt,
+                    size=size,
+                )
+                item0 = result.data[0] if result and getattr(result, "data", None) else None
+                image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
+                image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
+                if not image_base64:
+                    raise Exception("OpenAI não retornou b64_json na imagem.")
+                image_bytes = base64.b64decode(image_base64)
+                saved_url = _save_image_bytes(image_bytes, ext="png")
+                if not saved_url:
+                    raise Exception("Falha ao salvar imagem gerada pela OpenAI.")
+                return {"url": saved_url, "error": None, "model": model}
+            except Exception as e:
+                print("OPENAI IMAGE ERROR RAW:", repr(e))
+                return {"url": None, "error": str(e)[:400], "model": model}
 
         items: List[Dict[str, Any]] = []
         for idx, s in enumerate(allocated):
