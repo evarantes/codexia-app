@@ -829,6 +829,9 @@
                                             <a v-if="t.status === 'completed' && t.result && t.result.video_url" :href="t.result.video_url" target="_blank" class="text-indigo-700 text-xs font-semibold">
                                                 Abrir
                                             </a>
+                                            <button v-if="t.status === 'completed' && t.result && t.result.video_url" @click="saveClipTaskToLibrary(t)" :disabled="savedMusicSaving" class="text-gray-900 text-xs font-semibold">
+                                                Salvar
+                                            </button>
                                             <button v-if="t.status === 'processing' || t.status === 'pending'" @click="resumeClipTask(t.task_id)" class="text-indigo-700 text-xs font-semibold">
                                                 Ver
                                             </button>
@@ -857,12 +860,27 @@
                             Atualizar
                         </button>
                     </div>
+                    <div class="mt-3 flex flex-col md:flex-row gap-2">
+                        <input v-model="savedMusicFilterText" type="text" placeholder="Buscar na biblioteca (título, gênero, letra...)" class="flex-1 border rounded px-3 py-2 text-sm" />
+                        <select v-model="savedMusicFilterType" class="border rounded px-3 py-2 text-sm">
+                            <option value="all">Todos</option>
+                            <option value="clip">Só clipes</option>
+                            <option value="music">Só músicas</option>
+                            <option value="lyrics">Só letras</option>
+                        </select>
+                        <select v-model.number="savedMusicPageSize" class="border rounded px-3 py-2 text-sm">
+                            <option :value="10">10</option>
+                            <option :value="20">20</option>
+                            <option :value="50">50</option>
+                            <option :value="100">100</option>
+                        </select>
+                    </div>
                     <p v-if="savedMusicError" class="text-sm text-red-600 mt-2">{{ savedMusicError }}</p>
-                    <div v-if="!savedMusicLoading && (!savedMusicItems || !savedMusicItems.length)" class="mt-4 text-gray-500 text-sm">
+                    <div v-if="!savedMusicLoading && (!filteredSavedMusicItems || !filteredSavedMusicItems.length)" class="mt-4 text-gray-500 text-sm">
                         Nenhum item salvo ainda.
                     </div>
                     <div v-else class="mt-4 space-y-3">
-                        <div v-for="item in savedMusicItems" :key="'sm-'+item.id" class="border rounded p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                        <div v-for="item in pagedSavedMusicItems" :key="'sm-'+item.id" class="border rounded p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                             <div class="min-w-0">
                                 <div class="font-bold truncate">{{ item.title || 'Música' }}</div>
                                 <div class="text-xs text-gray-500">
@@ -872,23 +890,39 @@
                                     <span v-if="item.clip_url"> • clipe</span>
                                     <span v-if="item.lyrics"> • letra</span>
                                 </div>
+                                <div v-if="getSavedMusicPublishedText(item)" class="text-xs text-green-700 mt-1">
+                                    {{ getSavedMusicPublishedText(item) }}
+                                </div>
                             </div>
                             <div class="flex gap-2 flex-wrap">
                                 <button @click="loadSavedMusicItem(item)" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
                                     <i class="fas fa-upload"></i>
                                     Usar
                                 </button>
-                                <button v-if="item.clip_url" @click="previewSavedClip(item)" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
+                                <a v-if="item.clip_url || item.music_url || item.lyrics" :href="`/music/saved/${encodeURIComponent(String(item.id))}/watch`" target="_blank" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
                                     <i class="fas fa-play"></i>
                                     Assistir
-                                </button>
-                                <button v-if="item.clip_url" @click="publishSavedClipToYouTube(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                </a>
+                                <button v-if="item.clip_url" @click="publishSavedItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
                                     <i class="fab fa-youtube"></i>
                                     Publicar
                                 </button>
                                 <button @click="deleteSavedMusicItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
                                     <i class="fas fa-trash"></i>
                                     Excluir
+                                </button>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between gap-3 pt-2">
+                            <div class="text-xs text-gray-600">
+                                {{ (filteredSavedMusicItems || []).length }} item(ns) • página {{ Math.max(1, Math.min(Number(savedMusicPage || 1), savedMusicTotalPages || 1)) }} de {{ savedMusicTotalPages || 1 }}
+                            </div>
+                            <div class="flex gap-2">
+                                <button @click="savedMusicPage = Math.max(1, Number(savedMusicPage || 1) - 1)" :disabled="Number(savedMusicPage || 1) <= 1" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                    Anterior
+                                </button>
+                                <button @click="savedMusicPage = Math.min(savedMusicTotalPages || 1, Number(savedMusicPage || 1) + 1)" :disabled="Number(savedMusicPage || 1) >= (savedMusicTotalPages || 1)" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                    Próxima
                                 </button>
                             </div>
                         </div>
@@ -3268,6 +3302,11 @@
                     savedMusicSaving: false,
                     savedMusicItems: [],
                     savedMusicError: '',
+                    savedMusicFilterText: '',
+                    savedMusicFilterType: 'all',
+                    savedMusicPageSize: 20,
+                    savedMusicPage: 1,
+                    savedMusicPublishInfo: {},
                     importMusicLoading: false,
                     importMusicTitle: '',
                     importMusicSourceUrl: '',
@@ -3403,6 +3442,36 @@
                         return [];
                     }
                 },
+                filteredSavedMusicItems() {
+                    const items = Array.isArray(this.savedMusicItems) ? this.savedMusicItems : [];
+                    const q = String(this.savedMusicFilterText || '').trim().toLowerCase();
+                    const type = String(this.savedMusicFilterType || 'all').trim().toLowerCase();
+                    return items.filter((it) => {
+                        if (!it) return false;
+                        if (type === 'clip' && !it.clip_url) return false;
+                        if (type === 'music' && !it.music_url) return false;
+                        if (type === 'lyrics' && !it.lyrics) return false;
+                        if (!q) return true;
+                        const hay = [
+                            String(it.title || ''),
+                            String(it.genre || ''),
+                            String(it.vocal_gender || ''),
+                            String(it.lyrics || '')
+                        ].join(' ').toLowerCase();
+                        return hay.includes(q);
+                    });
+                },
+                savedMusicTotalPages() {
+                    const size = Math.max(5, Math.min(100, Number(this.savedMusicPageSize || 20)));
+                    const total = (this.filteredSavedMusicItems || []).length;
+                    return Math.max(1, Math.ceil(total / size));
+                },
+                pagedSavedMusicItems() {
+                    const size = Math.max(5, Math.min(100, Number(this.savedMusicPageSize || 20)));
+                    const page = Math.max(1, Math.min(Number(this.savedMusicPage || 1), this.savedMusicTotalPages || 1));
+                    const start = (page - 1) * size;
+                    return (this.filteredSavedMusicItems || []).slice(start, start + size);
+                },
                 readyVideos() {
                     const scheduledReady = this.scheduledVideos
                         .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
@@ -3507,6 +3576,17 @@
                 }, 5000);
                 
                 await this.checkAuth();
+
+                try {
+                    const raw = localStorage.getItem('savedMusicPublishInfo');
+                    const parsed = raw ? JSON.parse(raw) : {};
+                    this.savedMusicPublishInfo = (parsed && typeof parsed === 'object') ? parsed : {};
+                } catch (e) {
+                    this.savedMusicPublishInfo = {};
+                }
+                try {
+                    await this.handleSavedMusicHash();
+                } catch (e) {}
                 
                 await this.fetchBooks();
                 await this.fetchSettings();
@@ -6429,15 +6509,46 @@
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao publicar no YouTube.');
                         if (data.youtube_url) {
                             this.clipYoutubeUrl = String(data.youtube_url);
+                            try {
+                                const nowIso = new Date().toISOString();
+                                const map = (this.savedMusicPublishInfo && typeof this.savedMusicPublishInfo === 'object') ? this.savedMusicPublishInfo : {};
+                                map[String(id)] = { platforms: ['YouTube'], published_at: nowIso, youtube_url: String(data.youtube_url) };
+                                this.savedMusicPublishInfo = { ...map };
+                                localStorage.setItem('savedMusicPublishInfo', JSON.stringify(this.savedMusicPublishInfo));
+                            } catch (e) {}
                             window.open(data.youtube_url, '_blank');
                         } else {
                             alert('Upload concluído. Confira no seu canal.');
+                            try {
+                                const nowIso = new Date().toISOString();
+                                const map = (this.savedMusicPublishInfo && typeof this.savedMusicPublishInfo === 'object') ? this.savedMusicPublishInfo : {};
+                                map[String(id)] = { platforms: ['YouTube'], published_at: nowIso, youtube_url: null };
+                                this.savedMusicPublishInfo = { ...map };
+                                localStorage.setItem('savedMusicPublishInfo', JSON.stringify(this.savedMusicPublishInfo));
+                            } catch (e) {}
                         }
                     } catch (e) {
                         alert(e.message || String(e));
                     } finally {
                         this.savedMusicSaving = false;
                     }
+                },
+                async publishSavedItem(item) {
+                    const it = item || {};
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    const raw = prompt('Publicar em quais redes? (ex: youtube)\nOpções: youtube, instagram, tiktok, facebook', 'youtube');
+                    if (raw === null) return;
+                    const selected = String(raw || '')
+                        .split(',')
+                        .map(s => s.trim().toLowerCase())
+                        .filter(Boolean);
+                    const wantYoutube = selected.includes('youtube') || selected.includes('yt');
+                    const others = selected.filter(x => !['youtube', 'yt'].includes(x));
+                    if (others.length) {
+                        alert('No momento, apenas YouTube está disponível. Outras redes: em breve.');
+                    }
+                    if (!wantYoutube) return;
+                    await this.publishSavedClipToYouTube(it);
                 },
                 async fetchMusicTasks({ silent } = {}) {
                     if (!silent) this.musicTasksLoading = true;
@@ -6576,10 +6687,28 @@
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar biblioteca.');
                         this.savedMusicItems = Array.isArray(data.items) ? data.items : [];
+                        this.savedMusicPage = 1;
                     } catch (e) {
                         this.savedMusicError = e.message || String(e);
                     } finally {
                         this.savedMusicLoading = false;
+                    }
+                },
+                async handleSavedMusicHash() {
+                    try {
+                        const hash = String(window.location.hash || '');
+                        if (!hash.startsWith('#use_saved_music=')) return;
+                        const idStr = hash.split('=', 2)[1] || '';
+                        const id = Number(String(idStr || '').trim());
+                        if (!id) return;
+                        const res = await this.authFetch(`/music/saved/${encodeURIComponent(String(id))}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar item salvo.');
+                        this.currentTab = 'music_clip';
+                        this.loadSavedMusicItem(data);
+                        window.location.hash = '';
+                    } catch (e) {
+                        alert(e.message || String(e));
                     }
                 },
                 async saveLyricsToLibrary() {
@@ -6665,6 +6794,55 @@
                         this.savedMusicSaving = false;
                     }
                 },
+                async saveClipTaskToLibrary(task) {
+                    const t = task || {};
+                    const result = (t && t.result && typeof t.result === 'object') ? t.result : {};
+                    const clipUrl = result.video_url || result.videoUrl || null;
+                    if (!clipUrl) return;
+                    this.savedMusicSaving = true;
+                    this.savedMusicError = '';
+                    try {
+                        const res = await this.authFetch('/music/saved', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                title: result.title || this.musicTitle || 'Música',
+                                lyrics: this.musicLyrics || '',
+                                genre: this.musicGenre || '',
+                                vocal_gender: this.musicVocalGender || null,
+                                with_vocals: this.musicWithVocals === true,
+                                clip_url: clipUrl,
+                                clip_filename: this._filenameFromUrl(clipUrl),
+                                music_url: this.musicUrl || null,
+                                music_filename: this.musicFilename || this._filenameFromUrl(this.musicUrl)
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao salvar clipe.');
+                        await this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                getSavedMusicPublishedText(item) {
+                    try {
+                        const it = item || {};
+                        const id = it && it.id ? String(it.id) : '';
+                        const map = (this.savedMusicPublishInfo && typeof this.savedMusicPublishInfo === 'object') ? this.savedMusicPublishInfo : {};
+                        const info = map[id];
+                        if (!info) return '';
+                        const plats = Array.isArray(info.platforms) ? info.platforms.filter(Boolean) : [];
+                        const when = info.published_at ? new Date(info.published_at).toLocaleString() : '';
+                        if (!plats.length && !when) return '';
+                        const ptxt = plats.length ? plats.join(', ') : '';
+                        return `Publicado: ${ptxt}${when ? ' • ' + when : ''}`;
+                    } catch (e) {
+                        return '';
+                    }
+                },
                 loadSavedMusicItem(item) {
                     const it = item || {};
                     if (it.title) this.musicTitle = it.title;
@@ -6674,6 +6852,7 @@
                     this.musicUrl = it.music_url || null;
                     this.musicFilename = it.music_filename || this._filenameFromUrl(this.musicUrl);
                     this.clipVideoUrl = it.clip_url || null;
+                    try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) {}
                 },
                 async deleteSavedMusicItem(item) {
                     const id = item && item.id ? Number(item.id) : null;

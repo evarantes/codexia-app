@@ -10,6 +10,7 @@ import json
 import re
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
@@ -633,6 +634,70 @@ def get_saved_music(item_id: int, user: User = Depends(get_current_user), db: Se
         "clip_filename": item.clip_filename,
         "created_at": item.created_at.isoformat() if item.created_at else None,
     }
+
+
+@router.get("/saved/{item_id}/watch", response_class=HTMLResponse)
+def watch_saved_music(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from html import escape
+
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para acessar este item.")
+
+    title = escape((item.title or "Música")[:200])
+    genre = escape((item.genre or "").strip()[:80])
+    created_at = item.created_at.isoformat(sep=" ", timespec="seconds") if item.created_at else ""
+    created_at_html = escape(created_at)
+    clip_url = (item.clip_url or "").strip()
+    music_url = (item.music_url or "").strip()
+    lyrics = (item.lyrics or "").strip()
+    lyrics_html = escape(lyrics) if lyrics else ""
+
+    parts = []
+    parts.append("<!doctype html><html lang='pt-BR'><head><meta charset='utf-8' />")
+    parts.append("<meta name='viewport' content='width=device-width, initial-scale=1' />")
+    parts.append(f"<title>{title} • Codexia</title>")
+    parts.append("<script src='https://cdn.tailwindcss.com'></script>")
+    parts.append("</head><body class='bg-gray-50'>")
+    parts.append("<div class='max-w-4xl mx-auto p-4'>")
+    parts.append("<div class='flex items-start justify-between gap-4'>")
+    parts.append("<div class='min-w-0'>")
+    parts.append(f"<h1 class='text-2xl font-bold truncate'>{title}</h1>")
+    parts.append("<div class='text-sm text-gray-600'>")
+    if created_at_html:
+        parts.append(f"<span>{created_at_html}</span>")
+    if genre:
+        parts.append(f"<span> • {genre}</span>")
+    parts.append("</div></div>")
+    parts.append("<div class='flex gap-2 flex-wrap justify-end'>")
+    parts.append(f"<a class='px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 text-sm font-semibold' href='/static/index.html#use_saved_music={item.id}'>Usar</a>")
+    parts.append("<a class='px-3 py-2 rounded bg-white border hover:bg-gray-50 text-sm font-semibold' href='/static/index.html#'>Voltar</a>")
+    parts.append("</div></div>")
+
+    if clip_url:
+        safe_clip = escape(clip_url, quote=True)
+        parts.append("<div class='mt-4 bg-black rounded overflow-hidden'>")
+        parts.append(f"<video src='{safe_clip}' controls class='w-full h-full'></video>")
+        parts.append("</div>")
+    if music_url:
+        safe_music = escape(music_url, quote=True)
+        parts.append("<div class='mt-4 bg-white border rounded p-3'>")
+        parts.append("<div class='text-sm font-semibold mb-2'>Música</div>")
+        parts.append(f"<audio src='{safe_music}' controls class='w-full'></audio>")
+        parts.append("</div>")
+    if lyrics_html:
+        parts.append("<div class='mt-4 bg-white border rounded p-3'>")
+        parts.append("<div class='text-sm font-semibold mb-2'>Letra</div>")
+        parts.append(f"<pre class='whitespace-pre-wrap text-sm text-gray-800'>{lyrics_html}</pre>")
+        parts.append("</div>")
+
+    if not clip_url and not music_url and not lyrics_html:
+        parts.append("<div class='mt-4 bg-white border rounded p-3 text-gray-600'>Nada para exibir.</div>")
+
+    parts.append("</div></body></html>")
+    return HTMLResponse("".join(parts))
 
 
 @router.delete("/saved/{item_id}")
