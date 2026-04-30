@@ -903,10 +903,32 @@
                                     <i class="fas fa-play"></i>
                                     Assistir
                                 </a>
-                                <button v-if="item.clip_url" @click="publishSavedItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
-                                    <i class="fab fa-youtube"></i>
-                                    Publicar
-                                </button>
+                                <div v-if="item.clip_url" class="flex flex-col items-stretch">
+                                    <button @click="publishSavedItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2 justify-center">
+                                        <i class="fas fa-share-alt"></i>
+                                        <span>Publicar</span>
+                                        <i class="fas fa-chevron-down text-xs opacity-80" v-if="savedMusicPublishMenuItemId !== Number(item.id)"></i>
+                                        <i class="fas fa-chevron-up text-xs opacity-80" v-else></i>
+                                    </button>
+                                    <div v-if="savedMusicPublishMenuItemId === Number(item.id)" class="mt-2 bg-white border rounded p-2 shadow flex flex-wrap gap-2">
+                                        <button @click="publishSavedToPlatform(item, 'youtube')" :disabled="savedMusicSaving" class="bg-red-600 text-white px-3 py-2 rounded hover:bg-red-700 text-sm font-semibold flex items-center gap-2">
+                                            <i class="fab fa-youtube"></i>
+                                            YouTube
+                                        </button>
+                                        <button disabled class="bg-gray-100 text-gray-400 px-3 py-2 rounded text-sm font-semibold flex items-center gap-2 cursor-not-allowed" title="Em breve">
+                                            <i class="fab fa-instagram"></i>
+                                            Instagram
+                                        </button>
+                                        <button disabled class="bg-gray-100 text-gray-400 px-3 py-2 rounded text-sm font-semibold flex items-center gap-2 cursor-not-allowed" title="Em breve">
+                                            <i class="fab fa-tiktok"></i>
+                                            TikTok
+                                        </button>
+                                        <button disabled class="bg-gray-100 text-gray-400 px-3 py-2 rounded text-sm font-semibold flex items-center gap-2 cursor-not-allowed" title="Em breve">
+                                            <i class="fab fa-facebook"></i>
+                                            Facebook
+                                        </button>
+                                    </div>
+                                </div>
                                 <button @click="deleteSavedMusicItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
                                     <i class="fas fa-trash"></i>
                                     Excluir
@@ -3307,6 +3329,7 @@
                     savedMusicPageSize: 20,
                     savedMusicPage: 1,
                     savedMusicPublishInfo: {},
+                    savedMusicPublishMenuItemId: null,
                     importMusicLoading: false,
                     importMusicTitle: '',
                     importMusicSourceUrl: '',
@@ -6535,20 +6558,21 @@
                 },
                 async publishSavedItem(item) {
                     const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
                     if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
-                    const raw = prompt('Publicar em quais redes? (ex: youtube)\nOpções: youtube, instagram, tiktok, facebook', 'youtube');
-                    if (raw === null) return;
-                    const selected = String(raw || '')
-                        .split(',')
-                        .map(s => s.trim().toLowerCase())
-                        .filter(Boolean);
-                    const wantYoutube = selected.includes('youtube') || selected.includes('yt');
-                    const others = selected.filter(x => !['youtube', 'yt'].includes(x));
-                    if (others.length) {
-                        alert('No momento, apenas YouTube está disponível. Outras redes: em breve.');
+                    this.savedMusicPublishMenuItemId = (this.savedMusicPublishMenuItemId === id) ? null : id;
+                },
+                async publishSavedToPlatform(item, platform) {
+                    const it = item || {};
+                    const p = String(platform || '').trim().toLowerCase();
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    this.savedMusicPublishMenuItemId = null;
+                    if (p === 'youtube' || p === 'yt') {
+                        await this.publishSavedClipToYouTube(it);
+                        return;
                     }
-                    if (!wantYoutube) return;
-                    await this.publishSavedClipToYouTube(it);
+                    alert('Em breve.');
                 },
                 async fetchMusicTasks({ silent } = {}) {
                     if (!silent) this.musicTasksLoading = true;
