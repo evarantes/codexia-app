@@ -8,6 +8,7 @@ import re
 import time
 import difflib
 import unicodedata
+import math
 from typing import Optional, Callable, List
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
@@ -1618,6 +1619,43 @@ class VideoGenerator:
             lyrics_lines_for_timeline = lyrics_lines_all[:]
             lyrics_lines_for_captions = lyrics_lines_all[:] if captions_enabled else []
 
+            force_storyboard = isinstance(image_options, dict) and bool(image_options.get("force_storyboard"))
+            pre_generated_images = None
+            if isinstance(image_options, dict):
+                pre_generated_images = image_options.get("pre_generated_images")
+            pre_generated_images_override = None
+            timeline_override = None
+            if force_storyboard and isinstance(pre_generated_images, list) and pre_generated_images:
+                pre = [str(x).strip() for x in pre_generated_images if isinstance(x, str) and str(x).strip()]
+                if len(pre) > 20:
+                    pre = pre[:20]
+                while len(pre) < 15:
+                    pre.append(pre[-1])
+                pre_generated_images_override = pre
+
+                n = len(pre_generated_images_override)
+                seg_dur = float(total_duration) / float(max(1, n))
+                grouped_caps = []
+                if lyrics_lines_for_timeline:
+                    chunk = max(1, int(math.ceil(len(lyrics_lines_for_timeline) / float(max(1, n)))))
+                    for i in range(n):
+                        start_i = i * chunk
+                        end_i = min(len(lyrics_lines_for_timeline), (i + 1) * chunk)
+                        part = lyrics_lines_for_timeline[start_i:end_i]
+                        cap = " ".join([p for p in part if p])[:220].strip()
+                        grouped_caps.append(cap)
+                while len(grouped_caps) < n:
+                    grouped_caps.append(grouped_caps[-1] if grouped_caps else "")
+
+                t = 0.0
+                tl = []
+                for i in range(n):
+                    start = t
+                    end = float(total_duration) if i == (n - 1) else min(float(total_duration), start + seg_dur)
+                    t = end
+                    tl.append({"start": start, "end": end, "caption": grouped_caps[i] if captions_enabled else ""})
+                timeline_override = tl
+
             max_scenes_env = os.getenv("MUSIC_CLIP_MAX_SCENES", "").strip()
             try:
                 max_scenes = int(max_scenes_env) if max_scenes_env else 18
@@ -1630,6 +1668,9 @@ class VideoGenerator:
             enforce_voice_sync_env = (os.getenv("MUSIC_CLIP_ENFORCE_VOICE_SYNC") or "1").strip().lower()
             enforce_voice_sync = enforce_voice_sync_env not in {"0", "false", "no", "off"}
             strict_sync = explicit_strict or (enforce_voice_sync and captions_enabled and bool(lyrics_lines_for_captions) and mode_norm in {"auto", ""})
+            if force_storyboard:
+                strict_sync = False
+                explicit_strict = False
             if explicit_strict and not lyrics_lines_for_captions:
                 raise Exception("Para sincronização perfeita, informe a letra da música.")
             if strict_sync and lyrics_lines_for_timeline:
@@ -1637,7 +1678,7 @@ class VideoGenerator:
 
             segments = None
             transcribe_error = None
-            if self.ai_service and lyrics_lines_for_captions:
+            if (not force_storyboard) and self.ai_service and lyrics_lines_for_captions:
                 try:
                     if hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
                         info = self.ai_service.transcribe_audio_segments_detailed(music_path, language="pt")
@@ -1858,7 +1899,9 @@ class VideoGenerator:
                 return mapping
 
             timeline = []
-            if strict_sync and segments and isinstance(segments, list) and lyrics_lines_for_captions:
+            if isinstance(timeline_override, list) and timeline_override:
+                timeline = timeline_override
+            elif strict_sync and segments and isinstance(segments, list) and lyrics_lines_for_captions:
                 lead_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_LEAD_MS") or "").strip()
                 try:
                     lead_ms = float(lead_ms_raw) if lead_ms_raw else 0.0
@@ -2159,14 +2202,17 @@ class VideoGenerator:
                             progress_callback(min(90, max(0, pct)), f"Cena {scene_idx+1}/{total}: {str(message or '').strip()[:160]}")
                         except Exception:
                             pass
-
-                bg_image_path = self._ensure_image_for_scene(
-                    image_prompt,
-                    text_fallback=caption[:120],
-                    aspect_ratio=aspect_ratio,
-                    status_callback=_clip_status,
-                    allow_non_ai_fallback=allow_non_ai_fallback
-                )
+                bg_image_path = None
+                if isinstance(pre_generated_images_override, list) and i < len(pre_generated_images_override):
+                    bg_image_path = self._resolve_input_image_path(pre_generated_images_override[i])
+                else:
+                    bg_image_path = self._ensure_image_for_scene(
+                        image_prompt,
+                        text_fallback=caption[:120],
+                        aspect_ratio=aspect_ratio,
+                        status_callback=_clip_status,
+                        allow_non_ai_fallback=allow_non_ai_fallback
+                    )
                 if not bg_image_path:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]

@@ -813,6 +813,7 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
     def _run():
         try:
             from app.services.video_generator import VideoGenerator
+            from app.services.image_storyboard_service import generate_storyboard_images
             ai = AIContentGenerator()
             video_gen = VideoGenerator(ai_service=ai)
 
@@ -827,26 +828,103 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
                     result=payload,
                 )
 
+            def _extract_openai_error(e: Exception) -> Dict[str, Any]:
+                status = getattr(e, "status_code", None)
+                if status is None:
+                    resp_obj = getattr(e, "response", None)
+                    status = getattr(resp_obj, "status_code", None)
+                body = getattr(e, "body", None)
+                if body is None:
+                    resp_obj = getattr(e, "response", None)
+                    try:
+                        body = resp_obj.json() if resp_obj is not None else None
+                    except Exception:
+                        body = None
+                if isinstance(body, str) and body.strip():
+                    try:
+                        body = json.loads(body)
+                    except Exception:
+                        pass
+                err_type = None
+                err_code = None
+                err_message = None
+                if isinstance(body, dict):
+                    err = body.get("error")
+                    if isinstance(err, dict):
+                        err_type = err.get("type")
+                        err_code = err.get("code")
+                        err_message = err.get("message")
+                if not err_message:
+                    err_message = str(e)
+                return {"status": status, "type": err_type, "code": err_code, "message": err_message}
+
             if is_task_cancel_requested(task_id):
                 update_task(task_id, status="cancelled", progress=0, message="Cancelado pelo usuário.", result=payload)
                 return
+
+            desired = request.images_count if request.images_count is not None else 15
+            try:
+                storyboard_qty = int(desired or 15)
+            except Exception:
+                storyboard_qty = 15
+            storyboard_qty = max(15, min(storyboard_qty, 20))
+
+            lyrics_text = (request.lyrics.strip() if request.lyrics and request.lyrics.strip() else "")
+            if not lyrics_text:
+                raise Exception("Informe a letra para gerar o storyboard do clipe.")
+
+            _progress(8, f"Gerando imagens (OpenAI) 1/{storyboard_qty}...")
+            try:
+                ai._load_config()
+                api_key = (ai.api_key or "").strip() if getattr(ai, "api_key", None) else ""
+                if not api_key:
+                    raise Exception("OpenAI não configurada (OPENAI_API_KEY ausente).")
+                storyboard = generate_storyboard_images(lyrics_text, quantity=storyboard_qty, api_key=api_key) or {}
+            except Exception as e:
+                print("OPENAI IMAGE ERROR FULL:", repr(e))
+                print("OPENAI IMAGE ERROR DICT:", getattr(e, "__dict__", {}))
+                info = _extract_openai_error(e)
+                msg = (
+                    "Erro OpenAI:\n"
+                    f"status: {info.get('status')}\n"
+                    f"type: {info.get('type')}\n"
+                    f"code: {info.get('code')}\n"
+                    f"message: {info.get('message')}"
+                )
+                update_task(task_id, status="failed", progress=100, message=msg[:900], result={**payload, "error": info})
+                return
+
+            images = storyboard.get("images") if isinstance(storyboard, dict) else None
+            if not isinstance(images, list) or not images:
+                raise Exception("Falha ao gerar storyboard (sem imagens).")
+            pre_generated = []
+            for it in images:
+                if isinstance(it, dict):
+                    u = (it.get("url") or "").strip()
+                    if u:
+                        pre_generated.append(u)
+            if not pre_generated:
+                raise Exception("Falha ao gerar storyboard (sem URLs).")
+            if len(pre_generated) > 20:
+                pre_generated = pre_generated[:20]
+            while len(pre_generated) < 15:
+                pre_generated.append(pre_generated[-1])
+
+            _progress(22, f"Imagens geradas ({len(pre_generated)}). Montando clipe...")
             result = video_gen.create_music_video(
                 music_path,
                 title=safe_title,
                 aspect_ratio=aspect_ratio,
-                lyrics=(request.lyrics.strip() if request.lyrics and request.lyrics.strip() else None),
+                lyrics=lyrics_text,
                 author_text=author,
                 watermark_enabled=watermark_enabled,
-                sync_mode=sync_mode,
+                sync_mode="auto",
                 captions_enabled=captions_enabled,
                 progress_callback=_progress,
                 image_options={
-                    "images_count": request.images_count,
-                    "visual_style": request.visual_style,
-                    "spiritual_intensity": request.spiritual_intensity,
-                    "prompt_language": request.prompt_language,
-                    "mode": request.mode,
-                    "model": request.model,
+                    "force_storyboard": True,
+                    "storyboard_quantity": len(pre_generated),
+                    "pre_generated_images": pre_generated,
                 },
             )
             video_url = result.get("video_url") if isinstance(result, dict) else None
@@ -922,8 +1000,25 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
                     p = 0
                 update_task(task_id, status="cancelled", progress=max(0, min(99, p)), message="Cancelado pelo usuário.", result=payload)
             else:
-                msg = str(e)
-                update_task(task_id, status="failed", progress=100, message=msg, result=payload)
+                print("OPENAI IMAGE ERROR FULL:", repr(e))
+                print("OPENAI IMAGE ERROR DICT:", getattr(e, "__dict__", {}))
+                info = None
+                try:
+                    info = _extract_openai_error(e)
+                except Exception:
+                    info = None
+                if isinstance(info, dict) and any(info.get(k) for k in ("status", "type", "code", "message")):
+                    msg = (
+                        "Erro OpenAI:\n"
+                        f"status: {info.get('status')}\n"
+                        f"type: {info.get('type')}\n"
+                        f"code: {info.get('code')}\n"
+                        f"message: {info.get('message')}"
+                    )
+                    update_task(task_id, status="failed", progress=100, message=msg[:900], result={**payload, "error": info})
+                else:
+                    msg = str(e)
+                    update_task(task_id, status="failed", progress=100, message=msg[:900], result=payload)
             db2 = SessionLocal()
             try:
                 db2.add(SystemNotification(

@@ -10,8 +10,6 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import requests
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 BASE_DIR = Path("generated_assets/storyboard_images")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -35,7 +33,12 @@ def _clean_numbered_list_line(line: str) -> str:
     return s
 
 
-def build_scene_prompts(text: str, quantity: int = 15) -> List[str]:
+def _get_openai_client(api_key: Optional[str] = None) -> OpenAI:
+    key = (api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    return OpenAI(api_key=key)
+
+
+def build_scene_prompts(text: str, quantity: int = 15, api_key: Optional[str] = None) -> List[str]:
     quantity = max(15, min(int(quantity or 15), 20))
     full_text = (text or "").strip()
 
@@ -59,6 +62,7 @@ Regras:
     model_candidates = ["gpt-4.1-mini", "gpt-4o-mini"]
     raw = ""
     last_err: Optional[Exception] = None
+    client = _get_openai_client(api_key=api_key)
     for m in model_candidates:
         try:
             response = client.chat.completions.create(
@@ -92,7 +96,7 @@ Regras:
     return prompts[:quantity]
 
 
-def generate_image(prompt: str, index: int, model: str = "gpt-image-1") -> Dict[str, Any]:
+def generate_image(prompt: str, index: int, model: str = "gpt-image-1", api_key: Optional[str] = None) -> Dict[str, Any]:
     final_prompt = f"""
 {SYSTEM_STYLE}
 
@@ -109,6 +113,7 @@ Reforço obrigatório:
 """.strip()
 
     try:
+        client = _get_openai_client(api_key=api_key)
         result = client.images.generate(
             model="gpt-image-1",
             prompt=final_prompt,
@@ -135,13 +140,14 @@ Reforço obrigatório:
             "model_used": "gpt-image-1",
         }
     except Exception as e:
-        print("OPENAI IMAGE ERROR RAW:", repr(e))
-        raise Exception("Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.")
+        print("OPENAI IMAGE ERROR FULL:", repr(e))
+        print("OPENAI IMAGE ERROR DICT:", getattr(e, "__dict__", {}))
+        raise
 
 
-def generate_storyboard_images(text: str, quantity: int = 15) -> Dict[str, Any]:
+def generate_storyboard_images(text: str, quantity: int = 15, api_key: Optional[str] = None) -> Dict[str, Any]:
     qty = max(15, min(int(quantity or 15), 20))
-    prompts = build_scene_prompts(text, qty)
+    prompts = build_scene_prompts(text, qty, api_key=api_key)
     if len(prompts) < qty:
         while len(prompts) < qty:
             base = prompts[-1] if prompts else (text or "").strip()[:240]
@@ -150,7 +156,7 @@ def generate_storyboard_images(text: str, quantity: int = 15) -> Dict[str, Any]:
     images: List[Dict[str, Any]] = []
     preferred_model = "gpt-image-1"
     for i, scene_prompt in enumerate(prompts[:qty], start=1):
-        image = generate_image(scene_prompt, i, model=preferred_model)
+        image = generate_image(scene_prompt, i, model=preferred_model, api_key=api_key)
         images.append(image)
 
     return {
