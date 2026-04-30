@@ -6,6 +6,7 @@ import uuid
 import threading
 import sys
 import multiprocessing
+import math
 from datetime import datetime, timedelta, timezone
 try:
     from filelock import FileLock, Timeout
@@ -3294,6 +3295,75 @@ def process_video_generation(request: VideoRequest, task_id):
         _raise_if_cancelled()
 
         if isinstance(script, dict):
+            def _target_scene_count(duration_minutes: int) -> int:
+                try:
+                    m = int(duration_minutes or 1)
+                except Exception:
+                    m = 1
+                m = max(1, m)
+                return max(4, min(20, int(math.ceil(float(m) / 2.0))))
+
+            def _compact_scenes(raw: Any, target_count: int) -> List[Dict[str, Any]]:
+                scenes_in: List[Dict[str, Any]] = []
+                if isinstance(raw, list):
+                    for s in raw:
+                        if isinstance(s, str):
+                            txt = s.strip()
+                            if txt:
+                                scenes_in.append({"text": txt, "image_prompt": ""})
+                            continue
+                        if not isinstance(s, dict):
+                            continue
+                        txt = (s.get("text") or s.get("narration") or s.get("narration_text") or s.get("script") or "").strip()
+                        if not txt:
+                            continue
+                        ip = (s.get("image_prompt") or s.get("visual_prompt") or s.get("prompt") or "").strip()
+                        cap = (s.get("caption") or s.get("on_screen_text") or "").strip()
+                        out: Dict[str, Any] = {"text": txt, "image_prompt": ip}
+                        if cap:
+                            out["caption"] = cap
+                        scenes_in.append(out)
+
+                if not scenes_in:
+                    return []
+                if target_count <= 0 or len(scenes_in) <= target_count:
+                    return scenes_in
+
+                group_size = max(1, int(math.ceil(float(len(scenes_in)) / float(target_count))))
+                merged: List[Dict[str, Any]] = []
+                for i in range(0, len(scenes_in), group_size):
+                    group = scenes_in[i:i + group_size]
+                    if not group:
+                        continue
+                    txt = " ".join((g.get("text") or "").strip() for g in group).strip()
+                    ip = ""
+                    cap = ""
+                    for g in group:
+                        if not ip:
+                            ip = (g.get("image_prompt") or "").strip()
+                        if not cap:
+                            cap = (g.get("caption") or "").strip()
+                        if ip and cap:
+                            break
+                    out: Dict[str, Any] = {"text": txt, "image_prompt": ip}
+                    if cap:
+                        out["caption"] = cap
+                    if out.get("text"):
+                        merged.append(out)
+
+                while len(merged) > target_count:
+                    a = merged.pop()
+                    b = merged.pop()
+                    joined = f"{(b.get('text') or '').strip()} {(a.get('text') or '').strip()}".strip()
+                    ip = (b.get("image_prompt") or "").strip() or (a.get("image_prompt") or "").strip()
+                    cap = (b.get("caption") or "").strip() or (a.get("caption") or "").strip()
+                    out: Dict[str, Any] = {"text": joined, "image_prompt": ip}
+                    if cap:
+                        out["caption"] = cap
+                    merged.append(out)
+
+                return merged
+
             try:
                 desc = (script.get("description") or "").strip()
                 if not desc and request.story_content:
@@ -3307,6 +3377,17 @@ def process_video_generation(request: VideoRequest, task_id):
                         script["description"] = gen_desc[:2000]
             except Exception:
                 pass
+
+            try:
+                target = _target_scene_count(request.duration)
+                script["disable_scene_text_split"] = True
+                raw_scenes = script.get("scenes")
+                compacted = _compact_scenes(raw_scenes, target)
+                if compacted:
+                    script["scenes"] = compacted
+            except Exception:
+                pass
+
             selected = []
             if request.selected_images and isinstance(request.selected_images, list):
                 for v in request.selected_images:

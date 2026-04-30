@@ -878,7 +878,17 @@ class VideoGenerator:
                     if not scene_prompt and scene_text:
                         scene_prompt = f"Photorealistic cinematic photography representing: {scene_text[:140]}"
 
+                    disable_split = False
+                    try:
+                        if isinstance(plan, dict):
+                            v = plan.get("scene_text_split")
+                            disable_split = bool(plan.get("disable_scene_text_split")) or str(v or "").strip().lower() in {"none", "off", "false", "0"}
+                    except Exception:
+                        disable_split = False
+
                     split_threshold = int((os.getenv("SCENE_TEXT_SPLIT_THRESHOLD") or "320").strip() or "320")
+                    if disable_split:
+                        split_threshold = 10**9
                     target_chars = int((os.getenv("SCENE_TEXT_TARGET_CHARS") or "240").strip() or "240")
                     target_chars = max(160, min(800, target_chars))
 
