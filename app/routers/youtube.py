@@ -1426,6 +1426,37 @@ def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callbac
             plan = ai_service.generate_short_script_from_prompt(prompt)
             if not isinstance(plan, dict):
                 plan = {"title": f"Short {idx+1}", "scenes": [{"text": "Assista até o fim.", "image_prompt": "cinematic inspiring scene"}]}
+            try:
+                plan["disable_scene_text_split"] = True
+                plan["video_type"] = "short"
+                t = str(plan.get("title") or "").strip()
+                if len(t) > 60:
+                    plan["title"] = t[:60].rstrip()
+                desc = str(plan.get("description") or "").strip()
+                if desc and "#shorts" not in desc.lower():
+                    plan["description"] = (desc + "\n\n#shorts").strip()[:1200]
+                elif not desc:
+                    plan["description"] = "#shorts"
+
+                raw_scenes = plan.get("scenes")
+                cleaned = []
+                if isinstance(raw_scenes, list):
+                    for s in raw_scenes:
+                        if not isinstance(s, dict):
+                            continue
+                        txt = str(s.get("text") or "").strip()
+                        if not txt:
+                            continue
+                        ip = str(s.get("image_prompt") or s.get("visual_prompt") or "").strip()
+                        cleaned.append({"text": txt[:180], "image_prompt": ip})
+                if len(cleaned) > 5:
+                    cleaned = cleaned[:5]
+                while cleaned and len(cleaned) < 3:
+                    cleaned.append({"text": "Inscreva-se para mais.", "image_prompt": "call to action minimal"})
+                if cleaned:
+                    plan["scenes"] = cleaned
+            except Exception:
+                pass
             if selected_images:
                 plan["selected_images"] = selected_images
 

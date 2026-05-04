@@ -861,6 +861,12 @@
                         </button>
                     </div>
                     <div class="mt-3 flex flex-col md:flex-row gap-2">
+                        <div class="flex gap-2">
+                            <button @click="savedMusicLibraryTab = 'items'" :class="['px-3 py-2 rounded text-sm font-semibold border', savedMusicLibraryTab === 'items' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 hover:bg-gray-50']">Itens</button>
+                            <button @click="savedMusicLibraryTab = 'shorts'" :class="['px-3 py-2 rounded text-sm font-semibold border', savedMusicLibraryTab === 'shorts' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 hover:bg-gray-50']">Shorts</button>
+                        </div>
+                    </div>
+                    <div v-if="savedMusicLibraryTab === 'items'" class="mt-3 flex flex-col md:flex-row gap-2">
                         <input v-model="savedMusicFilterText" type="text" placeholder="Buscar na biblioteca (título, gênero, letra...)" class="flex-1 border rounded px-3 py-2 text-sm" />
                         <select v-model="savedMusicFilterType" class="border rounded px-3 py-2 text-sm">
                             <option value="all">Todos</option>
@@ -875,11 +881,20 @@
                             <option :value="100">100</option>
                         </select>
                     </div>
+                    <div v-else class="mt-3 flex flex-col md:flex-row gap-2">
+                        <input v-model="youtubeShortsFilterText" type="text" placeholder="Buscar shorts (título / vídeo matriz / id)..." class="flex-1 border rounded px-3 py-2 text-sm" />
+                        <select v-model.number="youtubeShortsPageSize" class="border rounded px-3 py-2 text-sm">
+                            <option :value="10">10</option>
+                            <option :value="20">20</option>
+                            <option :value="50">50</option>
+                            <option :value="100">100</option>
+                        </select>
+                    </div>
                     <p v-if="savedMusicError" class="text-sm text-red-600 mt-2">{{ savedMusicError }}</p>
-                    <div v-if="!savedMusicLoading && (!filteredSavedMusicItems || !filteredSavedMusicItems.length)" class="mt-4 text-gray-500 text-sm">
+                    <div v-if="savedMusicLibraryTab === 'items' && !savedMusicLoading && (!filteredSavedMusicItems || !filteredSavedMusicItems.length)" class="mt-4 text-gray-500 text-sm">
                         Nenhum item salvo ainda.
                     </div>
-                    <div v-else class="mt-4 space-y-3">
+                    <div v-else-if="savedMusicLibraryTab === 'items'" class="mt-4 space-y-3">
                         <div v-for="item in pagedSavedMusicItems" :key="'sm-'+item.id" class="border rounded p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                             <div class="min-w-0">
                                 <div class="font-bold truncate">{{ item.title || 'Música' }}</div>
@@ -946,6 +961,50 @@
                                 <button @click="savedMusicPage = Math.min(savedMusicTotalPages || 1, Number(savedMusicPage || 1) + 1)" :disabled="Number(savedMusicPage || 1) >= (savedMusicTotalPages || 1)" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
                                     Próxima
                                 </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-else class="mt-4 space-y-3">
+                        <div v-if="!pagedYoutubeShortItems.length" class="text-gray-500 text-sm">
+                            Nenhum short gerado ainda.
+                        </div>
+                        <div v-else class="space-y-3">
+                            <div v-for="s in pagedYoutubeShortItems" :key="'ytshort-'+s.id" class="border rounded p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                                <div class="min-w-0">
+                                    <div class="font-bold truncate">{{ s.title || 'Short' }}</div>
+                                    <div class="text-xs text-gray-500">
+                                        <span v-if="s.parent_video_id">Matriz: {{ (getScheduledParentVideo(s) && getScheduledParentVideo(s).title) ? getScheduledParentVideo(s).title : ('ID ' + s.parent_video_id) }}</span>
+                                        <span v-else>Sem vídeo matriz</span>
+                                        <span v-if="s.uploaded_at"> • publicado {{ new Date(s.uploaded_at).toLocaleString() }}</span>
+                                    </div>
+                                </div>
+                                <div class="flex gap-2 flex-wrap">
+                                    <button @click="watchScheduledVideo(s)" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
+                                        <i class="fas fa-play"></i>
+                                        Assistir
+                                    </button>
+                                    <button v-if="!isPublishedStatus(s.status)" @click="publishNowScheduledVideo(s)" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                        <i class="fab fa-youtube"></i>
+                                        Publicar
+                                    </button>
+                                    <button @click="deleteScheduledVideo(s)" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                        <i class="fas fa-trash"></i>
+                                        Excluir
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="flex items-center justify-between gap-3 pt-2">
+                                <div class="text-xs text-gray-600">
+                                    {{ (filteredYoutubeShortItems || []).length }} short(s) • página {{ Math.max(1, Math.min(Number(youtubeShortsPage || 1), youtubeShortsTotalPages || 1)) }} de {{ youtubeShortsTotalPages || 1 }}
+                                </div>
+                                <div class="flex gap-2">
+                                    <button @click="youtubeShortsPage = Math.max(1, Number(youtubeShortsPage || 1) - 1)" :disabled="Number(youtubeShortsPage || 1) <= 1" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                        Anterior
+                                    </button>
+                                    <button @click="youtubeShortsPage = Math.min(youtubeShortsTotalPages || 1, Number(youtubeShortsPage || 1) + 1)" :disabled="Number(youtubeShortsPage || 1) >= (youtubeShortsTotalPages || 1)" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                        Próxima
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1773,6 +1832,7 @@
                                                 <button @click="watchScheduledVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-play"></i> Visualizar</button>
                                                 <button @click="saveScheduledVideo(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Agendar publicação"><i class="fas fa-calendar-check"></i> Agendar</button>
                                                 <button @click="publishNowScheduledVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
+                                                <button v-if="String(video.video_type || '').toLowerCase() === 'video'" @click="createShortsFromPublishedVideo(video)" :disabled="ytPublishedShortsLoadingId === video.id" class="text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 p-2 rounded text-sm disabled:opacity-50" title="Criar shorts deste vídeo"><i class="fas fa-bolt"></i> Criar shorts</button>
                                                 <button @click="regenerateScheduledVideo(video)" class="text-orange-600 hover:text-orange-800 p-2" title="Refazer vídeo"><i class="fas fa-sync"></i> Refazer</button>
                                                 <button @click="deleteScheduledVideo(video)" class="text-red-500 hover:text-red-700 p-2" title="Excluir vídeo"><i class="fas fa-trash"></i> Excluir</button>
                                             </template>
@@ -3330,6 +3390,10 @@
                     savedMusicPage: 1,
                     savedMusicPublishInfo: {},
                     savedMusicPublishMenuItemId: null,
+                    savedMusicLibraryTab: 'items',
+                    youtubeShortsFilterText: '',
+                    youtubeShortsPageSize: 20,
+                    youtubeShortsPage: 1,
                     importMusicLoading: false,
                     importMusicTitle: '',
                     importMusicSourceUrl: '',
@@ -3494,6 +3558,36 @@
                     const page = Math.max(1, Math.min(Number(this.savedMusicPage || 1), this.savedMusicTotalPages || 1));
                     const start = (page - 1) * size;
                     return (this.filteredSavedMusicItems || []).slice(start, start + size);
+                },
+                youtubeShortItems() {
+                    const items = Array.isArray(this.scheduledVideos) ? this.scheduledVideos : [];
+                    return items.filter(v => String((v && v.video_type) || '').toLowerCase() === 'short');
+                },
+                filteredYoutubeShortItems() {
+                    const q = String(this.youtubeShortsFilterText || '').trim().toLowerCase();
+                    const shorts = this.youtubeShortItems || [];
+                    if (!q) return shorts;
+                    const byId = {};
+                    const all = Array.isArray(this.scheduledVideos) ? this.scheduledVideos : [];
+                    all.forEach(v => { if (v && v.id) byId[String(v.id)] = v; });
+                    return shorts.filter(s => {
+                        const title = String((s && s.title) || '').toLowerCase();
+                        const pid = (s && s.parent_video_id) ? String(s.parent_video_id) : '';
+                        const parent = pid ? byId[pid] : null;
+                        const pTitle = parent ? String(parent.title || '').toLowerCase() : '';
+                        return title.includes(q) || pTitle.includes(q) || pid.includes(q);
+                    });
+                },
+                youtubeShortsTotalPages() {
+                    const size = Math.max(5, Math.min(100, Number(this.youtubeShortsPageSize || 20)));
+                    const total = (this.filteredYoutubeShortItems || []).length;
+                    return Math.max(1, Math.ceil(total / size));
+                },
+                pagedYoutubeShortItems() {
+                    const size = Math.max(5, Math.min(100, Number(this.youtubeShortsPageSize || 20)));
+                    const page = Math.max(1, Math.min(Number(this.youtubeShortsPage || 1), this.youtubeShortsTotalPages || 1));
+                    const start = (page - 1) * size;
+                    return (this.filteredYoutubeShortItems || []).slice(start, start + size);
                 },
                 readyVideos() {
                     const scheduledReady = this.scheduledVideos
@@ -3662,6 +3756,12 @@
                 }, 5000); // 5s para atualizar fila e manter processamento em andamento
             },
             methods: {
+                getScheduledParentVideo(shortItem) {
+                    const pid = shortItem && shortItem.parent_video_id ? String(shortItem.parent_video_id) : '';
+                    if (!pid) return null;
+                    const all = Array.isArray(this.scheduledVideos) ? this.scheduledVideos : [];
+                    return all.find(v => v && String(v.id) === pid) || null;
+                },
                 async fetchActiveVideoTasks({ silent } = {}) {
                     try {
                         const now = Date.now();
