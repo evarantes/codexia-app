@@ -900,15 +900,16 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...", result={"kind": "music_shorts", "item_id": item.id})
 
     def _run():
-        from datetime import datetime as _dt
         try:
             try:
                 from moviepy.editor import VideoFileClip
-                from moviepy.video.fx.all import crop
             except ImportError:
                 from moviepy import VideoFileClip
-                from moviepy.video.fx.all import crop
-            import numpy as np
+            try:
+                import numpy as np
+            except Exception:
+                np = None
+            import math
 
             clip = VideoFileClip(abs_video_path)
             duration = float(getattr(clip, "duration", 0) or 0)
@@ -935,8 +936,23 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
                     rms.append(0.0)
                     continue
                 try:
-                    arr = np.asarray(a, dtype=np.float32)
-                    v = float(np.sqrt(np.mean(arr * arr)))
+                    if np is not None:
+                        arr = np.asarray(a, dtype=np.float32)
+                        v = float(np.sqrt(np.mean(arr * arr)))
+                    else:
+                        s = 0.0
+                        n = 0
+                        for row in a:
+                            try:
+                                for ch in row:
+                                    fv = float(ch)
+                                    s += fv * fv
+                                    n += 1
+                            except Exception:
+                                fv = float(row)
+                                s += fv * fv
+                                n += 1
+                        v = float(math.sqrt(s / max(1, n)))
                 except Exception:
                     v = 0.0
                 rms.append(v)
@@ -996,11 +1012,13 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
                         if ar > target_ar:
                             new_w = int(float(h) * target_ar)
                             x1 = int((w - new_w) / 2)
-                            sub = crop(sub, x1=x1, y1=0, x2=x1 + new_w, y2=h)
+                            if hasattr(sub, "crop"):
+                                sub = sub.crop(x1=x1, y1=0, x2=x1 + new_w, y2=h)
                         elif ar < target_ar:
                             new_h = int(float(w) / target_ar)
                             y1 = int((h - new_h) / 2)
-                            sub = crop(sub, x1=0, y1=y1, x2=w, y2=y1 + new_h)
+                            if hasattr(sub, "crop"):
+                                sub = sub.crop(x1=0, y1=y1, x2=w, y2=y1 + new_h)
                     try:
                         sub = sub.resize((720, 1280))
                     except Exception:
