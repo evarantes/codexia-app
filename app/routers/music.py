@@ -9,8 +9,8 @@ import requests
 import json
 import re
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
@@ -23,12 +23,54 @@ from app.services.suno_service import (
     download_suno_audio,
 )
 from app.services.ai_generator import AIContentGenerator
-from app.routers.auth import get_current_user
+from app.routers.auth import get_current_user, SECRET_KEY, ALGORITHM
 from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification
 from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
 from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
 router = APIRouter(prefix="/music", tags=["music"])
+
+def _stream_file_with_range(request, filepath: str, media_type: str = "video/mp4"):
+    try:
+        range_header = request.headers.get("range")
+    except Exception:
+        range_header = None
+    file_size = os.path.getsize(filepath)
+    common_headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+
+    if not range_header:
+        return FileResponse(filepath, media_type=media_type, headers=common_headers)
+
+    try:
+        units, rng = range_header.split("=", 1)
+        if units.strip().lower() != "bytes":
+            return FileResponse(filepath, media_type=media_type, headers=common_headers)
+        start_s, end_s = (rng.split("-", 1) + [""])[:2]
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else file_size - 1
+        start = max(0, min(start, file_size - 1))
+        end = max(start, min(end, file_size - 1))
+    except Exception:
+        return FileResponse(filepath, media_type=media_type, headers=common_headers)
+
+    def _iterfile(path: str, start_pos: int, end_pos: int, chunk_size: int = 1024 * 1024):
+        with open(path, "rb") as f:
+            f.seek(start_pos)
+            remaining = end_pos - start_pos + 1
+            while remaining > 0:
+                chunk = f.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    content_length = end - start + 1
+    headers = {
+        **common_headers,
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(content_length),
+    }
+    return StreamingResponse(_iterfile(filepath, start, end), status_code=206, media_type=media_type, headers=headers)
 
 
 class GenerateMusicRequest(BaseModel):
@@ -867,6 +909,13 @@ def list_music_shorts(limit: int = 50, user: User = Depends(get_current_user), d
         if clean.startswith("/static/videos/") or clean.startswith("/media/videos/") or "/static/videos/" in clean or "/media/videos/" in clean:
             return f"{VIDEO_URL_PREFIX}/{name}"
         return s
+
+    def _file_exists(url_path: Optional[str]) -> bool:
+        try:
+            p = absolute_path_for_video(url_path or "")
+            return bool(p and os.path.isfile(p))
+        except Exception:
+            return False
     return {
         "items": [
             {
@@ -878,6 +927,7 @@ def list_music_shorts(limit: int = 50, user: User = Depends(get_current_user), d
                 "parent_title": (parents.get(int(r.parent_saved_music_id)).title if parents.get(int(r.parent_saved_music_id)) else None),
                 "start_sec": r.start_sec,
                 "end_sec": r.end_sec,
+                "file_exists": _file_exists(_normalize_clip_url(r.clip_url)),
                 "youtube_video_id": r.youtube_video_id,
                 "uploaded_at": (r.uploaded_at.isoformat() if getattr(r, "uploaded_at", None) else None),
                 "created_at": (r.created_at.isoformat() if getattr(r, "created_at", None) else None),
@@ -885,6 +935,197 @@ def list_music_shorts(limit: int = 50, user: User = Depends(get_current_user), d
             for r in rows
         ]
     }
+
+
+@router.get("/shorts/{short_id}")
+def get_music_short(short_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.query(SavedMusicShort).filter(SavedMusicShort.id == short_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Short não encontrado.")
+    if row.user_id and row.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para acessar este short.")
+    clean = None
+    try:
+        clean = (row.clip_url or "").strip()
+        if clean and not (clean.startswith("http://") or clean.startswith("https://")):
+            name = os.path.basename(clean.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip())
+            if name:
+                clean = f"{VIDEO_URL_PREFIX}/{name}"
+    except Exception:
+        clean = row.clip_url
+    file_exists = False
+    try:
+        file_exists = bool(os.path.isfile(absolute_path_for_video(clean or row.clip_url or "")))
+    except Exception:
+        file_exists = False
+    return {
+        "id": row.id,
+        "title": row.title,
+        "clip_url": clean,
+        "clip_filename": row.clip_filename,
+        "parent_saved_music_id": row.parent_saved_music_id,
+        "start_sec": row.start_sec,
+        "end_sec": row.end_sec,
+        "file_exists": file_exists,
+        "youtube_video_id": row.youtube_video_id,
+        "uploaded_at": (row.uploaded_at.isoformat() if getattr(row, "uploaded_at", None) else None),
+        "created_at": (row.created_at.isoformat() if getattr(row, "created_at", None) else None),
+    }
+
+
+@router.get("/shorts/{short_id}/stream_url")
+def get_music_short_stream_url(short_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.query(SavedMusicShort).filter(SavedMusicShort.id == short_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Short não encontrado.")
+    if row.user_id and row.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para acessar este short.")
+    try:
+        from jose import jwt
+        from datetime import timedelta
+        payload = {"uid": int(user.id), "short_id": int(short_id), "exp": datetime.utcnow() + timedelta(minutes=10)}
+        st = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Falha ao gerar link de acesso.")
+    return {"url": f"/music/shorts/{int(short_id)}/stream?st={st}"}
+
+
+@router.get("/shorts/{short_id}/stream")
+def stream_music_short(short_id: int, st: str, request: Request, db: Session = Depends(get_db)):
+    try:
+        from jose import jwt
+        payload = jwt.decode(st, SECRET_KEY, algorithms=[ALGORITHM])
+        uid = int(payload.get("uid") or 0)
+        sid = int(payload.get("short_id") or 0)
+        if sid != int(short_id) or uid <= 0:
+            raise Exception("invalid")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Link inválido ou expirado.")
+
+    row = db.query(SavedMusicShort).filter(SavedMusicShort.id == int(short_id)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Short não encontrado.")
+    if row.user_id and int(row.user_id) != uid:
+        raise HTTPException(status_code=403, detail="Sem permissão para acessar este short.")
+
+    def _ensure_file():
+        url = (row.clip_url or "").strip()
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            name = os.path.basename(url.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip())
+            if name:
+                url = f"{VIDEO_URL_PREFIX}/{name}"
+        abs_path = absolute_path_for_video(url or row.clip_url or "")
+        if abs_path and os.path.isfile(abs_path):
+            return abs_path, url
+
+        parent = db.query(SavedMusic).filter(SavedMusic.id == int(row.parent_saved_music_id)).first()
+        if not parent or not parent.clip_url:
+            raise HTTPException(status_code=503, detail="Vídeo matriz não encontrado para recriar o short.")
+        parent_abs = absolute_path_for_video(parent.clip_url)
+        if not parent_abs or not os.path.isfile(parent_abs):
+            raise HTTPException(status_code=503, detail="Arquivo do vídeo matriz não encontrado no servidor.")
+
+        try:
+            try:
+                from moviepy.editor import VideoFileClip
+            except ImportError:
+                from moviepy import VideoFileClip
+            def _subclip(obj, start_t: float, end_t: float):
+                if hasattr(obj, "subclip"):
+                    return obj.subclip(start_t, end_t)
+                if hasattr(obj, "subclipped"):
+                    return obj.subclipped(start_t, end_t)
+                raise AttributeError("Clip sem subclip/subclipped")
+
+            def _crop(obj, **kwargs):
+                if hasattr(obj, "crop"):
+                    return obj.crop(**kwargs)
+                if hasattr(obj, "cropped"):
+                    return obj.cropped(**kwargs)
+                raise AttributeError("Clip sem crop/cropped")
+
+            def _resize(obj, size):
+                if hasattr(obj, "resize"):
+                    return obj.resize(size)
+                if hasattr(obj, "resized"):
+                    return obj.resized(size)
+                raise AttributeError("Clip sem resize/resized")
+
+            clip = VideoFileClip(parent_abs)
+            duration = float(getattr(clip, "duration", 0) or 0)
+            start = float(getattr(row, "start_sec", 0) or 0)
+            end = float(getattr(row, "end_sec", 0) or 0)
+            if end <= start:
+                end = min(duration, start + 45.0)
+            start = max(0.0, min(start, max(0.0, duration - 1.0)))
+            end = max(start + 1.0, min(end, duration))
+
+            out_dir = str(VIDEO_OUTPUT_DIR or os.path.join(str(STATIC_DIR), "videos"))
+            os.makedirs(out_dir, exist_ok=True)
+            filename = (row.clip_filename or "").strip()
+            if not filename.endswith(".mp4"):
+                filename = f"music_short_{int(row.parent_saved_music_id)}_{uuid.uuid4().hex}.mp4"
+            out_path = os.path.join(out_dir, filename)
+
+            sub = _subclip(clip, start, end)
+            w = int(getattr(sub, "w", 0) or 0)
+            h = int(getattr(sub, "h", 0) or 0)
+            if w > 0 and h > 0:
+                target_ar = 9.0 / 16.0
+                ar = float(w) / float(h)
+                if ar > target_ar:
+                    new_w = int(float(h) * target_ar)
+                    x1 = int((w - new_w) / 2)
+                    try:
+                        sub = _crop(sub, x1=x1, y1=0, x2=x1 + new_w, y2=h)
+                    except Exception:
+                        pass
+                elif ar < target_ar:
+                    new_h = int(float(w) / target_ar)
+                    y1 = int((h - new_h) / 2)
+                    try:
+                        sub = _crop(sub, x1=0, y1=y1, x2=w, y2=y1 + new_h)
+                    except Exception:
+                        pass
+            try:
+                sub = _resize(sub, (720, 1280))
+            except Exception:
+                pass
+
+            sub.write_videofile(
+                out_path,
+                fps=24,
+                codec="libx264",
+                audio_codec="aac",
+                threads=1,
+                ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
+            )
+            try:
+                sub.close()
+            except Exception:
+                pass
+            try:
+                clip.close()
+            except Exception:
+                pass
+
+            if not os.path.isfile(out_path):
+                raise HTTPException(status_code=503, detail="Falha ao gerar arquivo do short.")
+            row.clip_filename = filename
+            row.clip_url = f"{VIDEO_URL_PREFIX}/{filename}"
+            db.commit()
+            return out_path, row.clip_url
+        except HTTPException:
+            raise
+        except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise HTTPException(status_code=503, detail=str(e))
+
+    abs_path, _ = _ensure_file()
+    return _stream_file_with_range(request, abs_path, media_type="video/mp4")
 
 
 @router.post("/saved/{item_id}/shorts/task")
