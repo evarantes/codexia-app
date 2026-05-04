@@ -962,11 +962,11 @@
                                     <i class="fas fa-play"></i>
                                     Assistir
                                 </a>
-                                <button v-if="item.music_url" @click="downloadSavedMusicWav(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                                <button v-if="item.music_url || item.clip_url" @click="downloadSavedMusicWav(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
                                     <i class="fas fa-download"></i>
                                     WAV (HQ)
                                 </button>
-                                <button v-if="item.music_url" @click="downloadSavedMusicCover(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                                <button v-if="item.music_url || item.clip_url" @click="downloadSavedMusicCover(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
                                     <i class="fas fa-image"></i>
                                     Capa 3000
                                 </button>

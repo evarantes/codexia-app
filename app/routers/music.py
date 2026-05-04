@@ -50,12 +50,17 @@ def _ensure_hq_wav_for_item(db: Session, item: SavedMusic) -> Optional[str]:
                 return abs_in
 
     base_in = (item.music_filename or item.music_url or "").strip()
-    if not base_in:
-        return None
-    in_name = _safe_basename(base_in)
-    abs_in = absolute_path_for_music(in_name or base_in)
+    abs_in = None
+    if base_in:
+        in_name = _safe_basename(base_in)
+        abs_in = absolute_path_for_music(in_name or base_in)
     if not abs_in or not os.path.isfile(abs_in):
-        return None
+        base_v = (item.clip_filename or item.clip_url or "").strip()
+        if base_v:
+            v_name = _safe_basename(base_v)
+            abs_in = absolute_path_for_video(v_name or base_v)
+        if not abs_in or not os.path.isfile(abs_in):
+            return None
 
     if abs_in.lower().endswith(".wav"):
         item.hq_wav_filename = os.path.basename(abs_in)
@@ -679,7 +684,7 @@ def save_music_item(request: SaveMusicRequest, user: User = Depends(get_current_
     db.commit()
     db.refresh(item)
     try:
-        if item.music_url or item.music_filename:
+        if item.music_url or item.music_filename or item.clip_url or item.clip_filename:
             _kick_off_offstep_assets(int(item.id))
     except Exception:
         pass
@@ -785,7 +790,7 @@ async def import_music(
         db.commit()
         db.refresh(item)
         try:
-            if item.music_url or item.music_filename:
+            if item.music_url or item.music_filename or item.clip_url or item.clip_filename:
                 _kick_off_offstep_assets(int(item.id))
         except Exception:
             pass
@@ -930,6 +935,20 @@ def download_saved_music_cover(item_id: int, user: User = Depends(get_current_us
     out_name = f"{fname}_3000x3000.png"
     headers = {"Content-Disposition": f'attachment; filename="{out_name}"'}
     return FileResponse(path, media_type="image/png", filename=out_name, headers=headers)
+
+
+@router.post("/saved/{item_id}/assets/generate")
+def generate_saved_music_assets(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para gerar arquivos deste item.")
+    try:
+        _kick_off_offstep_assets(int(item.id))
+    except Exception:
+        pass
+    return {"status": "processing", "message": "Geração iniciada. Use os botões WAV (HQ) e Capa 3000 para baixar."}
 
 
 @router.get("/saved/{item_id}/watch", response_class=HTMLResponse)
