@@ -900,6 +900,15 @@
                             <option :value="100">100</option>
                         </select>
                     </div>
+                    <div v-if="musicShortsTask && (String(musicShortsTask.status || '').toLowerCase() === 'processing' || String(musicShortsTask.status || '').toLowerCase() === 'pending')" class="mt-3 bg-white border rounded p-3">
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="text-sm font-semibold text-gray-700">Produzindo short: {{ musicShortsTask.message || 'Processando...' }}</div>
+                            <div class="text-xs text-gray-600 whitespace-nowrap">{{ Number(musicShortsTask.progress || 0) }}%</div>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded h-2.5 mt-2">
+                            <div class="bg-purple-600 h-2.5 rounded" :style="{ width: Number(musicShortsTask.progress || 0) + '%' }"></div>
+                        </div>
+                    </div>
                     <p v-if="savedMusicError" class="text-sm text-red-600 mt-2">{{ savedMusicError }}</p>
                     <div v-if="savedMusicLibraryTab === 'items' && !savedMusicLoading && (!filteredSavedMusicItems || !filteredSavedMusicItems.length)" class="mt-4 text-gray-500 text-sm">
                         Nenhum item salvo ainda.
@@ -3457,6 +3466,8 @@
                     musicShortsItems: [],
                     musicShortsError: '',
                     musicShortsGeneratingId: null,
+                    musicShortsTaskId: null,
+                    musicShortsTask: null,
                     musicShortsFilterText: '',
                     musicShortsPageSize: 20,
                     musicShortsPage: 1,
@@ -6799,6 +6810,9 @@
                         });
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok || !data.task_id) throw new Error(data.detail || data.message || 'Falha ao iniciar geração de shorts.');
+                        this.musicShortsTaskId = String(data.task_id);
+                        this.musicShortsTask = { status: 'processing', progress: 0, message: 'Iniciando...' };
+                        this.savedMusicLibraryTab = 'music_shorts';
                         await this.pollMusicShortsTask(data.task_id);
                     } catch (e) {
                         alert(e.message || String(e));
@@ -6813,18 +6827,26 @@
                         const res = await this.authFetch(`/music/task/${encodeURIComponent(id)}`);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao consultar tarefa.');
+                        this.musicShortsTaskId = id;
+                        this.musicShortsTask = data;
                         const st = String((data.status || '')).toLowerCase();
                         if (st === 'completed') {
                             await this.fetchMusicShortsLibrary();
                             this.savedMusicLibraryTab = 'music_shorts';
-                            alert('Short gerado e salvo na aba Shorts (Música).');
+                            try { this.maybeBrowserNotify('Codexia', 'Short concluído'); } catch (e) {}
+                            alert('Short concluído!');
+                            this.musicShortsTaskId = null;
+                            this.musicShortsTask = null;
                             return;
                         }
                         if (st === 'failed') {
+                            this.musicShortsTaskId = null;
                             throw new Error(data.message || 'Falha ao gerar short.');
                         }
                         if (st === 'cancelled') {
                             alert('Geração cancelada.');
+                            this.musicShortsTaskId = null;
+                            this.musicShortsTask = null;
                             return;
                         }
                         setTimeout(() => this.pollMusicShortsTask(id), 1500);
