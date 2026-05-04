@@ -6844,8 +6844,12 @@
                     alert('Em breve.');
                 },
                 watchMusicShort(s) {
-                    const url = s && s.clip_url ? String(s.clip_url) : '';
-                    if (!url) return;
+                    const raw = s && s.clip_url ? String(s.clip_url) : '';
+                    if (!raw) return;
+                    const clean = raw.split('?')[0].split('#')[0];
+                    const parts = clean.split('/');
+                    const filename = parts && parts.length ? parts[parts.length - 1] : '';
+                    const url = filename ? (`/media/videos/${encodeURIComponent(filename)}`) : raw;
                     window.open(url, '_blank');
                 },
                 async fetchMusicShortsLibrary() {

@@ -851,12 +851,28 @@ def list_music_shorts(limit: int = 50, user: User = Depends(get_current_user), d
     if parent_ids:
         for p in db.query(SavedMusic).filter(SavedMusic.id.in_(parent_ids)).all():
             parents[int(p.id)] = p
+
+    def _normalize_clip_url(u: Optional[str]) -> Optional[str]:
+        if not u or not isinstance(u, str):
+            return None
+        s = u.strip()
+        if not s:
+            return None
+        if s.startswith("http://") or s.startswith("https://"):
+            return s
+        clean = s.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip()
+        name = os.path.basename(clean) if clean else ""
+        if not name:
+            return s
+        if clean.startswith("/static/videos/") or clean.startswith("/media/videos/") or "/static/videos/" in clean or "/media/videos/" in clean:
+            return f"{VIDEO_URL_PREFIX}/{name}"
+        return s
     return {
         "items": [
             {
                 "id": r.id,
                 "title": r.title,
-                "clip_url": r.clip_url,
+                "clip_url": _normalize_clip_url(r.clip_url),
                 "clip_filename": r.clip_filename,
                 "parent_saved_music_id": r.parent_saved_music_id,
                 "parent_title": (parents.get(int(r.parent_saved_music_id)).title if parents.get(int(r.parent_saved_music_id)) else None),
