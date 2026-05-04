@@ -80,6 +80,21 @@ def run_migrations(engine):
                         conn.commit()
             except Exception as e:
                 print(f"Failed to migrate video_tasks table: {e}")
+
+        if "saved_music" in inspector.get_table_names():
+            try:
+                columns = [c["name"] for c in inspector.get_columns("saved_music")]
+                missing_cols = []
+                for col in ["hq_wav_url", "hq_wav_filename", "cover_url", "cover_filename"]:
+                    if col not in columns:
+                        missing_cols.append(col)
+                if missing_cols:
+                    with engine.connect() as conn:
+                        for col in missing_cols:
+                            conn.execute(text(f"ALTER TABLE saved_music ADD COLUMN {col} TEXT"))
+                        conn.commit()
+            except Exception as e:
+                print(f"Failed to migrate saved_music table: {e}")
         
         # Books table migration
         if "books" in inspector.get_table_names():

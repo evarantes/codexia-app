@@ -8,6 +8,7 @@ import threading
 import requests
 import json
 import re
+import subprocess
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
@@ -26,9 +27,174 @@ from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user, SECRET_KEY, ALGORITHM
 from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification
 from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
-from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
+from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, absolute_path_for_static, VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
 router = APIRouter(prefix="/music", tags=["music"])
+
+def _safe_basename(url_or_name: str) -> str:
+    s = (url_or_name or "").strip()
+    if not s:
+        return ""
+    s = s.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip()
+    return os.path.basename(s) if s else ""
+
+def _ensure_hq_wav_for_item(db: Session, item: SavedMusic) -> Optional[str]:
+    in_ref = (item.hq_wav_filename or item.hq_wav_url or item.music_filename or item.music_url or "").strip()
+    if in_ref and str(in_ref).lower().endswith(".wav"):
+        name = _safe_basename(in_ref)
+        if name:
+            abs_in = absolute_path_for_music(name)
+            if abs_in and os.path.isfile(abs_in):
+                item.hq_wav_filename = name
+                item.hq_wav_url = f"{MUSIC_URL_PREFIX}/{name}"
+                return abs_in
+
+    base_in = (item.music_filename or item.music_url or "").strip()
+    if not base_in:
+        return None
+    in_name = _safe_basename(base_in)
+    abs_in = absolute_path_for_music(in_name or base_in)
+    if not abs_in or not os.path.isfile(abs_in):
+        return None
+
+    if abs_in.lower().endswith(".wav"):
+        item.hq_wav_filename = os.path.basename(abs_in)
+        item.hq_wav_url = f"{MUSIC_URL_PREFIX}/{os.path.basename(abs_in)}"
+        return abs_in
+
+    out_name = (item.hq_wav_filename or "").strip()
+    if not out_name or not out_name.lower().endswith(".wav"):
+        out_name = f"hq_{int(item.id)}.wav"
+    out_path = os.path.join(str(MUSIC_OUTPUT_DIR), out_name)
+    if os.path.isfile(out_path):
+        item.hq_wav_filename = out_name
+        item.hq_wav_url = f"{MUSIC_URL_PREFIX}/{out_name}"
+        return out_path
+
+    try:
+        os.makedirs(str(MUSIC_OUTPUT_DIR), exist_ok=True)
+    except Exception:
+        pass
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        abs_in,
+        "-vn",
+        "-ac",
+        "2",
+        "-ar",
+        "44100",
+        "-c:a",
+        "pcm_s24le",
+        out_path,
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+    except Exception:
+        return None
+
+    if os.path.isfile(out_path):
+        item.hq_wav_filename = out_name
+        item.hq_wav_url = f"{MUSIC_URL_PREFIX}/{out_name}"
+        return out_path
+    return None
+
+def _ensure_cover_for_item(db: Session, item: SavedMusic) -> Optional[str]:
+    out_name = (item.cover_filename or "").strip()
+    if not out_name or not out_name.lower().endswith(".png"):
+        out_name = f"cover_{int(item.id)}.png"
+    out_path = os.path.join(str(MUSIC_OUTPUT_DIR), out_name)
+    if os.path.isfile(out_path):
+        item.cover_filename = out_name
+        item.cover_url = f"{MUSIC_URL_PREFIX}/{out_name}"
+        return out_path
+
+    try:
+        os.makedirs(str(MUSIC_OUTPUT_DIR), exist_ok=True)
+    except Exception:
+        pass
+
+    title = _sanitize_title(getattr(item, "title", "") or "Música")
+    lyrics = (getattr(item, "lyrics", "") or "").strip()
+    prompt_text = lyrics if lyrics else title
+    base_img_path = None
+    try:
+        ai = AIContentGenerator()
+        ai._load_config()
+        if (getattr(ai, "api_key", "") or "").strip():
+            from app.services.openai_image_module import OpenAIImageModule
+            mod = OpenAIImageModule(ai_service=ai)
+            res = mod.generate_images_from_lyrics(prompt_text, options={"images_count": 1}) or {}
+            imgs = res.get("images") if isinstance(res, dict) else None
+            if isinstance(imgs, list) and imgs:
+                first = imgs[0] if isinstance(imgs[0], dict) else {}
+                img_url = (first.get("image_url") or "").strip() if isinstance(first, dict) else ""
+                if img_url:
+                    base_img_path = absolute_path_for_static(img_url)
+    except Exception:
+        base_img_path = None
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return None
+
+    img = None
+    try:
+        if base_img_path and os.path.isfile(base_img_path):
+            img = Image.open(base_img_path).convert("RGB")
+            img = img.resize((3000, 3000), resample=getattr(Image, "LANCZOS", 1))
+        else:
+            img = Image.new("RGB", (3000, 3000), (12, 14, 20))
+            d = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 120)
+            except Exception:
+                font = ImageFont.load_default()
+            text = title[:80]
+            d.rectangle((0, 2300, 3000, 3000), fill=(0, 0, 0))
+            d.text((160, 2380), text, fill=(255, 255, 255), font=font)
+        img.save(out_path, format="PNG", optimize=True)
+    except Exception:
+        return None
+    finally:
+        try:
+            if img:
+                img.close()
+        except Exception:
+            pass
+
+    if os.path.isfile(out_path):
+        item.cover_filename = out_name
+        item.cover_url = f"{MUSIC_URL_PREFIX}/{out_name}"
+        return out_path
+    return None
+
+def _kick_off_offstep_assets(saved_music_id: int):
+    sid = int(saved_music_id)
+    def _run():
+        dbx = SessionLocal()
+        try:
+            item = dbx.query(SavedMusic).filter(SavedMusic.id == sid).first()
+            if not item:
+                return
+            if not (getattr(item, "music_url", None) or getattr(item, "music_filename", None)):
+                return
+            _ensure_hq_wav_for_item(dbx, item)
+            _ensure_cover_for_item(dbx, item)
+            try:
+                dbx.commit()
+            except Exception:
+                dbx.rollback()
+        finally:
+            try:
+                dbx.close()
+            except Exception:
+                pass
+    threading.Thread(target=_run, daemon=True).start()
 
 def _stream_file_with_range(request, filepath: str, media_type: str = "video/mp4"):
     try:
@@ -512,6 +678,11 @@ def save_music_item(request: SaveMusicRequest, user: User = Depends(get_current_
     db.add(item)
     db.commit()
     db.refresh(item)
+    try:
+        if item.music_url or item.music_filename:
+            _kick_off_offstep_assets(int(item.id))
+    except Exception:
+        pass
     return {
         "id": item.id,
         "title": item.title,
@@ -521,6 +692,10 @@ def save_music_item(request: SaveMusicRequest, user: User = Depends(get_current_
         "with_vocals": item.with_vocals,
         "music_url": item.music_url,
         "music_filename": item.music_filename,
+        "hq_wav_url": getattr(item, "hq_wav_url", None),
+        "hq_wav_filename": getattr(item, "hq_wav_filename", None),
+        "cover_url": getattr(item, "cover_url", None),
+        "cover_filename": getattr(item, "cover_filename", None),
         "clip_url": item.clip_url,
         "clip_filename": item.clip_filename,
         "created_at": item.created_at.isoformat() if item.created_at else None,
@@ -609,6 +784,11 @@ async def import_music(
         db.add(item)
         db.commit()
         db.refresh(item)
+        try:
+            if item.music_url or item.music_filename:
+                _kick_off_offstep_assets(int(item.id))
+        except Exception:
+            pass
 
         return {
             "id": item.id,
@@ -619,6 +799,10 @@ async def import_music(
             "with_vocals": item.with_vocals,
             "music_url": item.music_url,
             "music_filename": item.music_filename,
+            "hq_wav_url": getattr(item, "hq_wav_url", None),
+            "hq_wav_filename": getattr(item, "hq_wav_filename", None),
+            "cover_url": getattr(item, "cover_url", None),
+            "cover_filename": getattr(item, "cover_filename", None),
             "created_at": item.created_at.isoformat() if item.created_at else None,
             "original_filename": original_name or None,
             "bytes": total,
@@ -659,6 +843,12 @@ def list_saved_music(limit: int = 50, user: User = Depends(get_current_user), db
                 "with_vocals": i.with_vocals,
                 "music_url": i.music_url,
                 "music_filename": i.music_filename,
+                "hq_wav_url": getattr(i, "hq_wav_url", None),
+                "hq_wav_filename": getattr(i, "hq_wav_filename", None),
+                "cover_url": getattr(i, "cover_url", None),
+                "cover_filename": getattr(i, "cover_filename", None),
+                "download_wav_url": f"/music/saved/{int(i.id)}/download/wav",
+                "download_cover_url": f"/music/saved/{int(i.id)}/download/cover",
                 "clip_url": i.clip_url,
                 "clip_filename": i.clip_filename,
                 "created_at": i.created_at.isoformat() if i.created_at else None,
@@ -684,10 +874,62 @@ def get_saved_music(item_id: int, user: User = Depends(get_current_user), db: Se
         "with_vocals": item.with_vocals,
         "music_url": item.music_url,
         "music_filename": item.music_filename,
+        "hq_wav_url": getattr(item, "hq_wav_url", None),
+        "hq_wav_filename": getattr(item, "hq_wav_filename", None),
+        "cover_url": getattr(item, "cover_url", None),
+        "cover_filename": getattr(item, "cover_filename", None),
+        "download_wav_url": f"/music/saved/{int(item.id)}/download/wav",
+        "download_cover_url": f"/music/saved/{int(item.id)}/download/cover",
         "clip_url": item.clip_url,
         "clip_filename": item.clip_filename,
         "created_at": item.created_at.isoformat() if item.created_at else None,
     }
+
+
+@router.get("/saved/{item_id}/download/wav")
+def download_saved_music_wav(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para baixar este item.")
+
+    path = _ensure_hq_wav_for_item(db, item)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=503, detail="Não foi possível gerar o WAV agora.")
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    base = _sanitize_title(item.title) or "musica"
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:80] or "musica"
+    out_name = f"{fname}.wav"
+    headers = {"Content-Disposition": f'attachment; filename="{out_name}"'}
+    return FileResponse(path, media_type="audio/wav", filename=out_name, headers=headers)
+
+
+@router.get("/saved/{item_id}/download/cover")
+def download_saved_music_cover(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para baixar este item.")
+
+    path = _ensure_cover_for_item(db, item)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=503, detail="Não foi possível gerar a capa agora.")
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    base = _sanitize_title(item.title) or "capa"
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:80] or "capa"
+    out_name = f"{fname}_3000x3000.png"
+    headers = {"Content-Disposition": f'attachment; filename="{out_name}"'}
+    return FileResponse(path, media_type="image/png", filename=out_name, headers=headers)
 
 
 @router.get("/saved/{item_id}/watch", response_class=HTMLResponse)

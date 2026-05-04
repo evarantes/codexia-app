@@ -962,6 +962,14 @@
                                     <i class="fas fa-play"></i>
                                     Assistir
                                 </a>
+                                <button v-if="item.music_url" @click="downloadSavedMusicWav(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                                    <i class="fas fa-download"></i>
+                                    WAV (HQ)
+                                </button>
+                                <button v-if="item.music_url" @click="downloadSavedMusicCover(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                                    <i class="fas fa-image"></i>
+                                    Capa 3000
+                                </button>
                                 <button v-if="item.clip_url" @click="generateShortsFromSavedMusicItem(item)" :disabled="savedMusicSaving || musicShortsGeneratingId === Number(item.id)" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 flex items-center gap-2">
                                     <i class="fas fa-bolt"></i>
                                     Gerar Shorts
@@ -7233,6 +7241,62 @@
                     } catch (e) {
                         this.savedMusicError = e.message || String(e);
                         alert(this.savedMusicError);
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async downloadAuthFile(url, fallbackName) {
+                    const u = String(url || '').trim();
+                    if (!u) return;
+                    const res = await this.authFetch(u);
+                    if (!res.ok) {
+                        const data = await res.json().catch(() => ({}));
+                        throw new Error((data && (data.detail || data.message)) || 'Falha ao baixar arquivo.');
+                    }
+                    const blob = await res.blob();
+                    let name = String(fallbackName || '').trim();
+                    try {
+                        const cd = res.headers.get('content-disposition') || res.headers.get('Content-Disposition') || '';
+                        const m = cd.match(/filename=\"?([^\";]+)\"?/i);
+                        if (m && m[1]) name = m[1];
+                    } catch (e) {}
+                    if (!name) name = 'download';
+                    const urlObj = URL.createObjectURL(blob);
+                    try {
+                        const a = document.createElement('a');
+                        a.href = urlObj;
+                        a.download = name;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                    } finally {
+                        setTimeout(() => URL.revokeObjectURL(urlObj), 2000);
+                    }
+                },
+                async downloadSavedMusicWav(item) {
+                    const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
+                    this.savedMusicSaving = true;
+                    try {
+                        const safeTitle = String(it.title || 'musica').trim() || 'musica';
+                        await this.downloadAuthFile(`/music/saved/${encodeURIComponent(String(id))}/download/wav`, `${safeTitle}.wav`);
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async downloadSavedMusicCover(item) {
+                    const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
+                    this.savedMusicSaving = true;
+                    try {
+                        const safeTitle = String(it.title || 'capa').trim() || 'capa';
+                        await this.downloadAuthFile(`/music/saved/${encodeURIComponent(String(id))}/download/cover`, `${safeTitle}_3000x3000.png`);
+                    } catch (e) {
+                        alert(e.message || String(e));
                     } finally {
                         this.savedMusicSaving = false;
                     }
