@@ -107,12 +107,12 @@ def _ensure_hq_wav_for_item(db: Session, item: SavedMusic) -> Optional[str]:
         return out_path
     return None
 
-def _ensure_cover_for_item(db: Session, item: SavedMusic) -> Optional[str]:
+def _ensure_cover_for_item(db: Session, item: SavedMusic, options: Optional[Dict[str, Any]] = None, force: bool = False, require_ai: bool = False) -> Optional[str]:
     out_name = (item.cover_filename or "").strip()
     if not out_name or not out_name.lower().endswith(".png"):
         out_name = f"cover_{int(item.id)}.png"
     out_path = os.path.join(str(MUSIC_OUTPUT_DIR), out_name)
-    if os.path.isfile(out_path):
+    if (not force) and os.path.isfile(out_path):
         item.cover_filename = out_name
         item.cover_url = f"{MUSIC_URL_PREFIX}/{out_name}"
         return out_path
@@ -126,19 +126,32 @@ def _ensure_cover_for_item(db: Session, item: SavedMusic) -> Optional[str]:
     lyrics = (getattr(item, "lyrics", "") or "").strip()
     prompt_text = lyrics if lyrics else title
     base_img_path = None
+    opts = options if isinstance(options, dict) else {}
     try:
         ai = AIContentGenerator()
         ai._load_config()
         if (getattr(ai, "api_key", "") or "").strip():
             from app.services.openai_image_module import OpenAIImageModule
             mod = OpenAIImageModule(ai_service=ai)
-            res = mod.generate_images_from_lyrics(prompt_text, options={"images_count": 1}) or {}
+            res = mod.generate_images_from_lyrics(
+                prompt_text,
+                options={
+                    "images_count": 1,
+                    "visual_style": (opts.get("visual_style") if opts else None),
+                    "spiritual_intensity": (opts.get("spiritual_intensity") if opts else None),
+                    "prompt_language": (opts.get("prompt_language") if opts else None),
+                    "mode": (opts.get("mode") if opts else None),
+                    "size": "1024x1024",
+                },
+            ) or {}
             imgs = res.get("images") if isinstance(res, dict) else None
             if isinstance(imgs, list) and imgs:
                 first = imgs[0] if isinstance(imgs[0], dict) else {}
                 img_url = (first.get("image_url") or "").strip() if isinstance(first, dict) else ""
                 if img_url:
                     base_img_path = absolute_path_for_static(img_url)
+        elif require_ai:
+            return None
     except Exception:
         base_img_path = None
 
@@ -153,7 +166,39 @@ def _ensure_cover_for_item(db: Session, item: SavedMusic) -> Optional[str]:
             img = Image.open(base_img_path).convert("RGB")
             img = img.resize((3000, 3000), resample=getattr(Image, "LANCZOS", 1))
         else:
-            img = Image.new("RGB", (3000, 3000), (12, 14, 20))
+            seed = sum(ord(c) for c in (title or "Música")) % 360
+            def _hsv_to_rgb(h, s, v):
+                h = float(h % 360)
+                s = float(max(0.0, min(1.0, s)))
+                v = float(max(0.0, min(1.0, v)))
+                c = v * s
+                x = c * (1 - abs((h / 60.0) % 2 - 1))
+                m = v - c
+                if h < 60:
+                    rp, gp, bp = c, x, 0
+                elif h < 120:
+                    rp, gp, bp = x, c, 0
+                elif h < 180:
+                    rp, gp, bp = 0, c, x
+                elif h < 240:
+                    rp, gp, bp = 0, x, c
+                elif h < 300:
+                    rp, gp, bp = x, 0, c
+                else:
+                    rp, gp, bp = c, 0, x
+                return (int((rp + m) * 255), int((gp + m) * 255), int((bp + m) * 255))
+            c1 = _hsv_to_rgb(seed, 0.55, 0.70)
+            c2 = _hsv_to_rgb((seed + 45) % 360, 0.65, 0.55)
+            grad = Image.new("RGB", (1, 3000), c1)
+            px = grad.load()
+            for y in range(3000):
+                t = y / 2999.0
+                px[0, y] = (
+                    int(c1[0] * (1 - t) + c2[0] * t),
+                    int(c1[1] * (1 - t) + c2[1] * t),
+                    int(c1[2] * (1 - t) + c2[2] * t),
+                )
+            img = grad.resize((3000, 3000))
             d = ImageDraw.Draw(img)
             try:
                 font = ImageFont.truetype("arial.ttf", 120)
@@ -186,7 +231,7 @@ def _kick_off_offstep_assets(saved_music_id: int):
             item = dbx.query(SavedMusic).filter(SavedMusic.id == sid).first()
             if not item:
                 return
-            if not (getattr(item, "music_url", None) or getattr(item, "music_filename", None)):
+            if not (getattr(item, "music_url", None) or getattr(item, "music_filename", None) or getattr(item, "clip_url", None) or getattr(item, "clip_filename", None)):
                 return
             _ensure_hq_wav_for_item(dbx, item)
             _ensure_cover_for_item(dbx, item)
@@ -949,6 +994,39 @@ def generate_saved_music_assets(item_id: int, user: User = Depends(get_current_u
     except Exception:
         pass
     return {"status": "processing", "message": "Geração iniciada. Use os botões WAV (HQ) e Capa 3000 para baixar."}
+
+
+class GenerateCoverRequest(BaseModel):
+    visual_style: Optional[str] = None
+    spiritual_intensity: Optional[str] = None
+    prompt_language: Optional[str] = None
+    mode: Optional[str] = None
+    force: bool = True
+    require_ai: bool = True
+
+
+@router.post("/saved/{item_id}/cover/generate")
+def generate_saved_music_cover(item_id: int, request: GenerateCoverRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para gerar capa deste item.")
+
+    options = {
+        "visual_style": (request.visual_style or None),
+        "spiritual_intensity": (request.spiritual_intensity or None),
+        "prompt_language": (request.prompt_language or None),
+        "mode": (request.mode or None),
+    }
+    path = _ensure_cover_for_item(db, item, options=options, force=bool(request.force), require_ai=bool(request.require_ai))
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=503, detail="Não foi possível gerar a capa com IA. Verifique a chave OpenAI em Configurações.")
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+    return {"cover_url": getattr(item, "cover_url", None), "cover_filename": getattr(item, "cover_filename", None)}
 
 
 @router.get("/saved/{item_id}/watch", response_class=HTMLResponse)

@@ -970,6 +970,10 @@
                                     <i class="fas fa-image"></i>
                                     Capa 3000
                                 </button>
+                                <button v-if="item.music_url || item.clip_url" @click="generateSavedMusicCoverWithCriteria(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                                    <i class="fas fa-magic"></i>
+                                    Gerar Capa
+                                </button>
                                 <button v-if="item.clip_url" @click="generateShortsFromSavedMusicItem(item)" :disabled="savedMusicSaving || musicShortsGeneratingId === Number(item.id)" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 flex items-center gap-2">
                                     <i class="fas fa-bolt"></i>
                                     Gerar Shorts
@@ -7297,6 +7301,38 @@
                         await this.downloadAuthFile(`/music/saved/${encodeURIComponent(String(id))}/download/cover`, `${safeTitle}_3000x3000.png`);
                     } catch (e) {
                         alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async generateSavedMusicCoverWithCriteria(item) {
+                    const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
+                    this.savedMusicSaving = true;
+                    this.savedMusicError = '';
+                    try {
+                        const payload = {
+                            visual_style: this.musicLyricsImagesStyle || null,
+                            spiritual_intensity: this.musicLyricsImagesIntensity || null,
+                            prompt_language: this.musicLyricsImagesPromptLanguage || null,
+                            mode: this.musicLyricsImagesMode || null,
+                            force: true,
+                            require_ai: true
+                        };
+                        const res = await this.authFetch(`/music/saved/${encodeURIComponent(String(id))}/cover/generate`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error((data && (data.detail || data.message)) || 'Falha ao gerar capa.');
+                        await this.fetchSavedMusicLibrary();
+                        const safeTitle = String(it.title || 'capa').trim() || 'capa';
+                        await this.downloadAuthFile(`/music/saved/${encodeURIComponent(String(id))}/download/cover`, `${safeTitle}_3000x3000.png`);
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
                     } finally {
                         this.savedMusicSaving = false;
                     }
