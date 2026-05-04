@@ -169,6 +169,13 @@ def _sanitize_title(title: str) -> str:
     t = re.sub(r"(\s*[-–—|:]?\s*E\.?MA\.?\s*)$", "", t, flags=re.IGNORECASE).strip()
     return t or "Música"
 
+def _strip_short_suffix(title: str) -> str:
+    t = (title or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"\s*,?\s*\(\s*short\s*\d+\s*\)\s*$", "", t, flags=re.IGNORECASE).strip()
+    return t
+
 
 @router.post("/lyrics")
 def generate_lyrics(request: GenerateLyricsRequest, user: User = Depends(get_current_user)):
@@ -1412,7 +1419,15 @@ def publish_music_short_youtube(short_id: int, request: PublishSavedClipRequest,
     if not abs_video_path or not os.path.exists(abs_video_path):
         raise HTTPException(status_code=503, detail="Arquivo do short não encontrado no servidor.")
 
-    title = (request.title or row.title or "Short")[:100]
+    base_title = None
+    try:
+        parent = db.query(SavedMusic).filter(SavedMusic.id == int(row.parent_saved_music_id)).first()
+        if parent and (parent.title or "").strip():
+            base_title = _sanitize_title(parent.title)
+    except Exception:
+        base_title = None
+    raw_title = request.title or base_title or row.title or "Short"
+    title = (_strip_short_suffix(raw_title) or _sanitize_title(raw_title) or "Short")[:100]
     description = (request.description or "").strip()[:4000] or "#shorts"
     if "#shorts" not in description.lower():
         description = (description + "\n\n#shorts").strip()[:4000]
