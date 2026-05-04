@@ -159,6 +159,7 @@ class Settings(Base):
     # Hotmart Integration
     hotmart_client_id = Column(String, nullable=True)
     hotmart_client_secret = Column(String, nullable=True)
+    hotmart_basic = Column(String, nullable=True)
     hotmart_access_token = Column(String, nullable=True)
     hotmart_token_expires_at = Column(DateTime, nullable=True)
     # Suno (música com voz)

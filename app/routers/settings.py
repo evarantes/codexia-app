@@ -38,6 +38,7 @@ class SettingsUpdate(BaseModel):
     youtube_refresh_token: Optional[str] = None
     hotmart_client_id: Optional[str] = None
     hotmart_client_secret: Optional[str] = None
+    hotmart_basic: Optional[str] = None
     suno_api_key: Optional[str] = None
     # Stock Media & TTS
     pexels_api_key: Optional[str] = None
@@ -133,10 +134,25 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         v = str(settings_update.youtube_refresh_token).strip()
         if v:
             settings.youtube_refresh_token = v
+    hotmart_changed = False
     if settings_update.hotmart_client_id is not None:
-        settings.hotmart_client_id = settings_update.hotmart_client_id
+        v = str(settings_update.hotmart_client_id).strip()
+        if v and v != (getattr(settings, "hotmart_client_id", None) or "").strip():
+            settings.hotmart_client_id = v
+            hotmart_changed = True
     if settings_update.hotmart_client_secret is not None:
-        settings.hotmart_client_secret = settings_update.hotmart_client_secret
+        v = str(settings_update.hotmart_client_secret).strip()
+        if v and v != (getattr(settings, "hotmart_client_secret", None) or "").strip():
+            settings.hotmart_client_secret = v
+            hotmart_changed = True
+    if settings_update.hotmart_basic is not None:
+        v = str(settings_update.hotmart_basic).strip()
+        if v and v != (getattr(settings, "hotmart_basic", None) or "").strip():
+            settings.hotmart_basic = v
+            hotmart_changed = True
+    if hotmart_changed:
+        settings.hotmart_access_token = None
+        settings.hotmart_token_expires_at = None
     if settings_update.suno_api_key is not None:
         settings.suno_api_key = settings_update.suno_api_key
 

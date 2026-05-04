@@ -911,6 +911,27 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
                 np = None
             import math
 
+            def _subclip(obj, start_t: float, end_t: float):
+                if hasattr(obj, "subclip"):
+                    return obj.subclip(start_t, end_t)
+                if hasattr(obj, "subclipped"):
+                    return obj.subclipped(start_t, end_t)
+                raise AttributeError("Clip sem subclip/subclipped")
+
+            def _crop(obj, **kwargs):
+                if hasattr(obj, "crop"):
+                    return obj.crop(**kwargs)
+                if hasattr(obj, "cropped"):
+                    return obj.cropped(**kwargs)
+                raise AttributeError("Clip sem crop/cropped")
+
+            def _resize(obj, size):
+                if hasattr(obj, "resize"):
+                    return obj.resize(size)
+                if hasattr(obj, "resized"):
+                    return obj.resized(size)
+                raise AttributeError("Clip sem resize/resized")
+
             clip = VideoFileClip(abs_video_path)
             duration = float(getattr(clip, "duration", 0) or 0)
             if duration <= 2:
@@ -929,7 +950,7 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
                 a = None
                 try:
                     if clip.audio:
-                        a = clip.audio.subclip(float(t), float(min(duration, t + one_sec))).to_soundarray(fps=8000)
+                        a = _subclip(clip.audio, float(t), float(min(duration, t + one_sec))).to_soundarray(fps=8000)
                 except Exception:
                     a = None
                 if a is None:
@@ -1003,7 +1024,7 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
                     if end - start < 5:
                         continue
                     update_task(task_id, status="processing", progress=40 + int((idx / max(1, count)) * 50), message=f"Renderizando short {idx+1}/{count}...")
-                    sub = clip.subclip(start, end)
+                    sub = _subclip(clip, start, end)
                     w = int(getattr(sub, "w", 0) or 0)
                     h = int(getattr(sub, "h", 0) or 0)
                     if w > 0 and h > 0:
@@ -1012,15 +1033,19 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
                         if ar > target_ar:
                             new_w = int(float(h) * target_ar)
                             x1 = int((w - new_w) / 2)
-                            if hasattr(sub, "crop"):
-                                sub = sub.crop(x1=x1, y1=0, x2=x1 + new_w, y2=h)
+                            try:
+                                sub = _crop(sub, x1=x1, y1=0, x2=x1 + new_w, y2=h)
+                            except Exception:
+                                pass
                         elif ar < target_ar:
                             new_h = int(float(w) / target_ar)
                             y1 = int((h - new_h) / 2)
-                            if hasattr(sub, "crop"):
-                                sub = sub.crop(x1=0, y1=y1, x2=w, y2=y1 + new_h)
+                            try:
+                                sub = _crop(sub, x1=0, y1=y1, x2=w, y2=y1 + new_h)
+                            except Exception:
+                                pass
                     try:
-                        sub = sub.resize((720, 1280))
+                        sub = _resize(sub, (720, 1280))
                     except Exception:
                         pass
 
@@ -1072,7 +1097,26 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
             if str(e) == "cancelled_by_user":
                 update_task(task_id, status="cancelled", progress=0, message="Cancelado pelo usuário.", result={"kind": "music_shorts", "item_id": item.id})
             else:
-                update_task(task_id, status="failed", progress=100, message=str(e), result={"kind": "music_shorts", "item_id": item.id})
+                try:
+                    import traceback as _traceback
+                    tb = _traceback.format_exc()
+                except Exception:
+                    tb = ""
+                msg = str(e) or repr(e)
+                et = getattr(type(e), "__name__", "Exception")
+                detail = f"{et}: {msg}".strip()
+                if tb:
+                    tail = tb.strip()
+                    if len(tail) > 900:
+                        tail = tail[-900:]
+                    detail = (detail + "\n" + tail).strip()
+                update_task(
+                    task_id,
+                    status="failed",
+                    progress=100,
+                    message=detail[:1600],
+                    result={"kind": "music_shorts", "item_id": item.id, "error_type": et, "error": msg},
+                )
 
     threading.Thread(target=_run, daemon=True).start()
     return {"message": "Processo iniciado", "task_id": task_id}

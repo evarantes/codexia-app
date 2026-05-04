@@ -27,27 +27,30 @@ class HotmartService:
         """Obtém credenciais da Hotmart do banco de dados"""
         settings = self._get_settings()
         if not settings:
-            return None, None
+            return None, None, None
         
-        client_id = settings.hotmart_client_id
-        client_secret = settings.hotmart_client_secret
+        client_id = (settings.hotmart_client_id or "").strip() if getattr(settings, "hotmart_client_id", None) else ""
+        client_secret = (settings.hotmart_client_secret or "").strip() if getattr(settings, "hotmart_client_secret", None) else ""
+        basic = (getattr(settings, "hotmart_basic", None) or "").strip()
+        if basic.lower().startswith("basic "):
+            basic = basic.split(" ", 1)[1].strip()
+        basic = basic or None
         
-        # Verifica se são strings vazias ou None
-        if not client_id or not client_id.strip():
-            return None, None
-        if not client_secret or not client_secret.strip():
-            return None, None
-            
-        return client_id.strip(), client_secret.strip()
+        if not basic:
+            if not client_id:
+                return None, None, None
+            if not client_secret:
+                return None, None, None
+        return (client_id or None), (client_secret or None), basic
     
     def authenticate(self):
         """
         Autentica na API da Hotmart usando OAuth 2.0 Client Credentials
         Retorna True se autenticado com sucesso
         """
-        client_id, client_secret = self._get_client_credentials()
+        client_id, client_secret, basic = self._get_client_credentials()
         
-        if not client_id or not client_secret:
+        if not basic and (not client_id or not client_secret):
             raise Exception("Credenciais Hotmart não configuradas. Configure em Configurações.")
         
         # Verifica se já temos um token válido
@@ -69,10 +72,15 @@ class HotmartService:
         try:
             import base64
             
-            # Tenta primeiro com Basic Auth no header (método mais comum)
-            auth_string = f"{client_id}:{client_secret}"
-            auth_bytes = auth_string.encode('utf-8')
-            auth_b64 = base64.b64encode(auth_bytes).decode('utf-8')
+            auth_b64 = None
+            if basic:
+                auth_b64 = basic
+            elif client_id and client_secret:
+                auth_string = f"{client_id}:{client_secret}"
+                auth_bytes = auth_string.encode('utf-8')
+                auth_b64 = base64.b64encode(auth_bytes).decode('utf-8')
+            if not auth_b64:
+                raise Exception("Credenciais Hotmart não configuradas. Configure em Configurações.")
             
             headers = {
                 "Authorization": f"Basic {auth_b64}",
@@ -87,7 +95,7 @@ class HotmartService:
             )
             
             # Se falhar com Basic Auth, tenta com credenciais no body (fallback)
-            if response.status_code == 401:
+            if response.status_code == 401 and client_id and client_secret:
                 response = requests.post(
                     self.token_url,
                     data={

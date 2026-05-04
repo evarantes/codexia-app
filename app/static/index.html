@@ -3062,6 +3062,11 @@
                             <label class="block font-bold mb-2">Hotmart Client Secret</label>
                             <input v-model="settings.hotmart_client_secret" type="password" class="w-full border p-2 rounded" placeholder="Seu Client Secret da Hotmart">
                         </div>
+                        <div class="mb-4">
+                            <label class="block font-bold mb-2">Hotmart Basic (opcional)</label>
+                            <input v-model="settings.hotmart_basic" type="password" class="w-full border p-2 rounded" placeholder="Base64 do Basic (sem 'Basic ')">
+                            <p class="text-xs text-gray-500 mt-1">Se informado, o sistema usa este valor no Authorization. Se vazio, calcula a partir do Client ID + Client Secret.</p>
+                        </div>
                         <button @click="testHotmartConnection" :disabled="hotmartTesting" class="bg-orange-600 text-white px-4 py-2 rounded hover:bg-orange-700 text-sm">
                             <i v-if="hotmartTesting" class="fas fa-spinner fa-spin mr-2"></i>
                             <span v-else><i class="fas fa-plug mr-2"></i> Testar Conexão</span>
@@ -3566,6 +3571,7 @@
                         mercadopago_access_token: '',
                         hotmart_client_id: '',
                         hotmart_client_secret: '',
+                        hotmart_basic: '',
                         suno_api_key: '',
                         pexels_api_key: '',
                         pixabay_api_key: '',
@@ -5912,12 +5918,20 @@
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(this.settings)
                         });
+                        const data = await res.json().catch(() => null);
                         if (res.ok) {
+                            if (data && typeof data === 'object') {
+                                try { Object.assign(this.settings, data); } catch (e) {}
+                            }
                             this.saveMessage = "Configurações salvas com sucesso!";
                             setTimeout(() => this.saveMessage = '', 3000);
+                            return true;
                         }
+                        alert((data && (data.detail || data.message)) || 'Erro ao salvar');
+                        return false;
                     } catch (e) { 
                         alert('Erro ao salvar'); 
+                        return false;
                     }
                 },
                 onElevenlabsSampleSelected(event) {
@@ -5954,6 +5968,7 @@
                     this.hotmartTesting = true;
                     this.hotmartTestResult = null;
                     try {
+                        await this.saveSettings();
                         const res = await this.authFetch('/hotmart/test-connection');
                         const data = await res.json();
                         this.hotmartTestResult = data;
