@@ -527,7 +527,12 @@ from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, STATIC_DIR
 
 def _resolve_video_path(safe_name: str):
     """Retorna o path absoluto do vídeo, procurando em VIDEO_OUTPUT_DIR e em app/static/videos."""
-    for directory in (VIDEO_OUTPUT_DIR, str(STATIC_DIR / "videos")):
+    bases = [VIDEO_OUTPUT_DIR, str(STATIC_DIR / "videos")]
+    extras = []
+    for d in bases:
+        if d:
+            extras.append(os.path.join(d, "music_shorts"))
+    for directory in [*bases, *extras]:
         if directory:
             filepath = os.path.join(directory, safe_name)
             if os.path.isfile(filepath):

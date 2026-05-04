@@ -26,7 +26,7 @@ from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
 from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification
 from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
-from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, VIDEO_OUTPUT_DIR, STATIC_DIR
+from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
 router = APIRouter(prefix="/music", tags=["music"])
 
@@ -1010,7 +1010,7 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
             if not picks:
                 picks = [max(0, int((duration / 2) / float(scan_step)))]
 
-            out_dir = os.path.join(str(STATIC_DIR), "videos", "music_shorts")
+            out_dir = str(VIDEO_OUTPUT_DIR or os.path.join(str(STATIC_DIR), "videos"))
             os.makedirs(out_dir, exist_ok=True)
 
             created_ids = []
@@ -1059,7 +1059,7 @@ def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRe
                         threads=1,
                         ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
                     )
-                    rel_url = f"/static/videos/music_shorts/{filename}"
+                    rel_url = f"{VIDEO_URL_PREFIX}/{filename}"
                     row = SavedMusicShort(
                         user_id=user.id,
                         parent_saved_music_id=int(item.id),
