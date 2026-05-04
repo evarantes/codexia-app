@@ -24,7 +24,7 @@ from app.services.suno_service import (
 )
 from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user
-from app.models import User, VideoTask, SavedMusic, SystemNotification
+from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification
 from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
 from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, VIDEO_OUTPUT_DIR, STATIC_DIR
 
@@ -99,6 +99,11 @@ class PublishSavedClipRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[str] = None  # vírgula-separado
+
+
+class GenerateSavedMusicShortsRequest(BaseModel):
+    count: int = 1
+    target_seconds: Optional[int] = 45
 
 
 def _parse_bool(v) -> Optional[bool]:
@@ -820,6 +825,300 @@ def publish_saved_clip_youtube(item_id: int, request: PublishSavedClipRequest, u
             payload_json=json.dumps({"item_id": item.id, "youtube_video_id": youtube_id, "youtube_url": youtube_url}, ensure_ascii=False),
             status="new",
         ))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    return {"status": "published", "youtube_video_id": youtube_id, "youtube_url": youtube_url, "upload_result": upload_result}
+
+
+@router.get("/shorts")
+def list_music_shorts(limit: int = 50, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        lim = int(limit)
+    except Exception:
+        lim = 50
+    lim = max(1, min(lim, 200))
+    rows = (
+        db.query(SavedMusicShort)
+        .filter(SavedMusicShort.user_id == user.id)
+        .order_by(SavedMusicShort.created_at.desc())
+        .limit(lim)
+        .all()
+    )
+    parent_ids = [int(r.parent_saved_music_id) for r in rows if getattr(r, "parent_saved_music_id", None)]
+    parents = {}
+    if parent_ids:
+        for p in db.query(SavedMusic).filter(SavedMusic.id.in_(parent_ids)).all():
+            parents[int(p.id)] = p
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "clip_url": r.clip_url,
+                "clip_filename": r.clip_filename,
+                "parent_saved_music_id": r.parent_saved_music_id,
+                "parent_title": (parents.get(int(r.parent_saved_music_id)).title if parents.get(int(r.parent_saved_music_id)) else None),
+                "start_sec": r.start_sec,
+                "end_sec": r.end_sec,
+                "youtube_video_id": r.youtube_video_id,
+                "uploaded_at": (r.uploaded_at.isoformat() if getattr(r, "uploaded_at", None) else None),
+                "created_at": (r.created_at.isoformat() if getattr(r, "created_at", None) else None),
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/saved/{item_id}/shorts/task")
+def generate_music_shorts_task(item_id: int, request: GenerateSavedMusicShortsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para gerar shorts deste item.")
+    if not item.clip_url:
+        raise HTTPException(status_code=400, detail="Este item não possui clipe.")
+
+    abs_video_path = absolute_path_for_video(item.clip_url)
+    if not abs_video_path or not os.path.exists(abs_video_path):
+        raise HTTPException(status_code=503, detail="Arquivo do clipe não encontrado no servidor.")
+
+    try:
+        count = int(getattr(request, "count", 1) or 1)
+    except Exception:
+        count = 1
+    count = max(1, min(3, count))
+    try:
+        target_seconds = int(getattr(request, "target_seconds", 45) or 45)
+    except Exception:
+        target_seconds = 45
+    target_seconds = max(20, min(58, target_seconds))
+
+    task_id = create_task(user_id=user.id)
+    update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...", result={"kind": "music_shorts", "item_id": item.id})
+
+    def _run():
+        from datetime import datetime as _dt
+        try:
+            try:
+                from moviepy.editor import VideoFileClip
+                from moviepy.video.fx.all import crop
+            except ImportError:
+                from moviepy import VideoFileClip
+                from moviepy.video.fx.all import crop
+            import numpy as np
+
+            clip = VideoFileClip(abs_video_path)
+            duration = float(getattr(clip, "duration", 0) or 0)
+            if duration <= 2:
+                raise Exception("Vídeo muito curto para gerar shorts.")
+
+            scan_step = 3
+            one_sec = 1.0
+            steps = list(range(0, max(1, int(duration - one_sec)), scan_step))
+            rms = []
+
+            for idx, t in enumerate(steps):
+                if is_task_cancel_requested(task_id):
+                    raise Exception("cancelled_by_user")
+                if idx % 8 == 0:
+                    update_task(task_id, status="processing", progress=min(35, int((idx / max(1, len(steps))) * 35)), message="Analisando áudio para encontrar trechos fortes...")
+                a = None
+                try:
+                    if clip.audio:
+                        a = clip.audio.subclip(float(t), float(min(duration, t + one_sec))).to_soundarray(fps=8000)
+                except Exception:
+                    a = None
+                if a is None:
+                    rms.append(0.0)
+                    continue
+                try:
+                    arr = np.asarray(a, dtype=np.float32)
+                    v = float(np.sqrt(np.mean(arr * arr)))
+                except Exception:
+                    v = 0.0
+                rms.append(v)
+
+            win_steps = max(1, int(target_seconds / float(scan_step)))
+            scores = []
+            if len(rms) < win_steps:
+                scores = [float(sum(rms))]
+            else:
+                cur = float(sum(rms[:win_steps]))
+                scores = [cur]
+                for i in range(1, len(rms) - win_steps + 1):
+                    cur = cur - float(rms[i - 1]) + float(rms[i + win_steps - 1])
+                    scores.append(cur)
+
+            picks = []
+            used = set()
+            for _ in range(count):
+                best_i = None
+                best_v = None
+                for i, sc in enumerate(scores):
+                    if i in used:
+                        continue
+                    if best_v is None or sc > best_v:
+                        best_v = sc
+                        best_i = i
+                if best_i is None:
+                    break
+                picks.append(best_i)
+                gap = max(1, int((target_seconds / float(scan_step)) * 0.8))
+                for j in range(max(0, best_i - gap), min(len(scores), best_i + gap + 1)):
+                    used.add(j)
+
+            if not picks:
+                picks = [max(0, int((duration / 2) / float(scan_step)))]
+
+            out_dir = os.path.join(str(STATIC_DIR), "videos", "music_shorts")
+            os.makedirs(out_dir, exist_ok=True)
+
+            created_ids = []
+            db2 = SessionLocal()
+            try:
+                for idx, start_i in enumerate(picks[:count]):
+                    if is_task_cancel_requested(task_id):
+                        raise Exception("cancelled_by_user")
+                    start = float(start_i * scan_step)
+                    end = float(min(duration, start + float(target_seconds)))
+                    if end - start < 5:
+                        continue
+                    update_task(task_id, status="processing", progress=40 + int((idx / max(1, count)) * 50), message=f"Renderizando short {idx+1}/{count}...")
+                    sub = clip.subclip(start, end)
+                    w = int(getattr(sub, "w", 0) or 0)
+                    h = int(getattr(sub, "h", 0) or 0)
+                    if w > 0 and h > 0:
+                        target_ar = 9.0 / 16.0
+                        ar = float(w) / float(h)
+                        if ar > target_ar:
+                            new_w = int(float(h) * target_ar)
+                            x1 = int((w - new_w) / 2)
+                            sub = crop(sub, x1=x1, y1=0, x2=x1 + new_w, y2=h)
+                        elif ar < target_ar:
+                            new_h = int(float(w) / target_ar)
+                            y1 = int((h - new_h) / 2)
+                            sub = crop(sub, x1=0, y1=y1, x2=w, y2=y1 + new_h)
+                    try:
+                        sub = sub.resize((720, 1280))
+                    except Exception:
+                        pass
+
+                    filename = f"music_short_{int(item.id)}_{uuid.uuid4().hex}.mp4"
+                    out_path = os.path.join(out_dir, filename)
+                    sub.write_videofile(
+                        out_path,
+                        fps=24,
+                        codec="libx264",
+                        audio_codec="aac",
+                        threads=1,
+                        ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
+                    )
+                    rel_url = f"/static/videos/music_shorts/{filename}"
+                    row = SavedMusicShort(
+                        user_id=user.id,
+                        parent_saved_music_id=int(item.id),
+                        title=f"{_sanitize_title(item.title)} (Short {idx+1})"[:200],
+                        clip_url=rel_url,
+                        clip_filename=filename,
+                        start_sec=float(start),
+                        end_sec=float(end),
+                    )
+                    db2.add(row)
+                    db2.flush()
+                    if row.id:
+                        created_ids.append(int(row.id))
+                    try:
+                        sub.close()
+                    except Exception:
+                        pass
+
+                db2.commit()
+            except Exception:
+                db2.rollback()
+                raise
+            finally:
+                try:
+                    db2.close()
+                except Exception:
+                    pass
+            try:
+                clip.close()
+            except Exception:
+                pass
+
+            update_task(task_id, status="completed", progress=100, message="Shorts gerados com sucesso.", result={"kind": "music_shorts", "item_id": item.id, "created_ids": created_ids, "count": len(created_ids)})
+        except Exception as e:
+            if str(e) == "cancelled_by_user":
+                update_task(task_id, status="cancelled", progress=0, message="Cancelado pelo usuário.", result={"kind": "music_shorts", "item_id": item.id})
+            else:
+                update_task(task_id, status="failed", progress=100, message=str(e), result={"kind": "music_shorts", "item_id": item.id})
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"message": "Processo iniciado", "task_id": task_id}
+
+
+@router.delete("/shorts/{short_id}")
+def delete_music_short(short_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.query(SavedMusicShort).filter(SavedMusicShort.id == short_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Short não encontrado.")
+    if row.user_id and row.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para excluir este short.")
+    try:
+        abs_path = absolute_path_for_video(row.clip_url)
+        if abs_path and os.path.exists(abs_path):
+            try:
+                os.remove(abs_path)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    db.delete(row)
+    db.commit()
+    return {"success": True}
+
+
+@router.post("/shorts/{short_id}/publish_youtube")
+def publish_music_short_youtube(short_id: int, request: PublishSavedClipRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    row = db.query(SavedMusicShort).filter(SavedMusicShort.id == short_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Short não encontrado.")
+    if row.user_id and row.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para publicar este short.")
+
+    abs_video_path = absolute_path_for_video(row.clip_url)
+    if not abs_video_path or not os.path.exists(abs_video_path):
+        raise HTTPException(status_code=503, detail="Arquivo do short não encontrado no servidor.")
+
+    title = (request.title or row.title or "Short")[:100]
+    description = (request.description or "").strip()[:4000] or "#shorts"
+    if "#shorts" not in description.lower():
+        description = (description + "\n\n#shorts").strip()[:4000]
+    tags = []
+    if request.tags and request.tags.strip():
+        tags = [t.strip() for t in str(request.tags).split(",") if t.strip()][:20]
+    if not tags:
+        tags = ["shorts", "música"]
+
+    from app.services.youtube_service import YouTubeService
+    service = YouTubeService()
+    upload_result = service.upload_video(abs_video_path, title=title, description=description, tags=tags)
+
+    youtube_id = None
+    if isinstance(upload_result, dict):
+        youtube_id = upload_result.get("id") or upload_result.get("videoId") or upload_result.get("youtube_video_id")
+        if upload_result.get("error") or upload_result.get("status") == "not_connected":
+            raise HTTPException(status_code=502, detail=upload_result.get("error") or "Canal não conectado ao YouTube.")
+    elif upload_result:
+        youtube_id = str(upload_result)
+
+    youtube_url = (f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else None)
+    try:
+        row.youtube_video_id = youtube_id
+        row.uploaded_at = datetime.utcnow()
         db.commit()
     except Exception:
         db.rollback()

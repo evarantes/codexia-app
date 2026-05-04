@@ -863,7 +863,8 @@
                     <div class="mt-3 flex flex-col md:flex-row gap-2">
                         <div class="flex gap-2">
                             <button @click="savedMusicLibraryTab = 'items'" :class="['px-3 py-2 rounded text-sm font-semibold border', savedMusicLibraryTab === 'items' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 hover:bg-gray-50']">Itens</button>
-                            <button @click="savedMusicLibraryTab = 'shorts'" :class="['px-3 py-2 rounded text-sm font-semibold border', savedMusicLibraryTab === 'shorts' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 hover:bg-gray-50']">Shorts</button>
+                            <button @click="savedMusicLibraryTab = 'yt_shorts'" :class="['px-3 py-2 rounded text-sm font-semibold border', savedMusicLibraryTab === 'yt_shorts' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 hover:bg-gray-50']">Shorts (YouTube)</button>
+                            <button @click="savedMusicLibraryTab = 'music_shorts'" :class="['px-3 py-2 rounded text-sm font-semibold border', savedMusicLibraryTab === 'music_shorts' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 hover:bg-gray-50']">Shorts (Música)</button>
                         </div>
                     </div>
                     <div v-if="savedMusicLibraryTab === 'items'" class="mt-3 flex flex-col md:flex-row gap-2">
@@ -881,9 +882,18 @@
                             <option :value="100">100</option>
                         </select>
                     </div>
-                    <div v-else class="mt-3 flex flex-col md:flex-row gap-2">
+                    <div v-else-if="savedMusicLibraryTab === 'yt_shorts'" class="mt-3 flex flex-col md:flex-row gap-2">
                         <input v-model="youtubeShortsFilterText" type="text" placeholder="Buscar shorts (título / vídeo matriz / id)..." class="flex-1 border rounded px-3 py-2 text-sm" />
                         <select v-model.number="youtubeShortsPageSize" class="border rounded px-3 py-2 text-sm">
+                            <option :value="10">10</option>
+                            <option :value="20">20</option>
+                            <option :value="50">50</option>
+                            <option :value="100">100</option>
+                        </select>
+                    </div>
+                    <div v-else class="mt-3 flex flex-col md:flex-row gap-2">
+                        <input v-model="musicShortsFilterText" type="text" placeholder="Buscar shorts (título / música matriz / id)..." class="flex-1 border rounded px-3 py-2 text-sm" />
+                        <select v-model.number="musicShortsPageSize" class="border rounded px-3 py-2 text-sm">
                             <option :value="10">10</option>
                             <option :value="20">20</option>
                             <option :value="50">50</option>
@@ -918,6 +928,10 @@
                                     <i class="fas fa-play"></i>
                                     Assistir
                                 </a>
+                                <button v-if="item.clip_url" @click="generateShortsFromSavedMusicItem(item)" :disabled="savedMusicSaving || musicShortsGeneratingId === Number(item.id)" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 flex items-center gap-2">
+                                    <i class="fas fa-bolt"></i>
+                                    Gerar Shorts
+                                </button>
                                 <div v-if="item.clip_url" class="flex flex-col items-stretch">
                                     <button @click="publishSavedItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2 justify-center">
                                         <i class="fas fa-share-alt"></i>
@@ -964,7 +978,7 @@
                             </div>
                         </div>
                     </div>
-                    <div v-else class="mt-4 space-y-3">
+                    <div v-else-if="savedMusicLibraryTab === 'yt_shorts'" class="mt-4 space-y-3">
                         <div v-if="!pagedYoutubeShortItems.length" class="text-gray-500 text-sm">
                             Nenhum short gerado ainda.
                         </div>
@@ -1002,6 +1016,51 @@
                                         Anterior
                                     </button>
                                     <button @click="youtubeShortsPage = Math.min(youtubeShortsTotalPages || 1, Number(youtubeShortsPage || 1) + 1)" :disabled="Number(youtubeShortsPage || 1) >= (youtubeShortsTotalPages || 1)" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                        Próxima
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-else class="mt-4 space-y-3">
+                        <div v-if="musicShortsError" class="text-sm text-red-600">{{ musicShortsError }}</div>
+                        <div v-if="musicShortsLoading" class="text-gray-600 text-sm">Carregando shorts...</div>
+                        <div v-else-if="!pagedMusicShortItems.length" class="text-gray-500 text-sm">
+                            Nenhum short gerado ainda.
+                        </div>
+                        <div v-else class="space-y-3">
+                            <div v-for="s in pagedMusicShortItems" :key="'mshort-'+s.id" class="border rounded p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                                <div class="min-w-0">
+                                    <div class="font-bold truncate">{{ s.title || 'Short' }}</div>
+                                    <div class="text-xs text-gray-500">
+                                        <span v-if="s.parent_saved_music_id">Matriz: {{ s.parent_title ? s.parent_title : ('ID ' + s.parent_saved_music_id) }}</span>
+                                        <span v-if="s.uploaded_at"> • publicado {{ new Date(s.uploaded_at).toLocaleString() }}</span>
+                                    </div>
+                                </div>
+                                <div class="flex gap-2 flex-wrap">
+                                    <button v-if="s.clip_url" @click="watchMusicShort(s)" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
+                                        <i class="fas fa-play"></i>
+                                        Assistir
+                                    </button>
+                                    <button @click="publishMusicShortToYouTube(s)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                        <i class="fab fa-youtube"></i>
+                                        Publicar
+                                    </button>
+                                    <button @click="deleteMusicShort(s)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2">
+                                        <i class="fas fa-trash"></i>
+                                        Excluir
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="flex items-center justify-between gap-3 pt-2">
+                                <div class="text-xs text-gray-600">
+                                    {{ (filteredMusicShortItems || []).length }} short(s) • página {{ Math.max(1, Math.min(Number(musicShortsPage || 1), musicShortsTotalPages || 1)) }} de {{ musicShortsTotalPages || 1 }}
+                                </div>
+                                <div class="flex gap-2">
+                                    <button @click="musicShortsPage = Math.max(1, Number(musicShortsPage || 1) - 1)" :disabled="Number(musicShortsPage || 1) <= 1" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                        Anterior
+                                    </button>
+                                    <button @click="musicShortsPage = Math.min(musicShortsTotalPages || 1, Number(musicShortsPage || 1) + 1)" :disabled="Number(musicShortsPage || 1) >= (musicShortsTotalPages || 1)" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
                                         Próxima
                                     </button>
                                 </div>
@@ -3394,6 +3453,13 @@
                     youtubeShortsFilterText: '',
                     youtubeShortsPageSize: 20,
                     youtubeShortsPage: 1,
+                    musicShortsLoading: false,
+                    musicShortsItems: [],
+                    musicShortsError: '',
+                    musicShortsGeneratingId: null,
+                    musicShortsFilterText: '',
+                    musicShortsPageSize: 20,
+                    musicShortsPage: 1,
                     importMusicLoading: false,
                     importMusicTitle: '',
                     importMusicSourceUrl: '',
@@ -3589,6 +3655,29 @@
                     const start = (page - 1) * size;
                     return (this.filteredYoutubeShortItems || []).slice(start, start + size);
                 },
+                filteredMusicShortItems() {
+                    const items = Array.isArray(this.musicShortsItems) ? this.musicShortsItems : [];
+                    const q = String(this.musicShortsFilterText || '').trim().toLowerCase();
+                    if (!q) return items;
+                    return items.filter(s => {
+                        if (!s) return false;
+                        const title = String(s.title || '').toLowerCase();
+                        const parentTitle = String(s.parent_title || '').toLowerCase();
+                        const pid = String(s.parent_saved_music_id || '');
+                        return title.includes(q) || parentTitle.includes(q) || pid.includes(q);
+                    });
+                },
+                musicShortsTotalPages() {
+                    const size = Math.max(5, Math.min(100, Number(this.musicShortsPageSize || 20)));
+                    const total = (this.filteredMusicShortItems || []).length;
+                    return Math.max(1, Math.ceil(total / size));
+                },
+                pagedMusicShortItems() {
+                    const size = Math.max(5, Math.min(100, Number(this.musicShortsPageSize || 20)));
+                    const page = Math.max(1, Math.min(Number(this.musicShortsPage || 1), this.musicShortsTotalPages || 1));
+                    const start = (page - 1) * size;
+                    return (this.filteredMusicShortItems || []).slice(start, start + size);
+                },
                 readyVideos() {
                     const scheduledReady = this.scheduledVideos
                         .filter(v => this.isReadyStatus(v.status) && !this.isPublishedStatus(v.status))
@@ -3675,6 +3764,7 @@
                     if (tab === 'book_factory') this.fetchFactoryDrafts();
                     if (tab === 'music_clip') {
                         this.fetchSavedMusicLibrary();
+                        this.fetchMusicShortsLibrary();
                         this.fetchMusicTasks({ silent: true });
                         this.fetchMusicNotifications({ silent: true });
                     }
@@ -6674,6 +6764,111 @@
                     }
                     alert('Em breve.');
                 },
+                watchMusicShort(s) {
+                    const url = s && s.clip_url ? String(s.clip_url) : '';
+                    if (!url) return;
+                    window.open(url, '_blank');
+                },
+                async fetchMusicShortsLibrary() {
+                    this.musicShortsLoading = true;
+                    this.musicShortsError = '';
+                    try {
+                        const res = await this.authFetch('/music/shorts?limit=200');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar shorts.');
+                        this.musicShortsItems = Array.isArray(data.items) ? data.items : [];
+                        this.musicShortsPage = 1;
+                    } catch (e) {
+                        this.musicShortsError = e.message || String(e);
+                    } finally {
+                        this.musicShortsLoading = false;
+                    }
+                },
+                async generateShortsFromSavedMusicItem(item) {
+                    const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    if (!confirm('Gerar shorts (30–58s) pegando o trecho mais forte do áudio (tipo o coro)?')) return;
+                    this.musicShortsGeneratingId = id;
+                    try {
+                        const res = await this.authFetch(`/music/saved/${encodeURIComponent(String(id))}/shorts/task`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ count: 1, target_seconds: 45 })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok || !data.task_id) throw new Error(data.detail || data.message || 'Falha ao iniciar geração de shorts.');
+                        await this.pollMusicShortsTask(data.task_id);
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.musicShortsGeneratingId = null;
+                    }
+                },
+                async pollMusicShortsTask(taskId) {
+                    const id = String(taskId || '').trim();
+                    if (!id) return;
+                    try {
+                        const res = await this.authFetch(`/music/task/${encodeURIComponent(id)}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao consultar tarefa.');
+                        const st = String((data.status || '')).toLowerCase();
+                        if (st === 'completed') {
+                            await this.fetchMusicShortsLibrary();
+                            this.savedMusicLibraryTab = 'music_shorts';
+                            alert('Short gerado e salvo na aba Shorts (Música).');
+                            return;
+                        }
+                        if (st === 'failed') {
+                            throw new Error(data.message || 'Falha ao gerar short.');
+                        }
+                        if (st === 'cancelled') {
+                            alert('Geração cancelada.');
+                            return;
+                        }
+                        setTimeout(() => this.pollMusicShortsTask(id), 1500);
+                    } catch (e) {
+                        setTimeout(() => this.pollMusicShortsTask(id), 2500);
+                    }
+                },
+                async deleteMusicShort(s) {
+                    const id = s && s.id ? Number(s.id) : null;
+                    if (!id) return;
+                    if (!confirm('Excluir este short?')) return;
+                    this.savedMusicSaving = true;
+                    try {
+                        const res = await this.authFetch(`/music/shorts/${encodeURIComponent(String(id))}`, { method: 'DELETE' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao excluir short.');
+                        await this.fetchMusicShortsLibrary();
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async publishMusicShortToYouTube(s) {
+                    const id = s && s.id ? Number(s.id) : null;
+                    if (!id) return;
+                    if (!confirm('Publicar este short no YouTube agora?')) return;
+                    this.savedMusicSaving = true;
+                    try {
+                        const res = await this.authFetch(`/music/shorts/${encodeURIComponent(String(id))}/publish_youtube`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ title: s.title || 'Short', description: '#shorts' })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao publicar no YouTube.');
+                        if (data.youtube_url) window.open(String(data.youtube_url), '_blank');
+                        await this.fetchMusicShortsLibrary();
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
                 async fetchMusicTasks({ silent } = {}) {
                     if (!silent) this.musicTasksLoading = true;
                     try {
@@ -6853,6 +7048,7 @@
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao salvar letra.');
                         await this.fetchSavedMusicLibrary();
+                        await this.fetchMusicShortsLibrary();
                     } catch (e) {
                         this.savedMusicError = e.message || String(e);
                         alert(this.savedMusicError);
@@ -6881,6 +7077,7 @@
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao salvar música.');
                         await this.fetchSavedMusicLibrary();
+                        await this.fetchMusicShortsLibrary();
                     } catch (e) {
                         this.savedMusicError = e.message || String(e);
                         alert(this.savedMusicError);
@@ -6911,6 +7108,7 @@
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao salvar clipe.');
                         await this.fetchSavedMusicLibrary();
+                        await this.fetchMusicShortsLibrary();
                     } catch (e) {
                         this.savedMusicError = e.message || String(e);
                         alert(this.savedMusicError);

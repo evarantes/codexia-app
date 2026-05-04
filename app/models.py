@@ -308,6 +308,22 @@ class SavedMusic(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class SavedMusicShort(Base):
+    __tablename__ = "saved_music_shorts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    parent_saved_music_id = Column(Integer, ForeignKey("saved_music.id"), nullable=False, index=True)
+    title = Column(String, default="Short")
+    clip_url = Column(String, nullable=False)
+    clip_filename = Column(String, nullable=True)
+    start_sec = Column(Float, nullable=True)
+    end_sec = Column(Float, nullable=True)
+    youtube_video_id = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class ChannelInsight(Base):
     __tablename__ = "channel_insights"
 
