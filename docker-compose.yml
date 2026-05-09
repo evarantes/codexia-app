@@ -50,11 +50,13 @@ services:
       - codexia_media:/app/app/static
 
   whatsapp_bridge:
-    image: node:20-alpine
+    image: node:20-bullseye
     container_name: codexia-whatsapp-bridge
     restart: always
     working_dir: /bridge
-    command: sh -c "npm install --silent && node server.js"
+    environment:
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    command: bash -lc "apt-get update && apt-get install -y chromium && npm install --silent && node server.js"
     ports:
       - "3030:3030"
     volumes:
