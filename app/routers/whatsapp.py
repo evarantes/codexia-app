@@ -29,8 +29,15 @@ def _bridge_request(method: str, path: str, json_body: Optional[Dict[str, Any]] 
             detail="WhatsApp não configurado. Defina WHATSAPP_BRIDGE_URL (ex.: http://whatsapp_bridge:3030).",
         )
     url = f"{base}{path}"
+    timeout = 6
     try:
-        r = requests.request(method.upper(), url, json=json_body, timeout=20)
+        p = str(path or "").strip().lower()
+        if p.startswith("/send"):
+            timeout = 45
+    except Exception:
+        timeout = 6
+    try:
+        r = requests.request(method.upper(), url, json=json_body, timeout=timeout)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Falha ao conectar no WhatsApp Bridge: {str(e)}")
     data = None

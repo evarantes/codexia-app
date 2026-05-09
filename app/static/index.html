@@ -4162,7 +4162,12 @@
                 },
                 async authFetch(url, options = {}) {
                     const headers = { ...options.headers, ...this.getAuthHeaders() };
-                    const res = await fetch(url, { ...options, headers });
+                    let res;
+                    try {
+                        res = await fetch(url, { ...options, headers });
+                    } catch (e) {
+                        throw new Error('Falha de rede ao chamar o servidor. Atualize a página e tente novamente. Se continuar, reinicie o app no Coolify.');
+                    }
                     if (res.status === 401) {
                         this.logout();
                     }
@@ -7109,15 +7114,6 @@
                 async loadWhatsAppContacts() {
                     this.whatsappContactsLoading = true;
                     try {
-                        try {
-                            const st = await this.authFetch('/whatsapp/status');
-                            const stData = await st.json().catch(() => ({}));
-                            if (st.ok && stData && stData.ready !== true) {
-                                throw new Error('WhatsApp ainda não está conectado. Escaneie o QR e aguarde alguns segundos.');
-                            }
-                        } catch (e) {
-                            throw e;
-                        }
                         const res = await this.authFetch('/whatsapp/contacts');
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar contatos.');
