@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import multiprocessing
+import requests
 from app.redis_client import conn as redis_conn, queue as rq_queue
 try:
     from rq import Worker
@@ -288,11 +289,113 @@ class MonitorService:
             ).all()
             
             if videos_to_upload:
-                from app.services.youtube_service import YouTubeService
-                yt_service = YouTubeService()
+                yt_service = None
                 for video in videos_to_upload:
-                    logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
                     try:
+                        payload = {}
+                        if video.script_data:
+                            try:
+                                payload = json.loads(video.script_data or "{}")
+                            except Exception:
+                                payload = {}
+                        platform = (payload.get("platform") if isinstance(payload, dict) else None) or "youtube"
+                        platform = str(platform).strip().lower() or "youtube"
+
+                        if platform == "whatsapp":
+                            bridge_url = (os.getenv("WHATSAPP_BRIDGE_URL") or "http://localhost:3030").strip().rstrip("/")
+                            if not bridge_url:
+                                video.auto_post = False
+                                note = "[UPLOAD_ERRO]: WHATSAPP_BRIDGE_URL não configurado. Não foi possível enviar no WhatsApp."
+                                if note not in (video.description or ""):
+                                    video.description = ((video.description or "").strip() + "\n\n" + note).strip()
+                                db.commit()
+                                continue
+
+                            base_message = (payload.get("message") if isinstance(payload, dict) else None) or (video.description or "")
+                            recs = payload.get("recipients") if isinstance(payload, dict) else None
+                            if not isinstance(recs, list) or not recs:
+                                video.auto_post = False
+                                note = "[UPLOAD_ERRO]: Nenhum destinatário configurado para WhatsApp."
+                                if note not in (video.description or ""):
+                                    video.description = ((video.description or "").strip() + "\n\n" + note).strip()
+                                db.commit()
+                                continue
+
+                            media_path = None
+                            if video.video_url:
+                                from app.config import absolute_path_for_video
+                                abs_video_path = absolute_path_for_video(video.video_url)
+                                if abs_video_path and os.path.exists(abs_video_path):
+                                    media_path = abs_video_path
+                                else:
+                                    video.auto_post = False
+                                    note = "[UPLOAD_ERRO]: Arquivo do vídeo não encontrado no servidor. Não foi possível enviar no WhatsApp."
+                                    if note not in (video.description or ""):
+                                        video.description = ((video.description or "").strip() + "\n\n" + note).strip()
+                                    db.commit()
+                                    continue
+
+                            sent = 0
+                            errors = []
+                            for r in recs:
+                                if not isinstance(r, dict):
+                                    continue
+                                to = str(r.get("to") or "").strip()
+                                if not to:
+                                    continue
+                                msg = str(r.get("message") or base_message or "").strip()
+                                name = str(r.get("name") or "").strip()
+                                if name and "{name}" in msg:
+                                    try:
+                                        msg = msg.replace("{name}", name)
+                                    except Exception:
+                                        pass
+                                try:
+                                    resp = requests.post(
+                                        f"{bridge_url}/send",
+                                        json={"to": to, "message": msg, "media_path": media_path},
+                                        timeout=40,
+                                    )
+                                    ok = bool(resp.ok)
+                                    if not ok:
+                                        err = None
+                                        try:
+                                            body = resp.json()
+                                            if isinstance(body, dict):
+                                                err = body.get("error") or body.get("detail")
+                                        except Exception:
+                                            err = None
+                                        errors.append(err or f"Falha ({resp.status_code}) para {to}")
+                                    else:
+                                        sent += 1
+                                except Exception as e:
+                                    errors.append(f"{to}: {str(e)}")
+
+                            if sent > 0 and not errors:
+                                video.uploaded_at = datetime.datetime.now()
+                                video.youtube_video_id = f"whatsapp:{sent}"
+                                video.status = "published"
+                                logger.info(f"Envio WhatsApp concluído para {sent} contato(s).")
+                            else:
+                                video.auto_post = False
+                                if sent <= 0:
+                                    video.status = "failed"
+                                else:
+                                    if (video.status or "").lower() not in {"completed", "ready"}:
+                                        video.status = "completed"
+                                err_txt = "; ".join([e for e in errors if e])[:800]
+                                note = f"[UPLOAD_ERRO]: WhatsApp não enviou para todos os destinatários. Enviados: {sent}. Erros: {err_txt or 'desconhecido'}"
+                                if note not in (video.description or ""):
+                                    video.description = ((video.description or "").strip() + "\n\n" + note).strip()
+
+                            db.commit()
+                            continue
+
+                        from app.services.youtube_service import YouTubeService
+                        if yt_service is None:
+                            yt_service = YouTubeService()
+
+                        logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
                         from app.config import absolute_path_for_video
                         abs_video_path = absolute_path_for_video(video.video_url)
                         

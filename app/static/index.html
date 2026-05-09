@@ -978,6 +978,10 @@
                                     <i class="fas fa-bolt"></i>
                                     Gerar Shorts
                                 </button>
+                                <button v-if="item.clip_url" @click="openWhatsAppSendModal(item)" :disabled="savedMusicSaving" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 flex items-center gap-2">
+                                    <i class="fab fa-whatsapp"></i>
+                                    WhatsApp
+                                </button>
                                 <div v-if="item.clip_url" class="flex flex-col items-stretch">
                                     <button @click="publishSavedItem(item)" :disabled="savedMusicSaving" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 flex items-center gap-2 justify-center">
                                         <i class="fas fa-share-alt"></i>
@@ -3168,6 +3172,52 @@
             </div>
         </div>
 
+        <div v-if="whatsappSendModalOpen" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white p-8 rounded-lg shadow-xl max-w-2xl w-full">
+                <h2 class="text-2xl font-bold mb-2">Enviar no WhatsApp</h2>
+                <p class="text-sm text-gray-600 mb-4">Envie o clipe automaticamente para contatos pelo WhatsApp Web (QR Code).</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-bold mb-1">Destinatários</label>
+                        <textarea v-model="whatsappSendRecipientsText" class="w-full border p-2 rounded" rows="8" placeholder="1 por linha: 5511999999999|João|Mensagem opcional&#10;5511888888888|Maria"></textarea>
+                        <p class="text-xs text-gray-500 mt-1">Formato: número|nome(opcional)|mensagem(opcional). Use {name} na mensagem para personalizar.</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-1">Mensagem</label>
+                        <textarea v-model="whatsappSendMessageText" class="w-full border p-2 rounded" rows="8" placeholder="Ex: Olá {name}, te envio esse vídeo..."></textarea>
+                        <div class="mt-3">
+                            <label class="block text-sm font-bold mb-1">Agendar (opcional)</label>
+                            <input v-model="whatsappSendDatetime" type="datetime-local" class="w-full border p-2 rounded">
+                        </div>
+                    </div>
+                </div>
+                <div class="flex flex-wrap justify-end gap-2 mt-5">
+                    <button @click="openWhatsappQr" :disabled="whatsappQrLoading" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
+                        <i class="fas fa-qrcode"></i>
+                        Ver QR
+                    </button>
+                    <button @click="closeWhatsAppSendModal" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+                    <button @click="sendWhatsAppNow" :disabled="savedMusicSaving || !whatsappSendRecipientsText.trim() || !whatsappSendMessageText.trim()" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">Enviar agora</button>
+                    <button @click="scheduleWhatsAppSend" :disabled="savedMusicSaving || !whatsappSendDatetime || !whatsappSendRecipientsText.trim() || !whatsappSendMessageText.trim()" class="bg-green-700 text-white px-4 py-2 rounded hover:bg-green-800">Agendar</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="whatsappQrModalOpen" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
+                <h2 class="text-2xl font-bold mb-2">Conectar WhatsApp</h2>
+                <p class="text-sm text-gray-600 mb-4">Abra o WhatsApp no celular → Dispositivos conectados → Conectar dispositivo e escaneie.</p>
+                <div class="bg-gray-50 border rounded p-4 flex items-center justify-center">
+                    <div v-if="!whatsappQrDataUrl" class="text-sm text-gray-600">Carregando QR...</div>
+                    <img v-else :src="whatsappQrDataUrl" class="w-72 h-72 object-contain" />
+                </div>
+                <div class="flex justify-end gap-2 mt-4">
+                    <button @click="refreshWhatsappQr" :disabled="whatsappQrLoading" class="bg-white border px-4 py-2 rounded hover:bg-gray-50">Atualizar</button>
+                    <button @click="closeWhatsappQr" class="px-4 py-2 text-gray-600 hover:text-gray-800">Fechar</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Add Book Modal -->
         <div v-if="showAddBookModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
@@ -3525,6 +3575,14 @@
                     savedMusicScheduleItem: null,
                     savedMusicSchedulePlatform: 'youtube',
                     savedMusicScheduleDatetime: '',
+                    whatsappSendModalOpen: false,
+                    whatsappSendItem: null,
+                    whatsappSendRecipientsText: '',
+                    whatsappSendMessageText: '',
+                    whatsappSendDatetime: '',
+                    whatsappQrModalOpen: false,
+                    whatsappQrDataUrl: '',
+                    whatsappQrLoading: false,
                     savedMusicLibraryTab: 'items',
                     youtubeShortsFilterText: '',
                     youtubeShortsPageSize: 20,
@@ -6947,6 +7005,128 @@
                     } finally {
                         this.savedMusicSaving = false;
                         this.closeSavedMusicSchedule();
+                    }
+                },
+                openWhatsAppSendModal(item) {
+                    const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    this.whatsappSendItem = it;
+                    this.whatsappSendModalOpen = true;
+                    if (!String(this.whatsappSendMessageText || '').trim()) {
+                        this.whatsappSendMessageText = `Olá {name}, estou te enviando esse vídeo: ${String(it.title || 'Clipe').trim() || 'Clipe'}`;
+                    }
+                    if (!String(this.whatsappSendDatetime || '').trim()) {
+                        try {
+                            const d = new Date();
+                            d.setMinutes(d.getMinutes() + 60);
+                            d.setSeconds(0);
+                            d.setMilliseconds(0);
+                            const pad = (n) => String(n).padStart(2, '0');
+                            this.whatsappSendDatetime = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                        } catch (e) {}
+                    }
+                },
+                closeWhatsAppSendModal() {
+                    this.whatsappSendModalOpen = false;
+                    this.whatsappSendItem = null;
+                },
+                _parseWhatsAppRecipients(raw) {
+                    const text = String(raw || '');
+                    const lines = text.split('\n').map(s => String(s || '').trim()).filter(Boolean);
+                    const out = [];
+                    for (const line of lines) {
+                        const parts = line.split('|').map(s => String(s || '').trim());
+                        const to = parts[0] || '';
+                        if (!to) continue;
+                        out.push({ to, name: parts[1] || null, message: parts[2] || null });
+                    }
+                    return out;
+                },
+                async openWhatsappQr() {
+                    this.whatsappQrModalOpen = true;
+                    await this.refreshWhatsappQr();
+                },
+                closeWhatsappQr() {
+                    this.whatsappQrModalOpen = false;
+                    this.whatsappQrDataUrl = '';
+                },
+                async refreshWhatsappQr() {
+                    this.whatsappQrLoading = true;
+                    try {
+                        const res = await this.authFetch('/whatsapp/qr');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar QR.');
+                        const durl = data.data_url || data.qr_data_url || data.qr || '';
+                        this.whatsappQrDataUrl = String(durl || '');
+                        if (!this.whatsappQrDataUrl) throw new Error('QR não disponível. Se já estiver conectado, ignore.');
+                    } catch (e) {
+                        this.whatsappQrDataUrl = '';
+                        alert(e.message || String(e));
+                    } finally {
+                        this.whatsappQrLoading = false;
+                    }
+                },
+                async sendWhatsAppNow() {
+                    const it = this.whatsappSendItem || {};
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    const recipients = this._parseWhatsAppRecipients(this.whatsappSendRecipientsText);
+                    if (!recipients.length) { alert('Informe ao menos 1 destinatário.'); return; }
+                    const base = String(this.whatsappSendMessageText || '').trim();
+                    if (!base) { alert('Informe a mensagem.'); return; }
+                    this.savedMusicSaving = true;
+                    try {
+                        for (const r of recipients) {
+                            let msg = String(r.message || base);
+                            if (r.name && msg.includes('{name}')) {
+                                msg = msg.split('{name}').join(String(r.name));
+                            }
+                            const res = await this.authFetch('/whatsapp/send-now', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ to: r.to, message: msg, video_url: it.clip_url })
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao enviar WhatsApp.');
+                        }
+                        alert('Envio concluído.');
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                async scheduleWhatsAppSend() {
+                    const it = this.whatsappSendItem || {};
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    const recipients = this._parseWhatsAppRecipients(this.whatsappSendRecipientsText);
+                    if (!recipients.length) { alert('Informe ao menos 1 destinatário.'); return; }
+                    const base = String(this.whatsappSendMessageText || '').trim();
+                    if (!base) { alert('Informe a mensagem.'); return; }
+                    const when = String(this.whatsappSendDatetime || '').trim();
+                    if (!when) { alert('Informe data e hora.'); return; }
+                    this.savedMusicSaving = true;
+                    try {
+                        const res = await this.authFetch('/whatsapp/schedule-send', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                scheduled_for: when,
+                                title: `WhatsApp • ${String(it.title || 'Clipe').trim() || 'Clipe'}`,
+                                message: base,
+                                video_url: it.clip_url,
+                                recipients
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao agendar WhatsApp.');
+                        alert('Envio agendado. Ele será disparado automaticamente no horário escolhido (servidor precisa estar online).');
+                        this.closeWhatsAppSendModal();
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
                     }
                 },
                 async watchMusicShort(s) {

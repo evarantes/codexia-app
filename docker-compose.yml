@@ -17,6 +17,7 @@ services:
       - YOUTUBE_CLIENT_ID=${YOUTUBE_CLIENT_ID}
       - YOUTUBE_CLIENT_SECRET=${YOUTUBE_CLIENT_SECRET}
       - YOUTUBE_REFRESH_TOKEN=${YOUTUBE_REFRESH_TOKEN}
+      - WHATSAPP_BRIDGE_URL=http://whatsapp_bridge:3030
     depends_on:
       - db
       - redis
@@ -40,11 +41,26 @@ services:
       - YOUTUBE_CLIENT_ID=${YOUTUBE_CLIENT_ID}
       - YOUTUBE_CLIENT_SECRET=${YOUTUBE_CLIENT_SECRET}
       - YOUTUBE_REFRESH_TOKEN=${YOUTUBE_REFRESH_TOKEN}
+      - WHATSAPP_BRIDGE_URL=http://whatsapp_bridge:3030
     depends_on:
       - db
       - redis
       - minio
     volumes:
+      - codexia_media:/app/app/static
+
+  whatsapp_bridge:
+    image: node:20-alpine
+    container_name: codexia-whatsapp-bridge
+    restart: always
+    working_dir: /bridge
+    command: sh -c "npm install --silent && node server.js"
+    ports:
+      - "3030:3030"
+    volumes:
+      - ./whatsapp_bridge:/bridge
+      - whatsapp_auth:/bridge/.wwebjs_auth
+      - whatsapp_cache:/bridge/.wwebjs_cache
       - codexia_media:/app/app/static
 
   db:
@@ -88,3 +104,5 @@ volumes:
   redis_data:
   minio_data:
   codexia_media:
+  whatsapp_auth:
+  whatsapp_cache:
