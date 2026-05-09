@@ -990,6 +990,10 @@
                                             <i class="fab fa-youtube"></i>
                                             YouTube
                                         </button>
+                                        <button @click="openSavedMusicSchedule(item, 'youtube')" :disabled="savedMusicSaving" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-sm font-semibold flex items-center gap-2">
+                                            <i class="far fa-calendar-alt"></i>
+                                            Agendar
+                                        </button>
                                         <button disabled class="bg-gray-100 text-gray-400 px-3 py-2 rounded text-sm font-semibold flex items-center gap-2 cursor-not-allowed" title="Em breve">
                                             <i class="fab fa-instagram"></i>
                                             Instagram
@@ -3147,6 +3151,23 @@
             </div>
         </div>
 
+        <div v-if="savedMusicScheduleModalOpen" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
+                <h2 class="text-2xl font-bold mb-2">Agendar Publicação</h2>
+                <p class="text-sm text-gray-600 mb-4">Escolha o dia e horário para publicar automaticamente.</p>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-bold mb-1">Data e hora</label>
+                        <input v-model="savedMusicScheduleDatetime" type="datetime-local" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="flex justify-end gap-2">
+                        <button @click="closeSavedMusicSchedule" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
+                        <button @click="submitSavedMusicSchedule" :disabled="savedMusicSaving || !savedMusicScheduleDatetime" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700">Agendar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Add Book Modal -->
         <div v-if="showAddBookModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
@@ -3500,6 +3521,10 @@
                     savedMusicPage: 1,
                     savedMusicPublishInfo: {},
                     savedMusicPublishMenuItemId: null,
+                    savedMusicScheduleModalOpen: false,
+                    savedMusicScheduleItem: null,
+                    savedMusicSchedulePlatform: 'youtube',
+                    savedMusicScheduleDatetime: '',
                     savedMusicLibraryTab: 'items',
                     youtubeShortsFilterText: '',
                     youtubeShortsPageSize: 20,
@@ -6855,6 +6880,75 @@
                     }
                     alert('Em breve.');
                 },
+                openSavedMusicSchedule(item, platform) {
+                    const it = item || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) return;
+                    if (!it.clip_url) { alert('Este item não tem clipe.'); return; }
+                    this.savedMusicPublishMenuItemId = null;
+                    this.savedMusicScheduleItem = it;
+                    this.savedMusicSchedulePlatform = String(platform || 'youtube');
+                    try {
+                        const d = new Date();
+                        d.setMinutes(d.getMinutes() + 60);
+                        d.setSeconds(0);
+                        d.setMilliseconds(0);
+                        const pad = (n) => String(n).padStart(2, '0');
+                        this.savedMusicScheduleDatetime = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                    } catch (e) {
+                        this.savedMusicScheduleDatetime = '';
+                    }
+                    this.savedMusicScheduleModalOpen = true;
+                },
+                closeSavedMusicSchedule() {
+                    this.savedMusicScheduleModalOpen = false;
+                    this.savedMusicScheduleItem = null;
+                    this.savedMusicScheduleDatetime = '';
+                },
+                async submitSavedMusicSchedule() {
+                    const it = this.savedMusicScheduleItem || {};
+                    const id = it && it.id ? Number(it.id) : null;
+                    if (!id) { this.closeSavedMusicSchedule(); return; }
+                    const when = String(this.savedMusicScheduleDatetime || '').trim();
+                    if (!when) return;
+                    const plat = String(this.savedMusicSchedulePlatform || 'youtube').trim().toLowerCase();
+                    this.savedMusicSaving = true;
+                    try {
+                        if (plat === 'youtube' || plat === 'yt') {
+                            const res = await this.authFetch(`/music/saved/${encodeURIComponent(String(id))}/publish_youtube`, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({
+                                    title: it.title || this.musicTitle || 'Clipe',
+                                    description: (it.lyrics || '').trim() || null,
+                                    scheduled_for: when,
+                                    auto_post: true
+                                })
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao agendar no YouTube.');
+                            if (String(data.status || '').toLowerCase() === 'scheduled') {
+                                try {
+                                    const map = (this.savedMusicPublishInfo && typeof this.savedMusicPublishInfo === 'object') ? this.savedMusicPublishInfo : {};
+                                    map[String(id)] = { platforms: ['YouTube'], scheduled_for: String(data.scheduled_for || ''), scheduled_video_id: data.scheduled_video_id || null };
+                                    this.savedMusicPublishInfo = { ...map };
+                                    localStorage.setItem('savedMusicPublishInfo', JSON.stringify(this.savedMusicPublishInfo));
+                                } catch (e) {}
+                                alert('Publicação agendada. Ela será enviada automaticamente no horário escolhido.');
+                            } else {
+                                alert(data.message || 'Agendamento processado.');
+                            }
+                            await this.fetchSavedMusicLibrary();
+                        } else {
+                            alert('Em breve.');
+                        }
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.savedMusicSaving = false;
+                        this.closeSavedMusicSchedule();
+                    }
+                },
                 async watchMusicShort(s) {
                     const id = s && s.id ? Number(s.id) : null;
                     if (!id) return;
@@ -7410,8 +7504,10 @@
                         if (!info) return '';
                         const plats = Array.isArray(info.platforms) ? info.platforms.filter(Boolean) : [];
                         const when = info.published_at ? new Date(info.published_at).toLocaleString() : '';
-                        if (!plats.length && !when) return '';
+                        const sched = info.scheduled_for ? new Date(info.scheduled_for).toLocaleString() : '';
+                        if (!plats.length && !when && !sched) return '';
                         const ptxt = plats.length ? plats.join(', ') : '';
+                        if (sched && !when) return `Agendado: ${ptxt}${sched ? ' • ' + sched : ''}`;
                         return `Publicado: ${ptxt}${when ? ' • ' + when : ''}`;
                     } catch (e) {
                         return '';

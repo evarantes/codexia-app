@@ -25,7 +25,7 @@ from app.services.suno_service import (
 )
 from app.services.ai_generator import AIContentGenerator
 from app.routers.auth import get_current_user, SECRET_KEY, ALGORITHM
-from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification
+from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification, ScheduledVideo
 from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
 from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, absolute_path_for_static, VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
@@ -357,6 +357,8 @@ class PublishSavedClipRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[str] = None  # vírgula-separado
+    scheduled_for: Optional[str] = None  # ISO string (ex: "2026-05-09T15:30")
+    auto_post: Optional[bool] = True
 
 
 class GenerateSavedMusicShortsRequest(BaseModel):
@@ -1190,6 +1192,69 @@ def publish_saved_clip_youtube(item_id: int, request: PublishSavedClipRequest, u
     tags = []
     if request.tags and request.tags.strip():
         tags = [t.strip() for t in str(request.tags).split(",") if t.strip()][:20]
+
+    scheduled_for = None
+    if request.scheduled_for:
+        raw = str(request.scheduled_for).strip()
+        if raw:
+            try:
+                raw = raw.replace("Z", "+00:00")
+            except Exception:
+                pass
+            try:
+                scheduled_for = datetime.fromisoformat(raw)
+            except Exception:
+                try:
+                    scheduled_for = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+                except Exception:
+                    scheduled_for = None
+
+    if scheduled_for and scheduled_for > datetime.now():
+        sv = ScheduledVideo(
+            user_id=getattr(user, "id", None),
+            theme="Música e Clipe",
+            title=title,
+            description=description,
+            scheduled_for=scheduled_for,
+            status="completed",
+            video_type="video",
+            parent_video_id=None,
+            script_data=json.dumps(
+                {"source": "saved_music", "saved_music_id": int(item.id), "platform": "youtube"},
+                ensure_ascii=False,
+            ),
+            video_url=item.clip_url,
+            progress=100,
+            auto_post=bool(request.auto_post) if request.auto_post is not None else True,
+        )
+        db.add(sv)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise HTTPException(status_code=500, detail="Falha ao salvar agendamento.")
+        try:
+            db.refresh(sv)
+        except Exception:
+            pass
+
+        try:
+            db.add(SystemNotification(
+                user_id=user.id,
+                kind="music_clip_scheduled",
+                title="Publicação agendada",
+                message=f"O clipe '{title}' foi agendado para publicação no YouTube.",
+                payload_json=json.dumps(
+                    {"item_id": int(item.id), "scheduled_video_id": int(getattr(sv, 'id', 0) or 0), "scheduled_for": scheduled_for.isoformat()},
+                    ensure_ascii=False,
+                ),
+                status="new",
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        return {"status": "scheduled", "scheduled_video_id": getattr(sv, "id", None), "scheduled_for": scheduled_for.isoformat()}
 
     from app.services.youtube_service import YouTubeService
     service = YouTubeService()
