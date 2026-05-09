@@ -60,12 +60,45 @@ app.get("/qr", async (_req, res) => {
   }
 });
 
+app.get("/contacts", async (_req, res) => {
+  if (!ready) {
+    res.status(503).json({ error: "WhatsApp não conectado. Escaneie o QR Code." });
+    return;
+  }
+  try {
+    const contacts = await client.getContacts();
+    const out = [];
+    for (const c of contacts || []) {
+      try {
+        if (!c || !c.id || !c.id._serialized) continue;
+        const isUser = c.isUser === true;
+        const isGroup = c.isGroup === true;
+        if (!isUser || isGroup) continue;
+        const serialized = String(c.id._serialized);
+        const number = serialized.endsWith("@c.us") ? serialized.replace("@c.us", "") : serialized;
+        const name = String(c.pushname || c.name || number);
+        out.push({ id: serialized, number, name });
+      } catch (_) {}
+    }
+    out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    res.json({ contacts: out });
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.message ? e.message : e) });
+  }
+});
+
 app.post("/send", async (req, res) => {
   if (!ready) {
     res.status(503).json({ error: "WhatsApp não conectado. Escaneie o QR Code." });
     return;
   }
-  const to = normalizeToChatId(req.body && req.body.to);
+  let toRaw = (req.body && req.body.to) ? String(req.body.to) : "";
+  let to = null;
+  if (toRaw.includes("@c.us")) {
+    to = toRaw;
+  } else {
+    to = normalizeToChatId(toRaw);
+  }
   const message = String((req.body && req.body.message) || "").trim();
   const mediaPath = (req.body && req.body.media_path) ? String(req.body.media_path) : null;
   if (!to) {
@@ -95,4 +128,3 @@ client.initialize();
 app.listen(port, "0.0.0.0", () => {
   console.log(`WhatsApp Bridge listening on :${port}`);
 });
-

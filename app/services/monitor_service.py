@@ -302,7 +302,7 @@ class MonitorService:
                         platform = str(platform).strip().lower() or "youtube"
 
                         if platform == "whatsapp":
-                            bridge_url = (os.getenv("WHATSAPP_BRIDGE_URL") or "http://localhost:3030").strip().rstrip("/")
+                            bridge_url = (os.getenv("WHATSAPP_BRIDGE_URL") or "").strip().rstrip("/")
                             if not bridge_url:
                                 video.auto_post = False
                                 note = "[UPLOAD_ERRO]: WHATSAPP_BRIDGE_URL não configurado. Não foi possível enviar no WhatsApp."
@@ -313,6 +313,9 @@ class MonitorService:
 
                             base_message = (payload.get("message") if isinstance(payload, dict) else None) or (video.description or "")
                             recs = payload.get("recipients") if isinstance(payload, dict) else None
+                            single_to = (payload.get("to") if isinstance(payload, dict) else None)
+                            if (not isinstance(recs, list) or not recs) and single_to:
+                                recs = [{"to": single_to, "name": payload.get("name"), "message": payload.get("message")}]
                             if not isinstance(recs, list) or not recs:
                                 video.auto_post = False
                                 note = "[UPLOAD_ERRO]: Nenhum destinatário configurado para WhatsApp."

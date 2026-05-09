@@ -18,13 +18,16 @@ router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
 
 def _bridge_url() -> str:
-    return (os.getenv("WHATSAPP_BRIDGE_URL") or "http://localhost:3030").strip().rstrip("/")
+    return (os.getenv("WHATSAPP_BRIDGE_URL") or "").strip().rstrip("/")
 
 
 def _bridge_request(method: str, path: str, json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     base = _bridge_url()
     if not base:
-        raise HTTPException(status_code=503, detail="WHATSAPP_BRIDGE_URL não configurado.")
+        raise HTTPException(
+            status_code=503,
+            detail="WhatsApp não configurado. Defina WHATSAPP_BRIDGE_URL (ex.: http://whatsapp_bridge:3030).",
+        )
     url = f"{base}{path}"
     try:
         r = requests.request(method.upper(), url, json=json_body, timeout=20)
@@ -51,12 +54,20 @@ class WhatsAppRecipient(BaseModel):
     to: str
     name: Optional[str] = None
     message: Optional[str] = None
+    scheduled_for: Optional[str] = None
 
 
 class WhatsAppScheduleRequest(BaseModel):
     scheduled_for: str
     title: Optional[str] = None
     message: str
+    video_url: Optional[str] = None
+    recipients: List[WhatsAppRecipient]
+
+
+class WhatsAppSchedulePerRecipientRequest(BaseModel):
+    title: Optional[str] = None
+    default_message: str
     video_url: Optional[str] = None
     recipients: List[WhatsAppRecipient]
 
@@ -71,6 +82,12 @@ def whatsapp_status(user: User = Depends(get_current_user)):
 def whatsapp_qr(user: User = Depends(get_current_user)):
     _ = user
     return _bridge_request("GET", "/qr")
+
+
+@router.get("/contacts")
+def whatsapp_contacts(user: User = Depends(get_current_user)):
+    _ = user
+    return _bridge_request("GET", "/contacts")
 
 
 @router.post("/send-now")
@@ -146,3 +163,70 @@ def whatsapp_schedule_send(request: WhatsAppScheduleRequest, user: User = Depend
 
     return {"status": "scheduled", "scheduled_video_id": getattr(sv, "id", None), "scheduled_for": scheduled_for.isoformat()}
 
+
+@router.post("/schedule-send-per-recipient")
+def whatsapp_schedule_send_per_recipient(request: WhatsAppSchedulePerRecipientRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    base_message = (request.default_message or "").strip()
+    if not base_message:
+        raise HTTPException(status_code=400, detail="default_message é obrigatório.")
+
+    created: List[int] = []
+    errors: List[str] = []
+
+    for r in request.recipients or []:
+        to = (r.to or "").strip()
+        if not to:
+            continue
+        raw = (r.scheduled_for or "").strip()
+        if not raw:
+            errors.append(f"{to}: scheduled_for ausente")
+            continue
+        try:
+            raw = raw.replace("Z", "+00:00")
+        except Exception:
+            pass
+        scheduled_for = None
+        try:
+            scheduled_for = datetime.fromisoformat(raw)
+        except Exception:
+            try:
+                scheduled_for = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+            except Exception:
+                scheduled_for = None
+        if not scheduled_for:
+            errors.append(f"{to}: scheduled_for inválido")
+            continue
+
+        msg = (r.message or "").strip() or base_message
+        name = (r.name or "").strip() or None
+        payload = {"platform": "whatsapp", "to": to, "name": name, "message": msg}
+
+        sv = ScheduledVideo(
+            user_id=getattr(user, "id", None),
+            theme="WhatsApp",
+            title=(request.title or "Envio WhatsApp")[:200],
+            description=msg[:4000],
+            scheduled_for=scheduled_for,
+            status="completed",
+            video_type="video",
+            parent_video_id=None,
+            script_data=json.dumps(payload, ensure_ascii=False),
+            video_url=(request.video_url or None),
+            progress=100,
+            auto_post=True,
+        )
+        db.add(sv)
+        try:
+            db.flush()
+            if getattr(sv, "id", None):
+                created.append(int(sv.id))
+        except Exception as e:
+            errors.append(f"{to}: {str(e)}")
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Falha ao salvar agendamentos: {str(e)}")
+
+    return {"status": "scheduled", "created_ids": created, "errors": errors}
