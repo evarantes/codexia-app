@@ -7109,6 +7109,15 @@
                 async loadWhatsAppContacts() {
                     this.whatsappContactsLoading = true;
                     try {
+                        try {
+                            const st = await this.authFetch('/whatsapp/status');
+                            const stData = await st.json().catch(() => ({}));
+                            if (st.ok && stData && stData.ready !== true) {
+                                throw new Error('WhatsApp ainda não está conectado. Escaneie o QR e aguarde alguns segundos.');
+                            }
+                        } catch (e) {
+                            throw e;
+                        }
                         const res = await this.authFetch('/whatsapp/contacts');
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar contatos.');
@@ -7213,6 +7222,11 @@
                     if (!recipients.length) { alert('Selecione ao menos 1 contato.'); return; }
                     this.savedMusicSaving = true;
                     try {
+                        const st = await this.authFetch('/whatsapp/status');
+                        const stData = await st.json().catch(() => ({}));
+                        if (!st.ok || !stData || stData.ready !== true) {
+                            throw new Error('WhatsApp ainda não está conectado. Clique em "Conectar (QR)", escaneie e aguarde alguns segundos.');
+                        }
                         for (const r of recipients) {
                             let msg = String((r && r.message) ? r.message : base).trim() || base;
                             const nm = (r && r.name) ? String(r.name) : '';
@@ -7254,6 +7268,11 @@
                     }
                     this.savedMusicSaving = true;
                     try {
+                        const st = await this.authFetch('/whatsapp/status');
+                        const stData = await st.json().catch(() => ({}));
+                        if (!st.ok || !stData || stData.ready !== true) {
+                            throw new Error('WhatsApp ainda não está conectado. Clique em "Conectar (QR)", escaneie e aguarde alguns segundos.');
+                        }
                         const res = await this.authFetch('/whatsapp/schedule-send-per-recipient', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},

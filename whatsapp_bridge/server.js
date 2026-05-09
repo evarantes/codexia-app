@@ -7,6 +7,8 @@ app.use(express.json({ limit: "10mb" }));
 
 let lastQr = null;
 let ready = false;
+let lastAuthAt = null;
+let lastDisconnect = null;
 
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: "codexia" }),
@@ -32,18 +34,31 @@ const client = new Client({
 client.on("qr", (qr) => {
   lastQr = String(qr || "");
   ready = false;
+  lastDisconnect = null;
+  console.log("WA: qr_received");
+});
+
+client.on("authenticated", () => {
+  lastAuthAt = new Date().toISOString();
+  console.log("WA: authenticated");
 });
 
 client.on("ready", () => {
   ready = true;
+  lastQr = null;
+  lastDisconnect = null;
+  console.log("WA: ready");
 });
 
 client.on("auth_failure", () => {
   ready = false;
+  console.log("WA: auth_failure");
 });
 
-client.on("disconnected", () => {
+client.on("disconnected", (reason) => {
   ready = false;
+  lastDisconnect = { at: new Date().toISOString(), reason: String(reason || "") };
+  console.log("WA: disconnected", reason || "");
 });
 
 function normalizeToChatId(raw) {
@@ -52,8 +67,25 @@ function normalizeToChatId(raw) {
   return `${digits}@c.us`;
 }
 
+async function getStateSafe() {
+  try {
+    const s = await client.getState();
+    return s ? String(s) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 app.get("/status", async (_req, res) => {
-  res.json({ ready: !!ready, has_qr: !!(lastQr && !ready) });
+  const state = await getStateSafe();
+  const isConnected = state && String(state).toUpperCase() === "CONNECTED";
+  res.json({
+    ready: !!ready || !!isConnected,
+    state: state || "",
+    has_qr: !!(lastQr && !ready && !isConnected),
+    last_auth_at: lastAuthAt || "",
+    last_disconnect: lastDisconnect || null
+  });
 });
 
 app.get("/qr", async (_req, res) => {
@@ -74,7 +106,9 @@ app.get("/qr", async (_req, res) => {
 });
 
 app.get("/contacts", async (_req, res) => {
-  if (!ready) {
+  const state = await getStateSafe();
+  const isConnected = state && String(state).toUpperCase() === "CONNECTED";
+  if (!ready && !isConnected) {
     res.status(503).json({ error: "WhatsApp não conectado. Escaneie o QR Code." });
     return;
   }
@@ -101,7 +135,9 @@ app.get("/contacts", async (_req, res) => {
 });
 
 app.post("/send", async (req, res) => {
-  if (!ready) {
+  const state = await getStateSafe();
+  const isConnected = state && String(state).toUpperCase() === "CONNECTED";
+  if (!ready && !isConnected) {
     res.status(503).json({ error: "WhatsApp não conectado. Escaneie o QR Code." });
     return;
   }
