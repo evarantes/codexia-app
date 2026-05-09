@@ -97,6 +97,12 @@ def whatsapp_contacts(user: User = Depends(get_current_user)):
     return _bridge_request("GET", "/contacts")
 
 
+@router.post("/logout")
+def whatsapp_logout(user: User = Depends(get_current_user)):
+    _ = user
+    return _bridge_request("POST", "/logout")
+
+
 @router.post("/send-now")
 def whatsapp_send_now(request: WhatsAppSendNowRequest, user: User = Depends(get_current_user)):
     _ = user

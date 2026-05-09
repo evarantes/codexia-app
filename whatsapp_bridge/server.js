@@ -105,6 +105,28 @@ app.get("/qr", async (_req, res) => {
   }
 });
 
+app.post("/logout", async (_req, res) => {
+  try {
+    try {
+      await client.logout();
+    } catch (_) {}
+    try {
+      await client.destroy();
+    } catch (_) {}
+    lastQr = null;
+    ready = false;
+    lastDisconnect = { at: new Date().toISOString(), reason: "manual_logout" };
+    setTimeout(() => {
+      try {
+        client.initialize();
+      } catch (_) {}
+    }, 500);
+    res.json({ status: "ok" });
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.message ? e.message : e) });
+  }
+});
+
 app.get("/contacts", async (_req, res) => {
   const state = await getStateSafe();
   const isConnected = state && String(state).toUpperCase() === "CONNECTED";

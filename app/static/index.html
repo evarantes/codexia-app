@@ -3267,10 +3267,11 @@
                 <h2 class="text-2xl font-bold mb-2">Conectar WhatsApp</h2>
                 <p class="text-sm text-gray-600 mb-4">Abra o WhatsApp no celular → Dispositivos conectados → Conectar dispositivo e escaneie.</p>
                 <div class="bg-gray-50 border rounded p-4 flex items-center justify-center">
-                    <div v-if="!whatsappQrDataUrl" class="text-sm text-gray-600">Carregando QR...</div>
+                    <div v-if="!whatsappQrDataUrl" class="text-sm text-gray-600">Se já estiver conectado, clique em Fechar. Se quiser trocar a conexão, clique em Desconectar.</div>
                     <img v-else :src="whatsappQrDataUrl" class="w-72 h-72 object-contain" />
                 </div>
                 <div class="flex justify-end gap-2 mt-4">
+                    <button @click="logoutWhatsappBridge" :disabled="whatsappQrLoading" class="bg-white border px-4 py-2 rounded hover:bg-gray-50">Desconectar</button>
                     <button @click="refreshWhatsappQr" :disabled="whatsappQrLoading" class="bg-white border px-4 py-2 rounded hover:bg-gray-50">Atualizar</button>
                     <button @click="closeWhatsappQr" class="px-4 py-2 text-gray-600 hover:text-gray-800">Fechar</button>
                 </div>
@@ -7201,9 +7202,28 @@
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar QR.');
                         const durl = data.data_url || data.qr_data_url || data.qr || '';
                         this.whatsappQrDataUrl = String(durl || '');
-                        if (!this.whatsappQrDataUrl) throw new Error('QR não disponível. Se já estiver conectado, ignore.');
+                        if (!this.whatsappQrDataUrl) {
+                            if (data && data.ready === true) {
+                                return;
+                            }
+                            throw new Error('QR não disponível ainda. Aguarde alguns segundos e clique em Atualizar.');
+                        }
                     } catch (e) {
                         this.whatsappQrDataUrl = '';
+                        alert(e.message || String(e));
+                    } finally {
+                        this.whatsappQrLoading = false;
+                    }
+                },
+                async logoutWhatsappBridge() {
+                    this.whatsappQrLoading = true;
+                    try {
+                        const res = await this.authFetch('/whatsapp/logout', { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao desconectar WhatsApp.');
+                        this.whatsappQrDataUrl = '';
+                        alert('WhatsApp desconectado. Clique em Atualizar para gerar um novo QR.');
+                    } catch (e) {
                         alert(e.message || String(e));
                     } finally {
                         this.whatsappQrLoading = false;
