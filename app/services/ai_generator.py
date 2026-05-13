@@ -123,7 +123,11 @@ class AIContentGenerator:
                 "model": model_id,
                 "messages": messages,
                 "temperature": temperature,
+                "max_tokens": 4096,  # Aumentado para suportar vídeos longos (10+ min)
             }
+            if allow_json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            
             response = client.chat.completions.create(**kwargs)
             return response.choices[0].message.content
 
@@ -794,21 +798,28 @@ class AIContentGenerator:
         if max_m < min_m:
             max_m = min_m
 
-        min_words = min_m * 200
-        max_words = max_m * 200
+        # Usando 140 palavras por minuto (ritmo de narração calmo e envolvente)
+        min_words = min_m * 140
+        max_words = max_m * 160
 
         prompt = f"""
-        Escreva um(a) {safe_kind} ORIGINAL em português (pt-BR), para ser NARRADO em vídeo.
+        Escreva um(a) {safe_kind} ORIGINAL em português (pt-BR), para ser NARRADO em vídeo de longa duração.
+        
+        IMPORTANTE: O vídeo deve ter no mínimo {min_m} minutos. Para isso, você DEVE escrever um texto longo e detalhado.
+        NÃO resuma. Seja descritivo, use exemplos, analogias e aprofunde-se nos detalhes para garantir a extensão necessária.
 
         INSTRUÇÕES DO USUÁRIO (respeite exatamente):
         {instruction}
 
-        REGRAS:
-        - Objetivo: texto para narração (sem marcações, sem JSON, sem listas, sem títulos de seção).
-        - Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
-        - Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 200 palavras por minuto).
+        REGRAS DE EXTENSÃO:
+        - Objetivo: texto para narração contínua.
+        - Duração alvo do vídeo: {min_m} a {max_m} minutos.
+        - Tamanho alvo: entre {min_words} e {max_words} palavras.
+        - Escreva pelo menos {min_words} palavras. Se o texto for muito curto, o vídeo ficará incompleto.
+
+        ESTILO:
         - Escreva em parágrafos, com ritmo natural e envolvente.
-        - Não inclua nomes de marcas, links, nem instruções técnicas.
+        - Sem marcações técnicas, sem JSON, sem listas, sem títulos de seção.
         - Não escreva "Cena 1" / "Narrador:" / "Roteiro:".
 
         Retorne APENAS o texto final completo.
@@ -841,33 +852,33 @@ class AIContentGenerator:
         if not self.openrouter_key:
             return (original_text or "").strip() or "Texto (Simulação - Sem Chave)"
 
-        safe_kind = "história" if kind == "story" else "devocional"
         min_m = max(1, int(duration_min_minutes or 1))
         max_m = int(duration_max_minutes) if duration_max_minutes else min_m
         if max_m < min_m:
             max_m = min_m
 
-        min_words = min_m * 200
-        max_words = max_m * 200
+        # Usando 140 palavras por minuto (ritmo de narração calmo e envolvente)
+        min_words = min_m * 140
+        max_words = max_m * 160
 
         prompt = f"""
-        Você é um editor profissional de textos para narração em vídeo.
-        Reescreva e MELHORE o(a) {safe_kind} abaixo, mantendo o tema e o sentido, mas elevando:
-        - Clareza e fluidez
-        - Emoção e retenção
-        - Coerência e ritmo de narração
+        Você é um editor profissional de textos para narração em vídeo de longa duração.
+        Reescreva, MELHORE e EXPANDA o(a) {safe_kind} abaixo para atingir a duração desejada.
+        
+        IMPORTANTE: O vídeo deve ter no mínimo {min_m} minutos. Se o texto original for curto, você DEVE expandi-lo com detalhes, exemplos e descrições ricas. NÃO resuma.
 
         INSTRUÇÕES DO USUÁRIO (respeite exatamente):
         {instruction}
 
         Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
-        Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 150 palavras por minuto).
+        Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 140-160 palavras por minuto).
 
         TEXTO ORIGINAL:
         {original_text}
 
         REGRAS:
         - Retorne APENAS o texto final completo (sem explicações, sem JSON, sem listas).
+        - Escreva pelo menos {min_words} palavras.
         - Não inclua nomes de marcas, links, nem instruções técnicas.
         """
 

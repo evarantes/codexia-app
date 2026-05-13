@@ -27,9 +27,10 @@ class HumorProject(Base):
 
     title = Column(String, nullable=True)
     theme = Column(String, nullable=False)
+    project_type = Column(String, nullable=False, default="standup")  # standup | whatsapp_chat
     joke_source = Column(String, nullable=False, default="ai")  # ai | manual | mixed
     manual_jokes_text = Column(Text, nullable=True)
-    jokes_json = Column(Text, nullable=True)  # JSON array
+    jokes_json = Column(Text, nullable=True)  # JSON array (dialogue for chat)
     avatar_override_path = Column(String, nullable=True)
     opening_message = Column(Text, nullable=True)
     catchphrase_message = Column(Text, nullable=True)

@@ -1281,7 +1281,9 @@ class VideoGenerator:
                 bg_color = bg_colors[i % len(bg_colors)]
                 
                 # Gerar Audio da cena
+                start_audio = time.time()
                 audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
+                print(f"DEBUG: Audio da cena {i+1} gerado em {time.time() - start_audio:.2f}s")
                 
                 screen_text = ""
                 if isinstance(scene, dict):
@@ -1369,7 +1371,9 @@ class VideoGenerator:
                     faded.append(c)
                 clips = faded
                 try:
-                    final_clip = concatenate_videoclips(clips, method="compose", padding=-transition_sec)
+                    # Otimização: Usando method="chain" para vídeos muito longos reduz uso de RAM
+                    method = "compose" if len(clips) < 15 else "chain"
+                    final_clip = concatenate_videoclips(clips, method=method, padding=-transition_sec)
                 except Exception:
                     final_clip = concatenate_videoclips(clips, method="compose")
             else:
@@ -1378,6 +1382,9 @@ class VideoGenerator:
             # 4. Adicionar Música de Fundo
             if progress_callback:
                 progress_callback(90, "Adicionando trilha sonora...")
+            
+            # Limpeza agressiva de memória antes da renderização final
+            gc.collect()
                 
             music_mood = plan.get('music_mood', 'drama')
             music_path = None
@@ -1509,8 +1516,13 @@ class VideoGenerator:
             # Escreve o arquivo
             # threads=1 + preset ultrafast para reduzir memória e tempo (evita OOM no Render)
             print(f"Renderizando vídeo para: {output_path}")
+            
+            # Otimização adicional para vídeos longos: bitrates controlados para evitar arquivos gigantes
+            bitrate = "2000k" if len(clips) > 15 else "4000k"
+            
             final_clip.write_videofile(
                 output_path, fps=24, codec="libx264", audio_codec="aac", threads=1,
+                bitrate=bitrate,
                 ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
                 **logger_kw
             )

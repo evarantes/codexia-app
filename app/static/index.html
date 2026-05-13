@@ -3213,6 +3213,7 @@
                             <input v-model="whatsappContactsFilter" class="border rounded px-2 py-1 text-sm w-44" placeholder="Buscar...">
                         </div>
                         <div v-if="whatsappContactsLoading" class="text-sm text-gray-600">Carregando...</div>
+                        <div v-else-if="whatsappContactsInfo" class="text-xs text-gray-600 mb-2">{{ whatsappContactsInfo }}</div>
                         <div v-else class="max-h-72 overflow-auto space-y-1">
                             <label v-for="c in filteredWhatsAppContacts" :key="c.id" class="flex items-center gap-2 text-sm p-2 rounded hover:bg-gray-50 cursor-pointer">
                                 <input type="checkbox" :checked="isWhatsAppRecipientSelected(c)" @change="toggleWhatsAppRecipient(c)">
@@ -3642,6 +3643,9 @@
                     whatsappContactsLoading: false,
                     whatsappContacts: [],
                     whatsappContactsFilter: '',
+                    whatsappContactsInfo: '',
+                    whatsappContactsLoadAttempts: 0,
+                    whatsappContactsLoadTimer: null,
                     whatsappRecipients: [],
                     whatsappManualTo: '',
                     whatsappManualName: '',
@@ -7114,18 +7118,47 @@
                 },
                 async loadWhatsAppContacts() {
                     this.whatsappContactsLoading = true;
+                    this.whatsappContactsInfo = '';
                     try {
                         const res = await this.authFetch('/whatsapp/contacts');
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao carregar contatos.');
+                        if (data && data.loading === true) {
+                            this.whatsappContacts = [];
+                            const msg = String(data.message || '').trim();
+                            this.whatsappContactsInfo = msg || 'O WhatsApp ainda está carregando os contatos. Aguarde alguns segundos...';
+                            this.whatsappContactsLoadAttempts = (Number(this.whatsappContactsLoadAttempts) || 0) + 1;
+                            if (this.whatsappContactsLoadTimer) {
+                                try { clearTimeout(this.whatsappContactsLoadTimer); } catch (e) {}
+                                this.whatsappContactsLoadTimer = null;
+                            }
+                            if (this.whatsappContactsLoadAttempts <= 12) {
+                                this.whatsappContactsLoadTimer = setTimeout(() => {
+                                    this.loadWhatsAppContacts();
+                                }, 2500);
+                            }
+                            return;
+                        }
                         const items = Array.isArray(data.contacts) ? data.contacts : (Array.isArray(data.items) ? data.items : []);
                         this.whatsappContacts = items.map((c) => ({
                             id: c.id || c.chat_id || c.to || '',
                             number: c.number || c.phone || '',
                             name: c.name || c.pushname || ''
                         })).filter((c) => String(c.id || c.number).trim());
+                        this.whatsappContactsInfo = '';
+                        this.whatsappContactsLoadAttempts = 0;
+                        if (this.whatsappContactsLoadTimer) {
+                            try { clearTimeout(this.whatsappContactsLoadTimer); } catch (e) {}
+                            this.whatsappContactsLoadTimer = null;
+                        }
                     } catch (e) {
                         this.whatsappContacts = [];
+                        this.whatsappContactsInfo = '';
+                        this.whatsappContactsLoadAttempts = 0;
+                        if (this.whatsappContactsLoadTimer) {
+                            try { clearTimeout(this.whatsappContactsLoadTimer); } catch (er) {}
+                            this.whatsappContactsLoadTimer = null;
+                        }
                         alert(e.message || String(e));
                     } finally {
                         this.whatsappContactsLoading = false;

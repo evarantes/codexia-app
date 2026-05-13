@@ -39,6 +39,7 @@ class HumorProjectRequest(BaseModel):
     title: Optional[str] = None
     theme: Optional[str] = None
     themes: List[str] = Field(default_factory=list)
+    project_type: str = Field(default="standup")  # standup | whatsapp_chat
     joke_source: str = Field(default="ai")  # ai | manual | mixed
     manual_jokes_text: Optional[str] = None
     avatar_override_path: Optional[str] = None
@@ -69,7 +70,12 @@ def _parse_json_list(value: Optional[str]) -> List[str]:
 
 
 def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
-    jokes = _parse_json_list(p.jokes_json)
+    # Para chat, jokes_json pode ser um objeto complexo, então tentamos carregar como JSON bruto primeiro
+    try:
+        jokes = json.loads(p.jokes_json) if p.jokes_json else []
+    except Exception:
+        jokes = _parse_json_list(p.jokes_json)
+        
     themes = [x.strip() for x in str(p.theme or "").split("|") if x.strip()]
     return {
         "id": p.id,
@@ -77,6 +83,7 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         "title": p.title,
         "theme": p.theme,
         "themes": themes,
+        "project_type": p.project_type,
         "joke_source": p.joke_source,
         "manual_jokes_text": p.manual_jokes_text,
         "avatar_override_path": p.avatar_override_path,
@@ -210,6 +217,7 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
         channel_id=payload.channel_id,
         title=(payload.title or "").strip() or None,
         theme=" | ".join(themes),
+        project_type=payload.project_type,
         joke_source=source,
         manual_jokes_text=payload.manual_jokes_text or "",
         avatar_override_path=(payload.avatar_override_path or "").strip() or None,

@@ -9,6 +9,9 @@ let lastQr = null;
 let ready = false;
 let lastAuthAt = null;
 let lastDisconnect = null;
+let contactsCache = null;
+let contactsCacheAt = null;
+let contactsRefreshing = false;
 
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: "codexia" }),
@@ -48,6 +51,11 @@ client.on("ready", () => {
   lastQr = null;
   lastDisconnect = null;
   console.log("WA: ready");
+  setTimeout(() => {
+    try {
+      refreshContactsCache();
+    } catch (_) {}
+  }, 1500);
 });
 
 client.on("auth_failure", () => {
@@ -73,6 +81,36 @@ async function getStateSafe() {
     return s ? String(s) : null;
   } catch (_) {
     return null;
+  }
+}
+
+function sanitizeContacts(contacts) {
+  const out = [];
+  for (const c of contacts || []) {
+    try {
+      if (!c || !c.id || !c.id._serialized) continue;
+      const isUser = c.isUser === true;
+      const isGroup = c.isGroup === true;
+      if (!isUser || isGroup) continue;
+      const serialized = String(c.id._serialized);
+      const number = serialized.endsWith("@c.us") ? serialized.replace("@c.us", "") : serialized;
+      const name = String(c.pushname || c.name || number);
+      out.push({ id: serialized, number, name });
+    } catch (_) {}
+  }
+  out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return out;
+}
+
+async function refreshContactsCache() {
+  if (contactsRefreshing) return;
+  contactsRefreshing = true;
+  try {
+    const contacts = await client.getContacts();
+    contactsCache = sanitizeContacts(contacts);
+    contactsCacheAt = new Date().toISOString();
+  } finally {
+    contactsRefreshing = false;
   }
 }
 
@@ -106,25 +144,35 @@ app.get("/qr", async (_req, res) => {
 });
 
 app.post("/logout", async (_req, res) => {
-  try {
+  lastQr = null;
+  ready = false;
+  lastDisconnect = { at: new Date().toISOString(), reason: "manual_logout" };
+  contactsCache = null;
+  contactsCacheAt = null;
+  res.json({ status: "ok" });
+
+  const withTimeout = async (p, ms) => {
+    return await Promise.race([
+      p,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))
+    ]);
+  };
+
+  (async () => {
     try {
-      await client.logout();
-    } catch (_) {}
-    try {
-      await client.destroy();
-    } catch (_) {}
-    lastQr = null;
-    ready = false;
-    lastDisconnect = { at: new Date().toISOString(), reason: "manual_logout" };
-    setTimeout(() => {
       try {
-        client.initialize();
+        await withTimeout(client.logout(), 4000);
       } catch (_) {}
-    }, 500);
-    res.json({ status: "ok" });
-  } catch (e) {
-    res.status(500).json({ error: String(e && e.message ? e.message : e) });
-  }
+      try {
+        await withTimeout(client.destroy(), 4000);
+      } catch (_) {}
+      setTimeout(() => {
+        try {
+          client.initialize();
+        } catch (_) {}
+      }, 500);
+    } catch (_) {}
+  })();
 });
 
 app.get("/contacts", async (_req, res) => {
@@ -134,26 +182,30 @@ app.get("/contacts", async (_req, res) => {
     res.status(503).json({ error: "WhatsApp não conectado. Escaneie o QR Code." });
     return;
   }
-  try {
-    const contacts = await client.getContacts();
-    const out = [];
-    for (const c of contacts || []) {
-      try {
-        if (!c || !c.id || !c.id._serialized) continue;
-        const isUser = c.isUser === true;
-        const isGroup = c.isGroup === true;
-        if (!isUser || isGroup) continue;
-        const serialized = String(c.id._serialized);
-        const number = serialized.endsWith("@c.us") ? serialized.replace("@c.us", "") : serialized;
-        const name = String(c.pushname || c.name || number);
-        out.push({ id: serialized, number, name });
-      } catch (_) {}
-    }
-    out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    res.json({ contacts: out });
-  } catch (e) {
-    res.status(500).json({ error: String(e && e.message ? e.message : e) });
+  const forceRefresh = String((_req.query && _req.query.refresh) || "").trim() === "1";
+  const now = Date.now();
+  const cacheAgeMs = contactsCacheAt ? Math.max(0, now - Date.parse(contactsCacheAt)) : null;
+  const cacheFresh = cacheAgeMs !== null && cacheAgeMs < 10 * 60 * 1000;
+  if (!forceRefresh && contactsCache && cacheFresh) {
+    res.json({ contacts: contactsCache, cached: true, cached_at: contactsCacheAt || "" });
+    return;
   }
+  if (!forceRefresh && contactsCache) {
+    try {
+      refreshContactsCache();
+    } catch (_) {}
+    res.json({ contacts: contactsCache, cached: true, cached_at: contactsCacheAt || "" });
+    return;
+  }
+  try {
+    refreshContactsCache();
+  } catch (_) {}
+  res.json({
+    contacts: [],
+    loading: true,
+    cached: false,
+    cached_at: contactsCacheAt || ""
+  });
 });
 
 app.post("/send", async (req, res) => {

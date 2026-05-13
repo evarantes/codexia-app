@@ -3332,7 +3332,9 @@ def process_video_generation(request: VideoRequest, task_id):
                 except Exception:
                     m = 1
                 m = max(1, m)
-                return max(4, min(20, int(math.ceil(float(m) / 2.0))))
+                # Para vídeos longos, precisamos de mais cenas para manter o engajamento.
+                # Recomendado: 2 a 3 cenas por minuto.
+                return max(6, min(80, int(m * 2.5)))
 
             def _compact_scenes(raw: Any, target_count: int) -> List[Dict[str, Any]]:
                 scenes_in: List[Dict[str, Any]] = []

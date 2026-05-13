@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -29,17 +30,41 @@ def _bridge_request(method: str, path: str, json_body: Optional[Dict[str, Any]] 
             detail="WhatsApp não configurado. Defina WHATSAPP_BRIDGE_URL (ex.: http://whatsapp_bridge:3030).",
         )
     url = f"{base}{path}"
-    timeout = 6
-    try:
-        p = str(path or "").strip().lower()
-        if p.startswith("/send"):
-            timeout = 45
-    except Exception:
-        timeout = 6
-    try:
-        r = requests.request(method.upper(), url, json=json_body, timeout=timeout)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Falha ao conectar no WhatsApp Bridge: {str(e)}")
+    timeout = 10
+    p = str(path or "").strip().lower()
+    if p.startswith("/send"):
+        timeout = 120
+    elif p.startswith("/contacts"):
+        timeout = 20
+    elif p.startswith("/qr"):
+        timeout = 20
+    elif p.startswith("/logout"):
+        timeout = 20
+
+    last_err: Optional[Exception] = None
+    r = None
+    for attempt in range(2):
+        try:
+            r = requests.request(method.upper(), url, json=json_body, timeout=timeout)
+            last_err = None
+            break
+        except requests.exceptions.Timeout as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            break
+        except Exception as e:
+            last_err = e
+            break
+    if last_err is not None or r is None:
+        msg = str(last_err) if last_err is not None else "Erro desconhecido."
+        if isinstance(last_err, requests.exceptions.Timeout):
+            raise HTTPException(
+                status_code=503,
+                detail=f"WhatsApp Bridge demorou para responder. Tente novamente (timeout={timeout}s). Detalhe: {msg}",
+            )
+        raise HTTPException(status_code=503, detail=f"Falha ao conectar no WhatsApp Bridge: {msg}")
     data = None
     try:
         data = r.json()
@@ -94,7 +119,14 @@ def whatsapp_qr(user: User = Depends(get_current_user)):
 @router.get("/contacts")
 def whatsapp_contacts(user: User = Depends(get_current_user)):
     _ = user
-    return _bridge_request("GET", "/contacts")
+    try:
+        return _bridge_request("GET", "/contacts")
+    except HTTPException as e:
+        msg = str(getattr(e, "detail", "") or "")
+        low = msg.lower()
+        if "getcontacts" in low or ("contato" in low and ("carreg" in low or "timeout" in low or "demorou" in low)):
+            return {"contacts": [], "loading": True, "message": msg}
+        raise
 
 
 @router.post("/logout")
