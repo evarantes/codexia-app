@@ -352,6 +352,7 @@ def run_migrations(engine):
                     "catchphrase_message": "TEXT",
                     "catchphrases_json": "TEXT",
                     "closing_message": "TEXT",
+                    "project_type": "VARCHAR(50)",
                 }
                 with engine.connect() as conn:
                     for col_name, col_type in extra_cols.items():
