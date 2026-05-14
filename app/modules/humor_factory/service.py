@@ -7,7 +7,7 @@ import traceback
 import uuid
 import wave
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
 from PIL import Image, ImageDraw

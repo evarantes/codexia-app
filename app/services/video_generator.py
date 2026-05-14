@@ -1106,11 +1106,21 @@ class VideoGenerator:
 
                     if img_path and os.path.exists(img_path):
                         # Criar clip
-                        clip = self._set_clip_duration(ImageClip(img_path), duration)
-                        clip = self._apply_ken_burns(clip, video_size)
-                        clips.append(clip)
+                        try:
+                            img_clip = ImageClip(img_path)
+                            clip = self._set_clip_duration(img_clip, duration)
+                            clip = self._apply_ken_burns(clip, video_size)
+                            clips.append(clip)
+                            # Não fechamos o clip aqui porque ele será concatenado depois
+                        except Exception as e:
+                            print(f"Erro ao criar clip da cena {i+1}: {e}")
+                            if 'img_clip' in locals(): img_clip.close()
                     else:
                         raise Exception("Falha ao gerar imagem da cena musical com OpenAI.")
+                    
+                    # Limpeza de memória periódica em loops longos
+                    if i % 5 == 0:
+                        gc.collect()
                 
                 # Concatenar clips visuais
                 if clips:
@@ -1324,6 +1334,13 @@ class VideoGenerator:
                     
                 clips.append(clip_scene)
                 
+                # Fechar objetos temporários para liberar RAM
+                try:
+                    if audio_clip_scene: audio_clip_scene.close()
+                    # bg_clip e overlay_clip estão dentro de clip_scene, não fechamos agora
+                except:
+                    pass
+                
                 # Limpeza de imagens temporárias
                 if bg_image_path and "temp_" in bg_image_path and bg_image_path not in cached_temp_paths:
                     try:
@@ -1518,12 +1535,26 @@ class VideoGenerator:
             print(f"Renderizando vídeo para: {output_path}")
             
             # Otimização adicional para vídeos longos: bitrates controlados para evitar arquivos gigantes
-            bitrate = "2000k" if len(clips) > 15 else "4000k"
+            # Para vídeos > 10 min, usamos bitrate menor para economizar RAM e disco
+            is_long_video = len(clips) > 25
+            bitrate = "1800k" if is_long_video else "3500k"
+            
+            # Logger customizado para não entupir a RAM com strings de log
+            logger_kw = {"logger": None}
             
             final_clip.write_videofile(
-                output_path, fps=24, codec="libx264", audio_codec="aac", threads=1,
+                output_path, 
+                fps=24, 
+                codec="libx264", 
+                audio_codec="aac", 
+                threads=1, # IMPORTANTE: 1 thread usa MUITO menos RAM que múltiplas
                 bitrate=bitrate,
-                ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
+                ffmpeg_params=[
+                    "-preset", "ultrafast", 
+                    "-movflags", "+faststart", 
+                    "-pix_fmt", "yuv420p",
+                    "-tune", "stillimage" if is_long_video else "film"
+                ],
                 **logger_kw
             )
             output_path = self._ensure_playable_mp4(output_path)
