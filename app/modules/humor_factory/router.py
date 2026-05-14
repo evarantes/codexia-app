@@ -43,6 +43,8 @@ class HumorProjectRequest(BaseModel):
     joke_source: str = Field(default="ai")  # ai | manual | mixed
     manual_jokes_text: Optional[str] = None
     avatar_override_path: Optional[str] = None
+    target_minutes: Optional[int] = 10
+    start_immediately: bool = True
     opening_message: Optional[str] = None
     catchphrase_message: Optional[str] = None
     catchphrases: List[str] = Field(default_factory=list)
@@ -215,7 +217,7 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
     target_minutes = max(10, int(payload.target_minutes or 10))
     project = HumorProject(
         channel_id=payload.channel_id,
-        title=(payload.title or "").strip() or None,
+        title=(payload.title or f"Projeto {datetime.now().strftime('%d/%m %H:%M')}").strip(),
         theme=" | ".join(themes),
         project_type=payload.project_type,
         joke_source=source,
@@ -227,16 +229,24 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
         closing_message=(payload.closing_message or "").strip() or None,
         target_minutes=target_minutes,
         auto_publish_after_review=bool(payload.auto_publish_after_review),
-        status="queued",
+        status="queued" if payload.start_immediately else "review",
         progress=0,
-        status_message="Projeto criado. Aguardando geração do vídeo...",
+        status_message="Projeto criado. Aguardando processamento...",
     )
     db.add(project)
     db.commit()
     db.refresh(project)
 
-    if payload.start_immediately:
-        background_tasks.add_task(get_service().generate_project_video, project.id)
+    from app.redis_client import queue as rq_queue
+    if rq_queue:
+        from app.modules.humor_factory.service import HumorFactoryService
+        service = HumorFactoryService()
+        if payload.start_immediately:
+            rq_queue.enqueue(service.generate_project_video, project.id)
+        else:
+            # Se for apenas roteiro, gera o roteiro em background mas não o vídeo
+            rq_queue.enqueue(service.generate_chat_script_for_project, project.id)
+
     return _project_to_dict(project)
 
 
@@ -254,18 +264,37 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     return _project_to_dict(row)
 
 
-@router.post("/projects/{project_id}/generate")
-def regenerate_project(project_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    row = db.query(HumorProject).filter(HumorProject.id == project_id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
-    row.status = "queued"
-    row.progress = 0
-    row.status_message = "Regeneração solicitada."
-    row.updated_at = datetime.now()
+@router.post("/projects/{project_id}/generate-video")
+def start_video_generation(project_id: int, db: Session = Depends(get_db)):
+    p = db.query(HumorProject).filter(HumorProject.id == project_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Projeto não encontrado")
+    
+    # Aqui chamamos o worker para gerar o vídeo
+    from app.redis_client import queue as rq_queue
+    from app.modules.humor_factory.service import HumorFactoryService
+    
+    p.status = "queued"
+    p.progress = 0
+    p.status_message = "Aguardando processamento do vídeo..."
     db.commit()
-    background_tasks.add_task(get_service().generate_project_video, project_id)
-    return {"status": "queued", "message": "Regeneração iniciada em background."}
+    
+    if rq_queue:
+        service = HumorFactoryService()
+        rq_queue.enqueue(service.generate_project_video, p.id)
+        
+    return {"status": "queued"}
+
+@router.post("/projects/{project_id}/cancel")
+def cancel_project(project_id: int, db: Session = Depends(get_db)):
+    p = db.query(HumorProject).filter(HumorProject.id == project_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Projeto não encontrado")
+    
+    p.status = "failed"
+    p.status_message = "Cancelado pelo usuário"
+    db.commit()
+    return {"status": "cancelled"}
 
 
 @router.post("/projects/{project_id}/approve")
@@ -314,14 +343,11 @@ def publish_project(project_id: int):
 
 @router.delete("/projects/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db)):
-    row = db.query(HumorProject).filter(HumorProject.id == project_id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
-    if row.video_path and os.path.exists(row.video_path):
-        try:
-            os.remove(row.video_path)
-        except Exception:
-            pass
-    db.delete(row)
+    p = db.query(HumorProject).filter(HumorProject.id == project_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Projeto não encontrado")
+    
+    # Se estiver gerando, tentamos "cancelar" mudando o status
+    db.delete(p)
     db.commit()
     return {"status": "deleted"}

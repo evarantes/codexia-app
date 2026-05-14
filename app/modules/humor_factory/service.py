@@ -189,7 +189,7 @@ Retorne APENAS um JSON no formato:
         except Exception:
             return None
 
-    def generate_chat_video(self, project_id: int):
+    def generate_chat_script_for_project(self, project_id: int):
         db = SessionLocal()
         project = None
         try:
@@ -198,17 +198,51 @@ Retorne APENAS um JSON no formato:
                 return
 
             project.status = "generating"
-            self._set_progress(db, project, 10, "Gerando roteiro do chat absurdo...")
+            self._set_progress(db, project, 20, "Gerando apenas o roteiro do chat...")
 
             script_data = self.generate_chat_script(project.theme)
             if not script_data or "dialogo" not in script_data:
                 raise RuntimeError("Falha ao gerar o roteiro do chat.")
 
             project.jokes_json = json.dumps(script_data, ensure_ascii=False)
-            self._set_progress(db, project, 30, "Roteiro gerado. Iniciando geração de áudios...")
+            project.status = "review"
+            self._set_progress(db, project, 100, "Roteiro pronto para análise.")
+            
+        except Exception as e:
+            if project:
+                project.status = "failed"
+                project.status_message = f"Erro no roteiro: {str(e)}"
+                db.commit()
+        finally:
+            db.close()
+    def generate_chat_video(self, project_id: int):
+        db = SessionLocal()
+        project = None
+        try:
+            project = db.query(HumorProject).filter(HumorProject.id == project_id).first()
+            if not project:
+                return
+
+            # Se ainda não tem roteiro, gera primeiro
+            script_data = None
+            if not project.jokes_json:
+                project.status = "generating"
+                self._set_progress(db, project, 10, "Gerando roteiro do chat absurdo...")
+                script_data = self.generate_chat_script(project.theme)
+                if not script_data or "dialogo" not in script_data:
+                    raise RuntimeError("Falha ao gerar o roteiro do chat.")
+                project.jokes_json = json.dumps(script_data, ensure_ascii=False)
+                db.commit()
+            else:
+                try:
+                    script_data = json.loads(project.jokes_json)
+                except:
+                    raise RuntimeError("Roteiro inválido no banco de dados.")
+
+            project.status = "generating"
+            self._set_progress(db, project, 30, "Roteiro preparado. Iniciando geração de áudios...")
 
             # ... resto da implementação da montagem do vídeo ...
-            # Por enquanto vou marcar como falha para não travar o worker se eu esquecer algo
             # project.status = "failed"
             # project.status_message = "Em desenvolvimento: Geração de vídeo chat."
             # db.commit()

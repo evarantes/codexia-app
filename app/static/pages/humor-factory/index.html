@@ -132,9 +132,26 @@
                         <label class="text-sm font-semibold text-emerald-900">Título do Vídeo</label>
                         <input v-model="newProject.title" class="w-full border rounded p-2 mt-1" placeholder="Ex: O Remédio para Sede">
                     </div>
-                    <button @click="createProject" :disabled="creatingProject" class="w-full bg-emerald-600 text-white font-bold py-3 rounded-lg hover:bg-emerald-700 shadow-md transition-all active:scale-95 disabled:opacity-50">
-                        <i v-if="creatingProject" class="fas fa-spinner fa-spin mr-2"></i> GERAR ROTEIRO E VÍDEO CHAT
-                    </button>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-sm font-semibold text-emerald-900">Duração do roteiro (min)</label>
+                            <input v-model.number="newProject.target_minutes" type="number" min="1" max="15" class="w-full border rounded p-2 mt-1 focus:ring-2 focus:ring-emerald-500 outline-none">
+                        </div>
+                        <div class="flex items-end">
+                            <label class="inline-flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" v-model="newProject.start_immediately" class="w-4 h-4 text-emerald-600">
+                                <span class="text-xs text-emerald-800 font-semibold">Gerar vídeo imediatamente</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="flex gap-2">
+                        <button @click="createProject(false)" :disabled="creatingProject" class="flex-1 bg-white text-emerald-700 border-2 border-emerald-600 font-bold py-2 rounded-lg hover:bg-emerald-50 transition-all disabled:opacity-50">
+                            <i v-if="creatingProject" class="fas fa-spinner fa-spin mr-2"></i> APENAS ROTEIRO
+                        </button>
+                        <button @click="createProject(true)" :disabled="creatingProject" class="flex-2 bg-emerald-600 text-white font-bold py-2 rounded-lg hover:bg-emerald-700 shadow-md transition-all active:scale-95 disabled:opacity-50">
+                            <i v-if="creatingProject" class="fas fa-spinner fa-spin mr-2"></i> GERAR ROTEIRO + VÍDEO
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Campos Originais (Ocultos no modo chat) -->
@@ -246,13 +263,15 @@
                             <td class="p-3 text-xs text-gray-600 max-w-xs">{{ p.status_message || '-' }}</td>
                             <td class="p-3">
                                 <div class="flex flex-wrap gap-2">
-                                    <button v-if="p.project_type === 'whatsapp_chat'" @click="openChatPreview(p)" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200"><i class="fas fa-comment-dots mr-1"></i> Ver Chat</button>
+                                    <button v-if="p.project_type === 'whatsapp_chat'" @click="openChatPreview(p)" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200" title="Ver roteiro do chat"><i class="fas fa-comment-dots mr-1"></i> Ver Chat</button>
+                                    <button v-if="p.project_type === 'whatsapp_chat' && (p.status === 'review' || p.status === 'failed')" @click="generateVideo(p)" class="px-2 py-1 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200" title="Gerar vídeo a partir deste roteiro"><i class="fas fa-video mr-1"></i> Gerar Vídeo</button>
                                     <button v-if="p.scheduled_video_id" @click="watchProject(p)" class="px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200">Ver Vídeo</button>
                                     <button v-if="p.status === 'review'" @click="approveProject(p, false)" class="px-2 py-1 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200">Aprovar</button>
                                     <button v-if="p.status === 'review' || p.status === 'approved'" @click="approveProject(p, true)" class="px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200">Aprovar + Publicar</button>
                                     <button v-if="p.status === 'approved' || p.status === 'review'" @click="publishProject(p)" class="px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">Publicar agora</button>
-                                    <button v-if="p.status === 'failed' || p.status === 'rejected'" @click="regenerateProject(p)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">Refazer</button>
-                                    <button v-if="p.status === 'review' || p.status === 'approved'" @click="rejectProject(p)" class="px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">Rejeitar</button>
+                                    <button v-if="p.status === 'failed' || p.status === 'rejected'" @click="regenerateProject(p)" class="px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200" title="Tentar gerar roteiro novamente">Refazer</button>
+                                    <button v-if="p.status === 'generating' || p.status === 'queued' || p.status === 'publishing'" @click="cancelProject(p)" class="px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200" title="Cancelar processo atual">Cancelar</button>
+                                    <button @click="deleteProject(p)" class="px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100" title="Excluir projeto permanentemente"><i class="fas fa-trash"></i></button>
                                 </div>
                             </td>
                         </tr>
@@ -588,35 +607,65 @@ createApp({
                 alert("Erro ao enviar imagem fixa: " + (e.message || e));
             }
         },
-        async createProject() {
+        async createProject(startImmediately = true) {
+            if (this.creatingProject) return;
             this.creatingProject = true;
             try {
-                const themes = Array.isArray(this.newProject.themes) ? [...this.newProject.themes] : [];
-                const custom = (this.customTheme || "").trim();
-                if (custom) themes.push(custom);
-                const uniqThemes = [...new Set(themes.map(t => String(t).trim()).filter(Boolean))];
-                if (uniqThemes.length === 0) throw new Error("Selecione pelo menos um tema.");
-                const catchphrases = this.channelCatchphrases.map(x => String(x).trim()).filter(Boolean);
                 const payload = {
                     ...this.newProject,
-                    themes: uniqThemes,
-                    catchphrases,
-                    channel_id: this.channel.id || null,
+                    theme: (this.customTheme || this.newProject.themes.join('|')),
+                    start_immediately: startImmediately
                 };
+                
+                // No modo chat absurdo, o tema é o que está no textarea do emerald-50
+                if (this.newProject.project_type === 'whatsapp_chat') {
+                    payload.theme = this.newProject.theme;
+                }
+
                 const res = await this.authFetch("/humor-factory/projects", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || "Falha ao criar projeto.");
-                alert("Projeto criado! A produção foi iniciada e ficará na fila de revisão.");
-                this.fetchProjects();
+                if (res.ok) {
+                    this.fetchProjects();
+                    this.customTheme = "";
+                    if (this.newProject.project_type === 'whatsapp_chat') {
+                        // Limpa apenas o título, mantém o tema para facilitar refazer se quiser
+                        this.newProject.title = "";
+                    }
+                } else {
+                    const err = await res.json();
+                    alert("Erro ao criar projeto: " + (err.detail || "Erro desconhecido"));
+                }
             } catch (e) {
-                alert("Erro ao criar projeto: " + (e.message || e));
+                console.error(e);
+                alert("Erro de conexão.");
             } finally {
                 this.creatingProject = false;
             }
+        },
+        async deleteProject(project) {
+            if (!confirm(`Deseja realmente excluir o projeto #${project.id}?`)) return;
+            try {
+                const res = await this.authFetch(`/humor-factory/projects/${project.id}`, { method: "DELETE" });
+                if (res.ok) this.fetchProjects();
+            } catch (e) { console.error(e); }
+        },
+        async cancelProject(project) {
+            try {
+                const res = await this.authFetch(`/humor-factory/projects/${project.id}/cancel", { method: "POST" });
+                if (res.ok) this.fetchProjects();
+            } catch (e) { console.error(e); }
+        },
+        async generateVideo(project) {
+            try {
+                const res = await this.authFetch(`/humor-factory/projects/${project.id}/generate-video`, { method: "POST" });
+                if (res.ok) {
+                    this.fetchProjects();
+                    alert("Geração de vídeo iniciada!");
+                }
+            } catch (e) { console.error(e); }
         },
         async fetchProjects() {
             try {
