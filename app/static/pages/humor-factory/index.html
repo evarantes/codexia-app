@@ -654,7 +654,7 @@ createApp({
         },
         async cancelProject(project) {
             try {
-                const res = await this.authFetch(`/humor-factory/projects/${project.id}/cancel", { method: "POST" });
+                const res = await this.authFetch(`/humor-factory/projects/${project.id}/cancel`, { method: "POST" });
                 if (res.ok) this.fetchProjects();
             } catch (e) { console.error(e); }
         },
