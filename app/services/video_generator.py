@@ -420,12 +420,35 @@ class VideoGenerator:
         elif style in ["robotic", "robotica", "robótica"]:
             openai_voice = None
 
+        def _infer_voice_settings(txt: str, is_male: bool) -> dict:
+            t = (txt or "").lower()
+            excls = t.count("!")
+            qmarks = t.count("?")
+            stress_words = ["meu deus", "pelo amor", "socorro", "urgente", "não acredito", "absurdo", "tá doido", "ta doido", "sério", "serio", "para", "pare", "calma", "relaxa"]
+            drama_hits = sum(1 for w in stress_words if w in t)
+            excited = excls >= 1
+            skeptical = qmarks >= 1 and ("como" in t or "por quê" in t or "porque" in t)
+            base_style = 0.55 if excited or skeptical or drama_hits else 0.35
+            base_stability = 0.25 if drama_hits or excited else 0.35
+            if "calma" in t or "relaxa" in t:
+                base_style = 0.28
+                base_stability = 0.45
+            if not is_male:
+                base_style = min(0.9, base_style + 0.05)
+            return {
+                "stability": float(max(0.15, min(0.6, base_stability))),
+                "similarity_boost": 0.85,
+                "style": float(max(0.2, min(0.95, base_style))),
+                "use_speaker_boost": True,
+            }
+
         # 1. ElevenLabs/OpenAI TTS (ai_service tenta ElevenLabs primeiro, depois OpenAI)
         # Importante: não depende de OPENAI_API_KEY para usar ElevenLabs.
         if openai_voice and self.ai_service and hasattr(self.ai_service, "generate_audio"):
             try:
                 print(f"Tentando TTS premium ({openai_voice})...")
-                audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice)
+                voice_settings = _infer_voice_settings(clean_text, is_male=(gender == "male"))
+                audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice, voice_settings=voice_settings)
                 if audio_content:
                     filename = f"{uuid.uuid4()}.mp3"
                     path = os.path.join(self.output_dir, filename)

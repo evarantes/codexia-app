@@ -2113,23 +2113,23 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             print("OPENAI IMAGE ERROR RAW:", repr(e))
             raise Exception(friendly_error)
 
-    def generate_audio(self, text, voice="onyx"):
+    def generate_audio(self, text, voice="onyx", voice_settings: Optional[Dict[str, Any]] = None):
         """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""
         self._load_config()
 
         if self.edenai_key:
-            audio_content = self._generate_audio_edenai_elevenlabs(text, voice)
+            audio_content = self._generate_audio_edenai_elevenlabs(text, voice, voice_settings=voice_settings)
             if audio_content:
                 return audio_content
 
         if self.elevenlabs_key:
-            audio_content = self._generate_audio_elevenlabs(text, voice)
+            audio_content = self._generate_audio_elevenlabs(text, voice, voice_settings=voice_settings)
             if audio_content:
                 return audio_content
 
         return None
 
-    def _generate_audio_edenai_elevenlabs(self, text: str, voice_hint: str = "onyx"):
+    def _generate_audio_edenai_elevenlabs(self, text: str, voice_hint: str = "onyx", voice_settings: Optional[Dict[str, Any]] = None):
         if not (self.edenai_key or "").strip() or not text or not text.strip():
             return None
         try:
@@ -2181,7 +2181,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             print(f"Eden AI TTS error: {e}")
             return None
 
-    def _generate_audio_elevenlabs(self, text: str, voice_hint: str = "onyx"):
+    def _generate_audio_elevenlabs(self, text: str, voice_hint: str = "onyx", voice_settings: Optional[Dict[str, Any]] = None):
         """Gera áudio usando ElevenLabs API (vozes ultra-realistas)."""
         if not self.elevenlabs_key or not text or not text.strip():
             return None
@@ -2207,15 +2207,21 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 voice_id = env_voice_default or voice_map.get(hint, env_voice_female or "EXAVITQu4vr4xnSDxMaL")
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             headers = {"xi-api-key": self.elevenlabs_key, "Content-Type": "application/json"}
+            settings = {
+                "stability": 0.35,
+                "similarity_boost": 0.85,
+                "style": 0.35,
+                "use_speaker_boost": True,
+            }
+            if isinstance(voice_settings, dict):
+                for k in ("stability", "similarity_boost", "style", "use_speaker_boost"):
+                    if k in voice_settings:
+                        settings[k] = voice_settings[k]
+
             payload = {
                 "text": text[:5000],
                 "model_id": "eleven_multilingual_v2",
-                "voice_settings": {
-                    "stability": 0.35,
-                    "similarity_boost": 0.85,
-                    "style": 0.35,
-                    "use_speaker_boost": True,
-                },
+                "voice_settings": settings,
             }
             r = requests.post(url, json=payload, headers=headers, timeout=30)
             if r.status_code == 200:
