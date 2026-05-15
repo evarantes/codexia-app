@@ -168,6 +168,7 @@ Regras:
 - Diálogo curto e dinâmico ({turns} falas).
 - Um dos personagens deve apresentar um produto ou ideia que "resolve" um problema de forma ridícula.
 - O tom deve ser de surpresa e indignação.
+- Use pontuação expressiva (ex: "?!", "...", "!") e interjeições naturais (ex: "ué", "oxi", "meu Deus") para ajudar na emoção do áudio, sem exagerar.
 
 Retorne APENAS um JSON no formato:
 {{
@@ -348,7 +349,12 @@ Retorne APENAS um JSON no formato:
                 audio_cfg = str((msg or {}).get("audio_config") or "").strip().lower()
                 author = str((msg or {}).get("autor") or "").strip().lower()
                 voice_gender = "female" if ("female" in audio_cfg or author in {"mãe", "mae", "mãe ", "mae "} or author == "mãe") else "male"
-                audio_path = video_gen.generate_audio(txt, voice_style="human", voice_gender=voice_gender)
+                style_tag = "human"
+                if "young" in audio_cfg or "jovem" in audio_cfg or author in {"filho"}:
+                    style_tag = "human_young"
+                elif "mature" in audio_cfg or "madura" in audio_cfg or "indign" in audio_cfg or author in {"mãe", "mae"}:
+                    style_tag = "human_mature"
+                audio_path = video_gen.generate_audio(txt, voice_style=style_tag, voice_gender=voice_gender)
                 if audio_path:
                     temp_files.append(audio_path)
                 if not audio_path or not os.path.exists(audio_path):

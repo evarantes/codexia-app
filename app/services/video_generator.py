@@ -411,7 +411,7 @@ class VideoGenerator:
         openai_voice = "onyx"
         if style in ["my_voice", "myvoice", "minha_voz", "minhavoz"]:
             openai_voice = "my_voice"
-        elif style in ["human", "humana"]:
+        elif style in ["human", "humana"] or style.startswith("human"):
             openai_voice = "onyx" if gender == "male" else "nova"
         elif style in ["child", "infantil"]:
             openai_voice = "echo" if gender == "male" else "shimmer"
@@ -420,34 +420,113 @@ class VideoGenerator:
         elif style in ["robotic", "robotica", "robótica"]:
             openai_voice = None
 
-        def _infer_voice_settings(txt: str, is_male: bool) -> dict:
+        def _infer_voice_settings(txt: str, is_male: bool, style_tag: str) -> dict:
             t = (txt or "").lower()
             excls = t.count("!")
             qmarks = t.count("?")
-            stress_words = ["meu deus", "pelo amor", "socorro", "urgente", "não acredito", "absurdo", "tá doido", "ta doido", "sério", "serio", "para", "pare", "calma", "relaxa"]
+            caps = sum(1 for ch in (txt or "") if ch.isalpha() and ch.isupper())
+            letters = sum(1 for ch in (txt or "") if ch.isalpha())
+            caps_ratio = (caps / max(1, letters))
+            stress_words = [
+                "meu deus", "pelo amor", "socorro", "urgente", "não acredito", "nao acredito",
+                "absurdo", "tá doido", "ta doido", "sério", "serio", "para", "pare",
+                "calma", "relaxa", "mentira", "que isso", "que é isso", "não", "nao",
+            ]
             drama_hits = sum(1 for w in stress_words if w in t)
-            excited = excls >= 1
+            excited = excls >= 1 or caps_ratio >= 0.14 or "!!" in (txt or "") or "??" in (txt or "")
             skeptical = qmarks >= 1 and ("como" in t or "por quê" in t or "porque" in t)
-            base_style = 0.55 if excited or skeptical or drama_hits else 0.35
-            base_stability = 0.25 if drama_hits or excited else 0.35
+            tag = (style_tag or "").lower()
+            base_style = 0.92 if (excited or drama_hits >= 2) else (0.78 if (drama_hits >= 1 or skeptical) else 0.55)
+            base_stability = 0.18 if (excited or drama_hits >= 2) else (0.22 if (drama_hits >= 1 or skeptical) else 0.32)
             if "calma" in t or "relaxa" in t:
-                base_style = 0.28
-                base_stability = 0.45
+                base_style = 0.42
+                base_stability = 0.55
+            if "young" in tag or "jovem" in tag:
+                base_style = min(0.95, base_style + 0.12)
+                base_stability = max(0.15, base_stability - 0.06)
+            if "mature" in tag or "madura" in tag or "indign" in tag:
+                base_style = min(0.95, base_style + 0.08)
+                base_stability = max(0.15, base_stability - 0.03)
             if not is_male:
                 base_style = min(0.9, base_style + 0.05)
             return {
-                "stability": float(max(0.15, min(0.6, base_stability))),
-                "similarity_boost": 0.85,
-                "style": float(max(0.2, min(0.95, base_style))),
+                "stability": float(max(0.12, min(0.62, base_stability))),
+                "similarity_boost": 0.92,
+                "style": float(max(0.25, min(0.95, base_style))),
                 "use_speaker_boost": True,
             }
+
+        def _infer_edge_prosody(txt: str, is_male: bool, style_tag: str) -> tuple:
+            t = (txt or "").lower()
+            excls = t.count("!")
+            qmarks = t.count("?")
+            drama = any(k in t for k in ["meu deus", "pelo amor", "socorro", "absurdo", "não acredito", "nao acredito"])
+            calm = any(k in t for k in ["calma", "relaxa", "devagar"])
+            tag = (style_tag or "").lower()
+            rate = "+0%"
+            pitch = "+0Hz"
+            if calm:
+                rate = "-6%"
+                pitch = "-2Hz" if is_male else "-1Hz"
+            elif drama or excls >= 1:
+                rate = "+18%"
+                pitch = "+7Hz" if not is_male else "+4Hz"
+            elif qmarks >= 1:
+                rate = "+10%"
+                pitch = "+5Hz" if not is_male else "+3Hz"
+            if "young" in tag or "jovem" in tag:
+                rate = "+20%" if rate == "+0%" else rate
+                pitch = "+8Hz" if not is_male else "+5Hz"
+            if "mature" in tag or "madura" in tag:
+                pitch = "-2Hz" if is_male else "-1Hz"
+            volume = "+0%"
+            if calm:
+                volume = "-8%"
+            elif drama or excls >= 1:
+                volume = "+10%"
+            elif qmarks >= 1:
+                volume = "+6%"
+            return rate, pitch, volume
+
+        def _edge_ssml(txt: str, voice_name: str, rate: str, pitch: str, volume: str, lang_tag: str) -> str:
+            import html
+            t = (txt or "").strip()
+            if not t:
+                t = "..."
+            t = t.replace("...", "…")
+            parts = re.split(r"([,.;:!?…]+)", t)
+            out = []
+            for p in parts:
+                if not p:
+                    continue
+                if re.fullmatch(r"[,.;:!?…]+", p):
+                    out.append(html.escape(p))
+                    ms = 120 if "," in p else 220
+                    if "…" in p:
+                        ms = 520
+                    elif "!" in p:
+                        ms = 320
+                    elif "?" in p:
+                        ms = 280
+                    elif any(ch in p for ch in ".;:"):
+                        ms = 240
+                    out.append(f'<break time="{ms}ms"/>')
+                else:
+                    out.append(html.escape(p))
+            body = "".join(out)
+            return (
+                f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang_tag}">'
+                f'<voice name="{voice_name}">'
+                f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{body}</prosody>'
+                f"</voice></speak>"
+            )
 
         # 1. ElevenLabs/OpenAI TTS (ai_service tenta ElevenLabs primeiro, depois OpenAI)
         # Importante: não depende de OPENAI_API_KEY para usar ElevenLabs.
         if openai_voice and self.ai_service and hasattr(self.ai_service, "generate_audio"):
             try:
                 print(f"Tentando TTS premium ({openai_voice})...")
-                voice_settings = _infer_voice_settings(clean_text, is_male=(gender == "male"))
+                voice_settings = _infer_voice_settings(clean_text, is_male=(gender == "male"), style_tag=style)
                 audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice, voice_settings=voice_settings)
                 if audio_content:
                     filename = f"{uuid.uuid4()}.mp3"
@@ -472,22 +551,28 @@ class VideoGenerator:
                         voice = "pt-BR-AntonioNeural"
                     else:
                         voice = "pt-BR-FranciscaNeural"
+                    lang_tag = "pt-BR"
                 else:
                     if gender == "male":
                         voice = "en-US-ChristopherNeural"
                     else:
                         voice = "en-US-JennyNeural"
+                    lang_tag = "en-US"
 
                 filename = f"{uuid.uuid4()}.mp3"
                 path = os.path.join(self.output_dir, filename)
+                rate, pitch, volume = _infer_edge_prosody(clean_text, is_male=(gender == "male"), style_tag=style)
+                ssml = _edge_ssml(clean_text, voice_name=voice, rate=rate, pitch=pitch, volume=volume, lang_tag=lang_tag)
 
                 async def _run_edge_tts():
-                    communicate = edge_tts.Communicate(clean_text, voice)
-                    await communicate.save(path)
+                    communicate = edge_tts.Communicate(ssml, voice)
+                    await asyncio.wait_for(communicate.save(path), timeout=90)
                     
                 t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
                 t.start()
-                t.join(timeout=15) # Aumentado timeout para 15s
+                t.join(timeout=95)
+                if t.is_alive():
+                    raise TimeoutError("Edge TTS timeout")
 
                 if os.path.exists(path) and os.path.getsize(path) > 500: # Check > 500 bytes
                     print(f"Edge TTS sucesso: {path}")

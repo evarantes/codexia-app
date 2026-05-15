@@ -2135,9 +2135,22 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         try:
             hint = (voice_hint or "").strip().lower()
             custom_voice_id = (self.elevenlabs_voice_id or "").strip()
-            voice_id = None
+            env_voice_male = os.getenv("ELEVENLABS_VOICE_ID_MALE", "").strip()
+            env_voice_female = os.getenv("ELEVENLABS_VOICE_ID_FEMALE", "").strip()
+            env_voice_default = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+
+            voice_map = {
+                "nova": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+                "shimmer": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+                "onyx": env_voice_male or "VR6AewLTigWG4xSOukaG",
+                "echo": env_voice_male or "VR6AewLTigWG4xSOukaG",
+                "fable": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+            }
+
             if hint in {"my_voice", "myvoice", "minha_voz", "minhavoz", "custom"} and custom_voice_id:
                 voice_id = custom_voice_id
+            else:
+                voice_id = env_voice_default or voice_map.get(hint)
 
             headers = {"Authorization": f"Bearer {self.edenai_key.strip()}"}
             payload = {
@@ -2148,6 +2161,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             if voice_id:
                 payload["voice_id"] = voice_id
                 payload["voice"] = voice_id
+            if isinstance(voice_settings, dict) and voice_settings:
+                payload["settings"] = {"elevenlabs": {"voice_settings": voice_settings}}
 
             r = requests.post(
                 "https://api.edenai.run/v2/audio/text_to_speech",
@@ -2223,7 +2238,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 "model_id": "eleven_multilingual_v2",
                 "voice_settings": settings,
             }
-            r = requests.post(url, json=payload, headers=headers, timeout=30)
+            r = requests.post(url, json=payload, headers=headers, timeout=120)
             if r.status_code == 200:
                 return r.content
             print(f"ElevenLabs TTS HTTP {r.status_code}: {r.text[:240]}")
