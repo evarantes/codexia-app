@@ -152,6 +152,15 @@
                             <i v-if="creatingProject" class="fas fa-spinner fa-spin mr-2"></i> GERAR ROTEIRO + VÍDEO
                         </button>
                     </div>
+                     <div v-if="lastChatProjectId" class="border-t border-emerald-200 pt-3">
+                         <div class="flex items-center justify-between mb-2">
+                             <div class="text-xs font-bold text-emerald-900">Roteiro (texto) para revisar</div>
+                             <button v-if="lastChatProject && (lastChatProject.status === 'review' || lastChatProject.status === 'failed')" @click="generateVideo(lastChatProject)" class="text-xs bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700">
+                                 Gerar vídeo deste roteiro
+                             </button>
+                         </div>
+                         <textarea class="w-full border rounded p-2 text-xs bg-white" rows="10" readonly :value="lastChatScriptText || 'Aguardando roteiro...'"></textarea>
+                     </div>
                 </div>
 
                 <!-- Campos Originais (Ocultos no modo chat) -->
@@ -402,6 +411,11 @@ createApp({
             isTyping: false,
             isPlaying: false,
             playTimer: null,
+            // Chat Absurdo: roteiro em texto (apenas roteiro)
+            lastChatProjectId: null,
+            lastChatProject: null,
+            lastChatScriptText: "",
+            chatScriptPollTimer: null,
         };
     },
     mounted() {
@@ -412,6 +426,7 @@ createApp({
     },
     beforeUnmount() {
         if (this.pollTimer) clearInterval(this.pollTimer);
+            if (this.chatScriptPollTimer) clearInterval(this.chatScriptPollTimer);
     },
     methods: {
         getAuthHeaders() {
@@ -618,6 +633,15 @@ createApp({
                 const uniqThemes = [...new Set(themes.map(t => String(t).trim()).filter(Boolean))];
                 const catchphrases = this.channelCatchphrases.map(x => String(x).trim()).filter(Boolean);
 
+                if (!isChat && uniqThemes.length === 0) {
+                    alert("Selecione pelo menos um tema.");
+                    return;
+                }
+                if (isChat && !String(this.newProject.theme || "").trim()) {
+                    alert("Escreva sua ideia para o Chat Absurdo.");
+                    return;
+                }
+
                 const payload = {
                     ...this.newProject,
                     channel_id: (this.channel && this.channel.id) ? this.channel.id : null,
@@ -633,11 +657,18 @@ createApp({
                     body: JSON.stringify(payload)
                 });
                 if (res.ok) {
+                    const data = await res.json().catch(() => ({}));
                     this.fetchProjects();
                     this.customTheme = "";
                     if (this.newProject.project_type === 'whatsapp_chat') {
                         // Limpa apenas o título, mantém o tema para facilitar refazer se quiser
                         this.newProject.title = "";
+                        if (!startImmediately && data && data.id) {
+                            this.lastChatProjectId = data.id;
+                            this.lastChatProject = null;
+                            this.lastChatScriptText = "Gerando roteiro...";
+                            this.startChatScriptPolling();
+                        }
                     }
                 } else {
                     const err = await res.json();
@@ -649,6 +680,33 @@ createApp({
             } finally {
                 this.creatingProject = false;
             }
+        },
+        startChatScriptPolling() {
+            if (this.chatScriptPollTimer) {
+                try { clearInterval(this.chatScriptPollTimer); } catch (e) {}
+                this.chatScriptPollTimer = null;
+            }
+            const id = this.lastChatProjectId;
+            if (!id) return;
+            this.chatScriptPollTimer = setInterval(async () => {
+                try {
+                    const res = await this.authFetch(`/humor-factory/projects/${id}`);
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) return;
+                    this.lastChatProject = data;
+                    if (data && data.script_text) {
+                        this.lastChatScriptText = String(data.script_text || "").trim();
+                    }
+                    const st = String(data.status || "").toLowerCase();
+                    const done = st === "review" || st === "failed";
+                    if (done && this.chatScriptPollTimer) {
+                        clearInterval(this.chatScriptPollTimer);
+                        this.chatScriptPollTimer = null;
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            }, 2000);
         },
         async deleteProject(project) {
             if (!confirm(`Deseja realmente excluir o projeto #${project.id}?`)) return;

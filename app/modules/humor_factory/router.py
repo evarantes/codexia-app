@@ -70,6 +70,26 @@ def _parse_json_list(value: Optional[str]) -> List[str]:
         pass
     return []
 
+def _chat_script_text(jokes: Any) -> str:
+    try:
+        if isinstance(jokes, dict) and isinstance(jokes.get("dialogo"), list):
+            lines = []
+            for item in jokes.get("dialogo") or []:
+                if not isinstance(item, dict):
+                    continue
+                autor = str(item.get("autor") or "").strip() or "Pessoa"
+                texto = str(item.get("texto") or "").strip()
+                if not texto:
+                    continue
+                lines.append(f"{autor}: {texto}")
+            return "\n".join(lines).strip()
+        if isinstance(jokes, list):
+            lines = [str(x).strip() for x in jokes if str(x).strip()]
+            return "\n\n".join(lines).strip()
+    except Exception:
+        return ""
+    return ""
+
 
 def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
     # Para chat, jokes_json pode ser um objeto complexo, então tentamos carregar como JSON bruto primeiro
@@ -94,6 +114,7 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         "catchphrases": _parse_json_list(p.catchphrases_json),
         "closing_message": p.closing_message,
         "jokes_json": p.jokes_json,
+        "script_text": _chat_script_text(jokes),
         "jokes_count": len(jokes),
         "target_minutes": p.target_minutes,
         "auto_publish_after_review": bool(p.auto_publish_after_review),

@@ -360,7 +360,15 @@ Retorne APENAS um JSON no formato:
 
                 frame_path = self._chat_render_frame(project_title, dialogo[:idx], size=size)
                 frame_files.append(frame_path)
-                clip = ImageClip(frame_path).set_duration(dur).set_audio(aclip)
+                clip = ImageClip(frame_path)
+                if hasattr(clip, "with_duration"):
+                    clip = clip.with_duration(dur)
+                else:
+                    clip = clip.set_duration(dur)
+                if hasattr(clip, "with_audio"):
+                    clip = clip.with_audio(aclip)
+                else:
+                    clip = clip.set_audio(aclip)
                 clips.append(clip)
 
                 pct = 30 + int((idx / max(1, total)) * 55)
