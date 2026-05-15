@@ -152,14 +152,20 @@ class HumorFactoryService:
                 return None
         return None
 
-    def generate_chat_script(self, theme: str) -> Optional[Dict[str, Any]]:
+    def generate_chat_script(self, theme: str, target_minutes: int = 2) -> Optional[Dict[str, Any]]:
+        try:
+            mins = int(target_minutes or 2)
+        except Exception:
+            mins = 2
+        mins = max(1, min(15, mins))
+        turns = max(6, min(18, mins * 3 + 4))
         prompt = f"""
 Crie um roteiro de "Chat de WhatsApp" absurdo e engraçado sobre o tema: "{theme}".
 O estilo deve ser similar ao humor de "lógica falha" (ex: Matheus Costa).
 
 Regras:
 - Dois personagens: um "Filho" (ideia absurda) e uma "Mãe" (indignada/cética).
-- Diálogo curto e dinâmico (6 a 10 falas).
+- Diálogo curto e dinâmico ({turns} falas).
 - Um dos personagens deve apresentar um produto ou ideia que "resolve" um problema de forma ridícula.
 - O tom deve ser de surpresa e indignação.
 
@@ -189,6 +195,67 @@ Retorne APENAS um JSON no formato:
         except Exception:
             return None
 
+    def _chat_render_frame(self, title: str, dialogo: List[Dict[str, Any]], size: Tuple[int, int]) -> str:
+        w, h = size
+        img = Image.new("RGB", (w, h), (229, 221, 213))
+        d = ImageDraw.Draw(img)
+        header_h = int(h * 0.12)
+        d.rectangle([0, 0, w, header_h], fill=(7, 94, 84))
+        safe_title = (title or "Chat Absurdo").strip()[:42]
+        d.text((18, int(header_h * 0.35)), safe_title, fill=(255, 255, 255))
+
+        max_bubble_w = int(w * 0.78)
+        x_pad = int(w * 0.06)
+        y = header_h + int(h * 0.04)
+
+        def wrap_text(text: str, max_width: int) -> List[str]:
+            t = (text or "").strip()
+            if not t:
+                return [""]
+            words = t.split()
+            lines: List[str] = []
+            cur = ""
+            for wd in words:
+                nxt = (cur + " " + wd).strip()
+                try:
+                    tw = d.textlength(nxt)
+                except Exception:
+                    tw = len(nxt) * 7
+                if tw <= max_width or not cur:
+                    cur = nxt
+                else:
+                    lines.append(cur)
+                    cur = wd
+            if cur:
+                lines.append(cur)
+            return lines
+
+        window = dialogo[-8:] if len(dialogo) > 8 else dialogo
+        for msg in window:
+            side = (msg.get("lado") or "").strip().lower()
+            is_right = side == "right"
+            txt = str(msg.get("texto") or "").strip()
+            lines = wrap_text(txt, max_bubble_w - 46)
+            line_h = 18
+            txt_h = max(1, len(lines)) * line_h
+            bubble_h = txt_h + 26
+            bubble_w = min(max_bubble_w, max(160, int(max(len(ln) for ln in lines) * 7.2) + 52))
+            bx = w - x_pad - bubble_w if is_right else x_pad
+            by = y
+            fill = (220, 248, 198) if is_right else (255, 255, 255)
+            d.rounded_rectangle([bx, by, bx + bubble_w, by + bubble_h], radius=14, fill=fill)
+            ty = by + 12
+            for ln in lines:
+                d.text((bx + 18, ty), ln, fill=(15, 15, 15))
+                ty += line_h
+            y = by + bubble_h + 14
+
+        out_dir = os.path.join(VIDEO_OUTPUT_DIR, "humor_chat_frames")
+        os.makedirs(out_dir, exist_ok=True)
+        frame_path = os.path.join(out_dir, f"chat_frame_{uuid.uuid4().hex}.png")
+        img.save(frame_path, format="PNG")
+        return frame_path
+
     def generate_chat_script_for_project(self, project_id: int):
         db = SessionLocal()
         project = None
@@ -200,7 +267,7 @@ Retorne APENAS um JSON no formato:
             project.status = "generating"
             self._set_progress(db, project, 20, "Gerando apenas o roteiro do chat...")
 
-            script_data = self.generate_chat_script(project.theme)
+            script_data = self.generate_chat_script(project.theme, target_minutes=int(project.target_minutes or 2))
             if not script_data or "dialogo" not in script_data:
                 raise RuntimeError("Falha ao gerar o roteiro do chat.")
 
@@ -228,7 +295,7 @@ Retorne APENAS um JSON no formato:
             if not project.jokes_json:
                 project.status = "generating"
                 self._set_progress(db, project, 10, "Gerando roteiro do chat absurdo...")
-                script_data = self.generate_chat_script(project.theme)
+                script_data = self.generate_chat_script(project.theme, target_minutes=int(project.target_minutes or 2))
                 if not script_data or "dialogo" not in script_data:
                     raise RuntimeError("Falha ao gerar o roteiro do chat.")
                 project.jokes_json = json.dumps(script_data, ensure_ascii=False)
@@ -242,10 +309,134 @@ Retorne APENAS um JSON no formato:
             project.status = "generating"
             self._set_progress(db, project, 30, "Roteiro preparado. Iniciando geração de áudios...")
 
-            # ... resto da implementação da montagem do vídeo ...
-            # project.status = "failed"
-            # project.status_message = "Em desenvolvimento: Geração de vídeo chat."
-            # db.commit()
+            try:
+                from moviepy.editor import AudioFileClip, ImageClip, concatenate_videoclips
+            except Exception:
+                from moviepy import AudioFileClip, ImageClip, concatenate_videoclips
+
+            video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
+            clips = []
+            audio_clips = []
+            temp_files = []
+            frame_files = []
+
+            def should_abort() -> bool:
+                try:
+                    fresh = db.query(HumorProject).filter(HumorProject.id == project_id).first()
+                    if not fresh:
+                        return True
+                    if (fresh.status or "").lower() == "failed" and "cancelado" in (fresh.status_message or "").lower():
+                        return True
+                except Exception:
+                    return False
+                return False
+
+            dialogo = script_data.get("dialogo") if isinstance(script_data, dict) else None
+            if not isinstance(dialogo, list) or not dialogo:
+                raise RuntimeError("Roteiro sem diálogo.")
+
+            project_title = (project.title or "Chat Absurdo").strip()
+            size = (720, 1280)
+
+            total = len(dialogo)
+            for idx, msg in enumerate(dialogo, start=1):
+                if should_abort():
+                    return
+                txt = str((msg or {}).get("texto") or "").strip()
+                if not txt:
+                    continue
+                audio_cfg = str((msg or {}).get("audio_config") or "").strip().lower()
+                author = str((msg or {}).get("autor") or "").strip().lower()
+                voice_gender = "female" if ("female" in audio_cfg or author in {"mãe", "mae", "mãe ", "mae "} or author == "mãe") else "male"
+                audio_path = video_gen.generate_audio(txt, voice_style="human", voice_gender=voice_gender)
+                if audio_path:
+                    temp_files.append(audio_path)
+                if not audio_path or not os.path.exists(audio_path):
+                    continue
+
+                aclip = AudioFileClip(audio_path)
+                audio_clips.append(aclip)
+                dur = max(1.6, float(aclip.duration or 0) + 0.35)
+
+                frame_path = self._chat_render_frame(project_title, dialogo[:idx], size=size)
+                frame_files.append(frame_path)
+                clip = ImageClip(frame_path).set_duration(dur).set_audio(aclip)
+                clips.append(clip)
+
+                pct = 30 + int((idx / max(1, total)) * 55)
+                self._set_progress(db, project, pct, f"Gerando chat {idx}/{total}...")
+
+            if not clips:
+                raise RuntimeError("Não foi possível gerar o vídeo do chat.")
+
+            method = "chain" if len(clips) >= 14 else "compose"
+            try:
+                final_clip = concatenate_videoclips(clips, method=method)
+            except Exception:
+                final_clip = concatenate_videoclips(clips, method="compose")
+
+            os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+            filename = f"humor_chat_{project.id}_{uuid.uuid4().hex[:8]}.mp4"
+            output_path = os.path.join(VIDEO_OUTPUT_DIR, filename)
+            self._set_progress(db, project, 90, "Renderizando vídeo final do chat...")
+            self._write_videofile_compat(
+                final_clip,
+                output_path,
+                fps=24,
+                codec="libx264",
+                audio_codec="aac",
+                threads=1,
+                preset="ultrafast",
+                verbose=False,
+                logger=None,
+            )
+
+            scheduled = ScheduledVideo(
+                theme=project.theme,
+                title=self._build_title(project),
+                description="Projeto Fábrica de Humor - Chat Absurdo (conversa em estilo WhatsApp).",
+                scheduled_for=datetime.now(),
+                status="completed",
+                video_type="video",
+                script_data=json.dumps(
+                    {"source": "humor_factory", "humor_project_id": project.id, "chat_script": script_data},
+                    ensure_ascii=False,
+                ),
+                video_url=output_path,
+                progress=100,
+                auto_post=False,
+                voice_style="human",
+                voice_gender="male",
+            )
+            db.add(scheduled)
+            db.commit()
+            db.refresh(scheduled)
+
+            project.video_path = output_path
+            project.scheduled_video_id = scheduled.id
+            project.status = "review"
+            self._set_progress(db, project, 100, "Vídeo do chat pronto para revisão.")
+
+            try:
+                final_clip.close()
+            except Exception:
+                pass
+            for c in clips:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            for a in audio_clips:
+                try:
+                    a.close()
+                except Exception:
+                    pass
+            for p in (temp_files or []) + (frame_files or []):
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
             
         except Exception as e:
             if project:

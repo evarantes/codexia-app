@@ -611,16 +611,21 @@ createApp({
             if (this.creatingProject) return;
             this.creatingProject = true;
             try {
+                const isChat = this.newProject.project_type === "whatsapp_chat";
+                const themes = Array.isArray(this.newProject.themes) ? [...this.newProject.themes] : [];
+                const custom = (this.customTheme || "").trim();
+                if (custom) themes.push(custom);
+                const uniqThemes = [...new Set(themes.map(t => String(t).trim()).filter(Boolean))];
+                const catchphrases = this.channelCatchphrases.map(x => String(x).trim()).filter(Boolean);
+
                 const payload = {
                     ...this.newProject,
-                    theme: (this.customTheme || this.newProject.themes.join('|')),
-                    start_immediately: startImmediately
+                    channel_id: (this.channel && this.channel.id) ? this.channel.id : null,
+                    themes: isChat ? [] : uniqThemes,
+                    catchphrases,
+                    theme: isChat ? String(this.newProject.theme || "").trim() : "",
+                    start_immediately: startImmediately,
                 };
-                
-                // No modo chat absurdo, o tema é o que está no textarea do emerald-50
-                if (this.newProject.project_type === 'whatsapp_chat') {
-                    payload.theme = this.newProject.theme;
-                }
 
                 const res = await this.authFetch("/humor-factory/projects", {
                     method: "POST",

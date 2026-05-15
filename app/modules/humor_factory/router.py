@@ -93,6 +93,7 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         "catchphrase_message": p.catchphrase_message,
         "catchphrases": _parse_json_list(p.catchphrases_json),
         "closing_message": p.closing_message,
+        "jokes_json": p.jokes_json,
         "jokes_count": len(jokes),
         "target_minutes": p.target_minutes,
         "auto_publish_after_review": bool(p.auto_publish_after_review),
@@ -204,22 +205,35 @@ def create_project(payload: HumorProjectRequest, background_tasks: BackgroundTas
     if source == "manual" and not (payload.manual_jokes_text or "").strip():
         raise HTTPException(status_code=400, detail="Informe as piadas no modo manual.")
 
-    raw_themes = [str(t).strip() for t in (payload.themes or []) if str(t).strip()]
-    if payload.theme and str(payload.theme).strip():
-        raw_themes.append(str(payload.theme).strip())
-    themes = []
-    for t in raw_themes:
-        if t not in themes:
-            themes.append(t)
-    if not themes:
-        raise HTTPException(status_code=400, detail="Selecione pelo menos um tema de piadas.")
+    project_type = (payload.project_type or "standup").strip().lower()
+    if project_type not in {"standup", "whatsapp_chat"}:
+        project_type = "standup"
 
-    target_minutes = max(10, int(payload.target_minutes or 10))
+    if project_type == "whatsapp_chat":
+        idea = (payload.theme or "").strip()
+        if not idea:
+            raise HTTPException(status_code=400, detail="Informe sua ideia para o Chat Absurdo.")
+        target_minutes = int(payload.target_minutes or 2)
+        target_minutes = max(1, min(15, target_minutes))
+        themes_label = idea
+    else:
+        raw_themes = [str(t).strip() for t in (payload.themes or []) if str(t).strip()]
+        if payload.theme and str(payload.theme).strip():
+            raw_themes.append(str(payload.theme).strip())
+        themes = []
+        for t in raw_themes:
+            if t not in themes:
+                themes.append(t)
+        if not themes:
+            raise HTTPException(status_code=400, detail="Selecione pelo menos um tema de piadas.")
+        target_minutes = max(10, int(payload.target_minutes or 10))
+        themes_label = " | ".join(themes)
+
     project = HumorProject(
         channel_id=payload.channel_id,
         title=(payload.title or f"Projeto {datetime.now().strftime('%d/%m %H:%M')}").strip(),
-        theme=" | ".join(themes),
-        project_type=payload.project_type,
+        theme=themes_label,
+        project_type=project_type,
         joke_source=source,
         manual_jokes_text=payload.manual_jokes_text or "",
         avatar_override_path=(payload.avatar_override_path or "").strip() or None,
