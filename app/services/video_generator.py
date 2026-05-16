@@ -1642,17 +1642,24 @@ class VideoGenerator:
                 elif current and current < (target_duration - 0.5):
                     extra = target_duration - current
                     try:
-                        frame_t = max(0, current - 0.02)
-                        last_frame = final_clip.get_frame(frame_t)
-                        freeze = self._set_clip_duration(ImageClip(last_frame), extra)
+                        try:
+                            size = getattr(final_clip, "size", None) or (1920, 1080)
+                        except Exception:
+                            size = (1920, 1080)
+                        try:
+                            from moviepy.editor import ColorClip
+                        except Exception:
+                            from moviepy import ColorClip
+
+                        pad = self._set_clip_duration(ColorClip(size=size, color=(0, 0, 0)), extra)
 
                         def _silence(_t):
                             return np.array([0.0, 0.0])
 
                         silence_audio = AudioClip(_silence, duration=extra, fps=44100)
-                        freeze = self._set_clip_audio(freeze, silence_audio)
+                        pad = self._set_clip_audio(pad, silence_audio)
 
-                        combined = concatenate_videoclips([final_clip, freeze], method="compose")
+                        combined = concatenate_videoclips([final_clip, pad], method="compose")
                         base_audio = final_clip.audio
                         if base_audio:
                             combined_audio = concatenate_audioclips([base_audio, silence_audio])
