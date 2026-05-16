@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Book
+from app.database import SessionLocal
+from app.models import Book, User
 from pydantic import BaseModel
 import shutil
 import os
@@ -12,6 +13,11 @@ from fastapi.responses import FileResponse, Response
 from app.services.book_assembler import BookAssembler
 
 import base64
+import threading
+from datetime import datetime
+
+from app.routers.auth import get_current_user
+from app.services.task_manager import create_task, is_task_cancel_requested, update_task
 
 router = APIRouter(prefix="/books", tags=["Books"])
 
@@ -270,3 +276,245 @@ def download_book(book_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return FileResponse(final_path, media_type="application/pdf", filename=os.path.basename(final_path))
+
+
+class PublishKdpRequest(BaseModel):
+    subtitle: str = ""
+    author: str = "E.MA"
+    description: str = ""
+    keywords: str = ""
+    price: str = ""
+    headless: bool = True
+
+
+def _resolve_local_path(p: str) -> str:
+    raw = (p or "").strip()
+    if not raw:
+        return ""
+    if os.path.isabs(raw) and os.path.exists(raw):
+        return raw
+    if (raw.startswith("app" + os.sep) or raw.startswith("app/") or raw.startswith("app\\")) and os.path.exists(raw):
+        return raw
+    clean = raw.lstrip("/")
+    norm = clean.replace("\\", "/")
+    if norm.startswith("app/"):
+        candidate = os.path.join(*norm.split("/"))
+        if os.path.exists(candidate):
+            return candidate
+    if norm.startswith("static/") or norm.startswith("uploads/"):
+        candidate = os.path.join("app", *norm.split("/"))
+        if os.path.exists(candidate):
+            return candidate
+    candidate = os.path.join("app", *norm.split("/"))
+    if os.path.exists(candidate):
+        return candidate
+    return ""
+
+
+def _safe_keywords_from_text(title: str, synopsis: str) -> str:
+    base = f"{title or ''} {synopsis or ''}".strip().lower()
+    if not base:
+        return ""
+    words = []
+    for token in base.replace("\n", " ").replace("\t", " ").split(" "):
+        w = "".join([c for c in token if c.isalnum() or c in ("-", "_")]).strip()
+        if len(w) < 3:
+            continue
+        if w not in words:
+            words.append(w)
+        if len(words) >= 7:
+            break
+    return ", ".join(words)
+
+
+def _write_base64_image_to_file(data_url: str, out_path: str) -> str:
+    raw = (data_url or "").strip()
+    if not raw:
+        return ""
+    mime = "image/png"
+    b64 = raw
+    if raw.startswith("data:"):
+        try:
+            header, b64 = raw.split(",", 1)
+            if ";" in header and ":" in header:
+                mime = header.split(";", 1)[0].split(":", 1)[1] or mime
+        except Exception:
+            b64 = raw
+    try:
+        payload = base64.b64decode(b64)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(payload)
+        if os.path.exists(out_path):
+            return out_path
+    except Exception:
+        return ""
+    return ""
+
+
+def _ensure_pdf_for_book(book: Book, out_path: str) -> str:
+    if not book or not book.full_text:
+        return ""
+    try:
+        sections = json.loads(book.full_text)
+    except Exception:
+        sections = {}
+    cover_image = ""
+    if getattr(book, "cover_image_url", None):
+        cover_image = _resolve_local_path(str(book.cover_image_url))
+    assembler = BookAssembler(output_path=out_path)
+    book_data = {
+        "metadata": {"title": book.title, "author": book.author},
+        "cover_image": cover_image or None,
+        "sections": sections,
+    }
+    try:
+        final_path = assembler.create_book(book_data)
+        return final_path if os.path.exists(final_path) else ""
+    except Exception:
+        return ""
+
+
+@router.post("/{book_id}/publish/kdp")
+def publish_book_kdp(
+    book_id: int,
+    request: PublishKdpRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    book = db.query(Book).filter(Book.id == int(book_id)).first()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if book.user_id and book.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para publicar este livro.")
+
+    task_id = create_task(user_id=user.id)
+    now = datetime.utcnow()
+    try:
+        book.status_amazon = "processing"
+        book.amazon_task_id = task_id
+        book.amazon_last_error = None
+        book.amazon_updated_at = now
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    update_task(
+        task_id,
+        status="processing",
+        progress=1,
+        message="Preparando arquivos para publicação...",
+        result={"kind": "ebook_publish", "book_id": int(book.id), "target": "kdp"},
+    )
+
+    subtitle = (request.subtitle or "").strip()
+    author = (request.author or "").strip() or "E.MA"
+    description = (request.description or "").strip() or (book.synopsis or "").strip()
+    keywords = (request.keywords or "").strip() or _safe_keywords_from_text(book.title or "", book.synopsis or "")
+    price = (request.price or "").strip()
+    if not price and getattr(book, "price", None) is not None:
+        try:
+            price = f"{float(book.price):.2f}"
+        except Exception:
+            price = ""
+    headless = bool(request.headless)
+
+    def _run():
+        dbx = SessionLocal()
+        try:
+            b = dbx.query(Book).filter(Book.id == int(book_id)).first()
+            if not b:
+                update_task(task_id, status="failed", progress=0, message="Livro não encontrado no servidor.")
+                return
+            if b.user_id and b.user_id != user.id and not getattr(user, "is_admin", False):
+                update_task(task_id, status="failed", progress=0, message="Sem permissão para publicar este livro.")
+                return
+            if is_task_cancel_requested(task_id):
+                update_task(task_id, status="cancelled", progress=0, message="Cancelado pelo usuário.")
+                return
+
+            update_task(task_id, status="processing", progress=10, message="Resolvendo arquivo do livro e capa...")
+            book_abs = _resolve_local_path(str(getattr(b, "file_path", "") or ""))
+            cover_abs = _resolve_local_path(str(getattr(b, "cover_image_url", "") or ""))
+
+            if not cover_abs and getattr(b, "cover_image_base64", None):
+                img_out = os.path.join("generated_assets", "distribution_logs", str(task_id), "cover.png")
+                cover_abs = _write_base64_image_to_file(str(b.cover_image_base64), img_out)
+
+            if not book_abs:
+                pdf_out = os.path.join("generated_assets", "distribution_logs", str(task_id), f"book_{int(b.id)}.pdf")
+                book_abs = _ensure_pdf_for_book(b, pdf_out)
+                if book_abs:
+                    try:
+                        b.file_path = f"/generated_assets/distribution_logs/{str(task_id)}/{os.path.basename(book_abs)}"
+                        dbx.commit()
+                    except Exception:
+                        dbx.rollback()
+
+            if not book_abs or not os.path.isfile(book_abs):
+                raise Exception("Arquivo do livro não encontrado no servidor.")
+            if not cover_abs or not os.path.isfile(cover_abs):
+                raise Exception("Arquivo da capa não encontrado no servidor.")
+
+            update_task(task_id, status="processing", progress=25, message="Iniciando automação no navegador...")
+            from app.services.distribution_automation import publish_ebook_kdp_via_browser
+
+            res = publish_ebook_kdp_via_browser(
+                task_id=task_id,
+                book_file_path=book_abs,
+                cover_file_path=cover_abs,
+                title=(b.title or "Livro"),
+                subtitle=subtitle,
+                author=author,
+                description=description,
+                keywords=keywords,
+                price=(price or None),
+                headless=headless,
+            )
+
+            try:
+                b.status_amazon = "published"
+                b.amazon_last_error = None
+                b.amazon_updated_at = datetime.utcnow()
+                dbx.commit()
+            except Exception:
+                dbx.rollback()
+
+            update_task(
+                task_id,
+                status="completed",
+                progress=100,
+                message="Publicação enviada.",
+                result={
+                    "kind": "ebook_publish",
+                    "book_id": int(b.id),
+                    "target": "kdp",
+                    "automation_result": res,
+                    "logs_url": f"/generated_assets/distribution_logs/{str(task_id)}/",
+                },
+            )
+        except Exception as e:
+            try:
+                b2 = dbx.query(Book).filter(Book.id == int(book_id)).first()
+                if b2:
+                    b2.status_amazon = "failed"
+                    b2.amazon_last_error = str(e)
+                    b2.amazon_updated_at = datetime.utcnow()
+                    dbx.commit()
+            except Exception:
+                dbx.rollback()
+            update_task(
+                task_id,
+                status="failed",
+                progress=0,
+                message=f"Falha ao publicar: {e}",
+                result={"kind": "ebook_publish", "book_id": int(book_id), "target": "kdp"},
+            )
+        finally:
+            try:
+                dbx.close()
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id, "status": "processing"}

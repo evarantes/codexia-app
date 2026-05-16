@@ -85,13 +85,17 @@ def run_migrations(engine):
             try:
                 columns = [c["name"] for c in inspector.get_columns("saved_music")]
                 missing_cols = []
-                for col in ["hq_wav_url", "hq_wav_filename", "cover_url", "cover_filename"]:
+                for col in ["hq_wav_url", "hq_wav_filename", "cover_url", "cover_filename", "status_spotify", "spotify_task_id", "spotify_last_error"]:
                     if col not in columns:
                         missing_cols.append(col)
                 if missing_cols:
                     with engine.connect() as conn:
                         for col in missing_cols:
                             conn.execute(text(f"ALTER TABLE saved_music ADD COLUMN {col} TEXT"))
+                        conn.commit()
+                if "spotify_updated_at" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text(f"ALTER TABLE saved_music ADD COLUMN spotify_updated_at {datetime_type}"))
                         conn.commit()
             except Exception as e:
                 print(f"Failed to migrate saved_music table: {e}")
@@ -104,6 +108,15 @@ def run_migrations(engine):
                     print("Migrating: Adding missing column cover_image_base64 to books table...")
                     with engine.connect() as conn:
                         conn.execute(text("ALTER TABLE books ADD COLUMN cover_image_base64 TEXT"))
+                        conn.commit()
+                for col in ["status_amazon", "amazon_task_id", "amazon_last_error"]:
+                    if col not in columns:
+                        with engine.connect() as conn:
+                            conn.execute(text(f"ALTER TABLE books ADD COLUMN {col} TEXT"))
+                            conn.commit()
+                if "amazon_updated_at" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text(f"ALTER TABLE books ADD COLUMN amazon_updated_at {datetime_type}"))
                         conn.commit()
             except Exception as e:
                 print(f"Failed to migrate books table: {e}")

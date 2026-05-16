@@ -361,6 +361,12 @@ class PublishSavedClipRequest(BaseModel):
     auto_post: Optional[bool] = True
 
 
+class DistributeSavedMusicRequest(BaseModel):
+    provider: str = "onerpm"
+    artist: str = "E.MA"
+    release_date: Optional[str] = None
+
+
 class GenerateSavedMusicShortsRequest(BaseModel):
     count: int = 1
     target_seconds: Optional[int] = 45
@@ -899,6 +905,10 @@ def list_saved_music(limit: int = 50, user: User = Depends(get_current_user), db
                 "hq_wav_filename": getattr(i, "hq_wav_filename", None),
                 "cover_url": getattr(i, "cover_url", None),
                 "cover_filename": getattr(i, "cover_filename", None),
+                "status_spotify": getattr(i, "status_spotify", None),
+                "spotify_task_id": getattr(i, "spotify_task_id", None),
+                "spotify_last_error": getattr(i, "spotify_last_error", None),
+                "spotify_updated_at": (getattr(i, "spotify_updated_at", None).isoformat() if getattr(i, "spotify_updated_at", None) else None),
                 "download_wav_url": f"/music/saved/{int(i.id)}/download/wav",
                 "download_cover_url": f"/music/saved/{int(i.id)}/download/cover",
                 "clip_url": i.clip_url,
@@ -930,6 +940,10 @@ def get_saved_music(item_id: int, user: User = Depends(get_current_user), db: Se
         "hq_wav_filename": getattr(item, "hq_wav_filename", None),
         "cover_url": getattr(item, "cover_url", None),
         "cover_filename": getattr(item, "cover_filename", None),
+        "status_spotify": getattr(item, "status_spotify", None),
+        "spotify_task_id": getattr(item, "spotify_task_id", None),
+        "spotify_last_error": getattr(item, "spotify_last_error", None),
+        "spotify_updated_at": (getattr(item, "spotify_updated_at", None).isoformat() if getattr(item, "spotify_updated_at", None) else None),
         "download_wav_url": f"/music/saved/{int(item.id)}/download/wav",
         "download_cover_url": f"/music/saved/{int(item.id)}/download/cover",
         "clip_url": item.clip_url,
@@ -1029,6 +1043,107 @@ def generate_saved_music_cover(item_id: int, request: GenerateCoverRequest, user
     except Exception:
         db.rollback()
     return {"cover_url": getattr(item, "cover_url", None), "cover_filename": getattr(item, "cover_filename", None)}
+
+
+@router.post("/saved/{item_id}/distribute")
+def distribute_saved_music(item_id: int, request: DistributeSavedMusicRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(SavedMusic).filter(SavedMusic.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado.")
+    if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="Sem permissão para distribuir este item.")
+
+    task_id = create_task(user_id=user.id)
+    now = datetime.utcnow()
+    try:
+        item.status_spotify = "processing"
+        item.spotify_task_id = task_id
+        item.spotify_last_error = None
+        item.spotify_updated_at = now
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    update_task(task_id, status="processing", progress=1, message="Preparando arquivos para distribuição...", result={"kind": "music_distribution", "saved_music_id": int(item.id)})
+
+    provider = (request.provider or "onerpm").strip()
+    artist = (request.artist or "E.MA").strip() or "E.MA"
+    release_date = (request.release_date or "").strip()
+    if not release_date:
+        try:
+            from datetime import timedelta
+            release_date = (datetime.utcnow() + timedelta(days=7)).date().isoformat()
+        except Exception:
+            release_date = datetime.utcnow().date().isoformat()
+
+    def _run():
+        dbx = SessionLocal()
+        try:
+            it = dbx.query(SavedMusic).filter(SavedMusic.id == int(item_id)).first()
+            if not it:
+                update_task(task_id, status="failed", progress=0, message="Item não encontrado no servidor.")
+                return
+            if it.user_id and it.user_id != user.id and not getattr(user, "is_admin", False):
+                update_task(task_id, status="failed", progress=0, message="Sem permissão para distribuir este item.")
+                return
+            if is_task_cancel_requested(task_id):
+                update_task(task_id, status="cancelled", progress=0, message="Cancelado pelo usuário.")
+                return
+
+            update_task(task_id, status="processing", progress=5, message="Gerando WAV (HQ) e capa 3000...")
+            audio_abs = _ensure_hq_wav_for_item(dbx, it)
+            cover_abs = _ensure_cover_for_item(dbx, it)
+            try:
+                dbx.commit()
+            except Exception:
+                dbx.rollback()
+            if not audio_abs or not os.path.isfile(audio_abs):
+                raise Exception("Não foi possível preparar o áudio (WAV).")
+            if not cover_abs or not os.path.isfile(cover_abs):
+                raise Exception("Não foi possível preparar a capa (PNG).")
+
+            update_task(task_id, status="processing", progress=20, message="Iniciando automação no navegador...")
+            from app.services.distribution_automation import distribute_music_via_browser
+            res = distribute_music_via_browser(
+                task_id=task_id,
+                provider=provider,
+                audio_path=audio_abs,
+                cover_path=cover_abs,
+                title=(it.title or "Música"),
+                artist=artist,
+                genre=(it.genre or ""),
+                release_date=release_date,
+                lyrics=(it.lyrics or None),
+                headless=True,
+            )
+            try:
+                it.status_spotify = "submitted"
+                it.spotify_last_error = None
+                it.spotify_updated_at = datetime.utcnow()
+                dbx.commit()
+            except Exception:
+                dbx.rollback()
+
+            update_task(task_id, status="completed", progress=100, message="Distribuição enviada para aprovação.", result={"kind": "music_distribution", "saved_music_id": int(it.id), "provider": provider, "automation_result": res})
+        except Exception as e:
+            try:
+                it2 = dbx.query(SavedMusic).filter(SavedMusic.id == int(item_id)).first()
+                if it2:
+                    it2.status_spotify = "failed"
+                    it2.spotify_last_error = str(e)
+                    it2.spotify_updated_at = datetime.utcnow()
+                    dbx.commit()
+            except Exception:
+                dbx.rollback()
+            update_task(task_id, status="failed", progress=0, message=f"Falha na distribuição: {e}", result={"kind": "music_distribution", "saved_music_id": int(item_id), "provider": provider})
+        finally:
+            try:
+                dbx.close()
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id, "status": "processing"}
 
 
 @router.get("/saved/{item_id}/watch", response_class=HTMLResponse)

@@ -68,6 +68,10 @@ class Book(Base):
     cover_image_url = Column(String)
     cover_image_base64 = Column(Text, nullable=True) # Armazena a imagem em Base64 para persistência no Render sem disco
     file_path = Column(String) # Caminho do arquivo do livro (PDF/EPUB)
+    status_amazon = Column(String, nullable=True)
+    amazon_task_id = Column(String, nullable=True)
+    amazon_last_error = Column(Text, nullable=True)
+    amazon_updated_at = Column(DateTime, nullable=True)
     
     posts = relationship("Post", back_populates="book")
     sales = relationship("Sale", back_populates="book")
@@ -310,6 +314,10 @@ class SavedMusic(Base):
     cover_filename = Column(String, nullable=True)
     clip_url = Column(String, nullable=True)
     clip_filename = Column(String, nullable=True)
+    status_spotify = Column(String, nullable=True)
+    spotify_task_id = Column(String, nullable=True)
+    spotify_last_error = Column(Text, nullable=True)
+    spotify_updated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

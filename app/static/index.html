@@ -276,6 +276,29 @@
                                     <button @click="deleteBook(book.id)" class="text-red-600 hover:text-red-800" title="Excluir livro"><i class="fas fa-trash"></i></button>
                                 </div>
                             </div>
+                            <div class="mt-3 flex items-center justify-between gap-2">
+                                <div class="text-xs text-gray-700">
+                                    <span class="font-semibold">Amazon:</span>
+                                    <span :class="String(book.status_amazon || '').toLowerCase() === 'failed' ? 'text-red-700 font-semibold' : (String(book.status_amazon || '').toLowerCase() === 'published' ? 'text-green-700 font-semibold' : 'text-indigo-700 font-semibold')">
+                                        {{ book.status_amazon || 'pendente' }}
+                                    </span>
+                                </div>
+                                <div class="flex gap-2 items-center">
+                                    <button @click="publishBookToKdp(book)" :disabled="savedMusicSaving" class="bg-gray-900 text-white px-3 py-2 rounded hover:bg-black text-xs font-semibold flex items-center gap-2">
+                                        <i class="fas fa-store"></i>
+                                        Publicar E-book
+                                    </button>
+                                    <a v-if="book.amazon_task_id" :href="`/generated_assets/distribution_logs/${encodeURIComponent(String(book.amazon_task_id))}/`" target="_blank" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                        Logs
+                                    </a>
+                                    <button v-if="book.amazon_task_id" @click="openOmniTask(String(book.amazon_task_id), 'ebook')" class="bg-white border px-3 py-2 rounded hover:bg-gray-50 text-xs font-semibold">
+                                        Progresso
+                                    </button>
+                                </div>
+                            </div>
+                            <div v-if="book.amazon_last_error" class="text-xs text-red-600 mt-2 truncate" :title="String(book.amazon_last_error)">
+                                {{ book.amazon_last_error }}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -955,6 +978,16 @@
                                 <div v-if="getSavedMusicPublishedText(item)" class="text-xs text-green-700 mt-1">
                                     {{ getSavedMusicPublishedText(item) }}
                                 </div>
+                                <div v-if="item.status_spotify || item.spotify_last_error || item.spotify_task_id" class="text-xs mt-1">
+                                    <span class="font-semibold text-gray-700">Distribuição:</span>
+                                    <span :class="String(item.status_spotify || '').toLowerCase() === 'failed' ? 'text-red-700 font-semibold' : (String(item.status_spotify || '').toLowerCase() === 'submitted' ? 'text-green-700 font-semibold' : 'text-indigo-700 font-semibold')">
+                                        {{ item.status_spotify || 'pendente' }}
+                                    </span>
+                                    <span v-if="item.spotify_task_id" class="text-gray-500"> • tarefa {{ String(item.spotify_task_id).slice(0, 8) }}</span>
+                                </div>
+                                <div v-if="item.spotify_last_error" class="text-xs text-red-600 mt-1 truncate" :title="String(item.spotify_last_error)">
+                                    {{ item.spotify_last_error }}
+                                </div>
                             </div>
                             <div class="flex gap-2 flex-wrap">
                                 <button @click="loadSavedMusicItem(item)" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
@@ -972,6 +1005,16 @@
                                 <button v-if="item.music_url || item.clip_url" @click="downloadSavedMusicCover(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
                                     <i class="fas fa-image"></i>
                                     Capa 3000
+                                </button>
+                                <button v-if="item.music_url || item.clip_url" @click="distributeSavedMusicItem(item)" :disabled="savedMusicSaving" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black flex items-center gap-2">
+                                    <i class="fas fa-share-square"></i>
+                                    Distribuir Música
+                                </button>
+                                <a v-if="item.spotify_task_id" :href="`/generated_assets/distribution_logs/${encodeURIComponent(String(item.spotify_task_id))}/`" target="_blank" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2 text-sm font-semibold">
+                                    Logs
+                                </a>
+                                <button v-if="item.spotify_task_id" @click="openOmniTask(String(item.spotify_task_id), 'music')" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2 text-sm font-semibold">
+                                    Progresso
                                 </button>
                                 <button v-if="item.music_url || item.clip_url" @click="generateSavedMusicCoverWithCriteria(item)" :disabled="savedMusicSaving" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 flex items-center gap-2">
                                     <i class="fas fa-magic"></i>
@@ -3503,6 +3546,52 @@
             </div>
         </div>
 
+        <div v-if="omniTaskModalOpen" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl">
+                <div class="p-4 border-b flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="font-bold text-gray-900 truncate">
+                            Tarefa • {{ omniTaskKind === 'music' ? 'Distribuição de Música' : 'Publicação de E-book' }}
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            {{ omniTaskId }}
+                        </div>
+                    </div>
+                    <button @click="closeOmniTaskModal" class="bg-gray-200 text-gray-800 px-4 py-2 rounded hover:bg-gray-300 text-sm font-semibold">Fechar</button>
+                </div>
+                <div class="p-4">
+                    <div v-if="!omniTask" class="text-sm text-gray-600">Carregando status...</div>
+                    <div v-else>
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="text-sm">
+                                <span class="font-semibold">Status:</span>
+                                <span class="ml-1">{{ omniTask.status }}</span>
+                            </div>
+                            <div class="text-sm">
+                                <span class="font-semibold">Progresso:</span>
+                                <span class="ml-1">{{ omniTask.progress || 0 }}%</span>
+                            </div>
+                        </div>
+                        <div class="mt-2 w-full bg-gray-200 rounded h-2">
+                            <div class="bg-indigo-600 h-2 rounded" :style="{ width: Number(omniTask.progress || 0) + '%' }"></div>
+                        </div>
+                        <div class="mt-3 text-sm text-gray-800 whitespace-pre-wrap">{{ omniTask.message || '' }}</div>
+                        <div class="mt-4 flex gap-2 flex-wrap">
+                            <a :href="`/generated_assets/distribution_logs/${encodeURIComponent(String(omniTaskId))}/`" target="_blank" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 text-sm font-semibold">
+                                Abrir logs
+                            </a>
+                            <button @click="refreshOmniTask" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black text-sm font-semibold">
+                                Atualizar
+                            </button>
+                            <button @click="clearOmniTask" class="bg-gray-200 text-gray-800 px-4 py-2 rounded hover:bg-gray-300 text-sm font-semibold">
+                                Limpar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -3771,6 +3860,11 @@
                     savedMusicSaving: false,
                     savedMusicItems: [],
                     savedMusicError: '',
+                    omniTaskModalOpen: false,
+                    omniTaskId: '',
+                    omniTaskKind: '',
+                    omniTask: null,
+                    omniTaskPollFails: {},
                     savedMusicFilterText: '',
                     savedMusicFilterType: 'all',
                     savedMusicPageSize: 20,
@@ -4585,6 +4679,99 @@
                         }
                     } catch (e) { 
                         console.error("Error fetching books:", e); 
+                    }
+                },
+                async publishBookToKdp(book) {
+                    const b = book || {};
+                    const id = Number(b.id || 0);
+                    if (!id) return;
+                    if (!confirm("Publicar este e-book na Amazon KDP?")) return;
+                    try {
+                        const res = await this.authFetch(`/books/${encodeURIComponent(String(id))}/publish/kdp`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ author: 'E.MA', subtitle: '', description: '', keywords: '', price: '' })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+                        const taskId = (data && data.task_id) ? String(data.task_id) : '';
+                        if (taskId) this.openOmniTask(taskId, 'ebook');
+                        await this.fetchBooks();
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    }
+                },
+                async distributeSavedMusicItem(item) {
+                    const it = item || {};
+                    const id = Number(it.id || 0);
+                    if (!id) return;
+                    if (!confirm("Distribuir esta música na distribuidora (automação via navegador)?")) return;
+                    this.savedMusicSaving = true;
+                    this.savedMusicError = '';
+                    try {
+                        const res = await this.authFetch(`/music/saved/${encodeURIComponent(String(id))}/distribute`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ provider: 'onerpm', artist: 'E.MA', release_date: null })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+                        const taskId = (data && data.task_id) ? String(data.task_id) : '';
+                        if (taskId) this.openOmniTask(taskId, 'music');
+                        await this.fetchSavedMusicLibrary();
+                    } catch (e) {
+                        this.savedMusicError = e.message || String(e);
+                        alert(this.savedMusicError);
+                    } finally {
+                        this.savedMusicSaving = false;
+                    }
+                },
+                openOmniTask(taskId, kind) {
+                    const id = String(taskId || '').trim();
+                    if (!id) return;
+                    this.omniTaskId = id;
+                    this.omniTaskKind = String(kind || '').trim().toLowerCase() || 'music';
+                    this.omniTask = null;
+                    this.omniTaskModalOpen = true;
+                    this.omniTaskPollFails[id] = 0;
+                    this.pollOmniTask(id);
+                },
+                closeOmniTaskModal() {
+                    this.omniTaskModalOpen = false;
+                },
+                clearOmniTask() {
+                    this.omniTaskId = '';
+                    this.omniTaskKind = '';
+                    this.omniTask = null;
+                    this.omniTaskModalOpen = false;
+                },
+                async refreshOmniTask() {
+                    if (!this.omniTaskId) return;
+                    await this.pollOmniTask(this.omniTaskId, { once: true });
+                },
+                async pollOmniTask(taskId, opts) {
+                    const id = String(taskId || '').trim();
+                    if (!id) return;
+                    const once = !!(opts && opts.once);
+                    try {
+                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(id)}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+                        this.omniTask = data;
+                        const st = String((data && data.status) || '').toLowerCase();
+                        if (!once && (st === 'processing' || st === 'queued' || st === 'pending')) {
+                            setTimeout(() => this.pollOmniTask(id), 1500);
+                        } else if (!once && (st === 'completed' || st === 'failed' || st === 'cancelled')) {
+                            try { await this.fetchSavedMusicLibrary(); } catch (e) {}
+                            try { await this.fetchBooks(); } catch (e) {}
+                        }
+                    } catch (e) {
+                        const key = String(id || '');
+                        const fails = Number(this.omniTaskPollFails[key] || 0) + 1;
+                        this.omniTaskPollFails[key] = fails;
+                        if (!once && fails <= 10) {
+                            setTimeout(() => this.pollOmniTask(id), 1200 + (fails * 400));
+                        }
                     }
                 },
                 handleFileUpload(event) {
