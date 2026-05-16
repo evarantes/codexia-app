@@ -1095,6 +1095,10 @@ class VideoRequest(BaseModel):
     story_content: Optional[str] = None
     custom_image_paths: Optional[List[str]] = None
     selected_images: Optional[List[str]] = None
+    thumbnail_path: Optional[str] = None
+    override_title: Optional[str] = None
+    override_description: Optional[str] = None
+    override_tags: Optional[List[str]] = None
 
 class StoryTextGenerateRequest(BaseModel):
     kind: str = "story"  # story | devotional
@@ -1132,6 +1136,13 @@ class CreateShortsFromScheduledRequest(BaseModel):
     count: int = 3
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
+
+class ContentFactoryGenerateRequest(BaseModel):
+    idea: str
+    channel_name: Optional[str] = None
+
+class ContentFactoryRegenerateThumbnailRequest(BaseModel):
+    text: Optional[str] = None
 
 def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
@@ -1607,6 +1618,186 @@ def delete_story_draft(draft_id: int, db: Session = Depends(get_db)):
     db.delete(draft)
     db.commit()
     return {"message": "Rascunho excluído."}
+
+def _content_factory_draft_to_dict(d: StoryDraft) -> Dict[str, Any]:
+    meta = json.loads(d.metadata_json) if d.metadata_json else {}
+    return {
+        "id": d.id,
+        "title": d.title,
+        "kind": d.kind,
+        "content": d.content or "",
+        "metadata": meta,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+    }
+
+@router.post("/content-factory/generate")
+def generate_content_factory_strategy(request: ContentFactoryGenerateRequest, db: Session = Depends(get_db)):
+    idea = (request.idea or "").strip()
+    if not idea:
+        raise HTTPException(status_code=400, detail="idea é obrigatório.")
+
+    ai = AIContentGenerator()
+    channel_name = (request.channel_name or "").strip() or "Herdeiros das Promessas"
+    strategy = ai.generate_youtube_content_factory_strategy(idea=idea, channel_name=channel_name)
+    if not isinstance(strategy, dict) or strategy.get("error"):
+        raise HTTPException(status_code=502, detail=strategy.get("error") if isinstance(strategy, dict) else "Falha ao gerar estratégia.")
+
+    titles = strategy.get("titulos") if isinstance(strategy.get("titulos"), list) else []
+    titles = [str(t).strip() for t in titles if isinstance(t, str) and t.strip()]
+    selected_title = titles[0] if titles else idea[:80]
+
+    roteiro = strategy.get("roteiro") if isinstance(strategy.get("roteiro"), dict) else {}
+    blocks = {
+        "gancho_0_30s": str((roteiro.get("gancho_0_30s") or "")).strip(),
+        "retencao_30_120s": str((roteiro.get("retencao_30_120s") or "")).strip(),
+        "corpo": str((roteiro.get("corpo") or "")).strip(),
+        "cta_inscricao": str((roteiro.get("cta_inscricao") or "")).strip(),
+    }
+    script_text = "\n\n".join([selected_title] + [v for v in blocks.values() if v]).strip()
+
+    seo = strategy.get("seo") if isinstance(strategy.get("seo"), dict) else {}
+    tags = seo.get("tags") if isinstance(seo.get("tags"), list) else []
+    tags = [str(t).strip() for t in tags if isinstance(t, str) and t.strip()]
+    desc = str((seo.get("descricao") or "")).strip()
+    timestamps = seo.get("timestamps") if isinstance(seo.get("timestamps"), list) else []
+    timestamps = [str(t).strip() for t in timestamps if isinstance(t, str) and t.strip()]
+    if timestamps:
+        desc = (desc + "\n\n" + "\n".join(timestamps)).strip()
+
+    thumb = strategy.get("thumbnail") if isinstance(strategy.get("thumbnail"), dict) else {}
+    thumb_text = str((thumb.get("texto") or "")).strip() or selected_title.split(":", 1)[0].strip()[:24]
+    image_prompt = str((thumb.get("imagem_prompt") or "")).strip() or None
+
+    thumb_payload = None
+    try:
+        from app.services.image_storyboard_service import generate_thumbnail_with_text
+        thumb_payload = generate_thumbnail_with_text(
+            idea=idea,
+            text=thumb_text,
+            image_prompt=image_prompt,
+            api_key=getattr(ai, "api_key", None),
+        )
+    except Exception:
+        thumb_payload = None
+
+    thumb_url = (thumb_payload.get("url") if isinstance(thumb_payload, dict) else None)
+    thumb_file = (thumb_payload.get("file") if isinstance(thumb_payload, dict) else None)
+    thumb_file_abs = os.path.abspath(thumb_file) if thumb_file and isinstance(thumb_file, str) else None
+
+    meta = {
+        "idea": idea,
+        "channel_name": channel_name,
+        "titles": titles,
+        "selected_title": selected_title,
+        "blocks": blocks,
+        "tags": tags,
+        "description": desc,
+        "timestamps": timestamps,
+        "thumbnail": {
+            "text": thumb_text,
+            "image_prompt": image_prompt,
+            "url": thumb_url,
+            "file_path": thumb_file_abs,
+        },
+        "strategy": strategy,
+    }
+
+    draft = StoryDraft(
+        title=selected_title[:120],
+        kind="content_factory",
+        content=(script_text or "")[:40000],
+        metadata_json=json.dumps(meta, ensure_ascii=False),
+    )
+    try:
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    out = _content_factory_draft_to_dict(draft)
+    out["titles"] = titles
+    out["blocks"] = blocks
+    out["tags"] = tags
+    out["description"] = desc
+    out["thumbnail_url"] = thumb_url
+    out["thumbnail_path"] = thumb_file_abs
+    return out
+
+@router.get("/content-factory/drafts")
+def list_content_factory_drafts(db: Session = Depends(get_db)):
+    drafts = (
+        db.query(StoryDraft)
+        .filter(StoryDraft.kind == "content_factory")
+        .order_by(StoryDraft.updated_at.desc())
+        .all()
+    )
+    return [{"id": d.id, "title": d.title, "updated_at": d.updated_at.isoformat() if d.updated_at else None} for d in drafts]
+
+@router.get("/content-factory/drafts/{draft_id}")
+def get_content_factory_draft(draft_id: int, db: Session = Depends(get_db)):
+    d = db.query(StoryDraft).filter(StoryDraft.id == draft_id).first()
+    if not d or (d.kind or "") != "content_factory":
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    out = _content_factory_draft_to_dict(d)
+    meta = out.get("metadata") if isinstance(out.get("metadata"), dict) else {}
+    thumb = meta.get("thumbnail") if isinstance(meta.get("thumbnail"), dict) else {}
+    out["titles"] = meta.get("titles") or []
+    out["blocks"] = meta.get("blocks") or {}
+    out["tags"] = meta.get("tags") or []
+    out["description"] = meta.get("description") or ""
+    out["thumbnail_url"] = thumb.get("url")
+    out["thumbnail_path"] = thumb.get("file_path")
+    return out
+
+@router.post("/content-factory/drafts/{draft_id}/regenerate-thumbnail")
+def regenerate_content_factory_thumbnail(draft_id: int, request: ContentFactoryRegenerateThumbnailRequest, db: Session = Depends(get_db)):
+    d = db.query(StoryDraft).filter(StoryDraft.id == draft_id).first()
+    if not d or (d.kind or "") != "content_factory":
+        raise HTTPException(status_code=404, detail="Rascunho não encontrado.")
+    meta = json.loads(d.metadata_json) if d.metadata_json else {}
+    idea = str((meta.get("idea") or d.title or "")).strip()
+    if not idea:
+        raise HTTPException(status_code=400, detail="Rascunho sem ideia.")
+    thumb_meta = meta.get("thumbnail") if isinstance(meta.get("thumbnail"), dict) else {}
+    txt = (request.text or "").strip() if request and getattr(request, "text", None) else ""
+    if not txt:
+        txt = str((thumb_meta.get("text") or "")).strip()
+    if not txt:
+        txt = str((d.title or "")).strip()[:24]
+    prompt = str((thumb_meta.get("image_prompt") or "")).strip() or None
+
+    ai = AIContentGenerator()
+    try:
+        from app.services.image_storyboard_service import generate_thumbnail_with_text
+        thumb_payload = generate_thumbnail_with_text(
+            idea=idea,
+            text=txt,
+            image_prompt=prompt,
+            api_key=getattr(ai, "api_key", None),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    file_path = os.path.abspath(str(thumb_payload.get("file") or "").strip()) if isinstance(thumb_payload, dict) else None
+    url = thumb_payload.get("url") if isinstance(thumb_payload, dict) else None
+    meta["thumbnail"] = {
+        "text": txt,
+        "image_prompt": prompt,
+        "url": url,
+        "file_path": file_path,
+    }
+    d.metadata_json = json.dumps(meta, ensure_ascii=False)
+    try:
+        db.add(d)
+        db.commit()
+        db.refresh(d)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"thumbnail_url": url, "thumbnail_path": file_path}
 
 @router.post("/story/generate_images_task")
 def generate_story_images_task(request: StoryImagesRequest, background_tasks: BackgroundTasks):
@@ -3412,6 +3603,18 @@ def process_video_generation(request: VideoRequest, task_id):
                 pass
 
             try:
+                if request.override_title and str(request.override_title).strip():
+                    script["title"] = str(request.override_title).strip()[:120]
+                if request.override_description and str(request.override_description).strip():
+                    script["description"] = str(request.override_description).strip()[:4000]
+                if request.override_tags and isinstance(request.override_tags, list):
+                    tags = [str(t).strip() for t in request.override_tags if isinstance(t, (str, int, float)) and str(t).strip()]
+                    if tags:
+                        script["tags"] = tags[:30]
+            except Exception:
+                pass
+
+            try:
                 target = _target_scene_count(request.duration)
                 script["disable_scene_text_split"] = True
                 raw_scenes = script.get("scenes")
@@ -3458,12 +3661,15 @@ def process_video_generation(request: VideoRequest, task_id):
             description = script.get('description', 'Vídeo motivacional.')
             if video_result.get("music_credit"):
                 description += f"\n\n{video_result['music_credit']}"
+
+            fallback_title = (request.topic or "Vídeo").strip()
             
             yt_service.upload_video(
                 abs_video_path,
-                title=script.get('title', f"Motivação: {topic}"),
+                title=script.get('title') or fallback_title,
                 description=description,
-                tags=script.get('tags', ['motivação', 'sucesso'])
+                tags=script.get('tags', ['motivação', 'sucesso']),
+                thumbnail_path=(request.thumbnail_path or None),
             )
             update_task(task_id, progress=100, status="completed", message="Vídeo gerado e publicado com sucesso!", result={
                 "video_url": video_path,

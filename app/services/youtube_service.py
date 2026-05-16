@@ -624,8 +624,27 @@ class YouTubeService:
         except Exception as e:
             return {"connected": False, "error": f"Erro ao buscar canal: {str(e)}"}
 
-    def upload_video(self, file_path, title, description, tags=None, category_id="27"):  # 27 = Education
-        """Faz upload de um vídeo para o YouTube"""
+    def set_thumbnail(self, youtube_video_id: str, thumbnail_path: str):
+        """Define a thumbnail de um vídeo já enviado (youtube.thumbnails.set)."""
+        if not self.service:
+            return {"error": self.auth_error or "Canal não conectado ao YouTube.", "status": "not_connected"}
+        vid = (youtube_video_id or "").strip()
+        path = (thumbnail_path or "").strip()
+        if not vid:
+            return {"error": "youtube_video_id é obrigatório.", "status": "invalid"}
+        if not path or not os.path.exists(path):
+            return {"error": "Arquivo de thumbnail não encontrado.", "status": "file_not_found", "path": path}
+
+        try:
+            media = MediaFileUpload(path, mimetype="image/png", resumable=False)
+            req = self.service.thumbnails().set(videoId=vid, media_body=media)
+            resp = req.execute()
+            return {"status": "ok", "response": resp}
+        except Exception as e:
+            return {"error": str(e), "status": "failed"}
+
+    def upload_video(self, file_path, title, description, tags=None, category_id="27", thumbnail_path: Optional[str] = None):  # 27 = Education
+        """Faz upload de um vídeo para o YouTube (opcional: seta thumbnail)."""
         if tags is None:
             tags = []
         if not self.service:
@@ -661,6 +680,13 @@ class YouTubeService:
                 if status:
                     print(f"Upload progresso: {int(status.progress() * 100)}%")
 
+            if thumbnail_path and isinstance(response, dict):
+                youtube_id = response.get("id")
+                if youtube_id and isinstance(youtube_id, str):
+                    thumb_res = self.set_thumbnail(youtube_id, thumbnail_path)
+                    response["thumbnail_set"] = bool(isinstance(thumb_res, dict) and thumb_res.get("status") == "ok")
+                    if isinstance(thumb_res, dict) and thumb_res.get("error"):
+                        response["thumbnail_error"] = thumb_res.get("error")
             return response
         except Exception as e:
             print(f"Erro no upload para YouTube: {e}")

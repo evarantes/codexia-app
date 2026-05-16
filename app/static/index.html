@@ -93,6 +93,9 @@
                 <a href="#" @click="currentTab = 'youtube'; fetchYoutubeStats()" :class="{'bg-indigo-700': currentTab === 'youtube'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fab fa-youtube"></i> YouTube Auto
                 </a>
+                <a href="#" @click="currentTab = 'content_factory'" :class="{'bg-indigo-700': currentTab === 'content_factory'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-industry"></i> Fábrica de Conteúdo
+                </a>
                 <a href="#" @click="currentTab = 'hotmart'; fetchBooks()" :class="{'bg-indigo-700': currentTab === 'hotmart'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-shopping-cart"></i> Hotmart Auto
                 </a>
@@ -2339,6 +2342,127 @@
                 </div>
             </div>
 
+            <!-- Content Factory Tab -->
+            <div v-if="currentTab === 'content_factory'">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Fábrica de Conteúdo</h1>
+                <div class="bg-white rounded-lg shadow p-6 mb-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="md:col-span-2">
+                            <label class="block text-sm font-semibold text-gray-700 mb-2">Qual o tema ou curiosidade de hoje?</label>
+                            <input v-model="cfIdea" type="text" class="w-full border p-3 rounded" placeholder="Ex: O segredo de Balaão e a jumenta">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-semibold text-gray-700 mb-2">Duração do vídeo (min)</label>
+                            <input v-model="cfVideoDuration" type="number" min="3" max="30" class="w-full border p-3 rounded">
+                        </div>
+                    </div>
+                    <div class="mt-4 flex gap-2">
+                        <button @click="generateContentFactory()" :disabled="cfLoading || !cfIdea" class="bg-indigo-600 text-white px-6 py-3 rounded hover:bg-indigo-700 flex items-center gap-2 disabled:opacity-50">
+                            <i v-if="cfLoading" class="fas fa-spinner fa-spin"></i>
+                            <span v-else><i class="fas fa-bolt"></i> Gerar Estratégia Completa</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div v-if="cfDraftId" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-2 space-y-6">
+                        <div class="bg-white rounded-lg shadow p-6">
+                            <h2 class="text-xl font-bold mb-4">Títulos sugeridos</h2>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <button v-for="(t, idx) in cfTitles" :key="'cft-'+idx" @click="selectContentFactoryTitle(t)" :class="['text-left border rounded p-3 hover:bg-gray-50', (cfSelectedTitle === t) ? 'border-indigo-600 bg-indigo-50' : 'border-gray-200']">
+                                    <div class="font-semibold text-gray-900">{{ t }}</div>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg shadow p-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <h2 class="text-xl font-bold">Roteiro (para revisar)</h2>
+                                <button @click="applyContentFactoryBlocksToScript()" class="text-sm px-3 py-2 border rounded bg-white hover:bg-gray-50">
+                                    Aplicar blocos
+                                </button>
+                            </div>
+                            <div class="grid grid-cols-1 gap-4">
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-1">Gancho (0–30s)</label>
+                                    <textarea v-model="cfBlocks.gancho_0_30s" class="w-full border p-3 rounded h-24"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-1">Retenção (30–120s)</label>
+                                    <textarea v-model="cfBlocks.retencao_30_120s" class="w-full border p-3 rounded h-28"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-1">Corpo</label>
+                                    <textarea v-model="cfBlocks.corpo" class="w-full border p-3 rounded h-48"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-1">CTA (inscrição)</label>
+                                    <textarea v-model="cfBlocks.cta_inscricao" class="w-full border p-3 rounded h-20"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-1">Texto final para narração</label>
+                                    <textarea v-model="cfScriptText" class="w-full border p-3 rounded h-64"></textarea>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg shadow p-6">
+                            <h2 class="text-xl font-bold mb-4">SEO (Tags e Descrição)</h2>
+                            <label class="block text-sm font-semibold text-gray-700 mb-1">Tags (separadas por vírgula)</label>
+                            <input v-model="cfTagsText" type="text" class="w-full border p-3 rounded mb-4">
+                            <label class="block text-sm font-semibold text-gray-700 mb-1">Descrição (com timestamps)</label>
+                            <textarea v-model="cfDescription" class="w-full border p-3 rounded h-52"></textarea>
+                        </div>
+                    </div>
+
+                    <div class="space-y-6">
+                        <div class="bg-white rounded-lg shadow p-6">
+                            <h2 class="text-xl font-bold mb-4">Thumbnail</h2>
+                            <div v-if="cfThumbnailUrl" class="border rounded overflow-hidden">
+                                <img :src="cfThumbnailUrl" class="w-full">
+                            </div>
+                            <div v-else class="text-sm text-gray-500">Nenhuma thumbnail gerada.</div>
+                            <div class="mt-4">
+                                <label class="block text-sm font-semibold text-gray-700 mb-1">Texto da thumbnail</label>
+                                <input v-model="cfThumbnailText" type="text" class="w-full border p-3 rounded">
+                            </div>
+                            <div class="mt-3 flex gap-2">
+                                <button @click="regenerateContentFactoryThumbnail()" :disabled="cfThumbLoading || !cfDraftId" class="px-4 py-2 rounded border bg-white hover:bg-gray-50 disabled:opacity-50">
+                                    <i v-if="cfThumbLoading" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>Regenerar</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg shadow p-6">
+                            <h2 class="text-xl font-bold mb-4">Publicação</h2>
+                            <label class="flex items-center gap-2 text-sm text-gray-700 mb-3">
+                                <input type="checkbox" v-model="cfAutoUpload">
+                                Publicar automaticamente no YouTube
+                            </label>
+                            <button @click="generateContentFactoryVideo()" :disabled="cfVideoLoading || !cfScriptText" class="bg-green-600 text-white px-6 py-3 rounded hover:bg-green-700 w-full flex items-center justify-center gap-2 disabled:opacity-50">
+                                <i v-if="cfVideoLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else><i class="fas fa-film"></i> Gerar vídeo narrado</span>
+                            </button>
+
+                            <div v-if="cfTask" class="mt-4 border rounded p-4 bg-gray-50">
+                                <div class="flex justify-between items-center">
+                                    <div class="font-semibold">Status: {{ cfTask.status || '-' }}</div>
+                                    <div class="text-sm text-gray-600">{{ Number(cfTask.progress || 0) }}%</div>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                                    <div class="bg-indigo-600 h-2.5 rounded-full" :style="{ width: (Number(cfTask.progress || 0)) + '%' }"></div>
+                                </div>
+                                <div class="text-sm text-gray-700 mt-2">{{ cfTask.message || '' }}</div>
+                                <div v-if="cfTask.result && cfTask.result.video_url" class="mt-3">
+                                    <a :href="cfTask.result.video_url" target="_blank" class="text-indigo-700 font-semibold hover:underline">Abrir vídeo gerado</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Hotmart Auto Tab -->
             <div v-if="currentTab === 'hotmart'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Hotmart Auto</h1>
@@ -3467,6 +3591,27 @@
                     autoInsights: null,
                     monetizationLoading: false,
                     monetizationData: null,
+
+                    // Content Factory
+                    cfIdea: '',
+                    cfChannelName: 'Herdeiros das Promessas',
+                    cfVideoDuration: 12,
+                    cfLoading: false,
+                    cfDraftId: null,
+                    cfTitles: [],
+                    cfSelectedTitle: '',
+                    cfBlocks: { gancho_0_30s: '', retencao_30_120s: '', corpo: '', cta_inscricao: '' },
+                    cfScriptText: '',
+                    cfTagsText: '',
+                    cfDescription: '',
+                    cfThumbnailUrl: null,
+                    cfThumbnailPath: null,
+                    cfThumbnailText: '',
+                    cfThumbLoading: false,
+                    cfAutoUpload: false,
+                    cfVideoLoading: false,
+                    cfTaskId: null,
+                    cfTask: null,
                     
                     // Weekly Schedule
                     scheduleMode: 'theme', // theme | music
@@ -4945,6 +5090,139 @@
                         alert("Erro: " + (e.message || e));
                     } finally {
                         this.ytStoryDraftDeleting = false;
+                    }
+                },
+                selectContentFactoryTitle(t) {
+                    const title = String(t || '').trim();
+                    if (!title) return;
+                    this.cfSelectedTitle = title;
+                    if (!this.cfThumbnailText) {
+                        const pick = title.split(':', 1)[0].trim();
+                        this.cfThumbnailText = pick.slice(0, 28);
+                    }
+                    this.applyContentFactoryBlocksToScript();
+                },
+                applyContentFactoryBlocksToScript() {
+                    const title = String(this.cfSelectedTitle || '').trim() || String(this.cfIdea || '').trim();
+                    const b = this.cfBlocks || {};
+                    const parts = [
+                        title,
+                        String(b.gancho_0_30s || '').trim(),
+                        String(b.retencao_30_120s || '').trim(),
+                        String(b.corpo || '').trim(),
+                        String(b.cta_inscricao || '').trim(),
+                    ].filter(Boolean);
+                    this.cfScriptText = parts.join("\n\n");
+                },
+                async generateContentFactory() {
+                    if (this.cfLoading) return;
+                    const idea = String(this.cfIdea || '').trim();
+                    if (!idea) return;
+                    this.cfLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/content-factory/generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ idea, channel_name: this.cfChannelName })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok || !data.id) {
+                            throw new Error(data.detail || data.message || "Falha ao gerar estratégia.");
+                        }
+                        this.cfDraftId = data.id;
+                        this.cfTitles = Array.isArray(data.titles) ? data.titles : [];
+                        this.cfSelectedTitle = String(data.title || (this.cfTitles[0] || idea)).trim();
+                        this.cfBlocks = data.blocks || { gancho_0_30s: '', retencao_30_120s: '', corpo: '', cta_inscricao: '' };
+                        this.cfTagsText = Array.isArray(data.tags) ? data.tags.join(', ') : '';
+                        this.cfDescription = String(data.description || '').trim();
+                        this.cfThumbnailUrl = data.thumbnail_url || null;
+                        this.cfThumbnailPath = data.thumbnail_path || null;
+                        this.cfThumbnailText = (data.metadata && data.metadata.thumbnail && data.metadata.thumbnail.text) ? String(data.metadata.thumbnail.text) : '';
+                        if (!this.cfThumbnailText) {
+                            const pick = this.cfSelectedTitle.split(':', 1)[0].trim();
+                            this.cfThumbnailText = pick.slice(0, 28);
+                        }
+                        this.applyContentFactoryBlocksToScript();
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.cfLoading = false;
+                    }
+                },
+                async regenerateContentFactoryThumbnail() {
+                    if (this.cfThumbLoading) return;
+                    const id = Number(this.cfDraftId || 0);
+                    if (!id) return;
+                    this.cfThumbLoading = true;
+                    try {
+                        const res = await this.authFetch(`/youtube/content-factory/drafts/${id}/regenerate-thumbnail`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: this.cfThumbnailText })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || "Falha ao regenerar thumbnail.");
+                        this.cfThumbnailUrl = data.thumbnail_url || this.cfThumbnailUrl;
+                        this.cfThumbnailPath = data.thumbnail_path || this.cfThumbnailPath;
+                    } catch (e) {
+                        alert("Erro: " + (e.message || e));
+                    } finally {
+                        this.cfThumbLoading = false;
+                    }
+                },
+                async generateContentFactoryVideo() {
+                    if (this.cfVideoLoading) return;
+                    const story = String(this.cfScriptText || '').trim();
+                    if (!story) return;
+                    this.cfVideoLoading = true;
+                    this.cfTask = null;
+                    this.cfTaskId = null;
+                    try {
+                        const duration = Number(this.cfVideoDuration || 10);
+                        const tags = String(this.cfTagsText || '')
+                            .split(',')
+                            .map(s => String(s || '').trim())
+                            .filter(Boolean)
+                            .slice(0, 30);
+                        const payload = {
+                            mode: 'story',
+                            duration: duration,
+                            auto_upload: !!this.cfAutoUpload,
+                            story_content: story,
+                            override_title: String(this.cfSelectedTitle || '').trim() || null,
+                            override_description: String(this.cfDescription || '').trim() || null,
+                            override_tags: tags,
+                            thumbnail_path: this.cfThumbnailPath || null,
+                        };
+                        const res = await this.authFetch('/youtube/generate_video', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok || !data.task_id) throw new Error(data.detail || data.message || "Falha ao iniciar geração do vídeo.");
+                        this.cfTaskId = String(data.task_id);
+                        this.pollContentFactoryTask(this.cfTaskId);
+                    } catch (e) {
+                        alert("Erro ao gerar vídeo: " + (e.message || e));
+                        this.cfVideoLoading = false;
+                    }
+                },
+                async pollContentFactoryTask(taskId) {
+                    if (!taskId) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || "Falha ao consultar tarefa.");
+                        this.cfTask = data;
+                        const status = String((data.status || '')).toLowerCase();
+                        if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+                            this.cfVideoLoading = false;
+                            return;
+                        }
+                        setTimeout(() => this.pollContentFactoryTask(taskId), 1500);
+                    } catch (e) {
+                        setTimeout(() => this.pollContentFactoryTask(taskId), 2500);
                     }
                 },
                 async generateStoryText() {

@@ -971,6 +971,67 @@ class AIContentGenerator:
             print(f"Erro ao melhorar {safe_kind}: {e}")
             return (original_text or "").strip()
 
+    def generate_youtube_content_factory_strategy(self, idea: str, channel_name: str = "Herdeiros das Promessas") -> Dict[str, Any]:
+        self._load_config()
+        theme = (idea or "").strip()
+        if not theme:
+            return {"error": "idea_required"}
+
+        system = (
+            "Você é Diretor de Estratégia e Criação para um canal cristão (fé/relacionado à Bíblia). "
+            "Seu objetivo é maximizar CTR e retenção (principalmente nos primeiros 2 minutos) sem sensacionalismo falso. "
+            "Use mistério e curiosidade bíblica com respeito, e foque em temas como mistérios bíblicos, curiosidades, escatologia, promessas."
+        )
+        prompt = f"""
+Gere uma estratégia completa para um vídeo do canal "{channel_name}" a partir desta ideia bruta:
+
+IDEIA BRUTA:
+{theme}
+
+RETORNE APENAS JSON VÁLIDO com esta estrutura:
+{{
+  "viralizacao": {{
+    "potencial": "alto|medio|baixo",
+    "nota": 0,
+    "justificativa": "..."
+  }},
+  "titulos": ["...", "...", "...", "...", "..."],
+  "roteiro": {{
+    "gancho_0_30s": "...",
+    "retencao_30_120s": "...",
+    "corpo": "...",
+    "cta_inscricao": "..."
+  }},
+  "thumbnail": {{
+    "texto": "...",
+    "imagem_prompt": "..."
+  }},
+  "seo": {{
+    "tags": ["..."],
+    "descricao": "...",
+    "timestamps": ["00:00 ...", "00:45 ...", "02:10 ..."]
+  }}
+}}
+
+REGRAS IMPORTANTES:
+- Não use markdown.
+- "nota" deve ser número inteiro de 0 a 100.
+- O texto da thumbnail deve ser curto (2 a 5 palavras) e legível.
+- A descrição deve incluir CTA e hashtags (sem exagero).
+- O prompt de imagem deve ser em INGLÊS, estilo: Epic Christian Digital Art, cinematográfico, dramático, iluminação épica, sem texto na imagem.
+""".strip()
+
+        try:
+            raw = self._generate_text(prompt, system_prompt=system, temperature=0.7, json_mode=True) or ""
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            import json
+            data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict):
+                return {"error": "invalid_response"}
+            return data
+        except Exception as e:
+            return {"error": str(e)}
+
     def generate_story_image_prompts(self, story_text: str, n: int = 4, kind: str = "story") -> list:
         self._load_config()
         try:
