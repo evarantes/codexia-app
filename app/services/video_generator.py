@@ -601,8 +601,19 @@ class VideoGenerator:
                     path = os.path.join(self.output_dir, filename)
                     with open(path, "wb") as f:
                         f.write(audio_content)
-                    print(f"TTS premium sucesso: {path}")
-                    return path
+                    dur = 0.0
+                    try:
+                        dur = float(self._ffprobe_duration_seconds(path) or 0)
+                    except Exception:
+                        dur = 0.0
+                    if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
+                        print(f"TTS premium sucesso: {path} ({dur:.2f}s)")
+                        return path
+                    try:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"TTS premium falhou, tentando fallback: {e}")
 
@@ -642,8 +653,13 @@ class VideoGenerator:
                 if t.is_alive():
                     raise TimeoutError("Edge TTS timeout")
 
-                if os.path.exists(path) and os.path.getsize(path) > 500: # Check > 500 bytes
-                    print(f"Edge TTS sucesso: {path}")
+                dur = 0.0
+                try:
+                    dur = float(self._ffprobe_duration_seconds(path) or 0)
+                except Exception:
+                    dur = 0.0
+                if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
+                    print(f"Edge TTS sucesso: {path} ({dur:.2f}s)")
                     return path
                 else:
                     print(f"Edge TTS gerou arquivo vazio ou falhou (Size check failed). Path: {path}")
@@ -660,8 +676,13 @@ class VideoGenerator:
             tts.save(path)
             
             # Verificação de segurança
-            if os.path.exists(path) and os.path.getsize(path) > 100:
-                print(f"gTTS sucesso: {path}")
+            dur = 0.0
+            try:
+                dur = float(self._ffprobe_duration_seconds(path) or 0)
+            except Exception:
+                dur = 0.0
+            if os.path.exists(path) and os.path.getsize(path) > 100 and dur > 0.2:
+                print(f"gTTS sucesso: {path} ({dur:.2f}s)")
                 return path
             else:
                  print("gTTS gerou arquivo vazio.")
@@ -861,6 +882,68 @@ class VideoGenerator:
             return clip.with_audio(audio_clip)
         return clip.set_audio(audio_clip)
 
+    def _render_debug_dir(self, debug_id: Optional[str] = None) -> str:
+        did = (debug_id or "").strip() or uuid.uuid4().hex
+        base = os.path.join("generated_assets", "render_errors", did)
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception:
+            pass
+        return base
+
+    def _clip_debug_info(self, clip) -> dict:
+        info = {"type": type(clip).__name__ if clip is not None else None}
+        if clip is None:
+            return info
+        try:
+            info["duration"] = float(getattr(clip, "duration", 0) or 0)
+        except Exception:
+            info["duration"] = None
+        try:
+            info["size"] = getattr(clip, "size", None)
+        except Exception:
+            info["size"] = None
+        try:
+            a = getattr(clip, "audio", None)
+            if a is not None:
+                try:
+                    info["audio_type"] = type(a).__name__
+                except Exception:
+                    info["audio_type"] = "unknown"
+                try:
+                    info["audio_duration"] = float(getattr(a, "duration", 0) or 0)
+                except Exception:
+                    info["audio_duration"] = None
+            else:
+                info["audio_type"] = None
+        except Exception:
+            info["audio_type"] = "error"
+        return info
+
+    def _assert_clip_not_none(self, clip, label: str, meta: Optional[dict] = None):
+        if clip is None:
+            extra = ""
+            try:
+                if meta:
+                    extra = f" | meta={str(meta)[:600]}"
+            except Exception:
+                extra = ""
+            raise Exception(f"Clip None detectado: {label}{extra}")
+
+    def _write_render_error_log(self, out_dir: str, payload: dict):
+        try:
+            import json
+            p = os.path.join(out_dir, "error.json")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception:
+            try:
+                p = os.path.join(out_dir, "error.txt")
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(str(payload))
+            except Exception:
+                pass
+
     def _clip_from_rgba(self, rgba_arr, duration):
         try:
             from moviepy.editor import ImageClip
@@ -1012,6 +1095,19 @@ class VideoGenerator:
             except Exception:
                 return
         
+        debug_ctx = {
+            "stage": "init",
+            "scene_index": None,
+            "scene_count": None,
+            "bg_image_path": None,
+            "audio_path": None,
+            "title_audio_path": None,
+            "end_audio_path": None,
+            "cover_image_path": cover_image_path,
+            "aspect_ratio": aspect_ratio,
+            "video_size": None,
+        }
+        debug_id = uuid.uuid4().hex
         try:
             title = plan.get('title', 'Vídeo Sem Título')
             try:
@@ -1149,6 +1245,7 @@ class VideoGenerator:
                 video_size = (1280, 720) # Antes: 1920, 1080
             else:
                 video_size = (720, 1280) # Antes: 1080, 1920
+            debug_ctx["video_size"] = list(video_size)
 
             selected_image_paths = []
             selected_primary_path = None
@@ -1376,6 +1473,7 @@ class VideoGenerator:
                 clean_title = clean_title[:97] + "..."
 
             title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
+            debug_ctx["title_audio_path"] = title_audio_path
             
             start_bg_path = selected_primary_path if selected_primary_path and os.path.exists(selected_primary_path) else None
             if not start_bg_path:
@@ -1386,20 +1484,27 @@ class VideoGenerator:
             img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path)
             
             clip_title = ImageClip(img_title)
+            self._assert_clip_not_none(clip_title, "title_slide")
             
             if title_audio_path:
                 audio_clip = AudioFileClip(title_audio_path)
-                # Adiciona um pouco de tempo extra
-                clip_title = clip_title.with_duration(audio_clip.duration + 1.5)
-                clip_title = clip_title.with_audio(audio_clip)
+                self._assert_clip_not_none(audio_clip, "title_audio_clip", {"path": title_audio_path})
+                dur = float(getattr(audio_clip, "duration", 0) or 0)
+                if dur <= 0:
+                    dur = 3.0
+                clip_title = self._set_clip_duration(clip_title, dur)
+                clip_title = self._set_clip_audio(clip_title, audio_clip)
             else:
-                clip_title = clip_title.with_duration(3)
+                clip_title = self._set_clip_duration(clip_title, 3.0)
                 
             clips.append(clip_title)
             
             # 2. Cenas
             total_scenes = len(scenes)
+            debug_ctx["scene_count"] = int(total_scenes)
             for i, scene in enumerate(scenes):
+                debug_ctx["stage"] = "scene_loop"
+                debug_ctx["scene_index"] = int(i)
                 scene_progress = 10 + int((i / total_scenes) * 70)
                 if progress_callback:
                     progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
@@ -1461,6 +1566,7 @@ class VideoGenerator:
                 except Exception:
                     pass
                 _track_image_path(bg_image_path)
+                debug_ctx["bg_image_path"] = bg_image_path
 
                 # Fallback colors
                 bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
@@ -1469,6 +1575,7 @@ class VideoGenerator:
                 # Gerar Audio da cena
                 start_audio = time.time()
                 audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
+                debug_ctx["audio_path"] = audio_path
                 print(f"DEBUG: Audio da cena {i+1} gerado em {time.time() - start_audio:.2f}s")
                 
                 screen_text = ""
@@ -1485,36 +1592,32 @@ class VideoGenerator:
                 bg_clip = ImageClip(bg_frame)
                 if audio_path:
                     audio_clip_scene = AudioFileClip(audio_path)
-                    scene_dur = float(audio_clip_scene.duration or 0) + 0.5
+                    self._assert_clip_not_none(audio_clip_scene, "scene_audio_clip", {"path": audio_path, "scene_index": i})
+                    scene_dur = float(getattr(audio_clip_scene, "duration", 0) or 0)
                 else:
                     audio_clip_scene = None
                     scene_dur = 5
 
-                if hasattr(bg_clip, "with_duration"):
-                    bg_clip = bg_clip.with_duration(scene_dur)
-                else:
-                    bg_clip = bg_clip.set_duration(scene_dur)
+                self._assert_clip_not_none(bg_clip, "scene_bg_clip", {"scene_index": i})
+                if scene_dur <= 0:
+                    scene_dur = 5.0
+                bg_clip = self._set_clip_duration(bg_clip, scene_dur)
                 bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
 
                 overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
                 overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
+                self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
                 clip_scene = CompositeVideoClip([bg_clip, overlay_clip], size=video_size)
+                self._assert_clip_not_none(clip_scene, "scene_composite_clip", {"scene_index": i})
                 
                 if audio_clip_scene:
-                    if hasattr(clip_scene, "with_audio"):
-                        clip_scene = clip_scene.with_audio(audio_clip_scene)
-                    else:
-                        clip_scene = clip_scene.set_audio(audio_clip_scene)
+                    clip_scene = self._set_clip_audio(clip_scene, audio_clip_scene)
                 else:
                     print(f"AVISO: Cena {i+1} sem áudio gerado. Mantendo duração padrão.")
                     
                 clips.append(clip_scene)
                 
-                # Fechar objetos temporários para liberar RAM
-                try:
-                    # bg_clip e overlay_clip estão dentro de clip_scene, não fechamos agora
-                except:
-                    pass
+                pass
                 
                 # Limpeza de imagens temporárias
                 if bg_image_path and "temp_" in bg_image_path and bg_image_path not in cached_temp_paths:
@@ -1532,6 +1635,7 @@ class VideoGenerator:
                 
             end_text = "Inscreva-se no Canal!\nLink na Bio."
             audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.", voice_style=voice_style, voice_gender=voice_gender)
+            debug_ctx["end_audio_path"] = audio_end_path
             
             end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
@@ -1540,17 +1644,52 @@ class VideoGenerator:
             img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path)
             
             clip_end = ImageClip(img_end)
+            self._assert_clip_not_none(clip_end, "end_slide")
             
             if audio_end_path:
                 audio_clip_end = AudioFileClip(audio_end_path)
-                clip_end = clip_end.with_duration(audio_clip_end.duration + 1)
-                clip_end = clip_end.with_audio(audio_clip_end)
+                self._assert_clip_not_none(audio_clip_end, "end_audio_clip", {"path": audio_end_path})
+                dur = float(getattr(audio_clip_end, "duration", 0) or 0)
+                if dur <= 0:
+                    dur = 3.0
+                clip_end = self._set_clip_duration(clip_end, dur)
+                clip_end = self._set_clip_audio(clip_end, audio_clip_end)
             else:
-                clip_end = clip_end.with_duration(3)
+                clip_end = self._set_clip_duration(clip_end, 3.0)
                 
             clips.append(clip_end)
             
             # Concatenar todos
+            debug_ctx["stage"] = "concat"
+            for ci, c in enumerate(list(clips)):
+                self._assert_clip_not_none(c, "clips_list_item", {"clip_index": ci})
+                try:
+                    d = float(getattr(c, "duration", 0) or 0)
+                except Exception:
+                    d = 0
+                if d <= 0:
+                    raise Exception(f"Clip com duração inválida (<=0): index={ci} type={type(c).__name__}")
+            preflight_env = (os.getenv("VIDEO_PREFLIGHT_VALIDATE") or "1").strip().lower()
+            if preflight_env not in {"0", "false", "no", "off"}:
+                try:
+                    max_pf = int((os.getenv("VIDEO_PREFLIGHT_MAX_CLIPS") or "120").strip() or "120")
+                except Exception:
+                    max_pf = 120
+                max_pf = max(0, min(max_pf, 220))
+                if max_pf and len(clips) <= max_pf:
+                    for ci, c in enumerate(list(clips)):
+                        try:
+                            dur = float(getattr(c, "duration", 0) or 0)
+                        except Exception:
+                            dur = 0
+                        ts = [0.0]
+                        if dur > 0.25:
+                            ts.append(max(0.0, dur - 0.05))
+                        for tt in ts:
+                            try:
+                                c.get_frame(tt)
+                            except Exception as ex:
+                                raise Exception(f"Preflight falhou: clip_index={ci} t={tt} type={type(c).__name__} err={ex}")
             if len(clips) > 1:
                 try:
                     method = "compose" if len(clips) < 15 else "chain"
@@ -1559,6 +1698,46 @@ class VideoGenerator:
                     final_clip = concatenate_videoclips(clips, method="compose")
             else:
                 final_clip = concatenate_videoclips(clips, method="compose")
+            self._assert_clip_not_none(final_clip, "final_clip_after_concat")
+
+            try:
+                final_dur = float(getattr(final_clip, "duration", 0) or 0)
+            except Exception:
+                final_dur = 0
+            if final_dur <= 0:
+                raise Exception("final_clip com duração inválida (<=0) após concatenação.")
+
+            try:
+                if getattr(final_clip, "audio", None) is not None:
+                    ad = float(getattr(final_clip.audio, "duration", 0) or 0)
+                    if ad > 0:
+                        if final_dur > ad + 0.2:
+                            final_clip = self._subclip(final_clip, 0, ad)
+                        elif final_dur < ad - 0.2:
+                            try:
+                                from moviepy.editor import ColorClip
+                            except Exception:
+                                from moviepy import ColorClip
+                            extra = ad - final_dur
+                            size = getattr(final_clip, "size", None) or (1280, 720)
+                            pad = self._set_clip_duration(ColorClip(size=size, color=(0, 0, 0)), extra)
+                            combined = concatenate_videoclips([final_clip, pad], method="compose")
+                            final_clip = self._set_clip_audio(combined, final_clip.audio)
+                        else:
+                            final_clip = self._set_clip_duration(final_clip, ad)
+                        try:
+                            final_dur = float(getattr(final_clip, "duration", 0) or 0)
+                        except Exception:
+                            final_dur = final_dur
+            except Exception:
+                pass
+
+            try:
+                final_clip.get_frame(0.0)
+                if final_dur > 0.25:
+                    final_clip.get_frame(max(0.0, final_dur - 0.05))
+            except Exception as e:
+                raise Exception(f"Preflight falhou no final_clip (get_frame): {e}")
             
             # 4. Adicionar Música de Fundo
             if progress_callback:
@@ -1608,6 +1787,7 @@ class VideoGenerator:
 
                 try:
                     bg_music = AudioFileClip(music_path)
+                    self._assert_clip_not_none(bg_music, "bg_music_clip", {"path": music_path})
                     
                     if bg_music.duration < final_clip.duration:
                         num_loops = int(final_clip.duration / bg_music.duration) + 1
@@ -1713,22 +1893,73 @@ class VideoGenerator:
             # Logger customizado para não entupir a RAM com strings de log
             logger_kw = {"logger": None}
             
-            final_clip.write_videofile(
-                output_path, 
-                fps=24, 
-                codec="libx264", 
-                audio_codec="aac", 
-                threads=1, # IMPORTANTE: 1 thread usa MUITO menos RAM que múltiplas
-                bitrate=bitrate,
-                ffmpeg_params=[
-                    "-preset", "ultrafast", 
-                    "-movflags", "+faststart", 
-                    "-pix_fmt", "yuv420p",
-                    "-tune", "stillimage" if is_long_video else "film"
-                ],
-                **logger_kw
-            )
+            debug_ctx["stage"] = "write_videofile"
+            try:
+                final_clip.write_videofile(
+                    output_path, 
+                    fps=24, 
+                    codec="libx264", 
+                    audio_codec="aac", 
+                    threads=1, # IMPORTANTE: 1 thread usa MUITO menos RAM que múltiplas
+                    bitrate=bitrate,
+                    ffmpeg_params=[
+                        "-preset", "ultrafast", 
+                        "-movflags", "+faststart", 
+                        "-pix_fmt", "yuv420p",
+                        "-tune", "stillimage" if is_long_video else "film"
+                    ],
+                    **logger_kw
+                )
+            except Exception as e:
+                try:
+                    import traceback
+                    failures = []
+                    try:
+                        for ci, c in enumerate(list(clips or [])):
+                            if c is None:
+                                failures.append({"clip_index": ci, "where": "clip", "error": "clip is None"})
+                                continue
+                            try:
+                                dur = float(getattr(c, "duration", 0) or 0)
+                            except Exception:
+                                dur = 0
+                            times = [0.0]
+                            if dur > 0.25:
+                                times.append(max(0.0, dur - 0.05))
+                            for tt in times:
+                                try:
+                                    c.get_frame(tt)
+                                except Exception as ex:
+                                    failures.append({"clip_index": ci, "where": f"get_frame(t={tt})", "error": str(ex)})
+                                    break
+                            try:
+                                a = getattr(c, "audio", None)
+                                if a is not None:
+                                    try:
+                                        a.get_frame(0.0)
+                                    except Exception as ax:
+                                        failures.append({"clip_index": ci, "where": "audio.get_frame(0.0)", "error": str(ax)})
+                            except Exception:
+                                pass
+                    except Exception:
+                        failures = failures or []
+                    out_dir = self._render_debug_dir(debug_id)
+                    payload = {
+                        "debug_id": debug_id,
+                        "error": str(e),
+                        "traceback": traceback.format_exc(),
+                        "context": debug_ctx,
+                        "clips": [self._clip_debug_info(c) for c in (clips or [])],
+                        "final_clip": self._clip_debug_info(final_clip),
+                        "postmortem_failures": failures,
+                    }
+                    self._write_render_error_log(out_dir, payload)
+                    print(f"Render error log salvo em: {out_dir}")
+                except Exception:
+                    pass
+                raise
             output_path = self._ensure_playable_mp4(output_path)
+            
             
             abs_path = os.path.abspath(output_path)
             print(f"Vídeo salvo com sucesso em: {abs_path} (Size: {os.path.getsize(output_path)} bytes)")
@@ -1739,8 +1970,23 @@ class VideoGenerator:
             return {"video_url": f"{VIDEO_URL_PREFIX}/{filename}", "music_credit": used_music_credit, "used_images": used_image_urls}
             
         except Exception as e:
-            print(f"Erro na geração do vídeo: {e}")
-            raise e
+            try:
+                import traceback
+                out_dir = self._render_debug_dir(debug_id)
+                payload = {
+                    "debug_id": debug_id,
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                    "context": debug_ctx,
+                    "clips": [self._clip_debug_info(c) for c in (clips or [])],
+                    "final_clip": self._clip_debug_info(final_clip),
+                }
+                self._write_render_error_log(out_dir, payload)
+                print(f"Render error log salvo em: {out_dir}")
+            except Exception:
+                pass
+            print(f"Erro na geração do vídeo: {e} (debug_id={debug_id})")
+            raise Exception(f"{e} | debug_id={debug_id} | log_dir=/generated_assets/render_errors/{debug_id}/") from e
         finally:
             # Resource Cleanup
             print("Limpando recursos de memória...")
