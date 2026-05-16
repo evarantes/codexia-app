@@ -1552,21 +1552,10 @@ class VideoGenerator:
             clips.append(clip_end)
             
             # Concatenar todos
-            transition_sec = 0.25
             if len(clips) > 1:
-                faded = []
-                for idx, c in enumerate(clips):
-                    if idx > 0 and hasattr(c, "crossfadein"):
-                        try:
-                            c = c.crossfadein(transition_sec)
-                        except Exception:
-                            pass
-                    faded.append(c)
-                clips = faded
                 try:
-                    # Otimização: Usando method="chain" para vídeos muito longos reduz uso de RAM
                     method = "compose" if len(clips) < 15 else "chain"
-                    final_clip = concatenate_videoclips(clips, method=method, padding=-transition_sec)
+                    final_clip = concatenate_videoclips(clips, method=method)
                 except Exception:
                     final_clip = concatenate_videoclips(clips, method="compose")
             else:
