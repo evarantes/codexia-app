@@ -4,6 +4,7 @@ import shutil
 import json
 import uuid
 import threading
+import time
 import sys
 import multiprocessing
 import math
@@ -42,7 +43,7 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
-from app.services.task_manager import create_task, update_task, get_task
+from app.services.task_manager import create_task, update_task, get_task, is_task_cancel_requested
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User
@@ -79,7 +80,30 @@ def _rq_workers_online() -> bool:
     if not conn or not RQ_AVAILABLE or Worker is None:
         return False
     try:
-        return Worker.count(conn) > 0
+        workers = []
+        try:
+            workers = list(Worker.all(conn))
+        except Exception:
+            workers = []
+        if not workers:
+            try:
+                return Worker.count(conn) > 0
+            except Exception:
+                return False
+        now = datetime.utcnow()
+        for w in workers:
+            try:
+                hb = getattr(w, "last_heartbeat", None)
+                if hb:
+                    try:
+                        age = (now - hb).total_seconds()
+                    except Exception:
+                        age = None
+                    if age is not None and age <= 120:
+                        return True
+            except Exception:
+                continue
+        return False
     except Exception:
         return False
 
@@ -3074,6 +3098,40 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         try:
             rq_queue.enqueue(process_video_generation_payload, payload, task_id, job_timeout=_rq_video_timeout_seconds())
             update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq"})
+            def _watchdog_fallback(tid: str, pay: Dict[str, Any]):
+                try:
+                    raw = (os.getenv("VIDEO_TASK_QUEUE_STALE_SECONDS") or "").strip()
+                    wait_s = int(raw) if raw else 90
+                except Exception:
+                    wait_s = 90
+                wait_s = max(20, min(15 * 60, wait_s))
+                try:
+                    time.sleep(wait_s)
+                except Exception:
+                    return
+                try:
+                    if is_task_cancel_requested(tid):
+                        return
+                except Exception:
+                    pass
+                t = get_task(tid) or {}
+                status = str((t.get("status") or "")).lower()
+                msg = str((t.get("message") or ""))
+                try:
+                    p = int(t.get("progress") or 0)
+                except Exception:
+                    p = 0
+                if status == "processing" and p <= 1 and ("enfileirad" in msg.lower() or "enfileirando" in msg.lower()):
+                    try:
+                        update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Iniciando execução local...")
+                    except Exception:
+                        pass
+                    try:
+                        th = threading.Thread(target=process_video_generation_payload, args=(pay, tid), daemon=True)
+                        th.start()
+                    except Exception:
+                        pass
+            threading.Thread(target=_watchdog_fallback, args=(task_id, payload), daemon=True).start()
             return {"message": "Processo iniciado", "task_id": task_id}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
@@ -3523,9 +3581,20 @@ def process_video_generation(request: VideoRequest, task_id):
                 except Exception:
                     m = 1
                 m = max(1, m)
-                # Para vídeos longos, precisamos de mais cenas para manter o engajamento.
-                # Recomendado: 2 a 3 cenas por minuto.
-                return max(6, min(80, int(m * 2.5)))
+                try:
+                    spm_raw = (os.getenv("YOUTUBE_SCENES_PER_MINUTE") or "").strip()
+                    spm = float(spm_raw) if spm_raw else 1.6
+                except Exception:
+                    spm = 1.6
+                spm = max(0.8, min(3.0, spm))
+                try:
+                    max_raw = (os.getenv("YOUTUBE_SCENES_MAX") or "").strip()
+                    max_scenes = int(max_raw) if max_raw else 60
+                except Exception:
+                    max_scenes = 60
+                max_scenes = max(20, min(120, max_scenes))
+                min_scenes = 4 if m <= 2 else 6
+                return max(min_scenes, min(max_scenes, int(m * spm)))
 
             def _compact_scenes(raw: Any, target_count: int) -> List[Dict[str, Any]]:
                 scenes_in: List[Dict[str, Any]] = []
