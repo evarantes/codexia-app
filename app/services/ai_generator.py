@@ -133,14 +133,14 @@ class AIContentGenerator:
 
         try:
             try:
-                return _call(model, allow_json_mode=True)
+                return _call(model, allow_json_mode=bool(json_mode))
             except Exception:
                 return _call(model, allow_json_mode=False)
         except Exception as e:
             if model != "openrouter/auto":
                 try:
                     try:
-                        return _call("openrouter/auto", allow_json_mode=True)
+                        return _call("openrouter/auto", allow_json_mode=bool(json_mode))
                     except Exception:
                         return _call("openrouter/auto", allow_json_mode=False)
                 except Exception:
