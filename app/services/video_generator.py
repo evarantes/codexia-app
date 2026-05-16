@@ -1512,7 +1512,6 @@ class VideoGenerator:
                 
                 # Fechar objetos temporários para liberar RAM
                 try:
-                    if audio_clip_scene: audio_clip_scene.close()
                     # bg_clip e overlay_clip estão dentro de clip_scene, não fechamos agora
                 except:
                     pass
