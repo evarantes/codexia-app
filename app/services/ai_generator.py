@@ -834,11 +834,86 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
-            return content.strip()
+            return (self._normalize_narration_text(content) or content).strip()
         except Exception as e:
             print(f"Erro ao gerar {safe_kind}: {e}")
             title = "História" if kind == "story" else "Devocional"
             return f"{title} (Falha na IA)\n\n{instruction}".strip()
+
+    def _normalize_narration_text(self, raw: str) -> str:
+        text = (raw or "").strip()
+        if not text:
+            return ""
+        if "```" in text:
+            t = text
+            if "```json" in t:
+                try:
+                    t = t.split("```json", 1)[1]
+                except Exception:
+                    t = t
+            try:
+                t = t.split("```", 1)[1] if t.strip().startswith("```") else t
+            except Exception:
+                t = t
+            try:
+                t = t.rsplit("```", 1)[0]
+            except Exception:
+                t = t
+            text = t.strip() or text
+
+        if not (text.startswith("{") or text.startswith("[")):
+            return text
+
+        try:
+            import json
+            data = json.loads(text)
+        except Exception:
+            return text
+
+        def pick_str(d: dict, keys: list) -> Optional[str]:
+            for k in keys:
+                v = d.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            return None
+
+        parts: List[str] = []
+        if isinstance(data, dict):
+            title = pick_str(data, ["title", "titulo"])
+            if title:
+                parts.append(title)
+
+            script_full = pick_str(data, ["script_full", "script", "content", "text", "narration_text", "narration"])
+            if script_full:
+                parts.append(script_full)
+
+            sections = data.get("sections")
+            if isinstance(sections, list):
+                for s in sections:
+                    if isinstance(s, dict):
+                        seg = pick_str(s, ["content", "text", "narration", "narration_text"])
+                        if seg:
+                            parts.append(seg)
+
+            scenes = data.get("scenes")
+            if isinstance(scenes, list):
+                for s in scenes:
+                    if isinstance(s, dict):
+                        seg = pick_str(s, ["text", "narration", "narration_text", "content"])
+                        if seg:
+                            parts.append(seg)
+
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, str) and item.strip():
+                    parts.append(item.strip())
+                elif isinstance(item, dict):
+                    v = pick_str(item, ["content", "text", "narration", "narration_text"])
+                    if v:
+                        parts.append(v)
+
+        out = "\n\n".join([p for p in (parts or []) if isinstance(p, str) and p.strip()]).strip()
+        return out or text
 
     def improve_story_or_devotional_text(
         self,
@@ -891,7 +966,7 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
-            return content.strip()
+            return (self._normalize_narration_text(content) or content).strip()
         except Exception as e:
             print(f"Erro ao melhorar {safe_kind}: {e}")
             return (original_text or "").strip()

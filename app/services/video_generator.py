@@ -365,6 +365,74 @@ class VideoGenerator:
         
         # 1. Remove Markdown Bold (**text**) -> text (keep content, remove markers)
         text = text.replace("**", "")
+
+        raw = (text or "").strip()
+        if "```" in raw:
+            t = raw
+            if "```json" in t:
+                try:
+                    t = t.split("```json", 1)[1]
+                except Exception:
+                    t = t
+            try:
+                t = t.split("```", 1)[1] if t.strip().startswith("```") else t
+            except Exception:
+                t = t
+            try:
+                t = t.rsplit("```", 1)[0]
+            except Exception:
+                t = t
+            raw = t.strip() or raw
+
+        if raw.startswith("{") or raw.startswith("["):
+            try:
+                import json
+
+                data = json.loads(raw)
+
+                def pick_str(d: dict, keys: list):
+                    for k in keys:
+                        v = d.get(k)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+                    return None
+
+                parts = []
+                if isinstance(data, dict):
+                    title = pick_str(data, ["title", "titulo"])
+                    if title:
+                        parts.append(title)
+                    sections = data.get("sections")
+                    if isinstance(sections, list):
+                        for s in sections:
+                            if isinstance(s, dict):
+                                seg = pick_str(s, ["content", "text", "narration", "narration_text"])
+                                if seg:
+                                    parts.append(seg)
+                    scenes = data.get("scenes")
+                    if isinstance(scenes, list):
+                        for s in scenes:
+                            if isinstance(s, dict):
+                                seg = pick_str(s, ["text", "narration", "narration_text", "content"])
+                                if seg:
+                                    parts.append(seg)
+                    script_full = pick_str(data, ["script_full", "script", "content", "text", "narration_text", "narration"])
+                    if script_full:
+                        parts.append(script_full)
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, str) and item.strip():
+                            parts.append(item.strip())
+                        elif isinstance(item, dict):
+                            seg = pick_str(item, ["content", "text", "narration", "narration_text"])
+                            if seg:
+                                parts.append(seg)
+
+                extracted = "\n\n".join([p for p in parts if isinstance(p, str) and p.strip()]).strip()
+                if extracted:
+                    text = extracted
+            except Exception:
+                pass
         
         # 2. Remove Script Prefixes
         # "Narrador:", "Cena 1:", "Imagem:"
