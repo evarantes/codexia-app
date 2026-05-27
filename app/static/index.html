@@ -1926,6 +1926,9 @@
                                             <button v-if="isFailedStatus(video.status)" @click="retryVideoStep(video)" class="text-orange-600 hover:text-orange-800" title="Reprocessar">
                                                 <i class="fas fa-redo"></i>
                                             </button>
+                                            <button v-if="isFailedStatus(video.status)" @click="deleteProductionVideo(video)" class="text-red-600 hover:text-red-800" title="Excluir vídeo com erro">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
                                             <button v-if="isReadyStatus(video.status)" @click="publishVideo(video)" class="text-red-600 hover:text-red-800" title="Publicar no YouTube">
                                                 <i class="fab fa-youtube"></i>
                                             </button>
@@ -5595,6 +5598,7 @@
                         const selectedImages = this.selectedImageUrlsAll();
                         const payload = {
                             mode: 'story',
+                            kind: this.ytStoryKind || 'story',
                             duration: duration,
                             auto_upload: !!this.ytStoryAutoUpload,
                             story_content: this.ytStoryContent,

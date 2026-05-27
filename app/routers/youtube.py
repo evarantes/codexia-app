@@ -1116,6 +1116,7 @@ class VideoRequest(BaseModel):
     duration: int = 5
     auto_upload: bool = False
     mode: str = "topic" # topic | story
+    kind: Optional[str] = None  # story | devotional (apenas quando mode=story)
     story_content: Optional[str] = None
     custom_image_paths: Optional[List[str]] = None
     selected_images: Optional[List[str]] = None
@@ -3552,7 +3553,10 @@ def process_video_generation(request: VideoRequest, task_id):
             except Exception:
                 file_lock = None
 
-        topic_display = request.topic if request.mode == 'topic' else "História Personalizada"
+        kind_norm = (request.kind or "").strip().lower()
+        if kind_norm not in {"story", "devotional"}:
+            kind_norm = "story"
+        topic_display = request.topic if request.mode == 'topic' else ("Devocional" if kind_norm == "devotional" else "História Personalizada")
         update_task(task_id, status="processing", progress=5, message=f"Iniciando geração sobre: {topic_display}")
         print(f"Iniciando geração de vídeo ({request.mode}): {topic_display}")
         
@@ -3564,8 +3568,159 @@ def process_video_generation(request: VideoRequest, task_id):
         update_task(task_id, progress=10, message="Estruturando roteiro com IA...")
         _raise_if_cancelled()
         
+        def _count_words(txt: str) -> int:
+            try:
+                import re as _re
+                return len(_re.findall(r"\w+", str(txt or ""), flags=_re.UNICODE))
+            except Exception:
+                return len(str(txt or "").split())
+
+        def _build_story_plan_from_text(story_text: str, duration_minutes: int, kind: str) -> Dict[str, Any]:
+            import re as _re
+            t = str(story_text or "").strip()
+            if not t:
+                base_title = "Devocional" if kind == "devotional" else "História"
+                return {"title": base_title, "description": "", "tags": [], "scenes": [{"text": "Conteúdo em preparação.", "image_prompt": "cinematic inspiring scene"}]}
+
+            t = t.replace("\r\n", "\n").replace("\r", "\n")
+            t = _re.sub(r"\n{3,}", "\n\n", t).strip()
+            target_words = max(1, int(duration_minutes or 1)) * 140
+            min_words = int(target_words * 0.92)
+            for attempt in range(2):
+                cur_words = _count_words(t)
+                if cur_words >= min_words:
+                    break
+                try:
+                    improved = ai_service.improve_story_or_devotional_text(
+                        original_text=t,
+                        instruction=f"Expanda o texto para atingir no mínimo {duration_minutes} minutos de narração (sem resumir).",
+                        kind=kind,
+                        duration_min_minutes=int(duration_minutes or 10),
+                        duration_max_minutes=int(duration_minutes or 10),
+                    )
+                    if isinstance(improved, str) and improved.strip():
+                        t = improved.strip()
+                        continue
+                except Exception:
+                    pass
+                break
+
+            cur_words = _count_words(t)
+            if cur_words < min_words:
+                try:
+                    safe_kind = "devocional" if kind == "devotional" else "história"
+                    instr = (
+                        f"Reescreva e EXPANDA este(a) {safe_kind} para ter pelo menos {duration_minutes} minutos de narração. "
+                        "Mantenha o sentido, os personagens e a mensagem do texto base, mas aprofunde com detalhes, exemplos, aplicações e reflexões.\n\n"
+                        f"TEXTO BASE:\n{t[:6000]}"
+                    )
+                    regenerated = ai_service.generate_story_or_devotional_text(
+                        instruction=instr,
+                        kind=kind,
+                        duration_min_minutes=int(duration_minutes or 10),
+                        duration_max_minutes=int(duration_minutes or 10),
+                    )
+                    if isinstance(regenerated, str) and regenerated.strip():
+                        t = regenerated.strip()
+                except Exception:
+                    pass
+
+            first_line = ""
+            for ln in t.split("\n"):
+                s = (ln or "").strip()
+                if s:
+                    first_line = s
+                    break
+            title_guess = first_line[:120] if first_line else ("Devocional" if kind == "devotional" else "História")
+
+            words_per_scene = 85
+            max_words_per_scene = 140
+            min_words_per_scene = 50
+            sentences = _re.split(r"(?<=[.!?])\s+", t)
+            scenes: List[Dict[str, Any]] = []
+            buf_parts: List[str] = []
+            buf_words = 0
+
+            def _flush():
+                nonlocal buf_parts, buf_words, scenes
+                chunk = " ".join([p.strip() for p in buf_parts if p and p.strip()]).strip()
+                buf_parts = []
+                buf_words = 0
+                if not chunk:
+                    return
+                chunk_words = _count_words(chunk)
+                if chunk_words < 5:
+                    return
+                ip = f"Photorealistic cinematic photography representing: {chunk[:160]}"
+                scenes.append({"text": chunk, "image_prompt": ip})
+
+            for s in sentences:
+                st = (s or "").strip()
+                if not st:
+                    continue
+                w = _count_words(st)
+                if w > (max_words_per_scene + 40):
+                    parts = _re.split(r"(?<=[,;:])\s+", st)
+                else:
+                    parts = [st]
+                for part in parts:
+                    p = (part or "").strip()
+                    if not p:
+                        continue
+                    pw = _count_words(p)
+                    if buf_words and (buf_words + pw) > max_words_per_scene:
+                        _flush()
+                    buf_parts.append(p)
+                    buf_words += pw
+                    if buf_words >= words_per_scene:
+                        _flush()
+
+            if buf_parts:
+                _flush()
+
+            merged: List[Dict[str, Any]] = []
+            acc = None
+            for sc in scenes:
+                if acc is None:
+                    acc = dict(sc)
+                    continue
+                if _count_words(acc.get("text") or "") < min_words_per_scene:
+                    acc["text"] = (str(acc.get("text") or "") + " " + str(sc.get("text") or "")).strip()
+                    if not (acc.get("image_prompt") or "").strip():
+                        acc["image_prompt"] = sc.get("image_prompt") or ""
+                else:
+                    merged.append(acc)
+                    acc = dict(sc)
+            if acc is not None:
+                merged.append(acc)
+            scenes = merged
+
+            hard_max_scenes = max(12, min(120, int(duration_minutes or 10) * 4))
+            if len(scenes) > hard_max_scenes:
+                scenes = scenes[:hard_max_scenes]
+
+            tags = ["reflexão", "fé", "motivação"]
+            if kind == "devotional":
+                tags = ["devocional", "bíblia", "fé", "oração", "reflexão"]
+            else:
+                tags = ["história", "reflexão", "fé", "motivação"]
+
+            return {
+                "title": title_guess,
+                "description": (t[:1200] + ("..." if len(t) > 1200 else "")).strip(),
+                "tags": tags,
+                "scenes": scenes,
+                "music_mood": "emotional_cinematic",
+            }
+
         if request.mode == 'story' and request.story_content:
-            script = ai_service.generate_script_from_text(request.story_content, request.duration)
+            minutes = 10
+            try:
+                minutes = int(request.duration or 10)
+            except Exception:
+                minutes = 10
+            minutes = max(1, min(60, minutes))
+            script = _build_story_plan_from_text(request.story_content, minutes, kind_norm)
         else:
             # Fallback to topic mode if no story content
             topic = request.topic or "Motivação Genérica"
