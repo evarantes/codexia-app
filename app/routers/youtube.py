@@ -1856,7 +1856,11 @@ def generate_story_shorts_task(request: StoryShortsRequest, background_tasks: Ba
     if use_rq:
         rq_queue.enqueue(process_story_shorts_generation, request.model_dump() if hasattr(request, "model_dump") else request.dict(), task_id, job_timeout=_rq_video_timeout_seconds())
     else:
-        allow_inline = (os.getenv("ALLOW_INLINE_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
+        allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
+        if allow_inline_raw is None or not str(allow_inline_raw).strip():
+            allow_inline = True
+        else:
+            allow_inline = str(allow_inline_raw).strip().lower() in {"1", "true", "yes", "on"}
         if not allow_inline:
             update_task(task_id, status="failed", progress=0, message="Geração em segundo plano indisponível: inicie o worker RQ e configure REDIS_URL.")
             return {"message": "Worker indisponível", "task_id": task_id}
@@ -3137,7 +3141,11 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
 
-    allow_inline = (os.getenv("ALLOW_INLINE_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
+    allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
+    if allow_inline_raw is None or not str(allow_inline_raw).strip():
+        allow_inline = True
+    else:
+        allow_inline = str(allow_inline_raw).strip().lower() in {"1", "true", "yes", "on"}
     if not allow_inline:
         raise HTTPException(status_code=503, detail="Para evitar travamentos, a geração de vídeo está configurada para rodar em segundo plano (worker). Suba um worker RQ ou ative ALLOW_INLINE_VIDEO_GENERATION=1.")
 
