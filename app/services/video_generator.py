@@ -809,7 +809,7 @@ class VideoGenerator:
         allow_non_ai_fallback=False
     ):
         """
-        Gera imagem por IA usando OpenAI e, se permitido, usa um fundo local como fallback.
+        Gera imagem por IA usando OpenAI e retorna o motivo exato quando falha.
         """
 
         def notify(msg):
@@ -818,16 +818,6 @@ class VideoGenerator:
                     status_callback(msg)
                 except Exception:
                     pass
-
-        def _local_fallback_path():
-            label = (text_fallback or prompt or "Cena").strip()
-            if not label:
-                label = "Cena"
-            size = (1280, 720) if str(aspect_ratio).strip() == "16:9" else (720, 1280)
-            palette = [(24, 32, 52), (38, 54, 30), (56, 36, 28), (32, 32, 32)]
-            bg_color = palette[abs(hash(label)) % len(palette)]
-            footer = "Imagem local gerada automaticamente"
-            return self.create_text_image(label[:180], size=size, bg_color=bg_color, footer_text=footer)
 
         if not prompt and text_fallback:
             prompt = f"Photorealistic cinematic photography representing this narration: {text_fallback[:220]}"
@@ -861,12 +851,8 @@ class VideoGenerator:
         ]
         final_prompt = "".join(parts)
         if not self.ai_service:
-            if allow_non_ai_fallback:
-                notify("OpenAI indisponível. Usando fundo local.")
-                return _local_fallback_path()
             raise Exception("AI Service não inicializado para geração de imagem.")
 
-        friendly_error = "Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
         try:
             url = self.ai_service.generate_image(
                 final_prompt,
@@ -874,22 +860,13 @@ class VideoGenerator:
                 providers=["openai_direct"],
                 status_callback=notify,
             )
-        except Exception:
-            if allow_non_ai_fallback:
-                notify("Falha na imagem IA. Usando fundo local.")
-                return _local_fallback_path()
-            raise Exception(friendly_error)
+        except Exception as e:
+            raise Exception(f"Falha na geração da imagem por IA: {str(e)}") from e
         if not url:
-            if allow_non_ai_fallback:
-                notify("Imagem IA vazia. Usando fundo local.")
-                return _local_fallback_path()
-            raise Exception(friendly_error)
+            raise Exception("A OpenAI não retornou URL/arquivo de imagem.")
         path = self._resolve_input_image_path(url)
         if not path or not os.path.exists(path) or os.path.getsize(path) < 1000:
-            if allow_non_ai_fallback:
-                notify("Arquivo de imagem inválido. Usando fundo local.")
-                return _local_fallback_path()
-            raise Exception(friendly_error)
+            raise Exception("A imagem retornada pela OpenAI está ausente, inválida ou corrompida.")
         return path
 
     def _set_clip_duration(self, clip, duration):
@@ -1088,10 +1065,7 @@ class VideoGenerator:
         final_clip = None
         bg_music = None
         allow_non_ai_fallback_raw = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK")
-        if allow_non_ai_fallback_raw is None or not str(allow_non_ai_fallback_raw).strip():
-            allow_non_ai_fallback = True
-        else:
-            allow_non_ai_fallback = str(allow_non_ai_fallback_raw).strip().lower() in {"1", "true", "yes", "on"}
+        allow_non_ai_fallback = str(allow_non_ai_fallback_raw or "").strip().lower() in {"1", "true", "yes", "on"}
         image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
         image_cache = {}
         cached_temp_paths = set()

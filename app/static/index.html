@@ -5498,7 +5498,7 @@
                         if (!res.ok || !data.task_id) throw new Error(data.detail || data.message || "Falha ao iniciar geração de imagens.");
                         await this.pollStoryImagesTask(data.task_id);
                     } catch (e) {
-                        alert("Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.");
+                        alert("Erro ao gerar imagens: " + (e.message || e));
                     } finally {
                         this.ytStoryImagesLoading = false;
                     }
@@ -5777,6 +5777,7 @@
                         }
                         if (status === 'failed') {
                             this.ytStoryVideoLoading = false;
+                            try { alert(data.message || "Falha ao gerar vídeo."); } catch (e) {}
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                             return;
                         }
@@ -7265,7 +7266,7 @@
                             alert("A IA não retornou imagens nesta rodada.");
                         }
                     } catch (e) {
-                        alert("Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.");
+                        alert("Erro ao gerar imagens: " + (e.message || e));
                     } finally {
                         this.musicLyricsImagesLoading = false;
                     }

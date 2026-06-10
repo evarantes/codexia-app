@@ -2251,7 +2251,33 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         base_dir.mkdir(parents=True, exist_ok=True)
         filename = f"img_{uuid.uuid4().hex}.png"
         out_path = base_dir / filename
-        friendly_error = "Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
+
+        def _extract_openai_error_message(err: Exception) -> str:
+            raw = ""
+            try:
+                raw = str(err or "").strip()
+            except Exception:
+                raw = ""
+            try:
+                body = getattr(err, "body", None)
+                if body:
+                    raw = f"{raw} | body={body}"
+            except Exception:
+                pass
+            low = raw.lower()
+            if not raw:
+                return "Erro desconhecido ao chamar a OpenAI Images API."
+            if "api key" in low or "invalid_api_key" in low or "incorrect api key" in low or "unauthorized" in low or "401" in low:
+                return "Falha na autenticação da OpenAI. Verifique a OpenAI API Key em Configurações."
+            if "insufficient_quota" in low or "quota" in low or "billing" in low or "credit" in low:
+                return "A OpenAI recusou a geração por falta de saldo/quota. Verifique faturamento e créditos da conta."
+            if "rate limit" in low or "429" in low or "too many requests" in low:
+                return "Limite de requisições da OpenAI atingido. Aguarde um pouco e tente novamente."
+            if "content_policy" in low or "safety" in low or "policy" in low or "moderation" in low:
+                return "A OpenAI bloqueou o prompt pela política de conteúdo. Ajuste a descrição da imagem."
+            if "model" in low and ("not found" in low or "does not exist" in low or "unsupported" in low):
+                return "O modelo de imagem da OpenAI não está disponível nessa conta/SDK. Verifique o acesso ao `gpt-image-1`."
+            return f"Falha ao gerar imagem na OpenAI: {raw[:500]}"
 
         notify("Gerando imagem com OpenAI...")
         try:
@@ -2268,7 +2294,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 raise Exception("SDK OpenAI desatualizado. Requer openai>=1.0.0.")
         except Exception as e:
             print("OPENAI IMAGE ERROR RAW:", repr(e))
-            raise Exception(friendly_error)
+            raise Exception(_extract_openai_error_message(e))
 
         try:
             image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
@@ -2282,7 +2308,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             return f"/generated_assets/openai_images/{filename}"
         except Exception as e:
             print("OPENAI IMAGE ERROR RAW:", repr(e))
-            raise Exception(friendly_error)
+            raise Exception(f"Falha ao processar a imagem retornada pela OpenAI: {str(e)[:500]}")
 
     def generate_audio(self, text, voice="onyx", voice_settings: Optional[Dict[str, Any]] = None):
         """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""
