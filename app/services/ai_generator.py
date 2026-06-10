@@ -94,10 +94,13 @@ class AIContentGenerator:
         if not self.leonardo_model_id: self.leonardo_model_id = os.getenv("LEONARDO_MODEL_ID")
         if not self.elevenlabs_key: self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
 
+    def _has_text_provider(self) -> bool:
+        return bool((self.openrouter_key or "").strip() or (self.api_key or "").strip())
+
     def _generate_text(self, prompt, system_prompt=None, temperature=0.7, json_mode=False):
-        """Gera texto via OpenRouter (gateway único para LLMs)."""
+        """Gera texto via OpenRouter com fallback para OpenAI direto."""
         self._load_config()
-        if not self.openrouter_key:
+        if not self._has_text_provider():
             return "{}" if json_mode else "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
         messages = []
@@ -105,47 +108,78 @@ class AIContentGenerator:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        raw_model = (self.openrouter_model or "").strip()
-        raw_model_norm = raw_model.lower()
-        if not raw_model or raw_model_norm in {"auto", "automático", "automatico", "melhor", "best"}:
-            model = "openrouter/auto"
-        else:
-            model = raw_model
+        def _extract_content(response) -> str:
+            try:
+                content = response.choices[0].message.content
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    parts = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            txt = item.get("text")
+                            if isinstance(txt, str) and txt.strip():
+                                parts.append(txt.strip())
+                    return "\n".join(parts).strip()
+            except Exception:
+                pass
+            return ""
 
-        client = openai.OpenAI(
-            api_key=self.openrouter_key,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"},
-        )
-
-        def _call(model_id: str, allow_json_mode: bool):
+        def _call_chat(client, model_id: str, allow_json_mode: bool):
             kwargs = {
                 "model": model_id,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": 4096,  # Aumentado para suportar vídeos longos (10+ min)
+                "max_tokens": 4096,
             }
             if allow_json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
-            
             response = client.chat.completions.create(**kwargs)
-            return response.choices[0].message.content
+            text = _extract_content(response)
+            if not str(text or "").strip():
+                raise Exception(f"Resposta vazia do modelo {model_id}")
+            return text
 
-        try:
-            try:
-                return _call(model, allow_json_mode=bool(json_mode))
-            except Exception:
-                return _call(model, allow_json_mode=False)
-        except Exception as e:
-            if model != "openrouter/auto":
+        errors = []
+        raw_model = (self.openrouter_model or "").strip()
+        raw_model_norm = raw_model.lower()
+
+        if self.openrouter_key:
+            or_client = openai.OpenAI(
+                api_key=self.openrouter_key,
+                base_url="https://openrouter.ai/api/v1",
+                default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"},
+                timeout=180.0,
+            )
+            candidate_models = []
+            if raw_model and raw_model_norm not in {"auto", "automático", "automatico", "melhor", "best", "openrouter/auto"}:
+                candidate_models.append(raw_model)
+            candidate_models.extend(["openai/gpt-4o-mini", "openrouter/auto"])
+            seen = set()
+            for model_id in candidate_models:
+                if not model_id or model_id in seen:
+                    continue
+                seen.add(model_id)
                 try:
                     try:
-                        return _call("openrouter/auto", allow_json_mode=bool(json_mode))
+                        return _call_chat(or_client, model_id, allow_json_mode=bool(json_mode))
                     except Exception:
-                        return _call("openrouter/auto", allow_json_mode=False)
+                        return _call_chat(or_client, model_id, allow_json_mode=False)
+                except Exception as e:
+                    errors.append(f"OpenRouter[{model_id}]: {e}")
+
+        if self.api_key:
+            oa_client = openai.OpenAI(api_key=self.api_key, timeout=180.0)
+            openai_model = (os.getenv("OPENAI_TEXT_MODEL") or "gpt-4o-mini").strip()
+            try:
+                try:
+                    return _call_chat(oa_client, openai_model, allow_json_mode=bool(json_mode))
                 except Exception:
-                    raise e
-            raise e
+                    return _call_chat(oa_client, openai_model, allow_json_mode=False)
+            except Exception as e:
+                errors.append(f"OpenAI[{openai_model}]: {e}")
+
+        raise Exception(" | ".join(errors) if errors else "Nenhum provedor de texto disponível.")
 
     def generate_book_section(self, section_type, context_text, title, existing_content=None):
         """Generates specific book sections like synopsis, epigraph, preface. Can rewrite existing content."""
@@ -788,7 +822,7 @@ class AIContentGenerator:
         duration_max_minutes: Optional[int] = None,
     ) -> str:
         self._load_config()
-        if not self.openrouter_key:
+        if not self._has_text_provider():
             title = "História" if kind == "story" else "Devocional"
             return f"{title} (Simulação - Sem Chave)\n\n{instruction}".strip()
 
@@ -924,9 +958,10 @@ class AIContentGenerator:
         duration_max_minutes: Optional[int] = None,
     ) -> str:
         self._load_config()
-        if not self.openrouter_key:
+        if not self._has_text_provider():
             return (original_text or "").strip() or "Texto (Simulação - Sem Chave)"
 
+        safe_kind = "história" if kind == "story" else "devocional"
         min_m = max(1, int(duration_min_minutes or 1))
         max_m = int(duration_max_minutes) if duration_max_minutes else min_m
         if max_m < min_m:
