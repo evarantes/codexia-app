@@ -3097,48 +3097,51 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     else:
         use_rq = conn is not None and _rq_workers_online()
     allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
+    force_local_reason = None
 
     if use_rq:
         if conn is None or not _rq_workers_online():
-            raise HTTPException(status_code=503, detail="Geração em segundo plano indisponível: inicie o worker RQ e configure REDIS_URL.")
+            use_rq = False
+            force_local_reason = "Worker/RQ indisponível. Iniciando geração local automaticamente..."
         try:
-            rq_queue.enqueue(process_video_generation_payload, payload, task_id, job_timeout=_rq_video_timeout_seconds())
-            update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq"})
-            def _watchdog_fallback(tid: str, pay: Dict[str, Any]):
-                try:
-                    raw = (os.getenv("VIDEO_TASK_QUEUE_STALE_SECONDS") or "").strip()
-                    wait_s = int(raw) if raw else 90
-                except Exception:
-                    wait_s = 90
-                wait_s = max(20, min(15 * 60, wait_s))
-                try:
-                    time.sleep(wait_s)
-                except Exception:
-                    return
-                try:
-                    if is_task_cancel_requested(tid):
+            if use_rq:
+                rq_queue.enqueue(process_video_generation_payload, payload, task_id, job_timeout=_rq_video_timeout_seconds())
+                update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq"})
+                def _watchdog_fallback(tid: str, pay: Dict[str, Any]):
+                    try:
+                        raw = (os.getenv("VIDEO_TASK_QUEUE_STALE_SECONDS") or "").strip()
+                        wait_s = int(raw) if raw else 90
+                    except Exception:
+                        wait_s = 90
+                    wait_s = max(20, min(15 * 60, wait_s))
+                    try:
+                        time.sleep(wait_s)
+                    except Exception:
                         return
-                except Exception:
-                    pass
-                t = get_task(tid) or {}
-                status = str((t.get("status") or "")).lower()
-                msg = str((t.get("message") or ""))
-                try:
-                    p = int(t.get("progress") or 0)
-                except Exception:
-                    p = 0
-                if status == "processing" and p <= 1 and ("enfileirad" in msg.lower() or "enfileirando" in msg.lower()):
                     try:
-                        update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Iniciando execução local...")
+                        if is_task_cancel_requested(tid):
+                            return
                     except Exception:
                         pass
+                    t = get_task(tid) or {}
+                    status = str((t.get("status") or "")).lower()
+                    msg = str((t.get("message") or ""))
                     try:
-                        th = threading.Thread(target=process_video_generation_payload, args=(pay, tid), daemon=True)
-                        th.start()
+                        p = int(t.get("progress") or 0)
                     except Exception:
-                        pass
-            threading.Thread(target=_watchdog_fallback, args=(task_id, payload), daemon=True).start()
-            return {"message": "Processo iniciado", "task_id": task_id}
+                        p = 0
+                    if status == "processing" and p <= 1 and ("enfileirad" in msg.lower() or "enfileirando" in msg.lower()):
+                        try:
+                            update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Iniciando execução local...")
+                        except Exception:
+                            pass
+                        try:
+                            th = threading.Thread(target=process_video_generation_payload, args=(pay, tid), daemon=True)
+                            th.start()
+                        except Exception:
+                            pass
+                threading.Thread(target=_watchdog_fallback, args=(task_id, payload), daemon=True).start()
+                return {"message": "Processo iniciado", "task_id": task_id}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
 
@@ -3146,7 +3149,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         allow_inline = True
     else:
         allow_inline = str(allow_inline_raw).strip().lower() in {"1", "true", "yes", "on"}
-    if not allow_inline:
+    if not allow_inline and not force_local_reason:
         raise HTTPException(status_code=503, detail="Para evitar travamentos, a geração de vídeo está configurada para rodar em segundo plano (worker). Suba um worker RQ ou ative ALLOW_INLINE_VIDEO_GENERATION=1.")
 
     executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "thread").strip().lower()
@@ -3176,7 +3179,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         except Exception:
             pass
 
-    msg = "Iniciando geração local..."
+    msg = force_local_reason or "Iniciando geração local..."
     if executor == "process" and conn is None:
         msg = "Redis indisponível para acompanhar progresso em processo separado. Iniciando geração local..."
     update_task(task_id, status="processing", progress=1, message=msg, result={"payload": payload, "executor": "thread"})
