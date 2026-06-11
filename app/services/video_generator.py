@@ -9,7 +9,7 @@ import time
 import difflib
 import unicodedata
 import math
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Dict, Any
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
@@ -334,6 +334,209 @@ class VideoGenerator:
             cap = t[:180].rstrip()
         return cap
 
+    def _normalize_tts_text(self, text: str) -> str:
+        t = self._clean_text(text)
+        if not t:
+            return ""
+        t = unicodedata.normalize("NFKC", t)
+        t = re.sub(r"https?://\S+|www\.\S+", " ", t, flags=re.IGNORECASE)
+        t = re.sub(r"\b[\w.+-]+@[\w.-]+\.\w+\b", " ", t)
+        t = t.replace("&", " e ")
+        t = t.replace("/", " / ")
+        t = re.sub(r"[_*#`~<>|]+", " ", t)
+        t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
+
+    def _split_caption_units(self, text: str, max_words: int = 10, max_chars: int = 68) -> List[str]:
+        cleaned = self._normalize_tts_text(text)
+        if not cleaned:
+            return []
+        units: List[str] = []
+        current = ""
+        current_words = 0
+        for part in re.split(r"(?<=[.!?;:,])\s+|\n+", cleaned):
+            piece = (part or "").strip()
+            if not piece:
+                continue
+            piece_words = len(piece.split())
+            if not current:
+                current = piece
+                current_words = piece_words
+            elif (
+                current_words + piece_words <= max_words
+                and len(f"{current} {piece}".strip()) <= max_chars
+            ):
+                current = f"{current} {piece}".strip()
+                current_words += piece_words
+            else:
+                units.append(current.strip())
+                current = piece
+                current_words = piece_words
+        if current.strip():
+            units.append(current.strip())
+
+        if not units:
+            words = cleaned.split()
+            for i in range(0, len(words), max_words):
+                chunk = " ".join(words[i:i + max_words]).strip()
+                if chunk:
+                    units.append(chunk)
+        return units
+
+    def _caption_timeline_from_text(self, narration: str, duration: float) -> List[Dict[str, Any]]:
+        total_duration = float(duration or 0.0)
+        if total_duration <= 0:
+            return []
+        chunks = self._split_caption_units(narration, max_words=10, max_chars=68)
+        if not chunks:
+            return []
+
+        total_words = sum(max(1, len(c.split())) for c in chunks)
+        cursor = 0.0
+        timeline: List[Dict[str, Any]] = []
+        remaining_words = total_words
+        remaining_duration = total_duration
+        for idx, chunk in enumerate(chunks):
+            chunk_words = max(1, len(chunk.split()))
+            if idx == len(chunks) - 1:
+                end = total_duration
+            else:
+                proportional = remaining_duration * (chunk_words / max(1, remaining_words))
+                seg_dur = max(0.9, min(4.2, proportional))
+                end = min(total_duration, cursor + seg_dur)
+            if end <= cursor:
+                continue
+            timeline.append({"start": cursor, "end": end, "caption": chunk})
+            remaining_words -= chunk_words
+            remaining_duration = max(0.0, total_duration - end)
+            cursor = end
+        if timeline:
+            timeline[0]["start"] = 0.0
+            timeline[-1]["end"] = total_duration
+        return timeline
+
+    def _caption_timeline_from_segments(self, segments: List[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
+        total_duration = float(duration or 0.0)
+        if total_duration <= 0 or not isinstance(segments, list):
+            return []
+
+        words: List[Dict[str, Any]] = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            seg_words = seg.get("words")
+            if isinstance(seg_words, list) and seg_words:
+                for item in seg_words:
+                    if not isinstance(item, dict):
+                        continue
+                    token = str(item.get("word") or item.get("text") or "").strip()
+                    if not token:
+                        continue
+                    try:
+                        ws = max(0.0, float(item.get("start")))
+                        we = min(total_duration, float(item.get("end")))
+                    except Exception:
+                        continue
+                    if we <= ws:
+                        continue
+                    words.append({"start": ws, "end": we, "word": token})
+
+        timeline: List[Dict[str, Any]] = []
+        if words:
+            current: List[Dict[str, Any]] = []
+
+            def flush_words():
+                nonlocal current, timeline
+                if not current:
+                    return
+                caption = " ".join(str(w.get("word") or "").strip() for w in current).strip()
+                if not caption:
+                    current = []
+                    return
+                start = float(current[0].get("start") or 0.0)
+                end = float(current[-1].get("end") or start)
+                if end > start:
+                    timeline.append({"start": start, "end": end, "caption": caption})
+                current = []
+
+            for word in words:
+                token = str(word.get("word") or "").strip()
+                current.append(word)
+                caption = " ".join(str(w.get("word") or "").strip() for w in current).strip()
+                dur = float(current[-1].get("end") or 0.0) - float(current[0].get("start") or 0.0)
+                hard_break = bool(re.search(r"[.!?…]$", token))
+                soft_break = bool(re.search(r"[,;:]$", token))
+                if (
+                    len(current) >= 9
+                    or len(caption) >= 62
+                    or dur >= 3.2
+                    or hard_break
+                    or (soft_break and dur >= 1.5)
+                ):
+                    flush_words()
+            flush_words()
+
+        if timeline:
+            timeline[0]["start"] = 0.0
+            timeline[-1]["end"] = total_duration
+            return timeline
+
+        approx: List[Dict[str, Any]] = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            text = str(seg.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                seg_start = max(0.0, float(seg.get("start")))
+                seg_end = min(total_duration, float(seg.get("end")))
+            except Exception:
+                continue
+            if seg_end <= seg_start:
+                continue
+            units = self._split_caption_units(text, max_words=10, max_chars=68)
+            if not units:
+                continue
+            seg_duration = seg_end - seg_start
+            total_words = sum(max(1, len(u.split())) for u in units)
+            local_cursor = seg_start
+            remaining_words = total_words
+            remaining_duration = seg_duration
+            for idx, unit in enumerate(units):
+                unit_words = max(1, len(unit.split()))
+                if idx == len(units) - 1:
+                    unit_end = seg_end
+                else:
+                    unit_dur = remaining_duration * (unit_words / max(1, remaining_words))
+                    unit_end = min(seg_end, local_cursor + max(0.6, unit_dur))
+                if unit_end > local_cursor:
+                    approx.append({"start": local_cursor, "end": unit_end, "caption": unit})
+                remaining_words -= unit_words
+                remaining_duration = max(0.0, seg_end - unit_end)
+                local_cursor = unit_end
+        if approx:
+            approx[0]["start"] = 0.0
+            approx[-1]["end"] = total_duration
+        return approx
+
+    def _build_caption_timeline(self, narration: str, duration: float, audio_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        total_duration = float(duration or 0.0)
+        if total_duration <= 0:
+            return []
+        if audio_path and self.ai_service and hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
+            try:
+                info = self.ai_service.transcribe_audio_segments_detailed(audio_path, language="pt")
+                segments = info.get("segments") if isinstance(info, dict) else None
+                if isinstance(segments, list) and segments:
+                    timed = self._caption_timeline_from_segments(segments, total_duration)
+                    if timed:
+                        return timed
+            except Exception:
+                pass
+        return self._caption_timeline_from_text(narration, total_duration)
+
     def review_plan(self, plan: dict):
         if not isinstance(plan, dict):
             return plan
@@ -466,7 +669,7 @@ class VideoGenerator:
             return None
         
         # Limpeza de segurança para evitar leitura de metadados
-        clean_text = self._clean_text(text)
+        clean_text = self._normalize_tts_text(text)
         if not clean_text: 
             print("Aviso: Texto ficou vazio após limpeza em generate_audio")
             return None
@@ -492,35 +695,37 @@ class VideoGenerator:
             t = (txt or "").lower()
             excls = t.count("!")
             qmarks = t.count("?")
-            caps = sum(1 for ch in (txt or "") if ch.isalpha() and ch.isupper())
-            letters = sum(1 for ch in (txt or "") if ch.isalpha())
-            caps_ratio = (caps / max(1, letters))
             stress_words = [
                 "meu deus", "pelo amor", "socorro", "urgente", "não acredito", "nao acredito",
                 "absurdo", "tá doido", "ta doido", "sério", "serio", "para", "pare",
                 "calma", "relaxa", "mentira", "que isso", "que é isso", "não", "nao",
             ]
             drama_hits = sum(1 for w in stress_words if w in t)
-            excited = excls >= 1 or caps_ratio >= 0.14 or "!!" in (txt or "") or "??" in (txt or "")
+            excited = excls >= 2 or "!!" in (txt or "") or "??" in (txt or "")
             skeptical = qmarks >= 1 and ("como" in t or "por quê" in t or "porque" in t)
             tag = (style_tag or "").lower()
-            base_style = 0.92 if (excited or drama_hits >= 2) else (0.78 if (drama_hits >= 1 or skeptical) else 0.55)
-            base_stability = 0.18 if (excited or drama_hits >= 2) else (0.22 if (drama_hits >= 1 or skeptical) else 0.32)
+            base_style = 0.16
+            base_stability = 0.74
+            if excited or drama_hits >= 2:
+                base_style = 0.24
+                base_stability = 0.64
+            elif drama_hits >= 1 or skeptical:
+                base_style = 0.20
+                base_stability = 0.68
             if "calma" in t or "relaxa" in t:
-                base_style = 0.42
-                base_stability = 0.55
+                base_style = 0.10
+                base_stability = 0.84
             if "young" in tag or "jovem" in tag:
-                base_style = min(0.95, base_style + 0.12)
-                base_stability = max(0.15, base_stability - 0.06)
-            if "mature" in tag or "madura" in tag or "indign" in tag:
-                base_style = min(0.95, base_style + 0.08)
-                base_stability = max(0.15, base_stability - 0.03)
+                base_style = min(0.30, base_style + 0.04)
+            if "mature" in tag or "madura" in tag or "indign" in tag or "angel" in tag:
+                base_stability = min(0.88, base_stability + 0.06)
+                base_style = max(0.08, min(base_style, 0.18))
             if not is_male:
-                base_style = min(0.9, base_style + 0.05)
+                base_style = min(0.28, base_style + 0.02)
             return {
-                "stability": float(max(0.12, min(0.62, base_stability))),
-                "similarity_boost": 0.92,
-                "style": float(max(0.25, min(0.95, base_style))),
+                "stability": float(max(0.55, min(0.90, base_stability))),
+                "similarity_boost": 0.9,
+                "style": float(max(0.08, min(0.32, base_style))),
                 "use_speaker_boost": True,
             }
 
@@ -534,26 +739,27 @@ class VideoGenerator:
             rate = "+0%"
             pitch = "+0Hz"
             if calm:
-                rate = "-6%"
+                rate = "-4%"
                 pitch = "-2Hz" if is_male else "-1Hz"
-            elif drama or excls >= 1:
-                rate = "+18%"
-                pitch = "+7Hz" if not is_male else "+4Hz"
+            elif drama or excls >= 2:
+                rate = "+6%"
+                pitch = "+2Hz" if not is_male else "+1Hz"
             elif qmarks >= 1:
-                rate = "+10%"
-                pitch = "+5Hz" if not is_male else "+3Hz"
+                rate = "+3%"
+                pitch = "+1Hz"
             if "young" in tag or "jovem" in tag:
-                rate = "+20%" if rate == "+0%" else rate
-                pitch = "+8Hz" if not is_male else "+5Hz"
+                rate = "+4%" if rate == "+0%" else rate
+                pitch = "+2Hz" if not is_male else "+1Hz"
             if "mature" in tag or "madura" in tag:
+                rate = "-2%" if rate == "+0%" else rate
                 pitch = "-2Hz" if is_male else "-1Hz"
             volume = "+0%"
             if calm:
-                volume = "-8%"
-            elif drama or excls >= 1:
-                volume = "+10%"
+                volume = "-4%"
+            elif drama or excls >= 2:
+                volume = "+4%"
             elif qmarks >= 1:
-                volume = "+6%"
+                volume = "+2%"
             return rate, pitch, volume
 
         def _edge_ssml(txt: str, voice_name: str, rate: str, pitch: str, volume: str, lang_tag: str) -> str:
@@ -875,6 +1081,12 @@ class VideoGenerator:
             return clip.with_duration(duration)
         return clip.set_duration(duration)
 
+    def _set_clip_start(self, clip, start):
+        """Compatível com MoviePy 1.x (set_start) e 2.x (with_start)."""
+        if hasattr(clip, "with_start"):
+            return clip.with_start(start)
+        return clip.set_start(start)
+
     def _set_clip_audio(self, clip, audio_clip):
         """Compatível com MoviePy 1.x (set_audio) e 2.x (with_audio)."""
         if hasattr(clip, "with_audio"):
@@ -1070,7 +1282,7 @@ class VideoGenerator:
         image_cache = {}
         cached_temp_paths = set()
         fallback_bg_path = None
-        use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "true").strip().lower() in {"1", "true", "yes", "on"}
+        use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "").strip().lower() in {"1", "true", "yes", "on"}
         video_bg_path = None
         video_bg_paths = []
         video_bg_frame = None
@@ -1125,6 +1337,15 @@ class VideoGenerator:
                 else:
                     raw_scenes = []
 
+            def _scene_prompt_for_fragment(base_prompt: str, fragment_text: str) -> str:
+                frag = (fragment_text or "").strip()
+                bp = (base_prompt or "").strip()
+                if bp and frag:
+                    return f"{bp}. Focus on this exact moment: {frag[:180]}"
+                if bp:
+                    return bp
+                return f"Photorealistic cinematic photography representing: {frag[:140]}"
+
             def _materialize_scenes(raw_list):
                 scenes_local = []
                 if music_file_path:
@@ -1177,12 +1398,21 @@ class VideoGenerator:
                             if len(buf) + 1 + len(p) <= target_chars:
                                 buf = f"{buf} {p}"
                                 continue
-                            scenes_local.append({"text": buf.strip(), "image_prompt": scene_prompt})
+                            scenes_local.append({
+                                "text": buf.strip(),
+                                "image_prompt": _scene_prompt_for_fragment(scene_prompt, buf.strip()),
+                            })
                             buf = p
                         if buf.strip():
-                            scenes_local.append({"text": buf.strip(), "image_prompt": scene_prompt})
+                            scenes_local.append({
+                                "text": buf.strip(),
+                                "image_prompt": _scene_prompt_for_fragment(scene_prompt, buf.strip()),
+                            })
                     else:
-                        scenes_local.append({"text": scene_text, "image_prompt": scene_prompt})
+                        scenes_local.append({
+                            "text": scene_text,
+                            "image_prompt": _scene_prompt_for_fragment(scene_prompt, scene_text),
+                        })
                 return scenes_local
 
             scenes = _materialize_scenes(raw_scenes)
@@ -1523,7 +1753,7 @@ class VideoGenerator:
                         image_prompt = f"Photorealistic cinematic photography representing: {text[:100]}"
 
                 # Limpeza de segurança para evitar metadados no vídeo
-                clean_text = self._clean_text(text)
+                clean_text = self._normalize_tts_text(text)
                 
                 # GARANTIA DE IMAGEM (Substitui lógica antiga)
                 def _scene_status(message, scene_idx=i, total=total_scenes, pct=scene_progress):
@@ -1604,10 +1834,28 @@ class VideoGenerator:
                 bg_clip = self._set_clip_duration(bg_clip, scene_dur)
                 bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
 
-                overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
-                overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
-                self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
-                clip_scene = CompositeVideoClip([bg_clip, overlay_clip], size=video_size)
+                caption_source = clean_text or screen_text
+                caption_timeline = self._build_caption_timeline(caption_source, scene_dur, audio_path=audio_path)
+                overlay_clips = []
+                if caption_timeline:
+                    for item in caption_timeline:
+                        caption = str(item.get("caption") or "").strip()
+                        start = float(item.get("start") or 0.0)
+                        end = float(item.get("end") or 0.0)
+                        if not caption or end <= start:
+                            continue
+                        overlay_arr = self.create_text_overlay(caption, size=video_size, text_color=(255, 255, 255))
+                        overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
+                        overlay_clip = self._set_clip_start(overlay_clip, start)
+                        overlay_clips.append(overlay_clip)
+                if not overlay_clips:
+                    overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
+                    overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
+                    overlay_clips = [overlay_clip]
+
+                for overlay_clip in overlay_clips:
+                    self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
+                clip_scene = CompositeVideoClip([bg_clip] + overlay_clips, size=video_size)
                 self._assert_clip_not_none(clip_scene, "scene_composite_clip", {"scene_index": i})
                 
                 if audio_clip_scene:

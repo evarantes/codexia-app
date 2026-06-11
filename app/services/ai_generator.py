@@ -949,6 +949,128 @@ class AIContentGenerator:
         out = "\n\n".join([p for p in (parts or []) if isinstance(p, str) and p.strip()]).strip()
         return out or text
 
+    def generate_strong_title_from_text(self, text: str, kind: str = "story", max_len: int = 80) -> str:
+        self._load_config()
+        safe_kind = (kind or "story").strip().lower()
+        if safe_kind not in {"story", "devotional"}:
+            safe_kind = "story"
+
+        base = (text or "").strip()
+        if not base:
+            return "Devocional" if safe_kind == "devotional" else "História"
+
+        def _clean_title_line(s: str) -> str:
+            import re as _re
+            t = (s or "").strip()
+            if not t:
+                return ""
+            t = t.replace("**", "").replace("`", "").strip()
+            if "\n" in t:
+                t = t.split("\n", 1)[0].strip()
+            if t.startswith(("“", "”", '"', "'", "‘", "’")) and t.endswith(("“", "”", '"', "'", "‘", "’")) and len(t) >= 2:
+                t = t[1:-1].strip()
+            t = _re.sub(r"\s+", " ", t).strip()
+            t = t.rstrip(" .,!?:;—–-").strip()
+            return t
+
+        def _truncate(t: str, limit: int) -> str:
+            s = (t or "").strip()
+            if not s:
+                return ""
+            if len(s) <= limit:
+                return s
+            cut = s[:limit].rstrip()
+            if " " in cut:
+                cut = cut.rsplit(" ", 1)[0].rstrip()
+            return cut.strip()
+
+        def _heuristic_title(src: str) -> str:
+            import re as _re
+            t = (src or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            first = ""
+            for ln in t.split("\n"):
+                s = (ln or "").strip()
+                if s:
+                    first = s
+                    break
+            first = _clean_title_line(first)
+            flat = _re.sub(r"\s+", " ", t).strip()
+            parts = _re.split(r"(?<=[.!?])\s+", flat)
+            sentence = _clean_title_line(parts[0] if parts else flat)
+
+            candidate = first if first else sentence
+            cand_low = f" {candidate.lower()} "
+            looks_like_sentence = any(x in cand_low for x in [" é ", " uma ", " um ", " são ", " foi ", " eram ", " estava ", " estamos "]) or len(candidate) > int(max_len or 80)
+
+            low = (t or "").lower()
+            if safe_kind == "devotional":
+                templates = [
+                    ("amor", "O Amor de Deus Que Transforma Tudo"),
+                    ("perd", "O Perdão de Deus Que Liberta"),
+                    ("esper", "A Esperança que Deus Renova Hoje"),
+                    ("propós", "O Propósito de Deus Para Sua Vida"),
+                    ("propos", "O Propósito de Deus Para Sua Vida"),
+                    ("oração", "A Oração Que Muda Tudo"),
+                    ("orar", "A Oração Que Muda Tudo"),
+                    ("ansied", "Deus Vai Acalmar o Seu Coração"),
+                    ("medo", "Deus Vai Acalmar o Seu Coração"),
+                    ("cura", "A Cura Que Deus Começa em Você"),
+                    ("milagr", "O Milagre que Deus Faz no Silêncio"),
+                ]
+                chosen = next((tpl for key, tpl in templates if key in low), "")
+                if looks_like_sentence or not candidate:
+                    candidate = chosen or "Deus Está Falando com Você Hoje"
+                if "deus" not in (candidate or "").lower():
+                    candidate = f"Deus: {candidate}"
+            else:
+                templates = [
+                    ("recome", "O Recomeço Que Mudou Tudo"),
+                    ("perd", "Quando Tudo Parece Perdido, a Virada Chega"),
+                    ("amor", "O Amor Que Voltou Quando Ninguém Esperava"),
+                    ("segred", "O Segredo Que Mudou a Vida Dele"),
+                    ("milagr", "O Dia em que Tudo Mudou"),
+                ]
+                chosen = next((tpl for key, tpl in templates if key in low), "")
+                if looks_like_sentence or not candidate:
+                    candidate = chosen or "A Virada Que Mudou Tudo"
+
+            candidate = _clean_title_line(candidate)
+            candidate = _truncate(candidate, max(40, min(120, int(max_len or 80))))
+            return candidate or ("Devocional" if safe_kind == "devotional" else "História")
+
+        if not self._has_text_provider():
+            return _heuristic_title(base)
+
+        role = "devocional" if safe_kind == "devotional" else "história"
+        prompt = (
+            "Crie UM título forte, impactante e chamativo em português (pt-BR) para um vídeo de YouTube.\n"
+            f"Baseie-se na mensagem do texto ({role}).\n\n"
+            "Regras obrigatórias:\n"
+            f"- 45 a {int(max_len or 80)} caracteres (se possível)\n"
+            "- Sem aspas, sem emojis, sem hashtags\n"
+            "- Sem ponto final\n"
+            "- Linguagem natural (pt-BR)\n"
+            + ("- Mencione Deus/Fé de forma respeitosa\n" if safe_kind == "devotional" else "")
+            + "\nTEXTO BASE (trecho):\n"
+            + base[:2200]
+            + "\n\nRetorne APENAS o título."
+        )
+
+        try:
+            content = self._generate_text(
+                prompt,
+                system_prompt="Você é um copywriter especialista em títulos virais para YouTube. Retorne apenas uma linha com o título.",
+                temperature=0.65,
+                json_mode=False,
+            )
+            title = _clean_title_line(str(content or ""))
+            if not title:
+                return _heuristic_title(base)
+            title = _truncate(title, max(40, min(120, int(max_len or 80))))
+            return title or _heuristic_title(base)
+        except Exception:
+            return _heuristic_title(base)
+
     def improve_story_or_devotional_text(
         self,
         original_text: str,

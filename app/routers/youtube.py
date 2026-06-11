@@ -1853,10 +1853,10 @@ def generate_story_shorts_task(request: StoryShortsRequest, background_tasks: Ba
     task_id = create_task()
     update_task(task_id, status="processing", progress=0, message="Iniciando geração de shorts...")
     use_rq = conn is not None and _rq_workers_online()
+    allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
     if use_rq:
         rq_queue.enqueue(process_story_shorts_generation, request.model_dump() if hasattr(request, "model_dump") else request.dict(), task_id, job_timeout=_rq_video_timeout_seconds())
     else:
-        allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
         if allow_inline_raw is None or not str(allow_inline_raw).strip():
             allow_inline = True
         else:
@@ -3096,6 +3096,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         use_rq = use_rq_raw.lower() in {"1", "true", "yes"}
     else:
         use_rq = conn is not None and _rq_workers_online()
+    allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
 
     if use_rq:
         if conn is None or not _rq_workers_online():
@@ -3141,7 +3142,6 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
 
-    allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
     if allow_inline_raw is None or not str(allow_inline_raw).strip():
         allow_inline = True
     else:
@@ -3640,6 +3640,13 @@ def process_video_generation(request: VideoRequest, task_id):
                     first_line = s
                     break
             title_guess = first_line[:120] if first_line else ("Devocional" if kind == "devotional" else "História")
+            try:
+                if hasattr(ai_service, "generate_strong_title_from_text"):
+                    stronger = ai_service.generate_strong_title_from_text(t, kind=kind, max_len=80)
+                    if isinstance(stronger, str) and stronger.strip():
+                        title_guess = stronger.strip()[:120]
+            except Exception:
+                pass
 
             words_per_scene = 85
             max_words_per_scene = 140
