@@ -214,7 +214,7 @@ def publish_ebook_kdp_via_browser(
         "started_at": datetime.utcnow().isoformat(),
     })
 
-    login_url = _get_env("KDP_LOGIN_URL")
+    login_url = (_get_env("KDP_LOGIN_URL", required=False) or "https://kdp.amazon.com/").strip()
     email = _get_env("KDP_EMAIL")
     password = _get_env("KDP_PASSWORD")
     timeout_ms = int((_get_env("KDP_TIMEOUT_MS", required=False) or "60000").strip() or "60000")
