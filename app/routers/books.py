@@ -11,6 +11,7 @@ from pathlib import Path
 import json
 from fastapi.responses import FileResponse, Response
 from app.services.book_assembler import BookAssembler
+from app.config import BOOKS_OUTPUT_DIR, COVERS_OUTPUT_DIR, STATIC_DIR
 
 import base64
 import threading
@@ -46,6 +47,26 @@ def _parse_price(value) -> float:
     except Exception:
         raise HTTPException(status_code=422, detail=f"Preço inválido: {value}")
 
+def _resolve_book_file_path(url_path: str) -> str:
+    raw = (url_path or "").strip().split("?", 1)[0].split("#", 1)[0]
+    clean = raw.lstrip("/")
+    if not clean:
+        return ""
+    if clean.startswith("static/books/"):
+        safe_name = os.path.basename(clean).strip()
+        if not safe_name:
+            return ""
+        for directory in (BOOKS_OUTPUT_DIR, str(STATIC_DIR / "books"), os.path.join("app", "static", "books")):
+            if directory:
+                candidate = os.path.join(directory, safe_name)
+                if os.path.isfile(candidate):
+                    return candidate
+        return ""
+    candidate = os.path.join("app", clean.replace("/", os.sep))
+    if os.path.exists(candidate):
+        return candidate
+    return ""
+
 @router.post("/")
 async def create_book(
     title: str = Form(...),
@@ -60,7 +81,7 @@ async def create_book(
     price_value = _parse_price(price)
     file_path = None
     if file:
-        upload_dir = "app/static/books"
+        upload_dir = BOOKS_OUTPUT_DIR
         try:
             os.makedirs(upload_dir, exist_ok=True)
         except Exception as e:
@@ -81,7 +102,7 @@ async def create_book(
     cover_image_url = None
     cover_image_base64 = None
     if cover_file:
-        cover_dir = "app/static/covers"
+        cover_dir = COVERS_OUTPUT_DIR
         try:
             os.makedirs(cover_dir, exist_ok=True)
         except Exception as e:
@@ -163,7 +184,7 @@ async def update_book(
     db_book.payment_link = payment_link
 
     if file:
-        upload_dir = "app/static/books"
+        upload_dir = BOOKS_OUTPUT_DIR
         try:
             os.makedirs(upload_dir, exist_ok=True)
         except Exception as e:
@@ -180,7 +201,7 @@ async def update_book(
         db_book.file_path = f"/static/books/{safe_filename}"
 
     if cover_file:
-        cover_dir = "app/static/covers"
+        cover_dir = COVERS_OUTPUT_DIR
         try:
             os.makedirs(cover_dir, exist_ok=True)
         except Exception as e:
@@ -286,8 +307,7 @@ def download_book(book_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Book not found")
 
     # Caminho atual salvo no banco (ex: /static/generated/arquivo.pdf ou /static/books/arquivo.pdf)
-    rel_path = (db_book.file_path or "").lstrip("/")
-    abs_path = os.path.join("app", rel_path) if rel_path else None
+    abs_path = _resolve_book_file_path(db_book.file_path or "")
 
     # Se o arquivo ainda existir, devolve direto
     if abs_path and os.path.exists(abs_path):

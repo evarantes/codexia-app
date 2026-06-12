@@ -568,7 +568,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 # Servir vídeos: tenta VIDEO_OUTPUT_DIR e depois app/static/videos (Render e múltiplas instâncias)
-from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, STATIC_DIR
+from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, STATIC_DIR, BOOKS_OUTPUT_DIR, COVERS_OUTPUT_DIR
 
 def _resolve_video_path(safe_name: str):
     """Retorna o path absoluto do vídeo, procurando em VIDEO_OUTPUT_DIR e em app/static/videos."""
@@ -586,6 +586,22 @@ def _resolve_video_path(safe_name: str):
 
 def _resolve_music_path(safe_name: str):
     for directory in (MUSIC_OUTPUT_DIR, str(STATIC_DIR / "music"), os.path.join("app", "static", "music")):
+        if directory:
+            filepath = os.path.join(directory, safe_name)
+            if os.path.isfile(filepath):
+                return filepath
+    return None
+
+def _resolve_book_path(safe_name: str):
+    for directory in (BOOKS_OUTPUT_DIR, str(STATIC_DIR / "books"), os.path.join("app", "static", "books")):
+        if directory:
+            filepath = os.path.join(directory, safe_name)
+            if os.path.isfile(filepath):
+                return filepath
+    return None
+
+def _resolve_cover_path(safe_name: str):
+    for directory in (COVERS_OUTPUT_DIR, str(STATIC_DIR / "covers"), os.path.join("app", "static", "covers")):
         if directory:
             filepath = os.path.join(directory, safe_name)
             if os.path.isfile(filepath):
@@ -687,6 +703,32 @@ def _guess_audio_media_type(filename: str) -> str:
         return "audio/ogg"
     return "application/octet-stream"
 
+def _guess_book_media_type(filename: str) -> str:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext == ".pdf":
+        return "application/pdf"
+    if ext == ".epub":
+        return "application/epub+zip"
+    if ext == ".mobi":
+        return "application/x-mobipocket-ebook"
+    if ext == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if ext == ".doc":
+        return "application/msword"
+    return "application/octet-stream"
+
+def _guess_image_media_type(filename: str) -> str:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".gif":
+        return "image/gif"
+    if ext == ".webp":
+        return "image/webp"
+    return "application/octet-stream"
+
 def _media_file_response(request: Request, filepath: str, media_type: str):
     range_header = request.headers.get("range")
     file_size = os.path.getsize(filepath)
@@ -770,6 +812,50 @@ def head_music_media(filename: str):
     media_type = _guess_audio_media_type(safe_name)
     return FileResponse(filepath, media_type=media_type, headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
 
+@app.get("/static/books/{filename:path}")
+def serve_books_static(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_book_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    media_type = _guess_book_media_type(safe_name)
+    return _media_file_response(request, filepath, media_type)
+
+@app.head("/static/books/{filename:path}")
+def head_books_static(filename: str):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_book_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    media_type = _guess_book_media_type(safe_name)
+    return FileResponse(filepath, media_type=media_type, headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
+
+@app.get("/static/covers/{filename:path}")
+def serve_covers_static(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_cover_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    media_type = _guess_image_media_type(safe_name)
+    return _media_file_response(request, filepath, media_type)
+
+@app.head("/static/covers/{filename:path}")
+def head_covers_static(filename: str):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_cover_path(safe_name)
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Not Found")
+    media_type = _guess_image_media_type(safe_name)
+    return FileResponse(filepath, media_type=media_type, headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
+
 # Montar /static com a pasta que contém index.html (no container: /app/app/static)
 app.mount("/static", StaticFiles(directory=_STATIC_SERVE), name="static")
 os.makedirs("generated_assets/storyboard_images", exist_ok=True)
@@ -778,8 +864,12 @@ app.mount("/generated_assets", StaticFiles(directory="generated_assets"), name="
 if os.path.isdir("/data"):
     os.makedirs("/data/media/videos", exist_ok=True)
     os.makedirs("/data/media/music", exist_ok=True)
+    os.makedirs("/data/media/books", exist_ok=True)
+    os.makedirs("/data/media/covers", exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "videos"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "music"), exist_ok=True)
+os.makedirs(os.path.join(STATIC_DIR, "books"), exist_ok=True)
+os.makedirs(os.path.join(STATIC_DIR, "covers"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "image_bank"), exist_ok=True)
 # NOTA: Não montamos /media como StaticFiles porque temos rotas específicas (/media/videos/{filename})
 # que servem vídeos de VIDEO_OUTPUT_DIR. O mount genérico interceptaria essas rotas.

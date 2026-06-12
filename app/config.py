@@ -65,6 +65,10 @@ _use_data_volume_music = os.path.isdir("/data") and os.getenv("USE_STATIC_MUSIC"
 MUSIC_OUTPUT_DIR = "/data/media/music" if _use_data_volume_music else str(STATIC_DIR / "music")
 MUSIC_URL_PREFIX = "/media/music" if _use_data_volume_music else "/static/music"
 
+_use_data_volume_books = os.path.isdir("/data") and os.getenv("USE_STATIC_BOOKS", "").lower() not in ("1", "true", "yes")
+BOOKS_OUTPUT_DIR = "/data/media/books" if _use_data_volume_books else str(STATIC_DIR / "books")
+COVERS_OUTPUT_DIR = "/data/media/covers" if _use_data_volume_books else str(STATIC_DIR / "covers")
+
 def absolute_path_for_music(filename_or_url: str) -> str:
     if not filename_or_url:
         return ""
