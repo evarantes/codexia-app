@@ -81,6 +81,41 @@ def _guess_book_media_type(filename: str) -> str:
         return "application/msword"
     return "application/octet-stream"
 
+def _book_file_status(book: Book) -> tuple[bool, bool, str, str]:
+    has_disk_file = bool(_resolve_book_file_path(str(getattr(book, "file_path", "") or "")))
+    has_backup = bool(str(getattr(book, "file_base64", "") or "").strip())
+    if has_disk_file:
+        return True, has_backup, "stored", "Arquivo salvo no servidor"
+    if has_backup:
+        return False, True, "backup_only", "Arquivo salvo em backup"
+    return False, False, "missing", "Arquivo ausente"
+
+def _serialize_book(book: Book) -> dict:
+    has_disk_file, has_backup, storage_status, storage_label = _book_file_status(book)
+    return {
+        "id": book.id,
+        "user_id": book.user_id,
+        "title": book.title,
+        "author": book.author,
+        "synopsis": book.synopsis,
+        "full_text": book.full_text,
+        "price": book.price,
+        "payment_link": book.payment_link,
+        "cover_image_url": book.cover_image_url,
+        "cover_image_base64": book.cover_image_base64,
+        "file_path": book.file_path,
+        "file_original_name": getattr(book, "file_original_name", None),
+        "file_mime_type": getattr(book, "file_mime_type", None),
+        "has_file_on_disk": has_disk_file,
+        "has_file_backup": has_backup,
+        "file_storage_status": storage_status,
+        "file_storage_label": storage_label,
+        "status_amazon": book.status_amazon,
+        "amazon_task_id": book.amazon_task_id,
+        "amazon_last_error": book.amazon_last_error,
+        "amazon_updated_at": book.amazon_updated_at.isoformat() if book.amazon_updated_at else None,
+    }
+
 def _store_book_file_content(content: bytes, original_name: str, content_type: str | None) -> tuple[str, str]:
     safe_filename = get_safe_filename(original_name or "livro.pdf")
     file_location = os.path.join(BOOKS_OUTPUT_DIR, safe_filename)
@@ -193,7 +228,7 @@ def list_books(db: Session = Depends(get_db)):
     try:
         books = db.query(Book).all()
         print(f"Listing {len(books)} books from DB")
-        return books
+        return [_serialize_book(book) for book in books]
     except Exception as e:
         print(f"Error listing books: {e}")
         raise HTTPException(status_code=500, detail="Error fetching books")

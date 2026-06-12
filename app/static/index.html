@@ -262,6 +262,11 @@
                         <div class="p-4">
                             <h3 class="font-bold text-lg mb-1">{{ book.title }}</h3>
                             <p class="text-gray-600 text-sm mb-2">{{ book.author }}</p>
+                            <div class="mb-2">
+                                <span :class="bookFileBadgeClass(book)" class="inline-flex items-center px-2 py-1 rounded text-[11px] font-semibold">
+                                    {{ book.file_storage_label || 'Arquivo ausente' }}
+                                </span>
+                            </div>
                             <div class="flex justify-between items-center mt-4">
                                 <span class="text-green-600 font-bold">R$ {{ book.price }}</span>
                                 <div class="flex gap-2 items-center">
@@ -276,6 +281,9 @@
                                     <button @click="deleteBook(book.id)" class="text-red-600 hover:text-red-800" title="Excluir livro"><i class="fas fa-trash"></i></button>
                                 </div>
                             </div>
+                            <div v-if="book.file_original_name" class="text-[11px] text-gray-500 mt-2 truncate" :title="String(book.file_original_name)">
+                                {{ book.file_original_name }}
+                            </div>
                             <div class="mt-3 flex items-center justify-between gap-2">
                                 <div class="text-xs text-gray-700">
                                     <span class="font-semibold">Amazon:</span>
@@ -284,7 +292,7 @@
                                     </span>
                                 </div>
                                 <div class="flex gap-2 items-center">
-                                    <button @click="publishBookToKdp(book)" :disabled="savedMusicSaving" class="bg-gray-900 text-white px-3 py-2 rounded hover:bg-black text-xs font-semibold flex items-center gap-2">
+                                    <button @click="publishBookToKdp(book)" :disabled="savedMusicSaving || book.file_storage_status === 'missing'" :title="book.file_storage_status === 'missing' ? 'Envie o arquivo do livro para publicar.' : 'Publicar e-book'" class="bg-gray-900 text-white px-3 py-2 rounded hover:bg-black text-xs font-semibold flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
                                         <i class="fas fa-store"></i>
                                         Publicar E-book
                                     </button>
@@ -4697,6 +4705,12 @@
                     } else {
                         event.target.src = 'https://via.placeholder.com/300x400?text=Sem+Capa';
                     }
+                },
+                bookFileBadgeClass(book) {
+                    const status = String((book && book.file_storage_status) || '').toLowerCase();
+                    if (status === 'stored') return 'bg-green-100 text-green-700';
+                    if (status === 'backup_only') return 'bg-amber-100 text-amber-700';
+                    return 'bg-red-100 text-red-700';
                 },
                 async fetchBooks() {
                     try {
