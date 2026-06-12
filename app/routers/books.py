@@ -90,8 +90,18 @@ def _book_file_status(book: Book) -> tuple[bool, bool, str, str]:
         return False, True, "backup_only", "Arquivo salvo em backup"
     return False, False, "missing", "Arquivo ausente"
 
+def _normalized_amazon_error(book: Book, has_disk_file: bool, has_backup: bool) -> str | None:
+    err = str(getattr(book, "amazon_last_error", "") or "").strip()
+    if not err:
+        return None
+    lower_err = err.lower()
+    if (has_disk_file or has_backup) and "arquivo do livro não encontrado no servidor" in lower_err:
+        return None
+    return err
+
 def _serialize_book(book: Book) -> dict:
     has_disk_file, has_backup, storage_status, storage_label = _book_file_status(book)
+    amazon_error = _normalized_amazon_error(book, has_disk_file, has_backup)
     return {
         "id": book.id,
         "user_id": book.user_id,
@@ -112,7 +122,7 @@ def _serialize_book(book: Book) -> dict:
         "file_storage_label": storage_label,
         "status_amazon": book.status_amazon,
         "amazon_task_id": book.amazon_task_id,
-        "amazon_last_error": book.amazon_last_error,
+        "amazon_last_error": amazon_error,
         "amazon_updated_at": book.amazon_updated_at.isoformat() if book.amazon_updated_at else None,
     }
 
@@ -263,6 +273,10 @@ async def update_book(
         db_book.file_base64 = base64.b64encode(content).decode("utf-8")
         db_book.file_original_name = (file.filename or "").strip() or safe_filename
         db_book.file_mime_type = file.content_type or _guess_book_media_type(db_book.file_original_name)
+        if "arquivo do livro não encontrado no servidor" in str(getattr(db_book, "amazon_last_error", "") or "").lower():
+            db_book.amazon_last_error = None
+            if str(getattr(db_book, "status_amazon", "") or "").lower() == "failed":
+                db_book.status_amazon = None
 
     if cover_file:
         cover_dir = COVERS_OUTPUT_DIR
