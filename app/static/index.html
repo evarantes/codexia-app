@@ -3311,7 +3311,17 @@
                             <label class="block font-bold mb-2">Timeout da automação (ms)</label>
                             <input v-model.number="settings.amazon_kdp_timeout_ms" type="number" min="10000" step="1000" class="w-full border p-2 rounded" placeholder="60000">
                         </div>
-                        <div class="mt-4 bg-gray-50 border rounded p-4">
+                        <div class="mt-4 flex flex-wrap gap-2">
+                            <button @click="fillAmazonKdpRecommendedDefaults" type="button" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 text-sm font-semibold">
+                                <i class="fas fa-magic mr-2"></i> Usar configuracao recomendada
+                            </button>
+                            <button @click="amazonKdpShowAdvanced = !amazonKdpShowAdvanced" type="button" class="bg-white border px-4 py-2 rounded hover:bg-gray-50 text-sm font-semibold">
+                                <i class="fas" :class="amazonKdpShowAdvanced ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                                {{ amazonKdpShowAdvanced ? ' Ocultar campos avancados' : ' Mostrar campos avancados' }}
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">Na maioria dos casos, basta preencher e-mail e senha. Os demais campos ja podem ser preenchidos automaticamente.</p>
+                        <div v-if="amazonKdpShowAdvanced" class="mt-4 bg-gray-50 border rounded p-4">
                             <div class="font-bold mb-2">Seletores básicos de login</div>
                             <div class="grid grid-cols-1 gap-3">
                                 <div>
@@ -3328,7 +3338,7 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="mt-4 bg-gray-50 border rounded p-4">
+                        <div v-if="amazonKdpShowAdvanced" class="mt-4 bg-gray-50 border rounded p-4">
                             <div class="font-bold mb-2">Seletores de publicação do eBook</div>
                             <p class="text-xs text-gray-500 mb-3">Se a Amazon mudar a tela, você pode ajustar os campos abaixo sem precisar mexer no servidor.</p>
                             <div class="grid grid-cols-1 gap-3">
@@ -4110,16 +4120,16 @@
                         amazon_kdp_password_selector: "input#ap_password, input[type='password']",
                         amazon_kdp_submit_selector: "input#signInSubmit, button#signInSubmit, input[type='submit'], button[type='submit']",
                         amazon_kdp_new_ebook_url: '',
-                        amazon_kdp_new_ebook_button_selector: 'text=Criar novo livro ou série',
-                        amazon_kdp_title_selector: '',
-                        amazon_kdp_subtitle_selector: '',
-                        amazon_kdp_author_selector: '',
-                        amazon_kdp_description_selector: '',
-                        amazon_kdp_keywords_selector: '',
-                        amazon_kdp_book_file_input_selector: '',
-                        amazon_kdp_cover_file_input_selector: '',
-                        amazon_kdp_price_selector: '',
-                        amazon_kdp_publish_selector: '',
+                        amazon_kdp_new_ebook_button_selector: 'text=Criar novo livro ou série, text=Create a new title',
+                        amazon_kdp_title_selector: "input[name*='title' i], input[id*='title' i], input[aria-label*='Título' i], input[aria-label*='Title' i]",
+                        amazon_kdp_subtitle_selector: "input[name*='subtitle' i], input[id*='subtitle' i], input[aria-label*='Subtítulo' i], input[aria-label*='Subtitle' i]",
+                        amazon_kdp_author_selector: "input[name*='author' i], input[id*='author' i], input[aria-label*='Autor' i], input[aria-label*='Author' i]",
+                        amazon_kdp_description_selector: "textarea[name*='description' i], textarea[id*='description' i], textarea[aria-label*='descrição' i], textarea[aria-label*='description' i]",
+                        amazon_kdp_keywords_selector: "input[name*='keyword' i], textarea[name*='keyword' i], input[id*='keyword' i], textarea[id*='keyword' i]",
+                        amazon_kdp_book_file_input_selector: "input[type='file'][name*='manuscript' i], input[type='file'][id*='manuscript' i], input[type='file'][name*='ebook' i], input[type='file'][id*='ebook' i], input[type='file'][accept*='.epub'], input[type='file'][accept*='.pdf']",
+                        amazon_kdp_cover_file_input_selector: "input[type='file'][name*='cover' i], input[type='file'][id*='cover' i], input[type='file'][accept*='image']",
+                        amazon_kdp_price_selector: "input[name*='price' i], input[id*='price' i], input[aria-label*='Preço' i], input[aria-label*='Price' i]",
+                        amazon_kdp_publish_selector: "button[type='submit'], input[type='submit'], button[aria-label*='publicar' i], button[aria-label*='publish' i]",
                         hotmart_client_id: '',
                         hotmart_client_secret: '',
                         hotmart_basic: '',
@@ -4133,6 +4143,7 @@
                     },
                     elevenlabsSampleFile: null,
                     elevenlabsVoiceCreating: false,
+                    amazonKdpShowAdvanced: false,
                     amazonKdpTesting: false,
                     amazonKdpSyncing: false,
                     amazonKdpTestResult: null,
@@ -6766,6 +6777,28 @@
                         alert('Erro ao salvar'); 
                         return false;
                     }
+                },
+                fillAmazonKdpRecommendedDefaults() {
+                    Object.assign(this.settings, {
+                        amazon_kdp_login_url: 'https://kdp.amazon.com/',
+                        amazon_kdp_bookshelf_url: 'https://kdp.amazon.com/pt_BR/bookshelf',
+                        amazon_kdp_timeout_ms: 60000,
+                        amazon_kdp_email_selector: "input#ap_email, input[type='email'], input[name='email']",
+                        amazon_kdp_password_selector: "input#ap_password, input[type='password']",
+                        amazon_kdp_submit_selector: "input#signInSubmit, button#signInSubmit, input[type='submit'], button[type='submit']",
+                        amazon_kdp_new_ebook_url: '',
+                        amazon_kdp_new_ebook_button_selector: 'text=Criar novo livro ou série, text=Create a new title',
+                        amazon_kdp_title_selector: "input[name*='title' i], input[id*='title' i], input[aria-label*='Título' i], input[aria-label*='Title' i]",
+                        amazon_kdp_subtitle_selector: "input[name*='subtitle' i], input[id*='subtitle' i], input[aria-label*='Subtítulo' i], input[aria-label*='Subtitle' i]",
+                        amazon_kdp_author_selector: "input[name*='author' i], input[id*='author' i], input[aria-label*='Autor' i], input[aria-label*='Author' i]",
+                        amazon_kdp_description_selector: "textarea[name*='description' i], textarea[id*='description' i], textarea[aria-label*='descrição' i], textarea[aria-label*='description' i]",
+                        amazon_kdp_keywords_selector: "input[name*='keyword' i], textarea[name*='keyword' i], input[id*='keyword' i], textarea[id*='keyword' i]",
+                        amazon_kdp_book_file_input_selector: "input[type='file'][name*='manuscript' i], input[type='file'][id*='manuscript' i], input[type='file'][name*='ebook' i], input[type='file'][id*='ebook' i], input[type='file'][accept*='.epub'], input[type='file'][accept*='.pdf']",
+                        amazon_kdp_cover_file_input_selector: "input[type='file'][name*='cover' i], input[type='file'][id*='cover' i], input[type='file'][accept*='image']",
+                        amazon_kdp_price_selector: "input[name*='price' i], input[id*='price' i], input[aria-label*='Preço' i], input[aria-label*='Price' i]",
+                        amazon_kdp_publish_selector: "button[type='submit'], input[type='submit'], button[aria-label*='publicar' i], button[aria-label*='publish' i]",
+                    });
+                    this.amazonKdpTestResult = { success: true, message: 'Configuracao recomendada aplicada. Agora normalmente basta informar e-mail e senha.' };
                 },
                 async testAmazonKdpConnection() {
                     this.amazonKdpTesting = true;

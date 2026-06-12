@@ -4,6 +4,7 @@ sqlalchemy
 python-multipart
 jinja2
 requests
+playwright
 openai>=1.0.0
 google-generativeai
 python-dotenv
