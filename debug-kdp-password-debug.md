@@ -23,6 +23,7 @@
 - Instrumentation added in `_login_kdp` to capture URL, title, password selector counts, and continue button counts.
 - Production-facing snapshots will be saved under `generated_assets/distribution_logs/<task>/debug_*.json`.
 - Evidence from `debug_C_before_password.json`: URL remained on Amazon sign-in, title was `KDP Sign in`, and password selectors matched (`input[type='password']`: 1).
+- Evidence from runtime error after `fefc8ce`: selector resolved to password inputs, but Playwright reported the element was not visible and referenced the hidden autofill hint field.
 
 ## Verification Conclusion
-- Root cause narrowed to the fill strategy, not missing password field detection.
+- Root cause narrowed to the fill strategy selecting hidden password inputs instead of the visible editable field.

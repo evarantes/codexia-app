@@ -357,9 +357,44 @@ def _fill_with_autofix(page: Any, cfg: Dict[str, Any], key: str, value: str, can
         chosen = str(chosen or "").strip()
         if not chosen:
             continue
-        if _locator_count(page, chosen) == 0:
+        count = _locator_count(page, chosen)
+        if count == 0:
             tried.append((chosen, "not-found"))
             continue
+        visible_failure = None
+        for idx in range(count):
+            try:
+                locator = page.locator(chosen).nth(idx)
+                try:
+                    if not locator.is_visible():
+                        visible_failure = "not-visible"
+                        continue
+                except Exception:
+                    pass
+                try:
+                    if not locator.is_enabled():
+                        visible_failure = "not-enabled"
+                        continue
+                except Exception:
+                    pass
+                try:
+                    locator.wait_for(state="visible", timeout=5000)
+                except Exception:
+                    pass
+                try:
+                    locator.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+                try:
+                    locator.click(timeout=2000)
+                except Exception:
+                    pass
+                locator.fill(value or "", timeout=5000)
+                cfg["selectors"][key] = chosen
+                return
+            except Exception as e:
+                visible_failure = str(e)
+                continue
         try:
             locator = page.locator(chosen).first
             try:
@@ -378,7 +413,7 @@ def _fill_with_autofix(page: Any, cfg: Dict[str, Any], key: str, value: str, can
             cfg["selectors"][key] = chosen
             return
         except Exception as e:
-            tried.append((chosen, str(e)))
+            tried.append((chosen, visible_failure or str(e)))
             continue
     if not tried or all(reason == "not-found" for _, reason in tried):
         raise DistributionAutomationError(f"Não foi possível localizar o campo '{key}' na tela da Amazon (selector inválido).")
