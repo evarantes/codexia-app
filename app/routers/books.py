@@ -750,6 +750,43 @@ def publish_book_kdp(
             )
 
             try:
+                autofixed = (res or {}).get("selectors_autofixed") if isinstance(res, dict) else None
+                if isinstance(autofixed, dict) and autofixed:
+                    sx = dbx.query(Settings).order_by(Settings.id.desc()).first()
+                    if sx:
+                        mapping = {
+                            "email": "amazon_kdp_email_selector",
+                            "password": "amazon_kdp_password_selector",
+                            "submit": "amazon_kdp_submit_selector",
+                            "new_ebook_button": "amazon_kdp_new_ebook_button_selector",
+                            "new_ebook_url": "amazon_kdp_new_ebook_url",
+                            "title": "amazon_kdp_title_selector",
+                            "subtitle": "amazon_kdp_subtitle_selector",
+                            "author": "amazon_kdp_author_selector",
+                            "description": "amazon_kdp_description_selector",
+                            "keywords": "amazon_kdp_keywords_selector",
+                            "book_file": "amazon_kdp_book_file_input_selector",
+                            "cover_file": "amazon_kdp_cover_file_input_selector",
+                            "price": "amazon_kdp_price_selector",
+                            "publish": "amazon_kdp_publish_selector",
+                        }
+                        changed = False
+                        for k, field in mapping.items():
+                            v = str(autofixed.get(k) or "").strip()
+                            if not v:
+                                continue
+                            if str(getattr(sx, field, "") or "").strip() != v:
+                                setattr(sx, field, v)
+                                changed = True
+                        if changed:
+                            dbx.commit()
+            except Exception:
+                try:
+                    dbx.rollback()
+                except Exception:
+                    pass
+
+            try:
                 b.status_amazon = "published"
                 b.amazon_last_error = None
                 b.amazon_updated_at = datetime.utcnow()

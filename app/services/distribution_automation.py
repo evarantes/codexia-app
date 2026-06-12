@@ -106,6 +106,69 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
         _safe_capture(page, out_dir, "02_after_login")
 
 
+def _locator_count(page: Any, selector: str) -> int:
+    try:
+        return int(page.locator(selector).count())
+    except Exception:
+        return 0
+
+
+def _pick_selector(page: Any, selectors: list[str]) -> str:
+    for s in selectors:
+        ss = str(s or "").strip()
+        if not ss:
+            continue
+        if _locator_count(page, ss) > 0:
+            return ss
+    return ""
+
+
+def _guard_against_challenge(page: Any):
+    try:
+        html = (page.content() or "").lower()
+    except Exception:
+        return
+    for token in ["captcha", "robô", "robot", "two-step", "verification", "verificação", "otp", "one-time", "challenge"]:
+        if token in html:
+            raise DistributionAutomationError("A Amazon exibiu um desafio (captcha/2FA). Para publicar automaticamente, desative 2FA nesta conta ou use um fluxo sem desafio.")
+
+
+def _fill_with_autofix(page: Any, cfg: Dict[str, Any], key: str, value: str, candidates: list[str]):
+    cur = str(cfg.get("selectors", {}).get(key) or "").strip()
+    chosen = _pick_selector(page, [cur, *candidates])
+    if not chosen:
+        raise DistributionAutomationError(f"Não foi possível localizar o campo '{key}' na tela da Amazon (selector inválido).")
+    try:
+        page.fill(chosen, value or "")
+    except Exception:
+        raise DistributionAutomationError(f"Falha ao preencher o campo '{key}'. A Amazon pode ter mudado a tela.")
+    cfg["selectors"][key] = chosen
+
+
+def _set_files_with_autofix(page: Any, cfg: Dict[str, Any], key: str, filepath: str, candidates: list[str]):
+    cur = str(cfg.get("selectors", {}).get(key) or "").strip()
+    chosen = _pick_selector(page, [cur, *candidates])
+    if not chosen:
+        raise DistributionAutomationError(f"Não foi possível localizar o upload '{key}' na tela da Amazon (selector inválido).")
+    try:
+        page.set_input_files(chosen, filepath)
+    except Exception:
+        raise DistributionAutomationError(f"Falha ao enviar arquivo em '{key}'. A Amazon pode ter mudado a tela.")
+    cfg["selectors"][key] = chosen
+
+
+def _click_with_autofix(page: Any, cfg: Dict[str, Any], key: str, candidates: list[str]):
+    cur = str(cfg.get("selectors", {}).get(key) or "").strip()
+    chosen = _pick_selector(page, [cur, *candidates])
+    if not chosen:
+        raise DistributionAutomationError(f"Não foi possível localizar o botão '{key}' na tela da Amazon (selector inválido).")
+    try:
+        page.click(chosen)
+    except Exception:
+        raise DistributionAutomationError(f"Falha ao clicar em '{key}'. A Amazon pode ter mudado a tela.")
+    cfg["selectors"][key] = chosen
+
+
 def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = True) -> Dict[str, Any]:
     cfg = _build_kdp_config(settings_obj)
     try:
@@ -471,39 +534,71 @@ def publish_ebook_kdp_via_browser(
         page.set_default_timeout(int(cfg["timeout_ms"]))
         try:
             _login_kdp(page, cfg, out_dir)
+            _guard_against_challenge(page)
 
-            if selectors["new_ebook_url"]:
+            if selectors.get("new_ebook_url"):
                 page.goto(selectors["new_ebook_url"], wait_until="domcontentloaded")
-            elif selectors["new_ebook_button"]:
-                page.click(selectors["new_ebook_button"])
+            elif selectors.get("new_ebook_button"):
+                _click_with_autofix(page, cfg, "new_ebook_button", [
+                    "text=/criar novo livro|create a new title/i",
+                    KDP_DEFAULTS["new_ebook_button_selector"],
+                ])
                 try:
                     page.wait_for_load_state("domcontentloaded")
                 except Exception:
                     pass
             _safe_capture(page, out_dir, "03_new_ebook")
+            _guard_against_challenge(page)
 
-            page.fill(selectors["title"], title or "")
-            if selectors.get("subtitle") and subtitle:
+            _fill_with_autofix(page, cfg, "title", title or "", [
+                KDP_DEFAULTS["title_selector"],
+                "xpath=//label[contains(.,'Título') or contains(.,'Title')]/following::input[1]",
+            ])
+            if (subtitle or "").strip():
                 try:
-                    page.fill(selectors["subtitle"], subtitle)
+                    _fill_with_autofix(page, cfg, "subtitle", subtitle or "", [
+                        KDP_DEFAULTS["subtitle_selector"],
+                        "xpath=//label[contains(.,'Subtítulo') or contains(.,'Subtitle')]/following::input[1]",
+                    ])
                 except Exception:
                     pass
-            page.fill(selectors["author"], author or "")
-            page.fill(selectors["description"], (description or "").strip())
-            page.fill(selectors["keywords"], (keywords or "").strip())
+            _fill_with_autofix(page, cfg, "author", author or "", [
+                KDP_DEFAULTS["author_selector"],
+                "xpath=//label[contains(.,'Autor') or contains(.,'Author')]/following::input[1]",
+            ])
+            _fill_with_autofix(page, cfg, "description", (description or "").strip(), [
+                KDP_DEFAULTS["description_selector"],
+                "xpath=//label[contains(.,'Descrição') or contains(.,'Description')]/following::textarea[1]",
+            ])
+            _fill_with_autofix(page, cfg, "keywords", (keywords or "").strip(), [
+                KDP_DEFAULTS["keywords_selector"],
+                "xpath=//label[contains(.,'Palavras') or contains(.,'Keywords')]/following::input[1]",
+            ])
             _safe_capture(page, out_dir, "04_metadata")
 
-            page.set_input_files(selectors["book_file"], book_file_path)
-            page.set_input_files(selectors["cover_file"], cover_file_path)
+            _set_files_with_autofix(page, cfg, "book_file", book_file_path, [
+                KDP_DEFAULTS["book_file_selector"],
+                "xpath=//input[@type='file'][contains(@accept,'.pdf') or contains(@accept,'.epub')]",
+            ])
+            _set_files_with_autofix(page, cfg, "cover_file", cover_file_path, [
+                KDP_DEFAULTS["cover_file_selector"],
+                "xpath=//input[@type='file'][contains(@accept,'image')]",
+            ])
             _safe_capture(page, out_dir, "05_files")
 
-            if selectors.get("price") and (price or "").strip():
+            if (price or "").strip():
                 try:
-                    page.fill(selectors["price"], (price or "").strip())
+                    _fill_with_autofix(page, cfg, "price", (price or "").strip(), [
+                        KDP_DEFAULTS["price_selector"],
+                        "xpath=//label[contains(.,'Preço') or contains(.,'Price')]/following::input[1]",
+                    ])
                 except Exception:
                     pass
 
-            page.click(selectors["publish"])
+            _click_with_autofix(page, cfg, "publish", [
+                KDP_DEFAULTS["publish_selector"],
+                "text=/publicar|publish/i",
+            ])
             try:
                 page.wait_for_load_state("networkidle")
             except Exception:
@@ -514,6 +609,7 @@ def publish_ebook_kdp_via_browser(
                 "status": "published",
                 "target": "kdp",
                 "completed_at": datetime.utcnow().isoformat(),
+                "selectors_autofixed": cfg.get("selectors", {}),
             }
             _write_json(out_dir / "result.json", result)
             return result
