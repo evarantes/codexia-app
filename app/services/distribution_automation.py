@@ -170,31 +170,59 @@ def _pick_selector(page: Any, selectors: list[str]) -> str:
 
 
 def _guard_against_challenge(page: Any):
+    url = ""
     try:
+        url = str(getattr(page, "url", "") or "").lower()
+    except Exception:
+        url = ""
+    challenge_url_tokens = [
+        "/ap/cvf/",
+        "/ap/mfa",
+        "/ap/signin",
+        "/ap/cnep",
+        "/errors/validatecaptcha",
+        "auth-mfa",
+        "approval",
+    ]
+    if any(token in url for token in challenge_url_tokens):
+        raise DistributionAutomationError(
+            f"A Amazon bloqueou o login com uma etapa extra de segurança. URL atual: {getattr(page, 'url', '')}"
+        )
+    selectors = [
+        "input[name='cvf_captcha_input']",
+        "input#auth-mfa-otpcode",
+        "input[name='otpCode']",
+        "input[name='code']",
+        "input[name='transactionApprovalStatus']",
+        "form[action*='validateCaptcha']",
+        "form[action*='verify']",
+        "img[alt*='captcha' i]",
+    ]
+    for selector in selectors:
+        if _locator_count(page, selector) > 0:
+            raise DistributionAutomationError(
+                f"A Amazon exibiu uma validação adicional de segurança. URL atual: {getattr(page, 'url', '')}"
+            )
+    text_tokens = [
+        "enter the characters you see",
+        "digite os caracteres",
+        "approve sign-in",
+        "aprove a entrada",
+        "insira o código",
+        "enter otp",
+        "one time password",
+        "senha de uso único",
+        "código de verificação",
+    ]
         html = (page.content() or "").lower()
     except Exception:
         return
     for token in [
-        "captcha",
-        "robô",
-        "robot",
-        "two-step",
-        "2-step",
-        "verification",
-        "verificação",
-        "otp",
-        "one-time",
-        "challenge",
-        "auth-mfa",
-        "mfa",
-        "approve sign-in",
-        "unusual activity",
-        "atividade incomum",
-        "enter the characters you see",
-        "digite os caracteres",
-    ]:
-        if token in html:
+    for token in text_tokens:
             raise DistributionAutomationError("A Amazon exibiu um desafio (captcha/2FA). Para publicar automaticamente, desative 2FA nesta conta ou use um fluxo sem desafio.")
+            raise DistributionAutomationError(
+                f"A Amazon exibiu uma validação adicional de segurança. URL atual: {getattr(page, 'url', '')}"
+            )
 
 
 def _fill_with_autofix(page: Any, cfg: Dict[str, Any], key: str, value: str, candidates: list[str]):
