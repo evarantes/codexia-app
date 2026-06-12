@@ -68,6 +68,9 @@ class Book(Base):
     cover_image_url = Column(String)
     cover_image_base64 = Column(Text, nullable=True) # Armazena a imagem em Base64 para persistência no Render sem disco
     file_path = Column(String) # Caminho do arquivo do livro (PDF/EPUB)
+    file_base64 = Column(Text, nullable=True) # Backup persistente do arquivo do livro
+    file_original_name = Column(String, nullable=True)
+    file_mime_type = Column(String, nullable=True)
     status_amazon = Column(String, nullable=True)
     amazon_task_id = Column(String, nullable=True)
     amazon_last_error = Column(Text, nullable=True)

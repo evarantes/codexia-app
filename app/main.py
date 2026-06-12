@@ -125,6 +125,18 @@ def run_migrations(engine):
                     with engine.connect() as conn:
                         conn.execute(text("ALTER TABLE books ADD COLUMN cover_image_base64 TEXT"))
                         conn.commit()
+                if "file_base64" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE books ADD COLUMN file_base64 TEXT"))
+                        conn.commit()
+                if "file_original_name" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE books ADD COLUMN file_original_name TEXT"))
+                        conn.commit()
+                if "file_mime_type" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE books ADD COLUMN file_mime_type TEXT"))
+                        conn.commit()
                 for col in ["status_amazon", "amazon_task_id", "amazon_last_error"]:
                     if col not in columns:
                         with engine.connect() as conn:

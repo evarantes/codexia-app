@@ -67,6 +67,49 @@ def _resolve_book_file_path(url_path: str) -> str:
         return candidate
     return ""
 
+def _guess_book_media_type(filename: str) -> str:
+    ext = (Path(filename or "").suffix or "").lower()
+    if ext == ".pdf":
+        return "application/pdf"
+    if ext == ".epub":
+        return "application/epub+zip"
+    if ext == ".mobi":
+        return "application/x-mobipocket-ebook"
+    if ext == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if ext == ".doc":
+        return "application/msword"
+    return "application/octet-stream"
+
+def _store_book_file_content(content: bytes, original_name: str, content_type: str | None) -> tuple[str, str]:
+    safe_filename = get_safe_filename(original_name or "livro.pdf")
+    file_location = os.path.join(BOOKS_OUTPUT_DIR, safe_filename)
+    try:
+        os.makedirs(BOOKS_OUTPUT_DIR, exist_ok=True)
+        with open(file_location, "wb") as buffer:
+            buffer.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao salvar arquivo do livro no servidor: {e}")
+    return safe_filename, file_location
+
+def _materialize_book_file(book: Book, preferred_dir: str | None = None, preferred_name: str | None = None) -> str:
+    existing = _resolve_book_file_path(str(getattr(book, "file_path", "") or ""))
+    if existing and os.path.isfile(existing):
+        return existing
+    raw_b64 = str(getattr(book, "file_base64", "") or "").strip()
+    if not raw_b64:
+        return ""
+    file_name = os.path.basename(str(preferred_name or getattr(book, "file_original_name", "") or getattr(book, "title", "livro")).strip()) or f"book_{int(getattr(book, 'id', 0) or 0)}.pdf"
+    out_dir = preferred_dir or BOOKS_OUTPUT_DIR
+    out_path = os.path.join(out_dir, file_name)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(raw_b64))
+        return out_path if os.path.isfile(out_path) else ""
+    except Exception:
+        return ""
+
 @router.post("/")
 async def create_book(
     title: str = Form(...),
@@ -80,24 +123,16 @@ async def create_book(
 ):
     price_value = _parse_price(price)
     file_path = None
+    file_base64 = None
+    file_original_name = None
+    file_mime_type = None
     if file:
-        upload_dir = BOOKS_OUTPUT_DIR
-        try:
-            os.makedirs(upload_dir, exist_ok=True)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Falha ao preparar diretório de upload do livro: {e}")
-        safe_filename = get_safe_filename(file.filename)
-        file_location = os.path.join(upload_dir, safe_filename)
-        
         content = await file.read()
-        try:
-            with open(file_location, "wb") as buffer:
-                buffer.write(content)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Falha ao salvar arquivo do livro no servidor: {e}")
-        
-        # Caminho relativo para acesso via web
+        safe_filename, _ = _store_book_file_content(content, file.filename, file.content_type)
         file_path = f"/static/books/{safe_filename}"
+        file_base64 = base64.b64encode(content).decode("utf-8")
+        file_original_name = (file.filename or "").strip() or safe_filename
+        file_mime_type = file.content_type or _guess_book_media_type(file_original_name)
 
     cover_image_url = None
     cover_image_base64 = None
@@ -134,6 +169,9 @@ async def create_book(
         price=price_value,
         payment_link=payment_link,
         file_path=file_path,
+        file_base64=file_base64,
+        file_original_name=file_original_name,
+        file_mime_type=file_mime_type,
         cover_image_url=cover_image_url,
         cover_image_base64=cover_image_base64
     )
@@ -184,21 +222,12 @@ async def update_book(
     db_book.payment_link = payment_link
 
     if file:
-        upload_dir = BOOKS_OUTPUT_DIR
-        try:
-            os.makedirs(upload_dir, exist_ok=True)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Falha ao preparar diretório de upload do livro: {e}")
-        safe_filename = get_safe_filename(file.filename)
-        file_location = os.path.join(upload_dir, safe_filename)
-        
         content = await file.read()
-        try:
-            with open(file_location, "wb") as buffer:
-                buffer.write(content)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Falha ao salvar arquivo do livro no servidor: {e}")
+        safe_filename, _ = _store_book_file_content(content, file.filename, file.content_type)
         db_book.file_path = f"/static/books/{safe_filename}"
+        db_book.file_base64 = base64.b64encode(content).decode("utf-8")
+        db_book.file_original_name = (file.filename or "").strip() or safe_filename
+        db_book.file_mime_type = file.content_type or _guess_book_media_type(db_book.file_original_name)
 
     if cover_file:
         cover_dir = COVERS_OUTPUT_DIR
@@ -307,12 +336,14 @@ def download_book(book_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Book not found")
 
     # Caminho atual salvo no banco (ex: /static/generated/arquivo.pdf ou /static/books/arquivo.pdf)
-    abs_path = _resolve_book_file_path(db_book.file_path or "")
+    abs_path = _materialize_book_file(db_book)
 
     # Se o arquivo ainda existir, devolve direto
     if abs_path and os.path.exists(abs_path):
         filename = os.path.basename(abs_path)
-        return FileResponse(abs_path, media_type="application/pdf", filename=filename)
+        media_type = getattr(db_book, "file_mime_type", None) or _guess_book_media_type(filename)
+        download_name = getattr(db_book, "file_original_name", None) or filename
+        return FileResponse(abs_path, media_type=media_type, filename=download_name)
 
     # Se não existe arquivo, mas temos conteúdo salvo, tenta regerar
     if not db_book.full_text:
@@ -520,6 +551,14 @@ def publish_book_kdp(
             if not cover_abs and getattr(b, "cover_image_base64", None):
                 img_out = os.path.join("generated_assets", "distribution_logs", str(task_id), "cover.png")
                 cover_abs = _write_base64_image_to_file(str(b.cover_image_base64), img_out)
+
+            if not book_abs:
+                preferred_name = os.path.basename(str(getattr(b, "file_original_name", "") or "")) or f"book_{int(b.id)}.pdf"
+                book_abs = _materialize_book_file(
+                    b,
+                    preferred_dir=os.path.join("generated_assets", "distribution_logs", str(task_id)),
+                    preferred_name=preferred_name,
+                )
 
             if not book_abs:
                 pdf_out = os.path.join("generated_assets", "distribution_logs", str(task_id), f"book_{int(b.id)}.pdf")
