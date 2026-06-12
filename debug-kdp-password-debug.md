@@ -13,15 +13,16 @@
 ## Hypotheses & Verification
 | ID | Hypothesis | Likelihood | Effort | Evidence |
 |----|------------|------------|--------|----------|
-| A | O campo de senha usa seletor diferente do esperado. | High | Low | Pending |
-| B | A pagina ainda nao terminou de carregar quando a senha e preenchida. | High | Low | Pending |
-| C | A Amazon esta usando um fluxo alternativo apos o e-mail. | Med | Med | Pending |
-| D | O botao `Continuar` encontrado nao e o correto nessa tela. | Med | Low | Pending |
-| E | Faltam evidencias de URL/titulo/seletores no ponto da falha. | High | Low | Pending |
+| A | O campo de senha usa seletor diferente do esperado. | High | Low | Rejected |
+| B | A pagina ainda nao terminou de carregar quando a senha e preenchida. | High | Low | Inconclusive |
+| C | A Amazon esta usando um fluxo alternativo apos o e-mail. | Med | Med | Rejected |
+| D | O botao `Continuar` encontrado nao e o correto nessa tela. | Med | Low | Inconclusive |
+| E | Faltam evidencias de URL/titulo/seletores no ponto da falha. | High | Low | Confirmed |
 
 ## Log Evidence
 - Instrumentation added in `_login_kdp` to capture URL, title, password selector counts, and continue button counts.
 - Production-facing snapshots will be saved under `generated_assets/distribution_logs/<task>/debug_*.json`.
+- Evidence from `debug_C_before_password.json`: URL remained on Amazon sign-in, title was `KDP Sign in`, and password selectors matched (`input[type='password']`: 1).
 
 ## Verification Conclusion
-- Pending.
+- Root cause narrowed to the fill strategy, not missing password field detection.

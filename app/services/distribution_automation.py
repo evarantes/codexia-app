@@ -352,14 +352,39 @@ def _guard_against_challenge(page: Any):
 
 def _fill_with_autofix(page: Any, cfg: Dict[str, Any], key: str, value: str, candidates: list[str]):
     cur = str(cfg.get("selectors", {}).get(key) or "").strip()
-    chosen = _pick_selector(page, [cur, *candidates])
-    if not chosen:
+    tried: list[tuple[str, str]] = []
+    for chosen in [cur, *candidates]:
+        chosen = str(chosen or "").strip()
+        if not chosen:
+            continue
+        if _locator_count(page, chosen) == 0:
+            tried.append((chosen, "not-found"))
+            continue
+        try:
+            locator = page.locator(chosen).first
+            try:
+                locator.wait_for(state="visible", timeout=5000)
+            except Exception:
+                pass
+            try:
+                locator.scroll_into_view_if_needed(timeout=2000)
+            except Exception:
+                pass
+            try:
+                locator.click(timeout=2000)
+            except Exception:
+                pass
+            locator.fill(value or "", timeout=5000)
+            cfg["selectors"][key] = chosen
+            return
+        except Exception as e:
+            tried.append((chosen, str(e)))
+            continue
+    if not tried or all(reason == "not-found" for _, reason in tried):
         raise DistributionAutomationError(f"Não foi possível localizar o campo '{key}' na tela da Amazon (selector inválido).")
-    try:
-        page.fill(chosen, value or "")
-    except Exception:
-        raise DistributionAutomationError(f"Falha ao preencher o campo '{key}'. A Amazon pode ter mudado a tela.")
-    cfg["selectors"][key] = chosen
+    raise DistributionAutomationError(
+        f"Falha ao preencher o campo '{key}'. Tentativas: {tried[:3]}"
+    )
 
 
 def _set_files_with_autofix(page: Any, cfg: Dict[str, Any], key: str, filepath: str, candidates: list[str]):
