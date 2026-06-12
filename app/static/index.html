@@ -4879,10 +4879,25 @@
                             this.fetchBooks();
                         } else {
                             const err = await res.json().catch(() => ({}));
-                            alert((err && (err.detail || err.message)) || "Erro ao salvar livro");
+                            const toMsg = (v) => {
+                                if (!v) return '';
+                                if (typeof v === 'string') return v;
+                                if (Array.isArray(v)) {
+                                    const parts = v.map(it => (it && (it.msg || it.message)) ? String(it.msg || it.message) : JSON.stringify(it));
+                                    return parts.filter(Boolean).join(' | ');
+                                }
+                                if (typeof v === 'object') {
+                                    if (v.detail) return toMsg(v.detail);
+                                    return JSON.stringify(v);
+                                }
+                                return String(v);
+                            };
+                            const msg = toMsg(err.detail || err.message || err) || "Erro ao salvar livro";
+                            alert(msg);
                         }
                     } catch (e) {
-                        alert("Erro ao salvar livro: " + e);
+                        const msg = (e && e.message) ? e.message : (typeof e === 'string' ? e : JSON.stringify(e));
+                        alert("Erro ao salvar livro: " + msg);
                     }
                 },
                 async fetchSettings() {

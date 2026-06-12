@@ -116,9 +116,16 @@ async def create_book(
         cover_image_url=cover_image_url,
         cover_image_base64=cover_image_base64
     )
-    db.add(db_book)
-    db.commit()
-    db.refresh(db_book)
+    try:
+        db.add(db_book)
+        db.commit()
+        db.refresh(db_book)
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar livro no banco: {e}")
     print(f"Book created: {db_book.id} - {db_book.title}")
     return db_book
 
@@ -193,9 +200,17 @@ async def update_book(
         # Save to Base64
         encoded = base64.b64encode(content).decode("utf-8")
         mime_type = cover_file.content_type or "image/jpeg"
+        db_book.cover_image_base64 = f"data:{mime_type};base64,{encoded}"
 
-    db.commit()
-    db.refresh(db_book)
+    try:
+        db.commit()
+        db.refresh(db_book)
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar livro no banco: {e}")
     return db_book
 
 @router.delete("/{book_id}")
