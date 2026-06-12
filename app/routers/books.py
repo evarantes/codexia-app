@@ -25,27 +25,55 @@ def get_safe_filename(original_filename: str) -> str:
     extension = Path(original_filename).suffix
     return f"{uuid.uuid4()}{extension}"
 
+def _parse_price(value) -> float:
+    if value is None:
+        raise HTTPException(status_code=422, detail="Preço é obrigatório.")
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        raise HTTPException(status_code=422, detail="Preço é obrigatório.")
+    s = s.replace("R$", "").replace(" ", "").replace("\u00a0", "")
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"Preço inválido: {value}")
+
 @router.post("/")
 async def create_book(
     title: str = Form(...),
     author: str = Form(...),
     synopsis: str = Form(...),
-    price: float = Form(...),
+    price: str = Form(...),
     payment_link: str = Form("http://link_padrao"),
     file: UploadFile = File(None),
     cover_file: UploadFile = File(None),
     db: Session = Depends(get_db)
 ):
+    price_value = _parse_price(price)
     file_path = None
     if file:
         upload_dir = "app/static/books"
-        os.makedirs(upload_dir, exist_ok=True)
+        try:
+            os.makedirs(upload_dir, exist_ok=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao preparar diretório de upload do livro: {e}")
         safe_filename = get_safe_filename(file.filename)
         file_location = os.path.join(upload_dir, safe_filename)
         
         content = await file.read()
-        with open(file_location, "wb") as buffer:
-            buffer.write(content)
+        try:
+            with open(file_location, "wb") as buffer:
+                buffer.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao salvar arquivo do livro no servidor: {e}")
         
         # Caminho relativo para acesso via web
         file_path = f"/static/books/{safe_filename}"
@@ -54,15 +82,21 @@ async def create_book(
     cover_image_base64 = None
     if cover_file:
         cover_dir = "app/static/covers"
-        os.makedirs(cover_dir, exist_ok=True)
+        try:
+            os.makedirs(cover_dir, exist_ok=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao preparar diretório de upload da capa: {e}")
         safe_covername = get_safe_filename(cover_file.filename)
         cover_location = os.path.join(cover_dir, safe_covername)
         
         content = await cover_file.read()
         
         # Save to disk
-        with open(cover_location, "wb") as buffer:
-            buffer.write(content)
+        try:
+            with open(cover_location, "wb") as buffer:
+                buffer.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao salvar capa no servidor: {e}")
         cover_image_url = f"/static/covers/{safe_covername}"
         
         # Save to Base64
@@ -76,7 +110,7 @@ async def create_book(
         title=title,
         author=author,
         synopsis=synopsis,
-        price=price,
+        price=price_value,
         payment_link=payment_link,
         file_path=file_path,
         cover_image_url=cover_image_url,
@@ -105,7 +139,7 @@ async def update_book(
     title: str = Form(...),
     author: str = Form(...),
     synopsis: str = Form(...),
-    price: float = Form(...),
+    price: str = Form(...),
     payment_link: str = Form("http://link_padrao"),
     file: UploadFile = File(None),
     cover_file: UploadFile = File(None),
@@ -118,36 +152,47 @@ async def update_book(
     db_book.title = title
     db_book.author = author
     db_book.synopsis = synopsis
-    db_book.price = price
+    db_book.price = _parse_price(price)
     db_book.payment_link = payment_link
 
     if file:
         upload_dir = "app/static/books"
-        os.makedirs(upload_dir, exist_ok=True)
+        try:
+            os.makedirs(upload_dir, exist_ok=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao preparar diretório de upload do livro: {e}")
         safe_filename = get_safe_filename(file.filename)
         file_location = os.path.join(upload_dir, safe_filename)
         
         content = await file.read()
-        with open(file_location, "wb") as buffer:
-            buffer.write(content)
+        try:
+            with open(file_location, "wb") as buffer:
+                buffer.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao salvar arquivo do livro no servidor: {e}")
         db_book.file_path = f"/static/books/{safe_filename}"
 
     if cover_file:
         cover_dir = "app/static/covers"
-        os.makedirs(cover_dir, exist_ok=True)
+        try:
+            os.makedirs(cover_dir, exist_ok=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao preparar diretório de upload da capa: {e}")
         safe_covername = get_safe_filename(cover_file.filename)
         cover_location = os.path.join(cover_dir, safe_covername)
         
         content = await cover_file.read()
         
-        with open(cover_location, "wb") as buffer:
-            buffer.write(content)
+        try:
+            with open(cover_location, "wb") as buffer:
+                buffer.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao salvar capa no servidor: {e}")
         db_book.cover_image_url = f"/static/covers/{safe_covername}"
         
         # Save to Base64
         encoded = base64.b64encode(content).decode("utf-8")
         mime_type = cover_file.content_type or "image/jpeg"
-        db_book.cover_image_base64 = f"data:{mime_type};base64,{encoded}"
 
     db.commit()
     db.refresh(db_book)

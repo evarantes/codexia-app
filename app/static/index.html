@@ -4843,7 +4843,10 @@
                         formData.append('title', this.newBook.title);
                         formData.append('author', this.newBook.author);
                         formData.append('synopsis', this.newBook.synopsis);
-                        formData.append('price', this.newBook.price);
+                        let priceRaw = (this.newBook && this.newBook.price !== undefined && this.newBook.price !== null) ? String(this.newBook.price) : '';
+                        priceRaw = priceRaw.trim();
+                        if (priceRaw) priceRaw = priceRaw.replace(/\s+/g, '').replace('R$', '').replace(',', '.');
+                        formData.append('price', priceRaw);
                         formData.append('payment_link', this.newBook.payment_link);
                         
                         if (this.newBook.file) {
@@ -4875,7 +4878,8 @@
                             this.newBook = { title: '', author: '', synopsis: '', price: 0.0, payment_link: 'http://link_padrao', file: null, cover_file: null };
                             this.fetchBooks();
                         } else {
-                            alert("Erro ao salvar livro");
+                            const err = await res.json().catch(() => ({}));
+                            alert((err && (err.detail || err.message)) || "Erro ao salvar livro");
                         }
                     } catch (e) {
                         alert("Erro ao salvar livro: " + e);
