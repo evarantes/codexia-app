@@ -4883,7 +4883,18 @@
                                 if (!v) return '';
                                 if (typeof v === 'string') return v;
                                 if (Array.isArray(v)) {
-                                    const parts = v.map(it => (it && (it.msg || it.message)) ? String(it.msg || it.message) : JSON.stringify(it));
+                                    const parts = v.map(it => {
+                                        try {
+                                            if (!it) return '';
+                                            const msg = (it.msg || it.message) ? String(it.msg || it.message) : '';
+                                            const loc = Array.isArray(it.loc) ? it.loc.filter(Boolean).map(x => String(x)).join('.') : '';
+                                            if (loc && msg) return `${loc}: ${msg}`;
+                                            if (msg) return msg;
+                                            return JSON.stringify(it);
+                                        } catch (e) {
+                                            return String(it);
+                                        }
+                                    });
                                     return parts.filter(Boolean).join(' | ');
                                 }
                                 if (typeof v === 'object') {

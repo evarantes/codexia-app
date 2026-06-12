@@ -71,7 +71,7 @@ def _resolve_book_file_path(url_path: str) -> str:
 async def create_book(
     title: str = Form(...),
     author: str = Form(...),
-    synopsis: str = Form(...),
+    synopsis: str = Form(""),
     price: str = Form(...),
     payment_link: str = Form("http://link_padrao"),
     file: UploadFile = File(None),
@@ -166,7 +166,7 @@ async def update_book(
     book_id: int,
     title: str = Form(...),
     author: str = Form(...),
-    synopsis: str = Form(...),
+    synopsis: str = Form(""),
     price: str = Form(...),
     payment_link: str = Form("http://link_padrao"),
     file: UploadFile = File(None),
