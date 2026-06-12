@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -91,8 +92,69 @@ def _build_kdp_config(source: Any = None) -> Dict[str, Any]:
     return cfg
 
 
+def _debug_report(hypothesis_id: str, location: str, msg: str, data: Optional[Dict[str, Any]] = None):
+    # #region debug-point E:report
+    try:
+        env_path = Path(".dbg") / "kdp-password-debug.env"
+        url = "http://127.0.0.1:7777/event"
+        session_id = "kdp-password-debug"
+        if env_path.exists():
+            content = env_path.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                if line.startswith("DEBUG_SERVER_URL="):
+                    url = line.split("=", 1)[1].strip() or url
+                elif line.startswith("DEBUG_SESSION_ID="):
+                    session_id = line.split("=", 1)[1].strip() or session_id
+        payload = {
+            "sessionId": session_id,
+            "runId": "pre-fix",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "msg": f"[DEBUG] {msg}",
+            "data": data or {},
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=0.8).read()
+    except Exception:
+        pass
+    # #endregion
+
+
+def _debug_probe(
+    out_dir: Optional[Path],
+    file_name: str,
+    hypothesis_id: str,
+    location: str,
+    msg: str,
+    data: Optional[Dict[str, Any]] = None,
+):
+    payload = {
+        "hypothesis_id": hypothesis_id,
+        "location": location,
+        "msg": msg,
+        "data": data or {},
+        "ts": datetime.utcnow().isoformat(),
+    }
+    if out_dir is not None:
+        try:
+            _write_json(out_dir / file_name, payload)
+        except Exception:
+            pass
+    _debug_report(hypothesis_id, location, msg, data)
+
+
 def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
     page.goto(cfg["login_url"], wait_until="domcontentloaded")
+    # #region debug-point E:login-entry
+    _debug_probe(out_dir, "debug_E_login_entry.json", "E", "distribution_automation.py:_login_kdp:goto", "Entered KDP login", {
+        "url": getattr(page, "url", ""),
+        "title": page.title() if hasattr(page, "title") else "",
+    })
+    # #endregion
     if out_dir is not None:
         _safe_capture(page, out_dir, "01_login")
     _guard_against_challenge(page)
@@ -131,6 +193,17 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
         "input[name='email']",
         "input[name='username']",
     ])
+    # #region debug-point A:after-email
+    _debug_probe(out_dir, "debug_A_after_email.json", "A", "distribution_automation.py:_login_kdp:after_email", "Email field filled", {
+        "url": getattr(page, "url", ""),
+        "title": page.title() if hasattr(page, "title") else "",
+        "password_matches": {candidate: _locator_count(page, candidate) for candidate in [
+            KDP_DEFAULTS["password_selector"],
+            "input#ap_password",
+            "input[type='password']",
+        ]},
+    })
+    # #endregion
     password_candidates = [
         KDP_DEFAULTS["password_selector"],
         "input#ap_password",
@@ -146,6 +219,13 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
             "text=/continuar|continue|próximo|next/i",
         ])
         if continue_sel:
+            # #region debug-point D:continue-click
+            _debug_probe(out_dir, "debug_D_before_continue.json", "D", "distribution_automation.py:_login_kdp:before_continue", "About to click continue", {
+                "continue_selector": continue_sel,
+                "url": getattr(page, "url", ""),
+                "title": page.title() if hasattr(page, "title") else "",
+            })
+            # #endregion
             try:
                 page.click(continue_sel)
                 page.wait_for_load_state("domcontentloaded")
@@ -153,8 +233,29 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
                 pass
             if out_dir is not None:
                 _safe_capture(page, out_dir, "01d_after_email_continue")
+            # #region debug-point B:after-continue
+            _debug_probe(out_dir, "debug_B_after_continue.json", "B", "distribution_automation.py:_login_kdp:after_continue", "Continue click finished", {
+                "url": getattr(page, "url", ""),
+                "title": page.title() if hasattr(page, "title") else "",
+                "password_matches": {candidate: _locator_count(page, candidate) for candidate in password_candidates},
+                "continue_matches": {candidate: _locator_count(page, candidate) for candidate in [
+                    "input#continue",
+                    "button#continue",
+                    "input[name='continue']",
+                    "button[name='continue']",
+                    "text=/continuar|continue|próximo|next/i",
+                ]},
+            })
+            # #endregion
             _guard_against_challenge(page)
 
+    # #region debug-point C:before-password
+    _debug_probe(out_dir, "debug_C_before_password.json", "C", "distribution_automation.py:_login_kdp:before_password", "Before filling password", {
+        "url": getattr(page, "url", ""),
+        "title": page.title() if hasattr(page, "title") else "",
+        "password_matches": {candidate: _locator_count(page, candidate) for candidate in password_candidates},
+    })
+    # #endregion
     _fill_with_autofix(page, cfg, "password", cfg["password"], [
         KDP_DEFAULTS["password_selector"],
         "input#ap_password",
