@@ -95,9 +95,55 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
     page.goto(cfg["login_url"], wait_until="domcontentloaded")
     if out_dir is not None:
         _safe_capture(page, out_dir, "01_login")
-    page.fill(cfg["selectors"]["email"], cfg["email"])
-    page.fill(cfg["selectors"]["password"], cfg["password"])
-    page.click(cfg["selectors"]["submit"])
+    _guard_against_challenge(page)
+
+    email_sel = str(cfg.get("selectors", {}).get("email") or "").strip()
+    if _locator_count(page, email_sel) == 0:
+        try:
+            page.click("text=/entrar|fazer login|sign in|login/i")
+            page.wait_for_load_state("domcontentloaded")
+        except Exception:
+            pass
+        if out_dir is not None:
+            _safe_capture(page, out_dir, "01b_after_signin_click")
+        _guard_against_challenge(page)
+
+    if _locator_count(page, email_sel) == 0:
+        try:
+            page.goto(cfg["bookshelf_url"], wait_until="domcontentloaded")
+        except Exception:
+            pass
+        if out_dir is not None:
+            _safe_capture(page, out_dir, "01c_bookshelf_redirect")
+        _guard_against_challenge(page)
+
+    if _locator_count(page, email_sel) == 0:
+        raise DistributionAutomationError(
+            "Não encontrei o formulário de login da Amazon (campo de e-mail). "
+            "A Amazon pode ter mudado a tela, bloqueado o acesso (captcha/2FA) ou exigido verificação. "
+            f"URL atual: {getattr(page, 'url', '')}"
+        )
+
+    _fill_with_autofix(page, cfg, "email", cfg["email"], [
+        KDP_DEFAULTS["email_selector"],
+        "input#ap_email",
+        "input[type='email']",
+        "input[name='email']",
+        "input[name='username']",
+    ])
+    _fill_with_autofix(page, cfg, "password", cfg["password"], [
+        KDP_DEFAULTS["password_selector"],
+        "input#ap_password",
+        "input[type='password']",
+    ])
+    _click_with_autofix(page, cfg, "submit", [
+        KDP_DEFAULTS["submit_selector"],
+        "input#signInSubmit",
+        "button#signInSubmit",
+        "button[type='submit']",
+        "input[type='submit']",
+        "text=/entrar|sign in|continuar|continue/i",
+    ])
     try:
         page.wait_for_load_state("networkidle")
     except Exception:
@@ -128,7 +174,25 @@ def _guard_against_challenge(page: Any):
         html = (page.content() or "").lower()
     except Exception:
         return
-    for token in ["captcha", "robô", "robot", "two-step", "verification", "verificação", "otp", "one-time", "challenge"]:
+    for token in [
+        "captcha",
+        "robô",
+        "robot",
+        "two-step",
+        "2-step",
+        "verification",
+        "verificação",
+        "otp",
+        "one-time",
+        "challenge",
+        "auth-mfa",
+        "mfa",
+        "approve sign-in",
+        "unusual activity",
+        "atividade incomum",
+        "enter the characters you see",
+        "digite os caracteres",
+    ]:
         if token in html:
             raise DistributionAutomationError("A Amazon exibiu um desafio (captcha/2FA). Para publicar automaticamente, desative 2FA nesta conta ou use um fluxo sem desafio.")
 
@@ -171,6 +235,7 @@ def _click_with_autofix(page: Any, cfg: Dict[str, Any], key: str, candidates: li
 
 def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = True) -> Dict[str, Any]:
     cfg = _build_kdp_config(settings_obj)
+    out_dir = _log_dir(f"kdp_test_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
@@ -181,7 +246,7 @@ def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = T
         page = context.new_page()
         page.set_default_timeout(int(cfg["timeout_ms"]))
         try:
-            _login_kdp(page, cfg)
+            _login_kdp(page, cfg, out_dir)
             page.goto(cfg["bookshelf_url"], wait_until="domcontentloaded")
             try:
                 page.wait_for_load_state("networkidle")
@@ -194,9 +259,16 @@ def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = T
                 "message": "Conexão com Amazon KDP realizada com sucesso." if ok else "Login realizado, mas a página da biblioteca não foi confirmada automaticamente.",
                 "page_title": title,
                 "bookshelf_url": cfg["bookshelf_url"],
+                "logs_url": f"/generated_assets/distribution_logs/{out_dir.name}/",
             }
         except Exception as e:
-            raise DistributionAutomationError(str(e))
+            try:
+                _safe_capture(page, out_dir, "99_error")
+            except Exception:
+                pass
+            raise DistributionAutomationError(
+                f"{str(e)} | Logs: /generated_assets/distribution_logs/{out_dir.name}/"
+            )
         finally:
             try:
                 context.close()
