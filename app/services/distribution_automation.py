@@ -528,6 +528,7 @@ def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = T
 
 def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = True) -> Dict[str, Any]:
     cfg = _build_kdp_config(settings_obj)
+    out_dir = _log_dir(f"kdp_sync_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
@@ -538,12 +539,13 @@ def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = Tr
         page = context.new_page()
         page.set_default_timeout(int(cfg["timeout_ms"]))
         try:
-            _login_kdp(page, cfg)
+            _login_kdp(page, cfg, out_dir)
             page.goto(cfg["bookshelf_url"], wait_until="domcontentloaded")
             try:
                 page.wait_for_load_state("networkidle")
             except Exception:
                 pass
+            _safe_capture(page, out_dir, "10_bookshelf")
             items = page.evaluate(
                 """
                 () => {
@@ -619,13 +621,21 @@ def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = Tr
                 }
                 """
             )
+            _write_json(out_dir / "bookshelf_items.json", {"count": len(items or []), "items": items or []})
             return {
                 "status": "ok",
                 "count": len(items or []),
                 "items": items or [],
+                "logs_url": f"/generated_assets/distribution_logs/{out_dir.name}/",
             }
         except Exception as e:
-            raise DistributionAutomationError(str(e))
+            try:
+                _safe_capture(page, out_dir, "99_error")
+            except Exception:
+                pass
+            raise DistributionAutomationError(
+                f"{str(e)} | Logs: /generated_assets/distribution_logs/{out_dir.name}/"
+            )
         finally:
             try:
                 context.close()

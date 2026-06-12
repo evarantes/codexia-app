@@ -6828,7 +6828,8 @@
                         const imported = Number(data.imported || 0);
                         const updated = Number(data.updated || 0);
                         const count = Number(data.count || 0);
-                        this.amazonKdpSyncResult = `Sincronizacao concluida: ${count} item(ns) lidos, ${imported} importado(s) e ${updated} atualizado(s).`;
+                        const logsText = data.logs_url ? ` Logs: ${data.logs_url}` : '';
+                        this.amazonKdpSyncResult = `Sincronizacao concluida: ${count} item(ns) lidos, ${imported} importado(s) e ${updated} atualizado(s).${logsText}`;
                         await this.fetchBooks();
                     } catch (e) {
                         this.amazonKdpSyncResult = 'Erro ao sincronizar KDP: ' + (e.message || e);

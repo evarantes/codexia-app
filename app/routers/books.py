@@ -639,6 +639,7 @@ def sync_books_from_amazon_kdp(
         "imported": imported,
         "updated": updated,
         "items": items,
+        "logs_url": payload.get("logs_url"),
     }
 
 
