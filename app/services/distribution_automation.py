@@ -178,11 +178,11 @@ def _guard_against_challenge(page: Any):
     challenge_url_tokens = [
         "/ap/cvf/",
         "/ap/mfa",
-        "/ap/signin",
         "/ap/cnep",
         "/errors/validatecaptcha",
         "auth-mfa",
-        "approval",
+        "transactionapproval",
+        "/ap/challenge",
     ]
     if any(token in url for token in challenge_url_tokens):
         raise DistributionAutomationError(
