@@ -131,6 +131,30 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
         "input[name='email']",
         "input[name='username']",
     ])
+    password_candidates = [
+        KDP_DEFAULTS["password_selector"],
+        "input#ap_password",
+        "input[type='password']",
+    ]
+    password_sel = _pick_selector(page, password_candidates)
+    if not password_sel:
+        continue_sel = _pick_selector(page, [
+            "input#continue",
+            "button#continue",
+            "input[name='continue']",
+            "button[name='continue']",
+            "text=/continuar|continue|próximo|next/i",
+        ])
+        if continue_sel:
+            try:
+                page.click(continue_sel)
+                page.wait_for_load_state("domcontentloaded")
+            except Exception:
+                pass
+            if out_dir is not None:
+                _safe_capture(page, out_dir, "01d_after_email_continue")
+            _guard_against_challenge(page)
+
     _fill_with_autofix(page, cfg, "password", cfg["password"], [
         KDP_DEFAULTS["password_selector"],
         "input#ap_password",
