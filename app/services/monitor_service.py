@@ -1,11 +1,12 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.services.video_processing import process_scheduled_video
 from app.database import SessionLocal, SQLALCHEMY_DATABASE_URL
-from app.models import ChannelReport, ScheduledVideo, CommunityComment, SystemNotification, ChannelInsight
+from app.models import ChannelReport, ScheduledVideo, CommunityComment, SystemNotification, ChannelInsight, VideoTask
 import datetime
 import logging
 import json
 import os
+import shutil
 import sys
 import multiprocessing
 import requests
@@ -29,6 +30,7 @@ class MonitorService:
         self.upload_job = None
         self.comments_job = None
         self.insights_job = None
+        self.housekeeping_job = None
 
     def start(self):
         if not self.job:
@@ -81,6 +83,15 @@ class MonitorService:
                 minutes=10,
                 max_instances=1,
                 next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
+            )
+
+            self.housekeeping_job = self.scheduler.add_job(
+                self.run_housekeeping,
+                "cron",
+                hour=4,
+                minute=20,
+                max_instances=1,
+                next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=4),
             )
             
             self.scheduler.start()
@@ -200,6 +211,116 @@ class MonitorService:
             logger.error(f"Erro na verificação de integridade: {e}")
         finally:
             db.close()
+
+    def run_housekeeping(self):
+        enabled = (os.getenv("CODEXIA_HOUSEKEEPING_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
+        if not enabled:
+            return
+
+        try:
+            retention_days = int((os.getenv("CODEXIA_HOUSEKEEPING_RETENTION_DAYS") or "").strip() or "7")
+        except Exception:
+            retention_days = 7
+        retention_days = max(1, min(365, retention_days))
+
+        try:
+            task_retention_days = int((os.getenv("CODEXIA_TASK_RETENTION_DAYS") or "").strip() or "30")
+        except Exception:
+            task_retention_days = 30
+        task_retention_days = max(7, min(365, task_retention_days))
+
+        now = datetime.datetime.utcnow()
+        cutoff = now - datetime.timedelta(days=retention_days)
+        dirs = [
+            os.path.join("app", "static", "temp_uploads"),
+            os.path.join("app", "static", "generated"),
+            os.path.join("app", "static", "tmp"),
+        ]
+        if os.path.isdir("/data"):
+            dirs.extend([
+                os.path.join("/data", "tmp"),
+                os.path.join("/data", "media", "tmp"),
+                os.path.join("/data", "media", "cache"),
+            ])
+
+        removed_files = 0
+        removed_bytes = 0
+        for base in dirs:
+            if not base or not os.path.isdir(base):
+                continue
+            for root, _, files in os.walk(base):
+                for name in files:
+                    path = os.path.join(root, name)
+                    try:
+                        st = os.stat(path)
+                        mtime = datetime.datetime.utcfromtimestamp(st.st_mtime)
+                        if mtime <= cutoff:
+                            removed_bytes += int(st.st_size or 0)
+                            os.remove(path)
+                            removed_files += 1
+                    except Exception:
+                        continue
+
+        try:
+            tasks_cutoff = now - datetime.timedelta(days=task_retention_days)
+            db = SessionLocal()
+            try:
+                q = (
+                    db.query(VideoTask)
+                    .filter(VideoTask.updated_at < tasks_cutoff)
+                    .filter(VideoTask.status.in_(["completed", "failed", "cancelled"]))
+                )
+                deleted = q.delete(synchronize_session=False)
+                if deleted:
+                    db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+        try:
+            warn_pct = int((os.getenv("CODEXIA_DISK_WARN_PCT") or "").strip() or "90")
+        except Exception:
+            warn_pct = 90
+        warn_pct = max(50, min(99, warn_pct))
+
+        try:
+            du = shutil.disk_usage("/")
+            used_pct = int(round((du.used / max(1, du.total)) * 100))
+            if used_pct >= warn_pct:
+                db = SessionLocal()
+                try:
+                    last = (
+                        db.query(SystemNotification)
+                        .filter(SystemNotification.kind == "disk_space")
+                        .order_by(SystemNotification.created_at.desc())
+                        .first()
+                    )
+                    should_create = True
+                    if last and last.created_at and (datetime.datetime.utcnow() - last.created_at) < datetime.timedelta(hours=12):
+                        should_create = False
+                    if should_create:
+                        msg = f"Disco do servidor está em {used_pct}% de uso. Faça limpeza de imagens/cache do Docker no servidor (Coolify) para evitar erro 500."
+                        db.add(SystemNotification(kind="disk_space", title="Espaço em disco baixo", message=msg))
+                        db.commit()
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    db.close()
+        except Exception:
+            pass
+
+        if removed_files:
+            mb = removed_bytes / (1024 * 1024)
+            logger.info(f"Housekeeping: removidos {removed_files} arquivos antigos (~{mb:.1f}MB) de diretórios temporários.")
 
     def stop(self):
         if self.scheduler.running:

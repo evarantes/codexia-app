@@ -686,6 +686,29 @@ def publish_book_kdp(
         except Exception:
             price = ""
     headless = bool(request.headless)
+    settings_snapshot = None
+    if settings:
+        settings_snapshot = {
+            "amazon_kdp_email": getattr(settings, "amazon_kdp_email", None),
+            "amazon_kdp_password": getattr(settings, "amazon_kdp_password", None),
+            "amazon_kdp_login_url": getattr(settings, "amazon_kdp_login_url", None),
+            "amazon_kdp_bookshelf_url": getattr(settings, "amazon_kdp_bookshelf_url", None),
+            "amazon_kdp_timeout_ms": getattr(settings, "amazon_kdp_timeout_ms", None),
+            "amazon_kdp_email_selector": getattr(settings, "amazon_kdp_email_selector", None),
+            "amazon_kdp_password_selector": getattr(settings, "amazon_kdp_password_selector", None),
+            "amazon_kdp_submit_selector": getattr(settings, "amazon_kdp_submit_selector", None),
+            "amazon_kdp_new_ebook_url": getattr(settings, "amazon_kdp_new_ebook_url", None),
+            "amazon_kdp_new_ebook_button_selector": getattr(settings, "amazon_kdp_new_ebook_button_selector", None),
+            "amazon_kdp_title_selector": getattr(settings, "amazon_kdp_title_selector", None),
+            "amazon_kdp_subtitle_selector": getattr(settings, "amazon_kdp_subtitle_selector", None),
+            "amazon_kdp_author_selector": getattr(settings, "amazon_kdp_author_selector", None),
+            "amazon_kdp_description_selector": getattr(settings, "amazon_kdp_description_selector", None),
+            "amazon_kdp_keywords_selector": getattr(settings, "amazon_kdp_keywords_selector", None),
+            "amazon_kdp_book_file_input_selector": getattr(settings, "amazon_kdp_book_file_input_selector", None),
+            "amazon_kdp_cover_file_input_selector": getattr(settings, "amazon_kdp_cover_file_input_selector", None),
+            "amazon_kdp_price_selector": getattr(settings, "amazon_kdp_price_selector", None),
+            "amazon_kdp_publish_selector": getattr(settings, "amazon_kdp_publish_selector", None),
+        }
 
     def _run():
         dbx = SessionLocal()
@@ -746,7 +769,7 @@ def publish_book_kdp(
                 keywords=keywords,
                 price=(price or None),
                 headless=headless,
-                settings_obj=settings,
+                settings_obj=settings_snapshot,
             )
 
             try:
