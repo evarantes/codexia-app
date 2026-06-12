@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.database import get_db
 from app.database import SessionLocal
-from app.models import Book, User
+from app.models import Book, User, Settings
 from pydantic import BaseModel
 import shutil
 import os
@@ -46,6 +47,25 @@ def _parse_price(value) -> float:
         return float(s)
     except Exception:
         raise HTTPException(status_code=422, detail=f"Preço inválido: {value}")
+
+def _parse_price_text_or_none(value) -> float | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    s = s.replace("USD", "").replace("BRL", "").replace("R$", "").replace("$", "").replace(" ", "")
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return None
 
 def _resolve_book_file_path(url_path: str) -> str:
     raw = (url_path or "").strip().split("?", 1)[0].split("#", 1)[0]
@@ -124,6 +144,11 @@ def _serialize_book(book: Book) -> dict:
         "amazon_task_id": book.amazon_task_id,
         "amazon_last_error": amazon_error,
         "amazon_updated_at": book.amazon_updated_at.isoformat() if book.amazon_updated_at else None,
+        "amazon_asin": getattr(book, "amazon_asin", None),
+        "amazon_product_url": getattr(book, "amazon_product_url", None),
+        "amazon_listing_status": getattr(book, "amazon_listing_status", None),
+        "amazon_format": getattr(book, "amazon_format", None),
+        "amazon_last_synced_at": (book.amazon_last_synced_at.isoformat() if getattr(book, "amazon_last_synced_at", None) else None),
     }
 
 def _store_book_file_content(content: bytes, original_name: str, content_type: str | None) -> tuple[str, str]:
@@ -535,6 +560,88 @@ def _ensure_pdf_for_book(book: Book, out_path: str) -> str:
         return ""
 
 
+@router.post("/amazon/kdp/sync")
+def sync_books_from_amazon_kdp(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    settings = db.query(Settings).order_by(Settings.id.desc()).first()
+    try:
+        from app.services.distribution_automation import sync_kdp_bookshelf_via_browser
+        payload = sync_kdp_bookshelf_via_browser(settings)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    now = datetime.utcnow()
+    imported = 0
+    updated = 0
+    items = payload.get("items") or []
+    for item in items:
+        asin = str(item.get("asin") or "").strip()
+        title = str(item.get("title") or "").strip() or "Livro Amazon"
+        author = str(item.get("author") or "").strip() or "Autor"
+        product_url = str(item.get("product_url") or "").strip() or None
+        listing_status = str(item.get("listing_status") or "").strip() or None
+        book_format = str(item.get("format") or "").strip() or None
+        price_value = _parse_price_text_or_none(item.get("price_text"))
+
+        book = None
+        if asin:
+            book = db.query(Book).filter(Book.amazon_asin == asin).first()
+        if not book:
+            book = (
+                db.query(Book)
+                .filter(
+                    or_(Book.user_id == user.id, Book.user_id.is_(None)),
+                    Book.title == title,
+                    Book.author == author,
+                )
+                .first()
+            )
+        if not book:
+            book = Book(
+                user_id=user.id,
+                title=title,
+                author=author,
+                synopsis="",
+                price=price_value,
+                payment_link=None,
+            )
+            db.add(book)
+            imported += 1
+        else:
+            updated += 1
+
+        if not book.user_id:
+            book.user_id = user.id
+        if not (book.title or "").strip():
+            book.title = title
+        if not (book.author or "").strip():
+            book.author = author
+        if getattr(book, "price", None) in (None, 0) and price_value is not None:
+            book.price = price_value
+        book.amazon_asin = asin or getattr(book, "amazon_asin", None)
+        book.amazon_product_url = product_url or getattr(book, "amazon_product_url", None)
+        book.amazon_listing_status = listing_status or getattr(book, "amazon_listing_status", None)
+        book.amazon_format = book_format or getattr(book, "amazon_format", None)
+        book.amazon_last_synced_at = now
+        if listing_status:
+            ls = listing_status.lower()
+            if "venda" in ls or "published" in ls or "live" in ls:
+                book.status_amazon = "published"
+            elif "rascunho" in ls or "draft" in ls:
+                book.status_amazon = "draft"
+
+    db.commit()
+    return {
+        "success": True,
+        "count": len(items),
+        "imported": imported,
+        "updated": updated,
+        "items": items,
+    }
+
+
 @router.post("/{book_id}/publish/kdp")
 def publish_book_kdp(
     book_id: int,
@@ -543,6 +650,7 @@ def publish_book_kdp(
     db: Session = Depends(get_db),
 ):
     book = db.query(Book).filter(Book.id == int(book_id)).first()
+    settings = db.query(Settings).order_by(Settings.id.desc()).first()
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
     if book.user_id and book.user_id != user.id and not getattr(user, "is_admin", False):
@@ -638,6 +746,7 @@ def publish_book_kdp(
                 keywords=keywords,
                 price=(price or None),
                 headless=headless,
+                settings_obj=settings,
             )
 
             try:

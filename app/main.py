@@ -78,6 +78,22 @@ def run_migrations(engine):
                     with engine.connect() as conn:
                         conn.execute(text("ALTER TABLE settings ADD COLUMN youtube_auto_thanks_cooldown_hours INTEGER"))
                         conn.commit()
+                for col in [
+                    "amazon_kdp_email", "amazon_kdp_password", "amazon_kdp_login_url", "amazon_kdp_bookshelf_url",
+                    "amazon_kdp_email_selector", "amazon_kdp_password_selector", "amazon_kdp_submit_selector",
+                    "amazon_kdp_new_ebook_url", "amazon_kdp_new_ebook_button_selector", "amazon_kdp_title_selector",
+                    "amazon_kdp_subtitle_selector", "amazon_kdp_author_selector", "amazon_kdp_description_selector",
+                    "amazon_kdp_keywords_selector", "amazon_kdp_book_file_input_selector",
+                    "amazon_kdp_cover_file_input_selector", "amazon_kdp_price_selector", "amazon_kdp_publish_selector"
+                ]:
+                    if col not in columns:
+                        with engine.connect() as conn:
+                            conn.execute(text(f"ALTER TABLE settings ADD COLUMN {col} TEXT"))
+                            conn.commit()
+                if "amazon_kdp_timeout_ms" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN amazon_kdp_timeout_ms INTEGER"))
+                        conn.commit()
             except Exception as e:
                 print(f"Failed to migrate settings table: {e}")
 
@@ -145,6 +161,15 @@ def run_migrations(engine):
                 if "amazon_updated_at" not in columns:
                     with engine.connect() as conn:
                         conn.execute(text(f"ALTER TABLE books ADD COLUMN amazon_updated_at {datetime_type}"))
+                        conn.commit()
+                for col in ["amazon_asin", "amazon_product_url", "amazon_listing_status", "amazon_format"]:
+                    if col not in columns:
+                        with engine.connect() as conn:
+                            conn.execute(text(f"ALTER TABLE books ADD COLUMN {col} TEXT"))
+                            conn.commit()
+                if "amazon_last_synced_at" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text(f"ALTER TABLE books ADD COLUMN amazon_last_synced_at {datetime_type}"))
                         conn.commit()
             except Exception as e:
                 print(f"Failed to migrate books table: {e}")

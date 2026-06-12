@@ -43,6 +43,25 @@ class SettingsUpdate(BaseModel):
     hotmart_client_id: Optional[str] = None
     hotmart_client_secret: Optional[str] = None
     hotmart_basic: Optional[str] = None
+    amazon_kdp_email: Optional[str] = None
+    amazon_kdp_password: Optional[str] = None
+    amazon_kdp_login_url: Optional[str] = None
+    amazon_kdp_bookshelf_url: Optional[str] = None
+    amazon_kdp_timeout_ms: Optional[int] = None
+    amazon_kdp_email_selector: Optional[str] = None
+    amazon_kdp_password_selector: Optional[str] = None
+    amazon_kdp_submit_selector: Optional[str] = None
+    amazon_kdp_new_ebook_url: Optional[str] = None
+    amazon_kdp_new_ebook_button_selector: Optional[str] = None
+    amazon_kdp_title_selector: Optional[str] = None
+    amazon_kdp_subtitle_selector: Optional[str] = None
+    amazon_kdp_author_selector: Optional[str] = None
+    amazon_kdp_description_selector: Optional[str] = None
+    amazon_kdp_keywords_selector: Optional[str] = None
+    amazon_kdp_book_file_input_selector: Optional[str] = None
+    amazon_kdp_cover_file_input_selector: Optional[str] = None
+    amazon_kdp_price_selector: Optional[str] = None
+    amazon_kdp_publish_selector: Optional[str] = None
     suno_api_key: Optional[str] = None
     # Stock Media & TTS
     pexels_api_key: Optional[str] = None
@@ -172,6 +191,34 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
     if hotmart_changed:
         settings.hotmart_access_token = None
         settings.hotmart_token_expires_at = None
+    if settings_update.amazon_kdp_email is not None:
+        v = str(settings_update.amazon_kdp_email).strip()
+        settings.amazon_kdp_email = v or None
+    if settings_update.amazon_kdp_password is not None:
+        v = str(settings_update.amazon_kdp_password)
+        settings.amazon_kdp_password = v.strip() or None
+    if settings_update.amazon_kdp_login_url is not None:
+        v = str(settings_update.amazon_kdp_login_url).strip()
+        settings.amazon_kdp_login_url = v or None
+    if settings_update.amazon_kdp_bookshelf_url is not None:
+        v = str(settings_update.amazon_kdp_bookshelf_url).strip()
+        settings.amazon_kdp_bookshelf_url = v or None
+    if settings_update.amazon_kdp_timeout_ms is not None:
+        try:
+            settings.amazon_kdp_timeout_ms = int(settings_update.amazon_kdp_timeout_ms)
+        except Exception:
+            pass
+    for field in [
+        "amazon_kdp_email_selector", "amazon_kdp_password_selector", "amazon_kdp_submit_selector",
+        "amazon_kdp_new_ebook_url", "amazon_kdp_new_ebook_button_selector", "amazon_kdp_title_selector",
+        "amazon_kdp_subtitle_selector", "amazon_kdp_author_selector", "amazon_kdp_description_selector",
+        "amazon_kdp_keywords_selector", "amazon_kdp_book_file_input_selector",
+        "amazon_kdp_cover_file_input_selector", "amazon_kdp_price_selector", "amazon_kdp_publish_selector"
+    ]:
+        val = getattr(settings_update, field, None)
+        if val is not None:
+            clean = str(val).strip()
+            setattr(settings, field, clean or None)
     if settings_update.suno_api_key is not None:
         settings.suno_api_key = settings_update.suno_api_key
 
@@ -203,6 +250,16 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
     db.commit()
     db.refresh(settings)
     return settings
+
+@router.post("/amazon/kdp/test")
+def test_amazon_kdp_connection(db: Session = Depends(get_db)):
+    settings = db.query(Settings).order_by(Settings.id.desc()).first()
+    try:
+        from app.services.distribution_automation import test_kdp_connection_via_browser
+        result = test_kdp_connection_via_browser(settings)
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/elevenlabs/voice")
 def get_elevenlabs_voice(db: Session = Depends(get_db)):

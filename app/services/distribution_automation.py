@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -14,6 +15,228 @@ def _get_env(name: str, required: bool = True) -> str:
     if required and not v:
         raise DistributionAutomationError(f"Env var ausente: {name}")
     return v
+
+
+KDP_DEFAULTS = {
+    "login_url": "https://kdp.amazon.com/",
+    "bookshelf_url": "https://kdp.amazon.com/pt_BR/bookshelf",
+    "timeout_ms": "60000",
+    "email_selector": "input#ap_email, input[type='email'], input[name='email']",
+    "password_selector": "input#ap_password, input[type='password']",
+    "submit_selector": "input#signInSubmit, button#signInSubmit, input[type='submit'], button[type='submit']",
+    "new_ebook_button_selector": "text=Criar novo livro ou série",
+}
+
+
+def _source_value(source: Any, attr_name: str) -> Any:
+    if source is None:
+        return None
+    if isinstance(source, dict):
+        return source.get(attr_name)
+    return getattr(source, attr_name, None)
+
+
+def _value_from_source_or_env(
+    source: Any,
+    attr_name: str,
+    env_name: str,
+    *,
+    default: Optional[str] = None,
+    required: bool = False,
+) -> str:
+    raw = _source_value(source, attr_name)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = os.getenv(env_name)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = default
+    value = str(raw or "").strip()
+    if required and not value:
+        raise DistributionAutomationError(f"Configuração ausente: {attr_name} / {env_name}")
+    return value
+
+
+def _build_kdp_config(source: Any = None) -> Dict[str, Any]:
+    cfg = {
+        "login_url": _value_from_source_or_env(source, "amazon_kdp_login_url", "KDP_LOGIN_URL", default=KDP_DEFAULTS["login_url"]),
+        "bookshelf_url": _value_from_source_or_env(source, "amazon_kdp_bookshelf_url", "KDP_BOOKSHELF_URL", default=KDP_DEFAULTS["bookshelf_url"]),
+        "email": _value_from_source_or_env(source, "amazon_kdp_email", "KDP_EMAIL", required=True),
+        "password": _value_from_source_or_env(source, "amazon_kdp_password", "KDP_PASSWORD", required=True),
+        "timeout_ms": int(_value_from_source_or_env(source, "amazon_kdp_timeout_ms", "KDP_TIMEOUT_MS", default=KDP_DEFAULTS["timeout_ms"]) or "60000"),
+        "selectors": {
+            "email": _value_from_source_or_env(source, "amazon_kdp_email_selector", "KDP_EMAIL_SELECTOR", default=KDP_DEFAULTS["email_selector"], required=True),
+            "password": _value_from_source_or_env(source, "amazon_kdp_password_selector", "KDP_PASSWORD_SELECTOR", default=KDP_DEFAULTS["password_selector"], required=True),
+            "submit": _value_from_source_or_env(source, "amazon_kdp_submit_selector", "KDP_SUBMIT_SELECTOR", default=KDP_DEFAULTS["submit_selector"], required=True),
+            "new_ebook_url": _value_from_source_or_env(source, "amazon_kdp_new_ebook_url", "KDP_NEW_EBOOK_URL"),
+            "new_ebook_button": _value_from_source_or_env(source, "amazon_kdp_new_ebook_button_selector", "KDP_NEW_EBOOK_BUTTON_SELECTOR", default=KDP_DEFAULTS["new_ebook_button_selector"]),
+            "title": _value_from_source_or_env(source, "amazon_kdp_title_selector", "KDP_TITLE_SELECTOR"),
+            "subtitle": _value_from_source_or_env(source, "amazon_kdp_subtitle_selector", "KDP_SUBTITLE_SELECTOR"),
+            "author": _value_from_source_or_env(source, "amazon_kdp_author_selector", "KDP_AUTHOR_SELECTOR"),
+            "description": _value_from_source_or_env(source, "amazon_kdp_description_selector", "KDP_DESCRIPTION_SELECTOR"),
+            "keywords": _value_from_source_or_env(source, "amazon_kdp_keywords_selector", "KDP_KEYWORDS_SELECTOR"),
+            "book_file": _value_from_source_or_env(source, "amazon_kdp_book_file_input_selector", "KDP_BOOK_FILE_INPUT_SELECTOR"),
+            "cover_file": _value_from_source_or_env(source, "amazon_kdp_cover_file_input_selector", "KDP_COVER_FILE_INPUT_SELECTOR"),
+            "price": _value_from_source_or_env(source, "amazon_kdp_price_selector", "KDP_PRICE_SELECTOR"),
+            "publish": _value_from_source_or_env(source, "amazon_kdp_publish_selector", "KDP_PUBLISH_SELECTOR"),
+        },
+    }
+    return cfg
+
+
+def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
+    page.goto(cfg["login_url"], wait_until="domcontentloaded")
+    if out_dir is not None:
+        _safe_capture(page, out_dir, "01_login")
+    page.fill(cfg["selectors"]["email"], cfg["email"])
+    page.fill(cfg["selectors"]["password"], cfg["password"])
+    page.click(cfg["selectors"]["submit"])
+    try:
+        page.wait_for_load_state("networkidle")
+    except Exception:
+        pass
+    if out_dir is not None:
+        _safe_capture(page, out_dir, "02_after_login")
+
+
+def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = True) -> Dict[str, Any]:
+    cfg = _build_kdp_config(settings_obj)
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        raise DistributionAutomationError(f"Playwright não disponível: {e}")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless)
+        context = browser.new_context()
+        page = context.new_page()
+        page.set_default_timeout(int(cfg["timeout_ms"]))
+        try:
+            _login_kdp(page, cfg)
+            page.goto(cfg["bookshelf_url"], wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("networkidle")
+            except Exception:
+                pass
+            title = page.title()
+            content = (page.content() or "").lower()
+            ok = ("biblioteca" in content) or ("bookshelf" in content)
+            return {
+                "message": "Conexão com Amazon KDP realizada com sucesso." if ok else "Login realizado, mas a página da biblioteca não foi confirmada automaticamente.",
+                "page_title": title,
+                "bookshelf_url": cfg["bookshelf_url"],
+            }
+        except Exception as e:
+            raise DistributionAutomationError(str(e))
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+
+def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = True) -> Dict[str, Any]:
+    cfg = _build_kdp_config(settings_obj)
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        raise DistributionAutomationError(f"Playwright não disponível: {e}")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless)
+        context = browser.new_context()
+        page = context.new_page()
+        page.set_default_timeout(int(cfg["timeout_ms"]))
+        try:
+            _login_kdp(page, cfg)
+            page.goto(cfg["bookshelf_url"], wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("networkidle")
+            except Exception:
+                pass
+            items = page.evaluate(
+                """
+                () => {
+                  const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
+                  const moneyRe = /(?:R\\$|\\$|€|£)\\s?[\\d.,]+(?:\\s?[A-Z]{3})?/i;
+                  const statusTokens = ['À venda', 'Rascunho', 'Draft', 'Live', 'Published', 'Publicado'];
+                  const nodes = Array.from(document.querySelectorAll('div, section, article, li, tr'))
+                    .filter((el) => {
+                      const text = clean(el.innerText);
+                      if (!/ASIN:\\s*[A-Z0-9]{6,}/i.test(text)) return false;
+                      const childWithAsin = Array.from(el.querySelectorAll('div, section, article, li, tr'))
+                        .some((child) => child !== el && /ASIN:\\s*[A-Z0-9]{6,}/i.test(clean(child.innerText)));
+                      return !childWithAsin && text.length < 4000;
+                    });
+                  const items = [];
+                  for (const el of nodes) {
+                    const text = clean(el.innerText);
+                    const lines = (el.innerText || '').split(/\\n+/).map(clean).filter(Boolean);
+                    let title = '';
+                    let author = '';
+                    let format = '';
+                    let listingStatus = '';
+                    let priceText = '';
+                    for (const line of lines) {
+                      if (!title && !/^Por\\b/i.test(line) && !/^ASIN:/i.test(line) && !/Visualizar na Amazon|View on Amazon|KDP Select|Enviado em|Última modificação|Last modified/i.test(line) && !moneyRe.test(line) && !statusTokens.some((s) => line.includes(s))) {
+                        title = line;
+                        continue;
+                      }
+                      if (!author && /^Por\\b/i.test(line)) {
+                        author = line.replace(/^Por\\.?[:]?\\s*/i, '').trim();
+                        continue;
+                      }
+                      if (!format && /(eBook Kindle|capa comum|Capa dura|Hardcover|Paperback)/i.test(line)) {
+                        format = line;
+                      }
+                      if (!listingStatus && statusTokens.some((s) => line.includes(s))) {
+                        listingStatus = line;
+                      }
+                      if (!priceText && moneyRe.test(line)) {
+                        const m = line.match(moneyRe);
+                        priceText = m ? m[0] : '';
+                      }
+                    }
+                    const asinMatch = text.match(/ASIN:\\s*([A-Z0-9]{6,})/i);
+                    const asin = asinMatch ? asinMatch[1] : '';
+                    const productLinkEl = Array.from(el.querySelectorAll('a')).find((a) => /Visualizar na Amazon|View on Amazon/i.test(clean(a.innerText || '')) || /amazon\\./i.test(a.href || ''));
+                    items.push({
+                      title,
+                      author,
+                      asin,
+                      format,
+                      listing_status: listingStatus,
+                      price_text: priceText,
+                      product_url: productLinkEl ? productLinkEl.href : '',
+                      raw_text: text.slice(0, 2000),
+                    });
+                  }
+                  const seen = new Set();
+                  return items.filter((item) => {
+                    const key = item.asin || `${item.title}::${item.author}`;
+                    if (!key || seen.has(key)) return false;
+                    seen.add(key);
+                    return Boolean(item.title || item.asin);
+                  });
+                }
+                """
+            )
+            return {
+                "status": "ok",
+                "count": len(items or []),
+                "items": items or [],
+            }
+        except Exception as e:
+            raise DistributionAutomationError(str(e))
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 
 def _log_dir(task_id: str) -> Path:
@@ -199,6 +422,7 @@ def publish_ebook_kdp_via_browser(
     keywords: str,
     price: Optional[str] = None,
     headless: bool = True,
+    settings_obj: Any = None,
 ) -> Dict[str, Any]:
     out_dir = _log_dir(task_id)
     _write_json(out_dir / "input.json", {
@@ -214,27 +438,11 @@ def publish_ebook_kdp_via_browser(
         "started_at": datetime.utcnow().isoformat(),
     })
 
-    login_url = (_get_env("KDP_LOGIN_URL", required=False) or "https://kdp.amazon.com/").strip()
-    email = _get_env("KDP_EMAIL")
-    password = _get_env("KDP_PASSWORD")
-    timeout_ms = int((_get_env("KDP_TIMEOUT_MS", required=False) or "60000").strip() or "60000")
-
-    selectors = {
-        "email": _get_env("KDP_EMAIL_SELECTOR"),
-        "password": _get_env("KDP_PASSWORD_SELECTOR"),
-        "submit": _get_env("KDP_SUBMIT_SELECTOR"),
-        "new_ebook_url": _get_env("KDP_NEW_EBOOK_URL", required=False),
-        "new_ebook_button": _get_env("KDP_NEW_EBOOK_BUTTON_SELECTOR", required=False),
-        "title": _get_env("KDP_TITLE_SELECTOR"),
-        "subtitle": _get_env("KDP_SUBTITLE_SELECTOR", required=False),
-        "author": _get_env("KDP_AUTHOR_SELECTOR"),
-        "description": _get_env("KDP_DESCRIPTION_SELECTOR"),
-        "keywords": _get_env("KDP_KEYWORDS_SELECTOR"),
-        "book_file": _get_env("KDP_BOOK_FILE_INPUT_SELECTOR"),
-        "cover_file": _get_env("KDP_COVER_FILE_INPUT_SELECTOR"),
-        "price": _get_env("KDP_PRICE_SELECTOR", required=False),
-        "publish": _get_env("KDP_PUBLISH_SELECTOR"),
-    }
+    cfg = _build_kdp_config(settings_obj)
+    selectors = cfg["selectors"]
+    for required_key in ["title", "author", "description", "keywords", "book_file", "cover_file", "publish"]:
+        if not str(selectors.get(required_key) or "").strip():
+            raise DistributionAutomationError(f"Configuração ausente na Amazon KDP: selector '{required_key}'.")
     _write_json(out_dir / "selectors.json", selectors)
 
     if not os.path.isfile(book_file_path):
@@ -251,18 +459,9 @@ def publish_ebook_kdp_via_browser(
         browser = p.chromium.launch(headless=headless)
         context = browser.new_context()
         page = context.new_page()
-        page.set_default_timeout(timeout_ms)
+        page.set_default_timeout(int(cfg["timeout_ms"]))
         try:
-            page.goto(login_url, wait_until="domcontentloaded")
-            _safe_capture(page, out_dir, "01_login")
-            page.fill(selectors["email"], email)
-            page.fill(selectors["password"], password)
-            page.click(selectors["submit"])
-            try:
-                page.wait_for_load_state("networkidle")
-            except Exception:
-                pass
-            _safe_capture(page, out_dir, "02_after_login")
+            _login_kdp(page, cfg, out_dir)
 
             if selectors["new_ebook_url"]:
                 page.goto(selectors["new_ebook_url"], wait_until="domcontentloaded")

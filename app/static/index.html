@@ -284,6 +284,17 @@
                             <div v-if="book.file_original_name" class="text-[11px] text-gray-500 mt-2 truncate" :title="String(book.file_original_name)">
                                 {{ book.file_original_name }}
                             </div>
+                            <div v-if="book.amazon_asin || book.amazon_product_url || book.amazon_listing_status" class="mt-2 text-[11px] text-gray-600 space-y-1">
+                                <div v-if="book.amazon_listing_status">
+                                    <span class="font-semibold">KDP:</span> {{ book.amazon_listing_status }}
+                                </div>
+                                <div v-if="book.amazon_asin">
+                                    <span class="font-semibold">ASIN:</span> {{ book.amazon_asin }}
+                                </div>
+                                <div v-if="book.amazon_product_url">
+                                    <a :href="book.amazon_product_url" target="_blank" class="text-indigo-600 hover:text-indigo-800 font-semibold">Ver na Amazon</a>
+                                </div>
+                            </div>
                             <div class="mt-3 flex items-center justify-between gap-2">
                                 <div class="text-xs text-gray-700">
                                     <span class="font-semibold">Amazon:</span>
@@ -3274,6 +3285,85 @@
                     </div>
                     
                     <div class="border-t pt-4 mt-6 mb-4">
+                        <h3 class="text-lg font-bold mb-4">Amazon KDP</h3>
+                        <p class="text-xs text-gray-500 mb-3">Configure aqui sua conta da Amazon KDP para publicar e sincronizar os livros já existentes da sua biblioteca.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label class="block font-bold mb-2">E-mail da KDP</label>
+                                <input v-model="settings.amazon_kdp_email" class="w-full border p-2 rounded" placeholder="seuemail@dominio.com">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Senha da KDP</label>
+                                <input v-model="settings.amazon_kdp_password" type="password" class="w-full border p-2 rounded" placeholder="Sua senha da Amazon/KDP">
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                            <div>
+                                <label class="block font-bold mb-2">URL de login</label>
+                                <input v-model="settings.amazon_kdp_login_url" class="w-full border p-2 rounded" placeholder="https://kdp.amazon.com/">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">URL da biblioteca</label>
+                                <input v-model="settings.amazon_kdp_bookshelf_url" class="w-full border p-2 rounded" placeholder="https://kdp.amazon.com/pt_BR/bookshelf">
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <label class="block font-bold mb-2">Timeout da automação (ms)</label>
+                            <input v-model.number="settings.amazon_kdp_timeout_ms" type="number" min="10000" step="1000" class="w-full border p-2 rounded" placeholder="60000">
+                        </div>
+                        <div class="mt-4 bg-gray-50 border rounded p-4">
+                            <div class="font-bold mb-2">Seletores básicos de login</div>
+                            <div class="grid grid-cols-1 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Selector do e-mail</label>
+                                    <input v-model="settings.amazon_kdp_email_selector" class="w-full border p-2 rounded bg-white" placeholder="input#ap_email, input[type='email']">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Selector da senha</label>
+                                    <input v-model="settings.amazon_kdp_password_selector" class="w-full border p-2 rounded bg-white" placeholder="input#ap_password, input[type='password']">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1 text-sm">Selector do botão Entrar</label>
+                                    <input v-model="settings.amazon_kdp_submit_selector" class="w-full border p-2 rounded bg-white" placeholder="input#signInSubmit, button#signInSubmit">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-4 bg-gray-50 border rounded p-4">
+                            <div class="font-bold mb-2">Seletores de publicação do eBook</div>
+                            <p class="text-xs text-gray-500 mb-3">Se a Amazon mudar a tela, você pode ajustar os campos abaixo sem precisar mexer no servidor.</p>
+                            <div class="grid grid-cols-1 gap-3">
+                                <input v-model="settings.amazon_kdp_new_ebook_url" class="w-full border p-2 rounded bg-white" placeholder="URL direta para criar novo eBook (opcional)">
+                                <input v-model="settings.amazon_kdp_new_ebook_button_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do botão 'Criar novo livro ou série'">
+                                <input v-model="settings.amazon_kdp_title_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do título">
+                                <input v-model="settings.amazon_kdp_subtitle_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do subtítulo (opcional)">
+                                <input v-model="settings.amazon_kdp_author_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do autor">
+                                <input v-model="settings.amazon_kdp_description_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector da descrição">
+                                <input v-model="settings.amazon_kdp_keywords_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector das palavras-chave">
+                                <input v-model="settings.amazon_kdp_book_file_input_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do arquivo do livro">
+                                <input v-model="settings.amazon_kdp_cover_file_input_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do arquivo da capa">
+                                <input v-model="settings.amazon_kdp_price_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do preço (opcional)">
+                                <input v-model="settings.amazon_kdp_publish_selector" class="w-full border p-2 rounded bg-white" placeholder="Selector do botão publicar">
+                            </div>
+                        </div>
+                        <div class="mt-4 flex flex-wrap gap-2">
+                            <button @click="testAmazonKdpConnection" :disabled="amazonKdpTesting" class="bg-amber-600 text-white px-4 py-2 rounded hover:bg-amber-700 text-sm">
+                                <i v-if="amazonKdpTesting" class="fas fa-spinner fa-spin mr-2"></i>
+                                <span v-else><i class="fas fa-plug mr-2"></i> Testar conexão KDP</span>
+                            </button>
+                            <button @click="syncAmazonKdpBooks" :disabled="amazonKdpSyncing" class="bg-gray-900 text-white px-4 py-2 rounded hover:bg-black text-sm">
+                                <i v-if="amazonKdpSyncing" class="fas fa-spinner fa-spin mr-2"></i>
+                                <span v-else><i class="fas fa-rotate mr-2"></i> Puxar livros já publicados</span>
+                            </button>
+                        </div>
+                        <p v-if="amazonKdpTestResult" :class="amazonKdpTestResult.success ? 'text-green-600 mt-2 text-sm' : 'text-red-600 mt-2 text-sm'">
+                            {{ amazonKdpTestResult.message }}
+                        </p>
+                        <p v-if="amazonKdpSyncResult" class="text-sm text-indigo-700 mt-2">
+                            {{ amazonKdpSyncResult }}
+                        </p>
+                    </div>
+
+                    <div class="border-t pt-4 mt-6 mb-4">
                         <h3 class="text-lg font-bold mb-4">Integração Hotmart</h3>
                         <div class="mb-4">
                             <label class="block font-bold mb-2">Hotmart Client ID</label>
@@ -4011,6 +4101,25 @@
                         telegram_bot_token: '',
                         telegram_allowed_chat_ids: '',
                         mercadopago_access_token: '',
+                        amazon_kdp_email: '',
+                        amazon_kdp_password: '',
+                        amazon_kdp_login_url: 'https://kdp.amazon.com/',
+                        amazon_kdp_bookshelf_url: 'https://kdp.amazon.com/pt_BR/bookshelf',
+                        amazon_kdp_timeout_ms: 60000,
+                        amazon_kdp_email_selector: "input#ap_email, input[type='email'], input[name='email']",
+                        amazon_kdp_password_selector: "input#ap_password, input[type='password']",
+                        amazon_kdp_submit_selector: "input#signInSubmit, button#signInSubmit, input[type='submit'], button[type='submit']",
+                        amazon_kdp_new_ebook_url: '',
+                        amazon_kdp_new_ebook_button_selector: 'text=Criar novo livro ou série',
+                        amazon_kdp_title_selector: '',
+                        amazon_kdp_subtitle_selector: '',
+                        amazon_kdp_author_selector: '',
+                        amazon_kdp_description_selector: '',
+                        amazon_kdp_keywords_selector: '',
+                        amazon_kdp_book_file_input_selector: '',
+                        amazon_kdp_cover_file_input_selector: '',
+                        amazon_kdp_price_selector: '',
+                        amazon_kdp_publish_selector: '',
                         hotmart_client_id: '',
                         hotmart_client_secret: '',
                         hotmart_basic: '',
@@ -4024,6 +4133,10 @@
                     },
                     elevenlabsSampleFile: null,
                     elevenlabsVoiceCreating: false,
+                    amazonKdpTesting: false,
+                    amazonKdpSyncing: false,
+                    amazonKdpTestResult: null,
+                    amazonKdpSyncResult: '',
                     
                     // Hotmart Auto
                     hotmartConnected: false,
@@ -6652,6 +6765,42 @@
                     } catch (e) { 
                         alert('Erro ao salvar'); 
                         return false;
+                    }
+                },
+                async testAmazonKdpConnection() {
+                    this.amazonKdpTesting = true;
+                    this.amazonKdpTestResult = null;
+                    try {
+                        const ok = await this.saveSettings();
+                        if (!ok) return;
+                        const res = await this.authFetch('/settings/amazon/kdp/test', { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+                        this.amazonKdpTestResult = { success: true, message: data.message || 'Conexão com Amazon KDP realizada com sucesso.' };
+                    } catch (e) {
+                        this.amazonKdpTestResult = { success: false, message: 'Erro ao testar Amazon KDP: ' + (e.message || e) };
+                    } finally {
+                        this.amazonKdpTesting = false;
+                    }
+                },
+                async syncAmazonKdpBooks() {
+                    this.amazonKdpSyncing = true;
+                    this.amazonKdpSyncResult = '';
+                    try {
+                        const ok = await this.saveSettings();
+                        if (!ok) return;
+                        const res = await this.authFetch('/books/amazon/kdp/sync', { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+                        const imported = Number(data.imported || 0);
+                        const updated = Number(data.updated || 0);
+                        const count = Number(data.count || 0);
+                        this.amazonKdpSyncResult = `Sincronizacao concluida: ${count} item(ns) lidos, ${imported} importado(s) e ${updated} atualizado(s).`;
+                        await this.fetchBooks();
+                    } catch (e) {
+                        this.amazonKdpSyncResult = 'Erro ao sincronizar KDP: ' + (e.message || e);
+                    } finally {
+                        this.amazonKdpSyncing = false;
                     }
                 },
                 onElevenlabsSampleSelected(event) {
