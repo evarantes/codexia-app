@@ -214,12 +214,12 @@ def _guard_against_challenge(page: Any):
         "senha de uso único",
         "código de verificação",
     ]
+    try:
         html = (page.content() or "").lower()
     except Exception:
         return
-    for token in [
     for token in text_tokens:
-            raise DistributionAutomationError("A Amazon exibiu um desafio (captcha/2FA). Para publicar automaticamente, desative 2FA nesta conta ou use um fluxo sem desafio.")
+        if token in html:
             raise DistributionAutomationError(
                 f"A Amazon exibiu uma validação adicional de segurança. URL atual: {getattr(page, 'url', '')}"
             )
