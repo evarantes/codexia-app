@@ -202,6 +202,11 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
             "input#ap_password",
             "input[type='password']",
         ]},
+        "visible_password_matches": {candidate: _visible_locator_count(page, candidate) for candidate in [
+            KDP_DEFAULTS["password_selector"],
+            "input#ap_password",
+            "input[type='password']",
+        ]},
     })
     # #endregion
     password_candidates = [
@@ -209,7 +214,7 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
         "input#ap_password",
         "input[type='password']",
     ]
-    password_sel = _pick_selector(page, password_candidates)
+    password_sel = _pick_visible_selector(page, password_candidates)
     if not password_sel:
         continue_sel = _pick_selector(page, [
             "input#continue",
@@ -238,6 +243,7 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
                 "url": getattr(page, "url", ""),
                 "title": page.title() if hasattr(page, "title") else "",
                 "password_matches": {candidate: _locator_count(page, candidate) for candidate in password_candidates},
+                "visible_password_matches": {candidate: _visible_locator_count(page, candidate) for candidate in password_candidates},
                 "continue_matches": {candidate: _locator_count(page, candidate) for candidate in [
                     "input#continue",
                     "button#continue",
@@ -254,6 +260,7 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
         "url": getattr(page, "url", ""),
         "title": page.title() if hasattr(page, "title") else "",
         "password_matches": {candidate: _locator_count(page, candidate) for candidate in password_candidates},
+        "visible_password_matches": {candidate: _visible_locator_count(page, candidate) for candidate in password_candidates},
     })
     # #endregion
     _fill_with_autofix(page, cfg, "password", cfg["password"], [
@@ -290,6 +297,32 @@ def _pick_selector(page: Any, selectors: list[str]) -> str:
         if not ss:
             continue
         if _locator_count(page, ss) > 0:
+            return ss
+    return ""
+
+
+def _visible_locator_count(page: Any, selector: str) -> int:
+    try:
+        locator = page.locator(selector)
+        count = int(locator.count())
+    except Exception:
+        return 0
+    visible = 0
+    for idx in range(count):
+        try:
+            if locator.nth(idx).is_visible():
+                visible += 1
+        except Exception:
+            continue
+    return visible
+
+
+def _pick_visible_selector(page: Any, selectors: list[str]) -> str:
+    for s in selectors:
+        ss = str(s or "").strip()
+        if not ss:
+            continue
+        if _visible_locator_count(page, ss) > 0:
             return ss
     return ""
 

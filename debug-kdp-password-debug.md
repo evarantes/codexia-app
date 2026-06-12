@@ -14,7 +14,7 @@
 | ID | Hypothesis | Likelihood | Effort | Evidence |
 |----|------------|------------|--------|----------|
 | A | O campo de senha usa seletor diferente do esperado. | High | Low | Rejected |
-| B | A pagina ainda nao terminou de carregar quando a senha e preenchida. | High | Low | Inconclusive |
+| B | A pagina ainda nao terminou de carregar quando a senha e preenchida. | High | Low | Confirmed |
 | C | A Amazon esta usando um fluxo alternativo apos o e-mail. | Med | Med | Rejected |
 | D | O botao `Continuar` encontrado nao e o correto nessa tela. | Med | Low | Inconclusive |
 | E | Faltam evidencias de URL/titulo/seletores no ponto da falha. | High | Low | Confirmed |
@@ -26,4 +26,4 @@
 - Evidence from runtime error after `fefc8ce`: selector resolved to password inputs, but Playwright reported the element was not visible and referenced the hidden autofill hint field.
 
 ## Verification Conclusion
-- Root cause narrowed to the fill strategy selecting hidden password inputs instead of the visible editable field.
+- Root cause narrowed to the login branch decision: hidden password inputs in the DOM made the automation skip the `Continuar` step before the visible password field was shown.
