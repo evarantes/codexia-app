@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -20,17 +21,71 @@ def _safe_int(v: Any, default: int) -> int:
         return default
 
 
-def _build_reply_text(template: str, author: Optional[str]) -> str:
+def _pick_verse(comment_text: str, seed: str) -> Tuple[str, str]:
+    low = (comment_text or "").strip().lower()
+    candidates = [
+        ("Salmos 46:1", "Deus é o nosso refúgio e fortaleza, socorro bem presente na angústia."),
+        ("Filipenses 4:6-7", "Não andem ansiosos... e a paz de Deus guardará o coração e a mente em Cristo Jesus."),
+        ("Isaías 41:10", "Não temas, porque eu sou contigo; não te assombres, porque eu sou o teu Deus."),
+        ("Mateus 11:28", "Vinde a mim, todos os que estais cansados e sobrecarregados, e eu vos aliviarei."),
+        ("Romanos 8:28", "Todas as coisas cooperam para o bem daqueles que amam a Deus."),
+        ("Salmos 23:1", "O Senhor é o meu pastor; nada me faltará."),
+        ("Josué 1:9", "Sê forte e corajoso... porque o Senhor teu Deus é contigo por onde quer que andares."),
+        ("Provérbios 3:5-6", "Confia no Senhor de todo o teu coração... e ele endireitará os teus caminhos."),
+        ("1 Pedro 5:7", "Lancem sobre ele toda a vossa ansiedade, porque ele tem cuidado de vós."),
+        ("Romanos 15:13", "O Deus da esperança vos encha de toda alegria e paz na fé."),
+        ("Isaías 40:31", "Os que esperam no Senhor renovam as suas forças."),
+        ("João 3:16", "Porque Deus amou o mundo de tal maneira que deu o seu Filho unigênito..."),
+        ("1 João 1:9", "Se confessarmos os nossos pecados, ele é fiel e justo para nos perdoar."),
+    ]
+
+    thematic: Optional[Tuple[str, str]] = None
+    if any(k in low for k in ["ansied", "ansioso", "preocupa", "afli", "press"]):
+        thematic = ("1 Pedro 5:7", "Lancem sobre ele toda a vossa ansiedade, porque ele tem cuidado de vós.")
+    elif any(k in low for k in ["medo", "temor", "pavor"]):
+        thematic = ("Isaías 41:10", "Não temas, porque eu sou contigo; não te assombres, porque eu sou o teu Deus.")
+    elif any(k in low for k in ["cans", "sobrecar", "esgot", "exaust"]):
+        thematic = ("Mateus 11:28", "Vinde a mim, todos os que estais cansados e sobrecarregados, e eu vos aliviarei.")
+    elif any(k in low for k in ["perd", "pecad", "culpa"]):
+        thematic = ("1 João 1:9", "Se confessarmos os nossos pecados, ele é fiel e justo para nos perdoar.")
+    elif any(k in low for k in ["amor", "amou", "amei"]):
+        thematic = ("João 3:16", "Porque Deus amou o mundo de tal maneira que deu o seu Filho unigênito...")
+    elif any(k in low for k in ["esper", "futuro", "amanhã"]):
+        thematic = ("Romanos 15:13", "O Deus da esperança vos encha de toda alegria e paz na fé.")
+    elif any(k in low for k in ["paz", "calma"]):
+        thematic = ("Filipenses 4:6-7", "Não andem ansiosos... e a paz de Deus guardará o coração e a mente em Cristo Jesus.")
+    elif any(k in low for k in ["força", "forte", "coragem", "coraj"]):
+        thematic = ("Josué 1:9", "Sê forte e corajoso... porque o Senhor teu Deus é contigo por onde quer que andares.")
+
+    if thematic:
+        return thematic
+
+    s = (seed or "").strip() or "seed"
+    idx = int(hashlib.md5(s.encode("utf-8")).hexdigest(), 16) % max(1, len(candidates))
+    return candidates[idx]
+
+
+def _build_reply_text(template: str, author: Optional[str], comment_text: str, seed: str) -> str:
     name = (author or "").strip()
     if not name:
         name = "amigo"
 
     text = (template or "").strip()
     if not text:
-        text = "Obrigado por assistir e comentar! Se ainda não é inscrito, se inscreva no canal e ative o sininho."
+        text = "Obrigado por assistir e comentar, {author}! Se ainda não é inscrito, se inscreva no canal e ative o sininho.\n\n{verse}"
 
-    out = text.replace("{author}", name)
+    verse_ref, verse_txt = _pick_verse(comment_text or "", seed)
+    verse_block = f"Versículo para meditar: {verse_txt} ({verse_ref})"
+
+    out = (
+        text.replace("{author}", name)
+        .replace("{verse}", verse_block)
+        .replace("{verse_ref}", verse_ref)
+        .replace("{verse_text}", verse_txt)
+    )
     out = " ".join(out.split()).strip()
+    if "{verse}" not in (template or "") and "versículo" not in out.lower():
+        out = f"{out}\n\n{verse_block}".strip()
     if len(out) > 900:
         out = out[:900].rstrip()
     return out
@@ -122,7 +177,7 @@ def auto_thank_comments(
                     skipped += 1
                     continue
 
-            reply_text = _build_reply_text(template, author)
+            reply_text = _build_reply_text(template, author, getattr(item, "text", None) or "", cid)
             yt.reply_to_comment(cid, reply_text)
 
             item.status = "replied"
@@ -139,4 +194,3 @@ def auto_thank_comments(
         db.commit()
 
     return {"enabled": enabled, "replied": replied, "skipped": skipped, "errors": errors}
-

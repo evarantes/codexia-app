@@ -3196,8 +3196,8 @@
                         </div>
                         <div class="mt-4">
                             <label class="block font-bold mb-1 text-sm">Modelo da resposta</label>
-                            <textarea v-model="settings.youtube_auto_thanks_template" rows="3" class="w-full border p-2 rounded bg-white" placeholder="Ex: Obrigado por assistir, {author}! Se ainda não é inscrito, se inscreva e ative o sininho."></textarea>
-                            <p class="text-xs text-gray-500 mt-1">Você pode usar {author} no texto.</p>
+                            <textarea v-model="settings.youtube_auto_thanks_template" rows="3" class="w-full border p-2 rounded bg-white" placeholder="Ex: Obrigado por assistir, {author}! Se ainda não é inscrito, se inscreva e ative o sininho.\n\n{verse}"></textarea>
+                            <p class="text-xs text-gray-500 mt-1">Você pode usar {author}, {verse}, {verse_ref} e {verse_text}.</p>
                         </div>
                     </div>
                     <div class="mb-4">
@@ -3988,7 +3988,7 @@
                         youtube_client_secret: '',
                         youtube_refresh_token: '',
                         youtube_auto_thanks_enabled: false,
-                        youtube_auto_thanks_template: '',
+                        youtube_auto_thanks_template: 'Obrigado por assistir e comentar, {author}! Se ainda não é inscrito, se inscreva no canal e ative o sininho.\n\n{verse}',
                         youtube_auto_thanks_max_per_run: 15,
                         youtube_auto_thanks_cooldown_hours: 72,
                         facebook_page_id: '',
