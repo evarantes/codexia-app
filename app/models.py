@@ -160,6 +160,10 @@ class Settings(Base):
     youtube_client_secret = Column(String, nullable=True)
     youtube_refresh_token = Column(String, nullable=True)
     youtube_comments_last_sync_at = Column(DateTime, nullable=True)
+    youtube_auto_thanks_enabled = Column(Boolean, default=False)
+    youtube_auto_thanks_template = Column(Text, nullable=True)
+    youtube_auto_thanks_max_per_run = Column(Integer, default=15)
+    youtube_auto_thanks_cooldown_hours = Column(Integer, default=72)
     # Hotmart Integration
     hotmart_client_id = Column(String, nullable=True)
     hotmart_client_secret = Column(String, nullable=True)

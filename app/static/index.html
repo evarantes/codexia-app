@@ -3176,6 +3176,30 @@
                         <label class="block font-bold mb-2">YouTube Refresh Token</label>
                         <input v-model="settings.youtube_refresh_token" type="password" class="w-full border p-2 rounded">
                     </div>
+                    <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <label class="block font-bold">Agradecer comentários automaticamente</label>
+                                <p class="text-xs text-gray-500 mt-1">O YouTube não permite enviar mensagem para quem apenas assistiu. Aqui o sistema agradece automaticamente quem comentou.</p>
+                            </div>
+                            <input v-model="settings.youtube_auto_thanks_enabled" type="checkbox" class="h-5 w-5">
+                        </div>
+                        <div class="grid grid-cols-2 gap-3 mt-4">
+                            <div>
+                                <label class="block font-bold mb-1 text-sm">Máx. respostas por ciclo</label>
+                                <input v-model.number="settings.youtube_auto_thanks_max_per_run" type="number" min="1" max="200" class="w-full border p-2 rounded bg-white">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 text-sm">Intervalo por autor (horas)</label>
+                                <input v-model.number="settings.youtube_auto_thanks_cooldown_hours" type="number" min="0" max="720" class="w-full border p-2 rounded bg-white">
+                            </div>
+                        </div>
+                        <div class="mt-4">
+                            <label class="block font-bold mb-1 text-sm">Modelo da resposta</label>
+                            <textarea v-model="settings.youtube_auto_thanks_template" rows="3" class="w-full border p-2 rounded bg-white" placeholder="Ex: Obrigado por assistir, {author}! Se ainda não é inscrito, se inscreva e ative o sininho."></textarea>
+                            <p class="text-xs text-gray-500 mt-1">Você pode usar {author} no texto.</p>
+                        </div>
+                    </div>
                     <div class="mb-4">
                         <label class="block font-bold mb-2">Facebook Page ID</label>
                         <input v-model="settings.facebook_page_id" class="w-full border p-2 rounded">
@@ -3963,6 +3987,10 @@
                         youtube_client_id: '',
                         youtube_client_secret: '',
                         youtube_refresh_token: '',
+                        youtube_auto_thanks_enabled: false,
+                        youtube_auto_thanks_template: '',
+                        youtube_auto_thanks_max_per_run: 15,
+                        youtube_auto_thanks_cooldown_hours: 72,
                         facebook_page_id: '',
                         facebook_access_token: '',
                         instagram_user_id: '',

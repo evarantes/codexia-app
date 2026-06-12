@@ -36,6 +36,10 @@ class SettingsUpdate(BaseModel):
     youtube_client_id: Optional[str] = None
     youtube_client_secret: Optional[str] = None
     youtube_refresh_token: Optional[str] = None
+    youtube_auto_thanks_enabled: Optional[bool] = None
+    youtube_auto_thanks_template: Optional[str] = None
+    youtube_auto_thanks_max_per_run: Optional[int] = None
+    youtube_auto_thanks_cooldown_hours: Optional[int] = None
     hotmart_client_id: Optional[str] = None
     hotmart_client_secret: Optional[str] = None
     hotmart_basic: Optional[str] = None
@@ -134,6 +138,21 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         v = str(settings_update.youtube_refresh_token).strip()
         if v:
             settings.youtube_refresh_token = v
+    if settings_update.youtube_auto_thanks_enabled is not None:
+        settings.youtube_auto_thanks_enabled = bool(settings_update.youtube_auto_thanks_enabled)
+    if settings_update.youtube_auto_thanks_template is not None:
+        v = str(settings_update.youtube_auto_thanks_template)
+        settings.youtube_auto_thanks_template = v if v.strip() else None
+    if settings_update.youtube_auto_thanks_max_per_run is not None:
+        try:
+            settings.youtube_auto_thanks_max_per_run = int(settings_update.youtube_auto_thanks_max_per_run)
+        except Exception:
+            pass
+    if settings_update.youtube_auto_thanks_cooldown_hours is not None:
+        try:
+            settings.youtube_auto_thanks_cooldown_hours = int(settings_update.youtube_auto_thanks_cooldown_hours)
+        except Exception:
+            pass
     hotmart_changed = False
     if settings_update.hotmart_client_id is not None:
         v = str(settings_update.hotmart_client_id).strip()

@@ -44,6 +44,7 @@ except Exception:
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, update_task, get_task, is_task_cancel_requested
+from app.services.youtube_auto_responder import auto_thank_comments
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User
@@ -3074,6 +3075,15 @@ def post_community_reply(req: CommunityReplyRequest, db: Session = Depends(get_d
         top.reply_sent_at = datetime.utcnow()
         db.commit()
     return {"status": "sent"}
+
+
+@router.post("/community/auto-thanks/run")
+def run_auto_thanks(
+    limit: Optional[int] = Query(None),
+    backfill: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    return auto_thank_comments(db, backfill=bool(backfill), limit=limit)
 
 @router.post("/generate_video")
 def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):

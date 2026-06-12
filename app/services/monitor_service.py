@@ -527,6 +527,7 @@ class MonitorService:
     def check_new_comments(self):
         from app.services.youtube_service import YouTubeService
         from app.models import Settings
+        from app.services.youtube_auto_responder import auto_thank_comments
 
         db = SessionLocal()
         try:
@@ -661,6 +662,11 @@ class MonitorService:
 
             if new_items or reply_by_owner:
                 db.commit()
+
+            try:
+                auto_thank_comments(db)
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Erro ao verificar comentários: {e}")
         finally:

@@ -62,6 +62,22 @@ def run_migrations(engine):
                     with engine.connect() as conn:
                         conn.execute(text(f"ALTER TABLE settings ADD COLUMN youtube_comments_last_sync_at {datetime_type}"))
                         conn.commit()
+                if "youtube_auto_thanks_enabled" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN youtube_auto_thanks_enabled INTEGER DEFAULT 0"))
+                        conn.commit()
+                if "youtube_auto_thanks_template" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN youtube_auto_thanks_template TEXT"))
+                        conn.commit()
+                if "youtube_auto_thanks_max_per_run" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN youtube_auto_thanks_max_per_run INTEGER"))
+                        conn.commit()
+                if "youtube_auto_thanks_cooldown_hours" not in columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE settings ADD COLUMN youtube_auto_thanks_cooldown_hours INTEGER"))
+                        conn.commit()
             except Exception as e:
                 print(f"Failed to migrate settings table: {e}")
 
