@@ -24,6 +24,7 @@
 - Production-facing snapshots will be saved under `generated_assets/distribution_logs/<task>/debug_*.json`.
 - Evidence from `debug_C_before_password.json`: URL remained on Amazon sign-in, title was `KDP Sign in`, and password selectors matched (`input[type='password']`: 1).
 - Evidence from runtime error after `fefc8ce`: selector resolved to password inputs, but Playwright reported the element was not visible and referenced the hidden autofill hint field.
+- User verification: `Testar conexão KDP` passed; remaining issue moved to bookshelf sync returning zero items despite visible books in the KDP UI.
 
 ## Verification Conclusion
 - Root cause narrowed to the login branch decision: hidden password inputs in the DOM made the automation skip the `Continuar` step before the visible password field was shown.

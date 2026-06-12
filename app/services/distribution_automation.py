@@ -550,17 +550,16 @@ def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = Tr
                   const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
                   const moneyRe = /(?:R\\$|\\$|€|£)\\s?[\\d.,]+(?:\\s?[A-Z]{3})?/i;
                   const statusTokens = ['À venda', 'Rascunho', 'Draft', 'Live', 'Published', 'Publicado'];
+                  const bookHintsRe = /ASIN\\s*:?\\s*[A-Z0-9]{6,}|eBook Kindle|capa comum|Capa dura|Hardcover|Paperback|Visualizar na Amazon|View on Amazon|Gerenciar livro|Manage title|Promover e anunciar/i;
                   const nodes = Array.from(document.querySelectorAll('div, section, article, li, tr'))
                     .filter((el) => {
                       const text = clean(el.innerText);
-                      if (!/ASIN:\\s*[A-Z0-9]{6,}/i.test(text)) return false;
-                      const childWithAsin = Array.from(el.querySelectorAll('div, section, article, li, tr'))
-                        .some((child) => child !== el && /ASIN:\\s*[A-Z0-9]{6,}/i.test(clean(child.innerText)));
-                      return !childWithAsin && text.length < 4000;
+                      return text && text.length < 6000 && bookHintsRe.test(text);
                     });
-                  const items = [];
+                  const bestByKey = new Map();
                   for (const el of nodes) {
                     const text = clean(el.innerText);
+                    if (!text) continue;
                     const lines = (el.innerText || '').split(/\\n+/).map(clean).filter(Boolean);
                     let title = '';
                     let author = '';
@@ -568,7 +567,7 @@ def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = Tr
                     let listingStatus = '';
                     let priceText = '';
                     for (const line of lines) {
-                      if (!title && !/^Por\\b/i.test(line) && !/^ASIN:/i.test(line) && !/Visualizar na Amazon|View on Amazon|KDP Select|Enviado em|Última modificação|Last modified/i.test(line) && !moneyRe.test(line) && !statusTokens.some((s) => line.includes(s))) {
+                      if (!title && !/^Por\\b/i.test(line) && !/^ASIN\\s*:/i.test(line) && !/Visualizar na Amazon|View on Amazon|KDP Select|Enviado em|Última modificação|Last modified|Gerenciar livro|Manage title|Promover e anunciar|Continue configuration|Continuar configuração/i.test(line) && !moneyRe.test(line) && !statusTokens.some((s) => line.includes(s))) {
                         title = line;
                         continue;
                       }
@@ -587,10 +586,10 @@ def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = Tr
                         priceText = m ? m[0] : '';
                       }
                     }
-                    const asinMatch = text.match(/ASIN:\\s*([A-Z0-9]{6,})/i);
+                    const asinMatch = text.match(/ASIN\\s*:?\\s*([A-Z0-9]{6,})/i);
                     const asin = asinMatch ? asinMatch[1] : '';
                     const productLinkEl = Array.from(el.querySelectorAll('a')).find((a) => /Visualizar na Amazon|View on Amazon/i.test(clean(a.innerText || '')) || /amazon\\./i.test(a.href || ''));
-                    items.push({
+                    const item = {
                       title,
                       author,
                       asin,
@@ -599,15 +598,24 @@ def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = Tr
                       price_text: priceText,
                       product_url: productLinkEl ? productLinkEl.href : '',
                       raw_text: text.slice(0, 2000),
-                    });
-                  }
-                  const seen = new Set();
-                  return items.filter((item) => {
+                    };
                     const key = item.asin || `${item.title}::${item.author}`;
-                    if (!key || seen.has(key)) return false;
-                    seen.add(key);
-                    return Boolean(item.title || item.asin);
-                  });
+                    if (!key || (!item.title && !item.asin)) continue;
+                    const score = [
+                      item.title ? 3 : 0,
+                      item.asin ? 3 : 0,
+                      item.product_url ? 2 : 0,
+                      item.format ? 1 : 0,
+                      item.listing_status ? 1 : 0,
+                      item.price_text ? 1 : 0,
+                      Math.min(lines.length, 5),
+                    ].reduce((a, b) => a + b, 0);
+                    const prev = bestByKey.get(key);
+                    if (!prev || score > prev.score) {
+                      bestByKey.set(key, { score, item });
+                    }
+                  }
+                  return Array.from(bestByKey.values()).map((entry) => entry.item);
                 }
                 """
             )
