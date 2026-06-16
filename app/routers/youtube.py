@@ -108,6 +108,33 @@ def _rq_workers_online() -> bool:
     except Exception:
         return False
 
+def _is_video_factory_busy() -> bool:
+    if conn:
+        try:
+            lock = conn.lock(FACTORY_LOCK_KEY, timeout=5, blocking_timeout=0)
+            acquired = lock.acquire(blocking=False)
+            if acquired:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+                return False
+            return True
+        except Exception:
+            pass
+    try:
+        lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
+        lock.acquire()
+        try:
+            lock.release()
+        except Exception:
+            pass
+        return False
+    except Timeout:
+        return True
+    except Exception:
+        return False
+
 def _video_task_result_payload(result_obj: Any) -> Dict[str, Any]:
     if not isinstance(result_obj, dict):
         return {}
@@ -287,6 +314,8 @@ def _kick_story_video_task_queue() -> Optional[str]:
         processing = next((r for r in rows if str(r.status or "").lower() == "processing"), None)
         if processing:
             return processing.id
+        if _is_video_factory_busy():
+            return None
         pending = next((r for r in rows if str(r.status or "").lower() == "pending"), None)
         if not pending:
             return None
@@ -3399,11 +3428,13 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
     try:
         rows = _load_story_video_task_rows(db, limit=limit)
         items = [_story_video_task_item_from_row(row, idx + 1) for idx, row in enumerate(rows)]
-        return {
+        payload = {
             "count": len(items),
             "processing_count": len([i for i in items if str(i.get("status") or "").lower() == "processing"]),
             "items": items,
         }
+        payload["factory_busy"] = bool(_is_video_factory_busy())
+        return payload
     finally:
         db.close()
 
@@ -3706,7 +3737,7 @@ def process_video_generation(request: VideoRequest, task_id):
             try:
                 redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
                 if not redis_lock.acquire(blocking=False):
-                    update_task(task_id, status="failed", progress=0, message="Já existe uma geração de vídeo em andamento no servidor.")
+                    update_task(task_id, status="pending", progress=0, message="Servidor ocupado. Aguardando vez na fila de produção...")
                     return
             except Exception:
                 redis_lock = None
@@ -3716,7 +3747,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 file_lock = FileLock(_FACTORY_LOCK_PATH, timeout=0)
                 file_lock.acquire()
             except Timeout:
-                update_task(task_id, status="failed", progress=0, message="Já existe uma geração de vídeo em andamento no servidor.")
+                update_task(task_id, status="pending", progress=0, message="Servidor ocupado. Aguardando vez na fila de produção...")
                 return
             except Exception:
                 file_lock = None

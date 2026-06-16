@@ -1784,7 +1784,10 @@
                                 <span v-else>Atualizar fila</span>
                             </button>
                         </div>
-                        <div v-if="!ytActiveVideoTasks.length" class="text-sm text-gray-500 italic">Nenhuma tarefa de vídeo na fila agora.</div>
+                        <div v-if="!ytActiveVideoTasks.length" class="text-sm text-gray-500 italic">
+                            <span v-if="ytQueueFactoryBusy">Servidor ocupado com outra geração. Assim que finalizar, esta geração vai entrar na fila automaticamente.</span>
+                            <span v-else>Nenhuma tarefa de vídeo na fila agora.</span>
+                        </div>
                         <div v-else class="space-y-2">
                             <div v-for="item in ytActiveVideoTasks" :key="'story-queue-'+item.task_id" class="border rounded p-3 bg-gray-50">
                                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
@@ -3814,6 +3817,7 @@
                     ytActiveVideoTasksLoading: false,
                     ytActiveVideoTasksLastLoadAt: 0,
                     ytActiveVideoTasks: [],
+                    ytQueueFactoryBusy: false,
                     ytStoryTaskPollFails: {},
                     ytStoryAssistLoading: false,
                     ytStoryAssistReport: null,
@@ -4547,6 +4551,7 @@
                         if (!res.ok) return;
                         const items = (data && data.items && Array.isArray(data.items)) ? data.items : [];
                         this.ytActiveVideoTasks = items;
+                        this.ytQueueFactoryBusy = Boolean(data && data.factory_busy);
                         if (!this.ytStoryTaskId && items.length) {
                             const pick = items.find(t => String((t.status || '')).toLowerCase() === 'processing') || items[0];
                             if (pick && pick.task_id) {
