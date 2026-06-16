@@ -141,6 +141,52 @@ def _video_task_result_payload(result_obj: Any) -> Dict[str, Any]:
     payload = result_obj.get("payload")
     return payload if isinstance(payload, dict) else {}
 
+def _video_task_result_obj(row: VideoTask) -> Optional[Dict[str, Any]]:
+    if not row or not row.result_json:
+        return None
+    try:
+        data = json.loads(row.result_json)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+def _video_task_title_from_row(row: VideoTask) -> str:
+    result_obj = _video_task_result_obj(row) or {}
+    payload = _video_task_result_payload(result_obj)
+
+    if _is_story_video_generation_task(result_obj):
+        return _story_video_task_title_from_payload(payload)
+
+    title_hint = str(result_obj.get("title_hint") or "").strip()
+    if title_hint:
+        return title_hint[:120]
+
+    kind = str(result_obj.get("kind") or "").strip().lower()
+    if kind == "music_clip":
+        return "Clipe musical"
+    if kind == "music_shorts":
+        return "Shorts musicais"
+    if kind == "music_distribution":
+        return "Distribuição musical"
+
+    msg = str(getattr(row, "message", "") or "").strip()
+    if msg:
+        return msg[:120]
+    return "Outra atividade do servidor"
+
+def _video_task_source_label(row: VideoTask) -> str:
+    result_obj = _video_task_result_obj(row) or {}
+    if _is_story_video_generation_task(result_obj):
+        return "Fila desta geração"
+    kind = str(result_obj.get("kind") or "").strip().lower()
+    if kind == "music_clip":
+        return "Clipe musical"
+    if kind == "music_shorts":
+        return "Shorts musicais"
+    if kind == "music_distribution":
+        return "Distribuição musical"
+    return "Outra atividade do servidor"
+
 def _is_story_video_generation_task(result_obj: Any) -> bool:
     if not isinstance(result_obj, dict):
         return False
@@ -187,13 +233,9 @@ def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]
     return filtered
 
 def _story_video_task_item_from_row(row: VideoTask, position: int) -> Dict[str, Any]:
-    result_obj = None
-    if row.result_json:
-        try:
-            result_obj = json.loads(row.result_json)
-        except Exception:
-            result_obj = None
+    result_obj = _video_task_result_obj(row) or {}
     payload = _video_task_result_payload(result_obj)
+    is_current = str(row.status or "").lower() == "processing"
     return {
         "task_id": row.id,
         "status": row.status,
@@ -202,12 +244,100 @@ def _story_video_task_item_from_row(row: VideoTask, position: int) -> Dict[str, 
         "created_at": (row.created_at.isoformat() if getattr(row, "created_at", None) else None),
         "updated_at": (row.updated_at.isoformat() if getattr(row, "updated_at", None) else None),
         "position": int(position),
-        "is_current": str(row.status or "").lower() == "processing",
+        "is_current": is_current,
         "title": _story_video_task_title_from_payload(payload),
         "duration": payload.get("duration"),
         "mode": payload.get("mode"),
-        "kind": (result_obj or {}).get("kind") if isinstance(result_obj, dict) else None,
+        "kind": result_obj.get("kind"),
+        "source_type": "video_task",
+        "source_label": "Fila desta geração",
+        "queue_label": "Em execução" if is_current else "Na fila",
+        "can_open": True,
+        "can_cancel": True,
+        "cancel_kind": "task",
     }
+
+def _active_video_task_blocker_item(db: Session, excluded_task_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
+    excluded = {str(v) for v in (excluded_task_ids or set()) if str(v).strip()}
+    rows = (
+        db.query(VideoTask)
+        .filter(VideoTask.status.in_(["pending", "processing"]))
+        .order_by(VideoTask.updated_at.desc().nullslast(), VideoTask.created_at.desc().nullslast())
+        .limit(50)
+        .all()
+    )
+    for row in rows:
+        if str(row.id) in excluded:
+            continue
+        if str(row.status or "").lower() != "processing":
+            continue
+        item = _story_video_task_item_from_row(row, 1)
+        item["title"] = _video_task_title_from_row(row)
+        item["source_label"] = _video_task_source_label(row)
+        item["queue_label"] = "Ocupando o servidor"
+        item["can_open"] = False
+        return item
+    return None
+
+def _active_production_video_blocker_item(db: Session) -> Optional[Dict[str, Any]]:
+    job = (
+        db.query(Job)
+        .join(Video, Video.id == Job.video_id)
+        .filter(Job.status == "processing")
+        .order_by(Job.updated_at.desc().nullslast(), Job.created_at.desc().nullslast(), Job.id.desc())
+        .first()
+    )
+    if not job or not getattr(job, "video", None):
+        return None
+
+    video = job.video
+    normalized_status = _normalize_video_status(video.status)
+    fallback_progress = _progress_from_video_status(normalized_status)
+    try:
+        job_progress = int(job.progress or 0)
+    except Exception:
+        job_progress = 0
+
+    progress = job_progress if job_progress > 0 else max(job_progress, fallback_progress)
+    status_message = _last_log_line(job.logs)
+    if not status_message:
+        step = (job.step or "").strip().lower() or "produção"
+        status_message = f"Etapa atual: {step}."
+
+    duration = None
+    try:
+        if getattr(video, "duration_sec", None):
+            duration = max(1, int(math.ceil(float(video.duration_sec) / 60.0)))
+    except Exception:
+        duration = None
+
+    return {
+        "task_id": None,
+        "status": normalized_status or "PROCESSING",
+        "progress": max(0, min(99, int(progress or 0))),
+        "message": status_message,
+        "created_at": (job.created_at.isoformat() if getattr(job, "created_at", None) else None),
+        "updated_at": (job.updated_at.isoformat() if getattr(job, "updated_at", None) else None),
+        "position": 1,
+        "is_current": True,
+        "title": (video.title or f"Vídeo #{video.id}")[:120],
+        "duration": duration,
+        "mode": "production_queue",
+        "kind": "production_video",
+        "source_type": "production_video",
+        "source_label": "Fila principal de produção",
+        "queue_label": "Ocupando o servidor",
+        "can_open": False,
+        "can_cancel": True,
+        "cancel_kind": "production_video",
+        "production_video_id": int(video.id),
+    }
+
+def _load_factory_blocker_item(db: Session, excluded_task_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
+    item = _active_video_task_blocker_item(db, excluded_task_ids=excluded_task_ids)
+    if item:
+        return item
+    return _active_production_video_blocker_item(db)
 
 def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
@@ -3427,13 +3557,23 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
     db = SessionLocal()
     try:
         rows = _load_story_video_task_rows(db, limit=limit)
-        items = [_story_video_task_item_from_row(row, idx + 1) for idx, row in enumerate(rows)]
+        factory_busy = bool(_is_video_factory_busy())
+        items: List[Dict[str, Any]] = []
+        if factory_busy and not any(str(r.status or "").lower() == "processing" for r in rows):
+            blocker = _load_factory_blocker_item(db, excluded_task_ids={str(r.id) for r in rows})
+            if blocker:
+                items.append(blocker)
+        for row in rows:
+            items.append(_story_video_task_item_from_row(row, len(items) + 1))
+        items = items[: max(1, min(200, int(limit or 20)))]
+        for idx, item in enumerate(items, start=1):
+            item["position"] = idx
         payload = {
             "count": len(items),
-            "processing_count": len([i for i in items if str(i.get("status") or "").lower() == "processing"]),
+            "processing_count": len([i for i in items if bool(i.get("is_current"))]),
             "items": items,
         }
-        payload["factory_busy"] = bool(_is_video_factory_busy())
+        payload["factory_busy"] = factory_busy
         return payload
     finally:
         db.close()

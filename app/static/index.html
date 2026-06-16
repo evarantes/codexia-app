@@ -1789,16 +1789,26 @@
                             <span v-else>Nenhuma tarefa de vídeo na fila agora.</span>
                         </div>
                         <div v-else class="space-y-2">
-                            <div v-for="item in ytActiveVideoTasks" :key="'story-queue-'+item.task_id" class="border rounded p-3 bg-gray-50">
+                            <div v-for="item in ytActiveVideoTasks" :key="'story-queue-'+(item.task_id || item.production_video_id || item.position)" class="border rounded p-3 bg-gray-50">
                                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                                     <div class="min-w-0">
                                         <div class="font-semibold text-gray-800 truncate">
                                             #{{ item.position }} - {{ item.title || 'Vídeo narrado' }}
                                         </div>
                                         <div class="text-xs text-gray-600 mt-1">
-                                            <span class="font-semibold">{{ item.is_current ? 'Em execução' : 'Na fila' }}</span>
+                                            <span class="font-semibold">{{ item.queue_label || (item.is_current ? 'Em execução' : 'Na fila') }}</span>
+                                            <span v-if="item.source_label"> • {{ item.source_label }}</span>
                                             <span v-if="item.duration"> • {{ item.duration }} min</span>
                                             <span v-if="item.created_at"> • {{ formatDate(item.created_at) }}</span>
+                                        </div>
+                                        <div class="mt-2">
+                                            <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                                                <span>Progresso</span>
+                                                <span>{{ Number(item.progress || 0) }}%</span>
+                                            </div>
+                                            <div class="w-full h-2 bg-gray-200 rounded overflow-hidden">
+                                                <div class="h-2 bg-indigo-500" :style="{ width: Math.max(0, Math.min(100, Number(item.progress || 0))) + '%' }"></div>
+                                            </div>
                                         </div>
                                         <div v-if="item.message" class="text-xs text-gray-600 mt-1 truncate" :title="item.message">{{ item.message }}</div>
                                     </div>
@@ -1806,8 +1816,8 @@
                                         <span :class="item.is_current ? 'bg-blue-100 text-blue-800' : 'bg-yellow-100 text-yellow-800'" class="px-2 py-1 rounded text-xs font-bold">
                                             {{ item.status }}
                                         </span>
-                                        <button @click="openStoryTaskFromQueue(item)" class="px-2 py-1 rounded border bg-white hover:bg-gray-100 text-xs">Abrir</button>
-                                        <button @click="cancelQueuedVideoTask(item)" class="px-2 py-1 rounded border bg-red-50 hover:bg-red-100 text-red-700 text-xs">Cancelar</button>
+                                        <button v-if="item.can_open" @click="openStoryTaskFromQueue(item)" class="px-2 py-1 rounded border bg-white hover:bg-gray-100 text-xs">Abrir</button>
+                                        <button v-if="item.can_cancel" @click="cancelQueuedVideoTask(item)" class="px-2 py-1 rounded border bg-red-50 hover:bg-red-100 text-red-700 text-xs">Cancelar</button>
                                     </div>
                                 </div>
                             </div>
@@ -4553,7 +4563,9 @@
                         this.ytActiveVideoTasks = items;
                         this.ytQueueFactoryBusy = Boolean(data && data.factory_busy);
                         if (!this.ytStoryTaskId && items.length) {
-                            const pick = items.find(t => String((t.status || '')).toLowerCase() === 'processing') || items[0];
+                            const pick = items.find(t => t && t.can_open && t.task_id && Boolean(t.is_current))
+                                || items.find(t => t && t.can_open && t.task_id)
+                                || null;
                             if (pick && pick.task_id) {
                                 this.ytStoryTaskId = String(pick.task_id);
                                 try { localStorage.setItem('ytStoryTaskId', String(pick.task_id)); } catch (e) {}
@@ -4580,10 +4592,18 @@
                 async cancelQueuedVideoTask(item) {
                     const it = item || {};
                     const taskId = String(it.task_id || '').trim();
-                    if (!taskId) return;
+                    const cancelKind = String(it.cancel_kind || 'task').trim().toLowerCase();
+                    const productionVideoId = Number(it.production_video_id || 0);
                     if (!confirm(`Cancelar a tarefa da fila #${it.position || '?'}?`)) return;
                     try {
-                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
+                        let res;
+                        if (cancelKind === 'production_video' && productionVideoId > 0) {
+                            res = await this.authFetch(`/youtube/videos/${productionVideoId}/cancel`, { method: 'POST' });
+                        } else if (taskId) {
+                            res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
+                        } else {
+                            throw new Error('Não foi possível identificar a atividade que ocupa o servidor.');
+                        }
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao cancelar tarefa da fila.');
                         if (String(this.ytStoryTaskId || '') === taskId) {
@@ -4592,6 +4612,7 @@
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                         }
                         await this.fetchActiveVideoTasks();
+                        try { this.fetchProductionQueue(); } catch (e) {}
                     } catch (e) {
                         alert(e.message || String(e));
                     }
