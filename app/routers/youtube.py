@@ -43,7 +43,7 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
-from app.services.task_manager import create_task, update_task, get_task, is_task_cancel_requested
+from app.services.task_manager import create_task, update_task, get_task, is_task_cancel_requested, request_cancel_task
 from app.services.youtube_auto_responder import auto_thank_comments
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
@@ -108,6 +108,208 @@ def _rq_workers_online() -> bool:
     except Exception:
         return False
 
+def _video_task_result_payload(result_obj: Any) -> Dict[str, Any]:
+    if not isinstance(result_obj, dict):
+        return {}
+    payload = result_obj.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+def _is_story_video_generation_task(result_obj: Any) -> bool:
+    if not isinstance(result_obj, dict):
+        return False
+    kind = str(result_obj.get("kind") or "").strip().lower()
+    if kind == "youtube_story_video":
+        return True
+    payload = _video_task_result_payload(result_obj)
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode in {"story", "topic"}:
+        return True
+    return False
+
+def _story_video_task_title_from_payload(payload: Dict[str, Any]) -> str:
+    title = str(payload.get("override_title") or payload.get("topic") or "").strip()
+    if title:
+        return title[:120]
+    story_content = str(payload.get("story_content") or "").strip()
+    if story_content:
+        first_line = next((ln.strip() for ln in story_content.splitlines() if ln.strip()), "")
+        if first_line:
+            return first_line[:120]
+    mode = str(payload.get("mode") or "").strip().lower()
+    return "Vídeo narrado" if mode in {"story", "topic"} else "Tarefa de vídeo"
+
+def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]:
+    rows = (
+        db.query(VideoTask)
+        .filter(VideoTask.status.in_(["pending", "processing"]))
+        .order_by(VideoTask.created_at.asc(), VideoTask.id.asc())
+        .limit(max(1, min(200, int(limit or 50))))
+        .all()
+    )
+    filtered: List[VideoTask] = []
+    for row in rows:
+        result_obj = None
+        if row.result_json:
+            try:
+                result_obj = json.loads(row.result_json)
+            except Exception:
+                result_obj = None
+        if _is_story_video_generation_task(result_obj):
+            filtered.append(row)
+    filtered.sort(key=lambda r: (0 if str(r.status or "").lower() == "processing" else 1, r.created_at or datetime.utcnow(), str(r.id)))
+    return filtered
+
+def _story_video_task_item_from_row(row: VideoTask, position: int) -> Dict[str, Any]:
+    result_obj = None
+    if row.result_json:
+        try:
+            result_obj = json.loads(row.result_json)
+        except Exception:
+            result_obj = None
+    payload = _video_task_result_payload(result_obj)
+    return {
+        "task_id": row.id,
+        "status": row.status,
+        "progress": int(row.progress or 0),
+        "message": row.message,
+        "created_at": (row.created_at.isoformat() if getattr(row, "created_at", None) else None),
+        "updated_at": (row.updated_at.isoformat() if getattr(row, "updated_at", None) else None),
+        "position": int(position),
+        "is_current": str(row.status or "").lower() == "processing",
+        "title": _story_video_task_title_from_payload(payload),
+        "duration": payload.get("duration"),
+        "mode": payload.get("mode"),
+        "kind": (result_obj or {}).get("kind") if isinstance(result_obj, dict) else None,
+    }
+
+def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
+    use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
+    if use_rq_raw:
+        use_rq = use_rq_raw.lower() in {"1", "true", "yes"}
+    else:
+        use_rq = conn is not None and _rq_workers_online()
+    allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
+    force_local_reason = None
+
+    if use_rq:
+        if conn is None or not _rq_workers_online():
+            use_rq = False
+            force_local_reason = "Worker/RQ indisponível. Iniciando geração local automaticamente..."
+        try:
+            if use_rq:
+                rq_queue.enqueue(process_video_generation_payload, payload, task_id, job_timeout=_rq_video_timeout_seconds())
+                update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq", "kind": "youtube_story_video"})
+                def _watchdog_fallback(tid: str, pay: Dict[str, Any]):
+                    try:
+                        raw = (os.getenv("VIDEO_TASK_QUEUE_STALE_SECONDS") or "").strip()
+                        wait_s = int(raw) if raw else 90
+                    except Exception:
+                        wait_s = 90
+                    wait_s = max(20, min(15 * 60, wait_s))
+                    try:
+                        time.sleep(wait_s)
+                    except Exception:
+                        return
+                    try:
+                        if is_task_cancel_requested(tid):
+                            return
+                    except Exception:
+                        pass
+                    t = get_task(tid) or {}
+                    status = str((t.get("status") or "")).lower()
+                    msg = str((t.get("message") or ""))
+                    try:
+                        p = int(t.get("progress") or 0)
+                    except Exception:
+                        p = 0
+                    if status == "processing" and p <= 1 and ("enfileirad" in msg.lower() or "enfileirando" in msg.lower()):
+                        try:
+                            update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Iniciando execução local...")
+                        except Exception:
+                            pass
+                        try:
+                            th = threading.Thread(target=process_video_generation_payload, args=(pay, tid), daemon=True)
+                            th.start()
+                        except Exception:
+                            pass
+                threading.Thread(target=_watchdog_fallback, args=(task_id, payload), daemon=True).start()
+                return
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
+
+    if allow_inline_raw is None or not str(allow_inline_raw).strip():
+        allow_inline = True
+    else:
+        allow_inline = str(allow_inline_raw).strip().lower() in {"1", "true", "yes", "on"}
+    if not allow_inline and not force_local_reason:
+        raise HTTPException(status_code=503, detail="Para evitar travamentos, a geração de vídeo está configurada para rodar em segundo plano (worker). Suba um worker RQ ou ative ALLOW_INLINE_VIDEO_GENERATION=1.")
+
+    executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "thread").strip().lower()
+    if executor not in {"auto", "thread", "process"}:
+        executor = "thread"
+
+    use_process = (executor == "process") and (conn is not None)
+    if use_process:
+        try:
+            method = "spawn" if sys.platform == "win32" else "fork"
+            ctx = multiprocessing.get_context(method)
+            p = ctx.Process(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
+            p.start()
+            update_task(task_id, status="processing", progress=1, message="Iniciando geração em processo separado...", result={"payload": payload, "executor": "process", "pid": p.pid, "kind": "youtube_story_video"})
+            def _watch(proc: multiprocessing.Process, tid: str):
+                try:
+                    proc.join()
+                    if proc.exitcode and proc.exitcode != 0:
+                        t = get_task(tid) or {}
+                        status = str((t.get("status") or "")).lower()
+                        if status not in {"completed", "failed", "cancelled"}:
+                            update_task(tid, status="failed", progress=0, message="Falha ao iniciar/rodar o processo de geração. Verifique os logs do container.")
+                except Exception:
+                    pass
+            threading.Thread(target=_watch, args=(p, task_id), daemon=True).start()
+            return
+        except Exception:
+            pass
+
+    msg = force_local_reason or "Iniciando geração local..."
+    if executor == "process" and conn is None:
+        msg = "Redis indisponível para acompanhar progresso em processo separado. Iniciando geração local..."
+    update_task(task_id, status="processing", progress=1, message=msg, result={"payload": payload, "executor": "thread", "kind": "youtube_story_video"})
+    t = threading.Thread(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
+    t.start()
+
+def _kick_story_video_task_queue() -> Optional[str]:
+    db = SessionLocal()
+    try:
+        rows = _load_story_video_task_rows(db, limit=100)
+        if not rows:
+            return None
+        processing = next((r for r in rows if str(r.status or "").lower() == "processing"), None)
+        if processing:
+            return processing.id
+        pending = next((r for r in rows if str(r.status or "").lower() == "pending"), None)
+        if not pending:
+            return None
+        result_obj = None
+        if pending.result_json:
+            try:
+                result_obj = json.loads(pending.result_json)
+            except Exception:
+                result_obj = None
+        payload = _video_task_result_payload(result_obj)
+        if not payload:
+            pending.status = "failed"
+            pending.message = "Payload inválido para geração de vídeo."
+            db.commit()
+            return None
+    finally:
+        db.close()
+    _dispatch_video_generation_task(payload, pending.id)
+    return pending.id
+
+def _kick_story_video_task_queue_async():
+    threading.Thread(target=_kick_story_video_task_queue, daemon=True).start()
+
 def _require_user_from_query_token(token: Optional[str], db: Session) -> User:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -167,6 +369,10 @@ def process_jobs_background():
                 file_lock.release()
             except Exception:
                 pass
+        try:
+            _kick_story_video_task_queue_async()
+        except Exception:
+            pass
         db.close()
 
 def _resolve_video_file_path(raw_path: Optional[str]) -> str:
@@ -3098,105 +3304,29 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         payload = request.dict()
 
     task_id = create_task()
-    update_task(task_id, status="processing", progress=0, message="Enfileirando geração de vídeo...", result={"payload": payload})
+    base_result = {
+        "payload": payload,
+        "kind": "youtube_story_video",
+        "title_hint": _story_video_task_title_from_payload(payload),
+    }
+    update_task(task_id, status="pending", progress=0, message="Aguardando vez na fila de produção...", result=base_result)
 
-    use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
-    use_rq = None
-    if use_rq_raw:
-        use_rq = use_rq_raw.lower() in {"1", "true", "yes"}
-    else:
-        use_rq = conn is not None and _rq_workers_online()
-    allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
-    force_local_reason = None
+    db = SessionLocal()
+    try:
+        queue_rows = _load_story_video_task_rows(db, limit=100)
+        queue_ids = [str(r.id) for r in queue_rows]
+        queue_position = queue_ids.index(str(task_id)) + 1 if str(task_id) in queue_ids else None
+        already_processing = any(str(r.status or "").lower() == "processing" for r in queue_rows if str(r.id) != str(task_id))
+    finally:
+        db.close()
 
-    if use_rq:
-        if conn is None or not _rq_workers_online():
-            use_rq = False
-            force_local_reason = "Worker/RQ indisponível. Iniciando geração local automaticamente..."
-        try:
-            if use_rq:
-                rq_queue.enqueue(process_video_generation_payload, payload, task_id, job_timeout=_rq_video_timeout_seconds())
-                update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq"})
-                def _watchdog_fallback(tid: str, pay: Dict[str, Any]):
-                    try:
-                        raw = (os.getenv("VIDEO_TASK_QUEUE_STALE_SECONDS") or "").strip()
-                        wait_s = int(raw) if raw else 90
-                    except Exception:
-                        wait_s = 90
-                    wait_s = max(20, min(15 * 60, wait_s))
-                    try:
-                        time.sleep(wait_s)
-                    except Exception:
-                        return
-                    try:
-                        if is_task_cancel_requested(tid):
-                            return
-                    except Exception:
-                        pass
-                    t = get_task(tid) or {}
-                    status = str((t.get("status") or "")).lower()
-                    msg = str((t.get("message") or ""))
-                    try:
-                        p = int(t.get("progress") or 0)
-                    except Exception:
-                        p = 0
-                    if status == "processing" and p <= 1 and ("enfileirad" in msg.lower() or "enfileirando" in msg.lower()):
-                        try:
-                            update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Iniciando execução local...")
-                        except Exception:
-                            pass
-                        try:
-                            th = threading.Thread(target=process_video_generation_payload, args=(pay, tid), daemon=True)
-                            th.start()
-                        except Exception:
-                            pass
-                threading.Thread(target=_watchdog_fallback, args=(task_id, payload), daemon=True).start()
-                return {"message": "Processo iniciado", "task_id": task_id}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
-
-    if allow_inline_raw is None or not str(allow_inline_raw).strip():
-        allow_inline = True
-    else:
-        allow_inline = str(allow_inline_raw).strip().lower() in {"1", "true", "yes", "on"}
-    if not allow_inline and not force_local_reason:
-        raise HTTPException(status_code=503, detail="Para evitar travamentos, a geração de vídeo está configurada para rodar em segundo plano (worker). Suba um worker RQ ou ative ALLOW_INLINE_VIDEO_GENERATION=1.")
-
-    executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "thread").strip().lower()
-    if executor not in {"auto", "thread", "process"}:
-        executor = "thread"
-
-    use_process = (executor == "process") and (conn is not None)
-    if use_process:
-        try:
-            method = "spawn" if sys.platform == "win32" else "fork"
-            ctx = multiprocessing.get_context(method)
-            p = ctx.Process(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
-            p.start()
-            update_task(task_id, status="processing", progress=1, message="Iniciando geração em processo separado...", result={"payload": payload, "executor": "process", "pid": p.pid})
-            def _watch(proc: multiprocessing.Process, tid: str):
-                try:
-                    proc.join()
-                    if proc.exitcode and proc.exitcode != 0:
-                        t = get_task(tid) or {}
-                        status = str((t.get("status") or "")).lower()
-                        if status not in {"completed", "failed"}:
-                            update_task(tid, status="failed", progress=0, message="Falha ao iniciar/rodar o processo de geração. Verifique os logs do container.")
-                except Exception:
-                    pass
-            threading.Thread(target=_watch, args=(p, task_id), daemon=True).start()
-            return {"message": "Processo iniciado", "task_id": task_id}
-        except Exception:
-            pass
-
-    msg = force_local_reason or "Iniciando geração local..."
-    if executor == "process" and conn is None:
-        msg = "Redis indisponível para acompanhar progresso em processo separado. Iniciando geração local..."
-    update_task(task_id, status="processing", progress=1, message=msg, result={"payload": payload, "executor": "thread"})
-    t = threading.Thread(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
-    t.start()
-    
-    return {"message": "Processo iniciado", "task_id": task_id}
+    _kick_story_video_task_queue_async()
+    return {
+        "message": "Vídeo enviado para a fila de produção.",
+        "task_id": task_id,
+        "queued": bool(already_processing or (queue_position and queue_position > 1)),
+        "queue_position": queue_position or 1,
+    }
 
 @router.get("/task/{task_id}")
 def get_task_status(task_id: str):
@@ -3205,7 +3335,7 @@ def get_task_status(task_id: str):
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     try:
         status = str((task.get("status") or "")).lower()
-        if status in {"processing", "pending"}:
+        if status in {"processing"}:
             updated_at_s = (task.get("updated_at") or task.get("created_at") or "").strip()
             if updated_at_s:
                 try:
@@ -3260,6 +3390,20 @@ def list_active_tasks(limit: int = 10, _admin=Depends(get_current_admin_user)):
                 "updated_at": (r.updated_at.isoformat() if getattr(r, "updated_at", None) else None),
             })
         return {"count": len(items), "items": items}
+    finally:
+        db.close()
+
+@router.get("/tasks/queue")
+def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admin_user)):
+    db = SessionLocal()
+    try:
+        rows = _load_story_video_task_rows(db, limit=limit)
+        items = [_story_video_task_item_from_row(row, idx + 1) for idx, row in enumerate(rows)]
+        return {
+            "count": len(items),
+            "processing_count": len([i for i in items if str(i.get("status") or "").lower() == "processing"]),
+            "items": items,
+        }
     finally:
         db.close()
 
@@ -3337,7 +3481,10 @@ def cancel_task(task_id: str):
         current_progress = int(task.get("progress") or 0)
     except Exception:
         current_progress = 0
+    request_cancel_task(task_id, message="Cancelado pelo usuário.")
     update_task(task_id, status="cancelled", progress=current_progress, message="Cancelado pelo usuário.")
+    if status == "pending":
+        _kick_story_video_task_queue_async()
     return {"message": "Cancelado", "task_id": task_id, "status": "cancelled"}
 
 @router.post("/tasks/cancel_all")
@@ -4007,6 +4154,10 @@ def process_video_generation(request: VideoRequest, task_id):
                 file_lock.release()
             except Exception:
                 pass
+        try:
+            _kick_story_video_task_queue_async()
+        except Exception:
+            pass
 
 
 # ─── Community: All Comments (across videos) ────────────
