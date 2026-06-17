@@ -27,6 +27,7 @@ class MonitorService:
         self.scheduler = BackgroundScheduler()
         self.job = None
         self.queue_job = None
+        self.story_queue_job = None
         self.upload_job = None
         self.comments_job = None
         self.insights_job = None
@@ -45,6 +46,13 @@ class MonitorService:
                 'interval', 
                 minutes=1, 
                 max_instances=1
+            )
+            self.story_queue_job = self.scheduler.add_job(
+                self.process_story_video_task_queue,
+                "interval",
+                minutes=1,
+                max_instances=1,
+                next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=45),
             )
             # Run upload check every 5 minutes; first run after 2 min to avoid overload at startup (Coolify/Render)
             self.upload_job = self.scheduler.add_job(
@@ -96,6 +104,13 @@ class MonitorService:
             
             self.scheduler.start()
             logger.info("Monitoramento do canal, processador de fila e agendador de uploads iniciados.")
+
+    def process_story_video_task_queue(self):
+        try:
+            from app.routers.youtube import _kick_story_video_task_queue
+            _kick_story_video_task_queue()
+        except Exception as e:
+            logger.error(f"Erro ao processar fila de vídeos narrados: {e}")
 
     def _reset_stuck_videos(self):
         """Reseta vídeos que ficaram presos em 'processing' devido a reinicialização do servidor"""

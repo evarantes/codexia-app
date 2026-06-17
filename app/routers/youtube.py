@@ -392,14 +392,22 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
                 threading.Thread(target=_watchdog_fallback, args=(task_id, payload), daemon=True).start()
                 return
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Falha ao enfileirar geração em segundo plano: {e}")
+            try:
+                update_task(task_id, status="pending", progress=0, message=f"Falha ao enfileirar no worker. Aguardando retry automático... ({str(e)[:200]})")
+            except Exception:
+                pass
+            return
 
     if allow_inline_raw is None or not str(allow_inline_raw).strip():
         allow_inline = True
     else:
         allow_inline = str(allow_inline_raw).strip().lower() in {"1", "true", "yes", "on"}
     if not allow_inline and not force_local_reason:
-        raise HTTPException(status_code=503, detail="Para evitar travamentos, a geração de vídeo está configurada para rodar em segundo plano (worker). Suba um worker RQ ou ative ALLOW_INLINE_VIDEO_GENERATION=1.")
+        try:
+            update_task(task_id, status="pending", progress=0, message="Aguardando worker em segundo plano (RQ) para iniciar a geração...")
+        except Exception:
+            pass
+        return
 
     executor = (os.getenv("VIDEO_GENERATION_EXECUTOR") or "thread").strip().lower()
     if executor not in {"auto", "thread", "process"}:
@@ -463,7 +471,13 @@ def _kick_story_video_task_queue() -> Optional[str]:
             return None
     finally:
         db.close()
-    _dispatch_video_generation_task(payload, pending.id)
+    try:
+        _dispatch_video_generation_task(payload, pending.id)
+    except Exception as e:
+        try:
+            update_task(pending.id, status="pending", progress=0, message=f"Fila aguardando inicialização. ({str(e)[:200]})")
+        except Exception:
+            pass
     return pending.id
 
 def _kick_story_video_task_queue_async():
