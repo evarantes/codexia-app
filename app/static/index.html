@@ -4457,6 +4457,7 @@
 
                 // Start polling for scheduled videos progress
                 setInterval(() => {
+                    try { if (document && document.hidden) return; } catch (e) {}
                     if (this.scheduledVideos.some(v => v.status === 'processing' || v.status === 'queued')) {
                         this.fetchScheduledVideos();
                     }
@@ -4518,6 +4519,7 @@
                 
                 // Polling for updates
                 setInterval(() => {
+                    try { if (document && document.hidden) return; } catch (e) {}
                     if (this.currentTab === 'youtube') {
                         this.fetchScheduledVideos();
                         this.fetchProductionQueue(); // Added
@@ -4541,6 +4543,34 @@
                         }
                     }
                 }, 5000); // 5s para atualizar fila e manter processamento em andamento
+
+                try {
+                    document.addEventListener('visibilitychange', () => {
+                        try {
+                            if (document.hidden) return;
+                        } catch (e) {}
+                        const tid = String(this.ytStoryTaskId || '').trim();
+                        if (tid) {
+                            this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                            this.ytStoryTaskPollFails[tid] = 0;
+                            try { this.pollStoryTask(tid); } catch (e) {}
+                        }
+                        try { this.fetchActiveVideoTasks({ silent: true }); } catch (e) {}
+                        try { this.fetchProductionQueue(); } catch (e) {}
+                    });
+                } catch (e) {}
+                try {
+                    window.addEventListener('online', () => {
+                        const tid = String(this.ytStoryTaskId || '').trim();
+                        if (tid) {
+                            this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                            this.ytStoryTaskPollFails[tid] = 0;
+                            try { this.pollStoryTask(tid); } catch (e) {}
+                        }
+                        try { this.fetchActiveVideoTasks({ silent: true }); } catch (e) {}
+                        try { this.fetchProductionQueue(); } catch (e) {}
+                    });
+                } catch (e) {}
             },
             methods: {
                 getScheduledParentVideo(shortItem) {
@@ -6041,10 +6071,33 @@
                 },
                 async pollStoryTask(taskId) {
                     try {
+                        try {
+                            if (document && document.hidden) {
+                                setTimeout(() => this.pollStoryTask(taskId), 7000);
+                                return;
+                            }
+                        } catch (e) {}
+                        try {
+                            if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+                                const currentProgress = (this.ytStoryTask && typeof this.ytStoryTask.progress === 'number') ? this.ytStoryTask.progress : 0;
+                                this.ytStoryTask = { status: 'processing', progress: currentProgress, message: 'Aguardando conexão...' };
+                                setTimeout(() => this.pollStoryTask(taskId), 7000);
+                                return;
+                            }
+                        } catch (e) {}
                         const res = await this.authFetch(`/youtube/task/${taskId}`);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
-                            throw new Error(data.detail || "Erro ao consultar tarefa.");
+                            const detail = data.detail || data.message || "Erro ao consultar tarefa.";
+                            const code = Number(res.status || 0);
+                            if (code === 404) {
+                                this.ytStoryVideoLoading = false;
+                                this.ytStoryTask = { status: 'failed', progress: 0, message: String(detail) };
+                                try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                                this.ytStoryTaskId = null;
+                                return;
+                            }
+                            throw new Error(String(detail));
                         }
                         this.ytStoryTask = data;
                         const status = String((data.status || '')).toLowerCase();
@@ -6096,15 +6149,27 @@
                         const prev = Number(this.ytStoryTaskPollFails[key] || 0);
                         const next = prev + 1;
                         this.ytStoryTaskPollFails[key] = next;
+                        const msg = (e && e.message) ? String(e.message) : String(e);
+                        const looksNetwork = /failed to fetch|networkerror|load failed|fetch/i.test(msg || '');
+                        let isHidden = false;
+                        try { isHidden = Boolean(document && document.hidden); } catch (e) {}
+                        let isOffline = false;
+                        try { isOffline = (typeof navigator !== 'undefined' && navigator && navigator.onLine === false); } catch (e) {}
+                        if (looksNetwork || isHidden || isOffline) {
+                            const currentProgress = (this.ytStoryTask && typeof this.ytStoryTask.progress === 'number') ? this.ytStoryTask.progress : 0;
+                            this.ytStoryTask = { status: 'processing', progress: currentProgress, message: (isOffline ? 'Sem internet. Aguardando conexão...' : 'Reconectando...') };
+                            const wait = Math.min(15000, 2000 + (next * 800));
+                            setTimeout(() => this.pollStoryTask(taskId), wait);
+                            return;
+                        }
                         if (next <= 10) {
                             const currentProgress = (this.ytStoryTask && typeof this.ytStoryTask.progress === 'number') ? this.ytStoryTask.progress : 0;
                             this.ytStoryTask = { status: 'processing', progress: currentProgress, message: 'Reconectando...' };
-                            setTimeout(() => this.pollStoryTask(taskId), 1200 + (next * 400));
+                            setTimeout(() => this.pollStoryTask(taskId), 1200 + (next * 500));
                             return;
                         }
                         this.ytStoryVideoLoading = false;
-                        this.ytStoryTask = { status: 'failed', progress: 0, message: e.message || String(e) };
-                        try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                        this.ytStoryTask = { status: 'failed', progress: 0, message: msg || 'Erro ao consultar tarefa.' };
                     }
                 },
                 async generateStoryShorts() {
