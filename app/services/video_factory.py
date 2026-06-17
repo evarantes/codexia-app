@@ -393,29 +393,33 @@ class VideoFactory:
         theme = plan.theme if plan and getattr(plan, "theme", None) else (video.title or "Tema")
         duration_min = plan.duration_min if plan and getattr(plan, "duration_min", None) else 3
         voice_style = plan.voice_style if plan and getattr(plan, "voice_style", None) else "human"
+        niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
+        if not niche:
+            niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
         target_words = max(80, int(duration_min) * 150)
         max_words = int(target_words * 1.10)
         prompt = f"""
         Crie um roteiro detalhado para um vídeo de YouTube sobre '{theme}'.
+        Nicho do canal: {niche}.
         Duração estimada: {duration_min} minutos.
         Meta de palavras no total: aproximadamente {target_words} (não exceda {max_words}).
         Estilo: {voice_style}.
         Estrutura:
-        1. Gancho (0-30s)
+        1. Gancho (0-30s) direto na dor/sentimento do espectador (sem vinheta/apresentação longa)
         2. Introdução
         3. Conteúdo Principal (dividido em tópicos)
-        4. Conclusão e CTA
+        4. Conclusão e CTA com pergunta direta para comentários
         
         Saída ESTRITAMENTE em JSON no formato:
         {{
-            "title": "Título chamativo",
+            "title": "Título (SEO + emoção; pode ser poético, mas inclua termo pesquisável e opcional '(Reflexão)')",
             "description": "Descrição para YouTube com hashtags",
             "tags": "tag1, tag2, tag3",
             "scenes": [
                 {{
                     "idx": 1,
                     "narration": "Texto exato para narrar...",
-                    "visual_prompt": "Descrição da imagem/cena para IA...",
+                    "visual_prompt": "Descrição da imagem/cena em inglês, fotorealista e cinematográfica, sem texto na imagem, variando ângulo/ambiente/iluminação",
                     "keywords": "keyword1, keyword2",
                     "duration_sec": 5
                 }}

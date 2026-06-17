@@ -3226,6 +3226,79 @@ def get_auto_insights():
         "ai_insights": ai_insights,
     }
 
+@router.get("/topic_suggestions")
+def get_topic_suggestions(
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+    _admin=Depends(get_current_admin_user),
+):
+    latest = (
+        db.query(ChannelInsight)
+        .filter(ChannelInsight.kind == "topic_suggestions")
+        .order_by(ChannelInsight.id.desc())
+        .first()
+    )
+    if latest and latest.data_json and (not refresh):
+        try:
+            data = json.loads(latest.data_json)
+        except Exception:
+            data = {"summary": latest.ai_summary or "Sugestões disponíveis.", "raw": latest.data_json}
+        return {
+            "generated_at": (latest.created_at.isoformat() if getattr(latest, "created_at", None) else None),
+            "summary": latest.ai_summary,
+            "data": data,
+        }
+
+    yt = YouTubeService()
+    ai = AIContentGenerator()
+    stats = yt.get_channel_stats()
+    videos = yt.get_recent_videos_performance(max_results=20)
+    comments_q = (
+        db.query(CommunityComment)
+        .order_by(CommunityComment.published_at.desc().nullslast(), CommunityComment.created_at.desc().nullslast())
+        .limit(80)
+        .all()
+    )
+    comments = []
+    for c in comments_q or []:
+        t = (c.text or "").strip()
+        if not t:
+            continue
+        comments.append({
+            "text": t[:500],
+            "like_count": int(getattr(c, "like_count", 0) or 0),
+            "published_at": (c.published_at.isoformat() if getattr(c, "published_at", None) else None),
+            "video_id": (c.youtube_video_id or None),
+        })
+    data = ai.generate_topic_suggestions(stats=stats, recent_videos=videos, recent_comments=comments, hours=72) or {}
+    summary = (data.get("summary") if isinstance(data, dict) else None) or "Sugestões de temas atualizadas."
+    db.add(ChannelInsight(
+        user_id=None,
+        kind="topic_suggestions",
+        start_date=None,
+        end_date=None,
+        data_json=json.dumps(data, ensure_ascii=False),
+        ai_summary=str(summary)[:1200],
+    ))
+    try:
+        top_titles = []
+        for idea in (data.get("long_video_ideas") or [])[:3]:
+            if isinstance(idea, dict) and (idea.get("title") or "").strip():
+                top_titles.append(str(idea.get("title")).strip()[:140])
+        payload = {"top_long_titles": top_titles, "hours_window": int(data.get("hours_window") or 72) if isinstance(data, dict) else 72}
+        db.add(SystemNotification(
+            user_id=None,
+            kind="topic_suggestions",
+            title="Sugestões de temas",
+            message=str(summary)[:900],
+            payload_json=json.dumps(payload, ensure_ascii=False),
+            status="new",
+        ))
+    except Exception:
+        pass
+    db.commit()
+    return {"generated_at": datetime.utcnow().isoformat(), "summary": str(summary)[:1200], "data": data}
+
 @router.get("/monetization_status")
 def get_monetization_status():
     """

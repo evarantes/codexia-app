@@ -723,23 +723,38 @@ class AIContentGenerator:
         # Estimate word count: approx 150 words per minute
         target_word_count = duration_minutes * 150
         min_scenes = max(5, duration_minutes * 2) # At least 2 scenes per minute
+        niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
+        if not niche:
+            niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
 
         prompt = f"""
         Crie um Roteiro de Vídeo Motivacional Profundo de {duration_minutes} minutos sobre '{topic}'.
-        Estilo: Inspirador, Estoico, Narrativa Poderosa.
+        Nicho do canal: {niche}.
+        Estilo: Inspirador, profundo, humano, com narrativa poderosa.
         Meta de Palavras: Aproximadamente {target_word_count} palavras.
         
         O roteiro deve ser estruturado para manter a retenção e COBRIR O TEMPO SOLICITADO.
         Divida em pelo menos {min_scenes} cenas/partes para garantir dinamismo.
-        Estrutura sugerida: Introdução, Problema, Virada, Desenvolvimento (longo), Solução/Mindset, Conclusão/CTA.
+        Estrutura sugerida: Gancho (0-30s), Problema (dor), Virada, Desenvolvimento (longo), Aplicação prática, Conclusão/CTA.
+
+        DIRETRIZES IMPORTANTES (retenção e engajamento):
+        - Primeiros 30 segundos: vá direto na dor/sentimento do espectador (ex: "Se você se sente cansado hoje, esta mensagem é para você...").
+        - Evite introduções longas. Sem vinhetas, sem "bem-vindo ao canal" no início.
+        - Ritmo: crie quebras de padrão frequentes via legendas curtas e mudanças visuais (ângulo/luz/ambiente). Use uma linguagem visual variada por cena.
+        - CTA: inclua uma pergunta direta para comentários no meio ou no final (ex: "Qual parte falou mais com você hoje?").
+        - Título: misture emoção + o que as pessoas buscam. Pode ser poético, mas deve conter um termo pesquisável e opcional "(Reflexão)".
         
         Retorne APENAS um JSON válido com a estrutura:
         {{
-            "title": "Título Impactante (SEO Friendly)",
+            "title": "Título Impactante (SEO + emoção)",
             "description": "Descrição otimizada para YouTube com hashtags",
             "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
             "scenes": [
-                {{"text": "Texto EXATO da narração (sem 'Cena 1:', sem 'Narrador:', apenas o que será falado). Deve ser longo o suficiente...", "image_prompt": "Descrição visual..."}},
+                {{
+                    "text": "Texto EXATO da narração (sem 'Cena 1:', sem 'Narrador:').",
+                    "caption": "Legenda curta e impactante (até 8 palavras).",
+                    "image_prompt": "Descrição visual em inglês, fotorealista e cinematográfica, sem texto na imagem, variando ângulo/ambiente/iluminação de cena para cena."
+                }},
                 ...
             ],
             "music_mood": "epic_cinematic"
@@ -770,18 +785,26 @@ class AIContentGenerator:
         self._load_config()
         if not self.openrouter_key:
             return self._mock_response("História do Usuário", "motivational_long")
+        niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
+        if not niche:
+            niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
 
         prompt = f"""
         Atue como um Editor de Vídeo Profissional.
+        Nicho do canal: {niche}.
         Eu tenho uma história/texto pronto e quero transformá-lo em um vídeo narrado de aproximadamente {duration_minutes} minutos.
         
         TEXTO ORIGINAL:
         "{text}"
         
         Sua tarefa:
-        1. Divida este texto em cenas lógicas para narração. MANTENHA O SENTIDO ORIGINAL E A MAIORIA DO TEXTO, apenas ajuste para fluidez se necessário.
-        2. Para cada cena, crie um 'image_prompt' visual, artístico e detalhado para gerar imagens com IA (DALL-E).
+        1. Reestruture o começo para ter um gancho forte nos primeiros 30 segundos (direto na dor/sentimento), mantendo a mensagem do texto.
+        2. Divida este texto em cenas lógicas para narração. MANTENHA O SENTIDO ORIGINAL E A MAIORIA DO TEXTO; ajuste apenas para fluidez e retenção.
+        3. Para cada cena, crie:
+           - 'caption' (legenda curta e dinâmica, até 8 palavras)
+           - 'image_prompt' visual, artístico e detalhado em inglês (sem texto na imagem), variando ângulo/ambiente/iluminação a cada cena.
         3. Defina um título e descrição para o YouTube.
+        4. Inclua CTA com pergunta direta para comentários no meio ou no final.
         
         Retorne APENAS um JSON válido com a estrutura:
         {{
@@ -789,8 +812,8 @@ class AIContentGenerator:
             "description": "Descrição para YouTube",
             "tags": ["tag1", "tag2"],
             "scenes": [
-                {{"text": "Trecho da narração da cena 1...", "image_prompt": "Descrição visual detalhada em inglês..."}},
-                {{"text": "Trecho da narração da cena 2...", "image_prompt": "Descrição visual detalhada em inglês..."}}
+                {{"text": "Trecho da narração da cena 1...", "caption": "Legenda curta...", "image_prompt": "Descrição visual detalhada em inglês..."}},
+                {{"text": "Trecho da narração da cena 2...", "caption": "Legenda curta...", "image_prompt": "Descrição visual detalhada em inglês..."}}
             ],
             "music_mood": "emotional_cinematic"
         }}
@@ -835,15 +858,25 @@ class AIContentGenerator:
         # Usando 140 palavras por minuto (ritmo de narração calmo e envolvente)
         min_words = min_m * 140
         max_words = max_m * 160
+        niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
+        if not niche:
+            niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
 
         prompt = f"""
         Escreva um(a) {safe_kind} ORIGINAL em português (pt-BR), para ser NARRADO em vídeo de longa duração.
+        Nicho do canal: {niche}.
         
         IMPORTANTE: O vídeo deve ter no mínimo {min_m} minutos. Para isso, você DEVE escrever um texto longo e detalhado.
         NÃO resuma. Seja descritivo, use exemplos, analogias e aprofunde-se nos detalhes para garantir a extensão necessária.
 
         INSTRUÇÕES DO USUÁRIO (respeite exatamente):
         {instruction}
+
+        DIRETRIZES DE RETENÇÃO:
+        - Comece com um gancho magnético nos primeiros 30 segundos, tocando diretamente na dor/sentimento do espectador.
+        - Evite introdução longa, sem vinheta, sem apresentação do canal no início.
+        - Inclua pelo menos 2 perguntas diretas ao longo do texto para estimular reflexão e comentários.
+        - Finalize com uma CTA clara (curtir/inscrever-se) e uma pergunta curta para comentários.
 
         REGRAS DE EXTENSÃO:
         - Objetivo: texto para narração contínua.
@@ -1092,15 +1125,24 @@ class AIContentGenerator:
         # Usando 140 palavras por minuto (ritmo de narração calmo e envolvente)
         min_words = min_m * 140
         max_words = max_m * 160
+        niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
+        if not niche:
+            niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
 
         prompt = f"""
         Você é um editor profissional de textos para narração em vídeo de longa duração.
+        Nicho do canal: {niche}.
         Reescreva, MELHORE e EXPANDA o(a) {safe_kind} abaixo para atingir a duração desejada.
         
         IMPORTANTE: O vídeo deve ter no mínimo {min_m} minutos. Se o texto original for curto, você DEVE expandi-lo com detalhes, exemplos e descrições ricas. NÃO resuma.
 
         INSTRUÇÕES DO USUÁRIO (respeite exatamente):
         {instruction}
+
+        DIRETRIZES DE RETENÇÃO:
+        - Ajuste os primeiros parágrafos para ter um gancho magnético (0-30s) direto na dor/sentimento do espectador.
+        - Inclua pelo menos 2 perguntas diretas ao longo do texto para estimular reflexão e comentários.
+        - Finalize com CTA clara e pergunta curta para comentários.
 
         Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
         Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 140-160 palavras por minuto).
@@ -1686,6 +1728,7 @@ REGRAS IMPORTANTES:
         
         prompt = f"""
         Atue como um Especialista Sênior em YouTube Analytics e Estratégia de Conteúdo.
+        Nicho do canal (obrigatório respeitar): {(os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "reflexão, espiritualidade e mensagens cristãs").strip()}.
         
         DADOS DO CANAL:
         - Nome: {stats.get('title')}
@@ -1699,8 +1742,9 @@ REGRAS IMPORTANTES:
         SUA MISSÃO:
         1. Analise a evolução de cada vídeo recente e seu impacto no canal (quais trouxeram mais views/engajamento).
         2. Identifique o vídeo de MELHOR resultado (o "Campeão").
-        3. Gere listas de ideias de vídeos longos e shorts baseados no campeão.
+        3. Gere listas de ideias de vídeos longos e shorts baseados no campeão e também em dores/perguntas do público do nicho.
         4. Gere um plano de conteúdo semanal AUTOMÁTICO focado em ALAVANCAR esse sucesso.
+        5. Inclua títulos com SEO + emoção (poesia com termo pesquisável) e CTA que estimule comentários.
         
         Retorne APENAS um JSON válido com a seguinte estrutura:
         {{
@@ -1775,6 +1819,76 @@ REGRAS IMPORTANTES:
                 "shorts_ideas": [],
                 "weekly_plan": []
             }
+
+    def generate_topic_suggestions(self, stats: dict, recent_videos: list, recent_comments: list, hours: int = 72) -> Dict[str, Any]:
+        self._load_config()
+        niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
+        if not niche:
+            niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
+        try:
+            hrs = int(hours or 72)
+        except Exception:
+            hrs = 72
+        hrs = max(12, min(24 * 14, hrs))
+        if not self.openrouter_key:
+            return {
+                "summary": "Sugestões simuladas (IA não configurada).",
+                "niche": niche,
+                "hours_window": hrs,
+                "long_video_ideas": [],
+                "shorts_ideas": [],
+                "notes": [],
+            }
+
+        import json
+        payload = {
+            "stats": stats or {},
+            "recent_videos": recent_videos or [],
+            "recent_comments": recent_comments or [],
+        }
+        prompt = f"""
+Atue como estrategista de conteúdo (YouTube + redes) para um canal do nicho: {niche}.
+
+Objetivo: sugerir temas que tendem a performar bem nas próximas {hrs} horas, sem inventar fatos específicos. Use padrões de dores do público, termos pesquisáveis e o histórico do canal.
+
+DADOS (use como base):
+{json.dumps(payload, ensure_ascii=False)}
+
+Regras:
+- Sugira ideias coerentes com o nicho e com a mensagem (reflexão/espiritualidade).
+- Crie títulos SEO + emoção (pode ser poético, mas inclua termo pesquisável e opcional "(Reflexão)").
+- Para cada ideia, inclua um gancho (0-30s) direto na dor/sentimento do espectador.
+- Inclua CTA com pergunta para comentários.
+
+Retorne APENAS JSON válido:
+{{
+  "summary": "Resumo curto do que parece em alta no nicho e por quê (2-4 frases).",
+  "hours_window": {hrs},
+  "long_video_ideas": [
+    {{"title": "...", "concept": "...", "hook_0_30s": "...", "cta_question": "..."}}
+  ],
+  "shorts_ideas": [
+    {{"title": "...", "concept": "...", "hook_0_3s": "...", "cta_question": "..."}}
+  ],
+  "notes": ["..."]
+}}
+""".strip()
+
+        raw = self._generate_text(
+            prompt,
+            system_prompt="Você é um estrategista de conteúdo e copywriter focado em retenção e SEO. Responda apenas JSON válido.",
+            temperature=0.7,
+            json_mode=True,
+        )
+        raw = (raw or "").replace("```json", "").replace("```", "").strip()
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception:
+            data = {"summary": raw}
+        if not isinstance(data, dict):
+            return {"summary": "Resposta inválida", "raw": raw}
+        data.setdefault("hours_window", hrs)
+        return data
 
     def generate_monetization_insights(self, progress_data):
         """

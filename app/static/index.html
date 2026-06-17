@@ -2384,6 +2384,48 @@
                             </div>
                         </div>
                     </div>
+
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-indigo-500">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-indigo-800 flex items-center gap-2">
+                                <i class="fas fa-fire"></i> Sugestões em alta (automático)
+                            </h2>
+                            <button @click="fetchTopicSuggestions({ refresh: true })" :disabled="topicSuggestionsLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2 text-sm">
+                                <i v-if="topicSuggestionsLoading" class="fas fa-spinner fa-spin"></i>
+                                <span v-else>Atualizar sugestões</span>
+                            </button>
+                        </div>
+                        <div v-if="topicSuggestionsLoading" class="text-gray-500 italic">Gerando sugestões com base no seu canal e no nicho...</div>
+                        <div v-else-if="!topicSuggestions" class="text-gray-500 italic">Clique em “Atualizar sugestões” para gerar ideias.</div>
+                        <div v-else class="space-y-4">
+                            <div class="text-xs text-gray-500" v-if="topicSuggestions.generated_at">Atualizado em: {{ formatDateTime(topicSuggestions.generated_at) }}</div>
+                            <p class="text-gray-700"><strong>Resumo:</strong> {{ topicSuggestions.summary || (topicSuggestions.data && topicSuggestions.data.summary) }}</p>
+
+                            <div v-if="topicSuggestions.data && topicSuggestions.data.long_video_ideas && topicSuggestions.data.long_video_ideas.length">
+                                <h3 class="font-semibold text-gray-800 mb-2">Ideias de Vídeos Longos</h3>
+                                <ul class="list-disc pl-5 space-y-2 text-sm text-gray-700">
+                                    <li v-for="(idea, idx) in topicSuggestions.data.long_video_ideas" :key="'ts-lv-'+idx">
+                                        <div class="font-semibold">{{ idea.title }}</div>
+                                        <div v-if="idea.concept" class="text-gray-600">{{ idea.concept }}</div>
+                                        <div v-if="idea.hook_0_30s" class="text-gray-600"><strong>Gancho (0-30s):</strong> {{ idea.hook_0_30s }}</div>
+                                        <div v-if="idea.cta_question" class="text-gray-600"><strong>Pergunta (CTA):</strong> {{ idea.cta_question }}</div>
+                                    </li>
+                                </ul>
+                            </div>
+
+                            <div v-if="topicSuggestions.data && topicSuggestions.data.shorts_ideas && topicSuggestions.data.shorts_ideas.length">
+                                <h3 class="font-semibold text-gray-800 mb-2">Ideias de Shorts</h3>
+                                <ul class="list-disc pl-5 space-y-2 text-sm text-gray-700">
+                                    <li v-for="(idea, idx) in topicSuggestions.data.shorts_ideas" :key="'ts-sh-'+idx">
+                                        <div class="font-semibold">{{ idea.title }}</div>
+                                        <div v-if="idea.concept" class="text-gray-600">{{ idea.concept }}</div>
+                                        <div v-if="idea.hook_0_3s" class="text-gray-600"><strong>Gancho (0-3s):</strong> {{ idea.hook_0_3s }}</div>
+                                        <div v-if="idea.cta_question" class="text-gray-600"><strong>Pergunta (CTA):</strong> {{ idea.cta_question }}</div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- MONETIZAÇÃO -->
@@ -3865,6 +3907,8 @@
                     selectedReport: null,
                     autoInsightsLoading: false,
                     autoInsights: null,
+                    topicSuggestionsLoading: false,
+                    topicSuggestions: null,
                     monetizationLoading: false,
                     monetizationData: null,
 
@@ -4484,6 +4528,7 @@
                 await this.fetchStoryDrafts();
                 await this.fetchReports();
                 await this.fetchYoutubeStats(); // Check YouTube status on load
+                try { await this.fetchTopicSuggestions(); } catch (e) {}
                 try {
                     const saved = localStorage.getItem('ytStoryTaskId');
                     if (saved) {
@@ -5378,6 +5423,21 @@
                         }
                     } catch (e) { console.error(e); }
                 },
+                async fetchTopicSuggestions({ refresh } = {}) {
+                    this.topicSuggestionsLoading = true;
+                    try {
+                        const url = refresh ? '/youtube/topic_suggestions?refresh=1' : '/youtube/topic_suggestions';
+                        const res = await this.authFetch(url);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao buscar sugestões.');
+                        this.topicSuggestions = data;
+                    } catch (e) {
+                        this.topicSuggestions = null;
+                        try { console.error(e); } catch (e2) {}
+                    } finally {
+                        this.topicSuggestionsLoading = false;
+                    }
+                },
                 async fetchAutoInsights() {
                     try {
                         this.autoInsightsLoading = true;
@@ -5402,6 +5462,15 @@
                         alert("Erro ao carregar status de monetização.");
                     } finally {
                         this.monetizationLoading = false;
+                    }
+                },
+                formatDateTime(s) {
+                    try {
+                        const d = new Date(String(s || ''));
+                        if (String(d) === 'Invalid Date') return String(s || '');
+                        return d.toLocaleString('pt-BR');
+                    } catch (e) {
+                        return String(s || '');
                     }
                 },
                 applyAutoInsightsToSchedule() {
