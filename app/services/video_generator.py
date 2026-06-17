@@ -1060,20 +1060,84 @@ class VideoGenerator:
             raise Exception("AI Service não inicializado para geração de imagem.")
 
         try:
-            url = self.ai_service.generate_image(
-                final_prompt,
-                aspect_ratio=aspect_ratio,
-                providers=["openai_direct"],
-                status_callback=notify,
-            )
+            import concurrent.futures
+            try:
+                timeout_raw = (os.getenv("IMAGE_GEN_TIMEOUT_SECONDS") or "").strip()
+                timeout_s = int(timeout_raw) if timeout_raw else 240
+            except Exception:
+                timeout_s = 240
+            timeout_s = max(30, min(900, timeout_s))
+            try:
+                rounds = int(max_rounds or 1)
+            except Exception:
+                rounds = 1
+            rounds = max(1, min(4, rounds))
+
+            last_err = None
+            url = None
+            prompt_attempts = []
+            prompt_attempts.append(final_prompt)
+            if len(final_prompt) > 1600:
+                prompt_attempts.append(final_prompt[:1600])
+            if len(final_prompt) > 900:
+                prompt_attempts.append(final_prompt[:900])
+            if not prompt_attempts:
+                prompt_attempts = [final_prompt]
+
+            def _gen(p: str):
+                return self.ai_service.generate_image(
+                    p,
+                    aspect_ratio=aspect_ratio,
+                    providers=["openai_direct"],
+                    status_callback=notify,
+                )
+
+            attempt_no = 0
+            for p in prompt_attempts:
+                for _ in range(rounds):
+                    attempt_no += 1
+                    try:
+                        notify(f"Gerando imagem com OpenAI (tentativa {attempt_no})...")
+                    except Exception:
+                        pass
+                    try:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                            fut = ex.submit(_gen, p)
+                            url = fut.result(timeout=timeout_s)
+                        if url:
+                            break
+                        last_err = "empty_result"
+                    except concurrent.futures.TimeoutError:
+                        last_err = "timeout"
+                        try:
+                            notify("OpenAI demorou demais para responder. Tentando novamente...")
+                        except Exception:
+                            pass
+                        continue
+                    except Exception as e:
+                        last_err = str(e)
+                        continue
+                if url:
+                    break
+
+            if url:
+                path = self._resolve_input_image_path(url)
+                if not path or not os.path.exists(path) or os.path.getsize(path) < 1000:
+                    raise Exception("A imagem retornada pela OpenAI está ausente, inválida ou corrompida.")
+                return path
+
+            if allow_non_ai_fallback or last_err in {"timeout", "empty_result"} or last_err:
+                try:
+                    notify("Falha ao gerar imagem com IA. Usando fallback local para não travar a produção...")
+                except Exception:
+                    pass
+                bg = self._generate_local_background(text_fallback=text_fallback, aspect_ratio=aspect_ratio)
+                if bg and os.path.exists(bg) and os.path.getsize(bg) > 1000:
+                    return bg
+
+            raise Exception(f"Falha na geração da imagem por IA: {last_err or 'unknown_error'}")
         except Exception as e:
             raise Exception(f"Falha na geração da imagem por IA: {str(e)}") from e
-        if not url:
-            raise Exception("A OpenAI não retornou URL/arquivo de imagem.")
-        path = self._resolve_input_image_path(url)
-        if not path or not os.path.exists(path) or os.path.getsize(path) < 1000:
-            raise Exception("A imagem retornada pela OpenAI está ausente, inválida ou corrompida.")
-        return path
 
     def _set_clip_duration(self, clip, duration):
         """Compatível com MoviePy 1.x (set_duration) e 2.x (with_duration)."""

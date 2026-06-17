@@ -2400,12 +2400,28 @@
                         <div v-else class="space-y-4">
                             <div class="text-xs text-gray-500" v-if="topicSuggestions.generated_at">Atualizado em: {{ formatDateTime(topicSuggestions.generated_at) }}</div>
                             <p class="text-gray-700"><strong>Resumo:</strong> {{ topicSuggestions.summary || (topicSuggestions.data && topicSuggestions.data.summary) }}</p>
+                            <div class="flex flex-col md:flex-row md:items-center gap-3 p-3 bg-indigo-50 border border-indigo-100 rounded">
+                                <div class="text-sm font-semibold text-indigo-900">Enviar para produção</div>
+                                <div class="flex items-center gap-2">
+                                    <div class="text-xs text-gray-600">Duração (min)</div>
+                                    <input v-model="topicSuggestionsDuration" type="number" min="3" max="60" class="w-24 border p-2 rounded text-sm">
+                                </div>
+                                <div class="text-xs text-gray-600">Clique em “Produzir” em uma ideia para entrar na fila e você revisar depois.</div>
+                            </div>
 
                             <div v-if="topicSuggestions.data && topicSuggestions.data.long_video_ideas && topicSuggestions.data.long_video_ideas.length">
                                 <h3 class="font-semibold text-gray-800 mb-2">Ideias de Vídeos Longos</h3>
                                 <ul class="list-disc pl-5 space-y-2 text-sm text-gray-700">
                                     <li v-for="(idea, idx) in topicSuggestions.data.long_video_ideas" :key="'ts-lv-'+idx">
-                                        <div class="font-semibold">{{ idea.title }}</div>
+                                        <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-2">
+                                            <div class="font-semibold">{{ idea.title }}</div>
+                                            <div class="flex items-center gap-2">
+                                                <button @click="queueTopicSuggestionToProduction(idea)" :disabled="topicSuggestionsEnqueueLoading" class="bg-indigo-600 text-white px-3 py-2 rounded hover:bg-indigo-700 text-xs disabled:opacity-50">
+                                                    <i v-if="topicSuggestionsEnqueueLoading" class="fas fa-spinner fa-spin mr-1"></i>
+                                                    <span>Produzir</span>
+                                                </button>
+                                            </div>
+                                        </div>
                                         <div v-if="idea.concept" class="text-gray-600">{{ idea.concept }}</div>
                                         <div v-if="idea.hook_0_30s" class="text-gray-600"><strong>Gancho (0-30s):</strong> {{ idea.hook_0_30s }}</div>
                                         <div v-if="idea.cta_question" class="text-gray-600"><strong>Pergunta (CTA):</strong> {{ idea.cta_question }}</div>
@@ -3909,6 +3925,8 @@
                     autoInsights: null,
                     topicSuggestionsLoading: false,
                     topicSuggestions: null,
+                    topicSuggestionsDuration: 12,
+                    topicSuggestionsEnqueueLoading: false,
                     monetizationLoading: false,
                     monetizationData: null,
 
@@ -5436,6 +5454,71 @@
                         try { console.error(e); } catch (e2) {}
                     } finally {
                         this.topicSuggestionsLoading = false;
+                    }
+                },
+                async queueTopicSuggestionToProduction(idea) {
+                    if (!idea || !idea.title) return;
+                    if (this.topicSuggestionsEnqueueLoading) return;
+                    this.topicSuggestionsEnqueueLoading = true;
+                    try {
+                        let duration = Number(this.topicSuggestionsDuration || 12);
+                        if (!Number.isFinite(duration)) duration = 12;
+                        duration = Math.max(3, Math.min(60, Math.round(duration)));
+                        const title = String(idea.title || '').trim();
+                        const concept = String(idea.concept || '').trim();
+                        const hook = String(idea.hook_0_30s || '').trim();
+                        const cta = String(idea.cta_question || '').trim();
+                        const parts = [title];
+                        if (concept) parts.push(concept);
+                        if (hook) parts.push(`Gancho: ${hook}`);
+                        if (cta) parts.push(`CTA: ${cta}`);
+                        const topic = parts.join(' | ').slice(0, 900);
+                        const payload = {
+                            mode: 'topic',
+                            topic,
+                            duration,
+                            auto_upload: false,
+                            override_title: title.slice(0, 120) || null
+                        };
+                        this.currentTab = 'youtube';
+                        this.youtubeSubTab = 'production';
+                        this.ytStoryVideoLoading = true;
+                        this.ytStoryTask = { status: 'processing', progress: 0, message: 'Iniciando produção a partir da sugestão...' };
+                        this.ytStoryTaskId = null;
+                        this.ytStoryAssistReport = null;
+                        try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+
+                        const res = await this.authFetch('/youtube/generate_video', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const text = await res.text().catch(() => '');
+                        let data = {};
+                        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                        if (!res.ok || !data.task_id) {
+                            const msg = data.detail || data.message || text || 'Falha ao iniciar geração do vídeo.';
+                            throw new Error(msg);
+                        }
+                        const taskId = String(data.task_id);
+                        this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                        this.ytStoryTaskPollFails[String(taskId)] = 0;
+                        this.ytStoryTaskId = taskId;
+                        try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
+                        await this.fetchActiveVideoTasks({ silent: true });
+                        if (data && data.queued) {
+                            const pos = Number(data.queue_position || 0);
+                            alert(`Pedido enviado para a fila${pos > 0 ? ` (posição ${pos})` : ''}.`);
+                        } else {
+                            alert('Pedido enviado para produção.');
+                        }
+                        try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) {}
+                        await this.pollStoryTask(taskId);
+                    } catch (e) {
+                        alert('Erro ao enviar para produção: ' + (e.message || e));
+                        this.ytStoryVideoLoading = false;
+                    } finally {
+                        this.topicSuggestionsEnqueueLoading = false;
                     }
                 },
                 async fetchAutoInsights() {
