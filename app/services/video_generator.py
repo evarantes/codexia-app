@@ -2117,12 +2117,50 @@ class VideoGenerator:
                 except Exception as e:
                     print(f"Erro ao adicionar música de fundo: {e}")
 
+            # #region debug-point C:duration-adjustment
+            def _dbg_duration_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+                try:
+                    import json as _json
+                    import urllib.request as _urlreq
+                    _p = ".dbg/video-duration-mismatch.env"
+                    _u, _s = "http://127.0.0.1:7777/event", "video-duration-mismatch"
+                    try:
+                        with open(_p, "r", encoding="utf-8") as _f:
+                            _c = _f.read()
+                        for _line in _c.splitlines():
+                            if _line.startswith("DEBUG_SERVER_URL="):
+                                _u = _line.split("=", 1)[1].strip() or _u
+                            elif _line.startswith("DEBUG_SESSION_ID="):
+                                _s = _line.split("=", 1)[1].strip() or _s
+                    except Exception:
+                        pass
+                    _payload = {
+                        "sessionId": _s,
+                        "runId": "pre-fix",
+                        "hypothesisId": hypothesis_id,
+                        "location": "app/services/video_generator.py:create_video_from_plan",
+                        "msg": f"[DEBUG] {msg}",
+                        "data": data or {},
+                    }
+                    _req = _urlreq.Request(_u, data=_json.dumps(_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+                    _urlreq.urlopen(_req, timeout=2).read()
+                except Exception:
+                    pass
+            # #endregion
+
             target_duration = plan.get("target_duration_sec")
             if target_duration:
                 try:
                     target_duration = float(target_duration)
                 except Exception:
                     target_duration = None
+            _dbg_duration_event("C", "pre-adjust final clip", {
+                "title": (plan.get("title") or "")[:160] if isinstance(plan, dict) else "",
+                "target_duration_sec": target_duration,
+                "scene_count": len(plan.get("scenes") or []) if isinstance(plan, dict) else 0,
+                "final_clip_duration_before": float(getattr(final_clip, "duration", 0) or 0) if final_clip else 0,
+                "final_audio_duration_before": (float(getattr(final_clip.audio, "duration", 0) or 0) if final_clip and getattr(final_clip, "audio", None) else 0),
+            })
             if target_duration and target_duration > 1 and final_clip:
                 try:
                     current = float(final_clip.duration or 0)
@@ -2159,6 +2197,11 @@ class VideoGenerator:
                         final_clip = self._set_clip_audio(combined, combined_audio)
                     except Exception as e:
                         print(f"Aviso: não foi possível ajustar duração para {target_duration}s: {e}")
+            _dbg_duration_event("D", "post-adjust final clip", {
+                "target_duration_sec": target_duration,
+                "final_clip_duration_after": float(getattr(final_clip, "duration", 0) or 0) if final_clip else 0,
+                "final_audio_duration_after": (float(getattr(final_clip.audio, "duration", 0) or 0) if final_clip and getattr(final_clip, "audio", None) else 0),
+            })
 
             # Output
             if progress_callback:
@@ -2330,6 +2373,12 @@ class VideoGenerator:
                 "output_path": output_path,
                 "output_exists": bool(os.path.exists(output_path)),
                 "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
+            })
+            _dbg_duration_event("E", "final output inspected", {
+                "output_path": output_path,
+                "output_exists": bool(os.path.exists(output_path)),
+                "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
+                "output_duration_sec": float(self._ffprobe_duration_seconds(output_path) or 0) if os.path.exists(output_path) else 0,
             })
             
             

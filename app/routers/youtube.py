@@ -1504,6 +1504,8 @@ class VideoRequest(BaseModel):
     override_title: Optional[str] = None
     override_description: Optional[str] = None
     override_tags: Optional[List[str]] = None
+    voice_style: Optional[str] = None
+    voice_gender: Optional[str] = None
 
 class StoryTextGenerateRequest(BaseModel):
     kind: str = "story"  # story | devotional
@@ -3174,12 +3176,62 @@ def download_scheduled_video(video_id: int, token: Optional[str] = Query(None), 
     return FileResponse(path, media_type="video/mp4", filename=os.path.basename(path))
 
 @router.get("/schedule")
-def get_schedule(db: Session = Depends(get_db)):
+def get_schedule(
+    q: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    video_type: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
     """Lista vídeos agendados; inclui description e error_msg para exibir erro na UI (Ver Erro)."""
+    from sqlalchemy import func, or_
+
     _sync_ready_production_to_scheduled(db)
-    videos = db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).all()
+
+    base_q = db.query(ScheduledVideo)
+
+    status_norm = (status or "").strip().lower()
+    if status_norm:
+        col = func.lower(func.trim(func.coalesce(ScheduledVideo.status, "")))
+        if status_norm in {"ready", "completed"}:
+            base_q = base_q.filter(col.in_(["ready", "completed"]))
+        elif status_norm == "published":
+            base_q = base_q.filter(col.like("%published%"))
+        elif status_norm in {"failed", "error"}:
+            base_q = base_q.filter(col.in_(["failed", "error"]))
+
+    vt_norm = (video_type or "").strip().lower()
+    if vt_norm and vt_norm in {"video", "short"}:
+        base_q = base_q.filter(func.lower(func.trim(func.coalesce(ScheduledVideo.video_type, ""))) == vt_norm)
+
+    q_norm = (q or "").strip()
+    if q_norm:
+        ql = q_norm.lower()
+        like_term = f"%{ql}%"
+        filters = [
+            func.lower(func.coalesce(ScheduledVideo.title, "")).like(like_term),
+            func.lower(func.coalesce(ScheduledVideo.theme, "")).like(like_term),
+            func.lower(func.coalesce(ScheduledVideo.description, "")).like(like_term),
+            func.lower(func.coalesce(ScheduledVideo.youtube_video_id, "")).like(like_term),
+        ]
+        if ql.isdigit():
+            try:
+                filters.append(ScheduledVideo.id == int(ql))
+            except Exception:
+                pass
+        base_q = base_q.filter(or_(*filters))
+
+    total = int(base_q.count() or 0)
+    rows = (
+        base_q.order_by(ScheduledVideo.id.desc())
+        .offset(int(offset or 0))
+        .limit(int(limit or 200))
+        .all()
+    )
+
     result = []
-    for v in videos:
+    for v in rows:
         desc = v.description or ""
         err = ""
         if "[ERRO]" in desc:
@@ -3203,7 +3255,11 @@ def get_schedule(db: Session = Depends(get_db)):
             "voice_style": getattr(v, "voice_style", "human"),
             "voice_gender": getattr(v, "voice_gender", "female"),
         })
-    return result
+
+    off = int(offset or 0)
+    lim = int(limit or 200)
+    has_more = (off + len(result)) < total
+    return {"items": result, "total": total, "limit": lim, "offset": off, "has_more": has_more}
 
 @router.get("/auto_insights")
 def get_auto_insights():
@@ -3952,6 +4008,41 @@ def process_video_generation(request: VideoRequest, task_id):
         if str((t.get("status") or "")).lower() == "cancelled" or _cancel_all_active():
             raise _TaskCancelled()
 
+    # #region debug-point A:duration-request-flow
+    def _dbg_duration_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+        try:
+            import json as _json
+            import urllib.request as _urlreq
+            _p = ".dbg/video-duration-mismatch.env"
+            _u, _s = "http://127.0.0.1:7777/event", "video-duration-mismatch"
+            try:
+                with open(_p, "r", encoding="utf-8") as _f:
+                    _c = _f.read()
+                for _line in _c.splitlines():
+                    if _line.startswith("DEBUG_SERVER_URL="):
+                        _u = _line.split("=", 1)[1].strip() or _u
+                    elif _line.startswith("DEBUG_SESSION_ID="):
+                        _s = _line.split("=", 1)[1].strip() or _s
+            except Exception:
+                pass
+            _payload = {
+                "sessionId": _s,
+                "runId": "pre-fix",
+                "hypothesisId": hypothesis_id,
+                "location": "app/routers/youtube.py:process_video_generation",
+                "msg": f"[DEBUG] {msg}",
+                "data": data or {},
+            }
+            _req = _urlreq.Request(
+                _u,
+                data=_json.dumps(_payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            _urlreq.urlopen(_req, timeout=2).read()
+        except Exception:
+            pass
+    # #endregion
+
     redis_lock = None
     file_lock = None
     try:
@@ -3982,6 +4073,27 @@ def process_video_generation(request: VideoRequest, task_id):
         kind_norm = (request.kind or "").strip().lower()
         if kind_norm not in {"story", "devotional"}:
             kind_norm = "story"
+        try:
+            requested_minutes = int(getattr(request, "duration", 5) or 5)
+        except Exception:
+            requested_minutes = 5
+        requested_minutes = max(1, min(60, requested_minutes))
+        voice_style = (getattr(request, "voice_style", None) or "human").strip() or "human"
+        voice_gender = (getattr(request, "voice_gender", None) or "female").strip().lower() or "female"
+        if voice_gender not in {"male", "female"}:
+            voice_gender = "female"
+        _dbg_duration_event("A", "request normalized", {
+            "task_id": task_id,
+            "mode": getattr(request, "mode", None),
+            "kind": getattr(request, "kind", None),
+            "topic": (getattr(request, "topic", None) or "")[:160],
+            "duration_raw": getattr(request, "duration", None),
+            "requested_minutes": requested_minutes,
+            "voice_style": voice_style,
+            "voice_gender": voice_gender,
+            "has_story_content": bool((getattr(request, "story_content", None) or "").strip()),
+            "selected_images_count": len(getattr(request, "selected_images", None) or []),
+        })
         topic_display = request.topic if request.mode == 'topic' else ("Devocional" if kind_norm == "devotional" else "História Personalizada")
         update_task(task_id, status="processing", progress=5, message=f"Iniciando geração sobre: {topic_display}")
         print(f"Iniciando geração de vídeo ({request.mode}): {topic_display}")
@@ -4149,7 +4261,7 @@ def process_video_generation(request: VideoRequest, task_id):
         if request.mode == 'story' and request.story_content:
             minutes = 10
             try:
-                minutes = int(request.duration or 10)
+                minutes = requested_minutes
             except Exception:
                 minutes = 10
             minutes = max(1, min(60, minutes))
@@ -4157,7 +4269,7 @@ def process_video_generation(request: VideoRequest, task_id):
         else:
             # Fallback to topic mode if no story content
             topic = request.topic or "Motivação Genérica"
-            script = ai_service.generate_motivational_script(topic, request.duration)
+            script = ai_service.generate_motivational_script(topic, requested_minutes)
             
         print("Roteiro gerado/estruturado.")
         _raise_if_cancelled()
@@ -4272,7 +4384,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 pass
 
             try:
-                target = _target_scene_count(request.duration)
+                target = _target_scene_count(requested_minutes)
                 script["disable_scene_text_split"] = True
                 raw_scenes = script.get("scenes")
                 compacted = _compact_scenes(raw_scenes, target)
@@ -4280,6 +4392,18 @@ def process_video_generation(request: VideoRequest, task_id):
                     script["scenes"] = compacted
             except Exception:
                 pass
+
+            script["target_duration_sec"] = int(requested_minutes * 60)
+            script["target_duration_min"] = int(requested_minutes)
+            _dbg_duration_event("B", "script prepared for render", {
+                "task_id": task_id,
+                "requested_minutes": requested_minutes,
+                "target_duration_sec": script.get("target_duration_sec"),
+                "target_duration_min": script.get("target_duration_min"),
+                "scene_count": len(script.get("scenes") or []),
+                "title": (script.get("title") or "")[:160],
+                "description_len": len(script.get("description") or ""),
+            })
 
             selected = []
             if request.selected_images and isinstance(request.selected_images, list):
@@ -4301,8 +4425,19 @@ def process_video_generation(request: VideoRequest, task_id):
             update_task(task_id, progress=task_progress, message=message)
             _raise_if_cancelled()
             
-        video_result = video_service.create_video_from_plan(script, aspect_ratio="16:9", progress_callback=progress_callback)
+        video_result = video_service.create_video_from_plan(
+            script,
+            aspect_ratio="16:9",
+            progress_callback=progress_callback,
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+        )
         video_path = video_result["video_url"]
+        _dbg_duration_event("E", "video result returned", {
+            "task_id": task_id,
+            "video_url": video_path,
+            "result_keys": sorted(list((video_result or {}).keys())) if isinstance(video_result, dict) else [],
+        })
         _raise_if_cancelled()
         
         # Path absoluto para upload (compatível com Docker e /data/media)
