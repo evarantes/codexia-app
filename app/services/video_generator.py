@@ -2163,6 +2163,37 @@ class VideoGenerator:
             # Output
             if progress_callback:
                 progress_callback(95, "Renderizando arquivo final...")
+
+            # #region debug-point A:render-write-phase
+            def _dbg_render_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+                try:
+                    import json as _json
+                    import urllib.request as _urlreq
+                    _p = ".dbg/video-render-stall.env"
+                    _u, _s = "http://127.0.0.1:7777/event", "video-render-stall"
+                    try:
+                        with open(_p, "r", encoding="utf-8") as _f:
+                            _c = _f.read()
+                        for _line in _c.splitlines():
+                            if _line.startswith("DEBUG_SERVER_URL="):
+                                _u = _line.split("=", 1)[1].strip() or _u
+                            elif _line.startswith("DEBUG_SESSION_ID="):
+                                _s = _line.split("=", 1)[1].strip() or _s
+                    except Exception:
+                        pass
+                    _payload = {
+                        "sessionId": _s,
+                        "runId": "pre-fix",
+                        "hypothesisId": hypothesis_id,
+                        "location": "app/services/video_generator.py:write_videofile",
+                        "msg": f"[DEBUG] {msg}",
+                        "data": data or {},
+                    }
+                    _req = _urlreq.Request(_u, data=_json.dumps(_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+                    _urlreq.urlopen(_req, timeout=2).read()
+                except Exception:
+                    pass
+            # #endregion
                 
             filename = f"{uuid.uuid4()}.mp4"
             output_path = os.path.join(self.output_dir, filename)
@@ -2188,6 +2219,11 @@ class VideoGenerator:
                                     self._cb(min(99, pct), "Renderizando arquivo final...")
                                 except Exception:
                                     pass
+                                try:
+                                    if value == 1 or value == total or (old_value is not None and int(value) != int(old_value) and int(value) % 25 == 0):
+                                        _dbg_render_event("A", "write_videofile progress", {"bar": bar, "value": value, "total": total, "task_progress": min(99, pct)})
+                                except Exception:
+                                    pass
                     write_logger = RenderProgressLogger(progress_callback)
                 except Exception:
                     pass
@@ -2206,6 +2242,14 @@ class VideoGenerator:
             logger_kw = {"logger": None}
             
             debug_ctx["stage"] = "write_videofile"
+            _render_started_at = time.time()
+            _dbg_render_event("A", "write_videofile start", {
+                "output_path": output_path,
+                "clip_count": len(clips or []),
+                "bitrate": bitrate,
+                "is_long_video": bool(is_long_video),
+                "final_clip": self._clip_debug_info(final_clip),
+            })
             try:
                 final_clip.write_videofile(
                     output_path, 
@@ -2222,7 +2266,18 @@ class VideoGenerator:
                     ],
                     **logger_kw
                 )
+                _dbg_render_event("A", "write_videofile success", {
+                    "elapsed_sec": round(time.time() - _render_started_at, 2),
+                    "output_exists": bool(os.path.exists(output_path)),
+                    "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
+                })
             except Exception as e:
+                _dbg_render_event("B", "write_videofile exception", {
+                    "elapsed_sec": round(time.time() - _render_started_at, 2),
+                    "error": str(e),
+                    "output_exists": bool(os.path.exists(output_path)),
+                    "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
+                })
                 try:
                     import traceback
                     failures = []
@@ -2271,6 +2326,11 @@ class VideoGenerator:
                     pass
                 raise
             output_path = self._ensure_playable_mp4(output_path)
+            _dbg_render_event("E", "post-process playable mp4", {
+                "output_path": output_path,
+                "output_exists": bool(os.path.exists(output_path)),
+                "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
+            })
             
             
             abs_path = os.path.abspath(output_path)
