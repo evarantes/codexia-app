@@ -156,6 +156,56 @@ class AIContentGenerator:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        def _http_chat(url: str, api_key: str, extra_headers: Optional[Dict[str, str]], model_id: str, allow_json_mode: bool) -> str:
+            hdrs = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            if isinstance(extra_headers, dict):
+                for k, v in extra_headers.items():
+                    if isinstance(k, str) and k and isinstance(v, str) and v:
+                        hdrs[k] = v
+            payload: Dict[str, Any] = {
+                "model": model_id,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": 4096,
+            }
+            if allow_json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            r = requests.post(url, json=payload, headers=hdrs, timeout=180)
+            if int(getattr(r, "status_code", 0) or 0) >= 400:
+                body = ""
+                try:
+                    body = (r.text or "")[:900]
+                except Exception:
+                    body = ""
+                body = " ".join(str(body).split())
+                raise Exception(f"HTTP {r.status_code} em {url}: {body}".strip())
+            try:
+                data = r.json()
+            except Exception:
+                raw = ""
+                try:
+                    raw = (r.text or "")[:900]
+                except Exception:
+                    raw = ""
+                raw = " ".join(str(raw).split())
+                raise Exception(f"Resposta não-JSON em {url}: {raw}".strip())
+            text = ""
+            try:
+                choices = data.get("choices") if isinstance(data, dict) else None
+                if isinstance(choices, list) and choices:
+                    msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+                    if isinstance(msg, dict):
+                        text = msg.get("content") or ""
+            except Exception:
+                text = ""
+            text = str(text or "").strip()
+            if not text:
+                raise Exception(f"Resposta vazia do modelo {model_id}")
+            return text
+
         def _extract_content(response) -> str:
             try:
                 content = response.choices[0].message.content
@@ -195,17 +245,29 @@ class AIContentGenerator:
         def _try_openrouter() -> Optional[str]:
             if not (self.openrouter_key or "").strip():
                 return None
-            or_client = openai.OpenAI(
-                api_key=self.openrouter_key,
-                base_url="https://openrouter.ai/api/v1",
-                default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"},
-                timeout=180.0,
-            )
+            or_client = None
+            try:
+                or_client = openai.OpenAI(
+                    api_key=self.openrouter_key,
+                    base_url="https://openrouter.ai/api/v1",
+                    default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"},
+                    timeout=180.0,
+                )
+            except TypeError:
+                try:
+                    or_client = openai.OpenAI(api_key=self.openrouter_key, base_url="https://openrouter.ai/api/v1")
+                except Exception as e:
+                    errors.append(f"OpenRouter[client]: {e}")
+                    or_client = None
+            except Exception as e:
+                errors.append(f"OpenRouter[client]: {e}")
+                or_client = None
             candidate_models = []
             if raw_model and raw_model_norm not in {"auto", "automático", "automatico", "melhor", "best", "openrouter/auto"}:
                 candidate_models.append(raw_model)
             candidate_models.extend(["openai/gpt-4o-mini", "openrouter/auto"])
             seen = set()
+            http_headers = {"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"}
             for model_id in candidate_models:
                 if not model_id or model_id in seen:
                     continue
@@ -216,7 +278,16 @@ class AIContentGenerator:
                         "json_mode": bool(json_mode),
                     })
                     try:
-                        text = _call_chat(or_client, model_id, allow_json_mode=bool(json_mode))
+                        if or_client is not None:
+                            text = _call_chat(or_client, model_id, allow_json_mode=bool(json_mode))
+                        else:
+                            text = _http_chat(
+                                "https://openrouter.ai/api/v1/chat/completions",
+                                self.openrouter_key,
+                                http_headers,
+                                model_id,
+                                allow_json_mode=bool(json_mode),
+                            )
                         self._dbg_textgen_event("B", "openrouter success", {
                             "model_id": model_id,
                             "response_len": len(str(text or "")),
@@ -225,7 +296,16 @@ class AIContentGenerator:
                         })
                         return text
                     except Exception:
-                        text = _call_chat(or_client, model_id, allow_json_mode=False)
+                        if or_client is not None:
+                            text = _call_chat(or_client, model_id, allow_json_mode=False)
+                        else:
+                            text = _http_chat(
+                                "https://openrouter.ai/api/v1/chat/completions",
+                                self.openrouter_key,
+                                http_headers,
+                                model_id,
+                                allow_json_mode=False,
+                            )
                         self._dbg_textgen_event("B", "openrouter success without json_mode", {
                             "model_id": model_id,
                             "response_len": len(str(text or "")),
@@ -244,7 +324,18 @@ class AIContentGenerator:
         def _try_openai() -> Optional[str]:
             if not (self.api_key or "").strip():
                 return None
-            oa_client = openai.OpenAI(api_key=self.api_key, timeout=180.0)
+            oa_client = None
+            try:
+                oa_client = openai.OpenAI(api_key=self.api_key, timeout=180.0)
+            except TypeError:
+                try:
+                    oa_client = openai.OpenAI(api_key=self.api_key)
+                except Exception as e:
+                    errors.append(f"OpenAI[client]: {e}")
+                    oa_client = None
+            except Exception as e:
+                errors.append(f"OpenAI[client]: {e}")
+                oa_client = None
             preferred = (os.getenv("OPENAI_TEXT_MODEL") or "").strip()
             candidate_models = [m for m in [preferred, "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o", "gpt-4.1"] if m]
             seen = set()
@@ -258,7 +349,16 @@ class AIContentGenerator:
                         "json_mode": bool(json_mode),
                     })
                     try:
-                        text = _call_chat(oa_client, model_id, allow_json_mode=bool(json_mode))
+                        if oa_client is not None:
+                            text = _call_chat(oa_client, model_id, allow_json_mode=bool(json_mode))
+                        else:
+                            text = _http_chat(
+                                "https://api.openai.com/v1/chat/completions",
+                                self.api_key,
+                                None,
+                                model_id,
+                                allow_json_mode=bool(json_mode),
+                            )
                         self._dbg_textgen_event("C", "openai direct success", {
                             "model_id": model_id,
                             "response_len": len(str(text or "")),
@@ -267,7 +367,16 @@ class AIContentGenerator:
                         })
                         return text
                     except Exception:
-                        text = _call_chat(oa_client, model_id, allow_json_mode=False)
+                        if oa_client is not None:
+                            text = _call_chat(oa_client, model_id, allow_json_mode=False)
+                        else:
+                            text = _http_chat(
+                                "https://api.openai.com/v1/chat/completions",
+                                self.api_key,
+                                None,
+                                model_id,
+                                allow_json_mode=False,
+                            )
                         self._dbg_textgen_event("C", "openai direct success without json_mode", {
                             "model_id": model_id,
                             "response_len": len(str(text or "")),
@@ -1070,8 +1179,7 @@ class AIContentGenerator:
                 "error": str(e)[:500],
             })
             print(f"Erro ao gerar {safe_kind}: {e}")
-            title = "História" if kind_norm == "story" else ("Devocional" if kind_norm == "devotional" else "Reflexão com Oração")
-            return f"{title} (Falha na IA)\n\n{instruction}".strip()
+            raise
 
     def _normalize_narration_text(self, raw: str) -> str:
         text = (raw or "").strip()

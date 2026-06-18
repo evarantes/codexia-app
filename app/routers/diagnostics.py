@@ -147,13 +147,20 @@ def test_ai_connection(db: Session = Depends(get_db)):
 def test_ai_text():
     try:
         ai = AIContentGenerator()
+        ai._load_config()
+        cfg = {
+            "provider_setting": (getattr(ai, "provider", None) or ""),
+            "has_openrouter_key": bool((getattr(ai, "openrouter_key", None) or "").strip()),
+            "has_openai_key": bool((getattr(ai, "api_key", None) or "").strip()),
+            "openrouter_model": (getattr(ai, "openrouter_model", None) or ""),
+        }
         text_out = ai._generate_text(
             "Responda com uma frase curta em pt-BR confirmando que o gerador de texto está funcionando.",
             system_prompt="Você é um assistente de diagnóstico. Responda apenas com texto simples.",
             temperature=0.2,
             json_mode=False,
         )
-        return {"ok": True, "text": (text_out or "")[:800]}
+        return {"ok": True, "text": (text_out or "")[:800], "config": cfg}
     except Exception as e:
         status = getattr(e, "status_code", None)
         if status is None:
@@ -166,7 +173,19 @@ def test_ai_text():
                 body = resp_obj.json() if resp_obj is not None else None
             except Exception:
                 body = None
-        raise HTTPException(status_code=503, detail={"exception": str(e), "status": status, "body": body})
+        cfg = None
+        try:
+            ai = AIContentGenerator()
+            ai._load_config()
+            cfg = {
+                "provider_setting": (getattr(ai, "provider", None) or ""),
+                "has_openrouter_key": bool((getattr(ai, "openrouter_key", None) or "").strip()),
+                "has_openai_key": bool((getattr(ai, "api_key", None) or "").strip()),
+                "openrouter_model": (getattr(ai, "openrouter_model", None) or ""),
+            }
+        except Exception:
+            cfg = None
+        raise HTTPException(status_code=503, detail={"exception": str(e)[:900], "status": status, "body": body, "config": cfg})
 
 
 def test_openai_image():

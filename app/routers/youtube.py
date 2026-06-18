@@ -1938,13 +1938,23 @@ def generate_story_text(request: StoryTextGenerateRequest):
     kind = (request.kind or "story").strip().lower()
     if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
-    text = ai_service.generate_story_or_devotional_text(
-        instruction=request.instruction,
-        kind=kind,
-        duration_min_minutes=request.duration_min,
-        duration_max_minutes=request.duration_max,
-    )
-    return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+    try:
+        text = ai_service.generate_story_or_devotional_text(
+            instruction=request.instruction,
+            kind=kind,
+            duration_min_minutes=request.duration_min,
+            duration_max_minutes=request.duration_max,
+        )
+        return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "ai_text_generation_failed",
+                "message": str(e)[:900],
+                "kind": kind,
+            },
+        )
 
 @router.post("/story/improve_text")
 def improve_story_text(request: StoryTextImproveRequest):
