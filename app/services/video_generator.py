@@ -684,6 +684,8 @@ class VideoGenerator:
             openai_voice = "my_voice"
         elif style in ["human", "humana"] or style.startswith("human"):
             openai_voice = "onyx" if gender == "male" else "nova"
+        elif style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
+            openai_voice = "echo" if gender == "male" else "nova"
         elif style in ["child", "infantil"]:
             openai_voice = "echo" if gender == "male" else "shimmer"
         elif style in ["angelic", "angelical"]:
@@ -715,6 +717,9 @@ class VideoGenerator:
             if "calma" in t or "relaxa" in t:
                 base_style = 0.10
                 base_stability = 0.84
+            if any(k in tag for k in ["soft", "suave", "relax", "prayer", "oração", "oracao", "meditat"]):
+                base_style = 0.09
+                base_stability = 0.88
             if "young" in tag or "jovem" in tag:
                 base_style = min(0.30, base_style + 0.04)
             if "mature" in tag or "madura" in tag or "indign" in tag or "angel" in tag:
@@ -753,6 +758,9 @@ class VideoGenerator:
             if "mature" in tag or "madura" in tag:
                 rate = "-2%" if rate == "+0%" else rate
                 pitch = "-2Hz" if is_male else "-1Hz"
+            if any(k in tag for k in ["soft", "suave", "relax", "prayer", "oração", "oracao", "meditat"]):
+                rate = "-10%"
+                pitch = "-2Hz" if is_male else "-1Hz"
             volume = "+0%"
             if calm:
                 volume = "-4%"
@@ -760,6 +768,8 @@ class VideoGenerator:
                 volume = "+4%"
             elif qmarks >= 1:
                 volume = "+2%"
+            if any(k in tag for k in ["soft", "suave", "relax", "prayer", "oração", "oracao", "meditat"]):
+                volume = "-6%"
             return rate, pitch, volume
 
         def _edge_ssml(txt: str, voice_name: str, rate: str, pitch: str, volume: str, lang_tag: str) -> str:
@@ -1390,6 +1400,9 @@ class VideoGenerator:
                 plan = self.review_plan(plan)
             except Exception:
                 pass
+            force_single_bg = bool(plan.get("single_bg")) or str(plan.get("image_mode") or "").strip().lower() == "single"
+            if force_single_bg:
+                use_single_bg = True
             raw_scenes = plan.get('scenes', [])
             
             # Validação extra: Se 'scenes' não for lista, tenta corrigir ou usa lista vazia
@@ -1553,7 +1566,9 @@ class VideoGenerator:
                         selected_image_paths.append(p)
             if selected_image_paths:
                 selected_primary_path = selected_image_paths[0]
-                if not music_file_path:
+                if force_single_bg:
+                    selected_image_paths = [selected_primary_path]
+                elif not music_file_path:
                     use_single_bg = False
 
             if use_single_bg and scenes and not music_file_path and not selected_image_paths:
@@ -2059,13 +2074,16 @@ class VideoGenerator:
             gc.collect()
                 
             music_mood = plan.get('music_mood', 'drama')
+            music_prompt = (plan.get("music_prompt") or "").strip() if isinstance(plan, dict) else ""
+            fallback_music_mood = (plan.get("music_mood_fallback") or music_mood) if isinstance(plan, dict) else music_mood
             music_path = None
             used_music_credit = None
             
             # Tenta gerar música exclusiva com IA
             if self.ai_service:
                 print(f"Gerando música exclusiva para mood: {music_mood}...")
-                music_content = self.ai_service.generate_music(f"{music_mood} style, inspired by {title}")
+                music_brief = music_prompt or f"{music_mood} style, inspired by {title}"
+                music_content = self.ai_service.generate_music(music_brief)
                 if music_content:
                     filename = f"music_{uuid.uuid4()}.wav" 
                     generated_music_path = os.path.join(self.output_dir, filename)
@@ -2076,7 +2094,7 @@ class VideoGenerator:
             # Se falhou ou não tem IA, usa biblioteca local
             if not music_path or not os.path.exists(music_path):
                  self._ensure_fallback_music()
-                 local_path = os.path.join("app/static/music", f"{music_mood}.mp3")
+                 local_path = os.path.join("app/static/music", f"{fallback_music_mood}.mp3")
                  if os.path.exists(local_path):
                      music_path = local_path
                  else:
@@ -2100,15 +2118,22 @@ class VideoGenerator:
                 try:
                     bg_music = AudioFileClip(music_path)
                     self._assert_clip_not_none(bg_music, "bg_music_clip", {"path": music_path})
+                    has_voice_audio = bool(final_clip and getattr(final_clip, "audio", None))
+                    try:
+                        bg_volume_raw = (os.getenv("VIDEO_BG_MUSIC_VOLUME") or "").strip()
+                        bg_volume = float(bg_volume_raw) if bg_volume_raw else (0.035 if has_voice_audio else 0.08)
+                    except Exception:
+                        bg_volume = 0.035 if has_voice_audio else 0.08
+                    bg_volume = max(0.0, min(0.2, bg_volume))
                     
                     if bg_music.duration < final_clip.duration:
                         num_loops = int(final_clip.duration / bg_music.duration) + 1
                         bg_music = concatenate_audioclips([bg_music] * num_loops)
                     
                     bg_music = bg_music.with_duration(final_clip.duration)
-                    bg_music = bg_music.with_volume_scaled(0.1)
+                    bg_music = bg_music.with_volume_scaled(bg_volume)
                     
-                    if final_clip.audio:
+                    if has_voice_audio:
                         final_audio = CompositeAudioClip([bg_music, final_clip.audio])
                     else:
                         final_audio = bg_music
@@ -2117,50 +2142,12 @@ class VideoGenerator:
                 except Exception as e:
                     print(f"Erro ao adicionar música de fundo: {e}")
 
-            # #region debug-point C:duration-adjustment
-            def _dbg_duration_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
-                try:
-                    import json as _json
-                    import urllib.request as _urlreq
-                    _p = ".dbg/video-duration-mismatch.env"
-                    _u, _s = "http://127.0.0.1:7777/event", "video-duration-mismatch"
-                    try:
-                        with open(_p, "r", encoding="utf-8") as _f:
-                            _c = _f.read()
-                        for _line in _c.splitlines():
-                            if _line.startswith("DEBUG_SERVER_URL="):
-                                _u = _line.split("=", 1)[1].strip() or _u
-                            elif _line.startswith("DEBUG_SESSION_ID="):
-                                _s = _line.split("=", 1)[1].strip() or _s
-                    except Exception:
-                        pass
-                    _payload = {
-                        "sessionId": _s,
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": "app/services/video_generator.py:create_video_from_plan",
-                        "msg": f"[DEBUG] {msg}",
-                        "data": data or {},
-                    }
-                    _req = _urlreq.Request(_u, data=_json.dumps(_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                    _urlreq.urlopen(_req, timeout=2).read()
-                except Exception:
-                    pass
-            # #endregion
-
             target_duration = plan.get("target_duration_sec")
             if target_duration:
                 try:
                     target_duration = float(target_duration)
                 except Exception:
                     target_duration = None
-            _dbg_duration_event("C", "pre-adjust final clip", {
-                "title": (plan.get("title") or "")[:160] if isinstance(plan, dict) else "",
-                "target_duration_sec": target_duration,
-                "scene_count": len(plan.get("scenes") or []) if isinstance(plan, dict) else 0,
-                "final_clip_duration_before": float(getattr(final_clip, "duration", 0) or 0) if final_clip else 0,
-                "final_audio_duration_before": (float(getattr(final_clip.audio, "duration", 0) or 0) if final_clip and getattr(final_clip, "audio", None) else 0),
-            })
             if target_duration and target_duration > 1 and final_clip:
                 try:
                     current = float(final_clip.duration or 0)
@@ -2197,11 +2184,6 @@ class VideoGenerator:
                         final_clip = self._set_clip_audio(combined, combined_audio)
                     except Exception as e:
                         print(f"Aviso: não foi possível ajustar duração para {target_duration}s: {e}")
-            _dbg_duration_event("D", "post-adjust final clip", {
-                "target_duration_sec": target_duration,
-                "final_clip_duration_after": float(getattr(final_clip, "duration", 0) or 0) if final_clip else 0,
-                "final_audio_duration_after": (float(getattr(final_clip.audio, "duration", 0) or 0) if final_clip and getattr(final_clip, "audio", None) else 0),
-            })
 
             # Output
             if progress_callback:
@@ -2373,12 +2355,6 @@ class VideoGenerator:
                 "output_path": output_path,
                 "output_exists": bool(os.path.exists(output_path)),
                 "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
-            })
-            _dbg_duration_event("E", "final output inspected", {
-                "output_path": output_path,
-                "output_exists": bool(os.path.exists(output_path)),
-                "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
-                "output_duration_sec": float(self._ffprobe_duration_seconds(output_path) or 0) if os.path.exists(output_path) else 0,
             })
             
             

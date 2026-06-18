@@ -1496,7 +1496,7 @@ class VideoRequest(BaseModel):
     duration: int = 5
     auto_upload: bool = False
     mode: str = "topic" # topic | story
-    kind: Optional[str] = None  # story | devotional (apenas quando mode=story)
+    kind: Optional[str] = None  # story | devotional | prayer (apenas quando mode=story)
     story_content: Optional[str] = None
     custom_image_paths: Optional[List[str]] = None
     selected_images: Optional[List[str]] = None
@@ -1506,27 +1506,29 @@ class VideoRequest(BaseModel):
     override_tags: Optional[List[str]] = None
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
+    image_mode: Optional[str] = None  # auto | single | multiple
 
 class StoryTextGenerateRequest(BaseModel):
-    kind: str = "story"  # story | devotional
+    kind: str = "story"  # story | devotional | prayer
     instruction: str
     duration_min: int = 10
     duration_max: Optional[int] = None
 
 class StoryTextImproveRequest(BaseModel):
-    kind: str = "story"  # story | devotional
+    kind: str = "story"  # story | devotional | prayer
     instruction: str = ""
     original_text: str
     duration_min: int = 10
     duration_max: Optional[int] = None
 class StoryImagesRequest(BaseModel):
-    kind: str = "story"  # story | devotional
+    kind: str = "story"  # story | devotional | prayer
     story_content: str
     count: int = 4
     aspect_ratio: str = "16:9"  # 16:9 | 9:16
+    image_mode: Optional[str] = None  # single | multiple
 
 class StoryShortsRequest(BaseModel):
-    kind: str = "story"  # story | devotional
+    kind: str = "story"  # story | devotional | prayer
     story_content: str
     count: int = 3
     selected_images: Optional[List[str]] = None
@@ -1554,12 +1556,17 @@ class ContentFactoryRegenerateThumbnailRequest(BaseModel):
 def _generate_story_images_payload(request: StoryImagesRequest, progress_callback=None) -> Dict[str, Any]:
     ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()
-    if kind not in {"story", "devotional"}:
+    if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
+    image_mode = (request.image_mode or "").strip().lower()
+    if image_mode not in {"single", "multiple"}:
+        image_mode = "single" if kind == "prayer" else "multiple"
 
     try:
         count = int(request.count or 1)
     except Exception:
+        count = 1
+    if image_mode == "single":
         count = 1
     count = max(1, min(12, count))
 
@@ -1626,7 +1633,7 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
             p = ""
         p = (p or "").strip()
         if not p:
-            safe_kind = "story" if kind == "story" else "devotional"
+            safe_kind = "story" if kind == "story" else ("devotional" if kind == "devotional" else "prayer reflection")
             p = (
                 f"Photorealistic cinematic photography of a scene inspired by this {safe_kind} excerpt: {chunk}. "
                 "Natural lighting, pleasant mood, realistic humans (no dolls), proportional anatomy, avoid close-up portraits. "
@@ -1667,7 +1674,7 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
         )
 
     _progress(100, "Imagens prontas.")
-    return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio}
+    return {"count": len(images), "images": images, "kind": kind, "aspect_ratio": aspect_ratio, "image_mode": image_mode}
 
 class ImageBankItem(BaseModel):
     url: str
@@ -1684,7 +1691,7 @@ def save_images_to_bank(request: ImageBankSaveRequest, db: Session = Depends(get
     if not isinstance(items, list) or not items:
         raise HTTPException(status_code=400, detail="selected_images é obrigatório.")
     kind = (request.kind or "").strip().lower()
-    if kind and kind not in {"story", "devotional"}:
+    if kind and kind not in {"story", "devotional", "prayer"}:
         kind = ""
     aspect = (request.aspect_ratio or "").strip()
     static_root = os.path.abspath(os.path.join("app", "static"))
@@ -1791,7 +1798,7 @@ def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callbac
     try:
         ai_service = AIContentGenerator()
         kind = (request.kind or "story").strip().lower()
-        if kind not in {"story", "devotional"}:
+        if kind not in {"story", "devotional", "prayer"}:
             kind = "story"
 
         try:
@@ -1929,7 +1936,7 @@ class QueueGeneratedVideoRequest(BaseModel):
 def generate_story_text(request: StoryTextGenerateRequest):
     ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()
-    if kind not in {"story", "devotional"}:
+    if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
     text = ai_service.generate_story_or_devotional_text(
         instruction=request.instruction,
@@ -1943,7 +1950,7 @@ def generate_story_text(request: StoryTextGenerateRequest):
 def improve_story_text(request: StoryTextImproveRequest):
     ai_service = AIContentGenerator()
     kind = (request.kind or "story").strip().lower()
-    if kind not in {"story", "devotional"}:
+    if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
     instruction = (request.instruction or "").strip() or "Melhore o texto mantendo o sentido e aumentando a retenção."
     text = ai_service.improve_story_or_devotional_text(
@@ -1958,7 +1965,7 @@ def improve_story_text(request: StoryTextImproveRequest):
 @router.post("/story/draft")
 def save_story_draft(request: StoryDraftSaveRequest, db: Session = Depends(get_db)):
     kind = (request.kind or "story").strip().lower()
-    if kind not in {"story", "devotional"}:
+    if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
     content = (request.content or "").strip()
     if not content:
@@ -1970,7 +1977,7 @@ def save_story_draft(request: StoryDraftSaveRequest, db: Session = Depends(get_d
         base = (meta.get("instruction") or meta.get("prompt") or "").strip()
         if not base:
             base = content.split("\n", 1)[0].strip()
-        title = base[:80] if base else ("História" if kind == "story" else "Devocional")
+        title = base[:80] if base else ("História" if kind == "story" else ("Devocional" if kind == "devotional" else "Reflexão com Oração"))
 
     draft = StoryDraft(
         title=title,
@@ -2337,7 +2344,7 @@ def process_create_shorts_from_scheduled_video(video_id: int, payload: Dict[str,
 
         if isinstance(data, dict):
             raw_kind = str(data.get("kind") or "").strip().lower()
-            if raw_kind in {"story", "devotional"}:
+            if raw_kind in {"story", "devotional", "prayer"}:
                 kind = raw_kind
 
             scenes = data.get("scenes")
@@ -2480,7 +2487,7 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
         raise HTTPException(status_code=400, detail="video_url é obrigatório.")
 
     kind = (request.kind or "").strip().lower()
-    if kind not in {"story", "devotional"}:
+    if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
 
     video_type = (request.video_type or "").strip().lower() or "video"
@@ -4008,41 +4015,6 @@ def process_video_generation(request: VideoRequest, task_id):
         if str((t.get("status") or "")).lower() == "cancelled" or _cancel_all_active():
             raise _TaskCancelled()
 
-    # #region debug-point A:duration-request-flow
-    def _dbg_duration_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
-        try:
-            import json as _json
-            import urllib.request as _urlreq
-            _p = ".dbg/video-duration-mismatch.env"
-            _u, _s = "http://127.0.0.1:7777/event", "video-duration-mismatch"
-            try:
-                with open(_p, "r", encoding="utf-8") as _f:
-                    _c = _f.read()
-                for _line in _c.splitlines():
-                    if _line.startswith("DEBUG_SERVER_URL="):
-                        _u = _line.split("=", 1)[1].strip() or _u
-                    elif _line.startswith("DEBUG_SESSION_ID="):
-                        _s = _line.split("=", 1)[1].strip() or _s
-            except Exception:
-                pass
-            _payload = {
-                "sessionId": _s,
-                "runId": "pre-fix",
-                "hypothesisId": hypothesis_id,
-                "location": "app/routers/youtube.py:process_video_generation",
-                "msg": f"[DEBUG] {msg}",
-                "data": data or {},
-            }
-            _req = _urlreq.Request(
-                _u,
-                data=_json.dumps(_payload, ensure_ascii=False).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-            )
-            _urlreq.urlopen(_req, timeout=2).read()
-        except Exception:
-            pass
-    # #endregion
-
     redis_lock = None
     file_lock = None
     try:
@@ -4071,30 +4043,22 @@ def process_video_generation(request: VideoRequest, task_id):
                 file_lock = None
 
         kind_norm = (request.kind or "").strip().lower()
-        if kind_norm not in {"story", "devotional"}:
+        if kind_norm not in {"story", "devotional", "prayer"}:
             kind_norm = "story"
+        image_mode = (getattr(request, "image_mode", None) or "").strip().lower()
+        if image_mode not in {"single", "multiple"}:
+            image_mode = "single" if kind_norm == "prayer" else "multiple"
         try:
             requested_minutes = int(getattr(request, "duration", 5) or 5)
         except Exception:
             requested_minutes = 5
         requested_minutes = max(1, min(60, requested_minutes))
-        voice_style = (getattr(request, "voice_style", None) or "human").strip() or "human"
+        default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"
+        voice_style = (getattr(request, "voice_style", None) or default_voice_style).strip() or default_voice_style
         voice_gender = (getattr(request, "voice_gender", None) or "female").strip().lower() or "female"
         if voice_gender not in {"male", "female"}:
             voice_gender = "female"
-        _dbg_duration_event("A", "request normalized", {
-            "task_id": task_id,
-            "mode": getattr(request, "mode", None),
-            "kind": getattr(request, "kind", None),
-            "topic": (getattr(request, "topic", None) or "")[:160],
-            "duration_raw": getattr(request, "duration", None),
-            "requested_minutes": requested_minutes,
-            "voice_style": voice_style,
-            "voice_gender": voice_gender,
-            "has_story_content": bool((getattr(request, "story_content", None) or "").strip()),
-            "selected_images_count": len(getattr(request, "selected_images", None) or []),
-        })
-        topic_display = request.topic if request.mode == 'topic' else ("Devocional" if kind_norm == "devotional" else "História Personalizada")
+        topic_display = request.topic if request.mode == 'topic' else ("Devocional" if kind_norm == "devotional" else ("Reflexão com Oração" if kind_norm == "prayer" else "História Personalizada"))
         update_task(task_id, status="processing", progress=5, message=f"Iniciando geração sobre: {topic_display}")
         print(f"Iniciando geração de vídeo ({request.mode}): {topic_display}")
         
@@ -4117,7 +4081,7 @@ def process_video_generation(request: VideoRequest, task_id):
             import re as _re
             t = str(story_text or "").strip()
             if not t:
-                base_title = "Devocional" if kind == "devotional" else "História"
+                base_title = "Devocional" if kind == "devotional" else ("Reflexão com Oração" if kind == "prayer" else "História")
                 return {"title": base_title, "description": "", "tags": [], "scenes": [{"text": "Conteúdo em preparação.", "image_prompt": "cinematic inspiring scene"}]}
 
             t = t.replace("\r\n", "\n").replace("\r", "\n")
@@ -4146,7 +4110,7 @@ def process_video_generation(request: VideoRequest, task_id):
             cur_words = _count_words(t)
             if cur_words < min_words:
                 try:
-                    safe_kind = "devocional" if kind == "devotional" else "história"
+                    safe_kind = "devocional" if kind == "devotional" else ("reflexão com oração" if kind == "prayer" else "história")
                     instr = (
                         f"Reescreva e EXPANDA este(a) {safe_kind} para ter pelo menos {duration_minutes} minutos de narração. "
                         "Mantenha o sentido, os personagens e a mensagem do texto base, mas aprofunde com detalhes, exemplos, aplicações e reflexões.\n\n"
@@ -4169,7 +4133,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 if s:
                     first_line = s
                     break
-            title_guess = first_line[:120] if first_line else ("Devocional" if kind == "devotional" else "História")
+            title_guess = first_line[:120] if first_line else ("Devocional" if kind == "devotional" else ("Reflexão com Oração" if kind == "prayer" else "História"))
             try:
                 if hasattr(ai_service, "generate_strong_title_from_text"):
                     stronger = ai_service.generate_strong_title_from_text(t, kind=kind, max_len=80)
@@ -4196,7 +4160,19 @@ def process_video_generation(request: VideoRequest, task_id):
                 chunk_words = _count_words(chunk)
                 if chunk_words < 5:
                     return
-                ip = f"Photorealistic cinematic photography representing: {chunk[:160]}"
+                if kind == "prayer":
+                    ip = (
+                        f"Photorealistic cinematic Christian meditation scene inspired by this prayer reflection: {chunk[:180]}. "
+                        "Soft angelic atmosphere, warm golden and white light, peaceful sacred ambience, gentle heavenly glow, serene prayerful mood, "
+                        "family-friendly, natural anatomy, realistic humans, no horror, no dark mood, no grotesque details, no surreal abstraction."
+                    )
+                elif kind == "devotional":
+                    ip = (
+                        f"Photorealistic cinematic devotional Christian scene inspired by this message: {chunk[:180]}. "
+                        "Reverent biblical atmosphere, hopeful expression, warm divine light, realistic humans, family-friendly, no horror."
+                    )
+                else:
+                    ip = f"Photorealistic cinematic photography representing: {chunk[:160]}"
                 scenes.append({"text": chunk, "image_prompt": ip})
 
             for s in sentences:
@@ -4245,18 +4221,45 @@ def process_video_generation(request: VideoRequest, task_id):
                 scenes = scenes[:hard_max_scenes]
 
             tags = ["reflexão", "fé", "motivação"]
+            music_mood = "emotional_cinematic"
+            music_prompt = None
+            music_mood_fallback = None
+            single_bg = False
+            background_prompt = None
             if kind == "devotional":
                 tags = ["devocional", "bíblia", "fé", "oração", "reflexão"]
+                music_mood = "happy"
+            elif kind == "prayer":
+                tags = ["oração", "reflexão", "meditação", "paz", "fé", "tranquilidade"]
+                music_mood = "happy"
+                music_mood_fallback = "happy"
+                music_prompt = "soft prayer meditation ambient, gentle piano, warm pads, peaceful worship background, calm and relaxing"
+                single_bg = image_mode == "single"
+                background_prompt = (
+                    "Photorealistic cinematic Christian prayer meditation scene, soft angelic atmosphere, warm golden and white light, "
+                    "peaceful heavenly ambience, serene sacred setting, family-friendly, realistic humans, no horror, no grotesque details, "
+                    "no abstract collage, no text, no watermark."
+                )
             else:
                 tags = ["história", "reflexão", "fé", "motivação"]
 
-            return {
+            plan: Dict[str, Any] = {
                 "title": title_guess,
                 "description": (t[:1200] + ("..." if len(t) > 1200 else "")).strip(),
                 "tags": tags,
                 "scenes": scenes,
-                "music_mood": "emotional_cinematic",
+                "music_mood": music_mood,
+                "kind": kind,
             }
+            if music_prompt:
+                plan["music_prompt"] = music_prompt
+            if music_mood_fallback:
+                plan["music_mood_fallback"] = music_mood_fallback
+            if single_bg:
+                plan["single_bg"] = True
+            if background_prompt:
+                plan["background_prompt"] = background_prompt
+            return plan
 
         if request.mode == 'story' and request.story_content:
             minutes = 10
@@ -4395,15 +4398,9 @@ def process_video_generation(request: VideoRequest, task_id):
 
             script["target_duration_sec"] = int(requested_minutes * 60)
             script["target_duration_min"] = int(requested_minutes)
-            _dbg_duration_event("B", "script prepared for render", {
-                "task_id": task_id,
-                "requested_minutes": requested_minutes,
-                "target_duration_sec": script.get("target_duration_sec"),
-                "target_duration_min": script.get("target_duration_min"),
-                "scene_count": len(script.get("scenes") or []),
-                "title": (script.get("title") or "")[:160],
-                "description_len": len(script.get("description") or ""),
-            })
+            script["kind"] = kind_norm
+            if kind_norm == "prayer" and image_mode == "single":
+                script["single_bg"] = True
 
             selected = []
             if request.selected_images and isinstance(request.selected_images, list):
@@ -4433,11 +4430,6 @@ def process_video_generation(request: VideoRequest, task_id):
             voice_gender=voice_gender,
         )
         video_path = video_result["video_url"]
-        _dbg_duration_event("E", "video result returned", {
-            "task_id": task_id,
-            "video_url": video_path,
-            "result_keys": sorted(list((video_result or {}).keys())) if isinstance(video_result, dict) else [],
-        })
         _raise_if_cancelled()
         
         # Path absoluto para upload (compatível com Docker e /data/media)

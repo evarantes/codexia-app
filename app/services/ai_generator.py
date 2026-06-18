@@ -722,6 +722,8 @@ class AIContentGenerator:
 
         # Estimate word count: approx 150 words per minute
         target_word_count = duration_minutes * 150
+        min_word_count = max(120, int(duration_minutes * 135))
+        max_word_count = max(min_word_count + 80, int(duration_minutes * 165))
         min_scenes = max(5, duration_minutes * 2) # At least 2 scenes per minute
         niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
         if not niche:
@@ -731,10 +733,12 @@ class AIContentGenerator:
         Crie um Roteiro de Vídeo Motivacional Profundo de {duration_minutes} minutos sobre '{topic}'.
         Nicho do canal: {niche}.
         Estilo: Inspirador, profundo, humano, com narrativa poderosa.
-        Meta de Palavras: Aproximadamente {target_word_count} palavras.
+        Meta de Palavras: ideal em torno de {target_word_count} palavras.
+        Faixa aceitável: entre {min_word_count} e {max_word_count} palavras.
         
         O roteiro deve ser estruturado para manter a retenção e COBRIR O TEMPO SOLICITADO.
         Divida em pelo menos {min_scenes} cenas/partes para garantir dinamismo.
+        IMPORTANTE: não entregue um roteiro curto. Se ficar abaixo de {min_word_count} palavras, o vídeo não alcançará os {duration_minutes} minutos pedidos.
         Estrutura sugerida: Gancho (0-30s), Problema (dor), Virada, Desenvolvimento (longo), Aplicação prática, Conclusão/CTA.
 
         DIRETRIZES IMPORTANTES (retenção e engajamento):
@@ -846,10 +850,13 @@ class AIContentGenerator:
     ) -> str:
         self._load_config()
         if not self._has_text_provider():
-            title = "História" if kind == "story" else "Devocional"
+            title = "História" if kind == "story" else ("Devocional" if kind == "devotional" else "Reflexão com Oração")
             return f"{title} (Simulação - Sem Chave)\n\n{instruction}".strip()
 
-        safe_kind = "história" if kind == "story" else "devocional"
+        kind_norm = (kind or "story").strip().lower()
+        if kind_norm not in {"story", "devotional", "prayer"}:
+            kind_norm = "story"
+        safe_kind = "história" if kind_norm == "story" else ("devocional" if kind_norm == "devotional" else "reflexão com oração")
         min_m = max(1, int(duration_min_minutes or 1))
         max_m = int(duration_max_minutes) if duration_max_minutes else min_m
         if max_m < min_m:
@@ -861,6 +868,17 @@ class AIContentGenerator:
         niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
         if not niche:
             niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
+
+        extra_guidance = ""
+        if kind_norm == "prayer":
+            extra_guidance = """
+        DIRETRIZES ESPECIAIS DE ORAÇÃO:
+        - O texto deve combinar reflexão, consolo, esperança e uma oração guiada natural.
+        - O tom deve ser suave, acolhedor, relaxante e espiritual, ajudando a pessoa a desacelerar e encontrar paz.
+        - Inclua momentos de respiração, silêncio interior, entrega a Deus, confiança, descanso e tranquilidade.
+        - Evite sensacionalismo, medo, condenação dura, culpa excessiva ou linguagem agressiva.
+        - Feche com uma oração de paz, proteção e descanso, em linguagem simples e profundamente confortadora.
+        """
 
         prompt = f"""
         Escreva um(a) {safe_kind} ORIGINAL em português (pt-BR), para ser NARRADO em vídeo de longa duração.
@@ -877,6 +895,7 @@ class AIContentGenerator:
         - Evite introdução longa, sem vinheta, sem apresentação do canal no início.
         - Inclua pelo menos 2 perguntas diretas ao longo do texto para estimular reflexão e comentários.
         - Finalize com uma CTA clara (curtir/inscrever-se) e uma pergunta curta para comentários.
+        {extra_guidance}
 
         REGRAS DE EXTENSÃO:
         - Objetivo: texto para narração contínua.
@@ -904,7 +923,7 @@ class AIContentGenerator:
             return (self._normalize_narration_text(content) or content).strip()
         except Exception as e:
             print(f"Erro ao gerar {safe_kind}: {e}")
-            title = "História" if kind == "story" else "Devocional"
+            title = "História" if kind_norm == "story" else ("Devocional" if kind_norm == "devotional" else "Reflexão com Oração")
             return f"{title} (Falha na IA)\n\n{instruction}".strip()
 
     def _normalize_narration_text(self, raw: str) -> str:
@@ -985,12 +1004,12 @@ class AIContentGenerator:
     def generate_strong_title_from_text(self, text: str, kind: str = "story", max_len: int = 80) -> str:
         self._load_config()
         safe_kind = (kind or "story").strip().lower()
-        if safe_kind not in {"story", "devotional"}:
+        if safe_kind not in {"story", "devotional", "prayer"}:
             safe_kind = "story"
 
         base = (text or "").strip()
         if not base:
-            return "Devocional" if safe_kind == "devotional" else "História"
+            return "Devocional" if safe_kind == "devotional" else ("Reflexão com Oração" if safe_kind == "prayer" else "História")
 
         def _clean_title_line(s: str) -> str:
             import re as _re
@@ -1055,6 +1074,19 @@ class AIContentGenerator:
                     candidate = chosen or "Deus Está Falando com Você Hoje"
                 if "deus" not in (candidate or "").lower():
                     candidate = f"Deus: {candidate}"
+            elif safe_kind == "prayer":
+                templates = [
+                    ("ansied", "Oração para Acalmar a Ansiedade"),
+                    ("medo", "Oração para Vencer o Medo"),
+                    ("paz", "Oração de Paz para o Seu Coração"),
+                    ("sono", "Oração para Dormir em Paz"),
+                    ("descans", "Oração para Descansar na Presença de Deus"),
+                    ("cura", "Oração de Cura e Esperança"),
+                    ("fam", "Oração de Proteção pela Família"),
+                ]
+                chosen = next((tpl for key, tpl in templates if key in low), "")
+                if looks_like_sentence or not candidate:
+                    candidate = chosen or "Oração de Paz e Reflexão com Deus"
             else:
                 templates = [
                     ("recome", "O Recomeço Que Mudou Tudo"),
@@ -1069,12 +1101,12 @@ class AIContentGenerator:
 
             candidate = _clean_title_line(candidate)
             candidate = _truncate(candidate, max(40, min(120, int(max_len or 80))))
-            return candidate or ("Devocional" if safe_kind == "devotional" else "História")
+            return candidate or ("Devocional" if safe_kind == "devotional" else ("Reflexão com Oração" if safe_kind == "prayer" else "História"))
 
         if not self._has_text_provider():
             return _heuristic_title(base)
 
-        role = "devocional" if safe_kind == "devotional" else "história"
+        role = "devocional" if safe_kind == "devotional" else ("reflexão com oração" if safe_kind == "prayer" else "história")
         prompt = (
             "Crie UM título forte, impactante e chamativo em português (pt-BR) para um vídeo de YouTube.\n"
             f"Baseie-se na mensagem do texto ({role}).\n\n"
@@ -1083,7 +1115,7 @@ class AIContentGenerator:
             "- Sem aspas, sem emojis, sem hashtags\n"
             "- Sem ponto final\n"
             "- Linguagem natural (pt-BR)\n"
-            + ("- Mencione Deus/Fé de forma respeitosa\n" if safe_kind == "devotional" else "")
+            + ("- Mencione Deus/Fé de forma respeitosa\n" if safe_kind in {"devotional", "prayer"} else "")
             + "\nTEXTO BASE (trecho):\n"
             + base[:2200]
             + "\n\nRetorne APENAS o título."
@@ -1116,7 +1148,10 @@ class AIContentGenerator:
         if not self._has_text_provider():
             return (original_text or "").strip() or "Texto (Simulação - Sem Chave)"
 
-        safe_kind = "história" if kind == "story" else "devocional"
+        kind_norm = (kind or "story").strip().lower()
+        if kind_norm not in {"story", "devotional", "prayer"}:
+            kind_norm = "story"
+        safe_kind = "história" if kind_norm == "story" else ("devocional" if kind_norm == "devotional" else "reflexão com oração")
         min_m = max(1, int(duration_min_minutes or 1))
         max_m = int(duration_max_minutes) if duration_max_minutes else min_m
         if max_m < min_m:
@@ -1128,6 +1163,16 @@ class AIContentGenerator:
         niche = (os.getenv("YOUTUBE_NICHE") or os.getenv("CHANNEL_NICHE") or os.getenv("CONTENT_NICHE") or "").strip()
         if not niche:
             niche = "reflexão, espiritualidade e mensagens cristãs (sem sensacionalismo falso)"
+
+        extra_guidance = ""
+        if kind_norm == "prayer":
+            extra_guidance = """
+        REGRAS ESPECIAIS:
+        - Intensifique o clima de paz, acolhimento, oração e descanso.
+        - Preserve uma linguagem suave, profundamente confortadora e relaxante.
+        - Inclua trechos naturais de oração guiada e meditação espiritual.
+        - Evite qualquer clima sombrio, ameaçador ou acusatório.
+        """
 
         prompt = f"""
         Você é um editor profissional de textos para narração em vídeo de longa duração.
@@ -1143,6 +1188,7 @@ class AIContentGenerator:
         - Ajuste os primeiros parágrafos para ter um gancho magnético (0-30s) direto na dor/sentimento do espectador.
         - Inclua pelo menos 2 perguntas diretas ao longo do texto para estimular reflexão e comentários.
         - Finalize com CTA clara e pergunta curta para comentários.
+        {extra_guidance}
 
         Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
         Tamanho alvo: entre {min_words} e {max_words} palavras (aprox. 140-160 palavras por minuto).
@@ -1244,8 +1290,13 @@ REGRAS IMPORTANTES:
             return []
 
         safe_kind = (kind or "story").strip().lower()
-        if safe_kind not in {"story", "devotional"}:
+        if safe_kind not in {"story", "devotional", "prayer"}:
             safe_kind = "story"
+        kind_pt = "história" if safe_kind == "story" else ("devocional" if safe_kind == "devotional" else "reflexão com oração")
+        prayer_visual_rule = (
+            "Angelical and peaceful Christian meditation atmosphere, soft heavenly light, serene prayerful mood, contemplative composition, relaxing and family-friendly. "
+            if safe_kind == "prayer" else ""
+        )
 
         if not self.openrouter_key:
             base = text.replace("\n", " ").strip()[:320]
@@ -1258,8 +1309,8 @@ REGRAS IMPORTANTES:
             prompts = []
             for i in range(count):
                 prompts.append(
-                    f"Photorealistic cinematic photography inspired by this {safe_kind} message: {base}. "
-                    f"{styles[i % len(styles)]}. Realistic humans (no dolls), natural skin, pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
+                    f"Photorealistic cinematic photography inspired by this {kind_pt} message: {base}. "
+                    f"{prayer_visual_rule}{styles[i % len(styles)]}. Realistic humans (no dolls), natural skin, pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
                 )
             return prompts
 
@@ -1267,7 +1318,7 @@ REGRAS IMPORTANTES:
 
         prompt = f"""
         Crie {count} prompts de imagem DISTINTOS em INGLÊS, para gerar imagens por IA,
-        com base no texto abaixo (um(a) {('história' if safe_kind == 'story' else 'devocional')} para narração).
+        com base no texto abaixo (um(a) {kind_pt} para narração).
 
         TEXTO (resumo/ideia central):
         {text[:2200]}
@@ -1279,6 +1330,7 @@ REGRAS IMPORTANTES:
         - Estilo preferido: fotografia cinematográfica fotorrealista, iluminação natural e agradável, clima esperançoso e sereno.
         - Pessoas: aparência humana realista, proporções naturais, expressão serena (evitar "doll-like", "uncanny", "creepy").
         - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, assustador, grotesco, distópico, apocalíptico, sombrio.
+        - Se for reflexão com oração: priorize atmosfera angelical, contemplativa, relaxante, luz celestial suave, paz interior, reverência cristã, sem exageros visuais.
         - Retorne APENAS um JSON válido:
           {{ "prompts": ["...", "..."] }}
         """
@@ -1301,8 +1353,8 @@ REGRAS IMPORTANTES:
         while len(prompts) < count:
             base = text.replace("\n", " ").strip()[:320]
             prompts.append(
-                f"Photorealistic cinematic photography inspired by this {safe_kind} message: {base}. "
-                "Realistic humans (no dolls), pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
+                f"Photorealistic cinematic photography inspired by this {kind_pt} message: {base}. "
+                f"{prayer_visual_rule}Realistic humans (no dolls), pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
             )
 
         clean = []
@@ -1310,14 +1362,14 @@ REGRAS IMPORTANTES:
             if isinstance(p, str) and p.strip():
                 clean.append(p.strip()[:900])
         while len(clean) < count:
-            clean.append(f"Photorealistic cinematic photography inspired by this {safe_kind} message. Pleasant mood, no horror, no monsters, no gore. No text.")
+            clean.append(f"Photorealistic cinematic photography inspired by this {kind_pt} message. {prayer_visual_rule}Pleasant mood, no horror, no monsters, no gore. No text.")
         return clean[:count]
 
     def _visual_global_style(self) -> str:
-        return "Cinematic photo-realistic, 8K, divine chiaroscuro, god rays, golden glow, celestial white highlights, deep blue atmosphere, warm fire tones, vibrant natural colors, epic perspective, deeply emotional expressions, high detail, high-definition, divine light, golden illumination, heavenly atmosphere, reverent scene, cinematic lighting, epic composition, inspiring, uplifting, photorealistic art, holy presence"
+        return "Cinematic photo-realistic, 8K, divine chiaroscuro, god rays, golden glow, celestial white highlights, deep blue atmosphere, warm fire tones, vibrant natural colors, epic perspective, deeply emotional expressions, high detail, high-definition, divine light, golden illumination, heavenly atmosphere, reverent scene, cinematic lighting, epic composition, inspiring, uplifting, photorealistic art, holy presence, single coherent scene, realistic anatomy, natural human faces, modest biblical wardrobe, live-action look"
 
     def _visual_global_negative(self) -> str:
-        return "(terror, horror, scary, disturbing, gore, blood, zombie, dark spirits, creepy, unsettling, death, monstrosity, distorted faces, menacing, evil appearance, nightmares, intense fear, non-divine context, unholy)"
+        return "(terror, horror, scary, disturbing, gore, blood, zombie, dark spirits, creepy, unsettling, death, monstrosity, distorted faces, menacing, evil appearance, nightmares, intense fear, non-divine context, unholy, abstract chaos, surreal nightmare, fused faces, extra limbs, deformed anatomy, melted skin, corpse-like face, skull imagery)"
 
     def _normalize_for_rules(self, text: str) -> str:
         import unicodedata
@@ -1336,6 +1388,14 @@ REGRAS IMPORTANTES:
             "no gore",
             "no horror",
             "no macabre",
+            "no grotesque",
+            "no corpse-like faces",
+            "no melted skin",
+            "no fused faces",
+            "no extra limbs",
+            "no deformed anatomy",
+            "no abstract collage",
+            "no surreal nightmare imagery",
             "no terrifying symbols",
             "no demonic symbols",
             "no evil expression",
@@ -1377,11 +1437,18 @@ REGRAS IMPORTANTES:
             "vestes de gloria", "robe of glory", "glorious robe",
             "filho do homem", "son of man",
         ])
+        is_christ_passion = any(k in norm for k in [
+            "jesus", "jesus christ", "cristo", "christ",
+            "crucificacao", "crucifixion", "crucificado", "crucified",
+            "coroa de espinhos", "crown of thorns", "cross", "cruz",
+            "calvario", "calvary", "golgota", "golgotha",
+        ])
 
         banned_words = [
             "monster", "monstrosity", "demon", "demonic", "devil", "satanic",
             "horror", "terror", "scary", "creepy", "macabre", "disturbing", "unholy",
-            "evil", "menacing", "nightmare", "grotesque",
+            "evil", "menacing", "nightmare", "grotesque", "corpse", "skull", "skeleton",
+            "mutated", "mutation", "deformed", "distorted", "melted", "twisted",
         ]
         if any(w in norm for w in banned_words):
             for w in banned_words:
@@ -1407,6 +1474,12 @@ REGRAS IMPORTANTES:
                 t = (
                     f"{t}. Interpret any 'sword from the mouth' symbolically as a radiant beam of light shaped like a blade, not grotesque."
                 ).strip()
+            if is_christ_passion:
+                t = (
+                    f"{t}. Depict Jesus Christ and the crucifixion with reverence, dignity, compassion, and biblical respect. "
+                    "A crown of thorns and the cross are allowed when relevant, but avoid gore, blood emphasis, mutilation, horror, body distortion, or shocking close-ups. "
+                    "Prefer medium or wide shots, peaceful sacred expression, natural anatomy, modest biblical clothing, warm divine light, and an atmosphere of sacrifice, love, hope, and redemption."
+                ).strip()
 
         style = self._visual_global_style()
         t_low = t.lower()
@@ -1419,7 +1492,8 @@ REGRAS IMPORTANTES:
 
         t = (
             f"{t}. Do not depict horror, terror, monsters, demons, disturbing atmosphere, or evil appearance. "
-            "Avoid close-up threatening faces; if faces appear, keep them serene, natural, and peaceful."
+            "Avoid close-up threatening faces; if faces appear, keep them serene, natural, and peaceful. "
+            "Avoid surreal abstraction, chaotic collage, fused people, duplicated faces, warped hands, extra fingers, broken anatomy, grayscale nightmare aesthetics, or corpse-like textures."
         )
         return re.sub(r"\s+", " ", t).strip()
 
@@ -1530,10 +1604,12 @@ REGRAS IMPORTANTES:
         - Representar fielmente a ideia e o clima da narração, evitando genericidade.
         - Estilo obrigatório: {style}.
         - Estética e tom: santidade, adoração, esperança; luz celestial (god rays), brilho dourado, contraste (chiaroscuro) para glória, não para medo; paleta dourado/branco celestial/azul profundo/tons quentes.
+        - Composição obrigatória: uma única cena coerente, sem colagem abstrata, sem múltiplos rostos fundidos, sem sobreposição caótica de pessoas, sem anatomia quebrada.
         - Pessoas: humanas realistas (evitar bonecos/uncanny), proporções naturais, expressão serena.
         - Paisagens: realistas, sem aparência de IA assustadora, cores naturais, clima agradável.
         - Bloqueio global obrigatório: {neg}.
         - Proibido: macabro, terror, gore, símbolos de horror, olhos totalmente pretos, expressões de pura maldade; vestes indecentes.
+        - Se mencionar Jesus Cristo, cruz, coroa de espinhos, crucificação ou Calvário: mostrar reverência e dignidade; pode haver sofrimento respeitoso, mas sem sangue em destaque, sem mutilação, sem choque visual, sem body horror.
         - Se narrar morte/inferno/trevas: represente por sombras, desertos ou abismos distantes, com a luz vencendo as trevas.
         - Proibido: texto na imagem, marcas d'água, logos.
         - Uma frase detalhada (30-80 palavras): cenário, iluminação, atmosfera, composição.

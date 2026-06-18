@@ -385,6 +385,7 @@
                                 <select v-model="voiceStyle" class="w-full border p-2 rounded">
                                     <option value="robotic">Robótica</option>
                                     <option value="human">Humana</option>
+                                    <option value="soft_prayer">Suave e relaxante</option>
                                     <option value="infantil">Infantil</option>
                                     <option value="angelic">Angelical</option>
                                     <option value="my_voice">Minha voz (ElevenLabs)</option>
@@ -1418,6 +1419,7 @@
                             <label class="block font-bold mb-2">Estilo de Voz</label>
                             <select v-model="voiceStyle" class="w-full border p-2 rounded">
                                 <option value="human">Humana (Natural)</option>
+                                <option value="soft_prayer">Suave e relaxante</option>
                                 <option value="robotic">Robótica</option>
                                 <option value="child">Criança</option>
                                 <option value="angelic">Angelical</option>
@@ -1542,9 +1544,10 @@
                         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                             <div>
                                 <label class="block font-bold mb-2">Tipo</label>
-                                <select v-model="ytStoryKind" class="w-full border p-2 rounded bg-white">
+                                <select v-model="ytStoryKind" @change="handleStoryKindChange" class="w-full border p-2 rounded bg-white">
                                     <option value="story">História</option>
                                     <option value="devotional">Devocional</option>
+                                    <option value="prayer">Reflexão com oração</option>
                                 </select>
                             </div>
                             <div>
@@ -1571,6 +1574,24 @@
                         <textarea v-model="ytStoryContent" class="w-full border p-3 rounded" rows="10" placeholder="Cole aqui sua história/devocional, ou gere com IA acima."></textarea>
                     </div>
 
+                    <div v-if="ytStoryKind === 'prayer'" class="mb-4 bg-amber-50 border border-amber-200 rounded p-4">
+                        <div class="flex flex-col md:flex-row md:items-end gap-4">
+                            <div class="flex-1">
+                                <label class="block font-bold mb-2">Modo visual da oração</label>
+                                <select v-model="ytPrayerImageMode" @change="handlePrayerImageModeChange" class="w-full border p-2 rounded bg-white">
+                                    <option value="single">Uma imagem angelical relaxante (fundo fixo)</option>
+                                    <option value="multiple">Várias imagens angelicais (alternando durante o vídeo)</option>
+                                </select>
+                                <p class="text-xs text-amber-800 mt-2">Esse modo prioriza paz, contemplação, luz celestial suave, música discreta e voz acolhedora para meditação e tranquilização.</p>
+                            </div>
+                            <div>
+                                <button @click="applyPrayerVideoPreset(true)" type="button" class="px-4 py-2 rounded bg-amber-500 text-white hover:bg-amber-600">
+                                    Aplicar preset de oração
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="mb-4 bg-gray-50 border rounded p-4">
                         <div class="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
                             <div class="md:col-span-2">
@@ -1578,7 +1599,7 @@
                                 <select v-model="ytStorySelectedDraftId" class="w-full border p-2 rounded bg-white">
                                     <option :value="null">Selecione um rascunho...</option>
                                     <option v-for="d in ytStoryDrafts" :key="'sd-'+d.id" :value="d.id">
-                                        #{{ d.id }} • {{ d.title }} ({{ (d.kind || '').toLowerCase() === 'devotional' ? 'Devocional' : 'História' }})
+                                        #{{ d.id }} • {{ d.title }} ({{ storyKindLabel(d.kind) }})
                                     </option>
                                 </select>
                             </div>
@@ -2021,6 +2042,45 @@
                         </div>
                     </div>
 
+
+                    <div class="bg-white rounded-lg shadow p-4 mb-6 border border-gray-200">
+                        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                            <div class="font-bold text-gray-800 flex items-center gap-2">
+                                <i class="fas fa-filter text-gray-600"></i>
+                                Organização da lista
+                            </div>
+                            <div class="text-xs text-gray-600">
+                                <span v-if="scheduleListLoading">Carregando...</span>
+                                <span v-else>Mostrando {{ (scheduledVideos || []).length }}<span v-if="scheduleListTotal"> de {{ scheduleListTotal }}</span></span>
+                            </div>
+                        </div>
+                        <div class="mt-3 grid grid-cols-1 md:grid-cols-5 gap-2">
+                            <input v-model="scheduleListQuery" @keyup.enter="applyScheduleFilters" type="text" placeholder="Buscar (título, id, youtube_id...)" class="border rounded px-3 py-2 text-sm" />
+                            <select v-model="scheduleListStatus" class="border rounded px-3 py-2 text-sm">
+                                <option value="all">Status: todos</option>
+                                <option value="ready">Status: aguardando</option>
+                                <option value="published">Status: publicados</option>
+                                <option value="failed">Status: falhas</option>
+                            </select>
+                            <select v-model="scheduleListType" class="border rounded px-3 py-2 text-sm">
+                                <option value="all">Tipo: todos</option>
+                                <option value="video">Tipo: vídeos</option>
+                                <option value="short">Tipo: shorts</option>
+                            </select>
+                            <select v-model.number="scheduleListPageSize" class="border rounded px-3 py-2 text-sm">
+                                <option :value="50">50</option>
+                                <option :value="100">100</option>
+                                <option :value="200">200</option>
+                            </select>
+                            <div class="flex gap-2">
+                                <button @click="applyScheduleFilters" :disabled="scheduleListLoading" class="bg-indigo-600 text-white px-3 py-2 rounded text-sm hover:bg-indigo-700 disabled:opacity-50">Aplicar</button>
+                                <button @click="loadMoreSchedule" :disabled="scheduleListLoading || !scheduleListHasMore" class="bg-gray-100 text-gray-800 px-3 py-2 rounded text-sm hover:bg-gray-200 disabled:opacity-50">Carregar mais</button>
+                            </div>
+                        </div>
+                        <div v-if="scheduleListOffset > 0" class="text-xs text-gray-500 mt-2">
+                            Visualizando páginas antigas. Clique em “Aplicar” para voltar ao modo normal.
+                        </div>
+                    </div>
 
                     <!-- 2. Ready to Publish (The "Other Field") -->
                     <div id="ready-queue" class="bg-white rounded-lg shadow p-6 border-l-4 border-green-500">
@@ -3871,6 +3931,7 @@
                     ytAutoUpload: false,
                     ytStoryMode: 'upload', // upload | ai
                     ytStoryKind: 'story', // story | devotional
+                    ytPrayerImageMode: 'single',
                     ytStoryInstruction: '',
                     ytStoryImproveInstruction: '',
                     ytStoryDurationMin: 10,
@@ -3967,6 +4028,14 @@
                     schedulePlan: [],
                     scheduleLoading: false,
                     scheduledVideos: [],
+                    scheduleListQuery: '',
+                    scheduleListStatus: 'all',
+                    scheduleListType: 'all',
+                    scheduleListPageSize: 100,
+                    scheduleListOffset: 0,
+                    scheduleListTotal: 0,
+                    scheduleListHasMore: false,
+                    scheduleListLoading: false,
                     productionVideos: [], // Moved from computed to data
                     communitySelectedYoutubeId: '',
                     communityLoading: false,
@@ -4520,8 +4589,9 @@
                 // Start polling for scheduled videos progress
                 setInterval(() => {
                     try { if (document && document.hidden) return; } catch (e) {}
+                    if (Number(this.scheduleListOffset || 0) > 0) return;
                     if (this.scheduledVideos.some(v => v.status === 'processing' || v.status === 'queued')) {
-                        this.fetchScheduledVideos();
+                        this.fetchScheduledVideos({ silent: true, reset: true });
                     }
                 }, 5000);
                 
@@ -5251,15 +5321,69 @@
                     } catch (e) { console.error(e); }
                 },
                 // Scheduled Videos Methods
-                async fetchScheduledVideos() {
+                async fetchScheduledVideos(opts) {
+                    const options = (opts && typeof opts === 'object') ? opts : {};
+                    const reset = options.reset !== undefined ? !!options.reset : true;
+                    const append = !!options.append;
+                    const silent = !!options.silent;
+                    if (this.scheduleListLoading) return;
+                    this.scheduleListLoading = true;
                     try {
-                        const res = await this.authFetch('/youtube/schedule');
-                        const data = await res.json();
-                        this.scheduledVideos = data.map(v => ({
+                        if (reset) this.scheduleListOffset = 0;
+                        const limit = Math.max(10, Math.min(500, Number(this.scheduleListPageSize || 200)));
+                        const offset = append ? Number((this.scheduledVideos || []).length || 0) : 0;
+                        if (append) this.scheduleListOffset = offset;
+
+                        const params = new URLSearchParams();
+                        params.set('limit', String(limit));
+                        params.set('offset', String(offset));
+
+                        const q = String(this.scheduleListQuery || '').trim();
+                        if (q) params.set('q', q);
+
+                        const st = String(this.scheduleListStatus || 'all').trim().toLowerCase();
+                        if (st && st !== 'all') params.set('status', st);
+
+                        const tp = String(this.scheduleListType || 'all').trim().toLowerCase();
+                        if (tp && tp !== 'all') params.set('video_type', tp);
+
+                        const url = `/youtube/schedule?${params.toString()}`;
+                        const res = await this.authFetch(url);
+                        const data = await res.json().catch(() => ({}));
+                        const items = Array.isArray(data) ? data : (Array.isArray(data.items) ? data.items : []);
+
+                        const mapped = items.map(v => ({
                             ...v,
-                            scheduled_for_local: v.scheduled_for ? v.scheduled_for.slice(0, 16) : ''
+                            scheduled_for_local: v && v.scheduled_for ? String(v.scheduled_for).slice(0, 16) : ''
                         }));
-                    } catch (e) { console.error("Erro ao buscar agenda:", e); }
+
+                        const total = Array.isArray(data) ? mapped.length : Number(data.total || 0);
+                        const hasMore = Array.isArray(data) ? false : !!data.has_more;
+                        this.scheduleListTotal = Number.isFinite(total) ? total : 0;
+                        this.scheduleListHasMore = !!hasMore;
+
+                        if (append) {
+                            const byId = {};
+                            (this.scheduledVideos || []).forEach(it => { if (it && it.id !== undefined && it.id !== null) byId[String(it.id)] = it; });
+                            mapped.forEach(it => { if (it && it.id !== undefined && it.id !== null) byId[String(it.id)] = it; });
+                            this.scheduledVideos = Object.values(byId).sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+                        } else {
+                            this.scheduledVideos = mapped;
+                        }
+                    } catch (e) {
+                        if (!silent) console.error("Erro ao buscar agenda:", e);
+                    } finally {
+                        this.scheduleListLoading = false;
+                    }
+                },
+                applyScheduleFilters() {
+                    this.scheduleListOffset = 0;
+                    this.fetchScheduledVideos({ reset: true });
+                },
+                loadMoreSchedule() {
+                    if (this.scheduleListLoading) return;
+                    if (!this.scheduleListHasMore) return;
+                    this.fetchScheduledVideos({ reset: false, append: true });
                 },
                 async loadCommunityComments() {
                     const opts = arguments && arguments[0] ? arguments[0] : {};
@@ -5478,7 +5602,9 @@
                             topic,
                             duration,
                             auto_upload: false,
-                            override_title: title.slice(0, 120) || null
+                            override_title: title.slice(0, 120) || null,
+                            voice_style: this.voiceStyle || null,
+                            voice_gender: this.voiceGender || null
                         };
                         this.currentTab = 'youtube';
                         this.youtubeSubTab = 'production';
@@ -5655,6 +5781,32 @@
                     };
                     reader.readAsText(file, 'UTF-8');
                 },
+                storyKindLabel(kind) {
+                    const k = String(kind || '').toLowerCase();
+                    if (k === 'devotional') return 'Devocional';
+                    if (k === 'prayer') return 'Reflexão com oração';
+                    return 'História';
+                },
+                applyPrayerVideoPreset(adjustImages = true) {
+                    this.voiceStyle = 'soft_prayer';
+                    this.voiceGender = 'female';
+                    if (adjustImages) {
+                        this.ytStoryImagesCount = this.ytPrayerImageMode === 'single' ? 1 : Math.max(4, Number(this.ytStoryImagesCount || 4));
+                    }
+                },
+                handlePrayerImageModeChange() {
+                    if (this.ytStoryKind === 'prayer') {
+                        this.applyPrayerVideoPreset(true);
+                    }
+                },
+                handleStoryKindChange() {
+                    if (this.ytStoryKind === 'prayer') {
+                        this.applyPrayerVideoPreset(true);
+                        if (!String(this.ytStoryInstruction || '').trim()) {
+                            this.ytStoryInstruction = 'Crie uma reflexão cristã com oração guiada, acolhedora, suave e relaxante, baseada em um tema que traga paz, esperança, descanso e tranquilidade.';
+                        }
+                    }
+                },
                 async fetchStoryDrafts() {
                     if (this.ytStoryDraftLoading) return;
                     this.ytStoryDraftLoading = true;
@@ -5694,7 +5846,10 @@
                             if (max) this.ytStoryDurationMax = max;
                             const prompt = (meta.instruction || meta.prompt || '').toString().trim();
                             if (prompt) this.ytStoryInstruction = prompt;
+                            const imageMode = String(meta.image_mode || meta.imageMode || '').trim();
+                            if (imageMode === 'single' || imageMode === 'multiple') this.ytPrayerImageMode = imageMode;
                         }
+                        this.handleStoryKindChange();
                         this.ytStoryGeneratedImages = [];
                     } catch (e) {
                         alert("Erro: " + (e.message || e));
@@ -5711,7 +5866,8 @@
                         const meta = {
                             duration_min: Number(this.ytStoryDurationMin || 10),
                             duration_max: Number(this.ytStoryDurationMax || this.ytStoryDurationMin || 10),
-                            instruction: String(this.ytStoryInstruction || '').trim()
+                            instruction: String(this.ytStoryInstruction || '').trim(),
+                            image_mode: this.ytPrayerImageMode || 'single'
                         };
                         const res = await this.authFetch('/youtube/story/draft', {
                             method: 'POST',
@@ -5854,6 +6010,8 @@
                             override_description: String(this.cfDescription || '').trim() || null,
                             override_tags: tags,
                             thumbnail_path: this.cfThumbnailPath || null,
+                            voice_style: this.voiceStyle || null,
+                            voice_gender: this.voiceGender || null,
                         };
                         const res = await this.authFetch('/youtube/generate_video', {
                             method: 'POST',
@@ -5887,6 +6045,7 @@
                     }
                 },
                 async generateStoryText() {
+                    if (this.ytStoryKind === 'prayer') this.applyPrayerVideoPreset(false);
                     this.ytStoryTextLoading = true;
                     try {
                         const durationMin = Number(this.ytStoryDurationMin || 10);
@@ -5917,6 +6076,7 @@
                     }
                 },
                 async improveStoryText() {
+                    if (this.ytStoryKind === 'prayer') this.applyPrayerVideoPreset(false);
                     this.ytStoryImproveLoading = true;
                     try {
                         const durationMin = Number(this.ytStoryDurationMin || 10);
@@ -5947,6 +6107,7 @@
                 },
                 async generateStoryImages() {
                     if (this.ytStoryImagesLoading) return;
+                    if (this.ytStoryKind === 'prayer') this.applyPrayerVideoPreset(false);
                     const count = Number(this.ytStoryImagesCount || 1);
                     const fullStory = String(this.ytStoryContent || "").trim();
                     if (!fullStory) return;
@@ -5962,7 +6123,8 @@
                                 kind: this.ytStoryKind,
                                 story_content: storyPayload,
                                 count: count,
-                                aspect_ratio: this.ytStoryImagesAspectRatio || '16:9'
+                                aspect_ratio: this.ytStoryImagesAspectRatio || '16:9',
+                                image_mode: this.ytPrayerImageMode || 'single'
                             })
                         });
                         const data = await res.json().catch(() => ({}));
@@ -6065,6 +6227,7 @@
                     this.ytStoryVideoUrl = null;
                     try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                     try {
+                        if (this.ytStoryKind === 'prayer') this.applyPrayerVideoPreset(false);
                         const duration = Number(this.ytStoryVideoDuration || this.ytStoryDurationMax || this.ytStoryDurationMin || 10);
                         const selectedImages = this.selectedImageUrlsAll();
                         const payload = {
@@ -6073,7 +6236,10 @@
                             duration: duration,
                             auto_upload: !!this.ytStoryAutoUpload,
                             story_content: this.ytStoryContent,
-                            selected_images: selectedImages
+                            selected_images: selectedImages,
+                            voice_style: this.voiceStyle || null,
+                            voice_gender: this.voiceGender || null,
+                            image_mode: this.ytPrayerImageMode || 'single'
                         };
                         const attempt = async () => {
                             const res = await this.authFetch('/youtube/generate_video', {
