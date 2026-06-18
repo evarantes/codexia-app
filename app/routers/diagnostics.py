@@ -143,6 +143,31 @@ def test_ai_connection(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Connection Failed: {str(e)}")
 
+@router.post("/test-ai-text")
+def test_ai_text():
+    try:
+        ai = AIContentGenerator()
+        text_out = ai._generate_text(
+            "Responda com uma frase curta em pt-BR confirmando que o gerador de texto está funcionando.",
+            system_prompt="Você é um assistente de diagnóstico. Responda apenas com texto simples.",
+            temperature=0.2,
+            json_mode=False,
+        )
+        return {"ok": True, "text": (text_out or "")[:800]}
+    except Exception as e:
+        status = getattr(e, "status_code", None)
+        if status is None:
+            resp_obj = getattr(e, "response", None)
+            status = getattr(resp_obj, "status_code", None)
+        body = getattr(e, "body", None)
+        if body is None:
+            resp_obj = getattr(e, "response", None)
+            try:
+                body = resp_obj.json() if resp_obj is not None else None
+            except Exception:
+                body = None
+        raise HTTPException(status_code=503, detail={"exception": str(e), "status": status, "body": body})
+
 
 def test_openai_image():
     from openai import OpenAI

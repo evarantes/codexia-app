@@ -192,7 +192,9 @@ class AIContentGenerator:
         raw_model = (self.openrouter_model or "").strip()
         raw_model_norm = raw_model.lower()
 
-        if self.openrouter_key:
+        def _try_openrouter() -> Optional[str]:
+            if not (self.openrouter_key or "").strip():
+                return None
             or_client = openai.OpenAI(
                 api_key=self.openrouter_key,
                 base_url="https://openrouter.ai/api/v1",
@@ -237,39 +239,72 @@ class AIContentGenerator:
                         "error_type": e.__class__.__name__,
                         "error": str(e)[:500],
                     })
+            return None
 
-        if self.api_key:
+        def _try_openai() -> Optional[str]:
+            if not (self.api_key or "").strip():
+                return None
             oa_client = openai.OpenAI(api_key=self.api_key, timeout=180.0)
-            openai_model = (os.getenv("OPENAI_TEXT_MODEL") or "gpt-4o-mini").strip()
-            try:
-                self._dbg_textgen_event("C", "openai direct attempt", {
-                    "model_id": openai_model,
-                    "json_mode": bool(json_mode),
-                })
+            preferred = (os.getenv("OPENAI_TEXT_MODEL") or "").strip()
+            candidate_models = [m for m in [preferred, "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o", "gpt-4.1"] if m]
+            seen = set()
+            for model_id in candidate_models:
+                if not model_id or model_id in seen:
+                    continue
+                seen.add(model_id)
                 try:
-                    text = _call_chat(oa_client, openai_model, allow_json_mode=bool(json_mode))
-                    self._dbg_textgen_event("C", "openai direct success", {
-                        "model_id": openai_model,
-                        "response_len": len(str(text or "")),
-                        "response_preview": str(text or "")[:220],
-                        "used_json_mode": bool(json_mode),
+                    self._dbg_textgen_event("C", "openai direct attempt", {
+                        "model_id": model_id,
+                        "json_mode": bool(json_mode),
                     })
-                    return text
-                except Exception:
-                    text = _call_chat(oa_client, openai_model, allow_json_mode=False)
-                    self._dbg_textgen_event("C", "openai direct success without json_mode", {
-                        "model_id": openai_model,
-                        "response_len": len(str(text or "")),
-                        "response_preview": str(text or "")[:220],
+                    try:
+                        text = _call_chat(oa_client, model_id, allow_json_mode=bool(json_mode))
+                        self._dbg_textgen_event("C", "openai direct success", {
+                            "model_id": model_id,
+                            "response_len": len(str(text or "")),
+                            "response_preview": str(text or "")[:220],
+                            "used_json_mode": bool(json_mode),
+                        })
+                        return text
+                    except Exception:
+                        text = _call_chat(oa_client, model_id, allow_json_mode=False)
+                        self._dbg_textgen_event("C", "openai direct success without json_mode", {
+                            "model_id": model_id,
+                            "response_len": len(str(text or "")),
+                            "response_preview": str(text or "")[:220],
+                        })
+                        return text
+                except Exception as e:
+                    errors.append(f"OpenAI[{model_id}]: {e}")
+                    self._dbg_textgen_event("C", "openai direct exception", {
+                        "model_id": model_id,
+                        "error_type": e.__class__.__name__,
+                        "error": str(e)[:500],
                     })
-                    return text
-            except Exception as e:
-                errors.append(f"OpenAI[{openai_model}]: {e}")
-                self._dbg_textgen_event("C", "openai direct exception", {
-                    "model_id": openai_model,
-                    "error_type": e.__class__.__name__,
-                    "error": str(e)[:500],
-                })
+            return None
+
+        prov = (self.provider or "").strip().lower()
+        if prov in {"openai"}:
+            text = _try_openai()
+            if text is not None:
+                return text
+            text = _try_openrouter()
+            if text is not None:
+                return text
+        elif prov in {"openrouter"}:
+            text = _try_openrouter()
+            if text is not None:
+                return text
+            text = _try_openai()
+            if text is not None:
+                return text
+        else:
+            text = _try_openrouter()
+            if text is not None:
+                return text
+            text = _try_openai()
+            if text is not None:
+                return text
 
         self._dbg_textgen_event("D", "_generate_text failed", {
             "errors": errors[:8],
