@@ -97,10 +97,58 @@ class AIContentGenerator:
     def _has_text_provider(self) -> bool:
         return bool((self.openrouter_key or "").strip() or (self.api_key or "").strip())
 
+    # #region debug-point A:textgen-failure-signal
+    def _dbg_textgen_event(self, hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+        try:
+            import json as _json
+            import urllib.request as _urlreq
+            _p = ".dbg/prayer-ai-failure.env"
+            _u, _s = "http://127.0.0.1:7777/event", "prayer-ai-failure"
+            try:
+                with open(_p, "r", encoding="utf-8") as _f:
+                    _c = _f.read()
+                for _line in _c.splitlines():
+                    if _line.startswith("DEBUG_SERVER_URL="):
+                        _u = _line.split("=", 1)[1].strip() or _u
+                    elif _line.startswith("DEBUG_SESSION_ID="):
+                        _s = _line.split("=", 1)[1].strip() or _s
+            except Exception:
+                pass
+            _payload = {
+                "sessionId": _s,
+                "runId": "pre-fix",
+                "hypothesisId": hypothesis_id,
+                "location": "app/services/ai_generator.py",
+                "msg": f"[DEBUG] {msg}",
+                "data": data or {},
+            }
+            _req = _urlreq.Request(
+                _u,
+                data=_json.dumps(_payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            _urlreq.urlopen(_req, timeout=2).read()
+        except Exception:
+            pass
+    # #endregion
+
     def _generate_text(self, prompt, system_prompt=None, temperature=0.7, json_mode=False):
         """Gera texto via OpenRouter com fallback para OpenAI direto."""
         self._load_config()
+        self._dbg_textgen_event("A", "_generate_text start", {
+            "provider_setting": self.provider,
+            "has_openrouter_key": bool((self.openrouter_key or "").strip()),
+            "has_openai_key": bool((self.api_key or "").strip()),
+            "openrouter_model": (self.openrouter_model or "").strip(),
+            "json_mode": bool(json_mode),
+            "temperature": temperature,
+            "prompt_len": len(str(prompt or "")),
+            "system_prompt_len": len(str(system_prompt or "")),
+        })
         if not self._has_text_provider():
+            self._dbg_textgen_event("A", "_generate_text missing provider", {
+                "json_mode": bool(json_mode),
+            })
             return "{}" if json_mode else "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
         messages = []
@@ -161,24 +209,71 @@ class AIContentGenerator:
                     continue
                 seen.add(model_id)
                 try:
+                    self._dbg_textgen_event("B", "openrouter attempt", {
+                        "model_id": model_id,
+                        "json_mode": bool(json_mode),
+                    })
                     try:
-                        return _call_chat(or_client, model_id, allow_json_mode=bool(json_mode))
+                        text = _call_chat(or_client, model_id, allow_json_mode=bool(json_mode))
+                        self._dbg_textgen_event("B", "openrouter success", {
+                            "model_id": model_id,
+                            "response_len": len(str(text or "")),
+                            "response_preview": str(text or "")[:220],
+                            "used_json_mode": bool(json_mode),
+                        })
+                        return text
                     except Exception:
-                        return _call_chat(or_client, model_id, allow_json_mode=False)
+                        text = _call_chat(or_client, model_id, allow_json_mode=False)
+                        self._dbg_textgen_event("B", "openrouter success without json_mode", {
+                            "model_id": model_id,
+                            "response_len": len(str(text or "")),
+                            "response_preview": str(text or "")[:220],
+                        })
+                        return text
                 except Exception as e:
                     errors.append(f"OpenRouter[{model_id}]: {e}")
+                    self._dbg_textgen_event("B", "openrouter exception", {
+                        "model_id": model_id,
+                        "error_type": e.__class__.__name__,
+                        "error": str(e)[:500],
+                    })
 
         if self.api_key:
             oa_client = openai.OpenAI(api_key=self.api_key, timeout=180.0)
             openai_model = (os.getenv("OPENAI_TEXT_MODEL") or "gpt-4o-mini").strip()
             try:
+                self._dbg_textgen_event("C", "openai direct attempt", {
+                    "model_id": openai_model,
+                    "json_mode": bool(json_mode),
+                })
                 try:
-                    return _call_chat(oa_client, openai_model, allow_json_mode=bool(json_mode))
+                    text = _call_chat(oa_client, openai_model, allow_json_mode=bool(json_mode))
+                    self._dbg_textgen_event("C", "openai direct success", {
+                        "model_id": openai_model,
+                        "response_len": len(str(text or "")),
+                        "response_preview": str(text or "")[:220],
+                        "used_json_mode": bool(json_mode),
+                    })
+                    return text
                 except Exception:
-                    return _call_chat(oa_client, openai_model, allow_json_mode=False)
+                    text = _call_chat(oa_client, openai_model, allow_json_mode=False)
+                    self._dbg_textgen_event("C", "openai direct success without json_mode", {
+                        "model_id": openai_model,
+                        "response_len": len(str(text or "")),
+                        "response_preview": str(text or "")[:220],
+                    })
+                    return text
             except Exception as e:
                 errors.append(f"OpenAI[{openai_model}]: {e}")
+                self._dbg_textgen_event("C", "openai direct exception", {
+                    "model_id": openai_model,
+                    "error_type": e.__class__.__name__,
+                    "error": str(e)[:500],
+                })
 
+        self._dbg_textgen_event("D", "_generate_text failed", {
+            "errors": errors[:8],
+        })
         raise Exception(" | ".join(errors) if errors else "Nenhum provedor de texto disponível.")
 
     def generate_book_section(self, section_type, context_text, title, existing_content=None):
@@ -857,6 +952,13 @@ class AIContentGenerator:
         if kind_norm not in {"story", "devotional", "prayer"}:
             kind_norm = "story"
         safe_kind = "história" if kind_norm == "story" else ("devocional" if kind_norm == "devotional" else "reflexão com oração")
+        self._dbg_textgen_event("E", "generate_story_or_devotional_text start", {
+            "kind": kind_norm,
+            "duration_min_minutes": duration_min_minutes,
+            "duration_max_minutes": duration_max_minutes,
+            "instruction_len": len(str(instruction or "")),
+            "instruction_preview": str(instruction or "")[:220],
+        })
         min_m = max(1, int(duration_min_minutes or 1))
         max_m = int(duration_max_minutes) if duration_max_minutes else min_m
         if max_m < min_m:
@@ -920,8 +1022,18 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
+            self._dbg_textgen_event("E", "generate_story_or_devotional_text success", {
+                "kind": kind_norm,
+                "content_len": len(str(content or "")),
+                "content_preview": str(content or "")[:220],
+            })
             return (self._normalize_narration_text(content) or content).strip()
         except Exception as e:
+            self._dbg_textgen_event("E", "generate_story_or_devotional_text exception", {
+                "kind": kind_norm,
+                "error_type": e.__class__.__name__,
+                "error": str(e)[:500],
+            })
             print(f"Erro ao gerar {safe_kind}: {e}")
             title = "História" if kind_norm == "story" else ("Devocional" if kind_norm == "devotional" else "Reflexão com Oração")
             return f"{title} (Falha na IA)\n\n{instruction}".strip()
