@@ -167,6 +167,36 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
             return
     db = SessionLocal()
     try:
+        # #region debug-point D:task-progress-persist
+        def _dbg_task_event(hypothesis_id, msg, data=None):
+            try:
+                import json as _json
+                import urllib.request as _urlreq
+                _p = ".dbg/render-stuck-86.env"
+                _u, _s = "http://127.0.0.1:7777/event", "render-stuck-86"
+                try:
+                    with open(_p, "r", encoding="utf-8") as _f:
+                        _c = _f.read()
+                    for _line in _c.splitlines():
+                        if _line.startswith("DEBUG_SERVER_URL="):
+                            _u = _line.split("=", 1)[1].strip() or _u
+                        elif _line.startswith("DEBUG_SESSION_ID="):
+                            _s = _line.split("=", 1)[1].strip() or _s
+                except Exception:
+                    pass
+                _payload = {
+                    "sessionId": _s,
+                    "runId": "pre-fix",
+                    "hypothesisId": hypothesis_id,
+                    "location": "app/services/task_manager.py:update_task",
+                    "msg": f"[DEBUG] {msg}",
+                    "data": data or {},
+                }
+                _req = _urlreq.Request(_u, data=_json.dumps(_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+                _urlreq.urlopen(_req, timeout=2).read()
+            except Exception:
+                pass
+        # #endregion
         row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
         if not row:
             if is_task_deleted(task_id) or is_task_cancel_requested(task_id):
@@ -198,6 +228,19 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
                 row.result_json = json.dumps(result, ensure_ascii=False)
             except Exception:
                 row.result_json = json.dumps({"raw": str(result)}, ensure_ascii=False)
+        try:
+            _msg_lower = str(message or "").lower()
+            _status_lower = str(status or row.status or "").lower()
+            _progress_n = int(progress if progress is not None else (row.progress or 0))
+            if _status_lower == "processing" and (_progress_n >= 85 or "render" in _msg_lower):
+                _dbg_task_event("D", "task progress persisted", {
+                    "task_id": str(task_id),
+                    "status": _status_lower,
+                    "progress": _progress_n,
+                    "message": str(message or row.message or "")[:240],
+                })
+        except Exception:
+            pass
         db.commit()
         current = _db_to_dict(row)
         video_tasks[task_id] = current

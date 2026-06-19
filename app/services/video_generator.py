@@ -2204,8 +2204,8 @@ class VideoGenerator:
                 try:
                     import json as _json
                     import urllib.request as _urlreq
-                    _p = ".dbg/video-render-stall.env"
-                    _u, _s = "http://127.0.0.1:7777/event", "video-render-stall"
+                    _p = ".dbg/render-stuck-86.env"
+                    _u, _s = "http://127.0.0.1:7777/event", "render-stuck-86"
                     try:
                         with open(_p, "r", encoding="utf-8") as _f:
                             _c = _f.read()
@@ -2285,6 +2285,38 @@ class VideoGenerator:
                 "is_long_video": bool(is_long_video),
                 "final_clip": self._clip_debug_info(final_clip),
             })
+            # #region debug-point C:render-heartbeat
+            _render_hb_stop = None
+            _render_hb_thread = None
+            try:
+                import threading as _threading
+                _render_hb_stop = _threading.Event()
+
+                def _render_heartbeat():
+                    _last_size = -1
+                    while not _render_hb_stop.wait(15):
+                        try:
+                            _exists = os.path.exists(output_path)
+                            _size = os.path.getsize(output_path) if _exists else 0
+                            _dbg_render_event(
+                                "C",
+                                "write_videofile heartbeat",
+                                {
+                                    "elapsed_sec": round(time.time() - _render_started_at, 2),
+                                    "output_exists": bool(_exists),
+                                    "output_size": int(_size),
+                                    "size_changed": bool(_size != _last_size),
+                                },
+                            )
+                            _last_size = _size
+                        except Exception as _hb_err:
+                            _dbg_render_event("C", "write_videofile heartbeat error", {"error": str(_hb_err)})
+
+                _render_hb_thread = _threading.Thread(target=_render_heartbeat, daemon=True)
+                _render_hb_thread.start()
+            except Exception as _hb_start_err:
+                _dbg_render_event("C", "write_videofile heartbeat start error", {"error": str(_hb_start_err)})
+            # #endregion
             try:
                 final_clip.write_videofile(
                     output_path, 
@@ -2301,12 +2333,22 @@ class VideoGenerator:
                     ],
                     **logger_kw
                 )
+                try:
+                    if _render_hb_stop:
+                        _render_hb_stop.set()
+                except Exception:
+                    pass
                 _dbg_render_event("A", "write_videofile success", {
                     "elapsed_sec": round(time.time() - _render_started_at, 2),
                     "output_exists": bool(os.path.exists(output_path)),
                     "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
                 })
             except Exception as e:
+                try:
+                    if _render_hb_stop:
+                        _render_hb_stop.set()
+                except Exception:
+                    pass
                 _dbg_render_event("B", "write_videofile exception", {
                     "elapsed_sec": round(time.time() - _render_started_at, 2),
                     "error": str(e),
