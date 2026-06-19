@@ -4712,6 +4712,34 @@
                     const all = Array.isArray(this.scheduledVideos) ? this.scheduledVideos : [];
                     return all.find(v => v && String(v.id) === pid) || null;
                 },
+                formatApiError(payload, fallback = 'Erro inesperado.') {
+                    try {
+                        const unpack = (value) => {
+                            if (value == null) return '';
+                            if (typeof value === 'string') return value.trim();
+                            if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+                            if (Array.isArray(value)) {
+                                return value.map(unpack).filter(Boolean).join(' | ').trim();
+                            }
+                            if (typeof value === 'object') {
+                                const preferred = [
+                                    value.message,
+                                    value.error,
+                                    value.exception,
+                                    value.detail,
+                                    value.body
+                                ].map(unpack).filter(Boolean);
+                                if (preferred.length) return preferred.join(' | ').trim();
+                                try { return JSON.stringify(value); } catch (e) { return ''; }
+                            }
+                            return String(value || '').trim();
+                        };
+                        const msg = unpack(payload);
+                        return msg || fallback;
+                    } catch (e) {
+                        return fallback;
+                    }
+                },
                 async fetchActiveVideoTasks({ silent } = {}) {
                     try {
                         const now = Date.now();
@@ -6067,7 +6095,7 @@
                             const avg = Math.round((durationMin + durationMax) / 2);
                             this.ytStoryVideoDuration = avg || this.ytStoryVideoDuration;
                         } else {
-                            alert(data.detail || data.message || "Erro ao gerar texto.");
+                            alert(this.formatApiError(data.detail || data.message || data, "Erro ao gerar texto."));
                         }
                     } catch (e) {
                         alert("Erro de conexão: " + (e.message || e));
@@ -6097,7 +6125,7 @@
                             this.ytStoryContent = data.text;
                             this.ytStoryGeneratedImages = [];
                         } else {
-                            alert(data.detail || data.message || "Erro ao melhorar texto.");
+                            alert(this.formatApiError(data.detail || data.message || data, "Erro ao melhorar texto."));
                         }
                     } catch (e) {
                         alert("Erro de conexão: " + (e.message || e));
@@ -6251,7 +6279,7 @@
                             let data = {};
                             try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
                             if (!res.ok || !data.task_id) {
-                                const msg = data.detail || data.message || text || "Falha ao iniciar geração do vídeo.";
+                                const msg = this.formatApiError(data.detail || data.message || text || data, "Falha ao iniciar geração do vídeo.");
                                 throw new Error(msg);
                             }
                             return data;
@@ -6406,7 +6434,7 @@
                         const res = await this.authFetch(`/youtube/task/${taskId}`);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
-                            const detail = data.detail || data.message || "Erro ao consultar tarefa.";
+                            const detail = this.formatApiError(data.detail || data.message || data, "Erro ao consultar tarefa.");
                             const code = Number(res.status || 0);
                             if (code === 404) {
                                 this.ytStoryVideoLoading = false;

@@ -1015,6 +1015,16 @@ class VideoGenerator:
             print(f"Erro ao gerar fundo local: {e}")
             return None
 
+    def _generate_local_background(self, text_fallback="", aspect_ratio="9:16"):
+        """Compat shim: gera um fundo local simples quando a IA de imagem falha."""
+        try:
+            ratio = str(aspect_ratio or "9:16").strip()
+            size = (1280, 720) if ratio == "16:9" else (720, 1280)
+            return self._generate_fallback_background(size)
+        except Exception as e:
+            print(f"Erro ao gerar background local compatível: {e}")
+            return None
+
     def _ensure_image_for_scene(
         self,
         prompt,
