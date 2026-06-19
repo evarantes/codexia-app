@@ -23,3 +23,31 @@
 
 - Nao alterar logica de negocio antes da evidencia runtime.
 - Limpeza da instrumentacao somente apos confirmacao do usuario.
+
+## Evidence Update
+
+- Evidence source: diagnostico da UI em producao.
+- Observacao: `USE_RQ_FOR_VIDEO_GENERATION está ativo, mas não há workers RQ.`
+
+## Hypothesis Status
+
+1. Logger de progresso nao chega na UI durante o render.
+   - Status: CONFIRMED
+   - Evidence: o `RenderProgressLogger` era criado em `video_generator.py`, mas o codigo sobrescrevia `logger_kw` com `{"logger": None}` imediatamente antes do `write_videofile`, anulando o progresso fino do render e congelando a UI em ~86%.
+2. `write_videofile` travou de fato.
+   - Status: INCONCLUSIVE
+   - Evidence: ainda depende dos heartbeats e/ou excecao de runtime.
+3. Status persistido congelou em `RENDER`.
+   - Status: INCONCLUSIVE
+   - Evidence: ainda depende dos logs instrumentados em `update_task`.
+4. Ambiente de fila RQ esta mal configurado.
+   - Status: CONFIRMED
+   - Evidence: diagnostico do sistema reporta `USE_RQ_FOR_VIDEO_GENERATION` ativo sem worker.
+5. Gargalo de CPU/RAM/disco no ffmpeg.
+   - Status: INCONCLUSIVE
+   - Evidence: sem metricas runtime suficientes ainda.
+
+## Fix Applied
+
+- Restaurado o logger customizado do `write_videofile` em `app/services/video_generator.py`.
+- Mantido heartbeat leve durante o render final para evitar tela completamente congelada enquanto o arquivo final cresce.

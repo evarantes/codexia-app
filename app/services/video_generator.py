@@ -2273,9 +2273,6 @@ class VideoGenerator:
             is_long_video = len(clips) > 25
             bitrate = "1800k" if is_long_video else "3500k"
             
-            # Logger customizado para não entupir a RAM com strings de log
-            logger_kw = {"logger": None}
-            
             debug_ctx["stage"] = "write_videofile"
             _render_started_at = time.time()
             _dbg_render_event("A", "write_videofile start", {
@@ -2298,6 +2295,11 @@ class VideoGenerator:
                         try:
                             _exists = os.path.exists(output_path)
                             _size = os.path.getsize(output_path) if _exists else 0
+                            try:
+                                if progress_callback:
+                                    progress_callback(96 if _size > 0 else 95, "Renderizando arquivo final...")
+                            except Exception:
+                                pass
                             _dbg_render_event(
                                 "C",
                                 "write_videofile heartbeat",
