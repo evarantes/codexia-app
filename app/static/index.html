@@ -3276,6 +3276,59 @@
             <!-- Settings Tab -->
             <div v-if="currentTab === 'settings'">
                 <h1 class="text-3xl font-bold text-gray-800 mb-6">Configurações</h1>
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                        <div>
+                            <h3 class="text-lg font-bold text-indigo-700">Saldo das IAs</h3>
+                            <p class="text-sm text-gray-500">Acompanhe saldo, uso e acesso rápido a recarga/cobrança dos provedores principais.</p>
+                        </div>
+                        <button @click="fetchAiCredits" :disabled="aiCreditsLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 text-sm">
+                            <i v-if="aiCreditsLoading" class="fas fa-spinner fa-spin mr-2"></i>
+                            <span v-else><i class="fas fa-rotate mr-2"></i> Atualizar saldo</span>
+                        </button>
+                    </div>
+                    <p v-if="aiCreditsGeneratedAt" class="text-xs text-gray-500 mb-3">Última atualização: {{ formatTimestamp(aiCreditsGeneratedAt) }}</p>
+                    <p v-if="aiCreditsError" class="text-sm text-red-600 mb-3">{{ aiCreditsError }}</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        <div v-for="provider in aiCreditsProviders" :key="provider.id" class="border rounded-lg p-4 bg-gray-50">
+                            <div class="flex items-start justify-between gap-2">
+                                <div>
+                                    <div class="font-bold text-gray-900">{{ provider.label }}</div>
+                                    <div v-if="provider.label_detail" class="text-xs text-gray-500 mt-1">{{ provider.label_detail }}</div>
+                                </div>
+                                <span class="text-xs px-2 py-1 rounded-full font-semibold" :class="aiCreditStatusClass(provider.status)">
+                                    {{ aiCreditStatusLabel(provider.status) }}
+                                </span>
+                            </div>
+                            <div class="mt-3 space-y-2 text-sm">
+                                <div v-if="provider.id === 'openrouter'">
+                                    <div class="flex justify-between"><span>Saldo estimado</span><span class="font-semibold">{{ formatAiValue(provider.estimated_balance, provider.unit) }}</span></div>
+                                    <div class="flex justify-between"><span>Usado</span><span>{{ formatAiValue(provider.total_usage, provider.unit) }}</span></div>
+                                    <div class="flex justify-between"><span>Restante da chave</span><span>{{ formatAiValue(provider.limit_remaining, provider.unit) }}</span></div>
+                                </div>
+                                <div v-else-if="provider.id === 'elevenlabs'">
+                                    <div class="flex justify-between"><span>Disponível</span><span class="font-semibold">{{ formatAiValue(provider.remaining, provider.unit) }}</span></div>
+                                    <div class="flex justify-between"><span>Usado</span><span>{{ formatAiValue(provider.used, provider.unit) }}</span></div>
+                                    <div class="flex justify-between"><span>Limite</span><span>{{ formatAiValue(provider.limit, provider.unit) }}</span></div>
+                                </div>
+                                <div v-else-if="provider.id === 'suno'">
+                                    <div class="flex justify-between"><span>Disponível</span><span class="font-semibold">{{ formatAiValue(provider.remaining, provider.unit) }}</span></div>
+                                </div>
+                                <div v-else>
+                                    <div class="text-gray-700">{{ provider.configured ? 'Configurado' : 'Não configurado' }}</div>
+                                </div>
+                                <div v-if="provider.tier" class="flex justify-between"><span>Plano</span><span>{{ provider.tier }}</span></div>
+                                <div v-if="provider.next_reset_unix" class="flex justify-between"><span>Renova em</span><span>{{ formatTimestamp(provider.next_reset_unix) }}</span></div>
+                                <div class="text-xs text-gray-500 leading-relaxed">{{ provider.message || 'Sem observações.' }}</div>
+                            </div>
+                            <div class="mt-4 flex gap-2">
+                                <a :href="provider.billing_url" target="_blank" rel="noopener noreferrer" class="inline-flex items-center justify-center bg-white border px-3 py-2 rounded hover:bg-gray-100 text-sm font-semibold w-full">
+                                    <i class="fas fa-arrow-up-right-from-square mr-2"></i> Abrir cobrança
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div class="bg-white p-6 rounded-lg shadow max-w-2xl">
                     <div class="mb-6 p-4 bg-gray-50 border rounded-lg">
                         <label class="block font-bold mb-2 text-indigo-700">Texto/LLMs (via OpenRouter)</label>
@@ -4367,7 +4420,11 @@
 
                     // Diagnostics
                     diagnosticLoading: false,
-                    diagnosticReport: null
+                    diagnosticReport: null,
+                    aiCreditsProviders: [],
+                    aiCreditsLoading: false,
+                    aiCreditsError: '',
+                    aiCreditsGeneratedAt: null
                 }
             },
             computed: {
@@ -4711,6 +4768,59 @@
                     if (!pid) return null;
                     const all = Array.isArray(this.scheduledVideos) ? this.scheduledVideos : [];
                     return all.find(v => v && String(v.id) === pid) || null;
+                },
+                formatTimestamp(unixTs) {
+                    try {
+                        const n = Number(unixTs || 0);
+                        if (!n) return '-';
+                        return new Date(n * 1000).toLocaleString('pt-BR');
+                    } catch (e) {
+                        return '-';
+                    }
+                },
+                formatAiValue(value, unit) {
+                    try {
+                        if (value === null || value === undefined || value === '') return '-';
+                        const num = Number(value);
+                        if (!Number.isFinite(num)) return String(value);
+                        const formatted = (unit === 'USD')
+                            ? num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                            : num.toLocaleString('pt-BR');
+                        return unit === 'USD' ? `US$ ${formatted}` : `${formatted}${unit ? ` ${unit}` : ''}`;
+                    } catch (e) {
+                        return String(value || '-');
+                    }
+                },
+                aiCreditStatusClass(status) {
+                    const s = String(status || '').toLowerCase();
+                    if (s === 'ok') return 'bg-green-100 text-green-700';
+                    if (s === 'portal_only') return 'bg-blue-100 text-blue-700';
+                    if (s === 'error') return 'bg-red-100 text-red-700';
+                    return 'bg-amber-100 text-amber-700';
+                },
+                aiCreditStatusLabel(status) {
+                    const s = String(status || '').toLowerCase();
+                    if (s === 'ok') return 'OK';
+                    if (s === 'portal_only') return 'Portal';
+                    if (s === 'error') return 'Erro';
+                    return 'Pendente';
+                },
+                async fetchAiCredits() {
+                    this.aiCreditsLoading = true;
+                    this.aiCreditsError = '';
+                    try {
+                        const res = await this.authFetch('/settings/ai-credits');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao consultar saldo das IAs.'));
+                        }
+                        this.aiCreditsProviders = Array.isArray(data.providers) ? data.providers : [];
+                        this.aiCreditsGeneratedAt = Number(data.generated_at || 0) || null;
+                    } catch (e) {
+                        this.aiCreditsError = e.message || String(e || 'Erro ao consultar saldo das IAs.');
+                    } finally {
+                        this.aiCreditsLoading = false;
+                    }
                 },
                 formatApiError(payload, fallback = 'Erro inesperado.') {
                     try {
@@ -5337,6 +5447,7 @@
                     try {
                         const res = await this.authFetch('/settings/');
                         this.settings = await res.json();
+                        await this.fetchAiCredits();
                     } catch (e) { console.error(e); }
                 },
                 async fetchCRMData() {
@@ -7285,6 +7396,7 @@
                             if (data && typeof data === 'object') {
                                 try { Object.assign(this.settings, data); } catch (e) {}
                             }
+                            try { await this.fetchAiCredits(); } catch (e) {}
                             this.saveMessage = "Configurações salvas com sucesso!";
                             setTimeout(() => this.saveMessage = '', 3000);
                             return true;

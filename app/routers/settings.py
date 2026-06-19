@@ -3,14 +3,172 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Settings
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any, List
 import requests
 import base64
 import os
 import subprocess
 import tempfile
+import time
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
+
+
+def _mask_configured(value: Optional[str]) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _safe_float(value, digits: int = 2):
+    try:
+        return round(float(value), digits)
+    except Exception:
+        return None
+
+
+def _safe_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _provider_card(
+    provider_id: str,
+    label: str,
+    configured: bool,
+    billing_url: str,
+    status: str = "missing",
+    message: str = "",
+    direct_api: bool = False,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    card = {
+        "id": provider_id,
+        "label": label,
+        "configured": bool(configured),
+        "billing_url": billing_url,
+        "status": status,
+        "message": message or "",
+        "direct_api": bool(direct_api),
+    }
+    if isinstance(extra, dict):
+        card.update(extra)
+    return card
+
+
+def _fetch_openrouter_credits(api_key: str) -> Dict[str, Any]:
+    headers = {"Authorization": f"Bearer {api_key.strip()}"}
+    card = _provider_card(
+        "openrouter",
+        "OpenRouter",
+        True,
+        "https://openrouter.ai/settings/credits",
+        status="ok",
+        direct_api=True,
+    )
+    try:
+        key_resp = requests.get("https://openrouter.ai/api/v1/key", headers=headers, timeout=20)
+        key_resp.raise_for_status()
+        key_data = key_resp.json().get("data", {}) if isinstance(key_resp.json(), dict) else {}
+        credit_resp = requests.get("https://openrouter.ai/api/v1/credits", headers=headers, timeout=20)
+        credit_payload = {}
+        if credit_resp.ok:
+            raw = credit_resp.json()
+            if isinstance(raw, dict):
+                credit_payload = raw.get("data", {}) if isinstance(raw.get("data"), dict) else {}
+
+        total_credits = _safe_float(credit_payload.get("total_credits"))
+        total_usage = _safe_float(credit_payload.get("total_usage"))
+        limit_remaining = _safe_float(key_data.get("limit_remaining"))
+        limit_value = _safe_float(key_data.get("limit"))
+        estimated_balance = None
+        if total_credits is not None and total_usage is not None:
+            estimated_balance = round(total_credits - total_usage, 2)
+        card.update({
+            "label_detail": key_data.get("label") or "Chave atual",
+            "unit": "USD",
+            "limit_remaining": limit_remaining,
+            "limit": limit_value,
+            "estimated_balance": estimated_balance,
+            "total_credits": total_credits,
+            "total_usage": total_usage,
+            "usage_daily": _safe_float(key_data.get("usage_daily")),
+            "usage_weekly": _safe_float(key_data.get("usage_weekly")),
+            "usage_monthly": _safe_float(key_data.get("usage_monthly")),
+            "is_free_tier": bool(key_data.get("is_free_tier")),
+            "limit_reset": key_data.get("limit_reset"),
+            "message": "Saldo consultado com sucesso.",
+        })
+        return card
+    except Exception as e:
+        card["status"] = "error"
+        card["message"] = f"Falha ao consultar OpenRouter: {str(e)[:240]}"
+        return card
+
+
+def _fetch_elevenlabs_credits(api_key: str) -> Dict[str, Any]:
+    headers = {"xi-api-key": api_key.strip()}
+    card = _provider_card(
+        "elevenlabs",
+        "ElevenLabs",
+        True,
+        "https://elevenlabs.io/app/subscription",
+        status="ok",
+        direct_api=True,
+    )
+    try:
+        resp = requests.get("https://api.elevenlabs.io/v1/user/subscription", headers=headers, timeout=20)
+        resp.raise_for_status()
+        data = resp.json() if isinstance(resp.json(), dict) else {}
+        used = _safe_int(data.get("character_count"))
+        limit_value = _safe_int(data.get("character_limit"))
+        remaining = None
+        if used is not None and limit_value is not None:
+            remaining = max(0, limit_value - used)
+        card.update({
+            "tier": data.get("tier"),
+            "status_detail": data.get("status"),
+            "used": used,
+            "limit": limit_value,
+            "remaining": remaining,
+            "unit": "caracteres",
+            "next_reset_unix": _safe_int(data.get("next_character_count_reset_unix")),
+            "voice_slots_used": _safe_int(data.get("voice_slots_used")),
+            "voice_limit": _safe_int(data.get("voice_limit")),
+            "message": "Uso e limite consultados com sucesso.",
+        })
+        return card
+    except Exception as e:
+        card["status"] = "error"
+        card["message"] = f"Falha ao consultar ElevenLabs: {str(e)[:240]}"
+        return card
+
+
+def _fetch_suno_credits(api_key: str) -> Dict[str, Any]:
+    headers = {"Authorization": f"Bearer {api_key.strip()}"}
+    card = _provider_card(
+        "suno",
+        "Suno",
+        True,
+        "https://sunoapi.org/api-key",
+        status="ok",
+        direct_api=True,
+    )
+    try:
+        resp = requests.get("https://api.sunoapi.org/api/v1/generate/credit", headers=headers, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json() if isinstance(resp.json(), dict) else {}
+        credits = _safe_int(payload.get("data"))
+        card.update({
+            "remaining": credits,
+            "unit": "creditos",
+            "message": "Creditos consultados com sucesso." if credits is not None else "Resposta recebida, mas sem saldo numerico.",
+        })
+        return card
+    except Exception as e:
+        card["status"] = "error"
+        card["message"] = f"Falha ao consultar Suno: {str(e)[:240]}"
+        return card
 
 class SettingsUpdate(BaseModel):
     openai_api_key: Optional[str] = None
@@ -86,6 +244,85 @@ def get_settings(db: Session = Depends(get_db)):
         db.commit()
         db.refresh(settings)
     return settings
+
+
+@router.get("/ai-credits")
+def get_ai_credits(db: Session = Depends(get_db)):
+    settings = db.query(Settings).order_by(Settings.id.desc()).first()
+    providers: List[Dict[str, Any]] = []
+
+    openrouter_key = (getattr(settings, "openrouter_api_key", None) or os.getenv("OPENROUTER_API_KEY") or "").strip()
+    elevenlabs_key = (getattr(settings, "elevenlabs_api_key", None) or os.getenv("ELEVENLABS_API_KEY") or "").strip()
+    suno_key = (getattr(settings, "suno_api_key", None) or os.getenv("SUNO_API_KEY") or "").strip()
+    openai_key = (getattr(settings, "openai_api_key", None) or os.getenv("OPENAI_API_KEY") or "").strip()
+    edenai_key = (getattr(settings, "edenai_api_key", None) or os.getenv("EDENAI_API_KEY") or "").strip()
+    hf_token = (os.getenv("HUGGINGFACE_TOKEN") or "").strip()
+
+    providers.append(
+        _fetch_openrouter_credits(openrouter_key) if openrouter_key else _provider_card(
+            "openrouter",
+            "OpenRouter",
+            False,
+            "https://openrouter.ai/settings/credits",
+            status="missing",
+            message="Chave nao configurada.",
+            direct_api=True,
+        )
+    )
+    providers.append(
+        _fetch_elevenlabs_credits(elevenlabs_key) if elevenlabs_key else _provider_card(
+            "elevenlabs",
+            "ElevenLabs",
+            False,
+            "https://elevenlabs.io/app/subscription",
+            status="missing",
+            message="Chave nao configurada.",
+            direct_api=True,
+        )
+    )
+    providers.append(
+        _fetch_suno_credits(suno_key) if suno_key else _provider_card(
+            "suno",
+            "Suno",
+            False,
+            "https://sunoapi.org/api-key",
+            status="missing",
+            message="Chave nao configurada.",
+            direct_api=True,
+        )
+    )
+    providers.append(_provider_card(
+        "openai",
+        "OpenAI",
+        _mask_configured(openai_key),
+        "https://platform.openai.com/account/billing",
+        status="portal_only" if _mask_configured(openai_key) else "missing",
+        message="Abra o portal para recarga e auto recharge. O sistema pode adicionar link direto, mas nao consulta saldo simples por esta chave comum.",
+        direct_api=False,
+    ))
+    providers.append(_provider_card(
+        "edenai",
+        "Eden AI",
+        _mask_configured(edenai_key),
+        "https://app.edenai.run/",
+        status="portal_only" if _mask_configured(edenai_key) else "missing",
+        message="Use o dashboard da Eden AI para acompanhar billing e consumo.",
+        direct_api=False,
+    ))
+    providers.append(_provider_card(
+        "huggingface",
+        "Hugging Face",
+        _mask_configured(hf_token),
+        "https://huggingface.co/settings/billing",
+        status="portal_only" if _mask_configured(hf_token) else "missing",
+        message="Use a pagina de billing do Hugging Face para acompanhar os creditos e gastos do roteador.",
+        direct_api=False,
+    ))
+
+    return {
+        "generated_at": int(time.time()),
+        "providers": providers,
+    }
 
 @router.post("/")
 def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_db)):
