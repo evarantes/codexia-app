@@ -120,6 +120,13 @@ class VideoGenerator:
                 print(f"Erro ao carregar imagem de fundo: {e}")
                 bg = None
         if bg is None:
+            try:
+                fallback_bg_path = self._generate_fallback_background(size)
+                if fallback_bg_path and os.path.exists(fallback_bg_path):
+                    bg = Image.open(fallback_bg_path).convert("RGB")
+            except Exception:
+                bg = None
+        if bg is None:
             bg = Image.new("RGB", size, color=bg_color)
         else:
             img_ratio = bg.width / max(1, bg.height)
@@ -1299,6 +1306,32 @@ class VideoGenerator:
             print(f"Erro ao aplicar Ken Burns: {e}")
             return clip
 
+    def _freeze_last_frame_clip(self, clip, duration):
+        """Repete o ultimo frame valido para evitar padding preto quando o audio passa do video."""
+        if clip is None:
+            return None
+        try:
+            extra = float(duration or 0)
+        except Exception:
+            extra = 0
+        if extra <= 0:
+            return None
+        try:
+            try:
+                from moviepy.editor import ImageClip
+            except Exception:
+                from moviepy import ImageClip
+            clip_duration = float(getattr(clip, "duration", 0) or 0)
+            if clip_duration <= 0:
+                return None
+            frame_t = max(0.0, clip_duration - 0.05)
+            frame = clip.get_frame(frame_t)
+            hold = ImageClip(frame)
+            return self._set_clip_duration(hold, extra)
+        except Exception as e:
+            print(f"Aviso: nao foi possivel congelar o ultimo frame: {e}")
+            return None
+
     def _resolve_input_image_path(self, value: str) -> str:
         v = (value or "").strip()
         if not v:
@@ -1367,6 +1400,9 @@ class VideoGenerator:
         cached_temp_paths = set()
         fallback_bg_path = None
         use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "").strip().lower() in {"1", "true", "yes", "on"}
+        kind_norm = str(plan.get("kind") or "").strip().lower() if isinstance(plan, dict) else ""
+        allow_image_reuse = bool(plan.get("allow_image_reuse")) if isinstance(plan, dict) else False
+        prefer_peaceful_music = bool(plan.get("prefer_peaceful_music")) if isinstance(plan, dict) else False
         video_bg_path = None
         video_bg_paths = []
         video_bg_frame = None
@@ -1566,6 +1602,9 @@ class VideoGenerator:
 
             selected_image_paths = []
             selected_primary_path = None
+            scene_image_pool = []
+            scene_image_seen = set()
+            scene_reuse_counts = {}
             selected_raw = plan.get("selected_images") or plan.get("images") or []
             if isinstance(selected_raw, list):
                 for item in selected_raw:
@@ -1574,6 +1613,9 @@ class VideoGenerator:
                     p = self._resolve_input_image_path(item)
                     if p and os.path.exists(p):
                         selected_image_paths.append(p)
+                        if p not in scene_image_seen:
+                            scene_image_pool.append(p)
+                            scene_image_seen.add(p)
             if selected_image_paths:
                 selected_primary_path = selected_image_paths[0]
                 if force_single_bg:
@@ -1639,6 +1681,9 @@ class VideoGenerator:
                         if path:
                             video_bg_paths.append(path)
                             _track_image_path(path)
+                            if path not in scene_image_seen:
+                                scene_image_pool.append(path)
+                                scene_image_seen.add(path)
 
                     if not video_bg_paths:
                         raise Exception("Falha ao gerar fundo do vídeo com OpenAI.")
@@ -1851,6 +1896,7 @@ class VideoGenerator:
 
                 bg_image_path = None
                 prompt_key = None
+                reused_from_pool = False
                 if selected_image_paths:
                     bg_image_path = selected_image_paths[i % len(selected_image_paths)]
                 elif use_single_bg and video_bg_paths:
@@ -1868,14 +1914,21 @@ class VideoGenerator:
                     if cached and os.path.exists(cached):
                         bg_image_path = cached
                     else:
-                        bg_image_path = self._ensure_image_for_scene(
-                            image_prompt,
-                            text_fallback=clean_text,
-                            aspect_ratio=aspect_ratio,
-                            status_callback=_scene_status,
-                            max_rounds=image_max_rounds,
-                            allow_non_ai_fallback=allow_non_ai_fallback
-                        )
+                        try:
+                            bg_image_path = self._ensure_image_for_scene(
+                                image_prompt,
+                                text_fallback=clean_text,
+                                aspect_ratio=aspect_ratio,
+                                status_callback=_scene_status,
+                                max_rounds=image_max_rounds,
+                                allow_non_ai_fallback=allow_non_ai_fallback
+                            )
+                        except Exception:
+                            bg_image_path = None
+                        if (not bg_image_path) and allow_image_reuse and scene_image_pool:
+                            bg_image_path = scene_image_pool[i % len(scene_image_pool)]
+                            reused_from_pool = True
+                            _scene_status("Reutilizando imagem valida com variacao de movimento para manter o video completo...")
 
                 if not bg_image_path:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1} com OpenAI.")
@@ -1884,11 +1937,17 @@ class VideoGenerator:
                         image_cache[prompt_key] = bg_image_path
                 except Exception:
                     pass
+                try:
+                    if bg_image_path not in scene_image_seen:
+                        scene_image_pool.append(bg_image_path)
+                        scene_image_seen.add(bg_image_path)
+                except Exception:
+                    pass
                 _track_image_path(bg_image_path)
                 debug_ctx["bg_image_path"] = bg_image_path
 
                 # Fallback colors
-                bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30), (30, 60, 0)]
+                bg_colors = [(24, 24, 24), (30, 30, 30), (36, 36, 36), (42, 42, 42)]
                 bg_color = bg_colors[i % len(bg_colors)]
                 
                 # Gerar Audio da cena
@@ -1921,7 +1980,12 @@ class VideoGenerator:
                 if scene_dur <= 0:
                     scene_dur = 5.0
                 bg_clip = self._set_clip_duration(bg_clip, scene_dur)
-                bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=1.08)
+                reuse_count = int(scene_reuse_counts.get(bg_image_path, 0))
+                scene_reuse_counts[bg_image_path] = reuse_count + 1
+                zoom_factor = 1.06 + (((i + reuse_count) % 4) * 0.02)
+                if reused_from_pool:
+                    zoom_factor = min(1.16, zoom_factor + 0.02)
+                bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=zoom_factor)
 
                 caption_source = clean_text or screen_text
                 caption_timeline = self._build_caption_timeline(caption_source, scene_dur, audio_path=audio_path)
@@ -2051,15 +2115,13 @@ class VideoGenerator:
                         if final_dur > ad + 0.2:
                             final_clip = self._subclip(final_clip, 0, ad)
                         elif final_dur < ad - 0.2:
-                            try:
-                                from moviepy.editor import ColorClip
-                            except Exception:
-                                from moviepy import ColorClip
                             extra = ad - final_dur
-                            size = getattr(final_clip, "size", None) or (1280, 720)
-                            pad = self._set_clip_duration(ColorClip(size=size, color=(0, 0, 0)), extra)
-                            combined = concatenate_videoclips([final_clip, pad], method="compose")
-                            final_clip = self._set_clip_audio(combined, final_clip.audio)
+                            hold = self._freeze_last_frame_clip(final_clip, extra)
+                            if hold is not None:
+                                combined = concatenate_videoclips([final_clip, hold], method="compose")
+                                final_clip = self._set_clip_audio(combined, final_clip.audio)
+                            else:
+                                final_clip = self._set_clip_duration(final_clip, ad)
                         else:
                             final_clip = self._set_clip_duration(final_clip, ad)
                         try:
@@ -2130,10 +2192,15 @@ class VideoGenerator:
                     self._assert_clip_not_none(bg_music, "bg_music_clip", {"path": music_path})
                     has_voice_audio = bool(final_clip and getattr(final_clip, "audio", None))
                     try:
-                        bg_volume_raw = (os.getenv("VIDEO_BG_MUSIC_VOLUME") or "").strip()
-                        bg_volume = float(bg_volume_raw) if bg_volume_raw else (0.035 if has_voice_audio else 0.08)
+                        bg_volume_raw = ""
+                        if isinstance(plan, dict) and plan.get("bg_music_volume") is not None:
+                            bg_volume_raw = str(plan.get("bg_music_volume")).strip()
+                        if not bg_volume_raw:
+                            bg_volume_raw = (os.getenv("VIDEO_BG_MUSIC_VOLUME") or "").strip()
+                        default_bg_volume = 0.025 if (has_voice_audio and prefer_peaceful_music) else (0.035 if has_voice_audio else 0.08)
+                        bg_volume = float(bg_volume_raw) if bg_volume_raw else default_bg_volume
                     except Exception:
-                        bg_volume = 0.035 if has_voice_audio else 0.08
+                        bg_volume = 0.025 if (has_voice_audio and prefer_peaceful_music) else (0.035 if has_voice_audio else 0.08)
                     bg_volume = max(0.0, min(0.2, bg_volume))
                     
                     if bg_music.duration < final_clip.duration:
@@ -2167,33 +2234,10 @@ class VideoGenerator:
                     final_clip = self._subclip(final_clip, 0, target_duration)
                 elif current and current < (target_duration - 0.5):
                     extra = target_duration - current
-                    try:
-                        try:
-                            size = getattr(final_clip, "size", None) or (1920, 1080)
-                        except Exception:
-                            size = (1920, 1080)
-                        try:
-                            from moviepy.editor import ColorClip
-                        except Exception:
-                            from moviepy import ColorClip
-
-                        pad = self._set_clip_duration(ColorClip(size=size, color=(0, 0, 0)), extra)
-
-                        def _silence(_t):
-                            return np.array([0.0, 0.0])
-
-                        silence_audio = AudioClip(_silence, duration=extra, fps=44100)
-                        pad = self._set_clip_audio(pad, silence_audio)
-
-                        combined = concatenate_videoclips([final_clip, pad], method="compose")
-                        base_audio = final_clip.audio
-                        if base_audio:
-                            combined_audio = concatenate_audioclips([base_audio, silence_audio])
-                        else:
-                            combined_audio = silence_audio
-                        final_clip = self._set_clip_audio(combined, combined_audio)
-                    except Exception as e:
-                        print(f"Aviso: não foi possível ajustar duração para {target_duration}s: {e}")
+                    print(
+                        f"Aviso: vídeo ficou {extra:.1f}s abaixo da duração alvo; "
+                        "mantendo duração real para evitar tela preta/silêncio artificial."
+                    )
 
             # Output
             if progress_callback:
@@ -3136,7 +3180,7 @@ class VideoGenerator:
                     )
                 if not bg_image_path:
                     raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
-                bg_colors = [(30, 30, 30), (0, 30, 60), (60, 0, 30)]
+                bg_colors = [(24, 24, 24), (30, 30, 30), (36, 36, 36)]
                 bg_color = bg_colors[i % len(bg_colors)]
                 if (i == 0 and strict_sync and not caption) or (i == 0 and not captions_enabled):
                     title_text = clean_title.strip()

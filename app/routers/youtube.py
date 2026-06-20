@@ -1558,6 +1558,7 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
     kind = (request.kind or "story").strip().lower()
     if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
+    allow_image_reuse = kind == "prayer"
     image_mode = (request.image_mode or "").strip().lower()
     if image_mode not in {"single", "multiple"}:
         image_mode = "single" if kind == "prayer" else "multiple"
@@ -1664,6 +1665,12 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
         except Exception:
             url = None
         if not url:
+            if allow_image_reuse and images:
+                reused = dict(images[-1])
+                reused["prompt"] = prompt_text
+                reused["reused"] = True
+                images.append(reused)
+                continue
             raise HTTPException(status_code=503, detail="Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível.")
         images.append({"url": url, "prompt": prompt_text})
 
@@ -4096,8 +4103,13 @@ def process_video_generation(request: VideoRequest, task_id):
 
             t = t.replace("\r\n", "\n").replace("\r", "\n")
             t = _re.sub(r"\n{3,}", "\n\n", t).strip()
-            target_words = max(1, int(duration_minutes or 1)) * 140
-            min_words = int(target_words * 0.92)
+            words_per_minute = 145
+            if kind == "devotional":
+                words_per_minute = 150
+            elif kind == "prayer":
+                words_per_minute = 155
+            target_words = max(1, int(duration_minutes or 1)) * words_per_minute
+            min_words = int(target_words * 0.95)
             for attempt in range(2):
                 cur_words = _count_words(t)
                 if cur_words >= min_words:
@@ -4105,7 +4117,11 @@ def process_video_generation(request: VideoRequest, task_id):
                 try:
                     improved = ai_service.improve_story_or_devotional_text(
                         original_text=t,
-                        instruction=f"Expanda o texto para atingir no mínimo {duration_minutes} minutos de narração (sem resumir).",
+                        instruction=(
+                            f"Expanda o texto para atingir no mínimo {duration_minutes} minutos de narração, "
+                            "sem resumir e sem repetir frases, ideias, versículos ou explicações já ditas. "
+                            "Cada parágrafo deve acrescentar conteúdo novo e sustentar a narração até o fim."
+                        ),
                         kind=kind,
                         duration_min_minutes=int(duration_minutes or 10),
                         duration_max_minutes=int(duration_minutes or 10),
@@ -4123,7 +4139,9 @@ def process_video_generation(request: VideoRequest, task_id):
                     safe_kind = "devocional" if kind == "devotional" else ("reflexão com oração" if kind == "prayer" else "história")
                     instr = (
                         f"Reescreva e EXPANDA este(a) {safe_kind} para ter pelo menos {duration_minutes} minutos de narração. "
-                        "Mantenha o sentido, os personagens e a mensagem do texto base, mas aprofunde com detalhes, exemplos, aplicações e reflexões.\n\n"
+                        "Mantenha o sentido, os personagens e a mensagem do texto base, mas aprofunde com detalhes, exemplos, aplicações e reflexões. "
+                        "Nao repita frases, nao recapitule o que ja foi dito, nao enrole e nao use blocos redundantes. "
+                        "Entregue um texto continuo, pronto para narracao, do inicio ao fim.\n\n"
                         f"TEXTO BASE:\n{t[:6000]}"
                     )
                     regenerated = ai_service.generate_story_or_devotional_text(
@@ -4234,6 +4252,9 @@ def process_video_generation(request: VideoRequest, task_id):
             music_mood = "emotional_cinematic"
             music_prompt = None
             music_mood_fallback = None
+            bg_music_volume = None
+            allow_image_reuse = False
+            prefer_peaceful_music = False
             single_bg = False
             background_prompt = None
             if kind == "devotional":
@@ -4243,7 +4264,10 @@ def process_video_generation(request: VideoRequest, task_id):
                 tags = ["oração", "reflexão", "meditação", "paz", "fé", "tranquilidade"]
                 music_mood = "happy"
                 music_mood_fallback = "happy"
-                music_prompt = "soft prayer meditation ambient, gentle piano, warm pads, peaceful worship background, calm and relaxing"
+                music_prompt = "soft prayer meditation ambient, gentle piano, airy pads, peaceful worship background, calm, serene, relaxing, no percussion aggression"
+                bg_music_volume = 0.025
+                allow_image_reuse = True
+                prefer_peaceful_music = True
                 single_bg = image_mode == "single"
                 background_prompt = (
                     "Photorealistic cinematic Christian prayer meditation scene, soft angelic atmosphere, warm golden and white light, "
@@ -4265,6 +4289,12 @@ def process_video_generation(request: VideoRequest, task_id):
                 plan["music_prompt"] = music_prompt
             if music_mood_fallback:
                 plan["music_mood_fallback"] = music_mood_fallback
+            if bg_music_volume is not None:
+                plan["bg_music_volume"] = bg_music_volume
+            if allow_image_reuse:
+                plan["allow_image_reuse"] = True
+            if prefer_peaceful_music:
+                plan["prefer_peaceful_music"] = True
             if single_bg:
                 plan["single_bg"] = True
             if background_prompt:
