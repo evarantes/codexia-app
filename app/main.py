@@ -9,6 +9,8 @@ from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, social_media, image_storyboard, whatsapp
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
+from app.modules.bible_video_factory import router as bible_video_factory
+from app.modules.bible_video_factory import models as bible_video_factory_models
 from app.modules.humor_factory import router as humor_factory
 from app.modules.humor_factory import models as humor_models
 from dotenv import load_dotenv
@@ -407,6 +409,12 @@ def run_migrations(engine):
                 Base.metadata.create_all(bind=engine)
             except Exception as e:
                 print(f"Error creating story_drafts table: {e}")
+
+        if "codexia_bible_video_series" not in inspector.get_table_names():
+            try:
+                Base.metadata.create_all(bind=engine)
+            except Exception as e:
+                print(f"Error creating Bible Video Factory tables: {e}")
 
         # Humor Factory migration
         if "codexia_humor_projects" in inspector.get_table_names():
@@ -1018,6 +1026,7 @@ app.include_router(image_storyboard.router)
 app.include_router(admin.router)
 app.include_router(social_media.router)
 app.include_router(ai_factory.router)
+app.include_router(bible_video_factory.router)
 app.include_router(humor_factory.router)
 
 @app.get("/success")

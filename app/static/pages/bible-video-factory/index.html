@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codexia - Fabrica de Videos Biblicos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        [v-cloak] { display: none !important; }
+        .kanban-col { min-height: 18rem; }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+    <div id="app" v-cloak class="min-h-screen">
+        <header class="bg-gradient-to-r from-indigo-950 via-indigo-900 to-slate-900 text-white shadow-lg">
+            <div class="max-w-7xl mx-auto px-4 py-5 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                    <div class="flex items-center gap-3">
+                        <i class="fas fa-film text-2xl text-amber-300"></i>
+                        <h1 class="text-2xl md:text-3xl font-bold">Fabrica de Videos Biblicos</h1>
+                    </div>
+                    <p class="text-indigo-100 mt-2 max-w-3xl">
+                        Linha de producao para series biblicas animadas em estilo anime/cinematografico, com roteiro, validacao biblica, cenas, shorts, thumbnail, fila e publicacao.
+                    </p>
+                </div>
+                <div class="flex gap-3 flex-wrap">
+                    <a href="/" class="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg font-medium">
+                        <i class="fas fa-arrow-left mr-2"></i>Voltar ao painel
+                    </a>
+                    <button @click="bootstrap" class="bg-amber-400 text-slate-900 hover:bg-amber-300 px-4 py-2 rounded-lg font-semibold">
+                        <i class="fas fa-rotate-right mr-2"></i>Atualizar
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <main class="max-w-7xl mx-auto px-4 py-6">
+            <div v-if="error" class="mb-4 bg-red-50 text-red-700 border border-red-200 rounded-lg px-4 py-3">
+                {{ error }}
+            </div>
+            <div v-if="success" class="mb-4 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg px-4 py-3">
+                {{ success }}
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4 mb-6">
+                <div class="bg-white rounded-xl shadow p-4" v-for="card in dashboardCards" :key="card.label">
+                    <div class="text-sm text-slate-500">{{ card.label }}</div>
+                    <div class="text-2xl font-bold mt-1">{{ card.value }}</div>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2 mb-6">
+                <button v-for="tab in tabs" :key="tab.id" @click="activeTab = tab.id"
+                    class="px-4 py-2 rounded-lg font-medium border"
+                    :class="activeTab === tab.id ? 'bg-indigo-700 text-white border-indigo-700' : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'">
+                    <i :class="tab.icon" class="mr-2"></i>{{ tab.label }}
+                </button>
+            </div>
+
+            <section v-if="activeTab === 'dashboard'" class="space-y-6">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white rounded-xl shadow p-6">
+                        <h2 class="text-xl font-bold mb-4">Resumo da Fabrica</h2>
+                        <div class="space-y-3 text-sm">
+                            <div class="flex justify-between"><span>Status da fila</span><span class="font-semibold">{{ dashboard.queue_status?.queued || 0 }} em andamento</span></div>
+                            <div class="flex justify-between"><span>Aguardando aprovacao</span><span class="font-semibold">{{ dashboard.totals?.videos_waiting_approval || 0 }}</span></div>
+                            <div class="flex justify-between"><span>Videos publicados</span><span class="font-semibold">{{ dashboard.totals?.videos_published || 0 }}</span></div>
+                            <div class="flex justify-between"><span>Melhor serie por visualizacao</span><span class="font-semibold">{{ dashboard.best_series_by_views?.name || 'Sem dados' }}</span></div>
+                            <div class="flex justify-between"><span>Melhor tema por retencao</span><span class="font-semibold">{{ dashboard.best_theme_by_retention?.theme || 'Sem dados' }}</span></div>
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-xl shadow p-6">
+                        <h2 class="text-xl font-bold mb-4">Custos Estimados</h2>
+                        <div class="grid grid-cols-2 gap-3 text-sm">
+                            <div class="bg-slate-50 rounded p-3">
+                                <div class="text-slate-500">Por video</div>
+                                <div class="text-xl font-bold">{{ formatMoney(dashboard.totals?.estimated_cost_per_video || 0) }}</div>
+                            </div>
+                            <div class="bg-slate-50 rounded p-3">
+                                <div class="text-slate-500">Media</div>
+                                <div class="text-xl font-bold">{{ formatMoney(dashboard.totals?.average_estimated_cost || 0) }}</div>
+                            </div>
+                            <div class="bg-slate-50 rounded p-3 col-span-2">
+                                <div class="text-slate-500">Custo mensal acumulado</div>
+                                <div class="text-xl font-bold">{{ formatMoney(dashboard.totals?.monthly_actual_cost || 0) }}</div>
+                            </div>
+                        </div>
+                        <div class="mt-4 text-xs text-slate-500">
+                            Exemplo atual: texto, voz, imagem, video, musica, legenda, thumbnail e shorts.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">Proximos videos agendados</h2>
+                    <div v-if="!dashboard.next_scheduled || !dashboard.next_scheduled.length" class="text-slate-500 text-sm">
+                        Nenhum video agendado.
+                    </div>
+                    <div v-else class="space-y-3">
+                        <div v-for="item in dashboard.next_scheduled" :key="item.id" class="border rounded-lg p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                            <div>
+                                <div class="font-semibold">{{ item.title }}</div>
+                                <div class="text-xs text-slate-500">{{ item.platform }} | {{ item.aspect_ratio }} | {{ item.status }}</div>
+                            </div>
+                            <div class="text-sm font-medium">{{ formatDate(item.scheduled_for) }}</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section v-if="activeTab === 'series'" class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                <div class="bg-white rounded-xl shadow p-6 xl:col-span-1">
+                    <h2 class="text-xl font-bold mb-4">{{ seriesForm.id ? 'Editar serie' : 'Nova serie biblica' }}</h2>
+                    <div class="space-y-3">
+                        <input v-model="seriesForm.name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome da serie">
+                        <input v-model="seriesForm.bible_book" class="w-full border rounded-lg px-3 py-2" placeholder="Livro biblico base">
+                        <input v-model="seriesForm.main_character" class="w-full border rounded-lg px-3 py-2" placeholder="Personagem principal">
+                        <div class="grid grid-cols-2 gap-3">
+                            <select v-model="seriesForm.target_audience" class="w-full border rounded-lg px-3 py-2">
+                                <option value="">Publico-alvo</option>
+                                <option>infantil</option>
+                                <option>jovem</option>
+                                <option>adulto</option>
+                                <option>familia</option>
+                            </select>
+                            <select v-model="seriesForm.visual_style" class="w-full border rounded-lg px-3 py-2">
+                                <option value="">Estilo visual</option>
+                                <option>anime</option>
+                                <option>manga animado</option>
+                                <option>cinematografico</option>
+                                <option>3D</option>
+                                <option>pintura biblica</option>
+                                <option>realista</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <select v-model="seriesForm.narrative_tone" class="w-full border rounded-lg px-3 py-2">
+                                <option value="">Tom narrativo</option>
+                                <option>emocionante</option>
+                                <option>suspense</option>
+                                <option>aventura</option>
+                                <option>devocional</option>
+                                <option>epico</option>
+                            </select>
+                            <select v-model="seriesForm.status" class="w-full border rounded-lg px-3 py-2">
+                                <option>draft</option>
+                                <option>in_production</option>
+                                <option>paused</option>
+                                <option>completed</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <input v-model.number="seriesForm.planned_episodes" type="number" min="1" max="300" class="w-full border rounded-lg px-3 py-2" placeholder="Qtd. episodios">
+                            <select v-model.number="seriesForm.episode_duration_minutes" class="w-full border rounded-lg px-3 py-2">
+                                <option :value="3">3 min</option>
+                                <option :value="4">4 min</option>
+                                <option :value="5">5 min</option>
+                                <option :value="6">6 min</option>
+                                <option :value="8">8 min</option>
+                            </select>
+                        </div>
+                        <input v-model="seriesForm.language" class="w-full border rounded-lg px-3 py-2" placeholder="Idioma">
+                        <input v-model="seriesForm.linked_channel" class="w-full border rounded-lg px-3 py-2" placeholder="Canal vinculado">
+                        <textarea v-model="seriesForm.series_summary" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Resumo da serie"></textarea>
+                        <textarea v-model="seriesForm.bible_story_text" class="w-full border rounded-lg px-3 py-2 h-40" placeholder="Historia biblica base para divisao automatica em episodios"></textarea>
+                        <textarea v-model="seriesForm.notes" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Observacoes"></textarea>
+                        <div class="flex gap-3 flex-wrap">
+                            <button @click="saveSeries" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar serie</button>
+                            <button @click="resetSeriesForm" class="bg-slate-200 px-4 py-2 rounded-lg font-semibold">Limpar</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow p-6 xl:col-span-2">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                        <h2 class="text-xl font-bold">Series cadastradas</h2>
+                        <button @click="selectedSeries && splitEpisodes(selectedSeries.id)" :disabled="!selectedSeries" class="bg-amber-400 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">
+                            <i class="fas fa-list-ol mr-2"></i>Dividir em episodios
+                        </button>
+                    </div>
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div v-for="item in series" :key="item.id" class="border rounded-xl p-4 hover:border-indigo-300">
+                            <div class="flex justify-between items-start gap-3">
+                                <div>
+                                    <div class="font-bold text-lg">{{ item.name }}</div>
+                                    <div class="text-sm text-slate-500">{{ item.bible_book || 'Sem livro base' }} | {{ item.main_character || 'Sem personagem' }}</div>
+                                </div>
+                                <span class="text-xs px-2 py-1 rounded bg-slate-100">{{ item.status }}</span>
+                            </div>
+                            <div class="mt-3 text-sm text-slate-700 line-clamp-3">{{ item.series_summary || item.notes || 'Sem resumo' }}</div>
+                            <div class="mt-4 flex flex-wrap gap-2">
+                                <button @click="selectSeries(item)" class="bg-slate-900 text-white px-3 py-2 rounded-lg text-sm">Abrir</button>
+                                <button @click="editSeries(item)" class="bg-slate-200 px-3 py-2 rounded-lg text-sm">Editar</button>
+                                <button @click="deleteSeries(item.id)" class="bg-red-600 text-white px-3 py-2 rounded-lg text-sm">Excluir</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="selectedSeries" class="mt-8 border-t pt-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-lg font-bold">Episodios de {{ selectedSeries.name }}</h3>
+                            <span class="text-sm text-slate-500">{{ selectedEpisodes.length }} episodios</span>
+                        </div>
+                        <div class="space-y-3">
+                            <div v-for="ep in selectedEpisodes" :key="ep.id" class="border rounded-lg p-4">
+                                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                                    <div>
+                                        <div class="font-semibold">Episodio {{ ep.episode_number }} - {{ ep.title }}</div>
+                                        <div class="text-xs text-slate-500">{{ ep.status }} | {{ ep.approval_status }} | {{ ep.estimated_minutes }} min</div>
+                                    </div>
+                                    <div class="flex gap-2 flex-wrap">
+                                        <button @click="selectEpisode(ep)" class="bg-indigo-700 text-white px-3 py-2 rounded-lg text-sm">Roteirizar</button>
+                                        <button @click="openEpisodeEditor(ep)" class="bg-slate-200 px-3 py-2 rounded-lg text-sm">Editar</button>
+                                    </div>
+                                </div>
+                                <div class="mt-2 text-sm text-slate-700">{{ ep.summary }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section v-if="activeTab === 'script'" class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                <div class="bg-white rounded-xl shadow p-6 xl:col-span-1">
+                    <h2 class="text-xl font-bold mb-4">Gerador de roteiro com IA</h2>
+                    <div class="space-y-3">
+                        <select v-model="selectedSeriesId" @change="onSeriesChange" class="w-full border rounded-lg px-3 py-2">
+                            <option value="">Selecione a serie</option>
+                            <option v-for="item in series" :key="item.id" :value="item.id">{{ item.name }}</option>
+                        </select>
+                        <select v-model="selectedEpisodeId" @change="onEpisodeChange" class="w-full border rounded-lg px-3 py-2">
+                            <option value="">Selecione o episodio</option>
+                            <option v-for="item in selectedEpisodes" :key="item.id" :value="item.id">Ep. {{ item.episode_number }} - {{ item.title }}</option>
+                        </select>
+                        <div class="grid grid-cols-2 gap-3">
+                            <input v-model.number="scriptForm.desired_duration_minutes" type="number" min="1" max="60" class="w-full border rounded-lg px-3 py-2" placeholder="Duracao">
+                            <input v-model="scriptForm.narrative_style" class="w-full border rounded-lg px-3 py-2" placeholder="Estilo narrativo">
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <input v-model.number="scriptForm.drama_level" type="number" min="1" max="10" class="w-full border rounded-lg px-3 py-2" placeholder="Drama">
+                            <input v-model.number="scriptForm.biblical_fidelity_level" type="number" min="1" max="10" class="w-full border rounded-lg px-3 py-2" placeholder="Fidelidade biblica">
+                        </div>
+                        <input v-model="scriptForm.target_audience" class="w-full border rounded-lg px-3 py-2" placeholder="Publico-alvo">
+                        <textarea v-model="scriptForm.subscribe_cta" class="w-full border rounded-lg px-3 py-2 h-20" placeholder="Chamada para inscricao"></textarea>
+                        <textarea v-model="scriptForm.next_episode_cta" class="w-full border rounded-lg px-3 py-2 h-20" placeholder="Chamada para proximo episodio"></textarea>
+                        <div class="flex gap-2 flex-wrap">
+                            <button @click="generateScript" :disabled="!selectedEpisodeId" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar roteiro</button>
+                            <button @click="validateCurrentScript" :disabled="!selectedScriptId" class="bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Validar biblicamente</button>
+                            <button @click="generateScenesForScript" :disabled="!selectedScriptId" class="bg-amber-500 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar cenas</button>
+                            <button @click="generateShortsForScript" :disabled="!selectedScriptId" class="bg-pink-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar Shorts</button>
+                            <button @click="generateThumbnailForScript" :disabled="!selectedScriptId" class="bg-slate-900 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar thumbnail</button>
+                            <button @click="createProductionJob('16:9')" :disabled="!selectedScriptId" class="bg-violet-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Enfileirar video</button>
+                            <button @click="createProductionJob('9:16', 'short')" :disabled="!selectedScriptId" class="bg-violet-200 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Enfileirar short</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow p-6 xl:col-span-2 space-y-6">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <h2 class="text-xl font-bold">Roteiros do episodio</h2>
+                            <select v-model="selectedScriptId" @change="loadSelectedScript" class="border rounded-lg px-3 py-2 text-sm">
+                                <option value="">Selecione um roteiro</option>
+                                <option v-for="item in episodeScripts" :key="item.id" :value="item.id">Roteiro #{{ item.id }} - {{ item.narrative_style }}</option>
+                            </select>
+                        </div>
+                        <div v-if="currentScript">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                <div class="bg-slate-50 rounded-lg p-4">
+                                    <div class="text-sm text-slate-500">Validacao biblica</div>
+                                    <div class="text-lg font-bold">{{ currentScript.validation_status }}</div>
+                                    <div class="text-sm mt-2">{{ currentScript.validation_notes || 'Ainda nao validado.' }}</div>
+                                </div>
+                                <div class="bg-slate-50 rounded-lg p-4">
+                                    <div class="text-sm text-slate-500">Trilha / voz</div>
+                                    <div class="text-sm font-semibold mt-1">{{ currentScript.voice_emotion_notes || 'Sem observacao' }}</div>
+                                    <div class="text-sm mt-2">{{ currentScript.soundtrack_notes || 'Sem trilha definida.' }}</div>
+                                </div>
+                            </div>
+                            <div class="mb-4">
+                                <h3 class="font-semibold mb-2">Narracao completa</h3>
+                                <textarea v-model="currentScript.full_narration" class="w-full border rounded-lg px-3 py-2 h-64"></textarea>
+                            </div>
+                            <div v-if="currentScript.thumbnail && Object.keys(currentScript.thumbnail).length" class="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                                <div class="font-semibold mb-1">Thumbnail sugerida</div>
+                                <div class="text-sm"><strong>Headline:</strong> {{ currentScript.thumbnail.headline }}</div>
+                                <div class="text-sm mt-1"><strong>Titulo YouTube:</strong> {{ currentScript.thumbnail.youtube_title }}</div>
+                                <div class="text-sm mt-1"><strong>Prompt:</strong> {{ currentScript.thumbnail.visual_prompt }}</div>
+                            </div>
+                            <div v-if="currentScript.shorts && currentScript.shorts.length" class="mb-4">
+                                <h3 class="font-semibold mb-2">Shorts sugeridos</h3>
+                                <div class="space-y-3">
+                                    <div v-for="(shortItem, idx) in currentScript.shorts" :key="idx" class="border rounded-lg p-3">
+                                        <div class="font-semibold">{{ shortItem.title }}</div>
+                                        <div class="text-sm mt-1">{{ shortItem.hook }}</div>
+                                        <div class="text-xs text-slate-500 mt-1">{{ (shortItem.hashtags || []).join(' ') }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-else class="text-slate-500">Selecione ou gere um roteiro para trabalhar.</div>
+                    </div>
+
+                    <div>
+                        <h2 class="text-xl font-bold mb-4">Lista de cenas</h2>
+                        <div v-if="!currentScenes.length" class="text-slate-500">Nenhuma cena gerada ainda.</div>
+                        <div v-else class="space-y-3">
+                            <div v-for="scene in currentScenes" :key="scene.id" class="border rounded-lg p-4">
+                                <div class="flex flex-col md:flex-row md:justify-between gap-2">
+                                    <div class="font-semibold">Cena {{ scene.scene_number }} - {{ scene.camera_type || 'camera livre' }}</div>
+                                    <div class="text-xs text-slate-500">{{ scene.duration_seconds }}s | {{ scene.emotion }}</div>
+                                </div>
+                                <div class="text-sm mt-2"><strong>Narracao:</strong> {{ scene.narration_text }}</div>
+                                <div class="text-sm mt-2"><strong>Visual:</strong> {{ scene.visual_description }}</div>
+                                <div class="text-sm mt-2"><strong>Prompt imagem:</strong> {{ scene.prompt_image }}</div>
+                                <div class="text-sm mt-2"><strong>Prompt animacao:</strong> {{ scene.prompt_animation }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section v-if="activeTab === 'assets'" class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                <div class="bg-white rounded-xl shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">Banco de personagens</h2>
+                    <div class="space-y-3">
+                        <select v-model="characterForm.series_id" class="w-full border rounded-lg px-3 py-2">
+                            <option value="">Serie vinculada</option>
+                            <option v-for="item in series" :key="item.id" :value="item.id">{{ item.name }}</option>
+                        </select>
+                        <input v-model="characterForm.name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome">
+                        <textarea v-model="characterForm.description" class="w-full border rounded-lg px-3 py-2 h-20" placeholder="Aparencia / descricao"></textarea>
+                        <input v-model="characterForm.approximate_age" class="w-full border rounded-lg px-3 py-2" placeholder="Idade aproximada">
+                        <input v-model="characterForm.clothing" class="w-full border rounded-lg px-3 py-2" placeholder="Roupa">
+                        <input v-model="characterForm.hair" class="w-full border rounded-lg px-3 py-2" placeholder="Cabelo">
+                        <input v-model="characterForm.default_expression" class="w-full border rounded-lg px-3 py-2" placeholder="Expressao padrao">
+                        <input v-model="characterForm.visual_style" class="w-full border rounded-lg px-3 py-2" placeholder="Estilo visual">
+                        <textarea v-model="characterForm.base_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt base"></textarea>
+                        <input v-model="characterForm.reference_image_url" class="w-full border rounded-lg px-3 py-2" placeholder="Imagem de referencia URL">
+                        <input v-model="characterEmotions" class="w-full border rounded-lg px-3 py-2" placeholder="Emocoes separadas por virgula">
+                        <button @click="saveCharacter" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar personagem</button>
+                    </div>
+                    <div class="mt-6 space-y-3 max-h-96 overflow-y-auto">
+                        <div v-for="item in characters" :key="item.id" class="border rounded-lg p-3">
+                            <div class="font-semibold">{{ item.name }}</div>
+                            <div class="text-xs text-slate-500">{{ item.visual_style }} | {{ item.approximate_age }}</div>
+                            <div class="text-sm mt-1">{{ item.description }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">Banco de cenarios</h2>
+                    <div class="space-y-3">
+                        <select v-model="scenarioForm.series_id" class="w-full border rounded-lg px-3 py-2">
+                            <option value="">Serie vinculada</option>
+                            <option v-for="item in series" :key="item.id" :value="item.id">{{ item.name }}</option>
+                        </select>
+                        <input v-model="scenarioForm.name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome do cenario">
+                        <textarea v-model="scenarioForm.description" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Descricao"></textarea>
+                        <textarea v-model="scenarioForm.base_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt base"></textarea>
+                        <input v-model="scenarioForm.visual_style" class="w-full border rounded-lg px-3 py-2" placeholder="Estilo visual">
+                        <input v-model="scenarioForm.reference_image_url" class="w-full border rounded-lg px-3 py-2" placeholder="Imagem de referencia URL">
+                        <button @click="saveScenario" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar cenario</button>
+                    </div>
+                    <div class="mt-6 space-y-3 max-h-96 overflow-y-auto">
+                        <div v-for="item in scenarios" :key="item.id" class="border rounded-lg p-3">
+                            <div class="font-semibold">{{ item.name }}</div>
+                            <div class="text-sm mt-1">{{ item.description }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">Banco de prompts</h2>
+                    <div class="space-y-3">
+                        <input v-model="promptForm.category" class="w-full border rounded-lg px-3 py-2" placeholder="Categoria">
+                        <input v-model="promptForm.title" class="w-full border rounded-lg px-3 py-2" placeholder="Titulo">
+                        <textarea v-model="promptForm.content" class="w-full border rounded-lg px-3 py-2 h-32" placeholder="Conteudo do prompt"></textarea>
+                        <label class="flex items-center gap-2 text-sm">
+                            <input v-model="promptForm.is_active" type="checkbox">
+                            Ativo
+                        </label>
+                        <button @click="savePrompt" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar prompt</button>
+                    </div>
+                    <div class="mt-6 space-y-3 max-h-96 overflow-y-auto">
+                        <div v-for="item in prompts" :key="item.id" class="border rounded-lg p-3">
+                            <div class="font-semibold">{{ item.title }}</div>
+                            <div class="text-xs text-slate-500">{{ item.category }}</div>
+                            <div class="text-sm mt-1 whitespace-pre-wrap">{{ item.content }}</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section v-if="activeTab === 'queue'" class="space-y-6">
+                <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
+                    <div v-for="stage in kanbanStages" :key="stage.id" class="bg-white rounded-xl shadow p-4 kanban-col">
+                        <div class="font-bold mb-4">{{ stage.label }}</div>
+                        <div class="space-y-3">
+                            <div v-for="item in jobsByStage(stage.id)" :key="item.id" class="border rounded-lg p-3 bg-slate-50">
+                                <div class="font-semibold">{{ item.title }}</div>
+                                <div class="text-xs text-slate-500 mt-1">{{ item.job_type }} | {{ item.platform }} | {{ item.aspect_ratio }}</div>
+                                <div class="text-xs text-slate-500 mt-1">{{ item.status_message || item.status }}</div>
+                                <div class="w-full bg-slate-200 rounded-full h-2 mt-3">
+                                    <div class="bg-indigo-700 h-2 rounded-full" :style="{ width: `${item.progress || 0}%` }"></div>
+                                </div>
+                                <div class="text-xs mt-1">{{ item.progress || 0 }}%</div>
+                                <div class="mt-3 flex gap-2 flex-wrap">
+                                    <button @click="startJob(item.id)" class="bg-indigo-700 text-white px-3 py-2 rounded text-xs">Iniciar</button>
+                                    <button @click="approveJob(item.id)" class="bg-emerald-600 text-white px-3 py-2 rounded text-xs">Aprovar</button>
+                                    <button @click="publishJob(item.id)" class="bg-amber-400 text-slate-900 px-3 py-2 rounded text-xs">Publicar</button>
+                                </div>
+                                <div v-if="item.output_video_url" class="mt-3">
+                                    <a :href="item.output_video_url" target="_blank" class="text-indigo-700 text-sm font-semibold">Abrir video</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section v-if="activeTab === 'config'" class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div class="bg-white rounded-xl shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">Configuracao de APIs e providers</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <select v-model="config.text_provider" class="w-full border rounded-lg px-3 py-2">
+                            <option>openai</option>
+                            <option>openrouter</option>
+                            <option>gemini</option>
+                        </select>
+                        <select v-model="config.voice_provider" class="w-full border rounded-lg px-3 py-2">
+                            <option>elevenlabs</option>
+                            <option>openai_tts</option>
+                            <option>edge_tts</option>
+                        </select>
+                        <select v-model="config.image_provider" class="w-full border rounded-lg px-3 py-2">
+                            <option>openai</option>
+                            <option>runway</option>
+                            <option>kling</option>
+                        </select>
+                        <select v-model="config.video_provider" class="w-full border rounded-lg px-3 py-2">
+                            <option>luma</option>
+                            <option>kling</option>
+                            <option>runway</option>
+                            <option>moviepy_ffmpeg</option>
+                        </select>
+                        <select v-model="config.music_provider" class="w-full border rounded-lg px-3 py-2">
+                            <option>musicgen</option>
+                            <option>suno</option>
+                            <option>native</option>
+                        </select>
+                        <select v-model="config.thumbnail_provider" class="w-full border rounded-lg px-3 py-2">
+                            <option>openai</option>
+                            <option>native</option>
+                        </select>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                        <input v-model="config.text_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key texto">
+                        <input v-model="config.voice_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key voz">
+                        <input v-model="config.image_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key imagem">
+                        <input v-model="config.video_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key video">
+                        <input v-model="config.youtube_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key YouTube">
+                        <input v-model="config.tiktok_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key TikTok">
+                        <input v-model="config.instagram_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key Instagram">
+                        <input v-model="config.default_playlist" class="w-full border rounded-lg px-3 py-2" placeholder="Playlist padrao">
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                        <input v-model="config.default_voice" class="w-full border rounded-lg px-3 py-2" placeholder="Voz padrao">
+                        <input v-model.number="config.default_voice_speed" type="number" step="0.1" class="w-full border rounded-lg px-3 py-2" placeholder="Velocidade">
+                        <input v-model="config.default_voice_emotion" class="w-full border rounded-lg px-3 py-2" placeholder="Emocao">
+                        <input v-model.number="config.default_voice_intensity" type="number" step="0.1" class="w-full border rounded-lg px-3 py-2" placeholder="Intensidade">
+                    </div>
+                    <textarea v-model="config.default_cta" class="w-full border rounded-lg px-3 py-2 h-20 mt-4" placeholder="CTA padrao"></textarea>
+                    <textarea v-model="config.default_next_episode_cta" class="w-full border rounded-lg px-3 py-2 h-20 mt-3" placeholder="CTA proximo episodio"></textarea>
+                    <button @click="saveConfig" class="mt-4 bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar configuracao</button>
+                </div>
+
+                <div class="bg-white rounded-xl shadow p-6">
+                    <h2 class="text-xl font-bold mb-4">Controle de custos e metricas</h2>
+                    <div class="grid grid-cols-2 gap-3">
+                        <input v-model.number="config.text_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo texto">
+                        <input v-model.number="config.voice_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo voz">
+                        <input v-model.number="config.image_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo imagem">
+                        <input v-model.number="config.video_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo animacao/video">
+                        <input v-model.number="config.music_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo musica">
+                        <input v-model.number="config.caption_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo legenda">
+                        <input v-model.number="config.thumbnail_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo thumbnail">
+                        <input v-model.number="config.daily_spend_limit" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2" placeholder="Limite diario">
+                        <input v-model.number="config.monthly_spend_limit" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2 col-span-2" placeholder="Limite mensal">
+                    </div>
+
+                    <div class="mt-6 border-t pt-6">
+                        <h3 class="font-bold mb-3">Registrar metricas</h3>
+                        <div class="grid grid-cols-2 gap-3">
+                            <select v-model="metricForm.job_id" class="w-full border rounded-lg px-3 py-2 col-span-2">
+                                <option value="">Job relacionado</option>
+                                <option v-for="item in jobs" :key="item.id" :value="item.id">{{ item.title }}</option>
+                            </select>
+                            <input v-model="metricForm.platform" class="w-full border rounded-lg px-3 py-2" placeholder="Plataforma">
+                            <input v-model="metricForm.video_id" class="w-full border rounded-lg px-3 py-2" placeholder="Video ID">
+                            <input v-model.number="metricForm.view_count" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Views">
+                            <input v-model.number="metricForm.ctr" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2" placeholder="CTR">
+                            <input v-model.number="metricForm.retention" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2" placeholder="Retencao">
+                            <input v-model.number="metricForm.subscribers_gained" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Inscritos ganhos">
+                            <input v-model.number="metricForm.likes" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Likes">
+                            <input v-model.number="metricForm.comments" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Comentarios">
+                        </div>
+                        <button @click="saveMetric" class="mt-4 bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold">Salvar metricas</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    loading: false,
+                    error: '',
+                    success: '',
+                    activeTab: 'dashboard',
+                    tabs: [
+                        { id: 'dashboard', label: 'Dashboard', icon: 'fas fa-chart-line' },
+                        { id: 'series', label: 'Series', icon: 'fas fa-book-bible' },
+                        { id: 'script', label: 'Roteiro e Cenas', icon: 'fas fa-clapperboard' },
+                        { id: 'assets', label: 'Assets', icon: 'fas fa-user-group' },
+                        { id: 'queue', label: 'Fila de Producao', icon: 'fas fa-diagram-project' },
+                        { id: 'config', label: 'Configuracoes e Custos', icon: 'fas fa-gear' }
+                    ],
+                    kanbanStages: [
+                        { id: 'idea', label: 'Ideia' },
+                        { id: 'script_generated', label: 'Roteiro Gerado' },
+                        { id: 'script_approved', label: 'Roteiro Aprovado' },
+                        { id: 'scenes_generated', label: 'Cenas Geradas' },
+                        { id: 'voice_generated', label: 'Voz Gerada' },
+                        { id: 'video_animating', label: 'Animacao' },
+                        { id: 'video_editing', label: 'Edicao' },
+                        { id: 'awaiting_approval', label: 'Aguardando Aprovacao' },
+                        { id: 'ready_to_publish', label: 'Pronto para Publicar' },
+                        { id: 'published', label: 'Publicado' },
+                        { id: 'error', label: 'Erro' }
+                    ],
+                    dashboard: { totals: {}, next_scheduled: [], queue_status: {}, best_series_by_views: {}, best_theme_by_retention: {} },
+                    series: [],
+                    selectedSeries: null,
+                    selectedSeriesId: '',
+                    selectedEpisodes: [],
+                    selectedEpisodeId: '',
+                    selectedEpisode: null,
+                    episodeScripts: [],
+                    selectedScriptId: '',
+                    currentScript: null,
+                    currentScenes: [],
+                    jobs: [],
+                    characters: [],
+                    scenarios: [],
+                    prompts: [],
+                    metrics: [],
+                    config: {
+                        text_provider: 'openai',
+                        voice_provider: 'elevenlabs',
+                        image_provider: 'openai',
+                        video_provider: 'luma',
+                        music_provider: 'musicgen',
+                        caption_provider: 'native',
+                        thumbnail_provider: 'openai',
+                        default_voice_speed: 1.0,
+                        default_voice_intensity: 0.7,
+                        default_language: 'pt-BR',
+                        daily_spend_limit: 0,
+                        monthly_spend_limit: 0,
+                        text_cost_unit: 0,
+                        voice_cost_unit: 0,
+                        image_cost_unit: 0,
+                        video_cost_unit: 0,
+                        music_cost_unit: 0,
+                        caption_cost_unit: 0,
+                        thumbnail_cost_unit: 0
+                    },
+                    seriesForm: {
+                        id: null,
+                        name: '',
+                        bible_book: '',
+                        main_character: '',
+                        target_audience: '',
+                        visual_style: '',
+                        narrative_tone: '',
+                        planned_episodes: 10,
+                        episode_duration_minutes: 5,
+                        language: 'pt-BR',
+                        linked_channel: '',
+                        status: 'draft',
+                        bible_story_text: '',
+                        series_summary: '',
+                        notes: ''
+                    },
+                    scriptForm: {
+                        desired_duration_minutes: 5,
+                        narrative_style: 'emocionante',
+                        drama_level: 7,
+                        biblical_fidelity_level: 9,
+                        target_audience: 'familia',
+                        subscribe_cta: '',
+                        next_episode_cta: ''
+                    },
+                    characterForm: {
+                        series_id: '',
+                        name: '',
+                        description: '',
+                        approximate_age: '',
+                        clothing: '',
+                        hair: '',
+                        default_expression: '',
+                        visual_style: '',
+                        base_prompt: '',
+                        reference_image_url: ''
+                    },
+                    characterEmotions: '',
+                    scenarioForm: {
+                        series_id: '',
+                        name: '',
+                        description: '',
+                        base_prompt: '',
+                        visual_style: '',
+                        reference_image_url: ''
+                    },
+                    promptForm: {
+                        category: '',
+                        title: '',
+                        content: '',
+                        is_active: true
+                    },
+                    metricForm: {
+                        job_id: '',
+                        platform: 'youtube',
+                        video_id: '',
+                        view_count: 0,
+                        ctr: 0,
+                        retention: 0,
+                        subscribers_gained: 0,
+                        likes: 0,
+                        comments: 0
+                    },
+                    pollTimer: null
+                }
+            },
+            computed: {
+                dashboardCards() {
+                    return [
+                        { label: 'Series criadas', value: this.dashboard.totals?.series || 0 },
+                        { label: 'Episodios', value: this.dashboard.totals?.episodes || 0 },
+                        { label: 'Videos longos', value: this.dashboard.totals?.long_videos || 0 },
+                        { label: 'Shorts', value: this.dashboard.totals?.shorts || 0 },
+                        { label: 'Aprovacao', value: this.dashboard.totals?.videos_waiting_approval || 0 },
+                        { label: 'Publicados', value: this.dashboard.totals?.videos_published || 0 }
+                    ];
+                }
+            },
+            methods: {
+                emptySeriesForm() {
+                    return {
+                        id: null,
+                        name: '',
+                        bible_book: '',
+                        main_character: '',
+                        target_audience: '',
+                        visual_style: '',
+                        narrative_tone: '',
+                        planned_episodes: 10,
+                        episode_duration_minutes: 5,
+                        language: 'pt-BR',
+                        linked_channel: '',
+                        status: 'draft',
+                        bible_story_text: '',
+                        series_summary: '',
+                        notes: ''
+                    };
+                },
+                getAuthHeaders() {
+                    const token = localStorage.getItem('access_token');
+                    return token ? { Authorization: `Bearer ${token}` } : {};
+                },
+                async authFetch(url, options = {}) {
+                    const headers = { ...(options.headers || {}), ...this.getAuthHeaders() };
+                    const response = await fetch(url, { ...options, headers });
+                    if (response.status === 401) {
+                        localStorage.removeItem('access_token');
+                        window.location.href = '/login.html';
+                    }
+                    return response;
+                },
+                async checkAuth() {
+                    const token = localStorage.getItem('access_token');
+                    if (!token) {
+                        window.location.href = '/login.html';
+                        return;
+                    }
+                    const res = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+                    if (!res.ok) {
+                        localStorage.removeItem('access_token');
+                        window.location.href = '/login.html';
+                    }
+                },
+                notifySuccess(message) {
+                    this.success = message;
+                    this.error = '';
+                    setTimeout(() => { this.success = ''; }, 4000);
+                },
+                notifyError(message) {
+                    this.error = message;
+                    this.success = '';
+                },
+                formatMoney(value) {
+                    const num = Number(value || 0);
+                    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(num);
+                },
+                formatDate(value) {
+                    if (!value) return 'Nao agendado';
+                    try {
+                        return new Date(value).toLocaleString('pt-BR');
+                    } catch (e) {
+                        return value;
+                    }
+                },
+                jobsByStage(stage) {
+                    return this.jobs.filter(item => item.kanban_stage === stage);
+                },
+                async bootstrap() {
+                    this.loading = true;
+                    try {
+                        const res = await this.authFetch('/bible-video-factory/bootstrap');
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao carregar a fabrica.');
+                        this.dashboard = data.dashboard || this.dashboard;
+                        this.series = data.series || [];
+                        this.jobs = data.jobs || [];
+                        this.prompts = data.prompts || [];
+                        this.characters = data.characters || [];
+                        this.scenarios = data.scenarios || [];
+                        this.metrics = data.metrics || [];
+                        this.config = { ...this.config, ...(data.config || {}) };
+                        if (this.selectedSeriesId) {
+                            await this.loadEpisodes(this.selectedSeriesId);
+                        }
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao carregar dados.');
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                resetSeriesForm() {
+                    this.seriesForm = this.emptySeriesForm();
+                },
+                editSeries(item) {
+                    this.seriesForm = { ...item };
+                    this.activeTab = 'series';
+                },
+                async saveSeries() {
+                    try {
+                        const payload = { ...this.seriesForm };
+                        const isEdit = !!payload.id;
+                        const url = isEdit ? `/bible-video-factory/series/${payload.id}` : '/bible-video-factory/series';
+                        const method = isEdit ? 'PUT' : 'POST';
+                        delete payload.id;
+                        const res = await this.authFetch(url, {
+                            method,
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar serie.');
+                        this.notifySuccess('Serie salva com sucesso.');
+                        this.resetSeriesForm();
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao salvar serie.');
+                    }
+                },
+                async deleteSeries(seriesId) {
+                    if (!confirm('Deseja excluir esta serie e todos os dados relacionados?')) return;
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/series/${seriesId}`, { method: 'DELETE' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao excluir serie.');
+                        this.notifySuccess('Serie excluida.');
+                        if (this.selectedSeriesId === seriesId) {
+                            this.selectedSeriesId = '';
+                            this.selectedSeries = null;
+                            this.selectedEpisodes = [];
+                        }
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao excluir serie.');
+                    }
+                },
+                async selectSeries(item) {
+                    this.selectedSeries = item;
+                    this.selectedSeriesId = item.id;
+                    await this.loadEpisodes(item.id);
+                    this.activeTab = 'series';
+                },
+                async loadEpisodes(seriesId) {
+                    if (!seriesId) return;
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/series/${seriesId}/episodes`);
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao carregar episodios.');
+                        this.selectedEpisodes = data || [];
+                        this.selectedSeries = this.series.find(item => String(item.id) === String(seriesId)) || this.selectedSeries;
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao carregar episodios.');
+                    }
+                },
+                async splitEpisodes(seriesId) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/series/${seriesId}/split-episodes`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ replace_existing: true })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao dividir em episodios.');
+                        this.selectedEpisodes = data || [];
+                        this.notifySuccess('Episodios gerados com sucesso.');
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao dividir episodios.');
+                    }
+                },
+                openEpisodeEditor(ep) {
+                    this.selectedEpisode = { ...ep };
+                    this.notifySuccess(`Edite o episodio "${ep.title}" usando o fluxo de roteiro.`);
+                    this.activeTab = 'script';
+                },
+                async onSeriesChange() {
+                    if (!this.selectedSeriesId) return;
+                    await this.loadEpisodes(this.selectedSeriesId);
+                    this.selectedEpisodeId = '';
+                    this.selectedScriptId = '';
+                    this.episodeScripts = [];
+                    this.currentScript = null;
+                    this.currentScenes = [];
+                },
+                async selectEpisode(ep) {
+                    this.selectedEpisodeId = ep.id;
+                    this.selectedEpisode = ep;
+                    await this.onEpisodeChange();
+                    this.activeTab = 'script';
+                },
+                async onEpisodeChange() {
+                    if (!this.selectedEpisodeId) return;
+                    this.selectedEpisode = this.selectedEpisodes.find(item => String(item.id) === String(this.selectedEpisodeId)) || null;
+                    const res = await this.authFetch(`/bible-video-factory/episodes/${this.selectedEpisodeId}/scripts`);
+                    const data = await res.json();
+                    if (!res.ok) {
+                        this.notifyError(data.detail || 'Falha ao carregar roteiros.');
+                        return;
+                    }
+                    this.episodeScripts = data || [];
+                    if (this.episodeScripts.length) {
+                        this.selectedScriptId = this.episodeScripts[0].id;
+                        await this.loadSelectedScript();
+                    } else {
+                        this.selectedScriptId = '';
+                        this.currentScript = null;
+                        this.currentScenes = [];
+                    }
+                },
+                async loadSelectedScript() {
+                    if (!this.selectedScriptId) return;
+                    const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}`);
+                    const data = await res.json();
+                    if (!res.ok) {
+                        this.notifyError(data.detail || 'Falha ao carregar roteiro.');
+                        return;
+                    }
+                    this.currentScript = data;
+                    const sceneRes = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/scenes`);
+                    const sceneData = await sceneRes.json();
+                    this.currentScenes = sceneRes.ok ? (sceneData || []) : [];
+                },
+                async generateScript() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/episodes/${this.selectedEpisodeId}/generate-script`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.scriptForm)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao gerar roteiro.');
+                        this.notifySuccess('Roteiro gerado com sucesso.');
+                        await this.onEpisodeChange();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao gerar roteiro.');
+                    }
+                },
+                async validateCurrentScript() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/validate`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao validar roteiro.');
+                        this.currentScript = data;
+                        this.notifySuccess('Validacao biblica concluida.');
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro na validacao biblica.');
+                    }
+                },
+                async generateScenesForScript() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/generate-scenes`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao gerar cenas.');
+                        this.currentScenes = data || [];
+                        this.notifySuccess('Cenas geradas com sucesso.');
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao gerar cenas.');
+                    }
+                },
+                async generateShortsForScript() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/generate-shorts`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao gerar shorts.');
+                        if (!this.currentScript) this.currentScript = {};
+                        this.currentScript.shorts = data || [];
+                        this.notifySuccess('Shorts sugeridos foram gerados.');
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao gerar shorts.');
+                    }
+                },
+                async generateThumbnailForScript() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/generate-thumbnail`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao gerar thumbnail.');
+                        if (!this.currentScript) this.currentScript = {};
+                        this.currentScript.thumbnail = data || {};
+                        this.notifySuccess('Thumbnail sugerida gerada.');
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao gerar thumbnail.');
+                    }
+                },
+                async createProductionJob(aspectRatio, jobType = 'episode') {
+                    try {
+                        const res = await this.authFetch('/bible-video-factory/jobs', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                script_id: this.selectedScriptId,
+                                platform: 'youtube',
+                                aspect_ratio: aspectRatio,
+                                start_immediately: false,
+                                job_type: jobType
+                            })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao criar job.');
+                        this.notifySuccess('Job criado com sucesso.');
+                        this.activeTab = 'queue';
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao criar job.');
+                    }
+                },
+                async startJob(jobId) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/jobs/${jobId}/start`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao iniciar job.');
+                        this.notifySuccess('Job enviado para processamento.');
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao iniciar job.');
+                    }
+                },
+                async approveJob(jobId) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/jobs/${jobId}/approve`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ notes: 'Aprovado na fila da fabrica.' })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao aprovar job.');
+                        this.notifySuccess('Job aprovado.');
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao aprovar job.');
+                    }
+                },
+                async publishJob(jobId) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/jobs/${jobId}/publish`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao publicar job.');
+                        this.notifySuccess('Video publicado com sucesso.');
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao publicar job.');
+                    }
+                },
+                async saveCharacter() {
+                    try {
+                        const payload = {
+                            ...this.characterForm,
+                            emotions: this.characterEmotions.split(',').map(x => x.trim()).filter(Boolean)
+                        };
+                        const res = await this.authFetch('/bible-video-factory/characters', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar personagem.');
+                        this.notifySuccess('Personagem salvo.');
+                        this.characterForm = { series_id: '', name: '', description: '', approximate_age: '', clothing: '', hair: '', default_expression: '', visual_style: '', base_prompt: '', reference_image_url: '' };
+                        this.characterEmotions = '';
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao salvar personagem.');
+                    }
+                },
+                async saveScenario() {
+                    try {
+                        const res = await this.authFetch('/bible-video-factory/scenarios', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.scenarioForm)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar cenario.');
+                        this.notifySuccess('Cenario salvo.');
+                        this.scenarioForm = { series_id: '', name: '', description: '', base_prompt: '', visual_style: '', reference_image_url: '' };
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao salvar cenario.');
+                    }
+                },
+                async savePrompt() {
+                    try {
+                        const res = await this.authFetch('/bible-video-factory/prompts', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.promptForm)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar prompt.');
+                        this.notifySuccess('Prompt salvo.');
+                        this.promptForm = { category: '', title: '', content: '', is_active: true };
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao salvar prompt.');
+                    }
+                },
+                async saveConfig() {
+                    try {
+                        const res = await this.authFetch('/bible-video-factory/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.config)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar configuracao.');
+                        this.config = { ...this.config, ...data };
+                        this.notifySuccess('Configuracao salva com sucesso.');
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao salvar configuracao.');
+                    }
+                },
+                async saveMetric() {
+                    try {
+                        const payload = {
+                            ...this.metricForm,
+                            job_id: this.metricForm.job_id || null
+                        };
+                        const res = await this.authFetch('/bible-video-factory/metrics', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar metricas.');
+                        this.notifySuccess('Metricas salvas.');
+                        this.metricForm = { job_id: '', platform: 'youtube', video_id: '', view_count: 0, ctr: 0, retention: 0, subscribers_gained: 0, likes: 0, comments: 0 };
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao salvar metricas.');
+                    }
+                }
+            },
+            async mounted() {
+                await this.checkAuth();
+                await this.bootstrap();
+                this.pollTimer = setInterval(() => this.bootstrap(), 15000);
+            },
+            beforeUnmount() {
+                if (this.pollTimer) clearInterval(this.pollTimer);
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
