@@ -13,6 +13,8 @@ class BibleVideoSeries(Base):
     bible_book = Column(String, nullable=True, index=True)
     main_character = Column(String, nullable=True, index=True)
     target_audience = Column(String, nullable=True)
+    production_profile = Column(String, nullable=True, index=True)
+    production_profile_json = Column(Text, nullable=True)
     visual_style = Column(String, nullable=True)
     narrative_tone = Column(String, nullable=True)
     planned_episodes = Column(Integer, nullable=False, default=10)

@@ -42,6 +42,8 @@ class SeriesRequest(BaseModel):
     bible_book: Optional[str] = None
     main_character: Optional[str] = None
     target_audience: Optional[str] = None
+    production_profile: Optional[str] = None
+    production_profile_config: Optional[Dict[str, Any]] = None
     visual_style: Optional[str] = None
     narrative_tone: Optional[str] = None
     planned_episodes: int = Field(default=10, ge=1, le=300)
@@ -90,11 +92,16 @@ class CharacterRequest(BaseModel):
     name: str
     description: Optional[str] = None
     approximate_age: Optional[str] = None
+    appearance: Optional[str] = None
     clothing: Optional[str] = None
     hair: Optional[str] = None
+    beard: Optional[str] = None
+    eye_color: Optional[str] = None
+    height: Optional[str] = None
     default_expression: Optional[str] = None
     visual_style: Optional[str] = None
     base_prompt: Optional[str] = None
+    master_prompt: Optional[str] = None
     reference_image_url: Optional[str] = None
     emotions: List[str] = Field(default_factory=list)
 
@@ -263,8 +270,14 @@ def list_series(db: Session = Depends(get_db), current_user: User = Depends(get_
 @router.post("/series")
 def create_series(payload: SeriesRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     row = BibleVideoSeries(user_id=current_user.id)
-    for key, value in payload.model_dump().items():
+    data = payload.model_dump()
+    profile_name = data.get("production_profile")
+    profile_config = data.pop("production_profile_config", None) or get_service()._series_profile_defaults(profile_name)
+    if profile_name and not data.get("narrative_tone") and profile_config.get("narrative_tone") == "cinematografico":
+        data["narrative_tone"] = "cinematografico"
+    for key, value in data.items():
         setattr(row, key, value)
+    row.production_profile_json = get_service()._json_dumps(profile_config)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -276,8 +289,14 @@ def update_series(series_id: int, payload: SeriesRequest, db: Session = Depends(
     row = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == series_id, BibleVideoSeries.user_id == current_user.id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Serie nao encontrada.")
-    for key, value in payload.model_dump().items():
+    data = payload.model_dump()
+    profile_name = data.get("production_profile")
+    profile_config = data.pop("production_profile_config", None) or get_service()._series_profile_defaults(profile_name)
+    if profile_name and not data.get("narrative_tone") and profile_config.get("narrative_tone") == "cinematografico":
+        data["narrative_tone"] = "cinematografico"
+    for key, value in data.items():
         setattr(row, key, value)
+    row.production_profile_json = get_service()._json_dumps(profile_config)
     db.commit()
     db.refresh(row)
     return get_service().serialize_series(row)
@@ -446,6 +465,69 @@ def generate_scenes(script_id: int, db: Session = Depends(get_db), current_user:
     return [get_service().serialize_scene(row) for row in created]
 
 
+@router.post("/scripts/{script_id}/approve-storyboard")
+def approve_storyboard(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+    package = get_service()._extract_script_package(script)
+    storyboard = package.get("storyboard") if isinstance(package, dict) else []
+    if not isinstance(storyboard, list):
+        storyboard = []
+    approved_storyboard = []
+    for idx, item in enumerate(storyboard):
+        if not isinstance(item, dict):
+            item = {"scene_number": idx + 1, "title": f"Cena {idx + 1}", "narration": str(item)}
+        approved_storyboard.append({**item, "approval_status": "approved"})
+    blueprint = package.get("production_blueprint") if isinstance(package, dict) and isinstance(package.get("production_blueprint"), dict) else {}
+    get_service()._save_script_package(
+        script,
+        {
+            "storyboard": approved_storyboard,
+            "production_blueprint": {**blueprint, "pipeline_status": "storyboard_aprovado"},
+        },
+    )
+    if episode:
+        episode.status = "storyboard_approved"
+    db.commit()
+    db.refresh(script)
+    return get_service().serialize_script(script)
+
+
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/preview")
+def generate_storyboard_preview(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().generate_storyboard_preview(db, script, scene_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/approve")
+def approve_storyboard_scene(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().approve_storyboard_scene(db, script, scene_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/regenerate")
+def regenerate_storyboard_scene(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().regenerate_storyboard_scene(db, script, scene_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/scripts/{script_id}/scenes")
 def list_scenes(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     rows = (
@@ -491,9 +573,28 @@ def list_characters(series_id: Optional[int] = Query(None), db: Session = Depend
 
 @router.post("/characters")
 def create_character(payload: CharacterRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    row = BibleVideoCharacter(user_id=current_user.id, emotions_json=get_service()._json_dumps(payload.emotions))
-    for key, value in payload.model_dump(exclude={"emotions"}).items():
+    try:
+        prepared = get_service().prepare_character_bible_payload({**payload.model_dump(), "emotions": payload.emotions})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    meta = {
+        "emotions": prepared.get("emotions") or [],
+        "appearance": prepared.get("appearance"),
+        "beard": prepared.get("beard"),
+        "eye_color": prepared.get("eye_color"),
+        "height": prepared.get("height"),
+        "master_prompt": prepared.get("master_prompt") or prepared.get("base_prompt"),
+        "consistency_lock": True,
+    }
+    row = BibleVideoCharacter(user_id=current_user.id, emotions_json=get_service()._json_dumps(meta))
+    for key, value in prepared.items():
+        if key in {"emotions", "appearance", "beard", "eye_color", "height", "master_prompt", "consistency_lock"}:
+            continue
         setattr(row, key, value)
+    if prepared.get("appearance") and not prepared.get("description"):
+        row.description = prepared.get("appearance")
+    if prepared.get("master_prompt"):
+        row.base_prompt = prepared.get("master_prompt")
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -505,9 +606,29 @@ def update_character(character_id: int, payload: CharacterRequest, db: Session =
     row = db.query(BibleVideoCharacter).filter(BibleVideoCharacter.id == character_id, BibleVideoCharacter.user_id == current_user.id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Personagem nao encontrado.")
-    for key, value in payload.model_dump(exclude={"emotions"}).items():
+    try:
+        prepared = get_service().prepare_character_bible_payload({**payload.model_dump(), "emotions": payload.emotions})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    for key, value in prepared.items():
+        if key in {"emotions", "appearance", "beard", "eye_color", "height", "master_prompt", "consistency_lock"}:
+            continue
         setattr(row, key, value)
-    row.emotions_json = get_service()._json_dumps(payload.emotions)
+    row.emotions_json = get_service()._json_dumps(
+        {
+            "emotions": prepared.get("emotions") or [],
+            "appearance": prepared.get("appearance"),
+            "beard": prepared.get("beard"),
+            "eye_color": prepared.get("eye_color"),
+            "height": prepared.get("height"),
+            "master_prompt": prepared.get("master_prompt") or prepared.get("base_prompt"),
+            "consistency_lock": True,
+        }
+    )
+    if prepared.get("appearance") and not prepared.get("description"):
+        row.description = prepared.get("appearance")
+    if prepared.get("master_prompt"):
+        row.base_prompt = prepared.get("master_prompt")
     db.commit()
     db.refresh(row)
     return get_service().serialize_character(row)
@@ -654,16 +775,19 @@ def create_job(payload: JobCreateRequest, db: Session = Depends(get_db), current
             scheduled_for = datetime.fromisoformat(payload.scheduled_for)
         except Exception:
             raise HTTPException(status_code=400, detail="scheduled_for invalido.")
-    row = get_service().create_job(
-        db,
-        user_id=current_user.id,
-        script=script,
-        platform=payload.platform,
-        aspect_ratio=payload.aspect_ratio,
-        start_immediately=payload.start_immediately,
-        scheduled_for=scheduled_for,
-        job_type=payload.job_type,
-    )
+    try:
+        row = get_service().create_job(
+            db,
+            user_id=current_user.id,
+            script=script,
+            platform=payload.platform,
+            aspect_ratio=payload.aspect_ratio,
+            start_immediately=payload.start_immediately,
+            scheduled_for=scheduled_for,
+            job_type=payload.job_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if payload.start_immediately:
         _enqueue_job(row.id)
         db.refresh(row)

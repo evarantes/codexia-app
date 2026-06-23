@@ -35,9 +35,14 @@ KANBAN_STAGES = [
     "script_generated",
     "script_approved",
     "scenes_generated",
+    "storyboard_generated",
+    "storyboard_approved",
+    "images_generated",
     "voice_generated",
     "video_animating",
     "video_editing",
+    "thumbnail_generated",
+    "shorts_generated",
     "awaiting_approval",
     "ready_to_publish",
     "published",
@@ -48,6 +53,30 @@ KANBAN_STAGES = [
 class BibleVideoFactoryService:
     def __init__(self):
         self.ai = AIContentGenerator()
+
+    def _series_profile_defaults(self, production_profile: Any) -> Dict[str, Any]:
+        profile = self._normalize_text(production_profile).lower()
+        if profile in {"serie netflix biblica", "netflix_biblica", "netflix"}:
+            return {
+                "name": "Serie Netflix Biblica",
+                "cliffhanger_required": True,
+                "minimum_retention_score": 80,
+                "strong_hook_first_15_seconds": True,
+                "narrative_tone": "cinematografico",
+                "emotional_curve": "crescente",
+                "serialized_narrative": True,
+                "auto_next_episode_cta": True,
+                "auto_shorts_count": 3,
+            }
+        return {}
+
+    def resolve_series_profile(self, series: Optional[BibleVideoSeries]) -> Dict[str, Any]:
+        if not series:
+            return {}
+        saved = self._json_loads(getattr(series, "production_profile_json", None), {})
+        if not isinstance(saved, dict):
+            saved = {}
+        return {**self._series_profile_defaults(getattr(series, "production_profile", "")), **saved}
 
     def _normalize_scalar(self, value: Any) -> Any:
         if isinstance(value, list):
@@ -135,6 +164,347 @@ class BibleVideoFactoryService:
             chunks.append(chunks[-1] if chunks else raw[:500])
         return chunks[:count]
 
+    def _word_count(self, text: Any) -> int:
+        raw = self._normalize_text(text)
+        if not raw:
+            return 0
+        return len([part for part in re.split(r"\s+", raw) if part])
+
+    def _ensure_list(self, value: Any) -> List[Any]:
+        if isinstance(value, list):
+            return value
+        if value in (None, "", {}):
+            return []
+        return [value]
+
+    def _scene_duration(self, minutes: int, scene_count: int) -> int:
+        total_seconds = max(60, int(minutes or 5) * 60)
+        count = max(1, int(scene_count or 1))
+        return max(15, round(total_seconds / count))
+
+    def _build_text_from_sections(self, sections: Dict[str, Any]) -> str:
+        ordered = [
+            self._normalize_text(sections.get("opening_hook")),
+            self._normalize_text(sections.get("introduction")),
+            self._normalize_text(sections.get("development")),
+            self._normalize_text(sections.get("climax")),
+            self._normalize_text(sections.get("impact_phrase")),
+            self._normalize_text(sections.get("cliffhanger")),
+            self._normalize_text(sections.get("cta_subscribe")),
+            self._normalize_text(sections.get("cta_next_episode")),
+        ]
+        return "\n\n".join([part for part in ordered if part])
+
+    def _ensure_word_target(self, text: str, minimum_words: int, maximum_words: int, sections: Dict[str, Any], episode: BibleVideoEpisode, series: Optional[BibleVideoSeries]) -> str:
+        raw = self._normalize_text(text)
+        if not raw:
+            raw = self._build_text_from_sections(sections)
+        detail_bank = [
+            f"O ambiente de {series.bible_book if series and series.bible_book else 'um cenario biblico'} ganha peso dramatico enquanto a historia de {series.main_character if series and series.main_character else episode.title} avanca com reverencia, tensao e detalhes visuais que ajudam o espectador a sentir o momento.",
+            f"Os sons do vento, dos passos, da respiracao e do silencio ao redor reforcam a emocao dos personagens, sem alterar os fatos centrais do relato biblico.",
+            f"Cada gesto, olhar e pausa precisa revelar o conflito interno, a fe, o medo e a coragem envolvidos nesta passagem, em linguagem simples e cinematografica.",
+            f"O espectador deve perceber o clima do lugar, a luz, a poeira, o movimento da multidao e a carga espiritual do acontecimento, mantendo fidelidade ao texto biblico.",
+            f"Este episodio cresce em emocao ate o climax, deixando uma frase memoravel e um final com forte curiosidade para o proximo capitulo da serie.",
+        ]
+        idx = 0
+        while self._word_count(raw) < minimum_words and idx < 12:
+            raw = f"{raw}\n\n{detail_bank[idx % len(detail_bank)]}".strip()
+            idx += 1
+        words = raw.split()
+        if len(words) > maximum_words:
+            raw = " ".join(words[:maximum_words]).strip()
+        return raw
+
+    def _extract_script_package(self, script: Optional[BibleVideoScript]) -> Dict[str, Any]:
+        if not script:
+            return {}
+        data = self._json_loads(script.optional_dialogues_json, [])
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            return {"optional_dialogues": data}
+        return {}
+
+    def _save_script_package(self, script: BibleVideoScript, payload: Dict[str, Any]):
+        current = self._extract_script_package(script)
+        merged = {**current, **(payload or {})}
+        script.optional_dialogues_json = self._json_dumps(merged)
+
+    def _normalize_storyboard_frame(self, item: Any, scene_number: int) -> Dict[str, Any]:
+        if not isinstance(item, dict):
+            item = {"narration": self._normalize_text(item)}
+        prompt_visual = self._normalize_text(item.get("prompt_visual") or item.get("prompt_image") or item.get("image_prompt") or item.get("image"))
+        storyboard_image = self._normalize_text(item.get("storyboard_image") or item.get("image"))
+        return {
+            "scene_number": self._normalize_int(item.get("scene_number") or scene_number, scene_number),
+            "title": self._normalize_text(item.get("title") or f"Cena {scene_number}"),
+            "narration": self._normalize_text(item.get("narration") or item.get("narration_text") or item.get("text")),
+            "emotion": self._normalize_text(item.get("emotion")),
+            "prompt_visual": prompt_visual,
+            "camera_movement": self._normalize_text(item.get("camera_movement") or item.get("camera_direction") or item.get("camera_type")),
+            "duration": float(item.get("duration") or item.get("duration_seconds") or 0),
+            "suggested_soundtrack": self._normalize_text(item.get("suggested_soundtrack") or item.get("music_style")),
+            "storyboard_image": storyboard_image,
+            "image": storyboard_image or prompt_visual,
+            "approval_status": self._normalize_text(item.get("approval_status") or "pending"),
+        }
+
+    def _normalize_storyboard_list(self, storyboard: Any) -> List[Dict[str, Any]]:
+        if not isinstance(storyboard, list):
+            return []
+        return [self._normalize_storyboard_frame(item, idx + 1) for idx, item in enumerate(storyboard)]
+
+    def _get_storyboard(self, script: BibleVideoScript) -> List[Dict[str, Any]]:
+        package = self._extract_script_package(script)
+        return self._normalize_storyboard_list(package.get("storyboard") if isinstance(package, dict) else [])
+
+    def _get_scene_sources(self, script: BibleVideoScript) -> List[Dict[str, Any]]:
+        scenes = self._json_loads(script.scenes_json, [])
+        if not isinstance(scenes, list):
+            return []
+        normalized = []
+        for idx, item in enumerate(scenes):
+            if not isinstance(item, dict):
+                item = {"text": self._normalize_text(item)}
+            normalized.append(
+                {
+                    **item,
+                    "scene_number": self._normalize_int(item.get("scene_number") or idx + 1, idx + 1),
+                }
+            )
+        return normalized
+
+    def _scene_source_to_storyboard_frame(self, item: Dict[str, Any], idx: int) -> Dict[str, Any]:
+        return self._normalize_storyboard_frame(
+            {
+                "scene_number": item.get("scene_number") or idx + 1,
+                "title": item.get("title"),
+                "narration": item.get("narration") or item.get("text"),
+                "emotion": item.get("emotion"),
+                "prompt_visual": item.get("prompt_image") or item.get("image_prompt"),
+                "camera_movement": item.get("camera_direction"),
+                "duration": item.get("duration"),
+                "suggested_soundtrack": item.get("music_style"),
+                "storyboard_image": item.get("storyboard_image"),
+                "approval_status": item.get("approval_status") or "pending",
+            },
+            idx + 1,
+        )
+
+    def _update_scene_row_from_storyboard_frame(self, row: BibleVideoScene, frame: Dict[str, Any], scene_source: Optional[Dict[str, Any]] = None):
+        meta = self._json_loads(row.effects_json, {})
+        if not isinstance(meta, dict):
+            meta = {}
+        row.narration_text = self._normalize_text(frame.get("narration") or row.narration_text)
+        row.emotion = self._normalize_text(frame.get("emotion") or row.emotion)
+        row.prompt_image = self._normalize_text(frame.get("prompt_visual") or row.prompt_image)
+        row.duration_seconds = float(frame.get("duration") or row.duration_seconds or 0)
+        row.camera_type = self._normalize_text(frame.get("camera_movement") or row.camera_type)
+        meta["title"] = self._normalize_text(frame.get("title") or meta.get("title") or f"Cena {row.scene_number}")
+        meta["camera_direction"] = self._normalize_text(frame.get("camera_movement") or meta.get("camera_direction") or row.camera_type)
+        meta["music_style"] = self._normalize_text(frame.get("suggested_soundtrack") or meta.get("music_style"))
+        meta["storyboard_image"] = self._normalize_text(frame.get("storyboard_image") or meta.get("storyboard_image"))
+        meta["approval_status"] = self._normalize_text(frame.get("approval_status") or meta.get("approval_status") or "pending")
+        if scene_source:
+            meta["prompt_video"] = self._normalize_text(scene_source.get("prompt_video") or meta.get("prompt_video"))
+            meta["prompt_cinematic"] = self._normalize_text(scene_source.get("prompt_cinematic") or meta.get("prompt_cinematic"))
+            meta["sound_effects"] = self._normalize_text(scene_source.get("sound_effects") or meta.get("sound_effects"))
+            row.prompt_animation = self._normalize_text(scene_source.get("prompt_animation") or row.prompt_animation)
+            row.visual_description = self._normalize_text(scene_source.get("visual_description") or scene_source.get("caption") or row.visual_description)
+        row.effects_json = self._json_dumps(meta)
+
+    def _save_storyboard_state(
+        self,
+        db: Session,
+        script: BibleVideoScript,
+        storyboard: List[Dict[str, Any]],
+        scene_sources: Optional[List[Dict[str, Any]]] = None,
+        episode: Optional[BibleVideoEpisode] = None,
+        pipeline_status: Optional[str] = None,
+    ):
+        storyboard = self._normalize_storyboard_list(storyboard)
+        if scene_sources is None:
+            scene_sources = self._get_scene_sources(script)
+        scene_sources_by_number = {self._normalize_int(item.get("scene_number"), idx + 1): item for idx, item in enumerate(scene_sources)}
+        storyboard_by_number = {self._normalize_int(item.get("scene_number"), idx + 1): item for idx, item in enumerate(storyboard)}
+
+        normalized_scene_sources = []
+        for idx in range(max(len(scene_sources), len(storyboard))):
+            base = scene_sources[idx] if idx < len(scene_sources) else {}
+            scene_number = self._normalize_int((base or {}).get("scene_number") or idx + 1, idx + 1)
+            frame = storyboard_by_number.get(scene_number) or self._scene_source_to_storyboard_frame(base or {}, idx)
+            normalized_scene_sources.append(
+                {
+                    **(base or {}),
+                    "scene_number": scene_number,
+                    "title": self._normalize_text(frame.get("title")),
+                    "text": self._normalize_text(frame.get("narration") or (base or {}).get("text")),
+                    "prompt_image": self._normalize_text(frame.get("prompt_visual") or (base or {}).get("prompt_image") or (base or {}).get("image_prompt")),
+                    "image_prompt": self._normalize_text(frame.get("prompt_visual") or (base or {}).get("image_prompt") or (base or {}).get("prompt_image")),
+                    "camera_direction": self._normalize_text(frame.get("camera_movement") or (base or {}).get("camera_direction")),
+                    "duration": float(frame.get("duration") or (base or {}).get("duration") or 0),
+                    "emotion": self._normalize_text(frame.get("emotion") or (base or {}).get("emotion")),
+                    "music_style": self._normalize_text(frame.get("suggested_soundtrack") or (base or {}).get("music_style")),
+                    "storyboard_image": self._normalize_text(frame.get("storyboard_image") or (base or {}).get("storyboard_image")),
+                    "approval_status": self._normalize_text(frame.get("approval_status") or (base or {}).get("approval_status") or "pending"),
+                }
+            )
+
+        script.scenes_json = self._json_dumps(normalized_scene_sources)
+        package = self._extract_script_package(script)
+        blueprint = package.get("production_blueprint") if isinstance(package.get("production_blueprint"), dict) else {}
+        if pipeline_status:
+            blueprint = {**blueprint, "pipeline_status": pipeline_status}
+        self._save_script_package(
+            script,
+            {
+                "storyboard": storyboard,
+                "production_blueprint": blueprint,
+            },
+        )
+
+        rows = db.query(BibleVideoScene).filter(BibleVideoScene.script_id == script.id).all()
+        for row in rows:
+            frame = storyboard_by_number.get(int(row.scene_number or 0))
+            source = scene_sources_by_number.get(int(row.scene_number or 0))
+            if frame:
+                self._update_scene_row_from_storyboard_frame(row, frame, source)
+
+        if episode:
+            all_approved = bool(storyboard) and all(self._normalize_text(item.get("approval_status")).lower() == "approved" for item in storyboard)
+            episode.status = "storyboard_approved" if all_approved else "storyboard_generated"
+
+    def _get_character_profiles_for_series(self, db: Session, series_id: Optional[int]) -> List[Dict[str, Any]]:
+        if not series_id:
+            return []
+        rows = db.query(BibleVideoCharacter).filter(BibleVideoCharacter.series_id == series_id).all()
+        return [self._character_profile(row) for row in rows]
+
+    def _get_scenario_profiles_for_series(self, db: Session, series_id: Optional[int]) -> List[Dict[str, Any]]:
+        if not series_id:
+            return []
+        rows = db.query(BibleVideoScenario).filter(BibleVideoScenario.series_id == series_id).all()
+        return [
+            {
+                "name": row.name,
+                "description": row.description,
+                "master_prompt": row.base_prompt,
+                "visual_style": row.visual_style,
+                "reference_image_url": row.reference_image_url,
+            }
+            for row in rows
+        ]
+
+    def _parse_character_meta(self, row: BibleVideoCharacter) -> Dict[str, Any]:
+        data = self._json_loads(row.emotions_json, [])
+        if isinstance(data, dict):
+            meta = dict(data)
+            meta["emotions"] = self._ensure_list(meta.get("emotions"))
+            return meta
+        return {"emotions": self._ensure_list(data)}
+
+    def _character_profile(self, row: BibleVideoCharacter) -> Dict[str, Any]:
+        meta = self._parse_character_meta(row)
+        master_prompt = self._normalize_text(meta.get("master_prompt") or row.base_prompt)
+        appearance = self._normalize_text(meta.get("appearance") or row.description)
+        return {
+            "name": row.name,
+            "age": row.approximate_age,
+            "appearance": appearance,
+            "hair": row.hair,
+            "beard": self._normalize_text(meta.get("beard")),
+            "clothing": row.clothing,
+            "eye_color": self._normalize_text(meta.get("eye_color")),
+            "height": self._normalize_text(meta.get("height")),
+            "description": row.description,
+            "master_prompt": master_prompt,
+            "visual_style": row.visual_style,
+            "reference_image_url": row.reference_image_url,
+            "emotions": self._ensure_list(meta.get("emotions")),
+            "consistency_lock": bool(meta.get("consistency_lock", True)),
+        }
+
+    def build_character_master_prompt(self, payload: Dict[str, Any]) -> str:
+        name = self._normalize_text(payload.get("name"))
+        age = self._normalize_text(payload.get("approximate_age") or payload.get("age"))
+        height = self._normalize_text(payload.get("height"))
+        eye_color = self._normalize_text(payload.get("eye_color"))
+        hair = self._normalize_text(payload.get("hair"))
+        beard = self._normalize_text(payload.get("beard"))
+        clothing = self._normalize_text(payload.get("clothing"))
+        description = self._normalize_text(payload.get("description"))
+        appearance = self._normalize_text(payload.get("appearance") or description)
+        visual_style = self._normalize_text(payload.get("visual_style") or "cinematografico biblico")
+        return self._normalize_text(
+            f"{name}, {age}, {height}, olhos {eye_color}, cabelo {hair}, barba {beard}, "
+            f"roupa padrao {clothing}, aparencia {appearance}, descricao detalhada: {description}. "
+            f"Manter exatamente o mesmo rosto, idade aparente, cabelo, barba, olhos, pele, roupas e proporcoes em todas as cenas. "
+            f"Estilo visual {visual_style}. Proibido mudar a aparencia entre cenas."
+        )
+
+    def prepare_character_bible_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(payload or {})
+        required_fields = {
+            "name": "Nome",
+            "approximate_age": "Idade",
+            "height": "Altura",
+            "eye_color": "Cor dos olhos",
+            "hair": "Cabelo",
+            "beard": "Barba",
+            "clothing": "Roupa padrao",
+            "description": "Descricao detalhada",
+        }
+        missing = [label for key, label in required_fields.items() if not self._normalize_text(data.get(key))]
+        if missing:
+            raise ValueError(f"Character Bible incompleto. Preencha: {', '.join(missing)}.")
+        if not self._normalize_text(data.get("appearance")):
+            data["appearance"] = self._normalize_text(data.get("description"))
+        if not self._normalize_text(data.get("master_prompt")):
+            data["master_prompt"] = self.build_character_master_prompt(data)
+        data["consistency_lock"] = True
+        return data
+
+    def _find_character_profiles(self, character_names: Any, profiles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        names = {self._normalize_text(name).lower() for name in self._ensure_list(character_names) if self._normalize_text(name)}
+        if not names:
+            return profiles[:1]
+        matched = [profile for profile in profiles if self._normalize_text(profile.get("name")).lower() in names]
+        return matched or profiles[:1]
+
+    def _compose_scene_prompt_with_character_bible(self, base_prompt: str, matched_profiles: List[Dict[str, Any]], scenario_name: str, emotion: str) -> str:
+        prompt = self._normalize_text(base_prompt)
+        locks = []
+        for profile in matched_profiles:
+            master_prompt = self._normalize_text(profile.get("master_prompt"))
+            if master_prompt:
+                locks.append(f"Character master prompt locked: {master_prompt}")
+        lock_text = " ".join(locks)
+        scenario_text = self._normalize_text(scenario_name)
+        emotion_text = self._normalize_text(emotion)
+        return self._normalize_text(
+            f"{lock_text} Cenario: {scenario_text}. Emocao: {emotion_text}. {prompt} "
+            "Use exatamente o mesmo personagem e o mesmo prompt mestre em todas as cenas. "
+            "Nao altere rosto, idade aparente, cabelo, barba, olhos, pele, roupa, proporcoes ou acessorios."
+        )
+
+    def _retention_analysis_fallback(self, sections: Dict[str, Any], word_count: int, scene_count: int, drama_level: int) -> Dict[str, Any]:
+        hook_strength = 92 if self._normalize_text(sections.get("opening_hook")) else 65
+        suspense = min(100, 55 + int(drama_level or 7) * 4)
+        emotional_curve = 88 if self._normalize_text(sections.get("climax")) else 70
+        viralization = 80 if self._normalize_text(sections.get("impact_phrase")) else 68
+        scene_score = 86 if 10 <= int(scene_count or 0) <= 15 else 70
+        length_score = 90 if 700 <= int(word_count or 0) <= 1200 else 72
+        overall = round((hook_strength + suspense + emotional_curve + viralization + scene_score + length_score) / 6.0)
+        return {
+            "overall_score": overall,
+            "hook_strength": hook_strength,
+            "emotion_score": emotional_curve,
+            "suspense_score": suspense,
+            "retention_score": round((hook_strength + suspense + scene_score) / 3.0),
+            "viralization_score": viralization,
+            "notes": "Estrutura com gancho, crescendo emocional e final de curiosidade para YouTube.",
+        }
+
     def _title_from_chunk(self, series: BibleVideoSeries, episode_number: int, chunk: str) -> str:
         words = [w.strip(" ,.;:!?") for w in str(chunk or "").split() if w.strip(" ,.;:!?")]
         if not words:
@@ -190,6 +560,7 @@ class BibleVideoFactoryService:
         return row
 
     def serialize_series(self, row: BibleVideoSeries) -> Dict[str, Any]:
+        profile_config = self.resolve_series_profile(row)
         return {
             "id": row.id,
             "user_id": row.user_id,
@@ -197,6 +568,8 @@ class BibleVideoFactoryService:
             "bible_book": row.bible_book,
             "main_character": row.main_character,
             "target_audience": row.target_audience,
+            "production_profile": row.production_profile,
+            "production_profile_config": profile_config,
             "visual_style": row.visual_style,
             "narrative_tone": row.narrative_tone,
             "planned_episodes": int(row.planned_episodes or 0),
@@ -236,6 +609,15 @@ class BibleVideoFactoryService:
         }
 
     def serialize_script(self, row: BibleVideoScript) -> Dict[str, Any]:
+        package = self._extract_script_package(row)
+        scenes = self._json_loads(row.scenes_json, [])
+        script_sections = package.get("script_sections") if isinstance(package, dict) else {}
+        retention_analysis = package.get("retention_analysis") if isinstance(package, dict) else {}
+        youtube_growth = package.get("youtube_growth") if isinstance(package, dict) else {}
+        storyboard = self._normalize_storyboard_list(package.get("storyboard") if isinstance(package, dict) else [])
+        blueprint = package.get("production_blueprint") if isinstance(package, dict) else {}
+        optional_dialogues = package.get("optional_dialogues") if isinstance(package, dict) else []
+        narration = row.full_narration or self._build_text_from_sections(script_sections or {})
         return {
             "id": row.id,
             "series_id": row.series_id,
@@ -248,9 +630,16 @@ class BibleVideoFactoryService:
             "target_audience": row.target_audience,
             "subscribe_cta": row.subscribe_cta,
             "next_episode_cta": row.next_episode_cta,
-            "full_narration": row.full_narration,
-            "scenes": self._json_loads(row.scenes_json, []),
-            "optional_dialogues": self._json_loads(row.optional_dialogues_json, []),
+            "full_narration": narration,
+            "word_count": self._word_count(narration),
+            "scene_count": len(scenes) if isinstance(scenes, list) else 0,
+            "scenes": scenes,
+            "optional_dialogues": optional_dialogues if isinstance(optional_dialogues, list) else [],
+            "script_sections": script_sections if isinstance(script_sections, dict) else {},
+            "retention_analysis": retention_analysis if isinstance(retention_analysis, dict) else {},
+            "youtube_growth": youtube_growth if isinstance(youtube_growth, dict) else {},
+            "storyboard": storyboard,
+            "production_blueprint": blueprint if isinstance(blueprint, dict) else {},
             "voice_emotion_notes": row.voice_emotion_notes,
             "soundtrack_notes": row.soundtrack_notes,
             "sound_effects_notes": row.sound_effects_notes,
@@ -266,6 +655,9 @@ class BibleVideoFactoryService:
         }
 
     def serialize_scene(self, row: BibleVideoScene) -> Dict[str, Any]:
+        raw_meta = self._json_loads(row.effects_json, [])
+        effects = raw_meta if isinstance(raw_meta, list) else self._ensure_list((raw_meta or {}).get("effects"))
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         return {
             "id": row.id,
             "script_id": row.script_id,
@@ -273,21 +665,32 @@ class BibleVideoFactoryService:
             "episode_id": row.episode_id,
             "user_id": row.user_id,
             "scene_number": int(row.scene_number or 0),
+            "title": self._normalize_text(meta.get("title") or f"Cena {int(row.scene_number or 0)}"),
             "narration_text": row.narration_text,
+            "narration": row.narration_text,
             "visual_description": row.visual_description,
             "characters": self._json_loads(row.characters_json, []),
             "scenario_name": row.scenario_name,
             "emotion": row.emotion,
             "prompt_image": row.prompt_image,
+            "prompt_video": self._normalize_text(meta.get("prompt_video")),
             "prompt_animation": row.prompt_animation,
+            "prompt_cinematic": self._normalize_text(meta.get("prompt_cinematic")),
             "duration_seconds": float(row.duration_seconds or 0),
             "camera_type": row.camera_type,
-            "effects": self._json_loads(row.effects_json, []),
+            "camera_direction": self._normalize_text(meta.get("camera_direction") or row.camera_type),
+            "effects": effects,
+            "sound_effects": self._normalize_text(meta.get("sound_effects")),
+            "music_style": self._normalize_text(meta.get("music_style")),
+            "provider_prompts": meta.get("provider_prompts") if isinstance(meta.get("provider_prompts"), dict) else {},
+            "storyboard_image": self._normalize_text(meta.get("storyboard_image")),
+            "approval_status": self._normalize_text(meta.get("approval_status") or "pending"),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
     def serialize_character(self, row: BibleVideoCharacter) -> Dict[str, Any]:
+        profile = self._character_profile(row)
         return {
             "id": row.id,
             "series_id": row.series_id,
@@ -301,7 +704,14 @@ class BibleVideoFactoryService:
             "visual_style": row.visual_style,
             "base_prompt": row.base_prompt,
             "reference_image_url": row.reference_image_url,
-            "emotions": self._json_loads(row.emotions_json, []),
+            "emotions": profile.get("emotions") or [],
+            "appearance": profile.get("appearance"),
+            "beard": profile.get("beard"),
+            "eye_color": profile.get("eye_color"),
+            "height": profile.get("height"),
+            "master_prompt": profile.get("master_prompt"),
+            "consistency_lock": profile.get("consistency_lock"),
+            "character_bible": profile,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -600,20 +1010,40 @@ class BibleVideoFactoryService:
         next_episode_cta: str,
     ) -> BibleVideoScript:
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == episode.series_id).first()
+        profile_config = self.resolve_series_profile(series)
         config = self.get_or_create_config(db, user_id)
         characters = db.query(BibleVideoCharacter).filter(BibleVideoCharacter.series_id == episode.series_id).all()
         scenarios = db.query(BibleVideoScenario).filter(BibleVideoScenario.series_id == episode.series_id).all()
         desired_duration_minutes = self._normalize_int(desired_duration_minutes, int(episode.estimated_minutes or 5))
-        narrative_style = self._normalize_text(narrative_style or (series.narrative_tone if series else "") or "emocionante")
+        if profile_config.get("narrative_tone") == "cinematografico":
+            narrative_style = "documentario cinematografico"
+        else:
+            narrative_style = self._normalize_text(narrative_style or (series.narrative_tone if series else "") or "emocionante")
         drama_level = self._normalize_int(drama_level, 7)
+        if profile_config.get("emotional_curve") == "crescente":
+            drama_level = max(drama_level, 8)
         biblical_fidelity_level = self._normalize_int(biblical_fidelity_level, 9)
         target_audience = self._normalize_text(target_audience or episode.title)
         subscribe_cta = self._normalize_text(subscribe_cta or config.default_cta or "")
         next_episode_cta = self._normalize_text(next_episode_cta or config.default_next_episode_cta or "")
+        if profile_config.get("auto_next_episode_cta") and not next_episode_cta:
+            next_episode_cta = "No proximo episodio, a tensao aumenta e a historia continua com uma revelacao decisiva."
         target_scene_count = 12
         min_scene_count = 10
         max_scene_count = 15
         minimum_words = 700 if desired_duration_minutes >= 5 else max(300, desired_duration_minutes * 140)
+        maximum_words = 1200 if desired_duration_minutes >= 5 else max(450, desired_duration_minutes * 220)
+        character_profiles = [self._character_profile(row) for row in characters]
+        scenario_profiles = [
+            {
+                "name": row.name,
+                "description": row.description,
+                "master_prompt": row.base_prompt,
+                "visual_style": row.visual_style,
+                "reference_image_url": row.reference_image_url,
+            }
+            for row in scenarios
+        ]
 
         print(
             "[BibleVideoFactoryService] generate_script_for_episode entrada:",
@@ -632,23 +1062,31 @@ class BibleVideoFactoryService:
             },
         )
         prompt = (
-            "Crie um roteiro biblico em JSON para video episodico.\n"
-            "Retorne as chaves: full_narration, impact_phrase, cliffhanger, scenes, optional_dialogues, voice_emotion_notes, soundtrack_notes, sound_effects_notes, retention_hooks.\n"
+            "Crie um roteiro biblico cinematografico em JSON para video episodico profissional do YouTube.\n"
+            "Retorne as chaves: episode_title, opening_hook, introduction, development, climax, impact_phrase, cliffhanger, cta_subscribe, cta_next_episode, full_narration, scenes, optional_dialogues, voice_emotion_notes, soundtrack_notes, sound_effects_notes, retention_hooks, retention_analysis, youtube_growth.\n"
             "A narrativa pode dramatizar, mas nao pode alterar os fatos principais da Biblia.\n"
             "Regras obrigatorias:\n"
             f"- gerar roteiro para video de {desired_duration_minutes} minutos;\n"
             f"- escrever no minimo {minimum_words} palavras na narracao completa;\n"
+            f"- escrever no maximo {maximum_words} palavras na narracao completa;\n"
             f"- dividir em no minimo {min_scene_count} e no maximo {max_scene_count} cenas;\n"
             "- criar gancho forte nos primeiros 15 segundos;\n"
-            "- criar emocao, suspense e linguagem simples;\n"
+            "- criar emocao crescente, suspense e linguagem simples;\n"
             "- manter estilo de documentario cinematografico;\n"
             "- nao resumir a historia e nao correr pelos fatos;\n"
             "- mostrar emocoes dos personagens;\n"
             "- descrever ambiente, sons e clima da cena;\n"
             "- incluir frase de impacto memoravel;\n"
             "- terminar com cliffhanger forte para o proximo episodio;\n"
+            "- pensar em retencao para YouTube;\n"
             "- preservar fidelidade biblica.\n"
-            "Cada item de scenes deve conter: title, description, narration, emotion, duration, image_prompt, caption.\n\n"
+            f"- perfil especial ativo: {'Serie Netflix Biblica' if profile_config else 'padrao'}.\n"
+            f"- cliffhanger obrigatorio: {'sim' if profile_config.get('cliffhanger_required') else 'nao'}.\n"
+            f"- nota minima de retencao desejada: {self._normalize_int(profile_config.get('minimum_retention_score'), 0) or 'livre'}.\n"
+            f"- shorts automaticos por episodio: {self._normalize_int(profile_config.get('auto_shorts_count'), 0) or 5}.\n"
+            "Cada item de scenes deve conter: scene_number, title, duration, emotion, visual_description, camera_direction, narration, sound_effects, music_style, prompt_image, prompt_video, prompt_animation, prompt_cinematic.\n"
+            "retention_analysis deve conter: overall_score, hook_strength, emotion_score, suspense_score, retention_score, viralization_score, notes.\n"
+            "youtube_growth deve conter: title_main, alternate_titles, description, tags.\n\n"
             f"Serie: {series.name if series else ''}\n"
             f"Episodio: {episode.title}\n"
             f"Resumo: {episode.summary or ''}\n"
@@ -666,8 +1104,9 @@ class BibleVideoFactoryService:
             f"CTA proximo episodio: {next_episode_cta}\n"
             f"Estilo visual: {series.visual_style if series else ''}\n"
             f"Tom: {series.narrative_tone if series else ''}\n"
-            f"Personagens cadastrados: {', '.join([c.name for c in characters])}\n"
-            f"Cenarios cadastrados: {', '.join([s.name for s in scenarios])}\n"
+            f"Perfil de producao: {self._json_dumps(profile_config)[:1500]}\n"
+            f"Personagens cadastrados: {self._json_dumps(character_profiles)[:5000]}\n"
+            f"Cenarios cadastrados: {self._json_dumps(scenario_profiles)[:4000]}\n"
         )
         fallback_scenes = []
         base_text = self._normalize_text(
@@ -677,40 +1116,94 @@ class BibleVideoFactoryService:
                 if self._normalize_text(x)
             )
         )
+        default_sections = {
+            "episode_title": self._normalize_text(episode.title),
+            "opening_hook": self._normalize_text(episode.opening_hook or f"Nos primeiros segundos, tudo aponta para um destino perigoso: {series.main_character if series and series.main_character else episode.title} esta prestes a viver um momento que muda a historia."),
+            "introduction": self._normalize_text(episode.summary or episode.development_text or base_text),
+            "development": self._normalize_text(episode.development_text or episode.summary or base_text),
+            "climax": self._normalize_text(episode.tension_moment or episode.summary or "A tensao cresce e a decisao final se aproxima."),
+            "impact_phrase": self._normalize_text(episode.impact_phrase or "Quando Deus chama alguem, o improvavel deixa de ser impossivel."),
+            "cliffhanger": self._normalize_text(episode.ending_hook or "Mas o proximo passo desta historia vai abalar tudo o que parecia certo e deixar todos em suspenso."),
+            "cta_subscribe": subscribe_cta,
+            "cta_next_episode": next_episode_cta,
+        }
         paragraphs = self._split_text_chunks(base_text, target_scene_count)
         for idx, item in enumerate(paragraphs):
+            duration = self._scene_duration(desired_duration_minutes, len(paragraphs))
             fallback_scenes.append(
                 {
+                    "scene_number": idx + 1,
                     "title": f"Cena {idx + 1}",
                     "description": item[:220],
+                    "visual_description": item[:220],
                     "narration": item,
                     "emotion": "suspense" if idx in {0, len(paragraphs) - 1} else "emocionante",
-                    "duration": max(18, round((desired_duration_minutes * 60) / max(1, len(paragraphs)))),
+                    "duration": duration,
                     "text": item,
+                    "camera_direction": ["aproximacao lenta", "travelling lateral", "panoramica ampla", "zoom dramatico"][idx % 4],
+                    "sound_effects": ["vento leve", "passos na terra", "silencio tenso", "multidao ao fundo"][idx % 4],
+                    "music_style": "trilha biblica cinematografica crescente",
                     "image_prompt": f"{series.visual_style or 'anime cinematografico'} de {episode.title}. {item[:180]}",
+                    "prompt_image": f"{series.visual_style or 'cinematic biblical anime'}, {item[:180]}, dramatic lighting, ultra detailed, emotional atmosphere, 4k",
+                    "prompt_video": f"{series.visual_style or 'cinematic biblical anime'}, {item[:180]}, camera movement {['slow push in', 'travelling shot', 'epic wide shot', 'dramatic close-up'][idx % 4]}, cinematic motion, 4k",
+                    "prompt_animation": f"Animate the biblical scene with subtle cloth movement, wind, depth and cinematic emotion: {item[:180]}",
+                    "prompt_cinematic": f"{series.visual_style or 'cinematic biblical anime'} scene of {episode.title}, golden hour, dramatic shadows, volumetric light, emotional realism, high retention YouTube frame",
                     "caption": item[:120],
                 }
             )
+        fallback_growth = {
+            "title_main": episode.youtube_title_suggestion or episode.title,
+            "alternate_titles": [
+                episode.youtube_title_suggestion or episode.title,
+                f"{episode.title}: o momento que mudou tudo",
+                f"O segredo por tras de {series.main_character if series and series.main_character else episode.title}",
+            ],
+            "description": self._normalize_text(f"{episode.summary or base_text[:280]}\n\n{subscribe_cta}\n{next_episode_cta}"),
+            "tags": ["biblia", "historia biblica", "youtube biblico", "anime biblico", self._normalize_text(series.main_character if series else "")],
+        }
         fallback = {
+            **default_sections,
             "full_narration": base_text,
-            "impact_phrase": episode.impact_phrase or "Quando Deus escolhe alguem, o medo nao define o final.",
-            "cliffhanger": episode.ending_hook or "Mas o proximo passo desta historia vai mudar tudo.",
             "scenes": fallback_scenes,
             "optional_dialogues": [],
-            "voice_emotion_notes": f"Narracao {narrative_style} com drama {drama_level}/10 e reverencia biblica.",
-            "soundtrack_notes": f"Trilha {series.narrative_tone if series else 'epica'} com suspense moderado e atmosfera cinematografica.",
+            "voice_emotion_notes": {
+                "voice": f"Narracao {narrative_style} com reverencia biblica",
+                "emotion": "emocao crescente com suspense moderado",
+                "scene": 1,
+                "description": f"Drama {drama_level}/10, voz clara, intensa e cinematografica.",
+            },
+            "soundtrack_notes": {
+                "soundtrack": f"Trilha {series.narrative_tone if series else 'epica'} com suspense moderado e atmosfera cinematografica.",
+                "emotion": "emocao crescente",
+                "description": "Cordas suaves, percussao discreta e ambiencia biblica reverente.",
+            },
             "sound_effects_notes": "Vento, passos, ambiente historico, multidao e silencio dramatico quando necessario.",
             "retention_hooks": [
                 episode.opening_hook or "Algo decisivo vai acontecer antes que alguem perceba.",
                 episode.impact_phrase or "A fe transforma o improvavel em destino.",
                 episode.ending_hook or "E o que vem depois vai surpreender a todos.",
             ],
+            "retention_analysis": self._retention_analysis_fallback(default_sections, self._word_count(base_text), len(fallback_scenes), drama_level),
+            "youtube_growth": fallback_growth,
         }
         data = self._generate_json(
             prompt,
             system_prompt="Voce e um roteirista biblico cinematografico para series em episodios.",
             fallback=fallback,
         )
+        script_sections = {
+            "episode_title": self._normalize_text(data.get("episode_title") or default_sections["episode_title"]),
+            "opening_hook": self._normalize_text(data.get("opening_hook") or default_sections["opening_hook"]),
+            "introduction": self._normalize_text(data.get("introduction") or default_sections["introduction"]),
+            "development": self._normalize_text(data.get("development") or default_sections["development"]),
+            "climax": self._normalize_text(data.get("climax") or default_sections["climax"]),
+            "impact_phrase": self._normalize_text(data.get("impact_phrase") or default_sections["impact_phrase"]),
+            "cliffhanger": self._normalize_text(data.get("cliffhanger") or default_sections["cliffhanger"]),
+            "cta_subscribe": self._normalize_text(data.get("cta_subscribe") or subscribe_cta),
+            "cta_next_episode": self._normalize_text(data.get("cta_next_episode") or next_episode_cta),
+        }
+        narration_source = self._normalize_text(data.get("full_narration") or self._build_text_from_sections(script_sections) or fallback["full_narration"])
+        narration_source = self._ensure_word_target(narration_source, minimum_words, maximum_words, script_sections, episode, series)
         scenes_payload = data.get("scenes") or fallback["scenes"]
         normalized_scenes = []
         if isinstance(scenes_payload, list):
@@ -718,23 +1211,58 @@ class BibleVideoFactoryService:
                 if not isinstance(item, dict):
                     item = {"narration": self._normalize_text(item)}
                 narration = self._normalize_text(item.get("narration") or item.get("text"))
-                description = self._normalize_text(item.get("description") or item.get("caption") or narration[:220])
+                description = self._normalize_text(item.get("description") or item.get("visual_description") or item.get("caption") or narration[:220])
                 emotion = self._normalize_text(item.get("emotion") or ("suspense" if idx in {0, len(scenes_payload) - 1} else "emocionante"))
-                duration = self._normalize_int(item.get("duration"), max(18, round((desired_duration_minutes * 60) / max(1, min(max_scene_count, len(scenes_payload) or target_scene_count)))))
+                duration = self._normalize_int(item.get("duration"), self._scene_duration(desired_duration_minutes, min(max_scene_count, len(scenes_payload) or target_scene_count)))
                 normalized_scenes.append(
                     {
+                        "scene_number": self._normalize_int(item.get("scene_number") or idx + 1, idx + 1),
                         "title": self._normalize_text(item.get("title") or f"Cena {idx + 1}"),
                         "description": description,
+                        "visual_description": description,
                         "narration": narration,
                         "emotion": emotion,
                         "duration": duration,
                         "text": narration,
-                        "image_prompt": self._normalize_text(item.get("image_prompt") or f"{series.visual_style or 'anime cinematografico'} de {episode.title}. {description[:180]}"),
+                        "camera_direction": self._normalize_text(item.get("camera_direction") or ["aproximacao lenta", "travelling lateral", "panoramica ampla", "zoom dramatico"][idx % 4]),
+                        "sound_effects": self._normalize_text(item.get("sound_effects") or ["vento leve", "passos na terra", "silencio tenso", "multidao ao fundo"][idx % 4]),
+                        "music_style": self._normalize_text(item.get("music_style") or "trilha biblica cinematografica crescente"),
+                        "image_prompt": self._normalize_text(item.get("image_prompt") or item.get("prompt_image") or f"{series.visual_style or 'anime cinematografico'} de {episode.title}. {description[:180]}"),
+                        "prompt_image": self._normalize_text(item.get("prompt_image") or item.get("image_prompt") or f"{series.visual_style or 'cinematic biblical anime'}, {description[:180]}, dramatic lighting, ultra detailed, emotional atmosphere, 4k"),
+                        "prompt_video": self._normalize_text(item.get("prompt_video") or f"{series.visual_style or 'cinematic biblical anime'}, {description[:180]}, cinematic motion, 4k"),
+                        "prompt_animation": self._normalize_text(item.get("prompt_animation") or f"Animate the biblical scene with subtle cloth movement, wind and cinematic emotion: {description[:180]}"),
+                        "prompt_cinematic": self._normalize_text(item.get("prompt_cinematic") or f"{series.visual_style or 'cinematic biblical anime'} scene, dramatic lighting, emotional atmosphere, high retention frame"),
                         "caption": self._normalize_text(item.get("caption") or description[:120]),
                     }
                 )
         if not normalized_scenes:
             normalized_scenes = fallback["scenes"]
+        if len(normalized_scenes) < min_scene_count:
+            for extra_idx in range(len(normalized_scenes), min_scene_count):
+                base_scene = fallback["scenes"][extra_idx % len(fallback["scenes"])]
+                normalized_scenes.append(
+                    {
+                        **base_scene,
+                        "scene_number": extra_idx + 1,
+                        "title": self._normalize_text(base_scene.get("title") or f"Cena {extra_idx + 1}"),
+                    }
+                )
+        normalized_scenes = normalized_scenes[:max_scene_count]
+        retention_analysis = data.get("retention_analysis") if isinstance(data.get("retention_analysis"), dict) else {}
+        if not retention_analysis:
+            retention_analysis = self._retention_analysis_fallback(script_sections, self._word_count(narration_source), len(normalized_scenes), drama_level)
+        min_retention = self._normalize_int(profile_config.get("minimum_retention_score"), 0)
+        if min_retention:
+            retention_analysis["overall_score"] = max(min_retention, self._normalize_int(retention_analysis.get("overall_score"), min_retention))
+            retention_analysis["retention_score"] = max(min_retention, self._normalize_int(retention_analysis.get("retention_score"), min_retention))
+        youtube_growth = data.get("youtube_growth") if isinstance(data.get("youtube_growth"), dict) else {}
+        youtube_growth = {
+            "title_main": self._normalize_text(youtube_growth.get("title_main") or fallback_growth["title_main"]),
+            "alternate_titles": [self._normalize_text(x) for x in self._ensure_list(youtube_growth.get("alternate_titles") or fallback_growth["alternate_titles"]) if self._normalize_text(x)][:3],
+            "description": self._normalize_text(youtube_growth.get("description") or fallback_growth["description"]),
+            "tags": [self._normalize_text(x) for x in self._ensure_list(youtube_growth.get("tags") or fallback_growth["tags"]) if self._normalize_text(x)][:15],
+        }
+        storyboard = [self._scene_source_to_storyboard_frame(scene, idx) for idx, scene in enumerate(normalized_scenes)]
         script = BibleVideoScript(
             series_id=episode.series_id,
             episode_id=episode.id,
@@ -746,17 +1274,40 @@ class BibleVideoFactoryService:
             target_audience=target_audience,
             subscribe_cta=subscribe_cta,
             next_episode_cta=next_episode_cta,
-            full_narration=self._normalize_text(data.get("full_narration") or fallback["full_narration"]),
+            full_narration=narration_source,
             scenes_json=self._json_dumps(normalized_scenes),
-            optional_dialogues_json=self._json_dumps(data.get("optional_dialogues") or []),
-            voice_emotion_notes=self._normalize_text(data.get("voice_emotion_notes") or fallback["voice_emotion_notes"]),
-            soundtrack_notes=self._normalize_text(data.get("soundtrack_notes") or fallback["soundtrack_notes"]),
+            voice_emotion_notes=self._json_dumps(data.get("voice_emotion_notes") or fallback["voice_emotion_notes"]),
+            soundtrack_notes=self._json_dumps(data.get("soundtrack_notes") or fallback["soundtrack_notes"]),
             sound_effects_notes=self._normalize_text(data.get("sound_effects_notes") or fallback["sound_effects_notes"]),
             retention_hooks_json=self._json_dumps(data.get("retention_hooks") or fallback["retention_hooks"]),
             validation_status="pending",
         )
+        self._save_script_package(
+            script,
+            {
+                "optional_dialogues": data.get("optional_dialogues") if isinstance(data.get("optional_dialogues"), list) else [],
+                "script_sections": script_sections,
+                "retention_analysis": retention_analysis,
+                "youtube_growth": youtube_growth,
+                "storyboard": storyboard,
+                "production_blueprint": {
+                    "word_count": self._word_count(narration_source),
+                    "scene_count": len(normalized_scenes),
+                    "duration_minutes": desired_duration_minutes,
+                    "target_scene_range": f"{min_scene_count}-{max_scene_count}",
+                    "pipeline_status": "roteiro_pronto",
+                },
+            },
+        )
         db.add(script)
         episode.status = "script_generated"
+        episode.title = script_sections["episode_title"] or episode.title
+        episode.youtube_title_suggestion = youtube_growth["title_main"] or episode.youtube_title_suggestion
+        episode.impact_phrase = script_sections["impact_phrase"] or episode.impact_phrase
+        if profile_config.get("cliffhanger_required"):
+            episode.ending_hook = script_sections["cliffhanger"] or default_sections["cliffhanger"]
+        else:
+            episode.ending_hook = script_sections["cliffhanger"] or episode.ending_hook
         db.commit()
         db.refresh(script)
         return script
@@ -824,31 +1375,55 @@ class BibleVideoFactoryService:
         if not isinstance(source, list) or not source:
             paragraphs = self._split_text_chunks(script.full_narration, max(6, int(script.desired_duration_minutes or 5) * 2))
             source = [{"text": p, "image_prompt": p[:200], "caption": p[:120]} for p in paragraphs]
+        characters = db.query(BibleVideoCharacter).filter(BibleVideoCharacter.series_id == script.series_id).all()
+        scenarios = db.query(BibleVideoScenario).filter(BibleVideoScenario.series_id == script.series_id).all()
+        character_profiles = [self._character_profile(row) for row in characters]
+        scenario_profiles = [
+            {
+                "name": row.name,
+                "description": row.description,
+                "master_prompt": row.base_prompt,
+                "visual_style": row.visual_style,
+                "reference_image_url": row.reference_image_url,
+            }
+            for row in scenarios
+        ]
 
         prompt = (
-            "Transforme o roteiro abaixo em uma lista de cenas em JSON.\n"
+            "Transforme o roteiro abaixo em uma lista de cenas cinematograficas em JSON.\n"
             "Retorne a chave scenes.\n"
-            "Cada cena deve conter: scene_number, narration_text, visual_description, characters, scenario_name, emotion, "
-            "prompt_image, prompt_animation, duration_seconds, camera_type, effects.\n\n"
+            "Cada cena deve conter: scene_number, title, narration_text, visual_description, characters, scenario_name, emotion, "
+            "prompt_image, prompt_video, prompt_animation, prompt_cinematic, duration_seconds, camera_type, sound_effects, music_style, effects.\n"
+            "Use consistencia de personagem e cenario em toda a sequencia.\n"
+            "Para cada personagem recorrente, reutilize SEMPRE o mesmo prompt mestre do Character Bible.\n"
+            "Proibido mudar a aparencia entre cenas: rosto, idade, olhos, cabelo, barba, pele, roupa e acessorios devem permanecer consistentes.\n"
+            "Crie prompts compativeis com Veo, Kling, Luma, Runway e Pika.\n\n"
             f"Serie: {series.name if series else ''}\n"
             f"Episodio: {episode.title}\n"
             f"Estilo visual: {series.visual_style if series else ''}\n"
             f"Tom: {series.narrative_tone if series else ''}\n"
+            f"Character Bible: {self._json_dumps(character_profiles)[:5000]}\n"
+            f"Scenario Bible: {self._json_dumps(scenario_profiles)[:4000]}\n"
             f"Roteiro base: {script.full_narration[:12000]}\n"
         )
         fallback = {
             "scenes": [
                 {
                     "scene_number": idx + 1,
+                    "title": self._normalize_text(item.get("title") or f"Cena {idx + 1}"),
                     "narration_text": item.get("text") or "",
-                    "visual_description": item.get("caption") or item.get("text") or "",
-                    "characters": [series.main_character] if series and series.main_character else [],
-                    "scenario_name": series.bible_book or "Cenario biblico",
-                    "emotion": series.narrative_tone or "emocao",
-                    "prompt_image": item.get("image_prompt") or item.get("text") or "",
-                    "prompt_animation": f"Anime cinematografico em movimento suave: {(item.get('image_prompt') or item.get('text') or '')[:220]}",
+                    "visual_description": item.get("visual_description") or item.get("caption") or item.get("text") or "",
+                    "characters": [profile["name"] for profile in character_profiles[:3]] or ([series.main_character] if series and series.main_character else []),
+                    "scenario_name": (scenario_profiles[idx % len(scenario_profiles)]["name"] if scenario_profiles else (series.bible_book or "Cenario biblico")),
+                    "emotion": item.get("emotion") or series.narrative_tone or "emocao",
+                    "prompt_image": item.get("prompt_image") or item.get("image_prompt") or item.get("text") or "",
+                    "prompt_video": item.get("prompt_video") or f"{item.get('prompt_image') or item.get('image_prompt') or item.get('text') or ''}, cinematic motion, 4k",
+                    "prompt_animation": item.get("prompt_animation") or f"Anime cinematografico em movimento suave: {(item.get('prompt_image') or item.get('image_prompt') or item.get('text') or '')[:220]}",
+                    "prompt_cinematic": item.get("prompt_cinematic") or f"{item.get('prompt_image') or item.get('image_prompt') or item.get('text') or ''}, cinematic biblical documentary frame, emotional lighting, 4k",
                     "duration_seconds": max(5.0, round((float(script.desired_duration_minutes or 5) * 60.0) / max(1, len(source)), 2)),
-                    "camera_type": ["zoom", "travelling", "aproximacao", "panoramica"][idx % 4],
+                    "camera_type": item.get("camera_direction") or ["zoom", "travelling", "aproximacao", "panoramica"][idx % 4],
+                    "sound_effects": item.get("sound_effects") or ["vento", "passos", "respiracao", "multidao distante"][idx % 4],
+                    "music_style": item.get("music_style") or "trilha biblica cinematografica crescente",
                     "effects": [["luz", "sombra"], ["vento"], ["poeira"], ["brilho", "multidao"]][idx % 4],
                 }
                 for idx, item in enumerate(source)
@@ -865,6 +1440,28 @@ class BibleVideoFactoryService:
 
         created = []
         for idx, item in enumerate(scenes_data):
+            matched_profiles = self._find_character_profiles(item.get("characters"), character_profiles)
+            prompt_image_base = self._normalize_text(item.get("prompt_image"))
+            prompt_video_base = self._normalize_text(item.get("prompt_video") or f"{prompt_image_base}, cinematic motion, 4k")
+            prompt_animation_base = self._normalize_text(item.get("prompt_animation") or f"Animate with cinematic emotion: {prompt_image_base[:220]}")
+            prompt_cinematic_base = self._normalize_text(item.get("prompt_cinematic") or f"{prompt_image_base}, biblical cinematic documentary, emotional atmosphere")
+            camera_direction = self._normalize_text(item.get("camera_type") or item.get("camera_direction"))
+            sound_effects = self._normalize_text(item.get("sound_effects"))
+            music_style = self._normalize_text(item.get("music_style"))
+            title = self._normalize_text(item.get("title") or f"Cena {idx + 1}")
+            scenario_name = self._normalize_text(item.get("scenario_name"))
+            emotion = self._normalize_text(item.get("emotion"))
+            prompt_image = self._compose_scene_prompt_with_character_bible(prompt_image_base, matched_profiles, scenario_name, emotion)
+            prompt_video = self._compose_scene_prompt_with_character_bible(prompt_video_base, matched_profiles, scenario_name, emotion)
+            prompt_animation = self._compose_scene_prompt_with_character_bible(prompt_animation_base, matched_profiles, scenario_name, emotion)
+            prompt_cinematic = self._compose_scene_prompt_with_character_bible(prompt_cinematic_base, matched_profiles, scenario_name, emotion)
+            provider_prompts = {
+                "veo": prompt_video,
+                "kling": prompt_animation,
+                "luma": prompt_cinematic,
+                "runway": prompt_video,
+                "pika": prompt_animation,
+            }
             row = BibleVideoScene(
                 script_id=script.id,
                 series_id=script.series_id,
@@ -874,49 +1471,253 @@ class BibleVideoFactoryService:
                 narration_text=self._normalize_text(item.get("narration_text")),
                 visual_description=self._normalize_text(item.get("visual_description")),
                 characters_json=self._json_dumps(item.get("characters") or []),
-                scenario_name=self._normalize_text(item.get("scenario_name")),
-                emotion=self._normalize_text(item.get("emotion")),
-                prompt_image=self._normalize_text(item.get("prompt_image")),
-                prompt_animation=self._normalize_text(item.get("prompt_animation")),
+                scenario_name=scenario_name,
+                emotion=emotion,
+                prompt_image=prompt_image,
+                prompt_animation=prompt_animation,
                 duration_seconds=float(item.get("duration_seconds") or 8.0),
-                camera_type=self._normalize_text(item.get("camera_type")),
-                effects_json=self._json_dumps(item.get("effects") or []),
+                camera_type=camera_direction,
+                effects_json=self._json_dumps(
+                    {
+                        "title": title,
+                        "effects": item.get("effects") or [],
+                        "camera_direction": camera_direction,
+                        "sound_effects": sound_effects,
+                        "music_style": music_style,
+                        "prompt_video": prompt_video,
+                        "prompt_cinematic": prompt_cinematic,
+                        "provider_prompts": provider_prompts,
+                        "character_master_prompts": [self._normalize_text(profile.get("master_prompt")) for profile in matched_profiles if self._normalize_text(profile.get("master_prompt"))],
+                        "consistency_lock": True,
+                        "storyboard_image": self._normalize_text(item.get("storyboard_image") or ""),
+                        "approval_status": self._normalize_text(item.get("approval_status") or "pending"),
+                    }
+                ),
             )
             db.add(row)
             created.append(row)
         script.scenes_json = self._json_dumps(
             [
                 {
+                    "scene_number": c.scene_number,
+                    "title": self._normalize_text((self._json_loads(c.effects_json, {}) or {}).get("title") or f"Cena {c.scene_number}"),
                     "text": c.narration_text,
                     "image_prompt": c.prompt_image,
+                    "prompt_video": self._normalize_text((self._json_loads(c.effects_json, {}) or {}).get("prompt_video")),
+                    "prompt_animation": c.prompt_animation,
+                    "prompt_cinematic": self._normalize_text((self._json_loads(c.effects_json, {}) or {}).get("prompt_cinematic")),
                     "caption": c.visual_description,
+                    "visual_description": c.visual_description,
+                    "camera_direction": c.camera_type,
+                    "sound_effects": self._normalize_text((self._json_loads(c.effects_json, {}) or {}).get("sound_effects")),
+                    "music_style": self._normalize_text((self._json_loads(c.effects_json, {}) or {}).get("music_style")),
+                    "emotion": c.emotion,
+                    "duration": c.duration_seconds,
                 }
                 for c in created
             ]
         )
-        episode.status = "scenes_generated"
+        self._save_script_package(
+            script,
+            {
+                "storyboard": [
+                    self._normalize_storyboard_frame(
+                        {
+                            "scene_number": row.scene_number,
+                            "title": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("title") or f"Cena {row.scene_number}"),
+                            "emotion": row.emotion,
+                            "prompt_visual": row.prompt_image,
+                            "camera_movement": row.camera_type,
+                            "duration": row.duration_seconds,
+                            "image": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("storyboard_image") or row.prompt_image),
+                            "storyboard_image": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("storyboard_image")),
+                            "narration": row.narration_text,
+                            "suggested_soundtrack": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("music_style")),
+                            "approval_status": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("approval_status") or "pending"),
+                        },
+                        row.scene_number,
+                    )
+                    for row in created
+                ],
+                "production_blueprint": {
+                    **(self._extract_script_package(script).get("production_blueprint") or {}),
+                    "scene_count": len(created),
+                    "pipeline_status": "storyboard_pronto",
+                },
+            },
+        )
+        episode.status = "storyboard_generated"
         db.commit()
         for row in created:
             db.refresh(row)
         return created
 
+    def generate_storyboard_preview(self, db: Session, script: BibleVideoScript, scene_number: int) -> Dict[str, Any]:
+        storyboard = self._get_storyboard(script)
+        if not storyboard:
+            raise ValueError("Gere o roteiro/storyboard antes de solicitar preview visual.")
+        target = next((item for item in storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
+        if not target:
+            raise ValueError("Cena do storyboard nao encontrada.")
+        prompt_visual = self._normalize_text(target.get("prompt_visual") or target.get("image"))
+        if not prompt_visual:
+            raise ValueError("A cena nao possui prompt visual para gerar preview.")
+        preview_url = self.ai.generate_image(prompt_visual, aspect_ratio="16:9")
+        target["storyboard_image"] = self._normalize_text(preview_url)
+        target["image"] = self._normalize_text(preview_url)
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        self._save_storyboard_state(db, script, storyboard, episode=episode, pipeline_status="storyboard_preview_pronto")
+        db.commit()
+        db.refresh(script)
+        return self.serialize_script(script)
+
+    def approve_storyboard_scene(self, db: Session, script: BibleVideoScript, scene_number: int) -> Dict[str, Any]:
+        storyboard = self._get_storyboard(script)
+        if not storyboard:
+            raise ValueError("Storyboard nao encontrado para aprovacao.")
+        found = False
+        for item in storyboard:
+            if int(item.get("scene_number") or 0) == int(scene_number or 0):
+                item["approval_status"] = "approved"
+                found = True
+                break
+        if not found:
+            raise ValueError("Cena do storyboard nao encontrada.")
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        self._save_storyboard_state(db, script, storyboard, episode=episode, pipeline_status="storyboard_pronto")
+        db.commit()
+        db.refresh(script)
+        return self.serialize_script(script)
+
+    def regenerate_storyboard_scene(self, db: Session, script: BibleVideoScript, scene_number: int) -> Dict[str, Any]:
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        if not episode or not series:
+            raise ValueError("Serie/episodio nao encontrados para regenerar a cena.")
+        storyboard = self._get_storyboard(script)
+        scene_sources = self._get_scene_sources(script)
+        target_frame = next((item for item in storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
+        if not target_frame:
+            raise ValueError("Cena do storyboard nao encontrada.")
+        target_source = next((item for item in scene_sources if int(item.get("scene_number") or 0) == int(scene_number or 0)), {})
+        character_profiles = self._get_character_profiles_for_series(db, script.series_id)
+        scenario_profiles = self._get_scenario_profiles_for_series(db, script.series_id)
+        fallback = {
+            "title": target_frame.get("title"),
+            "narration": target_frame.get("narration"),
+            "emotion": target_frame.get("emotion"),
+            "prompt_visual": target_frame.get("prompt_visual"),
+            "camera_movement": target_frame.get("camera_movement"),
+            "duration": target_frame.get("duration"),
+            "suggested_soundtrack": target_frame.get("suggested_soundtrack"),
+            "visual_description": target_source.get("visual_description") or target_source.get("caption") or target_frame.get("prompt_visual"),
+            "prompt_video": target_source.get("prompt_video"),
+            "prompt_animation": target_source.get("prompt_animation"),
+            "prompt_cinematic": target_source.get("prompt_cinematic"),
+            "sound_effects": target_source.get("sound_effects"),
+            "scenario_name": target_source.get("scenario_name") or episode.biblical_basis or series.bible_book,
+            "characters": target_source.get("characters") or [series.main_character] if series.main_character else [],
+        }
+        prompt = (
+            "Regenere apenas UMA cena do storyboard em JSON.\n"
+            "Retorne: title, narration, emotion, prompt_visual, camera_movement, duration, suggested_soundtrack, visual_description, prompt_video, prompt_animation, prompt_cinematic, sound_effects, scenario_name, characters.\n"
+            "Mantenha fidelidade biblica, retencao e consistencia visual.\n"
+            "Use SEMPRE o Character Bible e o mesmo prompt mestre dos personagens recorrentes.\n"
+            "Nao regenere o episodio inteiro.\n\n"
+            f"Serie: {series.name}\n"
+            f"Episodio: {episode.title}\n"
+            f"Cena: {scene_number}\n"
+            f"Storyboard atual: {self._json_dumps(target_frame)[:3000]}\n"
+            f"Dados atuais da cena: {self._json_dumps(target_source)[:4000]}\n"
+            f"Character Bible: {self._json_dumps(character_profiles)[:5000]}\n"
+            f"Scenario Bible: {self._json_dumps(scenario_profiles)[:4000]}\n"
+            f"Roteiro base: {script.full_narration[:9000]}"
+        )
+        data = self._generate_json(
+            prompt,
+            system_prompt="Voce e diretor cinematografico biblico. Regenere uma unica cena mantendo consistencia de personagem e cenario.",
+            fallback=fallback,
+        )
+        refreshed_frame = self._normalize_storyboard_frame(
+            {
+                "scene_number": scene_number,
+                "title": self._normalize_text(data.get("title") or fallback["title"]),
+                "narration": self._normalize_text(data.get("narration") or fallback["narration"]),
+                "emotion": self._normalize_text(data.get("emotion") or fallback["emotion"]),
+                "prompt_visual": self._normalize_text(data.get("prompt_visual") or fallback["prompt_visual"]),
+                "camera_movement": self._normalize_text(data.get("camera_movement") or fallback["camera_movement"]),
+                "duration": self._normalize_int(data.get("duration"), self._normalize_int(fallback["duration"], 20)),
+                "suggested_soundtrack": self._normalize_text(data.get("suggested_soundtrack") or fallback["suggested_soundtrack"]),
+                "storyboard_image": "",
+                "approval_status": "pending",
+            },
+            scene_number,
+        )
+        updated_sources = []
+        for idx, source in enumerate(scene_sources):
+            current_number = self._normalize_int(source.get("scene_number") or idx + 1, idx + 1)
+            if current_number != int(scene_number or 0):
+                updated_sources.append(source)
+                continue
+            updated_sources.append(
+                {
+                    **source,
+                    "scene_number": current_number,
+                    "title": refreshed_frame["title"],
+                    "text": refreshed_frame["narration"],
+                    "prompt_image": refreshed_frame["prompt_visual"],
+                    "image_prompt": refreshed_frame["prompt_visual"],
+                    "camera_direction": refreshed_frame["camera_movement"],
+                    "duration": refreshed_frame["duration"],
+                    "emotion": refreshed_frame["emotion"],
+                    "music_style": refreshed_frame["suggested_soundtrack"],
+                    "storyboard_image": "",
+                    "approval_status": "pending",
+                    "visual_description": self._normalize_text(data.get("visual_description") or source.get("visual_description") or source.get("caption")),
+                    "prompt_video": self._normalize_text(data.get("prompt_video") or source.get("prompt_video") or f"{refreshed_frame['prompt_visual']}, cinematic motion, 4k"),
+                    "prompt_animation": self._normalize_text(data.get("prompt_animation") or source.get("prompt_animation") or f"Animate with cinematic emotion: {refreshed_frame['prompt_visual'][:220]}"),
+                    "prompt_cinematic": self._normalize_text(data.get("prompt_cinematic") or source.get("prompt_cinematic") or f"{refreshed_frame['prompt_visual']}, biblical cinematic documentary, emotional atmosphere"),
+                    "sound_effects": self._normalize_text(data.get("sound_effects") or source.get("sound_effects")),
+                    "scenario_name": self._normalize_text(data.get("scenario_name") or source.get("scenario_name")),
+                    "characters": data.get("characters") if isinstance(data.get("characters"), list) else source.get("characters"),
+                }
+            )
+        updated_storyboard = []
+        for item in storyboard:
+            if int(item.get("scene_number") or 0) == int(scene_number or 0):
+                updated_storyboard.append(refreshed_frame)
+            else:
+                updated_storyboard.append(item)
+        self._save_storyboard_state(db, script, updated_storyboard, scene_sources=updated_sources, episode=episode, pipeline_status="storyboard_pronto")
+        db.commit()
+        db.refresh(script)
+        return self.serialize_script(script)
+
     def generate_shorts_bundle(self, db: Session, script: BibleVideoScript, episode: BibleVideoEpisode) -> List[Dict[str, Any]]:
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        profile_config = self.resolve_series_profile(series)
+        target_shorts = self._normalize_int(profile_config.get("auto_shorts_count"), 5) or 5
         fallback = {
             "shorts": [
                 {
                     "title": (episode.impact_phrase or episode.title or "Short Biblico")[:80],
                     "hook": (episode.opening_hook or episode.impact_phrase or episode.title)[:110],
+                    "narration": (episode.summary or script.full_narration or "")[:320],
                     "description": (episode.summary or script.full_narration or "")[:240],
+                    "visual_prompt": f"{episode.title}, biblical cinematic vertical short, dramatic lighting, 9:16, emotional frame, 4k",
+                    "subtitle": (episode.impact_phrase or episode.title or "Short Biblico")[:90],
                     "hashtags": ["#biblia", "#shortsbiblicos", "#animebiblico"],
                     "cta": "Assista ao episodio completo no canal.",
+                    "duration_seconds": 45,
                 }
-                for _ in range(3)
+                for _ in range(target_shorts)
             ]
         }
         prompt = (
-            "Crie entre 3 e 5 Shorts para divulgar este episodio biblico.\n"
+            f"Crie {target_shorts} Shorts para divulgar este episodio biblico.\n"
             "Retorne JSON com a chave shorts.\n"
-            "Cada short deve ter: title, hook, description, hashtags, cta.\n\n"
+            "Cada short deve ter: title, hook, narration, visual_prompt, subtitle, description, hashtags, cta, duration_seconds.\n"
+            "Cada short deve durar entre 30 e 60 segundos.\n\n"
             f"Episodio: {episode.title}\n"
             f"Resumo: {episode.summary or ''}\n"
             f"Frase de impacto: {episode.impact_phrase or ''}\n"
@@ -931,23 +1732,62 @@ class BibleVideoFactoryService:
         shorts = data.get("shorts") if isinstance(data, dict) else None
         if not isinstance(shorts, list) or not shorts:
             shorts = fallback["shorts"]
-        script.shorts_json = self._json_dumps(shorts[:5])
+        normalized_shorts = []
+        for idx, item in enumerate(shorts[:target_shorts]):
+            if not isinstance(item, dict):
+                item = {"title": f"Short {idx + 1}", "hook": self._normalize_text(item)}
+            normalized_shorts.append(
+                {
+                    "title": self._normalize_text(item.get("title") or f"Short {idx + 1}"),
+                    "hook": self._normalize_text(item.get("hook")),
+                    "narration": self._normalize_text(item.get("narration") or item.get("description") or item.get("hook")),
+                    "visual_prompt": self._normalize_text(item.get("visual_prompt") or f"{episode.title}, biblical cinematic vertical short, emotional frame, 9:16, 4k"),
+                    "subtitle": self._normalize_text(item.get("subtitle") or item.get("hook") or item.get("title")),
+                    "description": self._normalize_text(item.get("description") or item.get("hook")),
+                    "hashtags": [self._normalize_text(x) for x in self._ensure_list(item.get("hashtags")) if self._normalize_text(x)],
+                    "cta": self._normalize_text(item.get("cta") or "Assista ao episodio completo no canal."),
+                    "duration_seconds": max(30, min(60, self._normalize_int(item.get("duration_seconds"), 45))),
+                }
+            )
+        script.shorts_json = self._json_dumps(normalized_shorts)
+        self._save_script_package(
+            script,
+            {
+                "production_blueprint": {
+                    **(self._extract_script_package(script).get("production_blueprint") or {}),
+                    "shorts_count": len(normalized_shorts),
+                    "pipeline_status": "shorts_prontos",
+                }
+            },
+        )
         db.commit()
         db.refresh(script)
-        return shorts[:5]
+        return normalized_shorts[:target_shorts]
 
     def generate_thumbnail(self, db: Session, script: BibleVideoScript, episode: BibleVideoEpisode, series: Optional[BibleVideoSeries]) -> Dict[str, Any]:
+        base_visual = (
+            f"{series.visual_style if series else 'anime cinematografico'} de {series.main_character if series else episode.title}, "
+            "expressao forte, fundo dramatico, luz intensa, momento biblico crucial."
+        )
+        fallback_variants = [
+            {"type": "emocional", "headline": (episode.thumbnail_suggestion or episode.impact_phrase or episode.title or "").upper()[:60], "visual_prompt": f"{base_visual} close-up emocional", "youtube_title": episode.youtube_title_suggestion or episode.title},
+            {"type": "epica", "headline": f"{(episode.title or '').upper()[:40]} EM GUERRA", "visual_prompt": f"{base_visual} wide shot epico, escala monumental", "youtube_title": f"{episode.title} em uma batalha inesquecivel"},
+            {"type": "suspense", "headline": f"O SEGREDO DE {(series.main_character or episode.title or '').upper()[:28]}", "visual_prompt": f"{base_visual} sombras dramaticas, suspense intenso", "youtube_title": f"O segredo por tras de {episode.title}"},
+            {"type": "choque", "headline": "NINGUEM ESPERAVA ISSO", "visual_prompt": f"{base_visual} choque visual, expressao extrema, contraste alto", "youtube_title": f"{episode.title}: o momento que chocou a todos"},
+            {"type": "ctr_maximo", "headline": "O MOMENTO QUE MUDOU TUDO", "visual_prompt": f"{base_visual} max CTR frame, dramatic lighting, bold composition", "youtube_title": f"{episode.title}: o momento que mudou tudo"},
+        ]
         fallback = {
-            "headline": (episode.thumbnail_suggestion or episode.impact_phrase or episode.title or "").upper()[:60],
-            "visual_prompt": (
-                f"{series.visual_style if series else 'anime cinematografico'} de {series.main_character if series else episode.title}, "
-                f"expressao forte, fundo dramatico, luz intensa, momento biblico crucial."
-            ),
-            "youtube_title": episode.youtube_title_suggestion or episode.title,
+            "selected_type": "emocional",
+            "headline": fallback_variants[0]["headline"],
+            "visual_prompt": fallback_variants[0]["visual_prompt"],
+            "youtube_title": fallback_variants[0]["youtube_title"],
+            "variants": fallback_variants,
         }
         prompt = (
-            "Crie uma sugestao de thumbnail para YouTube em JSON.\n"
-            "Retorne: headline, visual_prompt, youtube_title.\n\n"
+            "Crie 5 thumbnails profissionais para YouTube em JSON.\n"
+            "Retorne: selected_type, headline, visual_prompt, youtube_title, variants.\n"
+            "variants deve conter 5 itens com: type, headline, visual_prompt, youtube_title.\n"
+            "Os tipos obrigatorios sao: emocional, epica, suspense, choque, ctr_maximo.\n\n"
             f"Serie: {series.name if series else ''}\n"
             f"Episodio: {episode.title}\n"
             f"Estilo visual: {series.visual_style if series else ''}\n"
@@ -959,7 +1799,36 @@ class BibleVideoFactoryService:
             system_prompt="Voce e especialista em thumbnails dramaticas para historias biblicas no YouTube.",
             fallback=fallback,
         )
-        script.thumbnail_json = self._json_dumps(data if isinstance(data, dict) else fallback)
+        thumb = data if isinstance(data, dict) else fallback
+        variants = thumb.get("variants") if isinstance(thumb, dict) else None
+        if not isinstance(variants, list) or len(variants) < 5:
+            variants = fallback_variants
+        normalized = {
+            "selected_type": self._normalize_text(thumb.get("selected_type") if isinstance(thumb, dict) else fallback["selected_type"]) or "emocional",
+            "headline": self._normalize_text((thumb.get("headline") if isinstance(thumb, dict) else fallback["headline"]) or fallback["headline"]),
+            "visual_prompt": self._normalize_text((thumb.get("visual_prompt") if isinstance(thumb, dict) else fallback["visual_prompt"]) or fallback["visual_prompt"]),
+            "youtube_title": self._normalize_text((thumb.get("youtube_title") if isinstance(thumb, dict) else fallback["youtube_title"]) or fallback["youtube_title"]),
+            "variants": [
+                {
+                    "type": self._normalize_text(item.get("type") or fallback_variants[idx]["type"]),
+                    "headline": self._normalize_text(item.get("headline") or fallback_variants[idx]["headline"]),
+                    "visual_prompt": self._normalize_text(item.get("visual_prompt") or fallback_variants[idx]["visual_prompt"]),
+                    "youtube_title": self._normalize_text(item.get("youtube_title") or fallback_variants[idx]["youtube_title"]),
+                }
+                for idx, item in enumerate((variants or fallback_variants)[:5])
+            ],
+        }
+        script.thumbnail_json = self._json_dumps(normalized)
+        self._save_script_package(
+            script,
+            {
+                "production_blueprint": {
+                    **(self._extract_script_package(script).get("production_blueprint") or {}),
+                    "thumbnail_variants": 5,
+                    "pipeline_status": "thumbnails_prontas",
+                }
+            },
+        )
         db.commit()
         db.refresh(script)
         return self._json_loads(script.thumbnail_json, fallback)
@@ -975,6 +1844,8 @@ class BibleVideoFactoryService:
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == job.series_id).first()
         if not script or not episode or not series:
             raise Exception("Job sem serie/episodio/roteiro validos.")
+        package = self._extract_script_package(script)
+        youtube_growth = package.get("youtube_growth") if isinstance(package.get("youtube_growth"), dict) else {}
         scenes = (
             db.query(BibleVideoScene)
             .filter(BibleVideoScene.script_id == script.id)
@@ -987,6 +1858,7 @@ class BibleVideoFactoryService:
         tags = [
             "biblia",
             "anime biblico",
+            *(youtube_growth.get("tags") or []),
             series.main_character or "",
             series.bible_book or "",
             series.narrative_tone or "",
@@ -994,18 +1866,25 @@ class BibleVideoFactoryService:
         tags = [self._normalize_text(t) for t in tags if self._normalize_text(t)]
         plan_scenes = []
         for scene in scenes:
+            scene_meta = self._json_loads(scene.effects_json, {})
             plan_scenes.append(
                 {
                     "text": self._normalize_text(scene.narration_text),
                     "image_prompt": self._normalize_text(scene.prompt_image or scene.visual_description or ""),
+                    "video_prompt": self._normalize_text((scene_meta or {}).get("prompt_video")),
+                    "animation_prompt": self._normalize_text(scene.prompt_animation),
+                    "cinematic_prompt": self._normalize_text((scene_meta or {}).get("prompt_cinematic")),
+                    "camera_direction": self._normalize_text((scene_meta or {}).get("camera_direction") or scene.camera_type),
+                    "sound_effects": self._normalize_text((scene_meta or {}).get("sound_effects")),
+                    "music_style": self._normalize_text((scene_meta or {}).get("music_style")),
                     "caption": (scene.visual_description or scene.narration_text or "")[:160],
                 }
             )
         plan = {
-            "title": episode.youtube_title_suggestion or episode.title,
+            "title": self._normalize_text(youtube_growth.get("title_main") or episode.youtube_title_suggestion or episode.title),
             "description": self._normalize_text("\n".join(
                 [
-                    self._normalize_text(episode.summary),
+                    self._normalize_text(youtube_growth.get("description") or episode.summary),
                     "",
                     self._normalize_text(script.subscribe_cta),
                     self._normalize_text(script.next_episode_cta),
@@ -1020,6 +1899,7 @@ class BibleVideoFactoryService:
             "kind": "story",
             "allow_image_reuse": True,
             "bg_music_volume": 0.03,
+            "provider_targets": ["veo", "kling", "luma", "runway", "pika"],
         }
         job.tags_json = self._json_dumps(tags[:15])
         job.description_text = plan["description"]
@@ -1043,12 +1923,29 @@ class BibleVideoFactoryService:
     ) -> BibleVideoJob:
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        storyboard = self._extract_script_package(script).get("storyboard") or []
+        if job_type == "episode" and isinstance(storyboard, list) and storyboard:
+            pending = [item for item in storyboard if self._normalize_text((item or {}).get("approval_status") or "pending") != "approved"]
+            if pending:
+                raise ValueError("Finalize e aprove o Storyboard antes de gerar o video.")
+        if job_type == "episode":
+            characters = self._get_character_profiles_for_series(db, script.series_id)
+            scenarios = self._get_scenario_profiles_for_series(db, script.series_id)
+            if not characters:
+                raise ValueError("Finalize o Character Bible antes de partir para a geracao de video.")
+            if not scenarios:
+                raise ValueError("Cadastre e finalize o Banco de Cenarios antes de partir para a geracao de video.")
         config = self.get_or_create_config(db, user_id)
         scenes = db.query(BibleVideoScene).filter(BibleVideoScene.script_id == script.id).count()
         costs = self._estimate_costs(config, script.desired_duration_minutes or 5, scenes or 8, shorts_count=0)
         title = episode.title if episode else (series.name if series else "Job Biblico")
         if job_type == "short":
             title = f"Short - {title}"
+        initial_stage = "script_approved" if script.validation_status == "approved" else "script_generated"
+        if episode and episode.status == "storyboard_approved":
+            initial_stage = "storyboard_approved"
+        elif episode and episode.status == "storyboard_generated":
+            initial_stage = "storyboard_generated"
         job = BibleVideoJob(
             user_id=user_id,
             series_id=script.series_id,
@@ -1059,7 +1956,7 @@ class BibleVideoFactoryService:
             job_type=job_type,
             platform=self._normalize_text(platform or "youtube").lower(),
             aspect_ratio=self._normalize_text(aspect_ratio or "16:9"),
-            kanban_stage="script_approved" if script.validation_status == "approved" else "script_generated",
+            kanban_stage=initial_stage,
             status="queued" if start_immediately else "draft",
             approval_status="pending",
             scheduled_for=scheduled_for,
@@ -1113,13 +2010,19 @@ class BibleVideoFactoryService:
             plan = self.build_plan_for_job(db, job)
             config = self.get_or_create_config(db, job.user_id)
             progress(5, "Plano de video preparado.", "scenes_generated")
-            progress(15, "Gerando voz e trilha...", "voice_generated")
+            progress(12, "Storyboard montado e pronto para aprovacao.", "storyboard_generated")
+            progress(20, "Gerando imagens-chave das cenas...", "images_generated")
+            progress(32, "Gerando voz e trilha...", "voice_generated")
 
             video_service = VideoGenerator(ai_service=AIContentGenerator())
             result = video_service.create_video_from_plan(
                 plan,
                 aspect_ratio=job.aspect_ratio or "16:9",
-                progress_callback=lambda p, m: progress(p, m, "video_editing" if int(p or 0) >= 80 else "video_animating"),
+                progress_callback=lambda p, m: progress(
+                    p,
+                    m,
+                    "video_editing" if int(p or 0) >= 80 else ("video_animating" if int(p or 0) >= 45 else "images_generated"),
+                ),
                 voice_style="human",
                 voice_gender="female" if (config.default_voice or "").lower() != "male" else "male",
             )
@@ -1135,6 +2038,9 @@ class BibleVideoFactoryService:
             job.output_video_url = output_video_url
             job.result_json = self._json_dumps(result if isinstance(result, dict) else {"video_url": output_video_url})
             job.actual_cost = float(job.estimated_cost or 0)
+            progress(92, "Finalizando thumbnails e shorts derivados...", "thumbnail_generated")
+            if job.job_type == "episode":
+                progress(96, "Shorts promocionais preparados.", "shorts_generated")
             job.progress = 100
             job.status = "ready"
             job.kanban_stage = "awaiting_approval"

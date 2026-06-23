@@ -125,6 +125,12 @@
                                 <option>adulto</option>
                                 <option>familia</option>
                             </select>
+                            <select v-model="seriesForm.production_profile" @change="applySeriesProfile" class="w-full border rounded-lg px-3 py-2">
+                                <option value="">Perfil de producao</option>
+                                <option value="Serie Netflix Biblica">Serie Netflix Biblica</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
                             <select v-model="seriesForm.visual_style" class="w-full border rounded-lg px-3 py-2">
                                 <option value="">Estilo visual</option>
                                 <option>anime</option>
@@ -143,6 +149,7 @@
                                 <option>aventura</option>
                                 <option>devocional</option>
                                 <option>epico</option>
+                                <option>cinematografico</option>
                             </select>
                             <select v-model="seriesForm.status" class="w-full border rounded-lg px-3 py-2">
                                 <option>draft</option>
@@ -186,6 +193,7 @@
                                 <div>
                                     <div class="font-bold text-lg">{{ item.name }}</div>
                                     <div class="text-sm text-slate-500">{{ item.bible_book || 'Sem livro base' }} | {{ item.main_character || 'Sem personagem' }}</div>
+                                    <div v-if="item.production_profile" class="text-xs text-indigo-700 mt-1">{{ item.production_profile }}</div>
                                 </div>
                                 <span class="text-xs px-2 py-1 rounded bg-slate-100">{{ item.status }}</span>
                             </div>
@@ -249,6 +257,7 @@
                             <button @click="generateScript" :disabled="!selectedEpisodeId" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar roteiro</button>
                             <button @click="validateCurrentScript" :disabled="!selectedScriptId" class="bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Validar biblicamente</button>
                             <button @click="generateScenesForScript" :disabled="!selectedScriptId" class="bg-amber-500 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar cenas</button>
+                            <button @click="approveStoryboard" :disabled="!selectedScriptId" class="bg-teal-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Aprovar storyboard</button>
                             <button @click="generateShortsForScript" :disabled="!selectedScriptId" class="bg-pink-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar Shorts</button>
                             <button @click="generateThumbnailForScript" :disabled="!selectedScriptId" class="bg-slate-900 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar thumbnail</button>
                             <button @click="createProductionJob('16:9')" :disabled="!selectedScriptId" class="bg-violet-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Enfileirar video</button>
@@ -274,6 +283,14 @@
                                     <div class="text-sm mt-2">{{ currentScript.validation_notes || 'Ainda nao validado.' }}</div>
                                 </div>
                                 <div class="bg-slate-50 rounded-lg p-4">
+                                    <div class="text-sm text-slate-500">Analise de retencao</div>
+                                    <div class="text-3xl font-bold">{{ currentScript.retention_analysis?.overall_score || 0 }}</div>
+                                    <div class="text-sm mt-1">Palavras: {{ currentScript.word_count || 0 }} | Cenas: {{ currentScript.scene_count || 0 }}</div>
+                                    <div class="text-sm mt-2">{{ currentScript.retention_analysis?.notes || 'Sem analise de retencao.' }}</div>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+                                <div class="bg-slate-50 rounded-lg p-4">
                                     <div class="text-sm text-slate-500">Trilha / voz</div>
                                     <div class="space-y-2 mt-2">
                                         <div v-for="(item, idx) in formatScriptInsight(currentScript.soundtrack_notes, 'soundtrack')" :key="`soundtrack-${idx}`" class="text-sm">
@@ -286,6 +303,29 @@
                                         </div>
                                     </div>
                                 </div>
+                                <div class="bg-slate-50 rounded-lg p-4 lg:col-span-2">
+                                    <div class="text-sm text-slate-500">YouTube Growth AI</div>
+                                    <div class="font-semibold mt-2">{{ currentScript.youtube_growth?.title_main || currentScript.script_sections?.episode_title || 'Sem titulo principal' }}</div>
+                                    <div v-if="currentScript.youtube_growth?.alternate_titles?.length" class="mt-3 space-y-1">
+                                        <div v-for="(title, idx) in currentScript.youtube_growth.alternate_titles" :key="`alt-title-${idx}`" class="text-sm">• {{ title }}</div>
+                                    </div>
+                                    <div class="text-sm mt-3 whitespace-pre-wrap">{{ currentScript.youtube_growth?.description || 'Sem descricao sugerida.' }}</div>
+                                    <div class="text-xs text-slate-500 mt-2">{{ (currentScript.youtube_growth?.tags || []).join(', ') }}</div>
+                                </div>
+                            </div>
+                            <div class="mb-4 bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                                <h3 class="font-semibold mb-3">Estrutura cinematografica do episodio</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                    <div><strong>Titulo:</strong> {{ currentScript.script_sections?.episode_title || selectedEpisode?.title }}</div>
+                                    <div><strong>Frase de impacto:</strong> {{ currentScript.script_sections?.impact_phrase || 'Sem frase de impacto' }}</div>
+                                    <div class="md:col-span-2"><strong>Gancho inicial:</strong> {{ currentScript.script_sections?.opening_hook || 'Sem gancho' }}</div>
+                                    <div class="md:col-span-2"><strong>Introducao:</strong> {{ currentScript.script_sections?.introduction || 'Sem introducao' }}</div>
+                                    <div class="md:col-span-2"><strong>Desenvolvimento:</strong> {{ currentScript.script_sections?.development || 'Sem desenvolvimento' }}</div>
+                                    <div class="md:col-span-2"><strong>Climax:</strong> {{ currentScript.script_sections?.climax || 'Sem climax' }}</div>
+                                    <div class="md:col-span-2"><strong>Cliffhanger:</strong> {{ currentScript.script_sections?.cliffhanger || 'Sem cliffhanger' }}</div>
+                                    <div><strong>CTA inscricao:</strong> {{ currentScript.script_sections?.cta_subscribe || currentScript.subscribe_cta || 'Sem CTA' }}</div>
+                                    <div><strong>CTA proximo episodio:</strong> {{ currentScript.script_sections?.cta_next_episode || currentScript.next_episode_cta || 'Sem CTA' }}</div>
+                                </div>
                             </div>
                             <div class="mb-4">
                                 <h3 class="font-semibold mb-2">Narracao completa</h3>
@@ -293,17 +333,29 @@
                             </div>
                             <div v-if="currentScript.thumbnail && Object.keys(currentScript.thumbnail).length" class="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
                                 <div class="font-semibold mb-1">Thumbnail sugerida</div>
-                                <div class="text-sm"><strong>Headline:</strong> {{ currentScript.thumbnail.headline }}</div>
+                                <div class="text-sm"><strong>Selecionada:</strong> {{ currentScript.thumbnail.selected_type || 'emocional' }}</div>
+                                <div class="text-sm mt-1"><strong>Headline:</strong> {{ currentScript.thumbnail.headline }}</div>
                                 <div class="text-sm mt-1"><strong>Titulo YouTube:</strong> {{ currentScript.thumbnail.youtube_title }}</div>
                                 <div class="text-sm mt-1"><strong>Prompt:</strong> {{ currentScript.thumbnail.visual_prompt }}</div>
+                                <div v-if="currentScript.thumbnail.variants && currentScript.thumbnail.variants.length" class="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                                    <div v-for="(thumb, idx) in currentScript.thumbnail.variants" :key="`thumb-${idx}`" class="border rounded-lg p-3 bg-white">
+                                        <div class="text-xs uppercase text-slate-500">{{ thumb.type }}</div>
+                                        <div class="font-semibold mt-1">{{ thumb.headline }}</div>
+                                        <div class="text-sm mt-1">{{ thumb.youtube_title }}</div>
+                                        <div class="text-xs text-slate-500 mt-2">{{ thumb.visual_prompt }}</div>
+                                    </div>
+                                </div>
                             </div>
                             <div v-if="currentScript.shorts && currentScript.shorts.length" class="mb-4">
                                 <h3 class="font-semibold mb-2">Shorts sugeridos</h3>
                                 <div class="space-y-3">
                                     <div v-for="(shortItem, idx) in currentScript.shorts" :key="idx" class="border rounded-lg p-3">
                                         <div class="font-semibold">{{ shortItem.title }}</div>
-                                        <div class="text-sm mt-1">{{ shortItem.hook }}</div>
-                                        <div class="text-xs text-slate-500 mt-1">{{ (shortItem.hashtags || []).join(' ') }}</div>
+                                        <div class="text-sm mt-1"><strong>Gancho:</strong> {{ shortItem.hook }}</div>
+                                        <div class="text-sm mt-1"><strong>Narracao:</strong> {{ shortItem.narration }}</div>
+                                        <div class="text-sm mt-1"><strong>Legenda:</strong> {{ shortItem.subtitle }}</div>
+                                        <div class="text-sm mt-1"><strong>Prompt visual:</strong> {{ shortItem.visual_prompt }}</div>
+                                        <div class="text-xs text-slate-500 mt-1">{{ shortItem.duration_seconds }}s | {{ (shortItem.hashtags || []).join(' ') }}</div>
                                     </div>
                                 </div>
                             </div>
@@ -317,13 +369,64 @@
                         <div v-else class="space-y-3">
                             <div v-for="scene in currentScenes" :key="scene.id" class="border rounded-lg p-4">
                                 <div class="flex flex-col md:flex-row md:justify-between gap-2">
-                                    <div class="font-semibold">Cena {{ scene.scene_number }} - {{ scene.camera_type || 'camera livre' }}</div>
-                                    <div class="text-xs text-slate-500">{{ scene.duration_seconds }}s | {{ scene.emotion }}</div>
+                                    <div class="font-semibold">Cena {{ scene.scene_number }} - {{ scene.title || scene.camera_direction || 'camera livre' }}</div>
+                                    <div class="text-xs text-slate-500">{{ scene.duration_seconds }}s | {{ scene.emotion }} | {{ scene.scenario_name || 'cenario livre' }}</div>
                                 </div>
                                 <div class="text-sm mt-2"><strong>Narracao:</strong> {{ scene.narration_text }}</div>
                                 <div class="text-sm mt-2"><strong>Visual:</strong> {{ scene.visual_description }}</div>
+                                <div class="text-sm mt-2"><strong>Camera:</strong> {{ scene.camera_direction || scene.camera_type }}</div>
+                                <div class="text-sm mt-2"><strong>Efeitos sonoros:</strong> {{ scene.sound_effects || 'Sem efeitos' }}</div>
+                                <div class="text-sm mt-2"><strong>Trilha:</strong> {{ scene.music_style || 'Sem trilha definida' }}</div>
                                 <div class="text-sm mt-2"><strong>Prompt imagem:</strong> {{ scene.prompt_image }}</div>
+                                <div class="text-sm mt-2"><strong>Prompt video:</strong> {{ scene.prompt_video }}</div>
                                 <div class="text-sm mt-2"><strong>Prompt animacao:</strong> {{ scene.prompt_animation }}</div>
+                                <div class="text-sm mt-2"><strong>Prompt cinematografico:</strong> {{ scene.prompt_cinematic }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section v-if="activeTab === 'storyboard'" class="space-y-6">
+                <div class="bg-white rounded-xl shadow p-6">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                        <div>
+                            <h2 class="text-xl font-bold">Storyboard</h2>
+                            <div class="text-sm text-slate-500">Aprovacao visual antes da producao final.</div>
+                        </div>
+                        <button @click="approveStoryboard" :disabled="!selectedScriptId" class="bg-teal-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Aprovar storyboard</button>
+                    </div>
+                    <div class="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm">
+                        <div><strong>Ordem recomendada:</strong> Storyboard completo -> Character Bible -> Banco de cenarios -> aprovacao por cena -> imagem -> video.</div>
+                        <div class="mt-1">Status atual: {{ storyboardFrames.length }} cenas | {{ storyboardApprovedCount }} aprovadas | {{ selectedSeriesCharacterCount }} personagens | {{ selectedSeriesScenarioCount }} cenarios.</div>
+                    </div>
+                    <div v-if="!storyboardFrames.length" class="text-slate-500">Gere um roteiro para montar automaticamente o storyboard.</div>
+                    <div v-else class="space-y-4">
+                        <div v-for="frame in storyboardFrames" :key="`story-${frame.scene_number}`" class="border rounded-xl p-4">
+                            <div class="flex flex-col lg:flex-row gap-4">
+                                <div class="lg:w-1/3">
+                                    <img v-if="isVisualUrl(frame.storyboard_image || frame.image)" :src="frame.storyboard_image || frame.image" class="aspect-video w-full object-cover rounded-lg border" alt="Preview storyboard">
+                                    <div v-else class="aspect-video rounded-lg bg-slate-100 border border-dashed flex items-center justify-center text-center text-sm text-slate-500 p-4">
+                                        {{ frame.prompt_visual || 'Preview sera gerado a partir do prompt da cena' }}
+                                    </div>
+                                </div>
+                                <div class="lg:w-2/3">
+                                    <div class="flex flex-col md:flex-row md:justify-between gap-2">
+                                        <div class="font-semibold">Cena {{ frame.scene_number }} - {{ frame.title || 'Sem titulo' }}</div>
+                                        <div class="text-xs text-slate-500 uppercase">{{ frame.approval_status || 'pending' }}</div>
+                                    </div>
+                                    <div class="text-sm mt-3"><strong>Narracao:</strong> {{ frame.narration }}</div>
+                                    <div class="text-sm mt-2"><strong>Emocao:</strong> {{ frame.emotion || 'Sem emocao definida' }}</div>
+                                    <div class="text-sm mt-2"><strong>Prompt visual:</strong> {{ frame.prompt_visual || frame.image }}</div>
+                                    <div class="text-sm mt-2"><strong>Movimento de camera:</strong> {{ frame.camera_movement || 'camera livre' }}</div>
+                                    <div class="text-sm mt-2"><strong>Duracao:</strong> {{ frame.duration || 0 }}s</div>
+                                    <div class="text-sm mt-2"><strong>Trilha sugerida:</strong> {{ frame.suggested_soundtrack || 'Sem trilha definida' }}</div>
+                                    <div class="mt-4 flex gap-2 flex-wrap">
+                                        <button @click="generateStoryboardPreview(frame.scene_number)" class="bg-indigo-700 text-white px-3 py-2 rounded text-xs">Gerar preview</button>
+                                        <button @click="approveStoryboardScene(frame.scene_number)" class="bg-emerald-600 text-white px-3 py-2 rounded text-xs">Aprovar cena</button>
+                                        <button @click="regenerateStoryboardScene(frame.scene_number)" class="bg-amber-500 text-slate-900 px-3 py-2 rounded text-xs">Regenerar cena</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -339,13 +442,18 @@
                             <option v-for="item in series" :key="item.id" :value="item.id">{{ item.name }}</option>
                         </select>
                         <input v-model="characterForm.name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome">
-                        <textarea v-model="characterForm.description" class="w-full border rounded-lg px-3 py-2 h-20" placeholder="Aparencia / descricao"></textarea>
-                        <input v-model="characterForm.approximate_age" class="w-full border rounded-lg px-3 py-2" placeholder="Idade aproximada">
-                        <input v-model="characterForm.clothing" class="w-full border rounded-lg px-3 py-2" placeholder="Roupa">
-                        <input v-model="characterForm.hair" class="w-full border rounded-lg px-3 py-2" placeholder="Cabelo">
+                        <textarea v-model="characterForm.description" class="w-full border rounded-lg px-3 py-2 h-20" placeholder="Descricao detalhada"></textarea>
+                        <input v-model="characterForm.appearance" class="w-full border rounded-lg px-3 py-2" placeholder="Aparencia principal">
+                        <input v-model="characterForm.approximate_age" class="w-full border rounded-lg px-3 py-2" placeholder="Idade aproximada obrigatoria">
+                        <input v-model="characterForm.height" class="w-full border rounded-lg px-3 py-2" placeholder="Altura obrigatoria">
+                        <input v-model="characterForm.clothing" class="w-full border rounded-lg px-3 py-2" placeholder="Roupa padrao obrigatoria">
+                        <input v-model="characterForm.hair" class="w-full border rounded-lg px-3 py-2" placeholder="Cabelo obrigatorio">
+                        <input v-model="characterForm.beard" class="w-full border rounded-lg px-3 py-2" placeholder="Barba obrigatoria ou 'sem barba'">
+                        <input v-model="characterForm.eye_color" class="w-full border rounded-lg px-3 py-2" placeholder="Cor dos olhos obrigatoria">
                         <input v-model="characterForm.default_expression" class="w-full border rounded-lg px-3 py-2" placeholder="Expressao padrao">
                         <input v-model="characterForm.visual_style" class="w-full border rounded-lg px-3 py-2" placeholder="Estilo visual">
                         <textarea v-model="characterForm.base_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt base"></textarea>
+                        <textarea v-model="characterForm.master_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt mestre do personagem"></textarea>
                         <input v-model="characterForm.reference_image_url" class="w-full border rounded-lg px-3 py-2" placeholder="Imagem de referencia URL">
                         <input v-model="characterEmotions" class="w-full border rounded-lg px-3 py-2" placeholder="Emocoes separadas por virgula">
                         <button @click="saveCharacter" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar personagem</button>
@@ -355,6 +463,10 @@
                             <div class="font-semibold">{{ item.name }}</div>
                             <div class="text-xs text-slate-500">{{ item.visual_style }} | {{ item.approximate_age }}</div>
                             <div class="text-sm mt-1">{{ item.description }}</div>
+                            <div class="text-xs text-slate-500 mt-1">{{ item.eye_color || 'Olhos n/d' }} | {{ item.height || 'Altura n/d' }} | {{ item.beard || 'Sem barba' }}</div>
+                            <div class="text-xs text-slate-500 mt-1">{{ (item.emotions || []).join(', ') }}</div>
+                            <div class="text-xs text-emerald-700 mt-2">Consistencia visual bloqueada: {{ item.character_bible?.consistency_lock ? 'sim' : 'nao' }}</div>
+                            <div class="text-xs text-slate-500 mt-1 whitespace-pre-wrap">{{ item.master_prompt }}</div>
                         </div>
                     </div>
                 </div>
@@ -537,6 +649,7 @@
                         { id: 'dashboard', label: 'Dashboard', icon: 'fas fa-chart-line' },
                         { id: 'series', label: 'Series', icon: 'fas fa-book-bible' },
                         { id: 'script', label: 'Roteiro e Cenas', icon: 'fas fa-clapperboard' },
+                        { id: 'storyboard', label: 'Storyboard', icon: 'fas fa-images' },
                         { id: 'assets', label: 'Assets', icon: 'fas fa-user-group' },
                         { id: 'queue', label: 'Fila de Producao', icon: 'fas fa-diagram-project' },
                         { id: 'config', label: 'Configuracoes e Custos', icon: 'fas fa-gear' }
@@ -546,9 +659,14 @@
                         { id: 'script_generated', label: 'Roteiro Gerado' },
                         { id: 'script_approved', label: 'Roteiro Aprovado' },
                         { id: 'scenes_generated', label: 'Cenas Geradas' },
+                        { id: 'storyboard_generated', label: 'Storyboard' },
+                        { id: 'storyboard_approved', label: 'Storyboard Aprovado' },
+                        { id: 'images_generated', label: 'Imagens' },
                         { id: 'voice_generated', label: 'Voz Gerada' },
                         { id: 'video_animating', label: 'Animacao' },
                         { id: 'video_editing', label: 'Edicao' },
+                        { id: 'thumbnail_generated', label: 'Thumbnail' },
+                        { id: 'shorts_generated', label: 'Shorts' },
                         { id: 'awaiting_approval', label: 'Aguardando Aprovacao' },
                         { id: 'ready_to_publish', label: 'Pronto para Publicar' },
                         { id: 'published', label: 'Publicado' },
@@ -597,6 +715,8 @@
                         bible_book: '',
                         main_character: '',
                         target_audience: '',
+                        production_profile: '',
+                        production_profile_config: {},
                         visual_style: '',
                         narrative_tone: '',
                         planned_episodes: 10,
@@ -610,7 +730,7 @@
                     },
                     scriptForm: {
                         desired_duration_minutes: 5,
-                        narrative_style: 'emocionante',
+                        narrative_style: 'documentario cinematografico',
                         drama_level: 7,
                         biblical_fidelity_level: 9,
                         target_audience: 'familia',
@@ -621,12 +741,17 @@
                         series_id: '',
                         name: '',
                         description: '',
+                        appearance: '',
                         approximate_age: '',
+                        height: '',
                         clothing: '',
                         hair: '',
+                        beard: '',
+                        eye_color: '',
                         default_expression: '',
                         visual_style: '',
                         base_prompt: '',
+                        master_prompt: '',
                         reference_image_url: ''
                     },
                     characterEmotions: '',
@@ -668,6 +793,33 @@
                         { label: 'Aprovacao', value: this.dashboard.totals?.videos_waiting_approval || 0 },
                         { label: 'Publicados', value: this.dashboard.totals?.videos_published || 0 }
                     ];
+                },
+                storyboardFrames() {
+                    if (this.currentScript?.storyboard?.length) return this.currentScript.storyboard;
+                    return (this.currentScenes || []).map(scene => ({
+                        scene_number: scene.scene_number,
+                        title: scene.title,
+                        emotion: scene.emotion,
+                        prompt_visual: scene.prompt_image,
+                        camera_movement: scene.camera_direction || scene.camera_type,
+                        duration: scene.duration_seconds,
+                        suggested_soundtrack: scene.music_style,
+                        storyboard_image: scene.storyboard_image,
+                        image: scene.prompt_image,
+                        narration: scene.narration_text,
+                        approval_status: scene.approval_status || 'pending'
+                    }));
+                },
+                storyboardApprovedCount() {
+                    return this.storyboardFrames.filter(frame => (frame.approval_status || 'pending') === 'approved').length;
+                },
+                selectedSeriesCharacterCount() {
+                    if (!this.selectedSeriesId) return 0;
+                    return this.characters.filter(item => String(item.series_id) === String(this.selectedSeriesId)).length;
+                },
+                selectedSeriesScenarioCount() {
+                    if (!this.selectedSeriesId) return 0;
+                    return this.scenarios.filter(item => String(item.series_id) === String(this.selectedSeriesId)).length;
                 }
             },
             methods: {
@@ -678,6 +830,8 @@
                         bible_book: '',
                         main_character: '',
                         target_audience: '',
+                        production_profile: '',
+                        production_profile_config: {},
                         visual_style: '',
                         narrative_tone: '',
                         planned_episodes: 10,
@@ -759,6 +913,10 @@
                     if (text.includes('alegr') || text.includes('esperan')) return '✨';
                     return '🎭';
                 },
+                isVisualUrl(value) {
+                    const raw = String(value || '').trim();
+                    return raw.startsWith('/') || raw.startsWith('http://') || raw.startsWith('https://');
+                },
                 formatScriptInsight(value, type) {
                     const structured = this.parseStructuredValue(value);
                     if (structured && !Array.isArray(structured)) {
@@ -815,8 +973,28 @@
                     this.seriesForm = this.emptySeriesForm();
                 },
                 editSeries(item) {
-                    this.seriesForm = { ...item };
+                    this.seriesForm = {
+                        ...item,
+                        production_profile_config: item.production_profile_config || {}
+                    };
                     this.activeTab = 'series';
+                },
+                applySeriesProfile() {
+                    if (this.seriesForm.production_profile === 'Serie Netflix Biblica') {
+                        this.seriesForm.production_profile_config = {
+                            cliffhanger_required: true,
+                            minimum_retention_score: 80,
+                            strong_hook_first_15_seconds: true,
+                            narrative_tone: 'cinematografico',
+                            emotional_curve: 'crescente',
+                            serialized_narrative: true,
+                            auto_next_episode_cta: true,
+                            auto_shorts_count: 3
+                        };
+                        this.seriesForm.narrative_tone = 'cinematografico';
+                    } else {
+                        this.seriesForm.production_profile_config = {};
+                    }
                 },
                 async saveSeries() {
                     try {
@@ -950,9 +1128,10 @@
                             body: JSON.stringify(this.scriptForm)
                         });
                         const data = await res.json();
-                        if (!res.ok) throw new Error(data.detail || 'Falha ao gerar roteiro.');
+                        if (!res.ok) throw new Error(data.error || data.detail || 'Falha ao gerar roteiro.');
                         this.notifySuccess('Roteiro gerado com sucesso.');
                         await this.onEpisodeChange();
+                        this.activeTab = 'storyboard';
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao gerar roteiro.');
                     }
@@ -967,6 +1146,57 @@
                         await this.bootstrap();
                     } catch (e) {
                         this.notifyError(e.message || 'Erro na validacao biblica.');
+                    }
+                },
+                async approveStoryboard() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/approve-storyboard`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao aprovar storyboard.');
+                        this.currentScript = data;
+                        this.activeTab = 'storyboard';
+                        this.notifySuccess('Storyboard aprovado e pronto para producao.');
+                        await this.bootstrap();
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao aprovar storyboard.');
+                    }
+                },
+                async generateStoryboardPreview(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/preview`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao gerar preview da cena.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        this.notifySuccess(`Preview da cena ${sceneNumber} gerado.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao gerar preview da cena.');
+                    }
+                },
+                async approveStoryboardScene(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/approve`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao aprovar a cena.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess(`Cena ${sceneNumber} aprovada.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao aprovar a cena.');
+                    }
+                },
+                async regenerateStoryboardScene(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/regenerate`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao regenerar a cena.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess(`Cena ${sceneNumber} regenerada.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao regenerar a cena.');
                     }
                 },
                 async generateScenesForScript() {
@@ -990,6 +1220,7 @@
                         if (!this.currentScript) this.currentScript = {};
                         this.currentScript.shorts = data || [];
                         this.notifySuccess('Shorts sugeridos foram gerados.');
+                        await this.loadSelectedScript();
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao gerar shorts.');
                     }
@@ -1002,12 +1233,22 @@
                         if (!this.currentScript) this.currentScript = {};
                         this.currentScript.thumbnail = data || {};
                         this.notifySuccess('Thumbnail sugerida gerada.');
+                        await this.loadSelectedScript();
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao gerar thumbnail.');
                     }
                 },
                 async createProductionJob(aspectRatio, jobType = 'episode') {
                     try {
+                        if (jobType === 'episode' && this.storyboardFrames.length && this.storyboardFrames.some(frame => (frame.approval_status || 'pending') !== 'approved')) {
+                            throw new Error('Finalize e aprove o Storyboard antes de enfileirar o video.');
+                        }
+                        if (jobType === 'episode' && !this.selectedSeriesCharacterCount) {
+                            throw new Error('Finalize o Character Bible antes de partir para a geracao de video.');
+                        }
+                        if (jobType === 'episode' && !this.selectedSeriesScenarioCount) {
+                            throw new Error('Cadastre e finalize o Banco de Cenarios antes de partir para a geracao de video.');
+                        }
                         const res = await this.authFetch('/bible-video-factory/jobs', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -1079,7 +1320,7 @@
                         const data = await res.json();
                         if (!res.ok) throw new Error(data.detail || 'Falha ao salvar personagem.');
                         this.notifySuccess('Personagem salvo.');
-                        this.characterForm = { series_id: '', name: '', description: '', approximate_age: '', clothing: '', hair: '', default_expression: '', visual_style: '', base_prompt: '', reference_image_url: '' };
+                        this.characterForm = { series_id: '', name: '', description: '', appearance: '', approximate_age: '', height: '', clothing: '', hair: '', beard: '', eye_color: '', default_expression: '', visual_style: '', base_prompt: '', master_prompt: '', reference_image_url: '' };
                         this.characterEmotions = '';
                         await this.bootstrap();
                     } catch (e) {

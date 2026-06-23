@@ -415,6 +415,19 @@ def run_migrations(engine):
                 Base.metadata.create_all(bind=engine)
             except Exception as e:
                 print(f"Error creating Bible Video Factory tables: {e}")
+        else:
+            try:
+                bible_series_columns = [c["name"] for c in inspector.get_columns("codexia_bible_video_series")]
+                if "production_profile" not in bible_series_columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE codexia_bible_video_series ADD COLUMN production_profile TEXT"))
+                        conn.commit()
+                if "production_profile_json" not in bible_series_columns:
+                    with engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE codexia_bible_video_series ADD COLUMN production_profile_json TEXT"))
+                        conn.commit()
+            except Exception as e:
+                print(f"Error migrating Bible Video Factory series table: {e}")
 
         # Humor Factory migration
         if "codexia_humor_projects" in inspector.get_table_names():
