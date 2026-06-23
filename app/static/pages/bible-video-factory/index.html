@@ -275,8 +275,16 @@
                                 </div>
                                 <div class="bg-slate-50 rounded-lg p-4">
                                     <div class="text-sm text-slate-500">Trilha / voz</div>
-                                    <div class="text-sm font-semibold mt-1">{{ currentScript.voice_emotion_notes || 'Sem observacao' }}</div>
-                                    <div class="text-sm mt-2">{{ currentScript.soundtrack_notes || 'Sem trilha definida.' }}</div>
+                                    <div class="space-y-2 mt-2">
+                                        <div v-for="(item, idx) in formatScriptInsight(currentScript.soundtrack_notes, 'soundtrack')" :key="`soundtrack-${idx}`" class="text-sm">
+                                            <div class="text-slate-500">{{ item.label }}</div>
+                                            <div class="font-semibold">{{ item.value }}</div>
+                                        </div>
+                                        <div v-for="(item, idx) in formatScriptInsight(currentScript.voice_emotion_notes, 'emotion')" :key="`emotion-${idx}`" class="text-sm">
+                                            <div class="text-slate-500">{{ item.label }}</div>
+                                            <div class="font-semibold">{{ item.value }}</div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="mb-4">
@@ -727,6 +735,55 @@
                     } catch (e) {
                         return value;
                     }
+                },
+                parseStructuredValue(value) {
+                    if (value === null || value === undefined || value === '') return null;
+                    if (typeof value === 'object') return value;
+                    const raw = String(value).trim();
+                    if (!raw) return null;
+                    if ((raw.startsWith('{') && raw.endsWith('}')) || (raw.startsWith('[') && raw.endsWith(']'))) {
+                        try {
+                            return JSON.parse(raw.replace(/'/g, '"'));
+                        } catch (e) {
+                            return null;
+                        }
+                    }
+                    return null;
+                },
+                emotionEmoji(value) {
+                    const text = String(value || '').toLowerCase();
+                    if (text.includes('triste')) return '😔';
+                    if (text.includes('reflex')) return '🤔';
+                    if (text.includes('suspense') || text.includes('tens')) return '😮';
+                    if (text.includes('coragem') || text.includes('determina')) return '🔥';
+                    if (text.includes('alegr') || text.includes('esperan')) return '✨';
+                    return '🎭';
+                },
+                formatScriptInsight(value, type) {
+                    const structured = this.parseStructuredValue(value);
+                    if (structured && !Array.isArray(structured)) {
+                        const rows = [];
+                        if (type === 'soundtrack') {
+                            const soundtrackText = structured.soundtrack || structured.music || structured.trilha || structured.description || value;
+                            rows.push({ label: 'Trilha sugerida', value: `🎵 ${String(soundtrackText || 'Musica suave e cinematografica')}` });
+                            if (structured.emotion) {
+                                rows.push({ label: 'Emocao predominante', value: `${this.emotionEmoji(structured.emotion)} ${String(structured.emotion)}` });
+                            }
+                            return rows;
+                        }
+                        if (type === 'emotion') {
+                            const emotionText = structured.emotion || structured.voice || structured.description || value;
+                            rows.push({ label: 'Emocao predominante', value: `${this.emotionEmoji(emotionText)} ${String(emotionText || 'Emocao cinematografica')}` });
+                            if (structured.scene) {
+                                rows.push({ label: 'Cena de referencia', value: `🎬 Cena ${structured.scene}` });
+                            }
+                            return rows;
+                        }
+                    }
+                    if (type === 'soundtrack') {
+                        return [{ label: 'Trilha sugerida', value: `🎵 ${String(value || 'Sem trilha definida.')}` }];
+                    }
+                    return [{ label: 'Emocao predominante', value: `${this.emotionEmoji(value)} ${String(value || 'Sem observacao')}` }];
                 },
                 jobsByStage(stage) {
                     return this.jobs.filter(item => item.kanban_stage === stage);

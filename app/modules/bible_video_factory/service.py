@@ -610,6 +610,10 @@ class BibleVideoFactoryService:
         target_audience = self._normalize_text(target_audience or episode.title)
         subscribe_cta = self._normalize_text(subscribe_cta or config.default_cta or "")
         next_episode_cta = self._normalize_text(next_episode_cta or config.default_next_episode_cta or "")
+        target_scene_count = 12
+        min_scene_count = 10
+        max_scene_count = 15
+        minimum_words = 700 if desired_duration_minutes >= 5 else max(300, desired_duration_minutes * 140)
 
         print(
             "[BibleVideoFactoryService] generate_script_for_episode entrada:",
@@ -629,9 +633,22 @@ class BibleVideoFactoryService:
         )
         prompt = (
             "Crie um roteiro biblico em JSON para video episodico.\n"
-            "Retorne as chaves: full_narration, scenes, optional_dialogues, voice_emotion_notes, soundtrack_notes, sound_effects_notes, retention_hooks.\n"
-            "Cada item de scenes deve conter: text, image_prompt, caption.\n"
-            "A narrativa pode dramatizar, mas nao pode alterar os fatos principais da Biblia.\n\n"
+            "Retorne as chaves: full_narration, impact_phrase, cliffhanger, scenes, optional_dialogues, voice_emotion_notes, soundtrack_notes, sound_effects_notes, retention_hooks.\n"
+            "A narrativa pode dramatizar, mas nao pode alterar os fatos principais da Biblia.\n"
+            "Regras obrigatorias:\n"
+            f"- gerar roteiro para video de {desired_duration_minutes} minutos;\n"
+            f"- escrever no minimo {minimum_words} palavras na narracao completa;\n"
+            f"- dividir em no minimo {min_scene_count} e no maximo {max_scene_count} cenas;\n"
+            "- criar gancho forte nos primeiros 15 segundos;\n"
+            "- criar emocao, suspense e linguagem simples;\n"
+            "- manter estilo de documentario cinematografico;\n"
+            "- nao resumir a historia e nao correr pelos fatos;\n"
+            "- mostrar emocoes dos personagens;\n"
+            "- descrever ambiente, sons e clima da cena;\n"
+            "- incluir frase de impacto memoravel;\n"
+            "- terminar com cliffhanger forte para o proximo episodio;\n"
+            "- preservar fidelidade biblica.\n"
+            "Cada item de scenes deve conter: title, description, narration, emotion, duration, image_prompt, caption.\n\n"
             f"Serie: {series.name if series else ''}\n"
             f"Episodio: {episode.title}\n"
             f"Resumo: {episode.summary or ''}\n"
@@ -660,10 +677,15 @@ class BibleVideoFactoryService:
                 if self._normalize_text(x)
             )
         )
-        paragraphs = self._split_text_chunks(base_text, max(6, desired_duration_minutes * 2))
+        paragraphs = self._split_text_chunks(base_text, target_scene_count)
         for idx, item in enumerate(paragraphs):
             fallback_scenes.append(
                 {
+                    "title": f"Cena {idx + 1}",
+                    "description": item[:220],
+                    "narration": item,
+                    "emotion": "suspense" if idx in {0, len(paragraphs) - 1} else "emocionante",
+                    "duration": max(18, round((desired_duration_minutes * 60) / max(1, len(paragraphs)))),
                     "text": item,
                     "image_prompt": f"{series.visual_style or 'anime cinematografico'} de {episode.title}. {item[:180]}",
                     "caption": item[:120],
@@ -671,18 +693,48 @@ class BibleVideoFactoryService:
             )
         fallback = {
             "full_narration": base_text,
+            "impact_phrase": episode.impact_phrase or "Quando Deus escolhe alguem, o medo nao define o final.",
+            "cliffhanger": episode.ending_hook or "Mas o proximo passo desta historia vai mudar tudo.",
             "scenes": fallback_scenes,
             "optional_dialogues": [],
             "voice_emotion_notes": f"Narracao {narrative_style} com drama {drama_level}/10 e reverencia biblica.",
             "soundtrack_notes": f"Trilha {series.narrative_tone if series else 'epica'} com suspense moderado e atmosfera cinematografica.",
             "sound_effects_notes": "Vento, passos, ambiente historico, multidao e silencio dramatico quando necessario.",
-            "retention_hooks": [episode.opening_hook, episode.impact_phrase, episode.ending_hook],
+            "retention_hooks": [
+                episode.opening_hook or "Algo decisivo vai acontecer antes que alguem perceba.",
+                episode.impact_phrase or "A fe transforma o improvavel em destino.",
+                episode.ending_hook or "E o que vem depois vai surpreender a todos.",
+            ],
         }
         data = self._generate_json(
             prompt,
             system_prompt="Voce e um roteirista biblico cinematografico para series em episodios.",
             fallback=fallback,
         )
+        scenes_payload = data.get("scenes") or fallback["scenes"]
+        normalized_scenes = []
+        if isinstance(scenes_payload, list):
+            for idx, item in enumerate(scenes_payload[:max_scene_count]):
+                if not isinstance(item, dict):
+                    item = {"narration": self._normalize_text(item)}
+                narration = self._normalize_text(item.get("narration") or item.get("text"))
+                description = self._normalize_text(item.get("description") or item.get("caption") or narration[:220])
+                emotion = self._normalize_text(item.get("emotion") or ("suspense" if idx in {0, len(scenes_payload) - 1} else "emocionante"))
+                duration = self._normalize_int(item.get("duration"), max(18, round((desired_duration_minutes * 60) / max(1, min(max_scene_count, len(scenes_payload) or target_scene_count)))))
+                normalized_scenes.append(
+                    {
+                        "title": self._normalize_text(item.get("title") or f"Cena {idx + 1}"),
+                        "description": description,
+                        "narration": narration,
+                        "emotion": emotion,
+                        "duration": duration,
+                        "text": narration,
+                        "image_prompt": self._normalize_text(item.get("image_prompt") or f"{series.visual_style or 'anime cinematografico'} de {episode.title}. {description[:180]}"),
+                        "caption": self._normalize_text(item.get("caption") or description[:120]),
+                    }
+                )
+        if not normalized_scenes:
+            normalized_scenes = fallback["scenes"]
         script = BibleVideoScript(
             series_id=episode.series_id,
             episode_id=episode.id,
@@ -695,7 +747,7 @@ class BibleVideoFactoryService:
             subscribe_cta=subscribe_cta,
             next_episode_cta=next_episode_cta,
             full_narration=self._normalize_text(data.get("full_narration") or fallback["full_narration"]),
-            scenes_json=self._json_dumps(data.get("scenes") or fallback["scenes"]),
+            scenes_json=self._json_dumps(normalized_scenes),
             optional_dialogues_json=self._json_dumps(data.get("optional_dialogues") or []),
             voice_emotion_notes=self._normalize_text(data.get("voice_emotion_notes") or fallback["voice_emotion_notes"]),
             soundtrack_notes=self._normalize_text(data.get("soundtrack_notes") or fallback["soundtrack_notes"]),
