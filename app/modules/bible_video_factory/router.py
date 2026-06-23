@@ -93,7 +93,9 @@ class CharacterRequest(BaseModel):
     description: Optional[str] = None
     approximate_age: Optional[str] = None
     appearance: Optional[str] = None
+    skin_tone: Optional[str] = None
     clothing: Optional[str] = None
+    accessories: Optional[str] = None
     hair: Optional[str] = None
     beard: Optional[str] = None
     eye_color: Optional[str] = None
@@ -470,29 +472,10 @@ def approve_storyboard(script_id: int, db: Session = Depends(get_db), current_us
     script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
     if not script:
         raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
-    episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
-    package = get_service()._extract_script_package(script)
-    storyboard = package.get("storyboard") if isinstance(package, dict) else []
-    if not isinstance(storyboard, list):
-        storyboard = []
-    approved_storyboard = []
-    for idx, item in enumerate(storyboard):
-        if not isinstance(item, dict):
-            item = {"scene_number": idx + 1, "title": f"Cena {idx + 1}", "narration": str(item)}
-        approved_storyboard.append({**item, "approval_status": "approved"})
-    blueprint = package.get("production_blueprint") if isinstance(package, dict) and isinstance(package.get("production_blueprint"), dict) else {}
-    get_service()._save_script_package(
-        script,
-        {
-            "storyboard": approved_storyboard,
-            "production_blueprint": {**blueprint, "pipeline_status": "storyboard_aprovado"},
-        },
-    )
-    if episode:
-        episode.status = "storyboard_approved"
-    db.commit()
-    db.refresh(script)
-    return get_service().serialize_script(script)
+    try:
+        return get_service().approve_storyboard(db, script)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/scripts/{script_id}/storyboard/{scene_number}/preview")
@@ -580,15 +563,18 @@ def create_character(payload: CharacterRequest, db: Session = Depends(get_db), c
     meta = {
         "emotions": prepared.get("emotions") or [],
         "appearance": prepared.get("appearance"),
+        "skin_tone": prepared.get("skin_tone"),
         "beard": prepared.get("beard"),
         "eye_color": prepared.get("eye_color"),
         "height": prepared.get("height"),
+        "accessories": prepared.get("accessories"),
         "master_prompt": prepared.get("master_prompt") or prepared.get("base_prompt"),
         "consistency_lock": True,
+        "season_consistency_lock": True,
     }
     row = BibleVideoCharacter(user_id=current_user.id, emotions_json=get_service()._json_dumps(meta))
     for key, value in prepared.items():
-        if key in {"emotions", "appearance", "beard", "eye_color", "height", "master_prompt", "consistency_lock"}:
+        if key in {"emotions", "appearance", "skin_tone", "beard", "eye_color", "height", "accessories", "master_prompt", "consistency_lock", "season_consistency_lock"}:
             continue
         setattr(row, key, value)
     if prepared.get("appearance") and not prepared.get("description"):
@@ -611,18 +597,21 @@ def update_character(character_id: int, payload: CharacterRequest, db: Session =
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     for key, value in prepared.items():
-        if key in {"emotions", "appearance", "beard", "eye_color", "height", "master_prompt", "consistency_lock"}:
+        if key in {"emotions", "appearance", "skin_tone", "beard", "eye_color", "height", "accessories", "master_prompt", "consistency_lock", "season_consistency_lock"}:
             continue
         setattr(row, key, value)
     row.emotions_json = get_service()._json_dumps(
         {
             "emotions": prepared.get("emotions") or [],
             "appearance": prepared.get("appearance"),
+            "skin_tone": prepared.get("skin_tone"),
             "beard": prepared.get("beard"),
             "eye_color": prepared.get("eye_color"),
             "height": prepared.get("height"),
+            "accessories": prepared.get("accessories"),
             "master_prompt": prepared.get("master_prompt") or prepared.get("base_prompt"),
             "consistency_lock": True,
+            "season_consistency_lock": True,
         }
     )
     if prepared.get("appearance") and not prepared.get("description"):

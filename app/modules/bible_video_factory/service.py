@@ -61,6 +61,7 @@ class BibleVideoFactoryService:
                 "name": "Serie Netflix Biblica",
                 "cliffhanger_required": True,
                 "minimum_retention_score": 80,
+                "minimum_cliffhanger_score": 85,
                 "strong_hook_first_15_seconds": True,
                 "narrative_tone": "cinematografico",
                 "emotional_curve": "crescente",
@@ -235,12 +236,17 @@ class BibleVideoFactoryService:
             item = {"narration": self._normalize_text(item)}
         prompt_visual = self._normalize_text(item.get("prompt_visual") or item.get("prompt_image") or item.get("image_prompt") or item.get("image"))
         storyboard_image = self._normalize_text(item.get("storyboard_image") or item.get("image"))
+        prompt_image = self._normalize_text(item.get("prompt_image") or item.get("image_prompt") or prompt_visual)
+        prompt_video = self._normalize_text(item.get("prompt_video") or item.get("video_prompt") or prompt_image)
         return {
             "scene_number": self._normalize_int(item.get("scene_number") or scene_number, scene_number),
             "title": self._normalize_text(item.get("title") or f"Cena {scene_number}"),
             "narration": self._normalize_text(item.get("narration") or item.get("narration_text") or item.get("text")),
+            "narrative": self._normalize_text(item.get("narrative") or item.get("narration") or item.get("narration_text") or item.get("text")),
             "emotion": self._normalize_text(item.get("emotion")),
             "prompt_visual": prompt_visual,
+            "prompt_image": prompt_image,
+            "prompt_video": prompt_video,
             "camera_movement": self._normalize_text(item.get("camera_movement") or item.get("camera_direction") or item.get("camera_type")),
             "duration": float(item.get("duration") or item.get("duration_seconds") or 0),
             "suggested_soundtrack": self._normalize_text(item.get("suggested_soundtrack") or item.get("music_style")),
@@ -282,6 +288,8 @@ class BibleVideoFactoryService:
                 "narration": item.get("narration") or item.get("text"),
                 "emotion": item.get("emotion"),
                 "prompt_visual": item.get("prompt_image") or item.get("image_prompt"),
+                "prompt_image": item.get("prompt_image") or item.get("image_prompt"),
+                "prompt_video": item.get("prompt_video") or item.get("video_prompt"),
                 "camera_movement": item.get("camera_direction"),
                 "duration": item.get("duration"),
                 "suggested_soundtrack": item.get("music_style"),
@@ -297,7 +305,7 @@ class BibleVideoFactoryService:
             meta = {}
         row.narration_text = self._normalize_text(frame.get("narration") or row.narration_text)
         row.emotion = self._normalize_text(frame.get("emotion") or row.emotion)
-        row.prompt_image = self._normalize_text(frame.get("prompt_visual") or row.prompt_image)
+        row.prompt_image = self._normalize_text(frame.get("prompt_image") or frame.get("prompt_visual") or row.prompt_image)
         row.duration_seconds = float(frame.get("duration") or row.duration_seconds or 0)
         row.camera_type = self._normalize_text(frame.get("camera_movement") or row.camera_type)
         meta["title"] = self._normalize_text(frame.get("title") or meta.get("title") or f"Cena {row.scene_number}")
@@ -305,8 +313,9 @@ class BibleVideoFactoryService:
         meta["music_style"] = self._normalize_text(frame.get("suggested_soundtrack") or meta.get("music_style"))
         meta["storyboard_image"] = self._normalize_text(frame.get("storyboard_image") or meta.get("storyboard_image"))
         meta["approval_status"] = self._normalize_text(frame.get("approval_status") or meta.get("approval_status") or "pending")
+        meta["prompt_video"] = self._normalize_text(frame.get("prompt_video") or meta.get("prompt_video"))
         if scene_source:
-            meta["prompt_video"] = self._normalize_text(scene_source.get("prompt_video") or meta.get("prompt_video"))
+            meta["prompt_video"] = self._normalize_text(frame.get("prompt_video") or scene_source.get("prompt_video") or meta.get("prompt_video"))
             meta["prompt_cinematic"] = self._normalize_text(scene_source.get("prompt_cinematic") or meta.get("prompt_cinematic"))
             meta["sound_effects"] = self._normalize_text(scene_source.get("sound_effects") or meta.get("sound_effects"))
             row.prompt_animation = self._normalize_text(scene_source.get("prompt_animation") or row.prompt_animation)
@@ -339,8 +348,9 @@ class BibleVideoFactoryService:
                     "scene_number": scene_number,
                     "title": self._normalize_text(frame.get("title")),
                     "text": self._normalize_text(frame.get("narration") or (base or {}).get("text")),
-                    "prompt_image": self._normalize_text(frame.get("prompt_visual") or (base or {}).get("prompt_image") or (base or {}).get("image_prompt")),
-                    "image_prompt": self._normalize_text(frame.get("prompt_visual") or (base or {}).get("image_prompt") or (base or {}).get("prompt_image")),
+                    "prompt_image": self._normalize_text(frame.get("prompt_image") or frame.get("prompt_visual") or (base or {}).get("prompt_image") or (base or {}).get("image_prompt")),
+                    "image_prompt": self._normalize_text(frame.get("prompt_image") or frame.get("prompt_visual") or (base or {}).get("image_prompt") or (base or {}).get("prompt_image")),
+                    "prompt_video": self._normalize_text(frame.get("prompt_video") or (base or {}).get("prompt_video") or (base or {}).get("video_prompt")),
                     "camera_direction": self._normalize_text(frame.get("camera_movement") or (base or {}).get("camera_direction")),
                     "duration": float(frame.get("duration") or (base or {}).get("duration") or 0),
                     "emotion": self._normalize_text(frame.get("emotion") or (base or {}).get("emotion")),
@@ -411,9 +421,11 @@ class BibleVideoFactoryService:
             "name": row.name,
             "age": row.approximate_age,
             "appearance": appearance,
+            "skin_tone": self._normalize_text(meta.get("skin_tone")),
             "hair": row.hair,
             "beard": self._normalize_text(meta.get("beard")),
             "clothing": row.clothing,
+            "accessories": self._normalize_text(meta.get("accessories")),
             "eye_color": self._normalize_text(meta.get("eye_color")),
             "height": self._normalize_text(meta.get("height")),
             "description": row.description,
@@ -422,24 +434,28 @@ class BibleVideoFactoryService:
             "reference_image_url": row.reference_image_url,
             "emotions": self._ensure_list(meta.get("emotions")),
             "consistency_lock": bool(meta.get("consistency_lock", True)),
+            "season_consistency_lock": bool(meta.get("season_consistency_lock", True)),
         }
 
     def build_character_master_prompt(self, payload: Dict[str, Any]) -> str:
         name = self._normalize_text(payload.get("name"))
         age = self._normalize_text(payload.get("approximate_age") or payload.get("age"))
         height = self._normalize_text(payload.get("height"))
+        skin_tone = self._normalize_text(payload.get("skin_tone"))
         eye_color = self._normalize_text(payload.get("eye_color"))
         hair = self._normalize_text(payload.get("hair"))
         beard = self._normalize_text(payload.get("beard"))
         clothing = self._normalize_text(payload.get("clothing"))
+        accessories = self._normalize_text(payload.get("accessories"))
         description = self._normalize_text(payload.get("description"))
         appearance = self._normalize_text(payload.get("appearance") or description)
         visual_style = self._normalize_text(payload.get("visual_style") or "cinematografico biblico")
         return self._normalize_text(
-            f"{name}, {age}, {height}, olhos {eye_color}, cabelo {hair}, barba {beard}, "
-            f"roupa padrao {clothing}, aparencia {appearance}, descricao detalhada: {description}. "
-            f"Manter exatamente o mesmo rosto, idade aparente, cabelo, barba, olhos, pele, roupas e proporcoes em todas as cenas. "
-            f"Estilo visual {visual_style}. Proibido mudar a aparencia entre cenas."
+            f"PROMPT MESTRE UNICO DO PERSONAGEM: {name}. "
+            f"Idade {age}, altura {height}, tom de pele {skin_tone}, olhos {eye_color}, cabelo {hair}, barba {beard}, "
+            f"roupa padrao {clothing}, acessorios {accessories}, aparencia {appearance}, descricao detalhada: {description}. "
+            f"Manter exatamente o mesmo rosto, idade aparente, altura, tom de pele, cabelo, barba, olhos, roupas, acessorios e proporcoes em todas as cenas e em toda a temporada. "
+            f"Estilo visual {visual_style}. Reutilizar obrigatoriamente este prompt mestre em todas as geracoes. Proibido mudar a aparencia durante a temporada."
         )
 
     def prepare_character_bible_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -448,10 +464,12 @@ class BibleVideoFactoryService:
             "name": "Nome",
             "approximate_age": "Idade",
             "height": "Altura",
+            "skin_tone": "Tom de pele",
             "eye_color": "Cor dos olhos",
             "hair": "Cabelo",
             "beard": "Barba",
             "clothing": "Roupa padrao",
+            "accessories": "Acessorios",
             "description": "Descricao detalhada",
         }
         missing = [label for key, label in required_fields.items() if not self._normalize_text(data.get(key))]
@@ -461,6 +479,7 @@ class BibleVideoFactoryService:
             data["appearance"] = self._normalize_text(data.get("description"))
         if not self._normalize_text(data.get("master_prompt")):
             data["master_prompt"] = self.build_character_master_prompt(data)
+        data["season_consistency_lock"] = True
         data["consistency_lock"] = True
         return data
 
@@ -483,27 +502,425 @@ class BibleVideoFactoryService:
         emotion_text = self._normalize_text(emotion)
         return self._normalize_text(
             f"{lock_text} Cenario: {scenario_text}. Emocao: {emotion_text}. {prompt} "
-            "Use exatamente o mesmo personagem e o mesmo prompt mestre em todas as cenas. "
-            "Nao altere rosto, idade aparente, cabelo, barba, olhos, pele, roupa, proporcoes ou acessorios."
+            "Use exatamente o mesmo personagem e o mesmo prompt mestre unico em todas as cenas e durante toda a temporada. "
+            "Nao altere rosto, idade aparente, altura, tom de pele, cabelo, barba, olhos, roupa, proporcoes ou acessorios."
         )
 
-    def _retention_analysis_fallback(self, sections: Dict[str, Any], word_count: int, scene_count: int, drama_level: int) -> Dict[str, Any]:
-        hook_strength = 92 if self._normalize_text(sections.get("opening_hook")) else 65
-        suspense = min(100, 55 + int(drama_level or 7) * 4)
-        emotional_curve = 88 if self._normalize_text(sections.get("climax")) else 70
-        viralization = 80 if self._normalize_text(sections.get("impact_phrase")) else 68
-        scene_score = 86 if 10 <= int(scene_count or 0) <= 15 else 70
-        length_score = 90 if 700 <= int(word_count or 0) <= 1200 else 72
-        overall = round((hook_strength + suspense + emotional_curve + viralization + scene_score + length_score) / 6.0)
-        return {
-            "overall_score": overall,
-            "hook_strength": hook_strength,
-            "emotion_score": emotional_curve,
-            "suspense_score": suspense,
-            "retention_score": round((hook_strength + suspense + scene_score) / 3.0),
-            "viralization_score": viralization,
-            "notes": "Estrutura com gancho, crescendo emocional e final de curiosidade para YouTube.",
+    def _split_sentences(self, text: Any) -> List[str]:
+        raw = self._normalize_text(text).replace("\r\n", "\n").replace("\r", "\n")
+        if not raw:
+            return []
+        parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", raw.replace("\n", " ")) if part.strip()]
+        return parts or [raw]
+
+    def _keyword_hits(self, text: Any, keywords: List[str]) -> int:
+        raw = self._normalize_text(text).lower()
+        if not raw:
+            return 0
+        return sum(1 for keyword in keywords if keyword in raw)
+
+    def _sentence_with_keywords(self, sentences: List[str], keywords: List[str], fallback: str = "", reverse: bool = False) -> str:
+        ordered = list(reversed(sentences)) if reverse else list(sentences)
+        for sentence in ordered:
+            if self._keyword_hits(sentence, keywords):
+                return self._normalize_text(sentence)
+        return self._normalize_text(fallback or (ordered[0] if ordered else ""))
+
+    def _short_memorable_sentence(self, sentences: List[str], fallback: str = "") -> str:
+        candidates = []
+        for sentence in sentences:
+            words = self._word_count(sentence)
+            if 4 <= words <= 18:
+                candidates.append(sentence)
+        if candidates:
+            candidates.sort(key=lambda item: (abs(self._word_count(item) - 9), len(item)))
+            return self._normalize_text(candidates[0])
+        return self._normalize_text(fallback or (sentences[-1] if sentences else ""))
+
+    def _has_question_signal(self, text: Any) -> bool:
+        raw = self._normalize_text(text).lower()
+        if not raw:
+            return False
+        return "?" in raw or any(token in raw for token in ["o que", "quem", "como", "quando", "por que", "sera que", "ate onde"])
+
+    def _analyze_cliffhanger_impact(self, cliffhanger: Any, next_episode_cta: Any = "", netflix_mode: bool = False) -> Dict[str, Any]:
+        text = self._normalize_text(cliffhanger)
+        combined = self._normalize_text(f"{text} {next_episode_cta}").lower()
+        emotion_keywords = ["medo", "dor", "lagr", "coracao", "culpa", "esperanca", "choque", "angust", "tremia", "emocao"]
+        revelation_keywords = ["revelacao", "segredo", "verdade", "descobrir", "mostrar", "revelar", "ainda nao sabia", "viria a tona"]
+        threat_keywords = ["ameaca", "terrivel", "perigo", "inimigo", "morte", "destruicao", "armadilha", "contra", "farao", "gigante"]
+        promise_keywords = ["promessa", "destino", "chamado", "vitoria", "libertacao", "deus faria", "deus mostraria", "cumprir", "proposito"]
+        future_keywords = ["em breve", "logo", "no proximo", "ainda", "viria", "estava prestes", "estava por", "futuro", "seguinte"]
+
+        components = {
+            "gancho_emocional": self._keyword_hits(text, emotion_keywords) > 0,
+            "pergunta_sem_resposta": self._has_question_signal(text),
+            "revelacao_futura": self._keyword_hits(combined, revelation_keywords) > 0 and self._keyword_hits(combined, future_keywords) > 0,
+            "ameaca_futura": self._keyword_hits(combined, threat_keywords) > 0 and self._keyword_hits(combined, future_keywords) > 0,
+            "promessa_futura": self._keyword_hits(combined, promise_keywords) > 0 and self._keyword_hits(combined, future_keywords) > 0,
         }
+
+        impact_score = 20 if text else 0
+        impact_score += 12 if text.lower().startswith("mas") else 0
+        impact_score += 12 if components["gancho_emocional"] else 0
+        impact_score += 18 if components["pergunta_sem_resposta"] else 0
+        impact_score += 16 if components["revelacao_futura"] else 0
+        impact_score += 16 if components["ameaca_futura"] else 0
+        impact_score += 16 if components["promessa_futura"] else 0
+        impact_score += min(10, self._keyword_hits(combined, future_keywords) * 2)
+        if netflix_mode and all(components.values()):
+            impact_score += 8
+        impact_score = min(100, impact_score)
+
+        notes = []
+        if components["gancho_emocional"]:
+            notes.append("Gancho emocional presente.")
+        else:
+            notes.append("Falta gancho emocional forte no ultimo bloco.")
+        if components["pergunta_sem_resposta"]:
+            notes.append("Pergunta sem resposta detectada.")
+        else:
+            notes.append("Inclua pergunta sem resposta para prolongar curiosidade.")
+        if components["revelacao_futura"]:
+            notes.append("Ha revelacao futura anunciada.")
+        else:
+            notes.append("Falta revelar algo importante que so vira depois.")
+        if components["ameaca_futura"]:
+            notes.append("Ameaca futura identificada.")
+        else:
+            notes.append("Aumente a sensacao de perigo para o proximo episodio.")
+        if components["promessa_futura"]:
+            notes.append("Promessa futura esta presente.")
+        else:
+            notes.append("Inclua promessa futura que recompense o espectador.")
+
+        return {
+            "impact_score": impact_score,
+            "components": components,
+            "notes": notes,
+            "netflix_requirements_met": all(components.values()) if netflix_mode else True,
+        }
+
+    def _ensure_netflix_cliffhanger(self, cliffhanger: Any, episode: BibleVideoEpisode, series: Optional[BibleVideoSeries], next_episode_cta: str) -> str:
+        current = self._normalize_text(cliffhanger)
+        analysis = self._analyze_cliffhanger_impact(current, next_episode_cta, netflix_mode=True)
+        if current and analysis.get("netflix_requirements_met"):
+            return current
+        hero = self._normalize_text(series.main_character if series else "") or self._normalize_text(episode.title) or "o protagonista"
+        emotional_hook = current
+        if not emotional_hook:
+            emotional_hook = f"Mas o coracao de {hero} ainda carregava medo e expectativa, e ninguem imaginava o que viria a seguir."
+        elif not emotional_hook.lower().startswith("mas"):
+            emotional_hook = f"Mas {emotional_hook[:1].lower()}{emotional_hook[1:]}" if len(emotional_hook) > 1 else f"Mas {emotional_hook}"
+        if not self._keyword_hits(emotional_hook, ["medo", "coracao", "dor", "expectativa", "culpa", "angust", "esperanca", "tremia", "emocao"]):
+            emotional_hook = f"Mas o coracao de {hero} ainda carregava medo e expectativa, e {emotional_hook.lstrip()}"
+        unresolved_question = f"O que {hero} descobriria quando a verdade finalmente viesse a tona?"
+        future_revelation = f"Uma revelacao futura estava prestes a expor o que ainda estava escondido."
+        future_threat = f"Ao mesmo tempo, uma ameaca futura ja se movia em silencio para destruir tudo."
+        future_promise = f"E a promessa futura de Deus para {hero} comecaria a se cumprir no proximo episodio."
+        return self._normalize_text(" ".join([emotional_hook, unresolved_question, future_revelation, future_threat, future_promise, self._normalize_text(next_episode_cta)]))
+
+    def _enforce_storyboard_approval_rules(self, script: BibleVideoScript, series: Optional[BibleVideoSeries]):
+        profile_config = self.resolve_series_profile(series)
+        if not profile_config.get("cliffhanger_required"):
+            return
+        package = self._extract_script_package(script)
+        retention_analysis = package.get("retention_analysis") if isinstance(package, dict) else {}
+        if not isinstance(retention_analysis, dict):
+            retention_analysis = {}
+        cliffhanger_analysis = retention_analysis.get("cliffhanger_analysis") if isinstance(retention_analysis.get("cliffhanger_analysis"), dict) else {}
+        cliffhanger_score = self._normalize_int(cliffhanger_analysis.get("impact_score") or retention_analysis.get("cliffhanger_impact_score"), 0)
+        minimum_cliffhanger_score = self._normalize_int(profile_config.get("minimum_cliffhanger_score"), 85)
+        if cliffhanger_score < minimum_cliffhanger_score:
+            raise ValueError(f"O cliffhanger final precisa atingir pelo menos {minimum_cliffhanger_score}/100 antes da aprovacao. Nota atual: {cliffhanger_score}/100.")
+
+    def _detect_cinematic_sections(self, narration: Any, sections: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        current = dict(sections or {})
+        raw = self._normalize_text(narration or self._build_text_from_sections(current))
+        paragraphs = [part.strip() for part in raw.split("\n\n") if part.strip()]
+        if len(paragraphs) < 4:
+            paragraphs = self._split_text_chunks(raw, 4)
+        sentences = self._split_sentences(raw)
+        first_paragraph = paragraphs[0] if paragraphs else (sentences[0] if sentences else "")
+        intro_default = paragraphs[1] if len(paragraphs) > 1 else first_paragraph
+        development_default = " ".join(paragraphs[2:-2]).strip() if len(paragraphs) > 4 else (paragraphs[2] if len(paragraphs) > 2 else intro_default)
+        climax_default = self._sentence_with_keywords(
+            sentences,
+            ["climax", "decisao", "batalha", "ruptura", "virada", "confronto", "momento decisivo", "sacrificio", "revelacao"],
+            fallback=paragraphs[-2] if len(paragraphs) > 1 else raw,
+            reverse=True,
+        )
+        cliffhanger_default = self._sentence_with_keywords(
+            sentences,
+            ["mas", "porem", "ainda", "agora", "antes que", "o que vira", "proximo episodio", "continua", "nao imaginava"],
+            fallback=paragraphs[-1] if paragraphs else raw,
+            reverse=True,
+        )
+        impact_default = self._sentence_with_keywords(
+            sentences,
+            ["nunca", "jamais", "sempre", "destino", "fe", "deus", "impossivel", "coragem", "promessa", "milagre"],
+            fallback=self._short_memorable_sentence(sentences, fallback=climax_default),
+        )
+        detected = {
+            "episode_title": self._normalize_text(current.get("episode_title")),
+            "opening_hook": self._normalize_text(current.get("opening_hook") or first_paragraph or raw[:240]),
+            "introduction": self._normalize_text(current.get("introduction") or intro_default),
+            "development": self._normalize_text(current.get("development") or development_default),
+            "climax": self._normalize_text(current.get("climax") or climax_default),
+            "impact_phrase": self._normalize_text(current.get("impact_phrase") or impact_default),
+            "cliffhanger": self._normalize_text(current.get("cliffhanger") or cliffhanger_default),
+            "cta_subscribe": self._normalize_text(current.get("cta_subscribe")),
+            "cta_next_episode": self._normalize_text(current.get("cta_next_episode")),
+        }
+        return detected
+
+    def _calculate_retention_analysis(
+        self,
+        sections: Dict[str, Any],
+        narration: Any,
+        scenes: Optional[List[Dict[str, Any]]] = None,
+        desired_duration_minutes: int = 5,
+        drama_level: int = 7,
+        minimum_required_score: int = 0,
+        profile_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        narrative_text = self._normalize_text(narration or self._build_text_from_sections(sections))
+        script_sections = self._detect_cinematic_sections(narrative_text, sections)
+        scenes = scenes if isinstance(scenes, list) else []
+        scene_count = len(scenes)
+        sentences = self._split_sentences(narrative_text)
+        first_window = " ".join(narrative_text.split()[:45])
+        last_window = " ".join(narrative_text.split()[-45:])
+        first_scene_duration = 0.0
+        if scenes:
+            try:
+                first_scene_duration = float((scenes[0] or {}).get("duration") or (scenes[0] or {}).get("duration_seconds") or 0)
+            except Exception:
+                first_scene_duration = 0.0
+        if not first_scene_duration and scene_count:
+            first_scene_duration = round((float(desired_duration_minutes or 5) * 60.0) / max(1, scene_count), 2)
+
+        hook_keywords = ["segredo", "antes que", "e se", "o que", "ninguem", "nao imaginava", "em segundos", "de repente", "mas"]
+        conflict_keywords = ["conflito", "amea", "risco", "perigo", "luta", "fuga", "oposicao", "inimigo", "pressao", "decisao"]
+        emotion_keywords = ["medo", "dor", "lagr", "esperanca", "coragem", "culpa", "angust", "amor", "fe", "choque", "emocao"]
+        progression_keywords = ["entao", "depois", "enquanto", "ate que", "agora", "cada vez", "ao mesmo tempo", "em seguida"]
+        cliffhanger_keywords = ["mas", "porem", "antes que", "proximo episodio", "continua", "ainda nao", "o que vira", "agora tudo muda"]
+
+        opening_hook = self._normalize_text(script_sections.get("opening_hook"))
+        development = self._normalize_text(script_sections.get("development"))
+        climax = self._normalize_text(script_sections.get("climax"))
+        cliffhanger = self._normalize_text(script_sections.get("cliffhanger"))
+        impact_phrase = self._normalize_text(script_sections.get("impact_phrase"))
+        netflix_mode = bool((profile_config or {}).get("cliffhanger_required"))
+        cliffhanger_analysis = self._analyze_cliffhanger_impact(cliffhanger, script_sections.get("cta_next_episode"), netflix_mode=netflix_mode)
+
+        hook_score = 34
+        if opening_hook:
+            hook_score += 24
+        if "?" in opening_hook or "?" in first_window:
+            hook_score += 12
+        if self._keyword_hits(opening_hook or first_window, hook_keywords):
+            hook_score += min(22, self._keyword_hits(opening_hook or first_window, hook_keywords) * 6)
+        if first_scene_duration and first_scene_duration <= 15:
+            hook_score += 10
+        elif opening_hook and len(opening_hook.split()) <= 30:
+            hook_score += 6
+        hook_score = min(100, hook_score)
+
+        conflict_score = 30
+        conflict_hits = self._keyword_hits(f"{development} {climax} {narrative_text}", conflict_keywords)
+        if development:
+            conflict_score += 15
+        if climax:
+            conflict_score += 12
+        conflict_score += min(28, conflict_hits * 6)
+        conflict_score += min(10, max(0, self._normalize_int(drama_level, 7) - 5) * 2)
+        conflict_score = min(100, conflict_score)
+
+        emotion_score = 32
+        emotion_hits = self._keyword_hits(f"{script_sections.get('introduction')} {development} {climax} {impact_phrase}", emotion_keywords)
+        if self._normalize_text(script_sections.get("introduction")):
+            emotion_score += 10
+        if impact_phrase:
+            emotion_score += 10
+        emotion_score += min(30, emotion_hits * 5)
+        emotion_score += 6 if "!" in impact_phrase else 0
+        emotion_score = min(100, emotion_score)
+
+        present_beats = sum(
+            1
+            for key in ["opening_hook", "introduction", "development", "climax", "cliffhanger", "impact_phrase"]
+            if self._normalize_text(script_sections.get(key))
+        )
+        distinct_beats = len(
+            {
+                self._normalize_text(script_sections.get(key)).lower()
+                for key in ["opening_hook", "introduction", "development", "climax", "cliffhanger", "impact_phrase"]
+                if self._normalize_text(script_sections.get(key))
+            }
+        )
+        progression_score = 26 + min(36, present_beats * 9)
+        progression_score += 8 if 10 <= scene_count <= 15 else 0
+        progression_score += min(18, self._keyword_hits(narrative_text, progression_keywords) * 3)
+        progression_score += 8 if distinct_beats >= 5 else 0
+        progression_score = min(100, progression_score)
+
+        cliffhanger_score = max(
+            cliffhanger_analysis.get("impact_score", 0),
+            min(
+                100,
+                28
+                + (22 if cliffhanger else 0)
+                + min(28, self._keyword_hits(f"{cliffhanger} {last_window}", cliffhanger_keywords) * 7)
+                + (10 if self._normalize_text(script_sections.get("cta_next_episode")) else 0)
+                + (6 if cliffhanger and cliffhanger != impact_phrase else 0),
+            ),
+        )
+
+        overall_score = round(
+            (hook_score * 0.25)
+            + (conflict_score * 0.20)
+            + (emotion_score * 0.20)
+            + (progression_score * 0.20)
+            + (cliffhanger_score * 0.15)
+        )
+        retention_score = round((hook_score + progression_score + cliffhanger_score) / 3.0)
+        viralization_score = min(100, round((impact_phrase and 76 or 58) + min(18, self._keyword_hits(impact_phrase or narrative_text, ["deus", "fe", "promessa", "impossivel", "destino", "milagre"]) * 4)))
+
+        observations = []
+        suggestions = []
+        if hook_score >= 80:
+            observations.append("Gancho inicial detectado com impacto suficiente para abrir os primeiros 15 segundos.")
+        else:
+            observations.append("O gancho inicial existe, mas ainda pode ficar mais agressivo nos primeiros 15 segundos.")
+            suggestions.append("Abra com pergunta, risco imediato ou revelacao forte antes da primeira virada.")
+        if conflict_score >= 75:
+            observations.append("O conflito central aparece com clareza e sustenta a tensao do episodio.")
+        else:
+            observations.append("O conflito central ainda esta difuso ou pouco verbalizado.")
+            suggestions.append("Deixe a ameaca, a escolha dificil e o custo emocional mais explicitos no desenvolvimento.")
+        if emotion_score >= 75:
+            observations.append("A carga emocional esta presente e ajuda a criar conexao com o espectador.")
+        else:
+            observations.append("A emocao ainda pode crescer mais entre introducao, desenvolvimento e climax.")
+            suggestions.append("Adicione medo, fe, culpa, coragem ou perda em frases curtas e visuais.")
+        if progression_score >= 80:
+            observations.append("A progressao dramatica esta bem distribuida entre apresentacao, escalada e ruptura.")
+        else:
+            observations.append("A progressao dramatica precisa de escalada mais nitida entre as etapas.")
+            suggestions.append("Aumente a tensao a cada bloco e evite cenas com a mesma intensidade narrativa.")
+        if cliffhanger_score >= 80:
+            observations.append("O final deixa curiosidade real para o proximo episodio.")
+        else:
+            observations.append("O cliffhanger final ainda nao fecha com curiosidade maxima.")
+            suggestions.append("Termine com revelacao incompleta, decisao interrompida ou risco imediato para o proximo episodio.")
+        if netflix_mode and not cliffhanger_analysis.get("netflix_requirements_met"):
+            observations.append("O perfil Serie Netflix Biblica exige todos os sinais obrigatorios de cliffhanger no ultimo bloco.")
+            suggestions.append("Inclua obrigatoriamente gancho emocional, pergunta sem resposta, revelacao futura, ameaca futura e promessa futura.")
+        if not impact_phrase:
+            suggestions.append("Inclua uma frase de impacto curta, memoravel e reutilizavel para thumbnail, shorts e CTA.")
+        if minimum_required_score and overall_score < minimum_required_score:
+            suggestions.insert(0, f"Eleve a retencao para pelo menos {minimum_required_score}/100 reforcando hook, conflito e cliffhanger.")
+
+        notes = " ".join(observations[:3]).strip() or "Estrutura cinematografica analisada."
+        return {
+            "overall_score": overall_score,
+            "hook_strength": hook_score,
+            "emotion_score": emotion_score,
+            "suspense_score": cliffhanger_score,
+            "conflict_score": conflict_score,
+            "dramatic_progression_score": progression_score,
+            "cliffhanger_score": cliffhanger_score,
+            "retention_score": retention_score,
+            "viralization_score": viralization_score,
+            "cliffhanger_impact_score": cliffhanger_analysis.get("impact_score", cliffhanger_score),
+            "cliffhanger_analysis": cliffhanger_analysis,
+            "notes": notes,
+            "observations": observations,
+            "suggestions": suggestions,
+            "detected_structure": script_sections,
+            "beat_presence": {
+                "opening_hook": bool(opening_hook),
+                "introduction": bool(self._normalize_text(script_sections.get("introduction"))),
+                "development": bool(development),
+                "climax": bool(climax),
+                "cliffhanger": bool(cliffhanger),
+                "impact_phrase": bool(impact_phrase),
+            },
+            "cliffhanger_requirements_met": cliffhanger_analysis.get("netflix_requirements_met", True),
+            "first_15_seconds_hook_detected": bool(opening_hook) and (first_scene_duration <= 15 if first_scene_duration else True),
+            "scene_count": scene_count,
+            "word_count": self._word_count(narrative_text),
+            "minimum_required_score": int(minimum_required_score or 0),
+            "passed_minimum_threshold": False if minimum_required_score and overall_score < minimum_required_score else True,
+        }
+
+    def _strengthen_sections_for_retention(
+        self,
+        sections: Dict[str, Any],
+        episode: BibleVideoEpisode,
+        series: Optional[BibleVideoSeries],
+        subscribe_cta: str,
+        next_episode_cta: str,
+        profile_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        current = self._detect_cinematic_sections(self._build_text_from_sections(sections), sections)
+        hero = self._normalize_text(series.main_character if series else "") or self._normalize_text(episode.title) or "o protagonista"
+        story_world = self._normalize_text(series.bible_book if series else "") or "o relato biblico"
+        strong_hook = self._normalize_text(
+            current.get("opening_hook")
+            or f"O que aconteceria se {hero} tivesse apenas segundos para decidir entre o medo e o chamado de Deus?"
+        )
+        if "?" not in strong_hook:
+            strong_hook = f"{strong_hook.rstrip('.!')}?"
+        return {
+            "episode_title": self._normalize_text(current.get("episode_title") or episode.title),
+            "opening_hook": strong_hook,
+            "introduction": self._normalize_text(
+                current.get("introduction")
+                or f"No inicio desta etapa de {story_world}, {hero} entra em um ambiente carregado de pressao, expectativa e sinais de que algo irreversivel esta prestes a acontecer."
+            ),
+            "development": self._normalize_text(
+                current.get("development")
+                or f"O conflito cresce porque cada passo de {hero} aumenta o risco, expande a oposicao e coloca sua fe contra o medo diante de todos."
+            ),
+            "climax": self._normalize_text(
+                current.get("climax")
+                or f"No momento mais intenso, {hero} precisa agir sob maxima tensao, sabendo que uma unica decisao pode mudar para sempre o destino desta historia."
+            ),
+            "impact_phrase": self._normalize_text(
+                current.get("impact_phrase")
+                or "Quando Deus chama, o medo nao tem a palavra final."
+            ),
+            "cliffhanger": self._normalize_text(
+                self._ensure_netflix_cliffhanger(
+                    current.get("cliffhanger")
+                    or f"Mas quando tudo parece resolvido, uma nova ameaca surge e deixa {hero} a um passo de enfrentar o maior desafio do proximo episodio.",
+                    episode,
+                    series,
+                    next_episode_cta,
+                )
+                if (profile_config or {}).get("cliffhanger_required")
+                else (
+                    current.get("cliffhanger")
+                    or f"Mas quando tudo parece resolvido, uma nova ameaca surge e deixa {hero} a um passo de enfrentar o maior desafio do proximo episodio."
+                )
+            ),
+            "cta_subscribe": self._normalize_text(current.get("cta_subscribe") or subscribe_cta),
+            "cta_next_episode": self._normalize_text(current.get("cta_next_episode") or next_episode_cta),
+        }
+
+    def _retention_analysis_fallback(self, sections: Dict[str, Any], word_count: int, scene_count: int, drama_level: int) -> Dict[str, Any]:
+        estimated_minutes = max(1, round(max(1, int(word_count or 0)) / 150.0))
+        fake_scenes = [{"duration": self._scene_duration(estimated_minutes, max(1, int(scene_count or 1)))} for _ in range(max(1, int(scene_count or 1)))]
+        return self._calculate_retention_analysis(
+            sections,
+            self._build_text_from_sections(sections),
+            fake_scenes,
+            desired_duration_minutes=estimated_minutes,
+            drama_level=drama_level,
+            profile_config={},
+        )
 
     def _title_from_chunk(self, series: BibleVideoSeries, episode_number: int, chunk: str) -> str:
         words = [w.strip(" ,.;:!?") for w in str(chunk or "").split() if w.strip(" ,.;:!?")]
@@ -706,11 +1123,14 @@ class BibleVideoFactoryService:
             "reference_image_url": row.reference_image_url,
             "emotions": profile.get("emotions") or [],
             "appearance": profile.get("appearance"),
+            "skin_tone": profile.get("skin_tone"),
             "beard": profile.get("beard"),
             "eye_color": profile.get("eye_color"),
             "height": profile.get("height"),
+            "accessories": profile.get("accessories"),
             "master_prompt": profile.get("master_prompt"),
             "consistency_lock": profile.get("consistency_lock"),
+            "season_consistency_lock": profile.get("season_consistency_lock"),
             "character_bible": profile,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -1123,7 +1543,16 @@ class BibleVideoFactoryService:
             "development": self._normalize_text(episode.development_text or episode.summary or base_text),
             "climax": self._normalize_text(episode.tension_moment or episode.summary or "A tensao cresce e a decisao final se aproxima."),
             "impact_phrase": self._normalize_text(episode.impact_phrase or "Quando Deus chama alguem, o improvavel deixa de ser impossivel."),
-            "cliffhanger": self._normalize_text(episode.ending_hook or "Mas o proximo passo desta historia vai abalar tudo o que parecia certo e deixar todos em suspenso."),
+            "cliffhanger": self._normalize_text(
+                self._ensure_netflix_cliffhanger(
+                    episode.ending_hook or "Mas o proximo passo desta historia vai abalar tudo o que parecia certo e deixar todos em suspenso.",
+                    episode,
+                    series,
+                    next_episode_cta,
+                )
+                if profile_config.get("cliffhanger_required")
+                else (episode.ending_hook or "Mas o proximo passo desta historia vai abalar tudo o que parecia certo e deixar todos em suspenso.")
+            ),
             "cta_subscribe": subscribe_cta,
             "cta_next_episode": next_episode_cta,
         }
@@ -1186,82 +1615,219 @@ class BibleVideoFactoryService:
             "retention_analysis": self._retention_analysis_fallback(default_sections, self._word_count(base_text), len(fallback_scenes), drama_level),
             "youtube_growth": fallback_growth,
         }
-        data = self._generate_json(
-            prompt,
-            system_prompt="Voce e um roteirista biblico cinematografico para series em episodios.",
-            fallback=fallback,
-        )
-        script_sections = {
-            "episode_title": self._normalize_text(data.get("episode_title") or default_sections["episode_title"]),
-            "opening_hook": self._normalize_text(data.get("opening_hook") or default_sections["opening_hook"]),
-            "introduction": self._normalize_text(data.get("introduction") or default_sections["introduction"]),
-            "development": self._normalize_text(data.get("development") or default_sections["development"]),
-            "climax": self._normalize_text(data.get("climax") or default_sections["climax"]),
-            "impact_phrase": self._normalize_text(data.get("impact_phrase") or default_sections["impact_phrase"]),
-            "cliffhanger": self._normalize_text(data.get("cliffhanger") or default_sections["cliffhanger"]),
-            "cta_subscribe": self._normalize_text(data.get("cta_subscribe") or subscribe_cta),
-            "cta_next_episode": self._normalize_text(data.get("cta_next_episode") or next_episode_cta),
-        }
-        narration_source = self._normalize_text(data.get("full_narration") or self._build_text_from_sections(script_sections) or fallback["full_narration"])
-        narration_source = self._ensure_word_target(narration_source, minimum_words, maximum_words, script_sections, episode, series)
-        scenes_payload = data.get("scenes") or fallback["scenes"]
-        normalized_scenes = []
-        if isinstance(scenes_payload, list):
-            for idx, item in enumerate(scenes_payload[:max_scene_count]):
-                if not isinstance(item, dict):
-                    item = {"narration": self._normalize_text(item)}
-                narration = self._normalize_text(item.get("narration") or item.get("text"))
-                description = self._normalize_text(item.get("description") or item.get("visual_description") or item.get("caption") or narration[:220])
-                emotion = self._normalize_text(item.get("emotion") or ("suspense" if idx in {0, len(scenes_payload) - 1} else "emocionante"))
-                duration = self._normalize_int(item.get("duration"), self._scene_duration(desired_duration_minutes, min(max_scene_count, len(scenes_payload) or target_scene_count)))
-                normalized_scenes.append(
-                    {
-                        "scene_number": self._normalize_int(item.get("scene_number") or idx + 1, idx + 1),
-                        "title": self._normalize_text(item.get("title") or f"Cena {idx + 1}"),
-                        "description": description,
-                        "visual_description": description,
-                        "narration": narration,
-                        "emotion": emotion,
-                        "duration": duration,
-                        "text": narration,
-                        "camera_direction": self._normalize_text(item.get("camera_direction") or ["aproximacao lenta", "travelling lateral", "panoramica ampla", "zoom dramatico"][idx % 4]),
-                        "sound_effects": self._normalize_text(item.get("sound_effects") or ["vento leve", "passos na terra", "silencio tenso", "multidao ao fundo"][idx % 4]),
-                        "music_style": self._normalize_text(item.get("music_style") or "trilha biblica cinematografica crescente"),
-                        "image_prompt": self._normalize_text(item.get("image_prompt") or item.get("prompt_image") or f"{series.visual_style or 'anime cinematografico'} de {episode.title}. {description[:180]}"),
-                        "prompt_image": self._normalize_text(item.get("prompt_image") or item.get("image_prompt") or f"{series.visual_style or 'cinematic biblical anime'}, {description[:180]}, dramatic lighting, ultra detailed, emotional atmosphere, 4k"),
-                        "prompt_video": self._normalize_text(item.get("prompt_video") or f"{series.visual_style or 'cinematic biblical anime'}, {description[:180]}, cinematic motion, 4k"),
-                        "prompt_animation": self._normalize_text(item.get("prompt_animation") or f"Animate the biblical scene with subtle cloth movement, wind and cinematic emotion: {description[:180]}"),
-                        "prompt_cinematic": self._normalize_text(item.get("prompt_cinematic") or f"{series.visual_style or 'cinematic biblical anime'} scene, dramatic lighting, emotional atmosphere, high retention frame"),
-                        "caption": self._normalize_text(item.get("caption") or description[:120]),
-                    }
-                )
-        if not normalized_scenes:
-            normalized_scenes = fallback["scenes"]
-        if len(normalized_scenes) < min_scene_count:
-            for extra_idx in range(len(normalized_scenes), min_scene_count):
-                base_scene = fallback["scenes"][extra_idx % len(fallback["scenes"])]
-                normalized_scenes.append(
-                    {
-                        **base_scene,
-                        "scene_number": extra_idx + 1,
-                        "title": self._normalize_text(base_scene.get("title") or f"Cena {extra_idx + 1}"),
-                    }
-                )
-        normalized_scenes = normalized_scenes[:max_scene_count]
-        retention_analysis = data.get("retention_analysis") if isinstance(data.get("retention_analysis"), dict) else {}
-        if not retention_analysis:
-            retention_analysis = self._retention_analysis_fallback(script_sections, self._word_count(narration_source), len(normalized_scenes), drama_level)
         min_retention = self._normalize_int(profile_config.get("minimum_retention_score"), 0)
-        if min_retention:
-            retention_analysis["overall_score"] = max(min_retention, self._normalize_int(retention_analysis.get("overall_score"), min_retention))
-            retention_analysis["retention_score"] = max(min_retention, self._normalize_int(retention_analysis.get("retention_score"), min_retention))
-        youtube_growth = data.get("youtube_growth") if isinstance(data.get("youtube_growth"), dict) else {}
-        youtube_growth = {
-            "title_main": self._normalize_text(youtube_growth.get("title_main") or fallback_growth["title_main"]),
-            "alternate_titles": [self._normalize_text(x) for x in self._ensure_list(youtube_growth.get("alternate_titles") or fallback_growth["alternate_titles"]) if self._normalize_text(x)][:3],
-            "description": self._normalize_text(youtube_growth.get("description") or fallback_growth["description"]),
-            "tags": [self._normalize_text(x) for x in self._ensure_list(youtube_growth.get("tags") or fallback_growth["tags"]) if self._normalize_text(x)][:15],
-        }
+
+        def prepare_generated_payload(data_obj: Any, attempt_number: int, auto_regenerated: bool) -> Dict[str, Any]:
+            payload = data_obj if isinstance(data_obj, dict) else {}
+            raw_sections = {
+                "episode_title": self._normalize_text(payload.get("episode_title") or default_sections["episode_title"]),
+                "opening_hook": self._normalize_text(payload.get("opening_hook") or default_sections["opening_hook"]),
+                "introduction": self._normalize_text(payload.get("introduction") or default_sections["introduction"]),
+                "development": self._normalize_text(payload.get("development") or default_sections["development"]),
+                "climax": self._normalize_text(payload.get("climax") or default_sections["climax"]),
+                "impact_phrase": self._normalize_text(payload.get("impact_phrase") or default_sections["impact_phrase"]),
+                "cliffhanger": self._normalize_text(payload.get("cliffhanger") or default_sections["cliffhanger"]),
+                "cta_subscribe": self._normalize_text(payload.get("cta_subscribe") or subscribe_cta),
+                "cta_next_episode": self._normalize_text(payload.get("cta_next_episode") or next_episode_cta),
+            }
+            narration_value = self._normalize_text(payload.get("full_narration") or self._build_text_from_sections(raw_sections) or fallback["full_narration"])
+            narration_value = self._ensure_word_target(narration_value, minimum_words, maximum_words, raw_sections, episode, series)
+            script_sections_value = self._detect_cinematic_sections(narration_value, raw_sections)
+            if profile_config.get("cliffhanger_required"):
+                script_sections_value["cliffhanger"] = self._ensure_netflix_cliffhanger(
+                    script_sections_value.get("cliffhanger"),
+                    episode,
+                    series,
+                    script_sections_value.get("cta_next_episode") or next_episode_cta,
+                )
+                narration_value = self._ensure_word_target(
+                    self._normalize_text(self._build_text_from_sections(script_sections_value)),
+                    minimum_words,
+                    maximum_words,
+                    script_sections_value,
+                    episode,
+                    series,
+                )
+            scenes_payload = payload.get("scenes") or fallback["scenes"]
+            normalized_scenes_value = []
+            if isinstance(scenes_payload, list):
+                for idx, item in enumerate(scenes_payload[:max_scene_count]):
+                    if not isinstance(item, dict):
+                        item = {"narration": self._normalize_text(item)}
+                    narration = self._normalize_text(item.get("narration") or item.get("text") or item.get("narration_text"))
+                    description = self._normalize_text(item.get("description") or item.get("visual_description") or item.get("caption") or narration[:220])
+                    emotion = self._normalize_text(item.get("emotion") or ("suspense" if idx in {0, len(scenes_payload) - 1} else "emocionante"))
+                    duration = self._normalize_int(item.get("duration") or item.get("duration_seconds"), self._scene_duration(desired_duration_minutes, min(max_scene_count, len(scenes_payload) or target_scene_count)))
+                    normalized_scenes_value.append(
+                        {
+                            "scene_number": self._normalize_int(item.get("scene_number") or idx + 1, idx + 1),
+                            "title": self._normalize_text(item.get("title") or f"Cena {idx + 1}"),
+                            "description": description,
+                            "visual_description": description,
+                            "narration": narration,
+                            "emotion": emotion,
+                            "duration": duration,
+                            "text": narration,
+                            "camera_direction": self._normalize_text(item.get("camera_direction") or item.get("camera_type") or ["aproximacao lenta", "travelling lateral", "panoramica ampla", "zoom dramatico"][idx % 4]),
+                            "sound_effects": self._normalize_text(item.get("sound_effects") or ["vento leve", "passos na terra", "silencio tenso", "multidao ao fundo"][idx % 4]),
+                            "music_style": self._normalize_text(item.get("music_style") or "trilha biblica cinematografica crescente"),
+                            "image_prompt": self._normalize_text(item.get("image_prompt") or item.get("prompt_image") or f"{series.visual_style or 'anime cinematografico'} de {episode.title}. {description[:180]}"),
+                            "prompt_image": self._normalize_text(item.get("prompt_image") or item.get("image_prompt") or f"{series.visual_style or 'cinematic biblical anime'}, {description[:180]}, dramatic lighting, ultra detailed, emotional atmosphere, 4k"),
+                            "prompt_video": self._normalize_text(item.get("prompt_video") or f"{series.visual_style or 'cinematic biblical anime'}, {description[:180]}, cinematic motion, 4k"),
+                            "prompt_animation": self._normalize_text(item.get("prompt_animation") or f"Animate the biblical scene with subtle cloth movement, wind and cinematic emotion: {description[:180]}"),
+                            "prompt_cinematic": self._normalize_text(item.get("prompt_cinematic") or f"{series.visual_style or 'cinematic biblical anime'} scene, dramatic lighting, emotional atmosphere, high retention frame"),
+                            "caption": self._normalize_text(item.get("caption") or description[:120]),
+                        }
+                    )
+            if not normalized_scenes_value:
+                normalized_scenes_value = list(fallback["scenes"])
+            if len(normalized_scenes_value) < min_scene_count:
+                for extra_idx in range(len(normalized_scenes_value), min_scene_count):
+                    base_scene = fallback["scenes"][extra_idx % len(fallback["scenes"])]
+                    normalized_scenes_value.append(
+                        {
+                            **base_scene,
+                            "scene_number": extra_idx + 1,
+                            "title": self._normalize_text(base_scene.get("title") or f"Cena {extra_idx + 1}"),
+                        }
+                    )
+            normalized_scenes_value = normalized_scenes_value[:max_scene_count]
+            if normalized_scenes_value:
+                normalized_scenes_value[0] = {
+                    **normalized_scenes_value[0],
+                    "title": self._normalize_text(normalized_scenes_value[0].get("title") or "Gancho Inicial"),
+                    "narration": self._normalize_text(normalized_scenes_value[0].get("narration") or script_sections_value.get("opening_hook")),
+                    "text": self._normalize_text(normalized_scenes_value[0].get("text") or normalized_scenes_value[0].get("narration") or script_sections_value.get("opening_hook")),
+                    "emotion": self._normalize_text(normalized_scenes_value[0].get("emotion") or "suspense"),
+                }
+                normalized_scenes_value[-1] = {
+                    **normalized_scenes_value[-1],
+                    "emotion": self._normalize_text(normalized_scenes_value[-1].get("emotion") or "cliffhanger"),
+                    "prompt_video": self._normalize_text(normalized_scenes_value[-1].get("prompt_video") or f"{normalized_scenes_value[-1].get('prompt_image') or normalized_scenes_value[-1].get('image_prompt') or normalized_scenes_value[-1].get('description')}, cinematic suspense, cliffhanger ending, 4k"),
+                }
+            youtube_growth_value = payload.get("youtube_growth") if isinstance(payload.get("youtube_growth"), dict) else {}
+            youtube_growth_value = {
+                "title_main": self._normalize_text(youtube_growth_value.get("title_main") or fallback_growth["title_main"]),
+                "alternate_titles": [self._normalize_text(x) for x in self._ensure_list(youtube_growth_value.get("alternate_titles") or fallback_growth["alternate_titles"]) if self._normalize_text(x)][:3],
+                "description": self._normalize_text(youtube_growth_value.get("description") or fallback_growth["description"]),
+                "tags": [self._normalize_text(x) for x in self._ensure_list(youtube_growth_value.get("tags") or fallback_growth["tags"]) if self._normalize_text(x)][:15],
+            }
+            retention_analysis_value = self._calculate_retention_analysis(
+                script_sections_value,
+                narration_value,
+                normalized_scenes_value,
+                desired_duration_minutes=desired_duration_minutes,
+                drama_level=drama_level,
+                minimum_required_score=min_retention,
+                profile_config=profile_config,
+            )
+            model_analysis = payload.get("retention_analysis") if isinstance(payload.get("retention_analysis"), dict) else {}
+            model_notes = self._normalize_text(model_analysis.get("notes"))
+            if model_notes:
+                retention_analysis_value["observations"].append(f"Leitura da IA: {model_notes}")
+            retention_analysis_value["notes"] = " ".join(retention_analysis_value.get("observations", [])[:3]).strip() or retention_analysis_value["notes"]
+            retention_analysis_value["regeneration_attempts"] = attempt_number
+            retention_analysis_value["auto_regenerated"] = auto_regenerated
+            return {
+                "script_sections": script_sections_value,
+                "narration_source": narration_value,
+                "normalized_scenes": normalized_scenes_value,
+                "retention_analysis": retention_analysis_value,
+                "youtube_growth": youtube_growth_value,
+                "optional_dialogues": payload.get("optional_dialogues") if isinstance(payload.get("optional_dialogues"), list) else [],
+                "voice_emotion_notes": payload.get("voice_emotion_notes") or fallback["voice_emotion_notes"],
+                "soundtrack_notes": payload.get("soundtrack_notes") or fallback["soundtrack_notes"],
+                "sound_effects_notes": self._normalize_text(payload.get("sound_effects_notes") or fallback["sound_effects_notes"]),
+                "retention_hooks": payload.get("retention_hooks") or fallback["retention_hooks"],
+            }
+
+        max_attempts = 3 if min_retention else 1
+        selected_payload = None
+        for attempt in range(1, max_attempts + 1):
+            current_prompt = prompt
+            if attempt > 1 and selected_payload:
+                weak_points = "; ".join(selected_payload["retention_analysis"].get("suggestions") or ["Reforce gancho, conflito, emocao, progressao dramatica e cliffhanger final."])
+                current_prompt = (
+                    f"{prompt}\n\n"
+                    "REGENERACAO AUTOMATICA OBRIGATORIA.\n"
+                    f"A versao anterior ficou com retencao {selected_payload['retention_analysis'].get('overall_score', 0)}/100.\n"
+                    f"A meta minima deste perfil e {min_retention}/100.\n"
+                    f"Pontos fracos detectados: {weak_points}\n"
+                    "Reescreva o roteiro com gancho mais agressivo nos primeiros 15 segundos, conflito mais claro, emocao crescente, progressao dramatica perceptivel e cliffhanger cinematografico no final.\n"
+                    "No perfil Serie Netflix Biblica, o cliffhanger final precisa obrigatoriamente conter gancho emocional, pergunta sem resposta, revelacao futura, ameaca futura e promessa futura.\n"
+                    "Nao explique o que mudou. Apenas retorne o JSON final completo.\n"
+                )
+            generated_data = self._generate_json(
+                current_prompt,
+                system_prompt="Voce e um roteirista biblico cinematografico para series em episodios.",
+                fallback=fallback,
+            )
+            candidate_payload = prepare_generated_payload(generated_data, attempt, auto_regenerated=attempt > 1)
+            if selected_payload is None or candidate_payload["retention_analysis"]["overall_score"] >= selected_payload["retention_analysis"]["overall_score"]:
+                selected_payload = candidate_payload
+            if not min_retention or candidate_payload["retention_analysis"]["overall_score"] >= min_retention:
+                selected_payload = candidate_payload
+                break
+
+        if min_retention and selected_payload and selected_payload["retention_analysis"]["overall_score"] < min_retention:
+            strengthened_sections = self._strengthen_sections_for_retention(
+                selected_payload["script_sections"],
+                episode,
+                series,
+                subscribe_cta,
+                next_episode_cta,
+                profile_config=profile_config,
+            )
+            strengthened_narration = self._ensure_word_target(
+                self._normalize_text(f"{self._build_text_from_sections(strengthened_sections)}\n\n{selected_payload['narration_source']}"),
+                minimum_words,
+                maximum_words,
+                strengthened_sections,
+                episode,
+                series,
+            )
+            strengthened_scenes = list(selected_payload["normalized_scenes"])
+            if strengthened_scenes:
+                strengthened_scenes[0] = {
+                    **strengthened_scenes[0],
+                    "title": self._normalize_text(strengthened_scenes[0].get("title") or "Gancho Inicial"),
+                    "narration": strengthened_sections["opening_hook"],
+                    "text": strengthened_sections["opening_hook"],
+                    "emotion": "suspense",
+                }
+                strengthened_scenes[-1] = {
+                    **strengthened_scenes[-1],
+                    "narration": self._normalize_text(strengthened_scenes[-1].get("narration") or strengthened_sections["cliffhanger"]),
+                    "text": self._normalize_text(strengthened_scenes[-1].get("text") or strengthened_sections["cliffhanger"]),
+                    "emotion": "cliffhanger",
+                    "prompt_video": self._normalize_text(strengthened_scenes[-1].get("prompt_video") or f"{strengthened_scenes[-1].get('prompt_image') or strengthened_scenes[-1].get('image_prompt')}, suspense ending, unresolved revelation, cinematic motion, 4k"),
+                }
+            strengthened_analysis = self._calculate_retention_analysis(
+                strengthened_sections,
+                strengthened_narration,
+                strengthened_scenes,
+                desired_duration_minutes=desired_duration_minutes,
+                drama_level=drama_level,
+                minimum_required_score=min_retention,
+                profile_config=profile_config,
+            )
+            strengthened_analysis["regeneration_attempts"] = max_attempts
+            strengthened_analysis["auto_regenerated"] = True
+            strengthened_analysis["auto_boosted"] = True
+            strengthened_analysis["notes"] = " ".join(strengthened_analysis.get("observations", [])[:3]).strip() or strengthened_analysis["notes"]
+            selected_payload = {
+                **selected_payload,
+                "script_sections": strengthened_sections,
+                "narration_source": strengthened_narration,
+                "normalized_scenes": strengthened_scenes,
+                "retention_analysis": strengthened_analysis,
+            }
+
+        script_sections = selected_payload["script_sections"]
+        narration_source = selected_payload["narration_source"]
+        normalized_scenes = selected_payload["normalized_scenes"]
+        retention_analysis = selected_payload["retention_analysis"]
+        youtube_growth = selected_payload["youtube_growth"]
         storyboard = [self._scene_source_to_storyboard_frame(scene, idx) for idx, scene in enumerate(normalized_scenes)]
         script = BibleVideoScript(
             series_id=episode.series_id,
@@ -1276,16 +1842,16 @@ class BibleVideoFactoryService:
             next_episode_cta=next_episode_cta,
             full_narration=narration_source,
             scenes_json=self._json_dumps(normalized_scenes),
-            voice_emotion_notes=self._json_dumps(data.get("voice_emotion_notes") or fallback["voice_emotion_notes"]),
-            soundtrack_notes=self._json_dumps(data.get("soundtrack_notes") or fallback["soundtrack_notes"]),
-            sound_effects_notes=self._normalize_text(data.get("sound_effects_notes") or fallback["sound_effects_notes"]),
-            retention_hooks_json=self._json_dumps(data.get("retention_hooks") or fallback["retention_hooks"]),
+            voice_emotion_notes=self._json_dumps(selected_payload["voice_emotion_notes"]),
+            soundtrack_notes=self._json_dumps(selected_payload["soundtrack_notes"]),
+            sound_effects_notes=selected_payload["sound_effects_notes"],
+            retention_hooks_json=self._json_dumps(selected_payload["retention_hooks"]),
             validation_status="pending",
         )
         self._save_script_package(
             script,
             {
-                "optional_dialogues": data.get("optional_dialogues") if isinstance(data.get("optional_dialogues"), list) else [],
+                "optional_dialogues": selected_payload["optional_dialogues"],
                 "script_sections": script_sections,
                 "retention_analysis": retention_analysis,
                 "youtube_growth": youtube_growth,
@@ -1395,8 +1961,8 @@ class BibleVideoFactoryService:
             "Cada cena deve conter: scene_number, title, narration_text, visual_description, characters, scenario_name, emotion, "
             "prompt_image, prompt_video, prompt_animation, prompt_cinematic, duration_seconds, camera_type, sound_effects, music_style, effects.\n"
             "Use consistencia de personagem e cenario em toda a sequencia.\n"
-            "Para cada personagem recorrente, reutilize SEMPRE o mesmo prompt mestre do Character Bible.\n"
-            "Proibido mudar a aparencia entre cenas: rosto, idade, olhos, cabelo, barba, pele, roupa e acessorios devem permanecer consistentes.\n"
+            "Para cada personagem recorrente, reutilize SEMPRE o mesmo prompt mestre unico do Character Bible.\n"
+            "Proibido mudar a aparencia entre cenas e durante toda a temporada: rosto, idade, altura, olhos, cabelo, barba, tom de pele, roupa e acessorios devem permanecer consistentes.\n"
             "Crie prompts compativeis com Veo, Kling, Luma, Runway e Pika.\n\n"
             f"Serie: {series.name if series else ''}\n"
             f"Episodio: {episode.title}\n"
@@ -1527,6 +2093,8 @@ class BibleVideoFactoryService:
                             "title": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("title") or f"Cena {row.scene_number}"),
                             "emotion": row.emotion,
                             "prompt_visual": row.prompt_image,
+                            "prompt_image": row.prompt_image,
+                            "prompt_video": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("prompt_video")),
                             "camera_movement": row.camera_type,
                             "duration": row.duration_seconds,
                             "image": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("storyboard_image") or row.prompt_image),
@@ -1559,7 +2127,7 @@ class BibleVideoFactoryService:
         target = next((item for item in storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
         if not target:
             raise ValueError("Cena do storyboard nao encontrada.")
-        prompt_visual = self._normalize_text(target.get("prompt_visual") or target.get("image"))
+        prompt_visual = self._normalize_text(target.get("prompt_image") or target.get("prompt_visual") or target.get("image"))
         if not prompt_visual:
             raise ValueError("A cena nao possui prompt visual para gerar preview.")
         preview_url = self.ai.generate_image(prompt_visual, aspect_ratio="16:9")
@@ -1585,6 +2153,23 @@ class BibleVideoFactoryService:
             raise ValueError("Cena do storyboard nao encontrada.")
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
         self._save_storyboard_state(db, script, storyboard, episode=episode, pipeline_status="storyboard_pronto")
+        db.commit()
+        db.refresh(script)
+        return self.serialize_script(script)
+
+    def approve_storyboard(self, db: Session, script: BibleVideoScript) -> Dict[str, Any]:
+        storyboard = self._get_storyboard(script)
+        if not storyboard:
+            raise ValueError("Storyboard nao encontrado para aprovacao.")
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        self._enforce_storyboard_approval_rules(script, series)
+        approved_storyboard = []
+        for idx, item in enumerate(storyboard):
+            if not isinstance(item, dict):
+                item = {"scene_number": idx + 1, "title": f"Cena {idx + 1}", "narration": str(item)}
+            approved_storyboard.append({**item, "approval_status": "approved"})
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        self._save_storyboard_state(db, script, approved_storyboard, episode=episode, pipeline_status="storyboard_aprovado")
         db.commit()
         db.refresh(script)
         return self.serialize_script(script)
@@ -1622,7 +2207,7 @@ class BibleVideoFactoryService:
             "Regenere apenas UMA cena do storyboard em JSON.\n"
             "Retorne: title, narration, emotion, prompt_visual, camera_movement, duration, suggested_soundtrack, visual_description, prompt_video, prompt_animation, prompt_cinematic, sound_effects, scenario_name, characters.\n"
             "Mantenha fidelidade biblica, retencao e consistencia visual.\n"
-            "Use SEMPRE o Character Bible e o mesmo prompt mestre dos personagens recorrentes.\n"
+            "Use SEMPRE o Character Bible e o mesmo prompt mestre unico dos personagens recorrentes durante toda a temporada.\n"
             "Nao regenere o episodio inteiro.\n\n"
             f"Serie: {series.name}\n"
             f"Episodio: {episode.title}\n"

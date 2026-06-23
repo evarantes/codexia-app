@@ -287,6 +287,24 @@
                                     <div class="text-3xl font-bold">{{ currentScript.retention_analysis?.overall_score || 0 }}</div>
                                     <div class="text-sm mt-1">Palavras: {{ currentScript.word_count || 0 }} | Cenas: {{ currentScript.scene_count || 0 }}</div>
                                     <div class="text-sm mt-2">{{ currentScript.retention_analysis?.notes || 'Sem analise de retencao.' }}</div>
+                                    <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
+                                        <div class="bg-white border rounded px-2 py-1">Gancho: {{ currentScript.retention_analysis?.hook_strength || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Conflito: {{ currentScript.retention_analysis?.conflict_score || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Emocao: {{ currentScript.retention_analysis?.emotion_score || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Progressao: {{ currentScript.retention_analysis?.dramatic_progression_score || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Cliffhanger: {{ currentScript.retention_analysis?.cliffhanger_score || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Meta minima: {{ currentScript.retention_analysis?.minimum_required_score || 0 }}</div>
+                                    </div>
+                                    <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
+                                        <div class="bg-white border rounded px-2 py-1">Impacto cliffhanger: {{ currentScript.retention_analysis?.cliffhanger_impact_score || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Aprovacao cliffhanger: {{ currentScript.retention_analysis?.cliffhanger_impact_score >= 85 ? 'liberada' : 'bloqueada' }}</div>
+                                    </div>
+                                    <div class="text-xs mt-3 text-slate-500">
+                                        Gancho nos 15s:
+                                        <strong>{{ currentScript.retention_analysis?.first_15_seconds_hook_detected ? 'sim' : 'nao' }}</strong>
+                                        | Tentativas: {{ currentScript.retention_analysis?.regeneration_attempts || 1 }}
+                                        | Auto-regenerado: {{ currentScript.retention_analysis?.auto_regenerated ? 'sim' : 'nao' }}
+                                    </div>
                                 </div>
                             </div>
                             <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
@@ -325,6 +343,38 @@
                                     <div class="md:col-span-2"><strong>Cliffhanger:</strong> {{ currentScript.script_sections?.cliffhanger || 'Sem cliffhanger' }}</div>
                                     <div><strong>CTA inscricao:</strong> {{ currentScript.script_sections?.cta_subscribe || currentScript.subscribe_cta || 'Sem CTA' }}</div>
                                     <div><strong>CTA proximo episodio:</strong> {{ currentScript.script_sections?.cta_next_episode || currentScript.next_episode_cta || 'Sem CTA' }}</div>
+                                </div>
+                            </div>
+                            <div v-if="currentScript.retention_analysis?.cliffhanger_analysis" class="mb-4 bg-rose-50 border border-rose-200 rounded-lg p-4">
+                                <h3 class="font-semibold mb-3">Motor de Cliffhanger</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                    <div><strong>Impacto:</strong> {{ currentScript.retention_analysis?.cliffhanger_analysis?.impact_score || 0 }}/100</div>
+                                    <div><strong>Requisitos Netflix:</strong> {{ currentScript.retention_analysis?.cliffhanger_analysis?.netflix_requirements_met ? 'completos' : 'incompletos' }}</div>
+                                    <div><strong>Gancho emocional:</strong> {{ currentScript.retention_analysis?.cliffhanger_analysis?.components?.gancho_emocional ? 'sim' : 'nao' }}</div>
+                                    <div><strong>Pergunta sem resposta:</strong> {{ currentScript.retention_analysis?.cliffhanger_analysis?.components?.pergunta_sem_resposta ? 'sim' : 'nao' }}</div>
+                                    <div><strong>Revelacao futura:</strong> {{ currentScript.retention_analysis?.cliffhanger_analysis?.components?.revelacao_futura ? 'sim' : 'nao' }}</div>
+                                    <div><strong>Ameaca futura:</strong> {{ currentScript.retention_analysis?.cliffhanger_analysis?.components?.ameaca_futura ? 'sim' : 'nao' }}</div>
+                                    <div><strong>Promessa futura:</strong> {{ currentScript.retention_analysis?.cliffhanger_analysis?.components?.promessa_futura ? 'sim' : 'nao' }}</div>
+                                    <div><strong>Aprovacao:</strong> {{ (currentScript.retention_analysis?.cliffhanger_analysis?.impact_score || 0) >= 85 ? 'permitida' : 'bloqueada' }}</div>
+                                </div>
+                                <div v-if="currentScript.retention_analysis?.cliffhanger_analysis?.notes?.length" class="mt-3 space-y-1 text-sm">
+                                    <div v-for="(item, idx) in currentScript.retention_analysis.cliffhanger_analysis.notes" :key="`cliff-note-${idx}`">- {{ item }}</div>
+                                </div>
+                            </div>
+                            <div v-if="currentScript.retention_analysis?.observations?.length || currentScript.retention_analysis?.suggestions?.length" class="mb-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <div class="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                                    <h3 class="font-semibold mb-2">Observacoes do analisador</h3>
+                                    <div v-if="currentScript.retention_analysis?.observations?.length" class="space-y-2 text-sm">
+                                        <div v-for="(item, idx) in currentScript.retention_analysis.observations" :key="`obs-${idx}`">- {{ item }}</div>
+                                    </div>
+                                    <div v-else class="text-sm text-slate-500">Sem observacoes adicionais.</div>
+                                </div>
+                                <div class="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                                    <h3 class="font-semibold mb-2">Sugestoes para aumentar retencao</h3>
+                                    <div v-if="currentScript.retention_analysis?.suggestions?.length" class="space-y-2 text-sm">
+                                        <div v-for="(item, idx) in currentScript.retention_analysis.suggestions" :key="`sug-${idx}`">- {{ item }}</div>
+                                    </div>
+                                    <div v-else class="text-sm text-slate-500">A retencao atual ja esta forte para este perfil.</div>
                                 </div>
                             </div>
                             <div class="mb-4">
@@ -415,9 +465,11 @@
                                         <div class="font-semibold">Cena {{ frame.scene_number }} - {{ frame.title || 'Sem titulo' }}</div>
                                         <div class="text-xs text-slate-500 uppercase">{{ frame.approval_status || 'pending' }}</div>
                                     </div>
-                                    <div class="text-sm mt-3"><strong>Narracao:</strong> {{ frame.narration }}</div>
+                                    <div class="text-sm mt-3"><strong>Narrativa:</strong> {{ frame.narrative || frame.narration }}</div>
                                     <div class="text-sm mt-2"><strong>Emocao:</strong> {{ frame.emotion || 'Sem emocao definida' }}</div>
                                     <div class="text-sm mt-2"><strong>Prompt visual:</strong> {{ frame.prompt_visual || frame.image }}</div>
+                                    <div class="text-sm mt-2"><strong>Prompt de imagem:</strong> {{ frame.prompt_image || frame.prompt_visual || 'Sem prompt de imagem' }}</div>
+                                    <div class="text-sm mt-2"><strong>Prompt de video:</strong> {{ frame.prompt_video || 'Sem prompt de video' }}</div>
                                     <div class="text-sm mt-2"><strong>Movimento de camera:</strong> {{ frame.camera_movement || 'camera livre' }}</div>
                                     <div class="text-sm mt-2"><strong>Duracao:</strong> {{ frame.duration || 0 }}s</div>
                                     <div class="text-sm mt-2"><strong>Trilha sugerida:</strong> {{ frame.suggested_soundtrack || 'Sem trilha definida' }}</div>
@@ -446,16 +498,21 @@
                         <input v-model="characterForm.appearance" class="w-full border rounded-lg px-3 py-2" placeholder="Aparencia principal">
                         <input v-model="characterForm.approximate_age" class="w-full border rounded-lg px-3 py-2" placeholder="Idade aproximada obrigatoria">
                         <input v-model="characterForm.height" class="w-full border rounded-lg px-3 py-2" placeholder="Altura obrigatoria">
+                        <input v-model="characterForm.skin_tone" class="w-full border rounded-lg px-3 py-2" placeholder="Tom de pele obrigatorio">
                         <input v-model="characterForm.clothing" class="w-full border rounded-lg px-3 py-2" placeholder="Roupa padrao obrigatoria">
+                        <input v-model="characterForm.accessories" class="w-full border rounded-lg px-3 py-2" placeholder="Acessorios obrigatorios">
                         <input v-model="characterForm.hair" class="w-full border rounded-lg px-3 py-2" placeholder="Cabelo obrigatorio">
                         <input v-model="characterForm.beard" class="w-full border rounded-lg px-3 py-2" placeholder="Barba obrigatoria ou 'sem barba'">
                         <input v-model="characterForm.eye_color" class="w-full border rounded-lg px-3 py-2" placeholder="Cor dos olhos obrigatoria">
                         <input v-model="characterForm.default_expression" class="w-full border rounded-lg px-3 py-2" placeholder="Expressao padrao">
                         <input v-model="characterForm.visual_style" class="w-full border rounded-lg px-3 py-2" placeholder="Estilo visual">
-                        <textarea v-model="characterForm.base_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt base"></textarea>
-                        <textarea v-model="characterForm.master_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt mestre do personagem"></textarea>
+                        <textarea v-model="characterForm.base_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt base auxiliar opcional"></textarea>
+                        <textarea v-model="characterForm.master_prompt" class="w-full border rounded-lg px-3 py-2 h-24" placeholder="Prompt mestre unico do personagem"></textarea>
                         <input v-model="characterForm.reference_image_url" class="w-full border rounded-lg px-3 py-2" placeholder="Imagem de referencia URL">
                         <input v-model="characterEmotions" class="w-full border rounded-lg px-3 py-2" placeholder="Emocoes separadas por virgula">
+                        <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                            O prompt mestre e obrigatorio e todas as cenas da temporada devem reutilizar exatamente a mesma aparencia do personagem.
+                        </div>
                         <button @click="saveCharacter" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar personagem</button>
                     </div>
                     <div class="mt-6 space-y-3 max-h-96 overflow-y-auto">
@@ -464,8 +521,10 @@
                             <div class="text-xs text-slate-500">{{ item.visual_style }} | {{ item.approximate_age }}</div>
                             <div class="text-sm mt-1">{{ item.description }}</div>
                             <div class="text-xs text-slate-500 mt-1">{{ item.eye_color || 'Olhos n/d' }} | {{ item.height || 'Altura n/d' }} | {{ item.beard || 'Sem barba' }}</div>
+                            <div class="text-xs text-slate-500 mt-1">{{ item.skin_tone || 'Pele n/d' }} | {{ item.clothing || 'Roupa n/d' }} | {{ item.accessories || 'Sem acessorios' }}</div>
                             <div class="text-xs text-slate-500 mt-1">{{ (item.emotions || []).join(', ') }}</div>
                             <div class="text-xs text-emerald-700 mt-2">Consistencia visual bloqueada: {{ item.character_bible?.consistency_lock ? 'sim' : 'nao' }}</div>
+                            <div class="text-xs text-emerald-700 mt-1">Consistencia durante a temporada: {{ item.character_bible?.season_consistency_lock ? 'sim' : 'nao' }}</div>
                             <div class="text-xs text-slate-500 mt-1 whitespace-pre-wrap">{{ item.master_prompt }}</div>
                         </div>
                     </div>
@@ -744,7 +803,9 @@
                         appearance: '',
                         approximate_age: '',
                         height: '',
+                        skin_tone: '',
                         clothing: '',
+                        accessories: '',
                         hair: '',
                         beard: '',
                         eye_color: '',
@@ -799,8 +860,11 @@
                     return (this.currentScenes || []).map(scene => ({
                         scene_number: scene.scene_number,
                         title: scene.title,
+                        narrative: scene.narration_text,
                         emotion: scene.emotion,
                         prompt_visual: scene.prompt_image,
+                        prompt_image: scene.prompt_image,
+                        prompt_video: scene.prompt_video,
                         camera_movement: scene.camera_direction || scene.camera_type,
                         duration: scene.duration_seconds,
                         suggested_soundtrack: scene.music_style,
@@ -984,6 +1048,7 @@
                         this.seriesForm.production_profile_config = {
                             cliffhanger_required: true,
                             minimum_retention_score: 80,
+                            minimum_cliffhanger_score: 85,
                             strong_hook_first_15_seconds: true,
                             narrative_tone: 'cinematografico',
                             emotional_curve: 'crescente',
@@ -1205,7 +1270,8 @@
                         const data = await res.json();
                         if (!res.ok) throw new Error(data.detail || 'Falha ao gerar cenas.');
                         this.currentScenes = data || [];
-                        this.notifySuccess('Cenas geradas com sucesso.');
+                        this.activeTab = 'storyboard';
+                        this.notifySuccess('Cenas e storyboard completo foram gerados com sucesso.');
                         await this.loadSelectedScript();
                         await this.bootstrap();
                     } catch (e) {
@@ -1320,7 +1386,7 @@
                         const data = await res.json();
                         if (!res.ok) throw new Error(data.detail || 'Falha ao salvar personagem.');
                         this.notifySuccess('Personagem salvo.');
-                        this.characterForm = { series_id: '', name: '', description: '', appearance: '', approximate_age: '', height: '', clothing: '', hair: '', beard: '', eye_color: '', default_expression: '', visual_style: '', base_prompt: '', master_prompt: '', reference_image_url: '' };
+                        this.characterForm = { series_id: '', name: '', description: '', appearance: '', approximate_age: '', height: '', skin_tone: '', clothing: '', accessories: '', hair: '', beard: '', eye_color: '', default_expression: '', visual_style: '', base_prompt: '', master_prompt: '', reference_image_url: '' };
                         this.characterEmotions = '';
                         await this.bootstrap();
                     } catch (e) {
