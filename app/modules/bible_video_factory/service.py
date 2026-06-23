@@ -196,6 +196,32 @@ class BibleVideoFactoryService:
         ]
         return "\n\n".join([part for part in ordered if part])
 
+    def _build_text_from_storyboard(self, storyboard: List[Dict[str, Any]]) -> str:
+        if not isinstance(storyboard, list):
+            return ""
+        parts = []
+        for item in storyboard:
+            if not isinstance(item, dict):
+                text = self._normalize_text(item)
+            else:
+                text = self._normalize_text(item.get("narration") or item.get("narrative") or item.get("title"))
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts)
+
+    def _build_text_from_scene_sources(self, scene_sources: List[Dict[str, Any]]) -> str:
+        if not isinstance(scene_sources, list):
+            return ""
+        parts = []
+        for item in scene_sources:
+            if not isinstance(item, dict):
+                text = self._normalize_text(item)
+            else:
+                text = self._normalize_text(item.get("text") or item.get("narration") or item.get("title"))
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts)
+
     def _ensure_word_target(self, text: str, minimum_words: int, maximum_words: int, sections: Dict[str, Any], episode: BibleVideoEpisode, series: Optional[BibleVideoSeries]) -> str:
         raw = self._normalize_text(text)
         if not raw:
@@ -230,6 +256,107 @@ class BibleVideoFactoryService:
         current = self._extract_script_package(script)
         merged = {**current, **(payload or {})}
         script.optional_dialogues_json = self._json_dumps(merged)
+
+    def _has_meaningful_retention_analysis(self, analysis: Any) -> bool:
+        if not isinstance(analysis, dict):
+            return False
+        score_keys = [
+            "overall_score",
+            "hook_strength",
+            "emotion_score",
+            "conflict_score",
+            "dramatic_progression_score",
+            "revelation_score",
+            "cliffhanger_score",
+            "cliffhanger_impact_score",
+        ]
+        return any(self._normalize_int(analysis.get(key), 0) > 0 for key in score_keys)
+
+    def _pick_revelation_excerpt(self, narration: Any, script_sections: Dict[str, Any]) -> str:
+        raw = self._normalize_text(narration or self._build_text_from_sections(script_sections or {}))
+        sentences = self._split_sentences(raw)
+        return self._sentence_with_keywords(
+            sentences,
+            ["revelacao", "segredo", "verdade", "mist", "descob", "surpresa", "mudara a historia", "mudara o destino", "viria a tona", "foi entao que"],
+            fallback=self._normalize_text((script_sections or {}).get("climax") or (script_sections or {}).get("cliffhanger") or raw[:240]),
+            reverse=True,
+        )
+
+    def _rebuild_script_analysis(
+        self,
+        script: BibleVideoScript,
+        profile_config: Optional[Dict[str, Any]] = None,
+        episode: Optional[BibleVideoEpisode] = None,
+        storyboard: Optional[List[Dict[str, Any]]] = None,
+        persist: bool = False,
+    ) -> Dict[str, Any]:
+        package = self._extract_script_package(script)
+        if not isinstance(package, dict):
+            package = {}
+        storyboard = self._normalize_storyboard_list(storyboard if storyboard is not None else package.get("storyboard"))
+        scene_sources = self._get_scene_sources(script)
+        current_sections = package.get("script_sections") if isinstance(package.get("script_sections"), dict) else {}
+        candidate_parts = [
+            self._normalize_text(script.full_narration),
+            self._build_text_from_sections(current_sections),
+            self._build_text_from_storyboard(storyboard),
+            self._build_text_from_scene_sources(scene_sources),
+        ]
+        if episode:
+            candidate_parts.extend(
+                [
+                    self._normalize_text(episode.opening_hook),
+                    self._normalize_text(episode.summary),
+                    self._normalize_text(episode.development_text),
+                    self._normalize_text(episode.tension_moment),
+                    self._normalize_text(episode.impact_phrase),
+                    self._normalize_text(episode.ending_hook),
+                ]
+            )
+        narration = max((part for part in candidate_parts if part), key=len, default="")
+        if not narration:
+            narration = self._normalize_text(script.full_narration)
+        derived_sections = self._detect_cinematic_sections(narration, current_sections)
+        if episode:
+            derived_sections["episode_title"] = self._normalize_text(derived_sections.get("episode_title") or episode.title)
+            derived_sections["opening_hook"] = self._normalize_text(derived_sections.get("opening_hook") or episode.opening_hook)
+            derived_sections["development"] = self._normalize_text(derived_sections.get("development") or episode.development_text or episode.summary)
+            derived_sections["climax"] = self._normalize_text(derived_sections.get("climax") or episode.tension_moment)
+            derived_sections["impact_phrase"] = self._normalize_text(derived_sections.get("impact_phrase") or episode.impact_phrase)
+            derived_sections["cliffhanger"] = self._normalize_text(derived_sections.get("cliffhanger") or episode.ending_hook)
+            derived_sections["cta_subscribe"] = self._normalize_text(derived_sections.get("cta_subscribe") or script.subscribe_cta)
+            derived_sections["cta_next_episode"] = self._normalize_text(derived_sections.get("cta_next_episode") or script.next_episode_cta)
+        narration = self._normalize_text(narration or self._build_text_from_sections(derived_sections))
+        analysis = self._calculate_retention_analysis(
+            derived_sections,
+            narration,
+            storyboard or scene_sources,
+            desired_duration_minutes=int(script.desired_duration_minutes or (episode.estimated_minutes if episode and episode.estimated_minutes else 5) or 5),
+            drama_level=int(script.drama_level or 7),
+            minimum_required_score=self._normalize_int((profile_config or {}).get("minimum_retention_score"), 0),
+            profile_config=profile_config or {},
+        )
+        analysis["detected_excerpts"] = {
+            "hook": self._normalize_text(derived_sections.get("opening_hook")),
+            "revelation": self._pick_revelation_excerpt(narration, derived_sections),
+            "climax": self._normalize_text(derived_sections.get("climax")),
+            "cliffhanger": self._normalize_text(derived_sections.get("cliffhanger")),
+        }
+        if persist:
+            self._save_script_package(
+                script,
+                {
+                    "script_sections": derived_sections,
+                    "retention_analysis": analysis,
+                    "storyboard": storyboard or package.get("storyboard") or [],
+                },
+            )
+        return {
+            "script_sections": derived_sections,
+            "retention_analysis": analysis,
+            "narration": narration,
+            "storyboard": storyboard,
+        }
 
     def _normalize_storyboard_frame(self, item: Any, scene_number: int) -> Dict[str, Any]:
         if not isinstance(item, dict):
@@ -624,8 +751,8 @@ class BibleVideoFactoryService:
         profile_config = self.resolve_series_profile(series)
         if not profile_config.get("cliffhanger_required"):
             return
-        package = self._extract_script_package(script)
-        retention_analysis = package.get("retention_analysis") if isinstance(package, dict) else {}
+        refreshed = self._rebuild_script_analysis(script, profile_config=profile_config, persist=True)
+        retention_analysis = refreshed.get("retention_analysis") if isinstance(refreshed, dict) else {}
         if not isinstance(retention_analysis, dict):
             retention_analysis = {}
         cliffhanger_analysis = retention_analysis.get("cliffhanger_analysis") if isinstance(retention_analysis.get("cliffhanger_analysis"), dict) else {}
@@ -857,6 +984,12 @@ class BibleVideoFactoryService:
             "observations": observations,
             "suggestions": suggestions,
             "detected_structure": script_sections,
+            "detected_excerpts": {
+                "hook": opening_hook,
+                "revelation": self._pick_revelation_excerpt(narrative_text, script_sections),
+                "climax": climax,
+                "cliffhanger": cliffhanger,
+            },
             "beat_presence": {
                 "opening_hook": bool(opening_hook),
                 "introduction": bool(self._normalize_text(script_sections.get("introduction"))),
@@ -1052,6 +1185,10 @@ class BibleVideoFactoryService:
         storyboard = self._normalize_storyboard_list(package.get("storyboard") if isinstance(package, dict) else [])
         blueprint = package.get("production_blueprint") if isinstance(package, dict) else {}
         optional_dialogues = package.get("optional_dialogues") if isinstance(package, dict) else []
+        if not isinstance(script_sections, dict) or not script_sections or not self._has_meaningful_retention_analysis(retention_analysis):
+            live = self._rebuild_script_analysis(row, storyboard=storyboard, persist=False)
+            script_sections = live.get("script_sections") if isinstance(live.get("script_sections"), dict) else {}
+            retention_analysis = live.get("retention_analysis") if isinstance(live.get("retention_analysis"), dict) else {}
         narration = row.full_narration or self._build_text_from_sections(script_sections or {})
         return {
             "id": row.id,
@@ -2189,6 +2326,8 @@ class BibleVideoFactoryService:
             raise ValueError("Cena do storyboard nao encontrada.")
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
         self._save_storyboard_state(db, script, storyboard, episode=episode, pipeline_status="storyboard_pronto")
+        profile_config = self.resolve_series_profile(db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first())
+        self._rebuild_script_analysis(script, profile_config=profile_config, episode=episode, storyboard=storyboard, persist=True)
         db.commit()
         db.refresh(script)
         return self.serialize_script(script)
@@ -2198,14 +2337,16 @@ class BibleVideoFactoryService:
         if not storyboard:
             raise ValueError("Storyboard nao encontrado para aprovacao.")
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        self._rebuild_script_analysis(script, profile_config=self.resolve_series_profile(series), episode=episode, storyboard=storyboard, persist=True)
         self._enforce_storyboard_approval_rules(script, series)
         approved_storyboard = []
         for idx, item in enumerate(storyboard):
             if not isinstance(item, dict):
                 item = {"scene_number": idx + 1, "title": f"Cena {idx + 1}", "narration": str(item)}
             approved_storyboard.append({**item, "approval_status": "approved"})
-        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
         self._save_storyboard_state(db, script, approved_storyboard, episode=episode, pipeline_status="storyboard_aprovado")
+        self._rebuild_script_analysis(script, profile_config=self.resolve_series_profile(series), episode=episode, storyboard=approved_storyboard, persist=True)
         db.commit()
         db.refresh(script)
         return self.serialize_script(script)

@@ -349,6 +349,15 @@
                                     <div><strong>CTA proximo episodio:</strong> {{ currentScript.script_sections?.cta_next_episode || currentScript.next_episode_cta || 'Sem CTA' }}</div>
                                 </div>
                             </div>
+                            <div v-if="currentScript.retention_analysis?.detected_excerpts" class="mb-4 bg-sky-50 border border-sky-200 rounded-lg p-4">
+                                <h3 class="font-semibold mb-3">Trechos Detectados</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                    <div class="md:col-span-2"><strong>Gancho detectado:</strong> {{ currentScript.retention_analysis?.detected_excerpts?.hook || 'Nao detectado' }}</div>
+                                    <div class="md:col-span-2"><strong>Revelacao detectada:</strong> {{ currentScript.retention_analysis?.detected_excerpts?.revelation || 'Nao detectada' }}</div>
+                                    <div class="md:col-span-2"><strong>Climax detectado:</strong> {{ currentScript.retention_analysis?.detected_excerpts?.climax || 'Nao detectado' }}</div>
+                                    <div class="md:col-span-2"><strong>Cliffhanger detectado:</strong> {{ currentScript.retention_analysis?.detected_excerpts?.cliffhanger || 'Nao detectado' }}</div>
+                                </div>
+                            </div>
                             <div v-if="currentScript.retention_analysis?.cliffhanger_analysis" class="mb-4 bg-rose-50 border border-rose-200 rounded-lg p-4">
                                 <h3 class="font-semibold mb-3">Motor de Cliffhanger</h3>
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
