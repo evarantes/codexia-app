@@ -63,6 +63,8 @@ class BibleVideoFactoryService:
             return {
                 "name": "Serie Netflix Biblica",
                 "cliffhanger_required": True,
+                "minimum_scene_score": 80,
+                "minimum_episode_score": 85,
                 "minimum_retention_score": 80,
                 "minimum_cliffhanger_score": 85,
                 "cliffhanger_prompt_weight": "maximo",
@@ -346,21 +348,322 @@ class BibleVideoFactoryService:
             "climax": self._normalize_text(derived_sections.get("climax")),
             "cliffhanger": self._normalize_text(derived_sections.get("cliffhanger")),
         }
+        analyzed_storyboard, episode_quality = self._apply_scene_analyses(
+            storyboard or scene_sources,
+            profile_config=profile_config or {},
+            episode_analysis=analysis,
+        )
+        analysis.update(episode_quality)
         if persist:
             self._save_script_package(
                 script,
                 {
                     "script_sections": derived_sections,
                     "retention_analysis": analysis,
-                    "storyboard": storyboard or package.get("storyboard") or [],
+                    "storyboard": analyzed_storyboard or package.get("storyboard") or [],
                 },
             )
         return {
             "script_sections": derived_sections,
             "retention_analysis": analysis,
             "narration": narration,
-            "storyboard": storyboard,
+            "storyboard": analyzed_storyboard,
         }
+
+    def _clamp_score(self, value: Any) -> int:
+        try:
+            return max(0, min(100, int(round(float(value or 0)))))
+        except Exception:
+            return 0
+
+    def _scene_minimum_score(self, profile_config: Optional[Dict[str, Any]] = None) -> int:
+        return self._normalize_int((profile_config or {}).get("minimum_scene_score"), 80) or 80
+
+    def _episode_minimum_score(self, profile_config: Optional[Dict[str, Any]] = None) -> int:
+        return self._normalize_int((profile_config or {}).get("minimum_episode_score"), 85) or 85
+
+    def _default_scene_analysis(self, minimum_score: int = 80) -> Dict[str, Any]:
+        return {
+            "scene_score": 0,
+            "hook_score": 0,
+            "emotion_score": 0,
+            "conflict_score": 0,
+            "revelation_score": 0,
+            "visual_score": 0,
+            "suspense_score": 0,
+            "retention_score": 0,
+            "minimum_score": int(minimum_score or 80),
+            "approved": False,
+            "notes": [],
+            "suggestions": [],
+        }
+
+    def _normalize_scene_analysis(self, analysis: Any, minimum_score: int = 80) -> Dict[str, Any]:
+        base = self._default_scene_analysis(minimum_score=minimum_score)
+        if isinstance(analysis, dict):
+            base.update(analysis)
+        base["minimum_score"] = int(base.get("minimum_score") or minimum_score or 80)
+        for key in [
+            "scene_score",
+            "hook_score",
+            "emotion_score",
+            "conflict_score",
+            "revelation_score",
+            "visual_score",
+            "suspense_score",
+            "retention_score",
+        ]:
+            base[key] = self._clamp_score(base.get(key))
+        base["approved"] = bool(base.get("approved"))
+        base["notes"] = [self._normalize_text(item) for item in self._ensure_list(base.get("notes")) if self._normalize_text(item)]
+        base["suggestions"] = [self._normalize_text(item) for item in self._ensure_list(base.get("suggestions")) if self._normalize_text(item)]
+        return base
+
+    def _count_keyword_hits(self, text: str, keywords: List[str]) -> int:
+        lowered = self._normalize_text(text).lower()
+        return sum(1 for keyword in keywords if keyword and keyword in lowered)
+
+    def _analyze_storyboard_scene(self, frame: Dict[str, Any], profile_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        minimum_score = self._scene_minimum_score(profile_config)
+        narration = self._normalize_text(frame.get("narration") or frame.get("narrative"))
+        title = self._normalize_text(frame.get("title"))
+        emotion = self._normalize_text(frame.get("emotion"))
+        prompt_visual = self._normalize_text(frame.get("prompt_visual") or frame.get("prompt_image"))
+        prompt_video = self._normalize_text(frame.get("prompt_video"))
+        camera = self._normalize_text(frame.get("camera_movement"))
+        joined_text = " ".join([title, narration, emotion, prompt_visual, prompt_video, camera]).strip()
+
+        hook_keywords = ["o que", "e se", "sera", "antes que", "ninguem", "segredo", "de repente", "mas", "?"]
+        emotion_keywords = ["medo", "fe", "perda", "esperanca", "coragem", "dor", "lagr", "choque", "amor", "angustia"]
+        conflict_keywords = ["conflito", "risco", "perigo", "ameaca", "fuga", "luta", "inimigo", "oposicao", "pressao", "decisao"]
+        revelation_keywords = ["revelacao", "descob", "segredo", "verdade", "mist", "surpresa", "sinal", "profecia"]
+        suspense_keywords = ["mas", "porem", "ainda", "antes que", "o que", "agora", "continua", "aproxima", "sombras", "silencio"]
+        visual_keywords = ["close", "wide", "cinematic", "4k", "dramatic", "travelling", "panoramica", "zoom", "luz", "sombra", "poeira"]
+
+        hook_score = self._clamp_score(
+            20
+            + (12 if "?" in f"{title} {narration}" else 0)
+            + self._count_keyword_hits(f"{title} {narration}", hook_keywords) * 10
+            + min(18, len(narration.split()) // 8)
+        )
+        emotion_score = self._clamp_score(
+            (20 if emotion else 0)
+            + self._count_keyword_hits(f"{emotion} {narration}", emotion_keywords) * 12
+            + min(20, len(emotion.split()) * 8)
+        )
+        conflict_score = self._clamp_score(
+            10
+            + self._count_keyword_hits(joined_text, conflict_keywords) * 14
+            + (12 if any(word in narration.lower() for word in ["contra", "amea", "risco", "perigo"]) else 0)
+        )
+        revelation_score = self._clamp_score(
+            8
+            + self._count_keyword_hits(joined_text, revelation_keywords) * 16
+            + (14 if any(word in narration.lower() for word in ["descob", "revel", "segredo", "verdade"]) else 0)
+        )
+        suspense_score = self._clamp_score(
+            15
+            + self._count_keyword_hits(joined_text, suspense_keywords) * 11
+            + (12 if "?" in narration else 0)
+            + (10 if any(word in narration.lower() for word in ["depois", "agora", "ainda"]) else 0)
+        )
+        visual_score = self._clamp_score(
+            (22 if prompt_visual else 0)
+            + (14 if prompt_video else 0)
+            + (12 if camera else 0)
+            + self._count_keyword_hits(joined_text, visual_keywords) * 7
+            + min(20, len(prompt_visual.split()) // 4)
+        )
+        retention_score = self._clamp_score((hook_score + emotion_score + conflict_score + revelation_score + suspense_score) / 5.0)
+        scene_score = self._clamp_score(
+            hook_score * 0.20
+            + emotion_score * 0.20
+            + conflict_score * 0.20
+            + revelation_score * 0.15
+            + suspense_score * 0.15
+            + visual_score * 0.10
+        )
+
+        notes = []
+        suggestions = []
+        if hook_score >= 80:
+            notes.append("A cena abre curiosidade logo nos primeiros segundos.")
+        else:
+            suggestions.append("Reforce o gancho com pergunta forte ou frase que abra curiosidade imediata.")
+        if emotion_score >= 80:
+            notes.append("A emocao da cena esta clara e ajuda na conexao do publico.")
+        else:
+            suggestions.append("Amplie medo, fe, perda, esperanca ou coragem na narracao e no visual.")
+        if conflict_score < 75:
+            suggestions.append("Inclua um problema real, risco atual ou oposicao mais visivel dentro da cena.")
+        if revelation_score < 70:
+            suggestions.append("Adicione descoberta, pista, segredo ou revelacao local para mover a historia.")
+        if suspense_score < 75:
+            suggestions.append("Feche a cena com suspense local, pergunta aberta ou promessa do proximo movimento.")
+        if visual_score < 75:
+            suggestions.append("Deixe a descricao visual mais cinematografica com camera, luz, atmosfera e composicao.")
+        if not notes:
+            notes.append("Cena ainda precisa de mais forca narrativa para sustentar retencao.")
+
+        return self._normalize_scene_analysis(
+            {
+                "scene_score": scene_score,
+                "hook_score": hook_score,
+                "emotion_score": emotion_score,
+                "conflict_score": conflict_score,
+                "revelation_score": revelation_score,
+                "visual_score": visual_score,
+                "suspense_score": suspense_score,
+                "retention_score": retention_score,
+                "minimum_score": minimum_score,
+                "approved": scene_score >= minimum_score,
+                "notes": notes,
+                "suggestions": suggestions,
+            },
+            minimum_score=minimum_score,
+        )
+
+    def _build_episode_quality_summary(
+        self,
+        storyboard: List[Dict[str, Any]],
+        episode_analysis: Optional[Dict[str, Any]] = None,
+        profile_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        episode_analysis = episode_analysis if isinstance(episode_analysis, dict) else {}
+        scene_scores = [
+            self._normalize_int(((item or {}).get("scene_analysis") or {}).get("scene_score"), 0)
+            for item in (storyboard or [])
+            if isinstance(item, dict)
+        ]
+        minimum_scene_score = self._scene_minimum_score(profile_config)
+        minimum_episode_score = self._episode_minimum_score(profile_config)
+        weak_scenes = [
+            self._normalize_int((item or {}).get("scene_number"), 0)
+            for item in (storyboard or [])
+            if self._normalize_int((((item or {}).get("scene_analysis") or {}).get("scene_score"), 0), 0) < minimum_scene_score
+        ]
+        average_scene_score = round(sum(scene_scores) / max(1, len(scene_scores))) if scene_scores else 0
+        overall_score = self._normalize_int(episode_analysis.get("overall_score"), 0)
+        cliffhanger_score = self._normalize_int(
+            episode_analysis.get("cliffhanger_impact_score") or episode_analysis.get("cliffhanger_score"),
+            0,
+        )
+        episode_score = self._clamp_score(average_scene_score * 0.6 + overall_score * 0.25 + cliffhanger_score * 0.15)
+        approved = bool(scene_scores) and not weak_scenes and episode_score >= minimum_episode_score
+        return {
+            "episode_score": episode_score,
+            "minimum_score": minimum_episode_score,
+            "approved": approved,
+            "minimum_scene_score": minimum_scene_score,
+            "average_scene_score": average_scene_score,
+            "weak_scene_numbers": [number for number in weak_scenes if number > 0],
+        }
+
+    def _apply_scene_analyses(
+        self,
+        storyboard: Any,
+        profile_config: Optional[Dict[str, Any]] = None,
+        episode_analysis: Optional[Dict[str, Any]] = None,
+    ) -> (List[Dict[str, Any]], Dict[str, Any]):
+        normalized = self._normalize_storyboard_list(storyboard)
+        minimum_score = self._scene_minimum_score(profile_config)
+        analyzed = []
+        for frame in normalized:
+            scene_analysis = self._analyze_storyboard_scene(frame, profile_config=profile_config)
+            approved = self._normalize_text(frame.get("approval_status")).lower() == "approved"
+            scene_analysis["approved"] = approved and scene_analysis["scene_score"] >= minimum_score
+            analyzed.append(
+                {
+                    **frame,
+                    "scene_analysis": self._normalize_scene_analysis(scene_analysis, minimum_score=minimum_score),
+                }
+            )
+        episode_quality = self._build_episode_quality_summary(analyzed, episode_analysis=episode_analysis, profile_config=profile_config)
+        return analyzed, episode_quality
+
+    def _build_scene_improvement_feedback(self, frame: Dict[str, Any], profile_config: Optional[Dict[str, Any]] = None) -> str:
+        analysis = self._normalize_scene_analysis((frame or {}).get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config))
+        minimum_score = self._scene_minimum_score(profile_config)
+        weak_dimensions = []
+        if analysis["hook_score"] < minimum_score:
+            weak_dimensions.append("gancho")
+        if analysis["emotion_score"] < minimum_score:
+            weak_dimensions.append("emocao")
+        if analysis["conflict_score"] < minimum_score:
+            weak_dimensions.append("conflito")
+        if analysis["revelation_score"] < minimum_score:
+            weak_dimensions.append("revelacao")
+        if analysis["suspense_score"] < minimum_score:
+            weak_dimensions.append("suspense")
+        if analysis["visual_score"] < minimum_score:
+            weak_dimensions.append("visual cinematografico")
+        return self._normalize_text(
+            "Melhore automaticamente apenas esta cena ate atingir a meta minima. "
+            f"Nota atual: {analysis['scene_score']}/100. Meta: {minimum_score}/100. "
+            f"Fortalecer: {', '.join(weak_dimensions) or 'gancho, emocao, conflito, revelacao, suspense e visual'}. "
+            "Inclua cliffhanger local, pergunta forte, emocao clara, risco real, descoberta local e visual cinematografico. "
+            "Preserve a coerencia com as cenas aprovadas e com o Character Bible."
+        )
+
+    def _ensure_scene_editable(self, frame: Optional[Dict[str, Any]], action_label: str = "alterar"):
+        status = self._normalize_text((frame or {}).get("approval_status") or "pending").lower()
+        if status == "approved":
+            raise ValueError(f"A cena ja esta aprovada. Desaprove a cena antes de {action_label}.")
+
+    def _auto_fix_cliffhanger_for_episode(
+        self,
+        db: Session,
+        script: BibleVideoScript,
+        episode: Optional[BibleVideoEpisode],
+        series: Optional[BibleVideoSeries],
+        storyboard: Optional[List[Dict[str, Any]]] = None,
+        max_attempts: int = 3,
+    ) -> Dict[str, Any]:
+        if not episode or not series:
+            return self.serialize_script(script)
+        profile_config = self.resolve_series_profile(series)
+        storyboard = self._normalize_storyboard_list(storyboard if storyboard is not None else self._get_storyboard(script))
+        minimum_cliffhanger_score = self._normalize_int(profile_config.get("minimum_cliffhanger_score"), 85)
+        last_serialized = self.serialize_script(script)
+        for _ in range(max_attempts):
+            analysis = last_serialized.get("retention_analysis") if isinstance(last_serialized, dict) else {}
+            if not isinstance(analysis, dict):
+                analysis = {}
+            impact = self._normalize_int(analysis.get("cliffhanger_impact_score"), 0)
+            cliffhanger_score = self._normalize_int(analysis.get("cliffhanger_score"), 0)
+            if impact >= 80 and cliffhanger_score >= minimum_cliffhanger_score:
+                return last_serialized
+            package = self._extract_script_package(script)
+            sections = package.get("script_sections") if isinstance(package.get("script_sections"), dict) else {}
+            strengthened = self._detect_cinematic_sections(script.full_narration, sections)
+            strengthened["cliffhanger"] = self._ensure_netflix_cliffhanger(
+                strengthened.get("cliffhanger"),
+                episode,
+                series,
+                self._normalize_text(strengthened.get("cta_next_episode") or script.next_episode_cta),
+            )
+            script.full_narration = self._build_text_from_sections(strengthened)
+            if storyboard:
+                last_index = len(storyboard) - 1
+                storyboard[last_index] = self._normalize_storyboard_frame(
+                    {
+                        **storyboard[last_index],
+                        "narration": strengthened["cliffhanger"],
+                        "narrative": strengthened["cliffhanger"],
+                        "emotion": self._normalize_text(storyboard[last_index].get("emotion") or "cliffhanger"),
+                        "approval_status": "pending",
+                    },
+                    last_index + 1,
+                )
+            self._save_script_package(script, {"script_sections": strengthened, "storyboard": storyboard})
+            self._save_storyboard_state(db, script, storyboard, episode=episode, pipeline_status="storyboard_pronto")
+            refreshed = self._rebuild_script_analysis(script, profile_config=profile_config, episode=episode, storyboard=storyboard, persist=True)
+            last_serialized = {
+                **self.serialize_script(script),
+                "retention_analysis": refreshed.get("retention_analysis") if isinstance(refreshed, dict) else {},
+                "storyboard": refreshed.get("storyboard") if isinstance(refreshed, dict) else storyboard,
+            }
+        return last_serialized
 
     def _normalize_storyboard_frame(self, item: Any, scene_number: int) -> Dict[str, Any]:
         if not isinstance(item, dict):
@@ -384,6 +687,7 @@ class BibleVideoFactoryService:
             "storyboard_image": storyboard_image,
             "image": storyboard_image or prompt_visual,
             "approval_status": self._normalize_text(item.get("approval_status") or "pending"),
+            "scene_analysis": self._normalize_scene_analysis(item.get("scene_analysis"), minimum_score=self._scene_minimum_score({})),
         }
 
     def _scene_identity_key(self, item: Dict[str, Any], fallback_index: int) -> str:
@@ -473,6 +777,7 @@ class BibleVideoFactoryService:
                 "suggested_soundtrack": item.get("music_style"),
                 "storyboard_image": item.get("storyboard_image"),
                 "approval_status": item.get("approval_status") or "pending",
+                "scene_analysis": item.get("scene_analysis"),
             },
             idx + 1,
         )
@@ -491,6 +796,7 @@ class BibleVideoFactoryService:
         meta["music_style"] = self._normalize_text(frame.get("suggested_soundtrack") or meta.get("music_style"))
         meta["storyboard_image"] = self._normalize_text(frame.get("storyboard_image") or meta.get("storyboard_image"))
         meta["approval_status"] = self._normalize_text(frame.get("approval_status") or meta.get("approval_status") or "pending")
+        meta["scene_analysis"] = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=self._scene_minimum_score({}))
         meta["prompt_video"] = self._normalize_text(frame.get("prompt_video") or meta.get("prompt_video"))
         if scene_source:
             meta["prompt_video"] = self._normalize_text(frame.get("prompt_video") or scene_source.get("prompt_video") or meta.get("prompt_video"))
@@ -535,6 +841,7 @@ class BibleVideoFactoryService:
                     "music_style": self._normalize_text(frame.get("suggested_soundtrack") or (base or {}).get("music_style")),
                     "storyboard_image": self._normalize_text(frame.get("storyboard_image") or (base or {}).get("storyboard_image")),
                     "approval_status": self._normalize_text(frame.get("approval_status") or (base or {}).get("approval_status") or "pending"),
+                    "scene_analysis": self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=self._scene_minimum_score({})),
                 }
             )
 
@@ -844,12 +1151,26 @@ class BibleVideoFactoryService:
 
     def _enforce_storyboard_approval_rules(self, script: BibleVideoScript, series: Optional[BibleVideoSeries]):
         profile_config = self.resolve_series_profile(series)
-        if not profile_config.get("cliffhanger_required"):
-            return
         refreshed = self._rebuild_script_analysis(script, profile_config=profile_config, persist=True)
         retention_analysis = refreshed.get("retention_analysis") if isinstance(refreshed, dict) else {}
         if not isinstance(retention_analysis, dict):
             retention_analysis = {}
+        minimum_scene_score = self._scene_minimum_score(profile_config)
+        weak_scenes = retention_analysis.get("weak_scene_numbers") if isinstance(retention_analysis.get("weak_scene_numbers"), list) else []
+        if weak_scenes:
+            raise ValueError(
+                f"Todas as cenas precisam atingir pelo menos {minimum_scene_score}/100 antes da aprovacao. "
+                f"Cenas abaixo da meta: {', '.join(str(x) for x in weak_scenes)}."
+            )
+        minimum_episode_score = self._episode_minimum_score(profile_config)
+        episode_score = self._normalize_int(retention_analysis.get("episode_score"), 0)
+        if episode_score < minimum_episode_score:
+            raise ValueError(
+                f"O episodio precisa atingir pelo menos {minimum_episode_score}/100 antes da aprovacao. "
+                f"Nota atual: {episode_score}/100."
+            )
+        if not profile_config.get("cliffhanger_required"):
+            return
         cliffhanger_analysis = retention_analysis.get("cliffhanger_analysis") if isinstance(retention_analysis.get("cliffhanger_analysis"), dict) else {}
         cliffhanger_score = self._normalize_int(cliffhanger_analysis.get("impact_score") or retention_analysis.get("cliffhanger_impact_score"), 0)
         minimum_cliffhanger_score = self._normalize_int(profile_config.get("minimum_cliffhanger_score"), 85)
@@ -1352,6 +1673,7 @@ class BibleVideoFactoryService:
             "provider_prompts": meta.get("provider_prompts") if isinstance(meta.get("provider_prompts"), dict) else {},
             "storyboard_image": self._normalize_text(meta.get("storyboard_image")),
             "approval_status": self._normalize_text(meta.get("approval_status") or "pending"),
+            "scene_analysis": self._normalize_scene_analysis(meta.get("scene_analysis"), minimum_score=self._scene_minimum_score({})),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -2324,6 +2646,7 @@ class BibleVideoFactoryService:
     def generate_scenes(self, db: Session, script: BibleVideoScript, episode: BibleVideoEpisode, series: Optional[BibleVideoSeries]) -> List[BibleVideoScene]:
         db.query(BibleVideoScene).filter(BibleVideoScene.script_id == script.id).delete()
         db.commit()
+        profile_config = self.resolve_series_profile(series)
         source = self._json_loads(script.scenes_json, [])
         if not isinstance(source, list) or not source:
             paragraphs = self._split_text_chunks(script.full_narration, max(6, int(script.desired_duration_minutes or 5) * 2))
@@ -2425,6 +2748,22 @@ class BibleVideoFactoryService:
                 "runway": prompt_video,
                 "pika": prompt_animation,
             }
+            scene_analysis = self._analyze_storyboard_scene(
+                {
+                    "scene_number": self._normalize_int(item.get("scene_number") or idx + 1, idx + 1),
+                    "title": title,
+                    "narration": self._normalize_text(item.get("narration_text")),
+                    "emotion": emotion,
+                    "prompt_visual": prompt_image,
+                    "prompt_image": prompt_image,
+                    "prompt_video": prompt_video,
+                    "camera_movement": camera_direction,
+                    "duration": float(item.get("duration_seconds") or 8.0),
+                    "suggested_soundtrack": music_style,
+                    "approval_status": self._normalize_text(item.get("approval_status") or "pending"),
+                },
+                profile_config=profile_config,
+            )
             row = BibleVideoScene(
                 script_id=script.id,
                 series_id=script.series_id,
@@ -2454,6 +2793,7 @@ class BibleVideoFactoryService:
                         "consistency_lock": True,
                         "storyboard_image": self._normalize_text(item.get("storyboard_image") or ""),
                         "approval_status": self._normalize_text(item.get("approval_status") or "pending"),
+                        "scene_analysis": scene_analysis,
                     }
                 ),
             )
@@ -2476,6 +2816,8 @@ class BibleVideoFactoryService:
                     "music_style": self._normalize_text((self._json_loads(c.effects_json, {}) or {}).get("music_style")),
                     "emotion": c.emotion,
                     "duration": c.duration_seconds,
+                    "approval_status": self._normalize_text((self._json_loads(c.effects_json, {}) or {}).get("approval_status") or "pending"),
+                    "scene_analysis": self._normalize_scene_analysis((self._json_loads(c.effects_json, {}) or {}).get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config)),
                 }
                 for c in created
             ]
@@ -2499,6 +2841,7 @@ class BibleVideoFactoryService:
                             "narration": row.narration_text,
                             "suggested_soundtrack": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("music_style")),
                             "approval_status": self._normalize_text((self._json_loads(row.effects_json, {}) or {}).get("approval_status") or "pending"),
+                            "scene_analysis": self._normalize_scene_analysis((self._json_loads(row.effects_json, {}) or {}).get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config)),
                         },
                         row.scene_number,
                     )
@@ -2541,18 +2884,50 @@ class BibleVideoFactoryService:
         storyboard = self._get_storyboard(script)
         if not storyboard:
             raise ValueError("Storyboard nao encontrado para aprovacao.")
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        profile_config = self.resolve_series_profile(series)
+        analyzed_storyboard, _ = self._apply_scene_analyses(storyboard, profile_config=profile_config, episode_analysis=self.serialize_script(script).get("retention_analysis"))
+        target = next((item for item in analyzed_storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
+        if not target:
+            raise ValueError("Cena do storyboard nao encontrada.")
+        scene_analysis = self._normalize_scene_analysis(target.get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config))
+        if scene_analysis["scene_score"] < self._scene_minimum_score(profile_config):
+            raise ValueError(
+                f"A cena {scene_number} precisa atingir pelo menos {self._scene_minimum_score(profile_config)}/100 antes da aprovacao. "
+                f"Nota atual: {scene_analysis['scene_score']}/100."
+            )
+        approved_storyboard = []
+        for item in analyzed_storyboard:
+            if int(item.get("scene_number") or 0) == int(scene_number or 0):
+                approved_storyboard.append({**item, "approval_status": "approved", "scene_analysis": {**scene_analysis, "approved": True}})
+            else:
+                approved_storyboard.append(item)
+        self._save_storyboard_state(db, script, approved_storyboard, episode=episode, pipeline_status="storyboard_pronto")
+        self._rebuild_script_analysis(script, profile_config=profile_config, episode=episode, storyboard=approved_storyboard, persist=True)
+        db.commit()
+        db.refresh(script)
+        return self.serialize_script(script)
+
+    def unapprove_storyboard_scene(self, db: Session, script: BibleVideoScript, scene_number: int) -> Dict[str, Any]:
+        storyboard = self._get_storyboard(script)
+        if not storyboard:
+            raise ValueError("Storyboard nao encontrado para desaprovacao.")
         found = False
+        updated = []
         for item in storyboard:
             if int(item.get("scene_number") or 0) == int(scene_number or 0):
-                item["approval_status"] = "approved"
+                analysis = self._normalize_scene_analysis(item.get("scene_analysis"), minimum_score=self._scene_minimum_score({}))
+                updated.append({**item, "approval_status": "pending", "scene_analysis": {**analysis, "approved": False}})
                 found = True
-                break
+            else:
+                updated.append(item)
         if not found:
             raise ValueError("Cena do storyboard nao encontrada.")
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
-        self._save_storyboard_state(db, script, storyboard, episode=episode, pipeline_status="storyboard_pronto")
-        profile_config = self.resolve_series_profile(db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first())
-        self._rebuild_script_analysis(script, profile_config=profile_config, episode=episode, storyboard=storyboard, persist=True)
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        self._save_storyboard_state(db, script, updated, episode=episode, pipeline_status="storyboard_pronto")
+        self._rebuild_script_analysis(script, profile_config=self.resolve_series_profile(series), episode=episode, storyboard=updated, persist=True)
         db.commit()
         db.refresh(script)
         return self.serialize_script(script)
@@ -2563,29 +2938,39 @@ class BibleVideoFactoryService:
             raise ValueError("Storyboard nao encontrado para aprovacao.")
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
-        self._rebuild_script_analysis(script, profile_config=self.resolve_series_profile(series), episode=episode, storyboard=storyboard, persist=True)
+        profile_config = self.resolve_series_profile(series)
+        refreshed = self._rebuild_script_analysis(script, profile_config=profile_config, episode=episode, storyboard=storyboard, persist=True)
         self._enforce_storyboard_approval_rules(script, series)
         approved_storyboard = []
-        for idx, item in enumerate(storyboard):
+        for idx, item in enumerate((refreshed.get("storyboard") if isinstance(refreshed, dict) else storyboard) or storyboard):
             if not isinstance(item, dict):
                 item = {"scene_number": idx + 1, "title": f"Cena {idx + 1}", "narration": str(item)}
-            approved_storyboard.append({**item, "approval_status": "approved"})
+            analysis = self._normalize_scene_analysis(item.get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config))
+            approved_storyboard.append({**item, "approval_status": "approved", "scene_analysis": {**analysis, "approved": True}})
         self._save_storyboard_state(db, script, approved_storyboard, episode=episode, pipeline_status="storyboard_aprovado")
-        self._rebuild_script_analysis(script, profile_config=self.resolve_series_profile(series), episode=episode, storyboard=approved_storyboard, persist=True)
+        self._rebuild_script_analysis(script, profile_config=profile_config, episode=episode, storyboard=approved_storyboard, persist=True)
         db.commit()
         db.refresh(script)
         return self.serialize_script(script)
 
-    def regenerate_storyboard_scene(self, db: Session, script: BibleVideoScript, scene_number: int) -> Dict[str, Any]:
+    def regenerate_storyboard_scene(
+        self,
+        db: Session,
+        script: BibleVideoScript,
+        scene_number: int,
+        improvement_request: str = "",
+    ) -> Dict[str, Any]:
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
         if not episode or not series:
             raise ValueError("Serie/episodio nao encontrados para regenerar a cena.")
+        profile_config = self.resolve_series_profile(series)
         storyboard = self._get_storyboard(script)
         scene_sources = self._get_scene_sources(script)
         target_frame = next((item for item in storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
         if not target_frame:
             raise ValueError("Cena do storyboard nao encontrada.")
+        self._ensure_scene_editable(target_frame, "regenerar a cena")
         target_source = next((item for item in scene_sources if int(item.get("scene_number") or 0) == int(scene_number or 0)), {})
         character_profiles = self._get_character_profiles_for_series(db, script.series_id)
         scenario_profiles = self._get_scenario_profiles_for_series(db, script.series_id)
@@ -2618,12 +3003,27 @@ class BibleVideoFactoryService:
             f"Dados atuais da cena: {self._json_dumps(target_source)[:4000]}\n"
             f"Character Bible: {self._json_dumps(character_profiles)[:5000]}\n"
             f"Scenario Bible: {self._json_dumps(scenario_profiles)[:4000]}\n"
-            f"Roteiro base: {script.full_narration[:9000]}"
+            f"Roteiro base: {script.full_narration[:9000]}\n"
+            f"Melhorias obrigatorias: {self._normalize_text(improvement_request) or 'Reforce emocao, conflito, descoberta, suspense e cliffhanger local.'}"
         )
         data = self._generate_json(
             prompt,
             system_prompt="Voce e diretor cinematografico biblico. Regenere uma unica cena mantendo consistencia de personagem e cenario.",
             fallback=fallback,
+        )
+        refreshed_frame_analysis = self._analyze_storyboard_scene(
+            {
+                "scene_number": scene_number,
+                "title": self._normalize_text(data.get("title") or fallback["title"]),
+                "narration": self._normalize_text(data.get("narration") or fallback["narration"]),
+                "emotion": self._normalize_text(data.get("emotion") or fallback["emotion"]),
+                "prompt_visual": self._normalize_text(data.get("prompt_visual") or fallback["prompt_visual"]),
+                "prompt_video": self._normalize_text(data.get("prompt_video") or fallback["prompt_video"]),
+                "camera_movement": self._normalize_text(data.get("camera_movement") or fallback["camera_movement"]),
+                "duration": self._normalize_int(data.get("duration"), self._normalize_int(fallback["duration"], 20)),
+                "suggested_soundtrack": self._normalize_text(data.get("suggested_soundtrack") or fallback["suggested_soundtrack"]),
+            },
+            profile_config=profile_config,
         )
         refreshed_frame = self._normalize_storyboard_frame(
             {
@@ -2637,15 +3037,18 @@ class BibleVideoFactoryService:
                 "suggested_soundtrack": self._normalize_text(data.get("suggested_soundtrack") or fallback["suggested_soundtrack"]),
                 "storyboard_image": "",
                 "approval_status": "pending",
+                "scene_analysis": refreshed_frame_analysis,
             },
             scene_number,
         )
         updated_sources = []
+        replaced = False
         for idx, source in enumerate(scene_sources):
             current_number = self._normalize_int(source.get("scene_number") or idx + 1, idx + 1)
             if current_number != int(scene_number or 0):
                 updated_sources.append(source)
                 continue
+            replaced = True
             updated_sources.append(
                 {
                     **source,
@@ -2667,6 +3070,31 @@ class BibleVideoFactoryService:
                     "sound_effects": self._normalize_text(data.get("sound_effects") or source.get("sound_effects")),
                     "scenario_name": self._normalize_text(data.get("scenario_name") or source.get("scenario_name")),
                     "characters": data.get("characters") if isinstance(data.get("characters"), list) else source.get("characters"),
+                    "scene_analysis": refreshed_frame_analysis,
+                }
+            )
+        if not replaced:
+            updated_sources.append(
+                {
+                    "scene_number": int(scene_number or 0),
+                    "title": refreshed_frame["title"],
+                    "text": refreshed_frame["narration"],
+                    "prompt_image": refreshed_frame["prompt_visual"],
+                    "image_prompt": refreshed_frame["prompt_visual"],
+                    "camera_direction": refreshed_frame["camera_movement"],
+                    "duration": refreshed_frame["duration"],
+                    "emotion": refreshed_frame["emotion"],
+                    "music_style": refreshed_frame["suggested_soundtrack"],
+                    "storyboard_image": "",
+                    "approval_status": "pending",
+                    "visual_description": self._normalize_text(data.get("visual_description") or refreshed_frame["prompt_visual"]),
+                    "prompt_video": self._normalize_text(data.get("prompt_video") or f"{refreshed_frame['prompt_visual']}, cinematic motion, 4k"),
+                    "prompt_animation": self._normalize_text(data.get("prompt_animation") or f"Animate with cinematic emotion: {refreshed_frame['prompt_visual'][:220]}"),
+                    "prompt_cinematic": self._normalize_text(data.get("prompt_cinematic") or f"{refreshed_frame['prompt_visual']}, biblical cinematic documentary, emotional atmosphere"),
+                    "sound_effects": self._normalize_text(data.get("sound_effects")),
+                    "scenario_name": self._normalize_text(data.get("scenario_name") or episode.biblical_basis or series.bible_book),
+                    "characters": data.get("characters") if isinstance(data.get("characters"), list) else ([series.main_character] if series.main_character else []),
+                    "scene_analysis": refreshed_frame_analysis,
                 }
             )
         updated_storyboard = []
@@ -2676,9 +3104,73 @@ class BibleVideoFactoryService:
             else:
                 updated_storyboard.append(item)
         self._save_storyboard_state(db, script, updated_storyboard, scene_sources=updated_sources, episode=episode, pipeline_status="storyboard_pronto")
+        self._rebuild_script_analysis(script, profile_config=profile_config, episode=episode, storyboard=updated_storyboard, persist=True)
         db.commit()
         db.refresh(script)
         return self.serialize_script(script)
+
+    def auto_improve_storyboard_scene(self, db: Session, script: BibleVideoScript, scene_number: int) -> Dict[str, Any]:
+        current_script = script
+        final_payload = self.serialize_script(current_script)
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        profile_config = self.resolve_series_profile(series)
+        minimum_score = self._scene_minimum_score(profile_config)
+        for _ in range(4):
+            storyboard = final_payload.get("storyboard") if isinstance(final_payload.get("storyboard"), list) else []
+            target = next((item for item in storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
+            if not target:
+                raise ValueError("Cena do storyboard nao encontrada.")
+            self._ensure_scene_editable(target, "melhorar a cena")
+            analysis = self._normalize_scene_analysis(target.get("scene_analysis"), minimum_score=minimum_score)
+            if analysis["scene_score"] >= minimum_score:
+                return final_payload
+            final_payload = self.regenerate_storyboard_scene(
+                db,
+                current_script,
+                scene_number,
+                improvement_request=self._build_scene_improvement_feedback(target, profile_config=profile_config),
+            )
+            current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
+        return final_payload
+
+    def auto_improve_episode(self, db: Session, script: BibleVideoScript) -> Dict[str, Any]:
+        current_script = script
+        final_payload = self.serialize_script(current_script)
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        profile_config = self.resolve_series_profile(series)
+        minimum_score = self._scene_minimum_score(profile_config)
+        storyboard = final_payload.get("storyboard") if isinstance(final_payload.get("storyboard"), list) else []
+        for frame in storyboard:
+            if self._normalize_text(frame.get("approval_status")).lower() == "approved":
+                continue
+            analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_score)
+            if analysis["scene_score"] >= minimum_score:
+                continue
+            final_payload = self.auto_improve_storyboard_scene(db, current_script, self._normalize_int(frame.get("scene_number"), 0))
+            current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
+        final_payload = self._auto_fix_cliffhanger_for_episode(
+            db,
+            current_script,
+            episode=episode,
+            series=series,
+            storyboard=final_payload.get("storyboard") if isinstance(final_payload, dict) else None,
+            max_attempts=3,
+        )
+        current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
+        refreshed = self._rebuild_script_analysis(
+            current_script,
+            profile_config=profile_config,
+            episode=episode,
+            storyboard=final_payload.get("storyboard") if isinstance(final_payload, dict) else None,
+            persist=True,
+        )
+        db.commit()
+        db.refresh(current_script)
+        result = self.serialize_script(current_script)
+        result["retention_analysis"] = refreshed.get("retention_analysis") if isinstance(refreshed, dict) else result.get("retention_analysis", {})
+        result["storyboard"] = refreshed.get("storyboard") if isinstance(refreshed, dict) else result.get("storyboard", [])
+        return result
 
     def generate_shorts_bundle(self, db: Session, script: BibleVideoScript, episode: BibleVideoEpisode) -> List[Dict[str, Any]]:
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
@@ -2946,10 +3438,29 @@ class BibleVideoFactoryService:
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
         storyboard = self._extract_script_package(script).get("storyboard") or []
+        profile_config = self.resolve_series_profile(series)
+        script_snapshot = self.serialize_script(script)
+        retention_analysis = script_snapshot.get("retention_analysis") if isinstance(script_snapshot, dict) else {}
+        if not isinstance(retention_analysis, dict):
+            retention_analysis = {}
         if job_type == "episode" and isinstance(storyboard, list) and storyboard:
             pending = [item for item in storyboard if self._normalize_text((item or {}).get("approval_status") or "pending") != "approved"]
             if pending:
                 raise ValueError("Finalize e aprove o Storyboard antes de gerar o video.")
+        if job_type == "episode":
+            weak_scenes = retention_analysis.get("weak_scene_numbers") if isinstance(retention_analysis.get("weak_scene_numbers"), list) else []
+            if weak_scenes:
+                raise ValueError(
+                    f"Existem cenas abaixo da meta minima de {self._scene_minimum_score(profile_config)}/100. "
+                    f"Cenas pendentes de melhoria: {', '.join(str(x) for x in weak_scenes)}."
+                )
+            episode_score = self._normalize_int(retention_analysis.get("episode_score"), 0)
+            minimum_episode_score = self._episode_minimum_score(profile_config)
+            if episode_score < minimum_episode_score:
+                raise ValueError(
+                    f"O episodio precisa atingir pelo menos {minimum_episode_score}/100 antes da producao. "
+                    f"Nota atual: {episode_score}/100."
+                )
         if job_type == "episode":
             characters = self._get_character_profiles_for_series(db, script.series_id)
             scenarios = self._get_scenario_profiles_for_series(db, script.series_id)

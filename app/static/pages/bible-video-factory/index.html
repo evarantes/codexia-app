@@ -258,6 +258,7 @@
                             <button @click="validateCurrentScript" :disabled="!selectedScriptId" class="bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Validar biblicamente</button>
                             <button @click="generateScenesForScript" :disabled="!selectedScriptId" class="bg-amber-500 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar cenas</button>
                             <button @click="regenerateScenesForScript" :disabled="!selectedScriptId" class="bg-orange-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Regenerar Cenas</button>
+                            <button @click="autoImproveEpisode" :disabled="!selectedScriptId" class="bg-cyan-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Auto Melhorar Episodio</button>
                             <button @click="clearScenesForScript" :disabled="!selectedScriptId" class="bg-rose-100 text-rose-800 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Limpar Cenas</button>
                             <button @click="deleteCurrentScript" :disabled="!selectedScriptId" class="bg-red-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Excluir Roteiro</button>
                             <button @click="approveStoryboard" :disabled="!selectedScriptId" class="bg-teal-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Aprovar storyboard</button>
@@ -295,6 +296,28 @@
                                     {{ (sceneDiagnostics?.duplicate_scene_numbers || []).length ? sceneDiagnostics.duplicate_scene_numbers.join(', ') : 'nenhum' }}
                                 </div>
                             </div>
+                            <div class="mb-4 bg-sky-50 border border-sky-200 rounded-lg p-4">
+                                <h3 class="font-semibold mb-3">Painel de Qualidade do Episodio</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                                    <div><strong>Episodio:</strong> {{ currentScript.retention_analysis?.episode_score || 0 }}/100</div>
+                                    <div><strong>Meta episodio:</strong> {{ currentScript.retention_analysis?.minimum_score || 85 }}/100</div>
+                                    <div><strong>Meta por cena:</strong> {{ currentScript.retention_analysis?.minimum_scene_score || 80 }}/100</div>
+                                    <div><strong>Status:</strong> {{ currentScript.retention_analysis?.approved ? 'aprovado' : 'bloqueado' }}</div>
+                                </div>
+                                <div class="text-sm mt-3">
+                                    <strong>Cenas fracas:</strong>
+                                    {{ (currentScript.retention_analysis?.weak_scene_numbers || []).length ? currentScript.retention_analysis.weak_scene_numbers.join(', ') : 'nenhuma' }}
+                                </div>
+                            </div>
+                            <div v-if="sceneQualityRows.length" class="mb-4 bg-white border border-slate-200 rounded-lg p-4">
+                                <h3 class="font-semibold mb-3">Mapa de Retencao por Cena</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                                    <div v-for="item in sceneQualityRows" :key="`quality-${item.scene_number}`" class="flex items-center justify-between rounded-lg px-3 py-2 border" :class="scoreCardClass(item.scene_score)">
+                                        <span>Cena {{ item.scene_number }}</span>
+                                        <span>{{ item.scene_score }} {{ item.approval_status === 'approved' ? '✓' : (item.scene_score >= (item.minimum_score || 80) ? '•' : '⚠') }}</span>
+                                    </div>
+                                </div>
+                            </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                                 <div class="bg-slate-50 rounded-lg p-4">
                                     <div class="text-sm text-slate-500">Validacao biblica</div>
@@ -318,6 +341,10 @@
                                     <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
                                         <div class="bg-white border rounded px-2 py-1">Impacto cliffhanger: {{ currentScript.retention_analysis?.cliffhanger_impact_score || 0 }}</div>
                                         <div class="bg-white border rounded px-2 py-1">Aprovacao cliffhanger: {{ currentScript.retention_analysis?.cliffhanger_impact_score >= 85 ? 'liberada' : 'bloqueada' }}</div>
+                                    </div>
+                                    <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
+                                        <div class="bg-white border rounded px-2 py-1">Nota do episodio: {{ currentScript.retention_analysis?.episode_score || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Media das cenas: {{ currentScript.retention_analysis?.average_scene_score || 0 }}</div>
                                     </div>
                                     <div class="text-xs mt-3 text-slate-500">
                                         Gancho nos 15s:
@@ -455,6 +482,16 @@
                                     <div class="font-semibold">Cena {{ scene.scene_number }} - {{ scene.title || scene.camera_direction || 'camera livre' }}</div>
                                     <div class="text-xs text-slate-500">{{ scene.duration_seconds }}s | {{ scene.emotion }} | {{ scene.scenario_name || 'cenario livre' }}</div>
                                 </div>
+                                <div class="mt-3 flex flex-wrap gap-2 text-xs">
+                                    <span class="px-2 py-1 rounded border" :class="scoreCardClass(scene.scene_analysis?.scene_score || 0)">Nota: {{ scene.scene_analysis?.scene_score || 0 }}</span>
+                                    <span class="px-2 py-1 rounded border bg-white">Gancho: {{ scene.scene_analysis?.hook_score || 0 }}</span>
+                                    <span class="px-2 py-1 rounded border bg-white">Emocao: {{ scene.scene_analysis?.emotion_score || 0 }}</span>
+                                    <span class="px-2 py-1 rounded border bg-white">Conflito: {{ scene.scene_analysis?.conflict_score || 0 }}</span>
+                                    <span class="px-2 py-1 rounded border bg-white">Revelacao: {{ scene.scene_analysis?.revelation_score || 0 }}</span>
+                                    <span class="px-2 py-1 rounded border bg-white">Suspense: {{ scene.scene_analysis?.suspense_score || 0 }}</span>
+                                    <span class="px-2 py-1 rounded border bg-white">Visual: {{ scene.scene_analysis?.visual_score || 0 }}</span>
+                                    <span class="px-2 py-1 rounded border" :class="scene.approval_status === 'approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'">Status: {{ scene.approval_status === 'approved' ? 'APROVADA' : 'PENDENTE' }}</span>
+                                </div>
                                 <div class="text-sm mt-2"><strong>Narracao:</strong> {{ scene.narration_text }}</div>
                                 <div class="text-sm mt-2"><strong>Visual:</strong> {{ scene.visual_description }}</div>
                                 <div class="text-sm mt-2"><strong>Camera:</strong> {{ scene.camera_direction || scene.camera_type }}</div>
@@ -498,6 +535,15 @@
                                         <div class="font-semibold">Cena {{ frame.scene_number }} - {{ frame.title || 'Sem titulo' }}</div>
                                         <div class="text-xs text-slate-500 uppercase">{{ frame.approval_status || 'pending' }}</div>
                                     </div>
+                                    <div class="mt-3 flex flex-wrap gap-2 text-xs">
+                                        <span class="px-2 py-1 rounded border" :class="scoreCardClass(frame.scene_analysis?.scene_score || 0)">Cena {{ frame.scene_number }} ............ {{ frame.scene_analysis?.scene_score || 0 }} {{ frame.approval_status === 'approved' ? '✓' : ((frame.scene_analysis?.scene_score || 0) >= (frame.scene_analysis?.minimum_score || 80) ? '•' : '⚠') }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Gancho: {{ frame.scene_analysis?.hook_score || 0 }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Emocao: {{ frame.scene_analysis?.emotion_score || 0 }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Conflito: {{ frame.scene_analysis?.conflict_score || 0 }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Revelacao: {{ frame.scene_analysis?.revelation_score || 0 }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Suspense: {{ frame.scene_analysis?.suspense_score || 0 }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Visual: {{ frame.scene_analysis?.visual_score || 0 }}</span>
+                                    </div>
                                     <div class="text-sm mt-3"><strong>Narrativa:</strong> {{ frame.narrative || frame.narration }}</div>
                                     <div class="text-sm mt-2"><strong>Emocao:</strong> {{ frame.emotion || 'Sem emocao definida' }}</div>
                                     <div class="text-sm mt-2"><strong>Prompt visual:</strong> {{ frame.prompt_visual || frame.image }}</div>
@@ -506,10 +552,15 @@
                                     <div class="text-sm mt-2"><strong>Movimento de camera:</strong> {{ frame.camera_movement || 'camera livre' }}</div>
                                     <div class="text-sm mt-2"><strong>Duracao:</strong> {{ frame.duration || 0 }}s</div>
                                     <div class="text-sm mt-2"><strong>Trilha sugerida:</strong> {{ frame.suggested_soundtrack || 'Sem trilha definida' }}</div>
+                                    <div v-if="frame.scene_analysis?.suggestions?.length" class="mt-3 text-xs text-slate-600 space-y-1">
+                                        <div v-for="(item, idx) in frame.scene_analysis.suggestions" :key="`scene-suggestion-${frame.scene_number}-${idx}`">- {{ item }}</div>
+                                    </div>
                                     <div class="mt-4 flex gap-2 flex-wrap">
                                         <button @click="generateStoryboardPreview(frame.scene_number)" class="bg-indigo-700 text-white px-3 py-2 rounded text-xs">Gerar preview</button>
                                         <button @click="approveStoryboardScene(frame.scene_number)" class="bg-emerald-600 text-white px-3 py-2 rounded text-xs">Aprovar cena</button>
-                                        <button @click="regenerateStoryboardScene(frame.scene_number)" class="bg-amber-500 text-slate-900 px-3 py-2 rounded text-xs">Regenerar cena</button>
+                                        <button v-if="frame.approval_status === 'approved'" @click="unapproveStoryboardScene(frame.scene_number)" class="bg-slate-700 text-white px-3 py-2 rounded text-xs">Desaprovar Cena</button>
+                                        <button v-else @click="regenerateStoryboardScene(frame.scene_number)" class="bg-amber-500 text-slate-900 px-3 py-2 rounded text-xs">Regenerar cena</button>
+                                        <button v-if="frame.approval_status !== 'approved'" @click="autoImproveStoryboardScene(frame.scene_number)" class="bg-cyan-600 text-white px-3 py-2 rounded text-xs">Auto Melhorar Cena</button>
                                     </div>
                                 </div>
                             </div>
@@ -905,7 +956,8 @@
                         storyboard_image: scene.storyboard_image,
                         image: scene.prompt_image,
                         narration: scene.narration_text,
-                        approval_status: scene.approval_status || 'pending'
+                        approval_status: scene.approval_status || 'pending',
+                        scene_analysis: scene.scene_analysis || {}
                     }));
                 },
                 renderScenes() {
@@ -929,6 +981,14 @@
                 selectedSeriesScenarioCount() {
                     if (!this.selectedSeriesId) return 0;
                     return this.scenarios.filter(item => String(item.series_id) === String(this.selectedSeriesId)).length;
+                },
+                sceneQualityRows() {
+                    return this.storyboardFrames.map(frame => ({
+                        scene_number: frame.scene_number,
+                        scene_score: Number(frame?.scene_analysis?.scene_score || 0),
+                        minimum_score: Number(frame?.scene_analysis?.minimum_score || this.currentScript?.retention_analysis?.minimum_scene_score || 80),
+                        approval_status: frame?.approval_status || 'pending'
+                    }));
                 }
             },
             methods: {
@@ -1055,6 +1115,13 @@
                 jobsByStage(stage) {
                     return this.jobs.filter(item => item.kanban_stage === stage);
                 },
+                scoreCardClass(score) {
+                    const value = Number(score || 0);
+                    if (value >= 90) return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                    if (value >= 80) return 'bg-sky-50 text-sky-700 border-sky-200';
+                    if (value >= 70) return 'bg-amber-50 text-amber-700 border-amber-200';
+                    return 'bg-rose-50 text-rose-700 border-rose-200';
+                },
                 logSceneCounts(origin, receivedCount = null) {
                     const renderedCount = (this.renderScenes || []).length;
                     const rawCount = (this.currentScenes || []).length;
@@ -1112,6 +1179,8 @@
                 applySeriesProfile() {
                     if (this.seriesForm.production_profile === 'Serie Netflix Biblica') {
                         this.seriesForm.production_profile_config = {
+                            minimum_scene_score: 80,
+                            minimum_episode_score: 85,
                             cliffhanger_required: true,
                             minimum_retention_score: 80,
                             minimum_cliffhanger_score: 85,
@@ -1290,6 +1359,12 @@
                 },
                 async approveStoryboard() {
                     try {
+                        if ((this.currentScript?.retention_analysis?.weak_scene_numbers || []).length) {
+                            throw new Error(`Existem cenas abaixo da meta: ${(this.currentScript?.retention_analysis?.weak_scene_numbers || []).join(', ')}.`);
+                        }
+                        if ((this.currentScript?.retention_analysis?.episode_score || 0) < (this.currentScript?.retention_analysis?.minimum_score || 85)) {
+                            throw new Error('O episodio ainda nao atingiu a meta minima para aprovacao.');
+                        }
                         const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/approve-storyboard`, { method: 'POST' });
                         const data = await res.json();
                         if (!res.ok) throw new Error(data.detail || 'Falha ao aprovar storyboard.');
@@ -1326,6 +1401,19 @@
                         this.notifyError(e.message || 'Erro ao aprovar a cena.');
                     }
                 },
+                async unapproveStoryboardScene(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/unapprove`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao desaprovar a cena.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess(`Cena ${sceneNumber} voltou para pendente.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao desaprovar a cena.');
+                    }
+                },
                 async regenerateStoryboardScene(sceneNumber) {
                     try {
                         const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/regenerate`, { method: 'POST' });
@@ -1337,6 +1425,33 @@
                         this.notifySuccess(`Cena ${sceneNumber} regenerada.`);
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao regenerar a cena.');
+                    }
+                },
+                async autoImproveStoryboardScene(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/auto-improve`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao auto melhorar a cena.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess(`Cena ${sceneNumber} melhorada automaticamente.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao auto melhorar a cena.');
+                    }
+                },
+                async autoImproveEpisode() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/auto-improve-episode`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao auto melhorar o episodio.');
+                        this.currentScript = data;
+                        this.activeTab = 'storyboard';
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess('Episodio analisado e melhorado automaticamente.');
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao auto melhorar o episodio.');
                     }
                 },
                 async generateScenesForScript() {
@@ -1425,6 +1540,12 @@
                     try {
                         if (jobType === 'episode' && this.storyboardFrames.length && this.storyboardFrames.some(frame => (frame.approval_status || 'pending') !== 'approved')) {
                             throw new Error('Finalize e aprove o Storyboard antes de enfileirar o video.');
+                        }
+                        if (jobType === 'episode' && (this.currentScript?.retention_analysis?.weak_scene_numbers || []).length) {
+                            throw new Error(`Existem cenas abaixo da meta minima: ${(this.currentScript?.retention_analysis?.weak_scene_numbers || []).join(', ')}.`);
+                        }
+                        if (jobType === 'episode' && (this.currentScript?.retention_analysis?.episode_score || 0) < (this.currentScript?.retention_analysis?.minimum_score || 85)) {
+                            throw new Error('O episodio ainda nao atingiu a meta minima de qualidade narrativa.');
                         }
                         if (jobType === 'episode' && !this.selectedSeriesCharacterCount) {
                             throw new Error('Finalize o Character Bible antes de partir para a geracao de video.');
