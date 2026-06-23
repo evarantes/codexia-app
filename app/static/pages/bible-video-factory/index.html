@@ -292,6 +292,7 @@
                                         <div class="bg-white border rounded px-2 py-1">Conflito: {{ currentScript.retention_analysis?.conflict_score || 0 }}</div>
                                         <div class="bg-white border rounded px-2 py-1">Emocao: {{ currentScript.retention_analysis?.emotion_score || 0 }}</div>
                                         <div class="bg-white border rounded px-2 py-1">Progressao: {{ currentScript.retention_analysis?.dramatic_progression_score || 0 }}</div>
+                                        <div class="bg-white border rounded px-2 py-1">Revelacao: {{ currentScript.retention_analysis?.revelation_score || 0 }}</div>
                                         <div class="bg-white border rounded px-2 py-1">Cliffhanger: {{ currentScript.retention_analysis?.cliffhanger_score || 0 }}</div>
                                         <div class="bg-white border rounded px-2 py-1">Meta minima: {{ currentScript.retention_analysis?.minimum_required_score || 0 }}</div>
                                     </div>
@@ -328,7 +329,10 @@
                                         <div v-for="(title, idx) in currentScript.youtube_growth.alternate_titles" :key="`alt-title-${idx}`" class="text-sm">• {{ title }}</div>
                                     </div>
                                     <div class="text-sm mt-3 whitespace-pre-wrap">{{ currentScript.youtube_growth?.description || 'Sem descricao sugerida.' }}</div>
-                                    <div class="text-xs text-slate-500 mt-2">{{ (currentScript.youtube_growth?.tags || []).join(', ') }}</div>
+                                    <div class="text-xs text-slate-500 mt-2"><strong>Palavras-chave SEO:</strong> {{ (currentScript.youtube_growth?.seo_keywords || currentScript.youtube_growth?.tags || []).join(', ') }}</div>
+                                    <div class="text-xs text-slate-500 mt-2"><strong>Tags:</strong> {{ (currentScript.youtube_growth?.tags || []).join(', ') }}</div>
+                                    <div class="text-xs text-slate-500 mt-2"><strong>Hashtags:</strong> {{ (currentScript.youtube_growth?.hashtags || []).join(' ') }}</div>
+                                    <div class="text-xs text-slate-500 mt-2"><strong>Thumbnail prompt:</strong> {{ currentScript.youtube_growth?.thumbnail_prompt || 'Sem thumbnail prompt' }}</div>
                                 </div>
                             </div>
                             <div class="mb-4 bg-indigo-50 border border-indigo-200 rounded-lg p-4">
@@ -400,6 +404,7 @@
                                 <h3 class="font-semibold mb-2">Shorts sugeridos</h3>
                                 <div class="space-y-3">
                                     <div v-for="(shortItem, idx) in currentScript.shorts" :key="idx" class="border rounded-lg p-3">
+                                        <div class="text-xs uppercase text-slate-500">{{ shortItem.short_type || 'short' }}</div>
                                         <div class="font-semibold">{{ shortItem.title }}</div>
                                         <div class="text-sm mt-1"><strong>Gancho:</strong> {{ shortItem.hook }}</div>
                                         <div class="text-sm mt-1"><strong>Narracao:</strong> {{ shortItem.narration }}</div>

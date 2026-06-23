@@ -704,6 +704,7 @@ class BibleVideoFactoryService:
         conflict_keywords = ["conflito", "amea", "risco", "perigo", "luta", "fuga", "oposicao", "inimigo", "pressao", "decisao"]
         emotion_keywords = ["medo", "dor", "lagr", "esperanca", "coragem", "culpa", "angust", "amor", "fe", "choque", "emocao"]
         progression_keywords = ["entao", "depois", "enquanto", "ate que", "agora", "cada vez", "ao mesmo tempo", "em seguida"]
+        revelation_keywords = ["revelacao", "segredo", "verdade", "mist", "descob", "surpresa", "nao imaginava", "viria a tona", "foi entao que"]
         cliffhanger_keywords = ["mas", "porem", "antes que", "proximo episodio", "continua", "ainda nao", "o que vira", "agora tudo muda"]
 
         opening_hook = self._normalize_text(script_sections.get("opening_hook"))
@@ -747,6 +748,16 @@ class BibleVideoFactoryService:
         emotion_score += 6 if "!" in impact_phrase else 0
         emotion_score = min(100, emotion_score)
 
+        revelation_score = 28
+        revelation_hits = self._keyword_hits(f"{development} {climax} {cliffhanger} {narrative_text}", revelation_keywords)
+        if self._keyword_hits(climax, revelation_keywords):
+            revelation_score += 14
+        if self._keyword_hits(cliffhanger, revelation_keywords):
+            revelation_score += 10
+        revelation_score += min(36, revelation_hits * 6)
+        revelation_score += 6 if self._normalize_text(script_sections.get("impact_phrase")) else 0
+        revelation_score = min(100, revelation_score)
+
         present_beats = sum(
             1
             for key in ["opening_hook", "introduction", "development", "climax", "cliffhanger", "impact_phrase"]
@@ -778,13 +789,14 @@ class BibleVideoFactoryService:
         )
 
         overall_score = round(
-            (hook_score * 0.25)
-            + (conflict_score * 0.20)
-            + (emotion_score * 0.20)
-            + (progression_score * 0.20)
-            + (cliffhanger_score * 0.15)
+            (hook_score * 0.20)
+            + (conflict_score * 0.16)
+            + (emotion_score * 0.16)
+            + (progression_score * 0.16)
+            + (revelation_score * 0.16)
+            + (cliffhanger_score * 0.16)
         )
-        retention_score = round((hook_score + progression_score + cliffhanger_score) / 3.0)
+        retention_score = round((hook_score + progression_score + revelation_score + cliffhanger_score) / 4.0)
         viralization_score = min(100, round((impact_phrase and 76 or 58) + min(18, self._keyword_hits(impact_phrase or narrative_text, ["deus", "fe", "promessa", "impossivel", "destino", "milagre"]) * 4)))
 
         observations = []
@@ -809,6 +821,11 @@ class BibleVideoFactoryService:
         else:
             observations.append("A progressao dramatica precisa de escalada mais nitida entre as etapas.")
             suggestions.append("Aumente a tensao a cada bloco e evite cenas com a mesma intensidade narrativa.")
+        if revelation_score >= 75:
+            observations.append("O roteiro traz revelacoes suficientes para renovar curiosidade ao longo do episodio.")
+        else:
+            observations.append("Ainda faltam revelacoes fortes para sustentar surpresa e descoberta.")
+            suggestions.append("Inclua descoberta, segredo exposto ou verdade revelada em pontos-chave do desenvolvimento e do climax.")
         if cliffhanger_score >= 80:
             observations.append("O final deixa curiosidade real para o proximo episodio.")
         else:
@@ -830,6 +847,7 @@ class BibleVideoFactoryService:
             "suspense_score": cliffhanger_score,
             "conflict_score": conflict_score,
             "dramatic_progression_score": progression_score,
+            "revelation_score": revelation_score,
             "cliffhanger_score": cliffhanger_score,
             "retention_score": retention_score,
             "viralization_score": viralization_score,
@@ -1503,10 +1521,10 @@ class BibleVideoFactoryService:
             f"- perfil especial ativo: {'Serie Netflix Biblica' if profile_config else 'padrao'}.\n"
             f"- cliffhanger obrigatorio: {'sim' if profile_config.get('cliffhanger_required') else 'nao'}.\n"
             f"- nota minima de retencao desejada: {self._normalize_int(profile_config.get('minimum_retention_score'), 0) or 'livre'}.\n"
-            f"- shorts automaticos por episodio: {self._normalize_int(profile_config.get('auto_shorts_count'), 0) or 5}.\n"
+            "- gerar exatamente 3 shorts automaticos por episodio: gancho, momento emocional e cliffhanger.\n"
             "Cada item de scenes deve conter: scene_number, title, duration, emotion, visual_description, camera_direction, narration, sound_effects, music_style, prompt_image, prompt_video, prompt_animation, prompt_cinematic.\n"
-            "retention_analysis deve conter: overall_score, hook_strength, emotion_score, suspense_score, retention_score, viralization_score, notes.\n"
-            "youtube_growth deve conter: title_main, alternate_titles, description, tags.\n\n"
+            "retention_analysis deve conter: overall_score, hook_strength, conflict_score, emotion_score, dramatic_progression_score, revelation_score, cliffhanger_score, retention_score, viralization_score, notes.\n"
+            "youtube_growth deve conter: title_main, alternate_titles, description, hashtags, seo_keywords, tags, thumbnail_prompt.\n\n"
             f"Serie: {series.name if series else ''}\n"
             f"Episodio: {episode.title}\n"
             f"Resumo: {episode.summary or ''}\n"
@@ -1588,7 +1606,18 @@ class BibleVideoFactoryService:
                 f"O segredo por tras de {series.main_character if series and series.main_character else episode.title}",
             ],
             "description": self._normalize_text(f"{episode.summary or base_text[:280]}\n\n{subscribe_cta}\n{next_episode_cta}"),
+            "hashtags": ["#biblia", "#serieNetflixBiblica", "#historiabiblica", "#animebiblico", "#shortsbiblicos"],
+            "seo_keywords": [
+                self._normalize_text(episode.title),
+                self._normalize_text(series.main_character if series else ""),
+                "historia biblica",
+                "serie biblica cinematografica",
+                "youtube biblico",
+            ],
             "tags": ["biblia", "historia biblica", "youtube biblico", "anime biblico", self._normalize_text(series.main_character if series else "")],
+            "thumbnail_prompt": self._normalize_text(
+                f"{series.visual_style if series else 'anime cinematografico'}, {series.main_character if series and series.main_character else episode.title}, close-up emocional, contraste alto, luz dramatica, frame de CTR maximo, 16:9"
+            ),
         }
         fallback = {
             **default_sections,
@@ -1710,7 +1739,14 @@ class BibleVideoFactoryService:
                 "title_main": self._normalize_text(youtube_growth_value.get("title_main") or fallback_growth["title_main"]),
                 "alternate_titles": [self._normalize_text(x) for x in self._ensure_list(youtube_growth_value.get("alternate_titles") or fallback_growth["alternate_titles"]) if self._normalize_text(x)][:3],
                 "description": self._normalize_text(youtube_growth_value.get("description") or fallback_growth["description"]),
+                "hashtags": [
+                    self._normalize_text(x if str(x).startswith("#") else f"#{self._normalize_text(x).replace(' ', '')}")
+                    for x in self._ensure_list(youtube_growth_value.get("hashtags") or fallback_growth["hashtags"])
+                    if self._normalize_text(x)
+                ][:10],
+                "seo_keywords": [self._normalize_text(x) for x in self._ensure_list(youtube_growth_value.get("seo_keywords") or fallback_growth["seo_keywords"]) if self._normalize_text(x)][:15],
                 "tags": [self._normalize_text(x) for x in self._ensure_list(youtube_growth_value.get("tags") or fallback_growth["tags"]) if self._normalize_text(x)][:15],
+                "thumbnail_prompt": self._normalize_text(youtube_growth_value.get("thumbnail_prompt") or fallback_growth["thumbnail_prompt"]),
             }
             retention_analysis_value = self._calculate_retention_analysis(
                 script_sections_value,
@@ -2280,29 +2316,57 @@ class BibleVideoFactoryService:
 
     def generate_shorts_bundle(self, db: Session, script: BibleVideoScript, episode: BibleVideoEpisode) -> List[Dict[str, Any]]:
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
-        profile_config = self.resolve_series_profile(series)
-        target_shorts = self._normalize_int(profile_config.get("auto_shorts_count"), 5) or 5
+        package = self._extract_script_package(script)
+        script_sections = package.get("script_sections") if isinstance(package.get("script_sections"), dict) else {}
+        youtube_growth = package.get("youtube_growth") if isinstance(package.get("youtube_growth"), dict) else {}
+        target_shorts = 3
+        short_templates = [
+            {
+                "short_type": "gancho",
+                "title": f"{(episode.title or 'Episodio')} | Gancho Inicial"[:80],
+                "hook": self._normalize_text(script_sections.get("opening_hook") or episode.opening_hook or episode.title)[:110],
+                "narration": self._normalize_text(script_sections.get("opening_hook") or episode.summary or script.full_narration or "")[:320],
+                "description": "Short focado em abrir curiosidade nos primeiros segundos.",
+                "visual_prompt": f"{episode.title}, biblical cinematic vertical short, opening hook, dramatic tension, 9:16, 4k",
+                "subtitle": self._normalize_text(script_sections.get("opening_hook") or episode.opening_hook or episode.title)[:90],
+                "hashtags": youtube_growth.get("hashtags") or ["#biblia", "#shortsbiblicos", "#animebiblico"],
+                "cta": "Assista ao episodio completo no canal.",
+                "duration_seconds": 35,
+            },
+            {
+                "short_type": "momento_emocional",
+                "title": f"{(episode.title or 'Episodio')} | Momento Emocional"[:80],
+                "hook": self._normalize_text(script_sections.get("impact_phrase") or episode.impact_phrase or episode.title)[:110],
+                "narration": self._normalize_text(script_sections.get("climax") or episode.tension_moment or episode.summary or script.full_narration or "")[:320],
+                "description": "Short focado no pico emocional e na conexao com o publico.",
+                "visual_prompt": f"{episode.title}, biblical cinematic vertical short, emotional climax, tears, faith, dramatic light, 9:16, 4k",
+                "subtitle": self._normalize_text(script_sections.get("impact_phrase") or episode.impact_phrase or episode.title)[:90],
+                "hashtags": youtube_growth.get("hashtags") or ["#biblia", "#emocao", "#animebiblico"],
+                "cta": "Veja o episodio completo e acompanhe a serie.",
+                "duration_seconds": 45,
+            },
+            {
+                "short_type": "cliffhanger",
+                "title": f"{(episode.title or 'Episodio')} | Cliffhanger Final"[:80],
+                "hook": self._normalize_text(script_sections.get("cliffhanger") or episode.ending_hook or episode.title)[:110],
+                "narration": self._normalize_text(script_sections.get("cliffhanger") or episode.ending_hook or script.full_narration or "")[:320],
+                "description": "Short focado em deixar pergunta, ameaca e promessa para o proximo episodio.",
+                "visual_prompt": f"{episode.title}, biblical cinematic vertical short, unresolved ending, future threat, cliffhanger, 9:16, 4k",
+                "subtitle": self._normalize_text(script_sections.get("cliffhanger") or episode.ending_hook or episode.title)[:90],
+                "hashtags": youtube_growth.get("hashtags") or ["#biblia", "#cliffhanger", "#serieNetflixBiblica"],
+                "cta": "Nao perca o proximo episodio.",
+                "duration_seconds": 40,
+            },
+        ]
         fallback = {
-            "shorts": [
-                {
-                    "title": (episode.impact_phrase or episode.title or "Short Biblico")[:80],
-                    "hook": (episode.opening_hook or episode.impact_phrase or episode.title)[:110],
-                    "narration": (episode.summary or script.full_narration or "")[:320],
-                    "description": (episode.summary or script.full_narration or "")[:240],
-                    "visual_prompt": f"{episode.title}, biblical cinematic vertical short, dramatic lighting, 9:16, emotional frame, 4k",
-                    "subtitle": (episode.impact_phrase or episode.title or "Short Biblico")[:90],
-                    "hashtags": ["#biblia", "#shortsbiblicos", "#animebiblico"],
-                    "cta": "Assista ao episodio completo no canal.",
-                    "duration_seconds": 45,
-                }
-                for _ in range(target_shorts)
-            ]
+            "shorts": short_templates
         }
         prompt = (
-            f"Crie {target_shorts} Shorts para divulgar este episodio biblico.\n"
+            "Crie exatamente 3 Shorts para divulgar este episodio biblico.\n"
             "Retorne JSON com a chave shorts.\n"
-            "Cada short deve ter: title, hook, narration, visual_prompt, subtitle, description, hashtags, cta, duration_seconds.\n"
+            "Cada short deve ter: short_type, title, hook, narration, visual_prompt, subtitle, description, hashtags, cta, duration_seconds.\n"
             "Cada short deve durar entre 30 e 60 segundos.\n\n"
+            "Os tipos obrigatorios sao: gancho, momento_emocional, cliffhanger.\n"
             f"Episodio: {episode.title}\n"
             f"Resumo: {episode.summary or ''}\n"
             f"Frase de impacto: {episode.impact_phrase or ''}\n"
@@ -2321,17 +2385,19 @@ class BibleVideoFactoryService:
         for idx, item in enumerate(shorts[:target_shorts]):
             if not isinstance(item, dict):
                 item = {"title": f"Short {idx + 1}", "hook": self._normalize_text(item)}
+            fallback_item = short_templates[idx]
             normalized_shorts.append(
                 {
-                    "title": self._normalize_text(item.get("title") or f"Short {idx + 1}"),
-                    "hook": self._normalize_text(item.get("hook")),
-                    "narration": self._normalize_text(item.get("narration") or item.get("description") or item.get("hook")),
-                    "visual_prompt": self._normalize_text(item.get("visual_prompt") or f"{episode.title}, biblical cinematic vertical short, emotional frame, 9:16, 4k"),
-                    "subtitle": self._normalize_text(item.get("subtitle") or item.get("hook") or item.get("title")),
-                    "description": self._normalize_text(item.get("description") or item.get("hook")),
-                    "hashtags": [self._normalize_text(x) for x in self._ensure_list(item.get("hashtags")) if self._normalize_text(x)],
-                    "cta": self._normalize_text(item.get("cta") or "Assista ao episodio completo no canal."),
-                    "duration_seconds": max(30, min(60, self._normalize_int(item.get("duration_seconds"), 45))),
+                    "short_type": self._normalize_text(item.get("short_type") or fallback_item["short_type"] or f"short_{idx + 1}"),
+                    "title": self._normalize_text(item.get("title") or fallback_item["title"] or f"Short {idx + 1}"),
+                    "hook": self._normalize_text(item.get("hook") or fallback_item["hook"]),
+                    "narration": self._normalize_text(item.get("narration") or item.get("description") or item.get("hook") or fallback_item["narration"]),
+                    "visual_prompt": self._normalize_text(item.get("visual_prompt") or fallback_item["visual_prompt"] or f"{episode.title}, biblical cinematic vertical short, emotional frame, 9:16, 4k"),
+                    "subtitle": self._normalize_text(item.get("subtitle") or item.get("hook") or item.get("title") or fallback_item["subtitle"]),
+                    "description": self._normalize_text(item.get("description") or item.get("hook") or fallback_item["description"]),
+                    "hashtags": [self._normalize_text(x) for x in self._ensure_list(item.get("hashtags") or fallback_item["hashtags"]) if self._normalize_text(x)],
+                    "cta": self._normalize_text(item.get("cta") or fallback_item["cta"] or "Assista ao episodio completo no canal."),
+                    "duration_seconds": max(30, min(60, self._normalize_int(item.get("duration_seconds"), fallback_item["duration_seconds"]))),
                 }
             )
         script.shorts_json = self._json_dumps(normalized_shorts)
@@ -2350,8 +2416,11 @@ class BibleVideoFactoryService:
         return normalized_shorts[:target_shorts]
 
     def generate_thumbnail(self, db: Session, script: BibleVideoScript, episode: BibleVideoEpisode, series: Optional[BibleVideoSeries]) -> Dict[str, Any]:
+        package = self._extract_script_package(script)
+        youtube_growth = package.get("youtube_growth") if isinstance(package.get("youtube_growth"), dict) else {}
+        thumbnail_hint = self._normalize_text(youtube_growth.get("thumbnail_prompt"))
         base_visual = (
-            f"{series.visual_style if series else 'anime cinematografico'} de {series.main_character if series else episode.title}, "
+            f"{thumbnail_hint or ''} {series.visual_style if series else 'anime cinematografico'} de {series.main_character if series else episode.title}, "
             "expressao forte, fundo dramatico, luz intensa, momento biblico crucial."
         )
         fallback_variants = [
@@ -2377,7 +2446,8 @@ class BibleVideoFactoryService:
             f"Episodio: {episode.title}\n"
             f"Estilo visual: {series.visual_style if series else ''}\n"
             f"Frase de impacto: {episode.impact_phrase or ''}\n"
-            f"Gancho: {episode.opening_hook or ''}"
+            f"Gancho: {episode.opening_hook or ''}\n"
+            f"Thumbnail prompt base: {thumbnail_hint}"
         )
         data = self._generate_json(
             prompt,
@@ -2444,6 +2514,7 @@ class BibleVideoFactoryService:
             "biblia",
             "anime biblico",
             *(youtube_growth.get("tags") or []),
+            *(youtube_growth.get("seo_keywords") or []),
             series.main_character or "",
             series.bible_book or "",
             series.narrative_tone or "",
