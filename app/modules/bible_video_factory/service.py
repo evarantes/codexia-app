@@ -543,12 +543,7 @@ class BibleVideoFactoryService:
             if self._normalize_int((((item or {}).get("scene_analysis") or {}).get("scene_score"), 0), 0) < minimum_scene_score
         ]
         average_scene_score = round(sum(scene_scores) / max(1, len(scene_scores))) if scene_scores else 0
-        overall_score = self._normalize_int(episode_analysis.get("overall_score"), 0)
-        cliffhanger_score = self._normalize_int(
-            episode_analysis.get("cliffhanger_impact_score") or episode_analysis.get("cliffhanger_score"),
-            0,
-        )
-        episode_score = self._clamp_score(average_scene_score * 0.6 + overall_score * 0.25 + cliffhanger_score * 0.15)
+        episode_score = self._clamp_score(average_scene_score)
         approved = bool(scene_scores) and not weak_scenes and episode_score >= minimum_episode_score
         return {
             "episode_score": episode_score,
@@ -580,6 +575,12 @@ class BibleVideoFactoryService:
             )
         episode_quality = self._build_episode_quality_summary(analyzed, episode_analysis=episode_analysis, profile_config=profile_config)
         return analyzed, episode_quality
+
+    def _analysis_profile_from_values(self, minimum_scene_score: int = 80, minimum_episode_score: int = 85) -> Dict[str, Any]:
+        return {
+            "minimum_scene_score": int(minimum_scene_score or 80),
+            "minimum_episode_score": int(minimum_episode_score or 85),
+        }
 
     def _build_scene_improvement_feedback(self, frame: Dict[str, Any], profile_config: Optional[Dict[str, Any]] = None) -> str:
         analysis = self._normalize_scene_analysis((frame or {}).get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config))
@@ -1605,6 +1606,17 @@ class BibleVideoFactoryService:
             live = self._rebuild_script_analysis(row, storyboard=storyboard, persist=False)
             script_sections = live.get("script_sections") if isinstance(live.get("script_sections"), dict) else {}
             retention_analysis = live.get("retention_analysis") if isinstance(live.get("retention_analysis"), dict) else {}
+            storyboard = live.get("storyboard") if isinstance(live.get("storyboard"), list) else storyboard
+        minimum_scene_score = self._normalize_int((retention_analysis or {}).get("minimum_scene_score"), 80) or 80
+        minimum_episode_score = self._normalize_int((retention_analysis or {}).get("minimum_score"), 85) or 85
+        analyzed_storyboard, episode_quality = self._apply_scene_analyses(
+            storyboard or scenes,
+            profile_config=self._analysis_profile_from_values(minimum_scene_score, minimum_episode_score),
+            episode_analysis=retention_analysis if isinstance(retention_analysis, dict) else {},
+        )
+        storyboard = analyzed_storyboard
+        if isinstance(retention_analysis, dict):
+            retention_analysis = {**retention_analysis, **episode_quality}
         narration = row.full_narration or self._build_text_from_sections(script_sections or {})
         return {
             "id": row.id,
@@ -1624,7 +1636,7 @@ class BibleVideoFactoryService:
             "scenes": scenes,
             "optional_dialogues": optional_dialogues if isinstance(optional_dialogues, list) else [],
             "script_sections": script_sections if isinstance(script_sections, dict) else {},
-            "retention_analysis": retention_analysis if isinstance(retention_analysis, dict) else {},
+            "retention_analysis": retention_analysis if isinstance(retention_analysis, dict) else episode_quality,
             "youtube_growth": youtube_growth if isinstance(youtube_growth, dict) else {},
             "storyboard": storyboard,
             "production_blueprint": blueprint if isinstance(blueprint, dict) else {},
@@ -1646,6 +1658,24 @@ class BibleVideoFactoryService:
         raw_meta = self._json_loads(row.effects_json, [])
         effects = raw_meta if isinstance(raw_meta, list) else self._ensure_list((raw_meta or {}).get("effects"))
         meta = raw_meta if isinstance(raw_meta, dict) else {}
+        minimum_scene_score = self._normalize_int(((meta.get("scene_analysis") or {}) if isinstance(meta.get("scene_analysis"), dict) else {}).get("minimum_score"), 80) or 80
+        computed_scene_analysis = self._analyze_storyboard_scene(
+            {
+                "scene_number": int(row.scene_number or 0),
+                "title": self._normalize_text(meta.get("title") or f"Cena {int(row.scene_number or 0)}"),
+                "narration": row.narration_text,
+                "emotion": row.emotion,
+                "prompt_visual": row.prompt_image,
+                "prompt_image": row.prompt_image,
+                "prompt_video": self._normalize_text(meta.get("prompt_video")),
+                "camera_movement": self._normalize_text(meta.get("camera_direction") or row.camera_type),
+                "duration": float(row.duration_seconds or 0),
+                "suggested_soundtrack": self._normalize_text(meta.get("music_style")),
+                "approval_status": self._normalize_text(meta.get("approval_status") or "pending"),
+            },
+            profile_config=self._analysis_profile_from_values(minimum_scene_score, 85),
+        )
+        computed_scene_analysis["approved"] = self._normalize_text(meta.get("approval_status") or "pending").lower() == "approved" and computed_scene_analysis["scene_score"] >= minimum_scene_score
         return {
             "id": row.id,
             "script_id": row.script_id,
@@ -1673,7 +1703,7 @@ class BibleVideoFactoryService:
             "provider_prompts": meta.get("provider_prompts") if isinstance(meta.get("provider_prompts"), dict) else {},
             "storyboard_image": self._normalize_text(meta.get("storyboard_image")),
             "approval_status": self._normalize_text(meta.get("approval_status") or "pending"),
-            "scene_analysis": self._normalize_scene_analysis(meta.get("scene_analysis"), minimum_score=self._scene_minimum_score({})),
+            "scene_analysis": self._normalize_scene_analysis(computed_scene_analysis, minimum_score=minimum_scene_score),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -3135,20 +3165,28 @@ class BibleVideoFactoryService:
 
     def auto_improve_episode(self, db: Session, script: BibleVideoScript) -> Dict[str, Any]:
         current_script = script
-        final_payload = self.serialize_script(current_script)
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
         episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
         profile_config = self.resolve_series_profile(series)
         minimum_score = self._scene_minimum_score(profile_config)
-        storyboard = final_payload.get("storyboard") if isinstance(final_payload.get("storyboard"), list) else []
-        for frame in storyboard:
-            if self._normalize_text(frame.get("approval_status")).lower() == "approved":
-                continue
-            analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_score)
-            if analysis["scene_score"] >= minimum_score:
-                continue
-            final_payload = self.auto_improve_storyboard_scene(db, current_script, self._normalize_int(frame.get("scene_number"), 0))
-            current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
+        final_payload = self.serialize_script(current_script)
+        for _ in range(3):
+            storyboard = final_payload.get("storyboard") if isinstance(final_payload.get("storyboard"), list) else []
+            weak_scene_numbers = []
+            for frame in storyboard:
+                if self._normalize_text(frame.get("approval_status")).lower() == "approved":
+                    continue
+                analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_score)
+                if analysis["scene_score"] < minimum_score:
+                    weak_scene_numbers.append(self._normalize_int(frame.get("scene_number"), 0))
+            if not weak_scene_numbers:
+                break
+            for scene_number in weak_scene_numbers:
+                final_payload = self.auto_improve_storyboard_scene(db, current_script, scene_number)
+                current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
+            final_payload = self.serialize_script(current_script)
+            if not (final_payload.get("retention_analysis") or {}).get("weak_scene_numbers"):
+                break
         final_payload = self._auto_fix_cliffhanger_for_episode(
             db,
             current_script,
