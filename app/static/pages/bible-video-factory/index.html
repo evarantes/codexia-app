@@ -257,6 +257,9 @@
                             <button @click="generateScript" :disabled="!selectedEpisodeId" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar roteiro</button>
                             <button @click="validateCurrentScript" :disabled="!selectedScriptId" class="bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Validar biblicamente</button>
                             <button @click="generateScenesForScript" :disabled="!selectedScriptId" class="bg-amber-500 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar cenas</button>
+                            <button @click="regenerateScenesForScript" :disabled="!selectedScriptId" class="bg-orange-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Regenerar Cenas</button>
+                            <button @click="clearScenesForScript" :disabled="!selectedScriptId" class="bg-rose-100 text-rose-800 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Limpar Cenas</button>
+                            <button @click="deleteCurrentScript" :disabled="!selectedScriptId" class="bg-red-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Excluir Roteiro</button>
                             <button @click="approveStoryboard" :disabled="!selectedScriptId" class="bg-teal-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Aprovar storyboard</button>
                             <button @click="generateShortsForScript" :disabled="!selectedScriptId" class="bg-pink-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar Shorts</button>
                             <button @click="generateThumbnailForScript" :disabled="!selectedScriptId" class="bg-slate-900 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar thumbnail</button>
@@ -272,10 +275,26 @@
                             <h2 class="text-xl font-bold">Roteiros do episodio</h2>
                             <select v-model="selectedScriptId" @change="loadSelectedScript" class="border rounded-lg px-3 py-2 text-sm">
                                 <option value="">Selecione um roteiro</option>
-                                <option v-for="item in episodeScripts" :key="item.id" :value="item.id">Roteiro #{{ item.id }} - {{ item.narrative_style }}</option>
+                                <option v-for="item in episodeScripts" :key="item.id" :value="item.id">Roteiro #{{ item.id }} - {{ item.narrative_style }} - {{ formatDate(item.created_at) }}</option>
                             </select>
                         </div>
+                        <div class="text-xs text-slate-500 mb-3">
+                            Historico de roteiros deste episodio: {{ episodeScripts.length }} versao(oes)
+                        </div>
                         <div v-if="currentScript">
+                            <div class="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                                <h3 class="font-semibold mb-3">Diagnostico de Duplicacao</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                                    <div><strong>Banco:</strong> {{ sceneDiagnostics?.database_scene_count || 0 }}</div>
+                                    <div><strong>API:</strong> {{ sceneDiagnostics?.api_scene_count || 0 }}</div>
+                                    <div><strong>Tela:</strong> {{ renderScenes.length }}</div>
+                                    <div><strong>Roteiros:</strong> {{ sceneDiagnostics?.script_versions_count || episodeScripts.length || 0 }}</div>
+                                </div>
+                                <div class="text-sm mt-3">
+                                    <strong>Numeros duplicados detectados:</strong>
+                                    {{ (sceneDiagnostics?.duplicate_scene_numbers || []).length ? sceneDiagnostics.duplicate_scene_numbers.join(', ') : 'nenhum' }}
+                                </div>
+                            </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                                 <div class="bg-slate-50 rounded-lg p-4">
                                     <div class="text-sm text-slate-500">Validacao biblica</div>
@@ -429,9 +448,9 @@
 
                     <div>
                         <h2 class="text-xl font-bold mb-4">Lista de cenas</h2>
-                        <div v-if="!currentScenes.length" class="text-slate-500">Nenhuma cena gerada ainda.</div>
+                        <div v-if="!renderScenes.length" class="text-slate-500">Nenhuma cena gerada ainda.</div>
                         <div v-else class="space-y-3">
-                            <div v-for="scene in currentScenes" :key="scene.id" class="border rounded-lg p-4">
+                            <div v-for="scene in renderScenes" :key="scene.id || scene.scene_number" class="border rounded-lg p-4">
                                 <div class="flex flex-col md:flex-row md:justify-between gap-2">
                                     <div class="font-semibold">Cena {{ scene.scene_number }} - {{ scene.title || scene.camera_direction || 'camera livre' }}</div>
                                     <div class="text-xs text-slate-500">{{ scene.duration_seconds }}s | {{ scene.emotion }} | {{ scene.scenario_name || 'cenario livre' }}</div>
@@ -756,6 +775,7 @@
                     selectedScriptId: '',
                     currentScript: null,
                     currentScenes: [],
+                    sceneDiagnostics: null,
                     jobs: [],
                     characters: [],
                     scenarios: [],
@@ -871,7 +891,7 @@
                 },
                 storyboardFrames() {
                     if (this.currentScript?.storyboard?.length) return this.currentScript.storyboard;
-                    return (this.currentScenes || []).map(scene => ({
+                    return this.renderScenes.map(scene => ({
                         scene_number: scene.scene_number,
                         title: scene.title,
                         narrative: scene.narration_text,
@@ -887,6 +907,17 @@
                         narration: scene.narration_text,
                         approval_status: scene.approval_status || 'pending'
                     }));
+                },
+                renderScenes() {
+                    const deduped = [];
+                    const seen = new Set();
+                    for (const scene of (this.currentScenes || [])) {
+                        const number = Number(scene?.scene_number || 0);
+                        if (seen.has(number)) continue;
+                        seen.add(number);
+                        deduped.push(scene);
+                    }
+                    return deduped;
                 },
                 storyboardApprovedCount() {
                     return this.storyboardFrames.filter(frame => (frame.approval_status || 'pending') === 'approved').length;
@@ -1024,6 +1055,27 @@
                 jobsByStage(stage) {
                     return this.jobs.filter(item => item.kanban_stage === stage);
                 },
+                logSceneCounts(origin, receivedCount = null) {
+                    const renderedCount = (this.renderScenes || []).length;
+                    const rawCount = (this.currentScenes || []).length;
+                    const databaseCount = this.sceneDiagnostics?.database_scene_count ?? rawCount;
+                    const apiCount = this.sceneDiagnostics?.api_scene_count ?? rawCount;
+                    console.log("cenas recebidas", receivedCount ?? rawCount);
+                    console.log(`[BibleVideoFactoryUI] ${origin}: banco=${databaseCount} api=${apiCount} recebidas=${receivedCount ?? rawCount} renderizadas=${renderedCount}`);
+                },
+                async loadSceneDiagnostics() {
+                    if (!this.selectedScriptId) {
+                        this.sceneDiagnostics = null;
+                        return;
+                    }
+                    const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/scene-diagnostics`);
+                    const data = await res.json();
+                    if (!res.ok) {
+                        this.sceneDiagnostics = null;
+                        return;
+                    }
+                    this.sceneDiagnostics = data || null;
+                },
                 async bootstrap() {
                     this.loading = true;
                     try {
@@ -1160,6 +1212,7 @@
                     this.episodeScripts = [];
                     this.currentScript = null;
                     this.currentScenes = [];
+                    this.sceneDiagnostics = null;
                 },
                 async selectEpisode(ep) {
                     this.selectedEpisodeId = ep.id;
@@ -1184,10 +1237,16 @@
                         this.selectedScriptId = '';
                         this.currentScript = null;
                         this.currentScenes = [];
+                        this.sceneDiagnostics = null;
                     }
                 },
                 async loadSelectedScript() {
-                    if (!this.selectedScriptId) return;
+                    if (!this.selectedScriptId) {
+                        this.currentScript = null;
+                        this.currentScenes = [];
+                        this.sceneDiagnostics = null;
+                        return;
+                    }
                     const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}`);
                     const data = await res.json();
                     if (!res.ok) {
@@ -1198,6 +1257,8 @@
                     const sceneRes = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/scenes`);
                     const sceneData = await sceneRes.json();
                     this.currentScenes = sceneRes.ok ? (sceneData || []) : [];
+                    await this.loadSceneDiagnostics();
+                    this.logSceneCounts('loadSelectedScript');
                 },
                 async generateScript() {
                     try {
@@ -1290,6 +1351,48 @@
                         await this.bootstrap();
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao gerar cenas.');
+                    }
+                },
+                async clearScenesForScript() {
+                    try {
+                        if (!confirm('Deseja remover todas as cenas do roteiro atual?')) return;
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/clear-scenes`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao limpar cenas.');
+                        this.currentScenes = [];
+                        this.currentScript = data.script || this.currentScript;
+                        await this.loadSceneDiagnostics();
+                        this.logSceneCounts('clearScenesForScript', 0);
+                        this.notifySuccess('Cenas removidas com sucesso.');
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao limpar cenas.');
+                    }
+                },
+                async regenerateScenesForScript() {
+                    try {
+                        if (!confirm('Deseja apagar e regenerar todas as cenas deste roteiro?')) return;
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/regenerate-scenes`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao regenerar cenas.');
+                        this.currentScenes = data || [];
+                        this.activeTab = 'storyboard';
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess('Cenas regeneradas sem reaproveitar a lista anterior.');
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao regenerar cenas.');
+                    }
+                },
+                async deleteCurrentScript() {
+                    try {
+                        if (!confirm('Deseja excluir o roteiro atual? Essa acao remove as cenas ligadas a ele.')) return;
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}`, { method: 'DELETE' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao excluir roteiro.');
+                        await this.onEpisodeChange();
+                        this.notifySuccess(`Roteiro #${data.deleted_script_id} excluido com sucesso.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao excluir roteiro.');
                     }
                 },
                 async generateShortsForScript() {

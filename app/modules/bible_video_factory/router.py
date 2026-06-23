@@ -1,3 +1,4 @@
+import logging
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,8 @@ from app.routers.auth import get_current_user
 from app.redis_client import queue as rq_queue
 from app.models import User
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bible-video-factory", tags=["bible-video-factory"])
 _service = None
@@ -441,6 +444,15 @@ def get_script(script_id: int, db: Session = Depends(get_db), current_user: User
     return get_service().serialize_script(row)
 
 
+@router.delete("/scripts/{script_id}")
+def delete_script(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+    return get_service().delete_script(db, script, episode)
+
+
 @router.post("/scripts/{script_id}/validate")
 def validate_script(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
@@ -454,8 +466,18 @@ def validate_script(script_id: int, db: Session = Depends(get_db), current_user:
     return get_service().serialize_script(updated)
 
 
+@router.post("/scripts/{script_id}/clear-scenes")
+def clear_scenes(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+    return get_service().clear_scenes(db, script, episode)
+
+
 @router.post("/scripts/{script_id}/generate-scenes")
 def generate_scenes(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    logger.info("generate-scenes script_id=%s user_id=%s", script_id, current_user.id)
     script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
     if not script:
         raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
@@ -464,6 +486,24 @@ def generate_scenes(script_id: int, db: Session = Depends(get_db), current_user:
     if not episode:
         raise HTTPException(status_code=404, detail="Episodio nao encontrado.")
     created = get_service().generate_scenes(db, script, episode, series)
+    logger.info("generate-scenes resultado script_id=%s cenas_persistidas=%s", script_id, len(created))
+    return [get_service().serialize_scene(row) for row in created]
+
+
+@router.post("/scripts/{script_id}/regenerate-scenes")
+def regenerate_scenes(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    logger.info("regenerate-scenes script_id=%s user_id=%s", script_id, current_user.id)
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+    series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episodio nao encontrado.")
+    get_service().clear_scenes(db, script, episode)
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    created = get_service().generate_scenes(db, script, episode, series)
+    logger.info("regenerate-scenes resultado script_id=%s cenas_persistidas=%s", script_id, len(created))
     return [get_service().serialize_scene(row) for row in created]
 
 
@@ -519,7 +559,25 @@ def list_scenes(script_id: int, db: Session = Depends(get_db), current_user: Use
         .order_by(BibleVideoScene.scene_number.asc())
         .all()
     )
-    return [get_service().serialize_scene(row) for row in rows]
+    serialized = [get_service().serialize_scene(row) for row in rows]
+    deduped = []
+    seen_numbers = set()
+    for item in serialized:
+        scene_number = int((item or {}).get("scene_number") or 0)
+        if scene_number in seen_numbers:
+            continue
+        seen_numbers.add(scene_number)
+        deduped.append(item)
+    logger.info("cenas retornadas script_id=%s banco=%s api=%s", script_id, len(rows), len(deduped))
+    return deduped
+
+
+@router.get("/scripts/{script_id}/scene-diagnostics")
+def scene_diagnostics(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    return get_service().scene_diagnostics(db, script)
 
 
 @router.post("/scripts/{script_id}/generate-shorts")

@@ -1,3 +1,4 @@
+import logging
 import json
 import math
 import os
@@ -28,6 +29,8 @@ from app.services.ai_generator import AIContentGenerator
 from app.services.task_manager import create_task, get_task, update_task
 from app.services.video_generator import VideoGenerator
 from app.services.youtube_service import YouTubeService
+
+logger = logging.getLogger(__name__)
 
 
 KANBAN_STAGES = [
@@ -62,6 +65,7 @@ class BibleVideoFactoryService:
                 "cliffhanger_required": True,
                 "minimum_retention_score": 80,
                 "minimum_cliffhanger_score": 85,
+                "cliffhanger_prompt_weight": "maximo",
                 "strong_hook_first_15_seconds": True,
                 "narrative_tone": "cinematografico",
                 "emotional_curve": "crescente",
@@ -382,10 +386,57 @@ class BibleVideoFactoryService:
             "approval_status": self._normalize_text(item.get("approval_status") or "pending"),
         }
 
+    def _scene_identity_key(self, item: Dict[str, Any], fallback_index: int) -> str:
+        if not isinstance(item, dict):
+            return f"fallback:{fallback_index}"
+        scene_number = self._normalize_int(item.get("scene_number"), 0)
+        if scene_number > 0:
+            return f"scene_number:{scene_number}"
+        title = self._normalize_text(item.get("title")).lower()
+        narration = self._normalize_text(item.get("narration") or item.get("narration_text") or item.get("text")).lower()
+        if title or narration:
+            return f"text:{title}|{narration[:180]}"
+        return f"fallback:{fallback_index}"
+
+    def _merge_scene_like_items(self, base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(base, dict):
+            base = {}
+        if not isinstance(incoming, dict):
+            incoming = {}
+        merged = dict(base)
+        for key, value in incoming.items():
+            if key not in merged or not self._normalize_text(merged.get(key)):
+                merged[key] = value
+        return merged
+
+    def _dedupe_scene_dicts(self, items: Any, renumber: bool = True, log_label: str = "scenes") -> List[Dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        deduped_map = {}
+        ordered_keys = []
+        for idx, raw in enumerate(items):
+            item = dict(raw) if isinstance(raw, dict) else {"text": self._normalize_text(raw)}
+            key = self._scene_identity_key(item, idx)
+            if key in deduped_map:
+                deduped_map[key] = self._merge_scene_like_items(deduped_map[key], item)
+            else:
+                deduped_map[key] = item
+                ordered_keys.append(key)
+        deduped = [deduped_map[key] for key in ordered_keys]
+        if renumber:
+            for idx, item in enumerate(deduped, start=1):
+                item["scene_number"] = idx
+                item["title"] = self._normalize_text(item.get("title") or f"Cena {idx}")
+        print(
+            f"[BibleVideoFactoryService] {log_label}: entradas={len(items)} unicas={len(deduped)} duplicadas_removidas={max(0, len(items) - len(deduped))}"
+        )
+        return deduped
+
     def _normalize_storyboard_list(self, storyboard: Any) -> List[Dict[str, Any]]:
         if not isinstance(storyboard, list):
             return []
-        return [self._normalize_storyboard_frame(item, idx + 1) for idx, item in enumerate(storyboard)]
+        normalized = [self._normalize_storyboard_frame(item, idx + 1) for idx, item in enumerate(storyboard)]
+        return [self._normalize_storyboard_frame(item, idx + 1) for idx, item in enumerate(self._dedupe_scene_dicts(normalized, renumber=True, log_label="storyboard"))]
 
     def _get_storyboard(self, script: BibleVideoScript) -> List[Dict[str, Any]]:
         package = self._extract_script_package(script)
@@ -405,7 +456,7 @@ class BibleVideoFactoryService:
                     "scene_number": self._normalize_int(item.get("scene_number") or idx + 1, idx + 1),
                 }
             )
-        return normalized
+        return self._dedupe_scene_dicts(normalized, renumber=True, log_label="scene_sources")
 
     def _scene_source_to_storyboard_frame(self, item: Dict[str, Any], idx: int) -> Dict[str, Any]:
         return self._normalize_storyboard_frame(
@@ -674,29 +725,44 @@ class BibleVideoFactoryService:
         text = self._normalize_text(cliffhanger)
         combined = self._normalize_text(f"{text} {next_episode_cta}").lower()
         emotion_keywords = ["medo", "dor", "lagr", "coracao", "culpa", "esperanca", "choque", "angust", "tremia", "emocao"]
-        revelation_keywords = ["revelacao", "segredo", "verdade", "descobrir", "mostrar", "revelar", "ainda nao sabia", "viria a tona"]
-        threat_keywords = ["ameaca", "terrivel", "perigo", "inimigo", "morte", "destruicao", "armadilha", "contra", "farao", "gigante"]
-        promise_keywords = ["promessa", "destino", "chamado", "vitoria", "libertacao", "deus faria", "deus mostraria", "cumprir", "proposito"]
+        revelation_keywords = ["revelacao", "segredo", "verdade", "descobrir", "mostrar", "revelar", "ainda nao sabia", "viria a tona", "mudaria para sempre", "mudara para sempre", "nao estava completo", "incompleta"]
+        threat_keywords = ["ameaca", "terrivel", "perigo", "inimigo", "morte", "destruicao", "armadilha", "contra", "farao", "gigante", "risco", "consequencia", "poderia perder", "custo"]
+        promise_keywords = ["promessa", "destino", "chamado", "vitoria", "libertacao", "deus faria", "deus mostraria", "cumprir", "proposito", "no proximo episodio", "mudara para sempre", "mudaria para sempre"]
         future_keywords = ["em breve", "logo", "no proximo", "ainda", "viria", "estava prestes", "estava por", "futuro", "seguinte"]
 
         components = {
             "gancho_emocional": self._keyword_hits(text, emotion_keywords) > 0,
             "pergunta_sem_resposta": self._has_question_signal(text),
-            "revelacao_futura": self._keyword_hits(combined, revelation_keywords) > 0 and self._keyword_hits(combined, future_keywords) > 0,
-            "ameaca_futura": self._keyword_hits(combined, threat_keywords) > 0 and self._keyword_hits(combined, future_keywords) > 0,
-            "promessa_futura": self._keyword_hits(combined, promise_keywords) > 0 and self._keyword_hits(combined, future_keywords) > 0,
+            "revelacao_futura": self._keyword_hits(combined, revelation_keywords) > 0,
+            "ameaca_futura": self._keyword_hits(combined, threat_keywords) > 0,
+            "promessa_futura": self._keyword_hits(combined, promise_keywords) > 0,
         }
+        components["revelacao_incompleta"] = components["revelacao_futura"] and (
+            "?" in text
+            or any(token in combined for token in ["incompleta", "ainda nao", "viria a tona", "o que", "por que", "quem", "nao estava completo", "descobrir"])
+        )
+        components["risco_ou_consequencia_futura"] = components["ameaca_futura"] and (
+            self._keyword_hits(combined, future_keywords) > 0
+            or any(token in combined for token in ["vai", "ira", "pode", "podera", "mudara", "mudaria", "destruir", "custo", "consequencia", "destino"])
+        )
 
         impact_score = 20 if text else 0
-        impact_score += 12 if text.lower().startswith("mas") else 0
+        impact_score += 8 if text.lower().startswith("mas") else 0
         impact_score += 12 if components["gancho_emocional"] else 0
-        impact_score += 18 if components["pergunta_sem_resposta"] else 0
-        impact_score += 16 if components["revelacao_futura"] else 0
-        impact_score += 16 if components["ameaca_futura"] else 0
-        impact_score += 16 if components["promessa_futura"] else 0
-        impact_score += min(10, self._keyword_hits(combined, future_keywords) * 2)
-        if netflix_mode and all(components.values()):
-            impact_score += 8
+        impact_score += 20 if components["pergunta_sem_resposta"] else 0
+        impact_score += 18 if components["promessa_futura"] else 0
+        impact_score += 18 if components["revelacao_incompleta"] else (10 if components["revelacao_futura"] else 0)
+        impact_score += 18 if components["risco_ou_consequencia_futura"] else (10 if components["ameaca_futura"] else 0)
+        impact_score += min(8, self._keyword_hits(combined, future_keywords) * 2)
+        if netflix_mode and all(
+            [
+                components["pergunta_sem_resposta"],
+                components["promessa_futura"],
+                components["revelacao_incompleta"],
+                components["risco_ou_consequencia_futura"],
+            ]
+        ):
+            impact_score += 10
         impact_score = min(100, impact_score)
 
         notes = []
@@ -720,12 +786,28 @@ class BibleVideoFactoryService:
             notes.append("Promessa futura esta presente.")
         else:
             notes.append("Inclua promessa futura que recompense o espectador.")
+        if not components["revelacao_incompleta"]:
+            notes.append("A revelacao ainda precisa ficar incompleta para aumentar curiosidade.")
+        if not components["risco_ou_consequencia_futura"]:
+            notes.append("Falta risco ou consequencia futura explicita no ultimo bloco.")
 
         return {
             "impact_score": impact_score,
             "components": components,
             "notes": notes,
-            "netflix_requirements_met": all(components.values()) if netflix_mode else True,
+            "netflix_requirements_met": (
+                all(
+                    [
+                        components["gancho_emocional"],
+                        components["pergunta_sem_resposta"],
+                        components["promessa_futura"],
+                        components["revelacao_incompleta"],
+                        components["risco_ou_consequencia_futura"],
+                    ]
+                )
+                if netflix_mode
+                else True
+            ),
         }
 
     def _ensure_netflix_cliffhanger(self, cliffhanger: Any, episode: BibleVideoEpisode, series: Optional[BibleVideoSeries], next_episode_cta: str) -> str:
@@ -734,18 +816,31 @@ class BibleVideoFactoryService:
         if current and analysis.get("netflix_requirements_met"):
             return current
         hero = self._normalize_text(series.main_character if series else "") or self._normalize_text(episode.title) or "o protagonista"
-        emotional_hook = current
-        if not emotional_hook:
-            emotional_hook = f"Mas o coracao de {hero} ainda carregava medo e expectativa, e ninguem imaginava o que viria a seguir."
-        elif not emotional_hook.lower().startswith("mas"):
-            emotional_hook = f"Mas {emotional_hook[:1].lower()}{emotional_hook[1:]}" if len(emotional_hook) > 1 else f"Mas {emotional_hook}"
-        if not self._keyword_hits(emotional_hook, ["medo", "coracao", "dor", "expectativa", "culpa", "angust", "esperanca", "tremia", "emocao"]):
-            emotional_hook = f"Mas o coracao de {hero} ainda carregava medo e expectativa, e {emotional_hook.lstrip()}"
-        unresolved_question = f"O que {hero} descobriria quando a verdade finalmente viesse a tona?"
-        future_revelation = f"Uma revelacao futura estava prestes a expor o que ainda estava escondido."
-        future_threat = f"Ao mesmo tempo, uma ameaca futura ja se movia em silencio para destruir tudo."
-        future_promise = f"E a promessa futura de Deus para {hero} comecaria a se cumprir no proximo episodio."
-        return self._normalize_text(" ".join([emotional_hook, unresolved_question, future_revelation, future_threat, future_promise, self._normalize_text(next_episode_cta)]))
+        emotional_setup = self._normalize_text(current)
+        if not emotional_setup:
+            emotional_setup = f"{hero} e observado em silencio, mas seu olhar ainda carrega medo, destino e algo que ninguem consegue explicar."
+        if not emotional_setup.lower().startswith("mas"):
+            emotional_setup = f"Mas {emotional_setup[:1].lower()}{emotional_setup[1:]}" if len(emotional_setup) > 1 else f"Mas {emotional_setup}"
+        opening_line = f"Samuel observa {hero} em silencio." if hero.lower() != "o protagonista" else f"Todos observam {hero} em silencio."
+        question_one = f"Mas uma pergunta permanece: por que Deus escolheu justamente {hero}?"
+        question_two = f"O que sera revelado quando a verdade sobre {hero} finalmente vier a tona?"
+        incomplete_revelation = f"No proximo episodio, uma revelacao ainda incompleta comecara a mudar para sempre o destino desta historia."
+        future_risk = f"Se essa resposta vier tarde demais, Israel enfrentara uma consequencia que pode abalar tudo."
+        future_promise = f"E a promessa de Deus para {hero} comecara a se cumprir de forma impossivel de ignorar no proximo episodio."
+        return self._normalize_text(
+            " ".join(
+                [
+                    opening_line,
+                    emotional_setup,
+                    question_one,
+                    question_two,
+                    incomplete_revelation,
+                    future_risk,
+                    future_promise,
+                    self._normalize_text(next_episode_cta),
+                ]
+            )
+        )
 
     def _enforce_storyboard_approval_rules(self, script: BibleVideoScript, series: Optional[BibleVideoSeries]):
         profile_config = self.resolve_series_profile(series)
@@ -1261,6 +1356,118 @@ class BibleVideoFactoryService:
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
+    def clear_scenes(self, db: Session, script: BibleVideoScript, episode: Optional[BibleVideoEpisode] = None, commit: bool = True) -> Dict[str, Any]:
+        database_scene_count = (
+            db.query(BibleVideoScene)
+            .filter(BibleVideoScene.script_id == script.id)
+            .count()
+        )
+        db.query(BibleVideoScene).filter(BibleVideoScene.script_id == script.id).delete()
+        script.scenes_json = self._json_dumps([])
+        self._save_script_package(
+            script,
+            {
+                "storyboard": [],
+                "production_blueprint": {
+                    **(self._extract_script_package(script).get("production_blueprint") or {}),
+                    "scene_count": 0,
+                    "pipeline_status": "script_generated",
+                },
+            },
+        )
+        if episode:
+            episode.status = "script_generated"
+        if commit:
+            db.commit()
+            db.refresh(script)
+            if episode:
+                db.refresh(episode)
+        logger.info("cenas removidas script_id=%s banco=%s", script.id, database_scene_count)
+        return {
+            "database_scene_count": database_scene_count,
+            "script": self.serialize_script(script),
+        }
+
+    def delete_script(self, db: Session, script: BibleVideoScript, episode: Optional[BibleVideoEpisode] = None) -> Dict[str, Any]:
+        database_scene_count = (
+            db.query(BibleVideoScene)
+            .filter(BibleVideoScene.script_id == script.id)
+            .count()
+        )
+        related_job_count = (
+            db.query(BibleVideoJob)
+            .filter(BibleVideoJob.script_id == script.id)
+            .count()
+        )
+        db.query(BibleVideoScene).filter(BibleVideoScene.script_id == script.id).delete()
+        db.query(BibleVideoJob).filter(BibleVideoJob.script_id == script.id).delete()
+        deleted_script_id = script.id
+        deleted_episode_id = script.episode_id
+        db.delete(script)
+        db.commit()
+        remaining_scripts = (
+            db.query(BibleVideoScript)
+            .filter(BibleVideoScript.episode_id == deleted_episode_id)
+            .count()
+        )
+        if episode and remaining_scripts == 0:
+            episode.status = "idea"
+            db.commit()
+            db.refresh(episode)
+        logger.info(
+            "roteiro excluido script_id=%s cenas_removidas=%s jobs_removidos=%s roteiros_restantes=%s",
+            deleted_script_id,
+            database_scene_count,
+            related_job_count,
+            remaining_scripts,
+        )
+        return {
+            "deleted_script_id": deleted_script_id,
+            "database_scene_count": database_scene_count,
+            "related_job_count": related_job_count,
+            "remaining_scripts": remaining_scripts,
+        }
+
+    def scene_diagnostics(self, db: Session, script: BibleVideoScript) -> Dict[str, Any]:
+        rows = (
+            db.query(BibleVideoScene)
+            .filter(BibleVideoScene.script_id == script.id)
+            .order_by(BibleVideoScene.scene_number.asc(), BibleVideoScene.id.asc())
+            .all()
+        )
+        serialized = [self.serialize_scene(row) for row in rows]
+        deduped = []
+        seen_numbers = set()
+        duplicate_numbers = []
+        for item in serialized:
+            scene_number = int((item or {}).get("scene_number") or 0)
+            if scene_number in seen_numbers:
+                duplicate_numbers.append(scene_number)
+                continue
+            seen_numbers.add(scene_number)
+            deduped.append(item)
+        scripts_for_episode = (
+            db.query(BibleVideoScript)
+            .filter(BibleVideoScript.episode_id == script.episode_id)
+            .count()
+        )
+        diagnostics = {
+            "script_id": script.id,
+            "episode_id": script.episode_id,
+            "database_scene_count": len(rows),
+            "api_scene_count": len(deduped),
+            "duplicate_scene_numbers": sorted({number for number in duplicate_numbers if number > 0}),
+            "script_versions_count": scripts_for_episode,
+        }
+        logger.info(
+            "diagnostico cenas script_id=%s banco=%s api=%s duplicadas=%s",
+            script.id,
+            diagnostics["database_scene_count"],
+            diagnostics["api_scene_count"],
+            diagnostics["duplicate_scene_numbers"],
+        )
+        return diagnostics
+
     def serialize_character(self, row: BibleVideoCharacter) -> Dict[str, Any]:
         profile = self._character_profile(row)
         return {
@@ -1657,7 +1864,12 @@ class BibleVideoFactoryService:
             "- preservar fidelidade biblica.\n"
             f"- perfil especial ativo: {'Serie Netflix Biblica' if profile_config else 'padrao'}.\n"
             f"- cliffhanger obrigatorio: {'sim' if profile_config.get('cliffhanger_required') else 'nao'}.\n"
+            f"- peso do cliffhanger neste perfil: {self._normalize_text(profile_config.get('cliffhanger_prompt_weight') or 'alto')}.\n"
             f"- nota minima de retencao desejada: {self._normalize_int(profile_config.get('minimum_retention_score'), 0) or 'livre'}.\n"
+            "- no modo Serie Netflix Biblica, o ultimo bloco do episodio e a parte mais importante do roteiro.\n"
+            "- o ultimo bloco deve conter obrigatoriamente: uma pergunta sem resposta, uma promessa forte para o proximo episodio, uma revelacao incompleta e um risco ou consequencia futura.\n"
+            "- esse ultimo bloco nao pode terminar apenas encerrando a cena nem com frase vaga.\n"
+            "- prefira duas perguntas curtas seguidas de promessa, revelacao e risco futuro claros.\n"
             "- gerar exatamente 3 shorts automaticos por episodio: gancho, momento emocional e cliffhanger.\n"
             "Cada item de scenes deve conter: scene_number, title, duration, emotion, visual_description, camera_direction, narration, sound_effects, music_style, prompt_image, prompt_video, prompt_animation, prompt_cinematic.\n"
             "retention_analysis deve conter: overall_score, hook_strength, conflict_score, emotion_score, dramatic_progression_score, revelation_score, cliffhanger_score, retention_score, viralization_score, notes.\n"
@@ -1927,7 +2139,9 @@ class BibleVideoFactoryService:
                     f"A meta minima deste perfil e {min_retention}/100.\n"
                     f"Pontos fracos detectados: {weak_points}\n"
                     "Reescreva o roteiro com gancho mais agressivo nos primeiros 15 segundos, conflito mais claro, emocao crescente, progressao dramatica perceptivel e cliffhanger cinematografico no final.\n"
-                    "No perfil Serie Netflix Biblica, o cliffhanger final precisa obrigatoriamente conter gancho emocional, pergunta sem resposta, revelacao futura, ameaca futura e promessa futura.\n"
+                    "No perfil Serie Netflix Biblica, o cliffhanger final e o bloco mais importante do episodio.\n"
+                    "Ele precisa obrigatoriamente conter pergunta sem resposta, promessa forte para o proximo episodio, revelacao incompleta e risco ou consequencia futura.\n"
+                    "Nao aceite um final vago como 'ha algo especial' ou frases que apenas encerram a cena.\n"
                     "Nao explique o que mudou. Apenas retorne o JSON final completo.\n"
                 )
             generated_data = self._generate_json(
@@ -2114,6 +2328,7 @@ class BibleVideoFactoryService:
         if not isinstance(source, list) or not source:
             paragraphs = self._split_text_chunks(script.full_narration, max(6, int(script.desired_duration_minutes or 5) * 2))
             source = [{"text": p, "image_prompt": p[:200], "caption": p[:120]} for p in paragraphs]
+        source = self._dedupe_scene_dicts(source, renumber=True, log_label="scene_source_before_generation")
         characters = db.query(BibleVideoCharacter).filter(BibleVideoCharacter.series_id == script.series_id).all()
         scenarios = db.query(BibleVideoScenario).filter(BibleVideoScenario.series_id == script.series_id).all()
         character_profiles = [self._character_profile(row) for row in characters]
@@ -2176,6 +2391,15 @@ class BibleVideoFactoryService:
         scenes_data = data.get("scenes") if isinstance(data, dict) else None
         if not isinstance(scenes_data, list) or not scenes_data:
             scenes_data = fallback["scenes"]
+        ai_scene_count = len(scenes_data)
+        scenes_data = self._dedupe_scene_dicts(scenes_data, renumber=True, log_label="ai_generated_scenes")
+        logger.info("cenas geradas %s", len(scenes_data))
+        logger.info(
+            "diagnostico geracao_cenas script_id=%s recebidas_da_ia=%s persistidas_planejadas=%s",
+            script.id,
+            ai_scene_count,
+            len(scenes_data),
+        )
 
         created = []
         for idx, item in enumerate(scenes_data):
@@ -2289,6 +2513,7 @@ class BibleVideoFactoryService:
         )
         episode.status = "storyboard_generated"
         db.commit()
+        logger.info("cenas persistidas script_id=%s banco=%s", script.id, len(created))
         for row in created:
             db.refresh(row)
         return created
