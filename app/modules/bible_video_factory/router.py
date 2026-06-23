@@ -1,8 +1,10 @@
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -193,6 +195,29 @@ def _save_upload(file: UploadFile, folder: str) -> Dict[str, str]:
     }
 
 
+def _normalize_scalar(value: Any) -> Any:
+    if isinstance(value, list):
+        return value[0] if value else ""
+    if value is None:
+        return ""
+    return value
+
+
+def _normalize_text(value: Any) -> str:
+    value = _normalize_scalar(value)
+    return str(value).strip()
+
+
+def _normalize_int(value: Any, default: int) -> int:
+    value = _normalize_scalar(value)
+    if value in ("", None):
+        return default
+    try:
+        return int(float(str(value).strip()))
+    except Exception:
+        return default
+
+
 def _enqueue_job(job_id: int):
     if not rq_queue:
         process_bible_video_job(job_id)
@@ -320,23 +345,71 @@ def list_episode_scripts(episode_id: int, db: Session = Depends(get_db), current
 
 
 @router.post("/episodes/{episode_id}/generate-script")
-def generate_script(episode_id: int, payload: ScriptGenerateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == episode_id, BibleVideoEpisode.user_id == current_user.id).first()
-    if not episode:
-        raise HTTPException(status_code=404, detail="Episodio nao encontrado.")
-    script = get_service().generate_script_for_episode(
-        db,
-        user_id=current_user.id,
-        episode=episode,
-        desired_duration_minutes=payload.desired_duration_minutes,
-        narrative_style=payload.narrative_style,
-        drama_level=payload.drama_level,
-        biblical_fidelity_level=payload.biblical_fidelity_level,
-        target_audience=payload.target_audience,
-        subscribe_cta=payload.subscribe_cta or "",
-        next_episode_cta=payload.next_episode_cta or "",
+async def generate_script(episode_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {"raw_payload": payload}
+
+    raw_episode_id = payload.get("episode_id") or payload.get("selected_episode") or episode_id
+    raw_series_id = payload.get("series_id") or payload.get("selected_series") or ""
+    desired_duration_minutes = _normalize_int(payload.get("desired_duration_minutes"), 5)
+    narrative_style = _normalize_text(payload.get("narrative_style") or payload.get("tone") or "emocionante")
+    drama_level = _normalize_int(payload.get("drama_level"), 7)
+    biblical_fidelity_level = _normalize_int(payload.get("biblical_fidelity_level"), 9)
+    target_audience = _normalize_text(payload.get("target_audience") or payload.get("audience") or "familia")
+    subscribe_cta = _normalize_text(payload.get("subscribe_cta") or payload.get("call_to_action") or "")
+    next_episode_cta = _normalize_text(payload.get("next_episode_cta") or payload.get("next_episode_hook") or "")
+
+    print("[BibleVideoFactory] generate-script payload recebido:", payload)
+    print(
+        "[BibleVideoFactory] generate-script campos normalizados:",
+        {
+            "series_id": raw_series_id,
+            "episode_id_path": episode_id,
+            "episode_id_payload": raw_episode_id,
+            "selected_series": payload.get("selected_series"),
+            "selected_episode": payload.get("selected_episode"),
+            "duration": desired_duration_minutes,
+            "tone": narrative_style,
+            "drama": drama_level,
+            "biblical_fidelity": biblical_fidelity_level,
+            "target_audience": target_audience,
+            "call_to_action": subscribe_cta,
+            "next_episode_hook": next_episode_cta,
+        },
     )
-    return get_service().serialize_script(script)
+
+    try:
+        safe_episode_id = _normalize_int(raw_episode_id, episode_id)
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == safe_episode_id, BibleVideoEpisode.user_id == current_user.id).first()
+        if not episode:
+            return JSONResponse(status_code=404, content={"success": False, "error": "Episodio nao encontrado."})
+
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == episode.series_id).first()
+        print("[BibleVideoFactory] serie recebida:", get_service().serialize_series(series) if series else None)
+        print("[BibleVideoFactory] episodio recebido:", get_service().serialize_episode(episode))
+
+        script = get_service().generate_script_for_episode(
+            db,
+            user_id=current_user.id,
+            episode=episode,
+            desired_duration_minutes=desired_duration_minutes,
+            narrative_style=narrative_style,
+            drama_level=drama_level,
+            biblical_fidelity_level=biblical_fidelity_level,
+            target_audience=target_audience,
+            subscribe_cta=subscribe_cta,
+            next_episode_cta=next_episode_cta,
+        )
+        return get_service().serialize_script(script)
+    except Exception as e:
+        tb = traceback.format_exc()
+        print("[BibleVideoFactory] Erro ao gerar roteiro:", str(e))
+        print(tb)
+        return JSONResponse(status_code=500, content={"success": False, "error": f"{str(e)}", "traceback": tb})
 
 
 @router.get("/scripts/{script_id}")
@@ -623,7 +696,7 @@ def approve_job(job_id: int, payload: ApprovalRequest, db: Session = Depends(get
     row = db.query(BibleVideoJob).filter(BibleVideoJob.id == job_id, BibleVideoJob.user_id == current_user.id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Job nao encontrado.")
-    updated = get_service().approve_job(db, row, notes=(payload.notes or "").strip())
+    updated = get_service().approve_job(db, row, notes=_normalize_text(payload.notes))
     return get_service().serialize_job(updated)
 
 

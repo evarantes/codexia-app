@@ -49,6 +49,26 @@ class BibleVideoFactoryService:
     def __init__(self):
         self.ai = AIContentGenerator()
 
+    def _normalize_scalar(self, value: Any) -> Any:
+        if isinstance(value, list):
+            return value[0] if value else ""
+        if value is None:
+            return ""
+        return value
+
+    def _normalize_text(self, value: Any) -> str:
+        value = self._normalize_scalar(value)
+        return str(value).strip()
+
+    def _normalize_int(self, value: Any, default: int = 0) -> int:
+        value = self._normalize_scalar(value)
+        if value in ("", None):
+            return default
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return default
+
     def _json_dumps(self, value: Any) -> str:
         try:
             return json.dumps(value or {}, ensure_ascii=False)
@@ -66,7 +86,7 @@ class BibleVideoFactoryService:
             return default
 
     def _sanitize_ai_json_text(self, text: str) -> str:
-        t = str(text or "").strip()
+        t = self._normalize_text(text)
         if not t:
             return t
         if t.startswith("```"):
@@ -83,7 +103,7 @@ class BibleVideoFactoryService:
         end = max(end_obj, end_arr)
         if end >= 0:
             t = t[: end + 1]
-        return t.strip()
+        return self._normalize_text(t)
 
     def _generate_json(self, prompt: str, system_prompt: str, fallback: Any):
         try:
@@ -96,7 +116,7 @@ class BibleVideoFactoryService:
             return fallback
 
     def _split_text_chunks(self, text: str, count: int) -> List[str]:
-        raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        raw = self._normalize_text(text).replace("\r\n", "\n").replace("\r", "\n")
         if not raw:
             return []
         parts = [p.strip() for p in raw.split("\n\n") if p.strip()]
@@ -314,7 +334,7 @@ class BibleVideoFactoryService:
 
     def serialize_config(self, row: BibleVideoConfig) -> Dict[str, Any]:
         def _masked(value: Optional[str]) -> bool:
-            return bool(str(value or "").strip())
+            return bool(self._normalize_text(value))
 
         return {
             "id": row.id,
@@ -500,7 +520,7 @@ class BibleVideoFactoryService:
                     "opening_hook": f"O que ninguem percebeu no inicio desta historia de {series.main_character or series.name}?",
                     "development": chunk[:700],
                     "tension_moment": chunk[:240],
-                    "impact_phrase": (chunk[:120] or series.name).strip(),
+                    "impact_phrase": self._normalize_text(chunk[:120] or series.name),
                     "ending_hook": f"No proximo episodio, o destino de {series.main_character or series.name} muda de forma inesperada.",
                     "short_suggestion": chunk[:160],
                     "thumbnail_suggestion": self._title_from_chunk(series, idx + 1, chunk).upper()[:60],
@@ -542,19 +562,19 @@ class BibleVideoFactoryService:
             ep = BibleVideoEpisode(
                 series_id=series.id,
                 user_id=user_id,
-                episode_number=int(item.get("episode_number") or idx + 1),
-                title=(item.get("title") or f"{series.name} - Episodio {idx + 1}").strip()[:150],
-                summary=(item.get("summary") or "").strip(),
-                biblical_basis=(item.get("biblical_basis") or series.bible_book or "").strip(),
-                opening_hook=(item.get("opening_hook") or "").strip(),
-                development_text=(item.get("development") or "").strip(),
-                tension_moment=(item.get("tension_moment") or "").strip(),
-                impact_phrase=(item.get("impact_phrase") or "").strip(),
-                ending_hook=(item.get("ending_hook") or "").strip(),
-                short_suggestion=(item.get("short_suggestion") or "").strip(),
-                thumbnail_suggestion=(item.get("thumbnail_suggestion") or "").strip(),
-                youtube_title_suggestion=(item.get("youtube_title_suggestion") or "").strip(),
-                estimated_minutes=int(series.episode_duration_minutes or 5),
+                episode_number=self._normalize_int(item.get("episode_number") or idx + 1, idx + 1),
+                title=self._normalize_text(item.get("title") or f"{series.name} - Episodio {idx + 1}")[:150],
+                summary=self._normalize_text(item.get("summary")),
+                biblical_basis=self._normalize_text(item.get("biblical_basis") or series.bible_book or ""),
+                opening_hook=self._normalize_text(item.get("opening_hook")),
+                development_text=self._normalize_text(item.get("development")),
+                tension_moment=self._normalize_text(item.get("tension_moment")),
+                impact_phrase=self._normalize_text(item.get("impact_phrase")),
+                ending_hook=self._normalize_text(item.get("ending_hook")),
+                short_suggestion=self._normalize_text(item.get("short_suggestion")),
+                thumbnail_suggestion=self._normalize_text(item.get("thumbnail_suggestion")),
+                youtube_title_suggestion=self._normalize_text(item.get("youtube_title_suggestion")),
+                estimated_minutes=self._normalize_int(series.episode_duration_minutes or 5, 5),
                 status="script_generated",
                 approval_status="pending",
             )
@@ -583,6 +603,30 @@ class BibleVideoFactoryService:
         config = self.get_or_create_config(db, user_id)
         characters = db.query(BibleVideoCharacter).filter(BibleVideoCharacter.series_id == episode.series_id).all()
         scenarios = db.query(BibleVideoScenario).filter(BibleVideoScenario.series_id == episode.series_id).all()
+        desired_duration_minutes = self._normalize_int(desired_duration_minutes, int(episode.estimated_minutes or 5))
+        narrative_style = self._normalize_text(narrative_style or (series.narrative_tone if series else "") or "emocionante")
+        drama_level = self._normalize_int(drama_level, 7)
+        biblical_fidelity_level = self._normalize_int(biblical_fidelity_level, 9)
+        target_audience = self._normalize_text(target_audience or episode.title)
+        subscribe_cta = self._normalize_text(subscribe_cta or config.default_cta or "")
+        next_episode_cta = self._normalize_text(next_episode_cta or config.default_next_episode_cta or "")
+
+        print(
+            "[BibleVideoFactoryService] generate_script_for_episode entrada:",
+            {
+                "series_id": episode.series_id,
+                "episode_id": episode.id,
+                "selected_series": series.name if series else None,
+                "selected_episode": episode.title,
+                "duration": desired_duration_minutes,
+                "tone": narrative_style,
+                "drama": drama_level,
+                "biblical_fidelity": biblical_fidelity_level,
+                "target_audience": target_audience,
+                "call_to_action": subscribe_cta,
+                "next_episode_hook": next_episode_cta,
+            },
+        )
         prompt = (
             "Crie um roteiro biblico em JSON para video episodico.\n"
             "Retorne as chaves: full_narration, scenes, optional_dialogues, voice_emotion_notes, soundtrack_notes, sound_effects_notes, retention_hooks.\n"
@@ -609,9 +653,13 @@ class BibleVideoFactoryService:
             f"Cenarios cadastrados: {', '.join([s.name for s in scenarios])}\n"
         )
         fallback_scenes = []
-        base_text = "\n\n".join(
-            x for x in [episode.opening_hook, episode.summary, episode.development_text, episode.tension_moment, episode.ending_hook] if x
-        ).strip()
+        base_text = self._normalize_text(
+            "\n\n".join(
+                self._normalize_text(x)
+                for x in [episode.opening_hook, episode.summary, episode.development_text, episode.tension_moment, episode.ending_hook]
+                if self._normalize_text(x)
+            )
+        )
         paragraphs = self._split_text_chunks(base_text, max(6, desired_duration_minutes * 2))
         for idx, item in enumerate(paragraphs):
             fallback_scenes.append(
@@ -639,19 +687,19 @@ class BibleVideoFactoryService:
             series_id=episode.series_id,
             episode_id=episode.id,
             user_id=user_id,
-            desired_duration_minutes=int(desired_duration_minutes or episode.estimated_minutes or 5),
-            narrative_style=(narrative_style or series.narrative_tone or "emocionante").strip(),
-            drama_level=int(drama_level or 7),
-            biblical_fidelity_level=int(biblical_fidelity_level or 9),
-            target_audience=(target_audience or episode.title).strip(),
-            subscribe_cta=(subscribe_cta or config.default_cta or "").strip(),
-            next_episode_cta=(next_episode_cta or config.default_next_episode_cta or "").strip(),
-            full_narration=(data.get("full_narration") or fallback["full_narration"]).strip(),
+            desired_duration_minutes=self._normalize_int(desired_duration_minutes or episode.estimated_minutes or 5, 5),
+            narrative_style=narrative_style,
+            drama_level=self._normalize_int(drama_level, 7),
+            biblical_fidelity_level=self._normalize_int(biblical_fidelity_level, 9),
+            target_audience=target_audience,
+            subscribe_cta=subscribe_cta,
+            next_episode_cta=next_episode_cta,
+            full_narration=self._normalize_text(data.get("full_narration") or fallback["full_narration"]),
             scenes_json=self._json_dumps(data.get("scenes") or fallback["scenes"]),
             optional_dialogues_json=self._json_dumps(data.get("optional_dialogues") or []),
-            voice_emotion_notes=(data.get("voice_emotion_notes") or fallback["voice_emotion_notes"]).strip(),
-            soundtrack_notes=(data.get("soundtrack_notes") or fallback["soundtrack_notes"]).strip(),
-            sound_effects_notes=(data.get("sound_effects_notes") or fallback["sound_effects_notes"]).strip(),
+            voice_emotion_notes=self._normalize_text(data.get("voice_emotion_notes") or fallback["voice_emotion_notes"]),
+            soundtrack_notes=self._normalize_text(data.get("soundtrack_notes") or fallback["soundtrack_notes"]),
+            sound_effects_notes=self._normalize_text(data.get("sound_effects_notes") or fallback["sound_effects_notes"]),
             retention_hooks_json=self._json_dumps(data.get("retention_hooks") or fallback["retention_hooks"]),
             validation_status="pending",
         )
@@ -706,9 +754,9 @@ class BibleVideoFactoryService:
             "risco_alto": "high_risk",
             "risco alto": "high_risk",
         }
-        status = status_map.get(str(data.get("status") or "").strip().lower(), fallback["status"])
+        status = status_map.get(self._normalize_text(data.get("status")).lower(), fallback["status"])
         script.validation_status = status
-        script.validation_notes = (data.get("notes") or fallback["notes"]).strip()
+        script.validation_notes = self._normalize_text(data.get("notes") or fallback["notes"])
         script.disclaimer_required = bool(data.get("needs_disclaimer", fallback["needs_disclaimer"]))
         script.validation_flags_json = self._json_dumps(data.get("flags") or fallback["flags"])
         episode.approval_status = "approved" if status == "approved" else "pending"
@@ -770,16 +818,16 @@ class BibleVideoFactoryService:
                 series_id=script.series_id,
                 episode_id=script.episode_id,
                 user_id=script.user_id,
-                scene_number=int(item.get("scene_number") or idx + 1),
-                narration_text=(item.get("narration_text") or "").strip(),
-                visual_description=(item.get("visual_description") or "").strip(),
+                scene_number=self._normalize_int(item.get("scene_number") or idx + 1, idx + 1),
+                narration_text=self._normalize_text(item.get("narration_text")),
+                visual_description=self._normalize_text(item.get("visual_description")),
                 characters_json=self._json_dumps(item.get("characters") or []),
-                scenario_name=(item.get("scenario_name") or "").strip(),
-                emotion=(item.get("emotion") or "").strip(),
-                prompt_image=(item.get("prompt_image") or "").strip(),
-                prompt_animation=(item.get("prompt_animation") or "").strip(),
+                scenario_name=self._normalize_text(item.get("scenario_name")),
+                emotion=self._normalize_text(item.get("emotion")),
+                prompt_image=self._normalize_text(item.get("prompt_image")),
+                prompt_animation=self._normalize_text(item.get("prompt_animation")),
                 duration_seconds=float(item.get("duration_seconds") or 8.0),
-                camera_type=(item.get("camera_type") or "").strip(),
+                camera_type=self._normalize_text(item.get("camera_type")),
                 effects_json=self._json_dumps(item.get("effects") or []),
             )
             db.add(row)
@@ -891,27 +939,27 @@ class BibleVideoFactoryService:
             series.bible_book or "",
             series.narrative_tone or "",
         ]
-        tags = [t.strip() for t in tags if str(t or "").strip()]
+        tags = [self._normalize_text(t) for t in tags if self._normalize_text(t)]
         plan_scenes = []
         for scene in scenes:
             plan_scenes.append(
                 {
-                    "text": (scene.narration_text or "").strip(),
-                    "image_prompt": (scene.prompt_image or scene.visual_description or "").strip(),
+                    "text": self._normalize_text(scene.narration_text),
+                    "image_prompt": self._normalize_text(scene.prompt_image or scene.visual_description or ""),
                     "caption": (scene.visual_description or scene.narration_text or "")[:160],
                 }
             )
         plan = {
             "title": episode.youtube_title_suggestion or episode.title,
-            "description": "\n".join(
+            "description": self._normalize_text("\n".join(
                 [
-                    (episode.summary or "").strip(),
+                    self._normalize_text(episode.summary),
                     "",
-                    (script.subscribe_cta or "").strip(),
-                    (script.next_episode_cta or "").strip(),
+                    self._normalize_text(script.subscribe_cta),
+                    self._normalize_text(script.next_episode_cta),
                     "Narrativa inspirada em relato biblico." if script.disclaimer_required else "",
                 ]
-            ).strip(),
+            )),
             "tags": tags[:15],
             "scenes": plan_scenes,
             "music_mood": "emotional_cinematic" if "suspense" in str(series.narrative_tone or "").lower() else "happy",
@@ -957,8 +1005,8 @@ class BibleVideoFactoryService:
             parent_job_id=parent_job_id,
             title=title,
             job_type=job_type,
-            platform=(platform or "youtube").strip().lower(),
-            aspect_ratio=(aspect_ratio or "16:9").strip(),
+            platform=self._normalize_text(platform or "youtube").lower(),
+            aspect_ratio=self._normalize_text(aspect_ratio or "16:9"),
             kanban_stage="script_approved" if script.validation_status == "approved" else "script_generated",
             status="queued" if start_immediately else "draft",
             approval_status="pending",
@@ -976,7 +1024,7 @@ class BibleVideoFactoryService:
     def _resolve_local_video_path(self, job: BibleVideoJob) -> str:
         if job.output_video_url and os.path.isabs(job.output_video_url) and os.path.exists(job.output_video_url):
             return job.output_video_url
-        name = os.path.basename(str(job.output_video_url or "").strip())
+        name = os.path.basename(self._normalize_text(job.output_video_url))
         if not name:
             raise Exception("Job sem video gerado.")
         candidate = os.path.join(VIDEO_OUTPUT_DIR, name)
@@ -1026,7 +1074,7 @@ class BibleVideoFactoryService:
 
             output_video_url = ""
             if isinstance(result, dict):
-                output_video_url = str(result.get("video_url") or "").strip()
+                output_video_url = self._normalize_text(result.get("video_url"))
             elif isinstance(result, str):
                 output_video_url = result
             if not output_video_url:
@@ -1109,7 +1157,7 @@ class BibleVideoFactoryService:
         response = yt.upload_video(local_path, title, description, tags=tags, thumbnail_path=None)
         if not isinstance(response, dict) or response.get("error"):
             raise Exception((response or {}).get("error") if isinstance(response, dict) else "Falha no upload para YouTube.")
-        youtube_video_id = str(response.get("id") or "").strip()
+        youtube_video_id = self._normalize_text(response.get("id"))
         job.status = "published"
         job.kanban_stage = "published"
         job.approval_status = "approved"
