@@ -397,11 +397,25 @@ class BibleVideoFactoryService:
             "history": state.get("history") if isinstance(state.get("history"), list) else [],
         }
 
+    def _authoritative_script_package(self, script_id: int) -> Dict[str, Any]:
+        db = SessionLocal()
+        try:
+            fresh_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id).first()
+            return self._extract_script_package(fresh_script)
+        finally:
+            db.close()
+
     def _persist_optimization_state(self, db: Session, script: BibleVideoScript, state: Dict[str, Any], commit: bool = True):
-        merged = {**self._optimization_state(script), **(state or {})}
+        authoritative_package = self._authoritative_script_package(script.id)
+        authoritative_state = authoritative_package.get("optimization_state") if isinstance(authoritative_package.get("optimization_state"), dict) else {}
+        merged = {**self._optimization_state(script), **authoritative_state, **(state or {})}
         merged["script_id"] = script.id
         merged["updated_at"] = datetime.utcnow().isoformat()
-        self._save_script_package(script, {"optimization_state": merged})
+        updated_package = {
+            **(authoritative_package if isinstance(authoritative_package, dict) else {}),
+            "optimization_state": merged,
+        }
+        script.optional_dialogues_json = self._json_dumps(updated_package)
         if commit:
             db.commit()
             db.refresh(script)
