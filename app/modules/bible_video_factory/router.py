@@ -551,6 +551,17 @@ def unapprove_storyboard_scene(script_id: int, scene_number: int, db: Session = 
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/unlock-optimization")
+def unlock_storyboard_scene_for_optimization(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().unlock_storyboard_scene_for_optimization(db, script, scene_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/scripts/{script_id}/storyboard/{scene_number}/regenerate")
 def regenerate_storyboard_scene(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
@@ -560,6 +571,22 @@ def regenerate_storyboard_scene(script_id: int, scene_number: int, db: Session =
         return get_service().regenerate_storyboard_scene(db, script, scene_number)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/scripts/{script_id}/optimization-status")
+def optimization_status(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    return get_service().get_optimization_status(script)
+
+
+@router.post("/scripts/{script_id}/stop-optimization")
+def stop_optimization(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    return get_service().request_optimization_stop(db, script)
 
 
 @router.post("/scripts/{script_id}/storyboard/{scene_number}/auto-improve")
@@ -580,6 +607,17 @@ def auto_improve_episode(script_id: int, db: Session = Depends(get_db), current_
         raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
     try:
         return get_service().auto_improve_episode(db, script)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/scripts/{script_id}/auto-optimize-total")
+def auto_optimize_total(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().auto_optimize_episode_total(db, script)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

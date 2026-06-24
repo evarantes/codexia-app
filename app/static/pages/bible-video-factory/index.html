@@ -259,6 +259,8 @@
                             <button @click="generateScenesForScript" :disabled="!selectedScriptId" class="bg-amber-500 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Gerar cenas</button>
                             <button @click="regenerateScenesForScript" :disabled="!selectedScriptId" class="bg-orange-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Regenerar Cenas</button>
                             <button @click="autoImproveEpisode" :disabled="!selectedScriptId" class="bg-cyan-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Auto Melhorar Episodio</button>
+                            <button @click="startAutoOptimizeTotal" :disabled="!selectedScriptId || optimizationRunning" class="bg-fuchsia-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Auto Otimizar ate Aprovar</button>
+                            <button @click="stopOptimization" :disabled="!selectedScriptId || !optimizationRunning" class="bg-slate-800 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Parar otimizacao</button>
                             <button @click="clearScenesForScript" :disabled="!selectedScriptId" class="bg-rose-100 text-rose-800 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Limpar Cenas</button>
                             <button @click="deleteCurrentScript" :disabled="!selectedScriptId" class="bg-red-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Excluir Roteiro</button>
                             <button @click="approveStoryboard" :disabled="!selectedScriptId" class="bg-teal-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Aprovar storyboard</button>
@@ -514,11 +516,47 @@
                             <h2 class="text-xl font-bold">Storyboard</h2>
                             <div class="text-sm text-slate-500">Aprovacao visual antes da producao final.</div>
                         </div>
-                        <button @click="approveStoryboard" :disabled="!selectedScriptId" class="bg-teal-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Aprovar storyboard</button>
+                        <div class="flex gap-2 flex-wrap">
+                            <button @click="startAutoOptimizeTotal" :disabled="!selectedScriptId || optimizationRunning" class="bg-fuchsia-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Auto Otimizar ate Aprovar</button>
+                            <button @click="stopOptimization" :disabled="!selectedScriptId || !optimizationRunning" class="bg-slate-800 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Parar otimizacao</button>
+                            <button @click="approveStoryboard" :disabled="!selectedScriptId" class="bg-teal-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Aprovar storyboard</button>
+                        </div>
                     </div>
                     <div class="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm">
                         <div><strong>Ordem recomendada:</strong> Storyboard completo -> Character Bible -> Banco de cenarios -> aprovacao por cena -> imagem -> video.</div>
                         <div class="mt-1">Status atual: {{ storyboardFrames.length }} cenas | {{ storyboardApprovedCount }} aprovadas | {{ selectedSeriesCharacterCount }} personagens | {{ selectedSeriesScenarioCount }} cenarios.</div>
+                    </div>
+                    <div v-if="currentScript?.optimization_state" class="mb-4 rounded-lg border p-4" :class="optimizationRunning ? 'bg-fuchsia-50 border-fuchsia-200' : 'bg-slate-50 border-slate-200'">
+                        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                            <div>
+                                <div class="font-semibold">Auto Otimizacao Total</div>
+                                <div class="text-sm text-slate-600">{{ currentScript.optimization_state.message || 'Nenhuma rodada iniciada.' }}</div>
+                            </div>
+                            <div class="text-xs uppercase tracking-wide" :class="optimizationRunning ? 'text-fuchsia-700' : 'text-slate-500'">{{ currentScript.optimization_state.status || 'idle' }}</div>
+                        </div>
+                        <div class="mt-3 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3 text-sm">
+                            <div><strong>Rodada:</strong> {{ currentScript.optimization_state.current_round || 0 }}/{{ currentScript.optimization_state.max_rounds || 3 }}</div>
+                            <div><strong>Cena:</strong> {{ currentScript.optimization_state.current_scene || '-' }}</div>
+                            <div><strong>Tentativa:</strong> {{ currentScript.optimization_state.scene_attempt || 0 }}/{{ currentScript.optimization_state.max_scene_attempts || 5 }}</div>
+                            <div><strong>Nota anterior:</strong> {{ currentScript.optimization_state.previous_score || 0 }}</div>
+                            <div><strong>Nova nota:</strong> {{ currentScript.optimization_state.new_score || 0 }}</div>
+                            <div><strong>Melhor nota:</strong> {{ currentScript.optimization_state.best_score || 0 }}</div>
+                        </div>
+                        <div v-if="optimizationReport" class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                            <div class="rounded-lg bg-white border p-3">
+                                <div class="font-semibold mb-2">Relatorio final</div>
+                                <div><strong>Melhor nota alcançada:</strong> {{ optimizationReport.melhor_nota_alcancada || 0 }}</div>
+                                <div><strong>Episode score:</strong> {{ optimizationReport.episode_score || 0 }}</div>
+                                <div><strong>Cliffhanger:</strong> {{ optimizationReport.cliffhanger_score || 0 }}</div>
+                                <div><strong>Motivo de bloqueio:</strong> {{ optimizationReport.motivo_bloqueio || 'nenhum' }}</div>
+                            </div>
+                            <div class="rounded-lg bg-white border p-3">
+                                <div class="font-semibold mb-2">Resumo</div>
+                                <div><strong>Cenas melhoradas:</strong> {{ (optimizationReport.cenas_melhoradas || []).length }}</div>
+                                <div><strong>Cenas sem melhoria:</strong> {{ (optimizationReport.cenas_que_nao_melhoraram || []).length }}</div>
+                                <div><strong>Status atual:</strong> {{ currentScript.optimization_state.status || 'idle' }}</div>
+                            </div>
+                        </div>
                     </div>
                     <div v-if="!storyboardFrames.length" class="text-slate-500">Gere um roteiro para montar automaticamente o storyboard.</div>
                     <div v-else class="space-y-4">
@@ -537,6 +575,10 @@
                                     </div>
                                     <div class="mt-3 flex flex-wrap gap-2 text-xs">
                                         <span class="px-2 py-1 rounded border" :class="scoreCardClass(frame.scene_analysis?.scene_score || 0)">Cena {{ frame.scene_number }} ............ {{ frame.scene_analysis?.scene_score || 0 }} {{ frame.approval_status === 'approved' ? '✓' : ((frame.scene_analysis?.scene_score || 0) >= (frame.scene_analysis?.minimum_score || 80) ? '•' : '⚠') }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Versao atual: {{ frame.optimization_meta?.current_version || 1 }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Melhor versao: {{ frame.optimization_meta?.best_version || 1 }}</span>
+                                        <span class="px-2 py-1 rounded border bg-white">Melhor nota: {{ frame.optimization_meta?.best_score || (frame.scene_analysis?.scene_score || 0) }}</span>
+                                        <span class="px-2 py-1 rounded border" :class="frame.optimization_meta?.locked_for_optimization ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'">Otimizacao: {{ frame.optimization_meta?.locked_for_optimization ? 'bloqueada' : 'desbloqueada' }}</span>
                                         <span class="px-2 py-1 rounded border bg-white">Gancho: {{ frame.scene_analysis?.hook_score || 0 }}</span>
                                         <span class="px-2 py-1 rounded border bg-white">Emocao: {{ frame.scene_analysis?.emotion_score || 0 }}</span>
                                         <span class="px-2 py-1 rounded border bg-white">Conflito: {{ frame.scene_analysis?.conflict_score || 0 }}</span>
@@ -555,10 +597,14 @@
                                     <div v-if="frame.scene_analysis?.suggestions?.length" class="mt-3 text-xs text-slate-600 space-y-1">
                                         <div v-for="(item, idx) in frame.scene_analysis.suggestions" :key="`scene-suggestion-${frame.scene_number}-${idx}`">- {{ item }}</div>
                                     </div>
+                                    <div v-if="frame.optimization_meta?.version_history?.length" class="mt-3 text-xs text-slate-600">
+                                        <strong>Historico:</strong> {{ frame.optimization_meta.version_history.map(item => `v${item.version}:${item.score} ${item.status}`).join(' | ') }}
+                                    </div>
                                     <div class="mt-4 flex gap-2 flex-wrap">
                                         <button @click="generateStoryboardPreview(frame.scene_number)" class="bg-indigo-700 text-white px-3 py-2 rounded text-xs">Gerar preview</button>
                                         <button @click="approveStoryboardScene(frame.scene_number)" class="bg-emerald-600 text-white px-3 py-2 rounded text-xs">Aprovar cena</button>
                                         <button v-if="frame.approval_status === 'approved'" @click="unapproveStoryboardScene(frame.scene_number)" class="bg-slate-700 text-white px-3 py-2 rounded text-xs">Desaprovar Cena</button>
+                                        <button v-if="frame.approval_status === 'approved' && frame.optimization_meta?.locked_for_optimization" @click="unlockSceneForOptimization(frame.scene_number)" class="bg-violet-700 text-white px-3 py-2 rounded text-xs">Desbloquear cena para otimizacao</button>
                                         <button v-else @click="regenerateStoryboardScene(frame.scene_number)" class="bg-amber-500 text-slate-900 px-3 py-2 rounded text-xs">Regenerar cena</button>
                                         <button v-if="frame.approval_status !== 'approved'" @click="autoImproveStoryboardScene(frame.scene_number)" class="bg-cyan-600 text-white px-3 py-2 rounded text-xs">Auto Melhorar Cena</button>
                                     </div>
@@ -827,6 +873,7 @@
                     currentScript: null,
                     currentScenes: [],
                     sceneDiagnostics: null,
+                    optimizationPollingTimer: null,
                     jobs: [],
                     characters: [],
                     scenarios: [],
@@ -989,6 +1036,12 @@
                         minimum_score: Number(frame?.scene_analysis?.minimum_score || this.currentScript?.retention_analysis?.minimum_scene_score || 80),
                         approval_status: frame?.approval_status || 'pending'
                     }));
+                },
+                optimizationRunning() {
+                    return !!this.currentScript?.optimization_state?.running;
+                },
+                optimizationReport() {
+                    return this.currentScript?.optimization_state?.report || null;
                 }
             },
             methods: {
@@ -1314,6 +1367,7 @@
                         this.currentScript = null;
                         this.currentScenes = [];
                         this.sceneDiagnostics = null;
+                        this.stopOptimizationPolling();
                         return;
                     }
                     const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}`);
@@ -1328,6 +1382,40 @@
                     this.currentScenes = sceneRes.ok ? (sceneData || []) : [];
                     await this.loadSceneDiagnostics();
                     this.logSceneCounts('loadSelectedScript');
+                    if (this.currentScript?.optimization_state?.running) {
+                        this.startOptimizationPolling();
+                    } else {
+                        this.stopOptimizationPolling();
+                    }
+                },
+                startOptimizationPolling() {
+                    this.stopOptimizationPolling();
+                    this.optimizationPollingTimer = setInterval(async () => {
+                        if (!this.selectedScriptId) {
+                            this.stopOptimizationPolling();
+                            return;
+                        }
+                        try {
+                            const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/optimization-status`);
+                            const data = await res.json();
+                            if (!res.ok) return;
+                            this.currentScript = {
+                                ...(this.currentScript || {}),
+                                optimization_state: data || {}
+                            };
+                            if (!data?.running) {
+                                this.stopOptimizationPolling();
+                                await this.loadSelectedScript();
+                            }
+                        } catch (e) {
+                        }
+                    }, 1500);
+                },
+                stopOptimizationPolling() {
+                    if (this.optimizationPollingTimer) {
+                        clearInterval(this.optimizationPollingTimer);
+                        this.optimizationPollingTimer = null;
+                    }
                 },
                 async generateScript() {
                     try {
@@ -1414,6 +1502,18 @@
                         this.notifyError(e.message || 'Erro ao desaprovar a cena.');
                     }
                 },
+                async unlockSceneForOptimization(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/unlock-optimization`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao desbloquear a cena para otimizacao.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        this.notifySuccess(`Cena ${sceneNumber} desbloqueada para otimizacao.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao desbloquear a cena.');
+                    }
+                },
                 async regenerateStoryboardScene(sceneNumber) {
                     try {
                         const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/regenerate`, { method: 'POST' });
@@ -1452,6 +1552,45 @@
                         this.notifySuccess('Episodio analisado e melhorado automaticamente.');
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao auto melhorar o episodio.');
+                    }
+                },
+                async startAutoOptimizeTotal() {
+                    try {
+                        this.activeTab = 'storyboard';
+                        this.currentScript = {
+                            ...(this.currentScript || {}),
+                            optimization_state: {
+                                ...(this.currentScript?.optimization_state || {}),
+                                running: true,
+                                status: 'starting',
+                                message: 'Preparando Auto Otimizacao Total...'
+                            }
+                        };
+                        this.startOptimizationPolling();
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/auto-optimize-total`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao executar a Auto Otimizacao Total.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess('Auto Otimizacao Total concluida.');
+                    } catch (e) {
+                        this.stopOptimizationPolling();
+                        this.notifyError(e.message || 'Erro na Auto Otimizacao Total.');
+                    }
+                },
+                async stopOptimization() {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/stop-optimization`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao solicitar parada da otimizacao.');
+                        this.currentScript = {
+                            ...(this.currentScript || {}),
+                            optimization_state: data || {}
+                        };
+                        this.notifySuccess('Parada da otimizacao solicitada.');
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao parar a otimizacao.');
                     }
                 },
                 async generateScenesForScript() {
