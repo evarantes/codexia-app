@@ -387,6 +387,7 @@ class BibleVideoFactoryService:
             "best_score": self._normalize_int(state.get("best_score"), 0),
             "completion_percentage": self._clamp_score(state.get("completion_percentage")),
             "status": self._normalize_text(state.get("status") or "idle"),
+            "reason": self._normalize_text(state.get("reason")),
             "message": self._normalize_text(state.get("message")),
             "stop_requested": bool(state.get("stop_requested")),
             "started_at": self._normalize_text(state.get("started_at")),
@@ -635,6 +636,42 @@ class BibleVideoFactoryService:
             meta["best_score"] = current_score
             meta["best_version"] = self._normalize_int(meta.get("current_version"), 1)
         return meta
+
+    def _reset_scene_attempts_for_new_optimization_session(
+        self,
+        db: Session,
+        script: BibleVideoScript,
+        storyboard: List[Dict[str, Any]],
+        minimum_scene_score: int,
+        episode: Optional[BibleVideoEpisode] = None,
+    ) -> List[int]:
+        updated_storyboard = []
+        reset_scene_numbers: List[int] = []
+        changed = False
+        for frame in self._normalize_storyboard_list(storyboard):
+            analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_scene_score)
+            scene_number = self._normalize_int(frame.get("scene_number"), 0)
+            status = self._normalize_text(frame.get("approval_status")).lower()
+            meta = self._normalize_scene_optimization_meta(
+                frame.get("optimization_meta"),
+                scene_number=scene_number,
+                current_score=analysis["scene_score"],
+                approval_status=frame.get("approval_status"),
+            )
+            if analysis["scene_score"] < minimum_scene_score and status != "approved" and self._normalize_int(meta.get("attempts_used"), 0) > 0:
+                meta["attempts_used"] = 0
+                if self._normalize_text(meta.get("last_status")) != "aprovada":
+                    meta["last_status"] = "pendente"
+                changed = True
+                if scene_number > 0:
+                    reset_scene_numbers.append(scene_number)
+            updated_storyboard.append({**frame, "optimization_meta": meta, "scene_analysis": analysis})
+        if changed:
+            self._save_storyboard_state(db, script, updated_storyboard, episode=episode, pipeline_status="storyboard_pronto")
+            self._rebuild_script_analysis(script, storyboard=updated_storyboard, episode=episode, persist=True)
+            db.commit()
+            db.refresh(script)
+        return sorted(reset_scene_numbers)
 
     def _sync_scene_analysis_with_active_version(self, frame: Dict[str, Any], scene_analysis: Dict[str, Any]) -> (Dict[str, Any], Dict[str, Any]):
         minimum_score = self._normalize_int((scene_analysis or {}).get("minimum_score"), self._scene_minimum_score({})) or 80
@@ -3781,18 +3818,51 @@ class BibleVideoFactoryService:
         self._clear_optimization_stop(current_script.id)
         report = self._build_optimization_report_template()
         initial_payload = self.serialize_script(current_script)
+        reset_scene_numbers = self._reset_scene_attempts_for_new_optimization_session(
+            db,
+            current_script,
+            initial_payload.get("storyboard") if isinstance(initial_payload.get("storyboard"), list) else [],
+            minimum_scene_score=minimum_scene_score,
+            episode=episode,
+        )
+        if reset_scene_numbers:
+            logger.info("Tentativas reabertas para nova sessao de otimizacao: %s", reset_scene_numbers)
+            current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
+            initial_payload = self.serialize_script(current_script)
         initial_storyboard = initial_payload.get("storyboard") if isinstance(initial_payload.get("storyboard"), list) else []
         initial_eligible = set()
         blocked_scenes = set()
+        exhausted_scene_numbers = set()
+        #region debug-point auto-optimize-blocked-initial-selection
         for frame in initial_storyboard:
             analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_scene_score)
             scene_number = self._normalize_int(frame.get("scene_number"), 0)
+            meta = self._normalize_scene_optimization_meta(
+                frame.get("optimization_meta"),
+                scene_number=scene_number,
+                current_score=analysis["scene_score"],
+                approval_status=frame.get("approval_status"),
+            )
+            logger.info(
+                "auto_optimize_scene_scan scene=%s score=%s minimum=%s locked=%s approved=%s auto_approved=%s approval_status=%s attempts_used=%s",
+                scene_number,
+                analysis["scene_score"],
+                minimum_scene_score,
+                bool(meta.get("locked_for_optimization")),
+                self._normalize_text(frame.get("approval_status")).lower() == "approved",
+                bool((frame.get("scene_analysis") or {}).get("approved")),
+                self._normalize_text(frame.get("approval_status")).lower(),
+                self._normalize_int(meta.get("attempts_used"), 0),
+            )
             if analysis["scene_score"] < minimum_scene_score:
                 if scene_number > 0:
                     initial_eligible.add(scene_number)
             elif self._normalize_text(frame.get("approval_status")).lower() == "approved" and not allow_reoptimize_approved:
                 if scene_number > 0:
                     blocked_scenes.add(scene_number)
+        logger.info("Cenas abaixo da meta: %s", sorted(initial_eligible))
+        logger.info("Cenas bloqueadas na selecao inicial: %s", sorted(blocked_scenes))
+        #endregion
         report["nota_inicial_episodio"] = self._normalize_int((initial_payload.get("retention_analysis") or {}).get("episode_score"), 0)
         eligible_scene_numbers = sorted(initial_eligible)
         report["cenas_elegiveis"] = eligible_scene_numbers
@@ -3815,6 +3885,7 @@ class BibleVideoFactoryService:
                 "best_score": 0,
                 "completion_percentage": self._calculate_optimization_completion(progress_scene_numbers, eligible_scene_numbers),
                 "status": "running",
+                "reason": "",
                 "message": "Auto Otimizacao Total iniciada.",
                 "stop_requested": False,
                 "started_at": datetime.utcnow().isoformat(),
@@ -3826,6 +3897,7 @@ class BibleVideoFactoryService:
         )
         final_payload = self.serialize_script(current_script)
         stop_reason = ""
+        #region debug-point auto-optimize-blocked-rounds
         for round_number in range(1, 4):
             if self._should_stop_optimization(current_script):
                 stop_reason = "Otimizacao interrompida pelo usuario."
@@ -3833,6 +3905,7 @@ class BibleVideoFactoryService:
             final_payload = self.serialize_script(current_script)
             storyboard = final_payload.get("storyboard") if isinstance(final_payload.get("storyboard"), list) else []
             weak_frames = []
+            processable_weak_frames = []
             for frame in storyboard:
                 analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_scene_score)
                 meta = self._normalize_scene_optimization_meta(
@@ -3842,6 +3915,17 @@ class BibleVideoFactoryService:
                     approval_status=frame.get("approval_status"),
                 )
                 status = self._normalize_text(frame.get("approval_status")).lower()
+                logger.info(
+                    "auto_optimize_round_scene round=%s scene=%s score=%s minimum=%s locked=%s approved=%s auto_approved=%s approval_status=%s",
+                    round_number,
+                    self._normalize_int(frame.get("scene_number"), 0),
+                    analysis["scene_score"],
+                    minimum_scene_score,
+                    bool(meta.get("locked_for_optimization")),
+                    status == "approved",
+                    bool((frame.get("scene_analysis") or {}).get("approved")),
+                    status,
+                )
                 if analysis["scene_score"] >= minimum_scene_score:
                     continue
                 if status == "approved" and not allow_reoptimize_approved:
@@ -3851,24 +3935,41 @@ class BibleVideoFactoryService:
                     blocked_scenes.add(self._normalize_int(frame.get("scene_number"), 0))
                     continue
                 if analysis["scene_score"] < minimum_scene_score:
-                    weak_frames.append({**frame, "scene_analysis": analysis, "optimization_meta": meta})
+                    candidate_frame = {**frame, "scene_analysis": analysis, "optimization_meta": meta}
+                    weak_frames.append(candidate_frame)
+                    remaining_attempts = max(0, 5 - self._normalize_int(meta.get("attempts_used"), 0))
+                    if remaining_attempts <= 0:
+                        exhausted_scene_numbers.add(self._normalize_int(frame.get("scene_number"), 0))
+                        logger.info("Cena %s marcada como fraca, mas fora da lista processavel: attempts_used=%s", self._normalize_int(frame.get("scene_number"), 0), self._normalize_int(meta.get("attempts_used"), 0))
+                        continue
+                    processable_weak_frames.append(candidate_frame)
             report["cenas_bloqueadas"] = sorted(number for number in blocked_scenes if number > 0)
             weak_frames.sort(key=lambda frame: self._normalize_int(((frame.get("scene_analysis") or {}).get("scene_score")), 0))
+            processable_weak_frames.sort(key=lambda frame: self._normalize_int(((frame.get("scene_analysis") or {}).get("scene_score")), 0))
+            logger.info("Rodada %s: cenas abaixo da meta encontradas=%s", round_number, [self._normalize_int(item.get("scene_number"), 0) for item in weak_frames])
+            logger.info("Rodada %s: cenas elegiveis para otimizacao=%s", round_number, [self._normalize_int(item.get("scene_number"), 0) for item in processable_weak_frames])
             if not weak_frames:
+                logger.info("Rodada %s encerrada sem cenas elegiveis.", round_number)
                 break
-            for frame in weak_frames:
+            if not processable_weak_frames:
+                logger.info("Rodada %s encerrada sem cenas processaveis.", round_number)
+                break
+            for frame in processable_weak_frames:
                 if self._should_stop_optimization(current_script):
                     stop_reason = "Otimizacao interrompida pelo usuario."
                     break
                 scene_number = self._normalize_int(frame.get("scene_number"), 0)
+                logger.info("Iniciando otimizacao da cena %s", scene_number)
                 analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_scene_score)
                 meta = self._normalize_scene_optimization_meta(frame.get("optimization_meta"), scene_number=scene_number, current_score=analysis["scene_score"], approval_status=frame.get("approval_status"))
                 if self._normalize_text(frame.get("approval_status")).lower() == "approved" and meta.get("locked_for_optimization", True) and not allow_reoptimize_approved:
                     report["cenas_que_nao_melhoraram"].append({"scene_number": scene_number, "score": analysis["scene_score"], "motivo": "Cena aprovada e bloqueada para otimizacao."})
+                    logger.info("Cena %s bloqueada antes do loop de tentativas: locked=%s approved=%s", scene_number, bool(meta.get("locked_for_optimization")), self._normalize_text(frame.get("approval_status")).lower() == "approved")
                     continue
                 remaining_attempts = max(0, 5 - self._normalize_int(meta.get("attempts_used"), 0))
                 if remaining_attempts <= 0:
                     report["cenas_que_nao_melhoraram"].append({"scene_number": scene_number, "score": analysis["scene_score"], "motivo": "Limite maximo de 5 tentativas atingido."})
+                    logger.info("Cena %s sem tentativas restantes: attempts_used=%s", scene_number, self._normalize_int(meta.get("attempts_used"), 0))
                     continue
                 for attempt_index in range(1, remaining_attempts + 1):
                     if self._should_stop_optimization(current_script):
@@ -3919,6 +4020,13 @@ class BibleVideoFactoryService:
                     meta = self._normalize_scene_optimization_meta(updated_frame.get("optimization_meta"), scene_number=scene_number, current_score=analysis["scene_score"], approval_status=updated_frame.get("approval_status"))
                     report["melhor_nota_alcancada"] = max(report.get("melhor_nota_alcancada", 0), analysis["scene_score"], self._normalize_int(outcome.get("best_score"), 0))
                     report["tentativas_totais"] = self._normalize_int(report.get("tentativas_totais"), 0) + 1
+                    logger.info(
+                        "Contadores atualizados: attempts_total=%s scenes_improved=%s scenes_discarded=%s processed_scenes=%s",
+                        report["tentativas_totais"],
+                        len(report.get("cenas_melhoradas") or []),
+                        len(report.get("cenas_descartadas") or []),
+                        sorted(progress_scene_numbers),
+                    )
                     event = {
                         "round": round_number,
                         "scene_number": scene_number,
@@ -3993,6 +4101,7 @@ class BibleVideoFactoryService:
                     break
             if stop_reason:
                 break
+        #endregion
         final_payload = self._auto_fix_cliffhanger_for_episode(
             db,
             current_script,
@@ -4037,6 +4146,33 @@ class BibleVideoFactoryService:
         else:
             report["motivo_bloqueio"] = ""
             self._record_winning_episode_patterns(current_script, series, episode)
+        completion_status = "completed" if not report.get("motivo_bloqueio") else ("stopped" if stop_reason else "blocked")
+        if not eligible_scene_numbers:
+            completion_reason = "no_eligible_scenes"
+        elif weak_scene_numbers and set(self._ensure_list(weak_scene_numbers)).issubset(exhausted_scene_numbers):
+            completion_reason = "no_eligible_scenes"
+        elif weak_scene_numbers:
+            completion_reason = "weak_scenes_remain"
+        elif episode_score < minimum_episode_score:
+            completion_reason = "episode_below_target"
+        elif cliffhanger_score < minimum_cliffhanger_score:
+            completion_reason = "cliffhanger_below_target"
+        elif stop_reason:
+            completion_reason = "stop_requested"
+        else:
+            completion_reason = "all_scenes_above_target"
+        logger.info(
+            "auto_optimize_final status=%s reason=%s found_scenes=%s processed_scenes=%s attempts_total=%s scenes_improved=%s scenes_discarded=%s weak_scene_numbers=%s blocked_scenes=%s",
+            completion_status,
+            completion_reason,
+            len(eligible_scene_numbers),
+            len(progress_scene_numbers),
+            self._normalize_int(report.get("tentativas_totais"), 0),
+            len(report.get("cenas_melhoradas") or []),
+            len(report.get("cenas_descartadas") or []),
+            weak_scene_numbers,
+            sorted(number for number in blocked_scenes if number > 0),
+        )
         self._persist_optimization_state(
             db,
             current_script,
@@ -4049,7 +4185,8 @@ class BibleVideoFactoryService:
                 "new_score": 0,
                 "best_score": report.get("melhor_nota_alcancada", 0),
                 "completion_percentage": 100 if not report.get("motivo_bloqueio") else self._calculate_optimization_completion(progress_scene_numbers, eligible_scene_numbers),
-                "status": "completed" if not report.get("motivo_bloqueio") else ("stopped" if stop_reason else "blocked"),
+                "status": completion_status,
+                "reason": completion_reason,
                 "message": "Auto Otimizacao Total finalizada." if not report.get("motivo_bloqueio") else report.get("motivo_bloqueio"),
                 "finished_at": datetime.utcnow().isoformat(),
                 "report": report,

@@ -27,6 +27,22 @@ load_dotenv()
 
 APP_ENV = os.getenv("APP_ENV", "production").lower()
 IS_PRODUCTION = APP_ENV == "production"
+DEPLOY_MARKER = "auto-optimize-attempt-reset-v1"
+
+
+def _build_metadata() -> dict:
+    commit_sha = (
+        os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("SOURCE_COMMIT")
+        or os.getenv("COMMIT_SHA")
+        or os.getenv("GIT_COMMIT")
+        or ""
+    ).strip()
+    return {
+        "environment": APP_ENV,
+        "deploy_marker": DEPLOY_MARKER,
+        "commit": commit_sha,
+    }
 
 # CORS: lista separada por vírgula (ex: https://app.example.com,https://example.com)
 _cors_raw = os.getenv("CORS_ORIGINS", "*").strip()
@@ -936,7 +952,7 @@ os.makedirs(os.path.join(STATIC_DIR, "image_bank"), exist_ok=True)
 @app.get("/health")
 async def health():
     """Resposta rápida sem DB — para Render/Coolify e diagnóstico."""
-    return {"status": "ok"}
+    return {"status": "ok", **_build_metadata()}
 
 @app.get("/api/status")
 def api_status():
