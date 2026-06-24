@@ -632,6 +632,35 @@ class BibleVideoFactoryService:
             meta["best_version"] = self._normalize_int(meta.get("current_version"), 1)
         return meta
 
+    def _sync_scene_analysis_with_active_version(self, frame: Dict[str, Any], scene_analysis: Dict[str, Any]) -> (Dict[str, Any], Dict[str, Any]):
+        minimum_score = self._normalize_int((scene_analysis or {}).get("minimum_score"), self._scene_minimum_score({})) or 80
+        normalized_analysis = self._normalize_scene_analysis(scene_analysis, minimum_score=minimum_score)
+        meta = self._refresh_scene_optimization_meta(frame, normalized_analysis)
+        analyzed_score = self._normalize_int(normalized_analysis.get("scene_score"), 0)
+        current_version = self._normalize_int(meta.get("current_version"), 1)
+        best_version = self._normalize_int(meta.get("best_version"), current_version)
+        current_score = self._normalize_int(meta.get("current_score"), analyzed_score)
+        best_score = self._normalize_int(meta.get("best_score"), max(current_score, analyzed_score))
+
+        # When the active version is also the best version, the panel must reflect its best saved score.
+        if current_version == best_version and best_score > current_score:
+            current_score = best_score
+        elif analyzed_score > current_score:
+            current_score = analyzed_score
+
+        meta["current_score"] = current_score
+        meta["best_score"] = max(best_score, current_score)
+
+        if current_score != analyzed_score:
+            normalized_analysis = {
+                **normalized_analysis,
+                "scene_score": current_score,
+            }
+
+        approved = self._normalize_text((frame or {}).get("approval_status") or "pending").lower() == "approved"
+        normalized_analysis["approved"] = approved and current_score >= minimum_score
+        return normalized_analysis, meta
+
     def _normalize_scene_analysis(self, analysis: Any, minimum_score: int = 80) -> Dict[str, Any]:
         base = self._default_scene_analysis(minimum_score=minimum_score)
         if isinstance(analysis, dict):
@@ -818,13 +847,12 @@ class BibleVideoFactoryService:
         analyzed = []
         for frame in normalized:
             scene_analysis = self._analyze_storyboard_scene(frame, profile_config=profile_config)
-            approved = self._normalize_text(frame.get("approval_status")).lower() == "approved"
-            scene_analysis["approved"] = approved and scene_analysis["scene_score"] >= minimum_score
+            scene_analysis, scene_meta = self._sync_scene_analysis_with_active_version(frame, scene_analysis)
             analyzed.append(
                 {
                     **frame,
                     "scene_analysis": self._normalize_scene_analysis(scene_analysis, minimum_score=minimum_score),
-                    "optimization_meta": self._refresh_scene_optimization_meta(frame, scene_analysis),
+                    "optimization_meta": scene_meta,
                 }
             )
         episode_quality = self._build_episode_quality_summary(analyzed, episode_analysis=episode_analysis, profile_config=profile_config)
@@ -1004,6 +1032,8 @@ class BibleVideoFactoryService:
             current_score=current_analysis["scene_score"],
             approval_status=current_frame.get("approval_status"),
         )
+        best_score_before = self._normalize_int(current_meta.get("best_score"), current_analysis["scene_score"])
+        current_version_before = self._normalize_int(current_meta.get("current_version"), 1)
         next_version = self._normalize_int(current_meta.get("current_version"), 1) + 1
         improved = candidate_analysis["scene_score"] > current_analysis["scene_score"]
         history_entry = {
@@ -1020,6 +1050,11 @@ class BibleVideoFactoryService:
             "previous_score": current_analysis["scene_score"],
             "new_score": candidate_analysis["scene_score"],
             "best_score": self._normalize_int(current_meta.get("best_score"), current_analysis["scene_score"]),
+            "best_score_before": best_score_before,
+            "best_score_final": best_score_before,
+            "version_before": current_version_before,
+            "version_after": current_version_before,
+            "version_action": "nova_versao_descartada",
             "status": "descartada",
             "saved": False,
         }
@@ -1043,6 +1078,18 @@ class BibleVideoFactoryService:
             db.commit()
             db.refresh(script)
             outcome["best_score"] = max(outcome["best_score"], current_analysis["scene_score"])
+            outcome["best_score_final"] = self._normalize_int(current_meta.get("best_score"), outcome["best_score"])
+            logger.info(
+                "scene_version_decision scene=%s previous_score=%s candidate_score=%s best_score_before=%s best_score_final=%s version_before=%s version_after=%s decision=%s",
+                scene_number,
+                current_analysis["scene_score"],
+                candidate_analysis["scene_score"],
+                best_score_before,
+                outcome["best_score_final"],
+                current_version_before,
+                current_version_before,
+                outcome["version_action"],
+            )
             return outcome
         current_meta["current_version"] = next_version
         current_meta["current_score"] = candidate_analysis["scene_score"]
@@ -1077,9 +1124,23 @@ class BibleVideoFactoryService:
         outcome.update(
             {
                 "best_score": self._normalize_int(current_meta.get("best_score"), candidate_analysis["scene_score"]),
+                "best_score_final": self._normalize_int(current_meta.get("best_score"), candidate_analysis["scene_score"]),
+                "version_after": next_version,
+                "version_action": "nova_versao_mantida",
                 "status": "aprovada" if candidate_analysis["scene_score"] >= self._scene_minimum_score(self.resolve_series_profile(series)) else "melhorou",
                 "saved": True,
             }
+        )
+        logger.info(
+            "scene_version_decision scene=%s previous_score=%s candidate_score=%s best_score_before=%s best_score_final=%s version_before=%s version_after=%s decision=%s",
+            scene_number,
+            current_analysis["scene_score"],
+            candidate_analysis["scene_score"],
+            best_score_before,
+            outcome["best_score_final"],
+            current_version_before,
+            next_version,
+            outcome["version_action"],
         )
         return outcome
 
