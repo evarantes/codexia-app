@@ -175,6 +175,10 @@ class ApprovalRequest(BaseModel):
     notes: Optional[str] = ""
 
 
+class AutoOptimizeRequest(BaseModel):
+    allow_reoptimize_approved: bool = False
+
+
 class MetricRequest(BaseModel):
     job_id: Optional[int] = None
     series_id: Optional[int] = None
@@ -612,12 +616,12 @@ def auto_improve_episode(script_id: int, db: Session = Depends(get_db), current_
 
 
 @router.post("/scripts/{script_id}/auto-optimize-total")
-def auto_optimize_total(script_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def auto_optimize_total(script_id: int, payload: AutoOptimizeRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
     if not script:
         raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
     try:
-        return get_service().auto_optimize_episode_total(db, script)
+        return get_service().auto_optimize_episode_total(db, script, allow_reoptimize_approved=payload.allow_reoptimize_approved)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

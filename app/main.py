@@ -920,10 +920,11 @@ os.makedirs("generated_assets/storyboard_images", exist_ok=True)
 app.mount("/generated_assets", StaticFiles(directory="generated_assets"), name="generated_assets")
 # Garantir que os diretórios de vídeos existem
 if os.path.isdir("/data"):
-    os.makedirs("/data/media/videos", exist_ok=True)
-    os.makedirs("/data/media/music", exist_ok=True)
-    os.makedirs("/data/media/books", exist_ok=True)
-    os.makedirs("/data/media/covers", exist_ok=True)
+    for _path in ("/data/media/videos", "/data/media/music", "/data/media/books", "/data/media/covers"):
+        try:
+            os.makedirs(_path, exist_ok=True)
+        except OSError as exc:
+            print(f"Startup warning: unable to create {_path}: {exc}")
 os.makedirs(os.path.join(STATIC_DIR, "videos"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "music"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "books"), exist_ok=True)

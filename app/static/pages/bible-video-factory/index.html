@@ -269,6 +269,10 @@
                             <button @click="createProductionJob('16:9')" :disabled="!selectedScriptId" class="bg-violet-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Enfileirar video</button>
                             <button @click="createProductionJob('9:16', 'short')" :disabled="!selectedScriptId" class="bg-violet-200 text-slate-900 px-4 py-2 rounded-lg font-semibold disabled:opacity-50">Enfileirar short</button>
                         </div>
+                        <label class="inline-flex items-center gap-2 text-sm text-slate-600">
+                            <input v-model="allowReoptimizeApproved" type="checkbox" class="rounded border-slate-300">
+                            <span>Permitir reotimizar cenas aprovadas</span>
+                        </label>
                     </div>
                 </div>
 
@@ -542,9 +546,12 @@
                             <div><strong>Nova nota:</strong> {{ currentScript.optimization_state.new_score || 0 }}</div>
                             <div><strong>Melhor nota:</strong> {{ currentScript.optimization_state.best_score || 0 }}</div>
                         </div>
+                        <div class="mt-3 text-sm"><strong>Percentual de conclusao:</strong> {{ currentScript.optimization_state.completion_percentage || 0 }}%</div>
                         <div v-if="optimizationReport" class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                             <div class="rounded-lg bg-white border p-3">
                                 <div class="font-semibold mb-2">Relatorio final</div>
+                                <div><strong>Nota inicial do episodio:</strong> {{ optimizationReport.nota_inicial_episodio || 0 }}</div>
+                                <div><strong>Nota final do episodio:</strong> {{ optimizationReport.nota_final_episodio || 0 }}</div>
                                 <div><strong>Melhor nota alcançada:</strong> {{ optimizationReport.melhor_nota_alcancada || 0 }}</div>
                                 <div><strong>Episode score:</strong> {{ optimizationReport.episode_score || 0 }}</div>
                                 <div><strong>Cliffhanger:</strong> {{ optimizationReport.cliffhanger_score || 0 }}</div>
@@ -553,7 +560,9 @@
                             <div class="rounded-lg bg-white border p-3">
                                 <div class="font-semibold mb-2">Resumo</div>
                                 <div><strong>Cenas melhoradas:</strong> {{ (optimizationReport.cenas_melhoradas || []).length }}</div>
+                                <div><strong>Cenas descartadas:</strong> {{ (optimizationReport.cenas_descartadas || []).length }}</div>
                                 <div><strong>Cenas sem melhoria:</strong> {{ (optimizationReport.cenas_que_nao_melhoraram || []).length }}</div>
+                                <div><strong>Tentativas totais:</strong> {{ optimizationReport.tentativas_totais || 0 }}</div>
                                 <div><strong>Status atual:</strong> {{ currentScript.optimization_state.status || 'idle' }}</div>
                             </div>
                         </div>
@@ -873,6 +882,7 @@
                     currentScript: null,
                     currentScenes: [],
                     sceneDiagnostics: null,
+                    allowReoptimizeApproved: false,
                     optimizationPollingTimer: null,
                     jobs: [],
                     characters: [],
@@ -1567,7 +1577,11 @@
                             }
                         };
                         this.startOptimizationPolling();
-                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/auto-optimize-total`, { method: 'POST' });
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/auto-optimize-total`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ allow_reoptimize_approved: this.allowReoptimizeApproved })
+                        });
                         const data = await res.json();
                         if (!res.ok) throw new Error(data.detail || 'Falha ao executar a Auto Otimizacao Total.');
                         this.currentScript = data;
