@@ -573,7 +573,8 @@ class BibleVideoFactoryService:
             "attempts_used": 0,
             "max_attempts": 5,
             "locked_for_optimization": self._normalize_text(approval_status or "pending").lower() == "approved",
-            "last_status": "inicial",
+            "last_status": "aprovada" if self._normalize_text(approval_status or "pending").lower() == "approved" else "pendente",
+            "last_version_action": "pendente",
             "version_history": [],
         }
 
@@ -589,7 +590,8 @@ class BibleVideoFactoryService:
         base["attempts_used"] = max(0, self._normalize_int(base.get("attempts_used"), 0))
         base["max_attempts"] = max(1, self._normalize_int(base.get("max_attempts"), 5))
         base["locked_for_optimization"] = bool(base.get("locked_for_optimization"))
-        base["last_status"] = self._normalize_text(base.get("last_status") or "inicial")
+        base["last_status"] = self._normalize_text(base.get("last_status") or ("aprovada" if self._normalize_text(approval_status or "pending").lower() == "approved" else "pendente"))
+        base["last_version_action"] = self._normalize_text(base.get("last_version_action") or "pendente")
         history = []
         for item in self._ensure_list(base.get("version_history")):
             if not isinstance(item, dict):
@@ -614,6 +616,8 @@ class BibleVideoFactoryService:
         base["version_history"] = history[-12:]
         if self._normalize_text(approval_status or "pending").lower() == "approved" and "locked_for_optimization" not in (meta or {}):
             base["locked_for_optimization"] = True
+        if self._normalize_text(approval_status or "pending").lower() == "approved" and base["last_status"] in {"pendente", "inicial"}:
+            base["last_status"] = "aprovada"
         return base
 
     def _refresh_scene_optimization_meta(self, frame: Dict[str, Any], scene_analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -1060,6 +1064,7 @@ class BibleVideoFactoryService:
         }
         if not improved:
             current_meta["best_score"] = max(self._normalize_int(current_meta.get("best_score"), 0), current_analysis["scene_score"])
+            current_meta["last_version_action"] = "descartada"
             keep_storyboard = []
             for item in storyboard:
                 if int(item.get("scene_number") or 0) == int(scene_number or 0):
@@ -1096,6 +1101,8 @@ class BibleVideoFactoryService:
         if candidate_analysis["scene_score"] > self._normalize_int(current_meta.get("best_score"), 0):
             current_meta["best_score"] = candidate_analysis["scene_score"]
             current_meta["best_version"] = next_version
+        current_meta["last_status"] = "aprovada" if candidate_analysis["scene_score"] >= self._scene_minimum_score(self.resolve_series_profile(series)) else "melhorou"
+        current_meta["last_version_action"] = "mantida"
         current_meta["locked_for_optimization"] = False
         candidate_frame = {**candidate_frame, "approval_status": "pending", "optimization_meta": current_meta, "scene_analysis": {**candidate_analysis, "approved": False}}
         candidate_source = {**candidate_source, "approval_status": "pending", "optimization_meta": current_meta, "scene_analysis": candidate_analysis}
