@@ -423,8 +423,23 @@ class BibleVideoFactoryService:
     def _clear_optimization_stop(self, script_id: int):
         self._optimization_stop_flags[script_id] = False
 
-    def _should_stop_optimization(self, script: BibleVideoScript) -> bool:
-        return bool(self._optimization_stop_flags.get(script.id))
+    def _should_stop_optimization(self, db: Session, script: BibleVideoScript) -> bool:
+        in_memory_stop = bool(self._optimization_stop_flags.get(script.id))
+        persisted_stop = False
+        try:
+            db.refresh(script)
+            persisted_stop = bool(self._optimization_state(script).get("stop_requested"))
+        except Exception:
+            persisted_stop = bool(self._optimization_state(script).get("stop_requested"))
+        if in_memory_stop or persisted_stop:
+            logger.info(
+                "auto_optimize_stop_detected script_id=%s in_memory=%s persisted=%s",
+                script.id,
+                in_memory_stop,
+                persisted_stop,
+            )
+            return True
+        return False
 
     def get_optimization_status(self, script: BibleVideoScript) -> Dict[str, Any]:
         return self._optimization_state(script)
@@ -4078,7 +4093,7 @@ class BibleVideoFactoryService:
         stop_reason = ""
         #region debug-point auto-optimize-blocked-rounds
         for round_number in range(1, 4):
-            if self._should_stop_optimization(current_script):
+            if self._should_stop_optimization(db, current_script):
                 stop_reason = "Otimizacao interrompida pelo usuario."
                 break
             final_payload = self.serialize_script(current_script)
@@ -4134,7 +4149,7 @@ class BibleVideoFactoryService:
                 logger.info("Rodada %s encerrada sem cenas processaveis.", round_number)
                 break
             for frame in processable_weak_frames:
-                if self._should_stop_optimization(current_script):
+                if self._should_stop_optimization(db, current_script):
                     stop_reason = "Otimizacao interrompida pelo usuario."
                     break
                 scene_number = self._normalize_int(frame.get("scene_number"), 0)
@@ -4151,7 +4166,7 @@ class BibleVideoFactoryService:
                     logger.info("Cena %s sem tentativas restantes: attempts_used=%s", scene_number, self._normalize_int(meta.get("attempts_used"), 0))
                     continue
                 for attempt_index in range(1, remaining_attempts + 1):
-                    if self._should_stop_optimization(current_script):
+                    if self._should_stop_optimization(db, current_script):
                         stop_reason = "Otimizacao interrompida pelo usuario."
                         break
                     repair_plan = self._build_scene_metric_repair_plan(frame, profile_config=profile_config)
@@ -4296,12 +4311,12 @@ class BibleVideoFactoryService:
                         },
                         commit=True,
                     )
-                    if self._should_stop_optimization(current_script):
+                    if self._should_stop_optimization(db, current_script):
                         stop_reason = "Otimizacao interrompida pelo usuario."
                         break
                     if analysis["scene_score"] >= minimum_scene_score:
                         break
-                if self._should_stop_optimization(current_script):
+                if self._should_stop_optimization(db, current_script):
                     stop_reason = "Otimizacao interrompida pelo usuario."
                     break
             if stop_reason:
