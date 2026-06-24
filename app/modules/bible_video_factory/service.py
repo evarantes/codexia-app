@@ -557,6 +557,7 @@ class BibleVideoFactoryService:
             "revelation_score": 0,
             "visual_score": 0,
             "suspense_score": 0,
+            "cliffhanger_score": 0,
             "retention_score": 0,
             "minimum_score": int(minimum_score or 80),
             "approved": False,
@@ -715,6 +716,7 @@ class BibleVideoFactoryService:
             "revelation_score",
             "visual_score",
             "suspense_score",
+            "cliffhanger_score",
             "retention_score",
         ]:
             base[key] = self._clamp_score(base.get(key))
@@ -742,7 +744,9 @@ class BibleVideoFactoryService:
         conflict_keywords = ["conflito", "risco", "perigo", "ameaca", "fuga", "luta", "inimigo", "oposicao", "pressao", "decisao"]
         revelation_keywords = ["revelacao", "descob", "segredo", "verdade", "mist", "surpresa", "sinal", "profecia"]
         suspense_keywords = ["mas", "porem", "ainda", "antes que", "o que", "agora", "continua", "aproxima", "sombras", "silencio"]
+        cliffhanger_keywords = ["antes que", "quando", "naquele instante", "mas entao", "de repente", "se nao", "agora", "o que aconteceria", "quem era", "logo atras", "sem saber"]
         visual_keywords = ["close", "wide", "cinematic", "4k", "dramatic", "travelling", "panoramica", "zoom", "luz", "sombra", "poeira"]
+        ending_excerpt = " ".join(self._split_sentences(narration)[-2:]) or narration[-220:]
 
         hook_score = self._clamp_score(
             20
@@ -771,6 +775,13 @@ class BibleVideoFactoryService:
             + (12 if "?" in narration else 0)
             + (10 if any(word in narration.lower() for word in ["depois", "agora", "ainda"]) else 0)
         )
+        cliffhanger_score = self._clamp_score(
+            12
+            + self._count_keyword_hits(ending_excerpt, cliffhanger_keywords) * 13
+            + (16 if "?" in ending_excerpt else 0)
+            + (12 if any(word in ending_excerpt.lower() for word in ["antes que", "de repente", "naquele instante", "mas entao", "sem saber", "agora"]) else 0)
+            + (10 if any(word in ending_excerpt.lower() for word in ["amea", "risco", "perigo", "passos", "sombra", "grito", "silencio"]) else 0)
+        )
         visual_score = self._clamp_score(
             (22 if prompt_visual else 0)
             + (14 if prompt_video else 0)
@@ -778,13 +789,14 @@ class BibleVideoFactoryService:
             + self._count_keyword_hits(joined_text, visual_keywords) * 7
             + min(20, len(prompt_visual.split()) // 4)
         )
-        retention_score = self._clamp_score((hook_score + emotion_score + conflict_score + revelation_score + suspense_score) / 5.0)
+        retention_score = self._clamp_score((hook_score + emotion_score + conflict_score + revelation_score + suspense_score + cliffhanger_score) / 6.0)
         scene_score = self._clamp_score(
-            hook_score * 0.20
-            + emotion_score * 0.20
-            + conflict_score * 0.20
-            + revelation_score * 0.15
-            + suspense_score * 0.15
+            hook_score * 0.18
+            + emotion_score * 0.18
+            + conflict_score * 0.18
+            + revelation_score * 0.14
+            + suspense_score * 0.12
+            + cliffhanger_score * 0.10
             + visual_score * 0.10
         )
 
@@ -804,6 +816,8 @@ class BibleVideoFactoryService:
             suggestions.append("Adicione descoberta, pista, segredo ou revelacao local para mover a historia.")
         if suspense_score < 75:
             suggestions.append("Feche a cena com suspense local, pergunta aberta ou promessa do proximo movimento.")
+        if cliffhanger_score < 75:
+            suggestions.append("Encerre exatamente antes da resolucao, com decisao interrompida, perigo iminente ou revelacao incompleta.")
         if visual_score < 75:
             suggestions.append("Deixe a descricao visual mais cinematografica com camera, luz, atmosfera e composicao.")
         if not notes:
@@ -818,6 +832,7 @@ class BibleVideoFactoryService:
                 "revelation_score": revelation_score,
                 "visual_score": visual_score,
                 "suspense_score": suspense_score,
+                "cliffhanger_score": cliffhanger_score,
                 "retention_score": retention_score,
                 "minimum_score": minimum_score,
                 "approved": scene_score >= minimum_score,
@@ -905,27 +920,168 @@ class BibleVideoFactoryService:
             "minimum_episode_score": int(minimum_episode_score or 85),
         }
 
-    def _build_scene_improvement_feedback(self, frame: Dict[str, Any], profile_config: Optional[Dict[str, Any]] = None) -> str:
-        analysis = self._normalize_scene_analysis((frame or {}).get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config))
+    def _scene_metric_repair_catalog(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "key": "hook_score",
+                "label": "gancho",
+                "field_focus": ["title", "narration"],
+                "instructions": [
+                    "Abra a cena com uma pergunta forte, ameaca imediata, paradoxo ou curiosidade dificil de ignorar.",
+                    "Faça os primeiros 12-15 segundos prometerem uma descoberta, risco ou inversao clara.",
+                    "Reescreva o titulo e a primeira frase para gerar urgencia narrativa sem perder a fidelidade biblica.",
+                ],
+            },
+            {
+                "key": "emotion_score",
+                "label": "emocao",
+                "field_focus": ["narration", "emotion", "prompt_visual"],
+                "instructions": [
+                    "Defina uma emocao dominante para a cena e a torne explicita na narracao, no gesto e no clima visual.",
+                    "Inclua medo, fe, perda, culpa, coragem, alivio ou esperanca de modo concreto e visivel.",
+                    "Mostre reacao corporal, espiritual ou relacional para aumentar empatia e conexao do publico.",
+                ],
+            },
+            {
+                "key": "conflict_score",
+                "label": "conflito",
+                "field_focus": ["narration", "title", "prompt_video"],
+                "instructions": [
+                    "Introduza um obstaculo concreto, oposicao visivel ou risco atual que pressione o personagem nesta cena.",
+                    "Deixe claro o custo da falha, o que pode ser perdido e quem ou o que esta contra o protagonista.",
+                    "Troque abstracao por confronto, dilema, perigo, escolha dificil ou pressao dramatica imediata.",
+                ],
+            },
+            {
+                "key": "revelation_score",
+                "label": "revelacao",
+                "field_focus": ["narration", "title"],
+                "instructions": [
+                    "Inclua descoberta local, pista decisiva, verdade exposta, segredo revelado ou sinal profetico.",
+                    "A revelacao precisa mudar a leitura da cena e influenciar a proxima acao do personagem.",
+                    "Evite informacao decorativa: a nova informacao deve alterar o rumo dramatico da sequencia.",
+                ],
+            },
+            {
+                "key": "suspense_score",
+                "label": "suspense",
+                "field_focus": ["narration", "prompt_video", "sound_effects"],
+                "instructions": [
+                    "Atrase a resolucao com incerteza, silencio tenso, aproximacao do perigo, contagem regressiva ou interrupcao.",
+                    "Aumente a tensao na penultima frase e preserve uma pergunta ou ameaca em aberto.",
+                    "Use ritmo, pausa e expectativa para que o publico sinta que algo decisivo esta prestes a acontecer.",
+                ],
+            },
+            {
+                "key": "cliffhanger_score",
+                "label": "cliffhanger",
+                "field_focus": ["narration", "title", "prompt_cinematic"],
+                "instructions": [
+                    "Termine a cena com decisao interrompida, revelacao incompleta, perigo iminente ou pergunta sem resposta.",
+                    "A ultima frase e a ultima imagem devem empurrar o publico para a proxima cena sem entregar a resolucao.",
+                    "Feche no ponto de maior tensao, exatamente antes do desfecho, com promessa clara do proximo movimento.",
+                ],
+            },
+            {
+                "key": "visual_score",
+                "label": "visual",
+                "field_focus": ["prompt_visual", "prompt_video", "prompt_animation", "prompt_cinematic", "camera_movement", "sound_effects"],
+                "instructions": [
+                    "Deixe o visual mais cinematografico com enquadramento, lente, camera, luz, sombra, profundidade e atmosfera.",
+                    "Descreva composicao, blocking, textura, clima e acao visual em linguagem compativel com geradores de imagem e video.",
+                    "Amarre o visual ao momento biblico da cena, com iconografia coerente, movimento de camera e sensacao dramatica.",
+                ],
+            },
+        ]
+
+    def _build_scene_metric_repair_plan(self, frame: Dict[str, Any], profile_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         minimum_score = self._scene_minimum_score(profile_config)
-        weak_dimensions = []
-        if analysis["hook_score"] < minimum_score:
-            weak_dimensions.append("gancho")
-        if analysis["emotion_score"] < minimum_score:
-            weak_dimensions.append("emocao")
-        if analysis["conflict_score"] < minimum_score:
-            weak_dimensions.append("conflito")
-        if analysis["revelation_score"] < minimum_score:
-            weak_dimensions.append("revelacao")
-        if analysis["suspense_score"] < minimum_score:
-            weak_dimensions.append("suspense")
-        if analysis["visual_score"] < minimum_score:
-            weak_dimensions.append("visual cinematografico")
+        analysis = self._normalize_scene_analysis((frame or {}).get("scene_analysis"), minimum_score=minimum_score)
+        strengths = []
+        weak_metrics = []
+        for item in self._scene_metric_repair_catalog():
+            current_score = self._normalize_int(analysis.get(item["key"]), 0)
+            metric_payload = {
+                "key": item["key"],
+                "label": item["label"],
+                "current_score": current_score,
+                "target_score": minimum_score,
+                "gap": max(0, minimum_score - current_score),
+                "field_focus": item["field_focus"],
+                "instructions": item["instructions"],
+            }
+            if current_score >= minimum_score:
+                strengths.append(f"{item['label']} {current_score}/100")
+            else:
+                weak_metrics.append(metric_payload)
+        weak_metrics.sort(key=lambda metric: metric["gap"], reverse=True)
+        priority_metrics = [metric["label"] for metric in weak_metrics[:3]]
+        primary_metric = priority_metrics[0] if priority_metrics else ""
+        prompt_lines = [
+            f"Nota atual da cena: {analysis['scene_score']}/100. Meta minima por metrica: {minimum_score}/100.",
+            f"Pontos fortes a preservar: {', '.join(strengths) or 'nenhum ponto forte acima da meta ainda.'}",
+        ]
+        if weak_metrics:
+            prompt_lines.append(
+                f"Foco principal desta tentativa: {primary_metric or 'nenhum'}. "
+                f"Prioridade de correcao: {', '.join(priority_metrics) or 'nenhuma'}."
+            )
+            prompt_lines.append("Corrija obrigatoriamente as metricas abaixo, sem gerar variacao aleatoria:")
+            for metric in weak_metrics:
+                prompt_lines.append(
+                    f"- {metric['label']}: {metric['current_score']}/100 -> alvo {metric['target_score']}/100. "
+                    f"Campos prioritarios: {', '.join(metric['field_focus'])}. "
+                    f"Acoes: {' '.join(metric['instructions'])}"
+                )
+        else:
+            prompt_lines.append("Nenhuma metrica local esta abaixo da meta; preserve os pontos fortes e refine apenas detalhes de ritmo e clareza.")
+        return {
+            "scene_score": analysis["scene_score"],
+            "minimum_score": minimum_score,
+            "strengths": strengths,
+            "weak_metrics": weak_metrics,
+            "priority_metrics": priority_metrics,
+            "primary_metric": primary_metric,
+            "prompt_block": "\n".join(prompt_lines),
+        }
+
+    def _episode_scores_from_payload(self, payload: Optional[Dict[str, Any]]) -> Dict[str, int]:
+        retention = (payload or {}).get("retention_analysis") if isinstance((payload or {}).get("retention_analysis"), dict) else {}
+        cliffhanger_analysis = retention.get("cliffhanger_analysis") if isinstance(retention.get("cliffhanger_analysis"), dict) else {}
+        episode_score = self._normalize_int(retention.get("episode_score"), 0)
+        cliffhanger_score = self._normalize_int(
+            cliffhanger_analysis.get("impact_score") or retention.get("cliffhanger_impact_score"),
+            0,
+        )
+        return {
+            "episode_score": episode_score,
+            "cliffhanger_score": cliffhanger_score,
+        }
+
+    def _refresh_optimization_report_scores(self, report: Dict[str, Any], payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        report = report if isinstance(report, dict) else self._build_optimization_report_template()
+        score_snapshot = self._episode_scores_from_payload(payload)
+        current_episode_score = self._normalize_int(score_snapshot.get("episode_score"), 0)
+        current_cliffhanger_score = self._normalize_int(score_snapshot.get("cliffhanger_score"), 0)
+        report["episode_score"] = max(self._normalize_int(report.get("episode_score"), 0), current_episode_score)
+        report["cliffhanger_score"] = max(self._normalize_int(report.get("cliffhanger_score"), 0), current_cliffhanger_score)
+        report["nota_final_episodio"] = max(self._normalize_int(report.get("nota_final_episodio"), 0), current_episode_score)
+        report["melhor_nota_alcancada"] = max(
+            self._normalize_int(report.get("melhor_nota_alcancada"), 0),
+            current_episode_score,
+        )
+        return report
+
+    def _build_scene_improvement_feedback(self, frame: Dict[str, Any], profile_config: Optional[Dict[str, Any]] = None) -> str:
+        plan = self._build_scene_metric_repair_plan(frame, profile_config=profile_config)
+        weak_labels = [item["label"] for item in plan.get("weak_metrics") or []]
         return self._normalize_text(
-            "Melhore automaticamente apenas esta cena ate atingir a meta minima. "
-            f"Nota atual: {analysis['scene_score']}/100. Meta: {minimum_score}/100. "
-            f"Fortalecer: {', '.join(weak_dimensions) or 'gancho, emocao, conflito, revelacao, suspense e visual'}. "
-            "Inclua cliffhanger local, pergunta forte, emocao clara, risco real, descoberta local e visual cinematografico. "
+            "Melhore automaticamente apenas esta cena ate atingir a meta minima, guiando cada reescrita pelas metricas fracas abaixo da meta. "
+            f"Nota atual: {plan['scene_score']}/100. Meta: {plan['minimum_score']}/100. "
+            f"Fortalecer: {', '.join(weak_labels) or 'nenhuma metrica abaixo da meta no momento'}. "
+            f"Prioridade maxima desta tentativa: {plan.get('primary_metric') or 'nenhuma'}; depois foque em {', '.join(plan.get('priority_metrics') or []) or 'nenhuma metrica critica'}. "
+            "Nao gere uma nova versao aleatoria: cada alteracao precisa corrigir diretamente as deficiencias diagnosticadas. "
+            f"Plano corretivo:\n{plan['prompt_block']}\n"
             "Preserve a coerencia com as cenas aprovadas e com o Character Bible. "
             f"Biblioteca de padroes vencedores:\n{self._winning_patterns_prompt(limit=2) or 'Sem padroes registrados ainda.'}"
         )
@@ -3667,6 +3823,20 @@ class BibleVideoFactoryService:
         target_source = next((item for item in scene_sources if int(item.get("scene_number") or 0) == int(scene_number or 0)), {})
         character_profiles = self._get_character_profiles_for_series(db, script.series_id)
         scenario_profiles = self._get_scenario_profiles_for_series(db, script.series_id)
+        repair_plan = self._build_scene_metric_repair_plan(target_frame, profile_config=profile_config)
+        logger.info(
+            "scene_metric_repair_plan scene=%s current_score=%s minimum=%s weak_metrics=%s",
+            scene_number,
+            repair_plan.get("scene_score"),
+            repair_plan.get("minimum_score"),
+            [item.get("label") for item in (repair_plan.get("weak_metrics") or [])],
+        )
+        logger.info(
+            "scene_metric_repair_focus scene=%s primary_metric=%s priority_metrics=%s",
+            scene_number,
+            repair_plan.get("primary_metric") or "",
+            repair_plan.get("priority_metrics") or [],
+        )
         fallback = {
             "title": target_frame.get("title"),
             "narration": target_frame.get("narration"),
@@ -3689,16 +3859,20 @@ class BibleVideoFactoryService:
             "Mantenha fidelidade biblica, retencao e consistencia visual.\n"
             "Use SEMPRE o Character Bible e o mesmo prompt mestre unico dos personagens recorrentes durante toda a temporada.\n"
             "Nao regenere o episodio inteiro.\n\n"
+            "NAO gere uma nova variacao aleatoria: regenere a cena para corrigir diretamente as metricas que ficaram abaixo da meta.\n"
+            "Cada campo retornado precisa refletir o plano corretivo: title e narration corrigem gancho, emocao, conflito, revelacao, suspense e cliffhanger; "
+            "prompt_visual, prompt_video, prompt_animation, prompt_cinematic, camera_movement e sound_effects corrigem o visual cinematografico.\n\n"
             f"Serie: {series.name}\n"
             f"Episodio: {episode.title}\n"
             f"Cena: {scene_number}\n"
             f"Storyboard atual: {self._json_dumps(target_frame)[:3000]}\n"
             f"Dados atuais da cena: {self._json_dumps(target_source)[:4000]}\n"
+            f"Diagnostico metrico atual: {self._json_dumps(repair_plan)[:5000]}\n"
             f"Character Bible: {self._json_dumps(character_profiles)[:5000]}\n"
             f"Scenario Bible: {self._json_dumps(scenario_profiles)[:4000]}\n"
             f"Roteiro base: {script.full_narration[:9000]}\n"
             f"Biblioteca de padroes vencedores: {self._winning_patterns_prompt(limit=3) or 'Sem padroes registrados ainda.'}\n"
-            f"Melhorias obrigatorias: {self._normalize_text(improvement_request) or 'Reforce emocao, conflito, descoberta, suspense e cliffhanger local.'}"
+            f"Melhorias obrigatorias: {self._normalize_text(improvement_request) or repair_plan.get('prompt_block') or 'Reforce emocao, conflito, descoberta, suspense e cliffhanger local.'}"
         )
         data = self._generate_json(
             prompt,
@@ -3754,6 +3928,9 @@ class BibleVideoFactoryService:
             refreshed_frame,
             candidate_source,
         )
+        outcome["metrics_below_target"] = [item.get("label") for item in (repair_plan.get("weak_metrics") or [])]
+        outcome["metrics_attempted"] = list(repair_plan.get("priority_metrics") or outcome["metrics_below_target"])
+        outcome["primary_metric"] = self._normalize_text(repair_plan.get("primary_metric"))
         payload = self.serialize_script(script)
         if return_outcome:
             return {"payload": payload, "outcome": outcome}
@@ -3818,6 +3995,7 @@ class BibleVideoFactoryService:
         self._clear_optimization_stop(current_script.id)
         report = self._build_optimization_report_template()
         initial_payload = self.serialize_script(current_script)
+        report = self._refresh_optimization_report_scores(report, initial_payload)
         reset_scene_numbers = self._reset_scene_attempts_for_new_optimization_session(
             db,
             current_script,
@@ -3829,6 +4007,7 @@ class BibleVideoFactoryService:
             logger.info("Tentativas reabertas para nova sessao de otimizacao: %s", reset_scene_numbers)
             current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
             initial_payload = self.serialize_script(current_script)
+            report = self._refresh_optimization_report_scores(report, initial_payload)
         initial_storyboard = initial_payload.get("storyboard") if isinstance(initial_payload.get("storyboard"), list) else []
         initial_eligible = set()
         blocked_scenes = set()
@@ -3882,7 +4061,7 @@ class BibleVideoFactoryService:
                 "max_scene_attempts": 5,
                 "previous_score": 0,
                 "new_score": 0,
-                "best_score": 0,
+                "best_score": self._normalize_int(report.get("melhor_nota_alcancada"), 0),
                 "completion_percentage": self._calculate_optimization_completion(progress_scene_numbers, eligible_scene_numbers),
                 "status": "running",
                 "reason": "",
@@ -3975,6 +4154,9 @@ class BibleVideoFactoryService:
                     if self._should_stop_optimization(current_script):
                         stop_reason = "Otimizacao interrompida pelo usuario."
                         break
+                    repair_plan = self._build_scene_metric_repair_plan(frame, profile_config=profile_config)
+                    weak_metric_labels = [item.get("label") for item in (repair_plan.get("weak_metrics") or [])]
+                    attempted_metric_labels = list(repair_plan.get("priority_metrics") or weak_metric_labels)
                     self._persist_optimization_state(
                         db,
                         current_script,
@@ -3995,6 +4177,8 @@ class BibleVideoFactoryService:
                                     "scene_number": scene_number,
                                     "attempt": attempt_index,
                                     "previous_score": analysis["scene_score"],
+                                    "metrics_below_target": weak_metric_labels,
+                                    "metrics_attempted": attempted_metric_labels,
                                     "status": "processando",
                                     "created_at": datetime.utcnow().isoformat(),
                                 }
@@ -4014,12 +4198,25 @@ class BibleVideoFactoryService:
                     final_payload = response.get("payload") if isinstance(response, dict) else final_payload
                     current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
                     final_payload = self.serialize_script(current_script)
+                    report = self._refresh_optimization_report_scores(report, final_payload)
                     progress_scene_numbers.add(scene_number)
                     updated_frame = next((item for item in (final_payload.get("storyboard") or []) if int(item.get("scene_number") or 0) == scene_number), None) or frame
                     analysis = self._normalize_scene_analysis(updated_frame.get("scene_analysis"), minimum_score=minimum_scene_score)
                     meta = self._normalize_scene_optimization_meta(updated_frame.get("optimization_meta"), scene_number=scene_number, current_score=analysis["scene_score"], approval_status=updated_frame.get("approval_status"))
                     report["melhor_nota_alcancada"] = max(report.get("melhor_nota_alcancada", 0), analysis["scene_score"], self._normalize_int(outcome.get("best_score"), 0))
                     report["tentativas_totais"] = self._normalize_int(report.get("tentativas_totais"), 0) + 1
+                    metrics_below_target = outcome.get("metrics_below_target") if isinstance(outcome.get("metrics_below_target"), list) else weak_metric_labels
+                    metrics_attempted = outcome.get("metrics_attempted") if isinstance(outcome.get("metrics_attempted"), list) else attempted_metric_labels
+                    decision_label = "aceita" if bool(outcome.get("saved")) else "descartada"
+                    logger.info(
+                        "scene_attempt_result scene=%s previous_score=%s new_score=%s weak_metrics=%s attempted_metrics=%s decision=%s",
+                        scene_number,
+                        self._normalize_int(outcome.get("previous_score"), 0),
+                        self._normalize_int(outcome.get("new_score"), 0),
+                        metrics_below_target,
+                        metrics_attempted,
+                        decision_label,
+                    )
                     logger.info(
                         "Contadores atualizados: attempts_total=%s scenes_improved=%s scenes_discarded=%s processed_scenes=%s",
                         report["tentativas_totais"],
@@ -4034,6 +4231,8 @@ class BibleVideoFactoryService:
                         "previous_score": self._normalize_int(outcome.get("previous_score"), 0),
                         "new_score": self._normalize_int(outcome.get("new_score"), 0),
                         "best_score": self._normalize_int(outcome.get("best_score"), analysis["scene_score"]),
+                        "metrics_below_target": metrics_below_target,
+                        "metrics_attempted": metrics_attempted,
                         "status": self._normalize_text(outcome.get("status") or "descartada"),
                         "created_at": datetime.utcnow().isoformat(),
                     }
@@ -4062,6 +4261,8 @@ class BibleVideoFactoryService:
                                 "nota_anterior": self._normalize_int(outcome.get("previous_score"), 0),
                                 "nova_nota": self._normalize_int(outcome.get("new_score"), 0),
                                 "melhor_nota": self._normalize_int(outcome.get("best_score"), 0),
+                                "metricas_abaixo_da_meta": metrics_below_target,
+                                "metricas_tentadas": metrics_attempted,
                                 "status": self._normalize_text(outcome.get("status") or "melhorou"),
                             }
                         )
@@ -4072,6 +4273,9 @@ class BibleVideoFactoryService:
                                 "nota_anterior": self._normalize_int(outcome.get("previous_score"), 0),
                                 "nova_nota": self._normalize_int(outcome.get("new_score"), 0),
                                 "melhor_nota": self._normalize_int(outcome.get("best_score"), analysis["scene_score"]),
+                                "metricas_abaixo_da_meta": metrics_below_target,
+                                "metricas_tentadas": metrics_attempted,
+                                "decisao_final": decision_label,
                             }
                         )
                     if analysis["scene_score"] < minimum_scene_score and attempt_index == remaining_attempts:
@@ -4079,6 +4283,7 @@ class BibleVideoFactoryService:
                             {
                                 "scene_number": scene_number,
                                 "score": analysis["scene_score"],
+                                "metricas_abaixo_da_meta": metrics_below_target,
                                 "motivo": "As tentativas nao superaram a versao atual; as versoes piores foram descartadas.",
                             }
                         )
@@ -4123,17 +4328,11 @@ class BibleVideoFactoryService:
         result = self.serialize_script(current_script)
         result["retention_analysis"] = refreshed.get("retention_analysis") if isinstance(refreshed, dict) else result.get("retention_analysis", {})
         result["storyboard"] = refreshed.get("storyboard") if isinstance(refreshed, dict) else result.get("storyboard", [])
-        cliffhanger_score = self._normalize_int(
-            ((result.get("retention_analysis") or {}).get("cliffhanger_analysis") or {}).get("impact_score")
-            or (result.get("retention_analysis") or {}).get("cliffhanger_impact_score"),
-            0,
-        )
-        episode_score = self._normalize_int((result.get("retention_analysis") or {}).get("episode_score"), 0)
+        report = self._refresh_optimization_report_scores(report, result)
+        score_snapshot = self._episode_scores_from_payload(result)
+        cliffhanger_score = self._normalize_int(score_snapshot.get("cliffhanger_score"), 0)
+        episode_score = self._normalize_int(score_snapshot.get("episode_score"), 0)
         weak_scene_numbers = (result.get("retention_analysis") or {}).get("weak_scene_numbers") or []
-        report["cliffhanger_score"] = cliffhanger_score
-        report["episode_score"] = episode_score
-        report["nota_final_episodio"] = episode_score
-        report["melhor_nota_alcancada"] = max(report.get("melhor_nota_alcancada", 0), episode_score)
         report["cenas_bloqueadas"] = sorted(number for number in blocked_scenes if number > 0)
         if weak_scene_numbers:
             report["motivo_bloqueio"] = f"Cenas abaixo da meta: {', '.join(str(item) for item in weak_scene_numbers)}."
