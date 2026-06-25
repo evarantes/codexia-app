@@ -3971,6 +3971,17 @@ class BibleVideoFactoryService:
         series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
         profile_config = self.resolve_series_profile(series)
         minimum_score = self._scene_minimum_score(profile_config)
+        session_result = {
+            "scene_number": self._normalize_int(scene_number, 0),
+            "minimum_score": minimum_score,
+            "initial_score": 0,
+            "final_score": 0,
+            "best_score": 0,
+            "attempts": [],
+            "attempts_total": 0,
+            "improved": False,
+            "reason": "",
+        }
         for _ in range(5):
             storyboard = final_payload.get("storyboard") if isinstance(final_payload.get("storyboard"), list) else []
             target = next((item for item in storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
@@ -3978,8 +3989,26 @@ class BibleVideoFactoryService:
                 raise ValueError("Cena do storyboard nao encontrada.")
             self._ensure_scene_optimizable(target, "melhorar a cena")
             analysis = self._normalize_scene_analysis(target.get("scene_analysis"), minimum_score=minimum_score)
+            meta = self._normalize_scene_optimization_meta(
+                target.get("optimization_meta"),
+                scene_number=scene_number,
+                current_score=analysis["scene_score"],
+                approval_status=target.get("approval_status"),
+            )
+            if not session_result["initial_score"]:
+                session_result["initial_score"] = analysis["scene_score"]
+            session_result["best_score"] = max(
+                self._normalize_int(session_result.get("best_score"), 0),
+                analysis["scene_score"],
+                self._normalize_int(meta.get("best_score"), analysis["scene_score"]),
+            )
             if analysis["scene_score"] >= minimum_score:
-                return final_payload
+                session_result["final_score"] = analysis["scene_score"]
+                session_result["reason"] = "scene_already_above_target"
+                return {
+                    **final_payload,
+                    "auto_improve_result": session_result,
+                }
             response = self.regenerate_storyboard_scene(
                 db,
                 current_script,
@@ -3989,8 +4018,64 @@ class BibleVideoFactoryService:
                 return_outcome=True,
             )
             final_payload = response.get("payload") if isinstance(response, dict) else final_payload
+            outcome = response.get("outcome") if isinstance(response, dict) else {}
+            session_result["attempts_total"] = self._normalize_int(session_result.get("attempts_total"), 0) + 1
+            attempt_result = {
+                "attempt": session_result["attempts_total"],
+                "previous_score": self._normalize_int(outcome.get("previous_score"), analysis["scene_score"]),
+                "new_score": self._normalize_int(outcome.get("new_score"), analysis["scene_score"]),
+                "best_score": self._normalize_int(outcome.get("best_score"), analysis["scene_score"]),
+                "metrics_below_target": outcome.get("metrics_below_target") if isinstance(outcome.get("metrics_below_target"), list) else [],
+                "metrics_attempted": outcome.get("metrics_attempted") if isinstance(outcome.get("metrics_attempted"), list) else [],
+                "decision": "aceita" if bool(outcome.get("saved")) else "descartada",
+                "status": self._normalize_text(outcome.get("status") or "descartada"),
+            }
+            session_result["attempts"].append(attempt_result)
+            session_result["improved"] = bool(session_result.get("improved")) or bool(outcome.get("saved"))
+            session_result["best_score"] = max(
+                self._normalize_int(session_result.get("best_score"), 0),
+                self._normalize_int(outcome.get("best_score"), analysis["scene_score"]),
+                self._normalize_int(outcome.get("new_score"), analysis["scene_score"]),
+            )
+            logger.info(
+                "manual_scene_auto_improve_attempt scene=%s attempt=%s previous_score=%s new_score=%s weak_metrics=%s attempted_metrics=%s decision=%s",
+                self._normalize_int(scene_number, 0),
+                attempt_result["attempt"],
+                attempt_result["previous_score"],
+                attempt_result["new_score"],
+                attempt_result["metrics_below_target"],
+                attempt_result["metrics_attempted"],
+                attempt_result["decision"],
+            )
             current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
-        return final_payload
+            final_storyboard = final_payload.get("storyboard") if isinstance(final_payload.get("storyboard"), list) else []
+            final_target = next((item for item in final_storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
+            if final_target:
+                final_analysis = self._normalize_scene_analysis(final_target.get("scene_analysis"), minimum_score=minimum_score)
+                final_meta = self._normalize_scene_optimization_meta(
+                    final_target.get("optimization_meta"),
+                    scene_number=scene_number,
+                    current_score=final_analysis["scene_score"],
+                    approval_status=final_target.get("approval_status"),
+                )
+                session_result["final_score"] = final_analysis["scene_score"]
+                session_result["best_score"] = max(
+                    self._normalize_int(session_result.get("best_score"), 0),
+                    final_analysis["scene_score"],
+                    self._normalize_int(final_meta.get("best_score"), final_analysis["scene_score"]),
+                )
+                if final_analysis["scene_score"] >= minimum_score:
+                    session_result["reason"] = "scene_reached_target"
+                    return {
+                        **final_payload,
+                        "auto_improve_result": session_result,
+                    }
+        if not session_result["reason"]:
+            session_result["reason"] = "no_accepted_improvement" if not session_result.get("improved") else "target_not_reached"
+        return {
+            **final_payload,
+            "auto_improve_result": session_result,
+        }
 
     def _build_optimization_report_template(self) -> Dict[str, Any]:
         return {

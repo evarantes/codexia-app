@@ -1578,7 +1578,29 @@
                         this.currentScript = data;
                         await this.loadSelectedScript();
                         await this.bootstrap();
-                        this.notifySuccess(`Cena ${sceneNumber} melhorada automaticamente.`);
+                        const result = data.auto_improve_result || {};
+                        const attemptsTotal = Number(result.attempts_total || 0);
+                        const initialScore = Number(result.initial_score || 0);
+                        const finalScore = Number(result.final_score || 0);
+                        const bestScore = Number(result.best_score || finalScore || initialScore || 0);
+                        const primaryAttempt = Array.isArray(result.attempts) && result.attempts.length ? result.attempts[0] : null;
+                        const attemptedMetrics = primaryAttempt && Array.isArray(primaryAttempt.metrics_attempted)
+                            ? primaryAttempt.metrics_attempted.filter(Boolean).join(', ')
+                            : '';
+                        if (result.improved) {
+                            this.notifySuccess(
+                                `Cena ${sceneNumber} melhorada automaticamente. Nota ${initialScore} -> ${finalScore}. Melhor nota: ${bestScore}.` +
+                                (attemptedMetrics ? ` Foco: ${attemptedMetrics}.` : '')
+                            );
+                        } else if (result.reason === 'scene_already_above_target') {
+                            this.notifySuccess(`Cena ${sceneNumber} ja esta acima da meta. Nota atual: ${finalScore || initialScore}.`);
+                        } else {
+                            this.notifyError(
+                                `Cena ${sceneNumber} nao teve nenhuma melhoria aceita apos ${attemptsTotal} tentativa(s). ` +
+                                `Nota atual: ${finalScore || initialScore}. Melhor nota: ${bestScore}.` +
+                                (attemptedMetrics ? ` Foco tentado: ${attemptedMetrics}.` : '')
+                            );
+                        }
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao auto melhorar a cena.');
                     }
