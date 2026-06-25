@@ -979,6 +979,8 @@ class BibleVideoFactoryService:
                     "Introduza um obstaculo concreto, oposicao visivel ou risco atual que pressione o personagem nesta cena.",
                     "Deixe claro o custo da falha, o que pode ser perdido e quem ou o que esta contra o protagonista.",
                     "Troque abstracao por confronto, dilema, perigo, escolha dificil ou pressao dramatica imediata.",
+                    "A cena precisa conter pelo menos um antagonista, obstaculo fisico, ameaca objetiva ou prazo critico visivel.",
+                    "A narracao deve mostrar o personagem sendo impedido, perseguido, confrontado ou forcado a decidir sob pressao.",
                 ],
             },
             {
@@ -989,6 +991,8 @@ class BibleVideoFactoryService:
                     "Inclua descoberta local, pista decisiva, verdade exposta, segredo revelado ou sinal profetico.",
                     "A revelacao precisa mudar a leitura da cena e influenciar a proxima acao do personagem.",
                     "Evite informacao decorativa: a nova informacao deve alterar o rumo dramatico da sequencia.",
+                    "A cena precisa entregar uma informacao nova que nao estava explicita no inicio da propria cena.",
+                    "A revelacao deve obrigar o personagem a reinterpretar o perigo, a missao ou a identidade de alguem.",
                 ],
             },
             {
@@ -1009,6 +1013,8 @@ class BibleVideoFactoryService:
                     "Termine a cena com decisao interrompida, revelacao incompleta, perigo iminente ou pergunta sem resposta.",
                     "A ultima frase e a ultima imagem devem empurrar o publico para a proxima cena sem entregar a resolucao.",
                     "Feche no ponto de maior tensao, exatamente antes do desfecho, com promessa clara do proximo movimento.",
+                    "Nao resolva o principal conflito da cena; encerre antes da resposta final, do golpe final ou da fuga final.",
+                    "A ultima linha precisa terminar em ameaca, surpresa, interrupcao, ordem urgente, visao chocante ou pergunta aberta.",
                 ],
             },
             {
@@ -1046,6 +1052,23 @@ class BibleVideoFactoryService:
         weak_metrics.sort(key=lambda metric: metric["gap"], reverse=True)
         priority_metrics = [metric["label"] for metric in weak_metrics[:3]]
         primary_metric = priority_metrics[0] if priority_metrics else ""
+        structural_requirements = []
+        if "conflito" in priority_metrics:
+            structural_requirements.append(
+                "Conflito obrigatorio: inclua um obstaculo visivel, oposicao concreta ou risco imediato dentro da cena."
+            )
+        if "revelacao" in priority_metrics:
+            structural_requirements.append(
+                "Revelacao obrigatoria: a cena precisa entregar uma informacao nova que mude a interpretacao ou a proxima acao."
+            )
+        if "cliffhanger" in priority_metrics:
+            structural_requirements.append(
+                "Cliffhanger obrigatorio: termine antes da resolucao, com interrupcao, ameaca, surpresa ou pergunta aberta."
+            )
+        if "suspense" in priority_metrics:
+            structural_requirements.append(
+                "Suspense obrigatorio: aumente a tensao na penultima frase e atrase a resolucao imediata."
+            )
         prompt_lines = [
             f"Nota atual da cena: {analysis['scene_score']}/100. Meta minima por metrica: {minimum_score}/100.",
             f"Pontos fortes a preservar: {', '.join(strengths) or 'nenhum ponto forte acima da meta ainda.'}",
@@ -1062,6 +1085,13 @@ class BibleVideoFactoryService:
                     f"Campos prioritarios: {', '.join(metric['field_focus'])}. "
                     f"Acoes: {' '.join(metric['instructions'])}"
                 )
+            if structural_requirements:
+                prompt_lines.append("Exigencias estruturais obrigatorias desta tentativa:")
+                for item in structural_requirements:
+                    prompt_lines.append(f"- {item}")
+            prompt_lines.append(
+                "Proibido apenas parafrasear a mesma cena: mude o evento local, a descoberta, a oposicao ou o corte final para elevar as metricas prioritarias."
+            )
         else:
             prompt_lines.append("Nenhuma metrica local esta abaixo da meta; preserve os pontos fortes e refine apenas detalhes de ritmo e clareza.")
         return {
@@ -1071,6 +1101,7 @@ class BibleVideoFactoryService:
             "weak_metrics": weak_metrics,
             "priority_metrics": priority_metrics,
             "primary_metric": primary_metric,
+            "structural_requirements": structural_requirements,
             "prompt_block": "\n".join(prompt_lines),
         }
 
@@ -1110,6 +1141,7 @@ class BibleVideoFactoryService:
             f"Fortalecer: {', '.join(weak_labels) or 'nenhuma metrica abaixo da meta no momento'}. "
             f"Prioridade maxima desta tentativa: {plan.get('primary_metric') or 'nenhuma'}; depois foque em {', '.join(plan.get('priority_metrics') or []) or 'nenhuma metrica critica'}. "
             "Nao gere uma nova versao aleatoria: cada alteracao precisa corrigir diretamente as deficiencias diagnosticadas. "
+            f"Exigencias estruturais: {' | '.join(plan.get('structural_requirements') or ['Introduza mudanca dramatica concreta na cena.'])}. "
             f"Plano corretivo:\n{plan['prompt_block']}\n"
             "Preserve a coerencia com as cenas aprovadas e com o Character Bible. "
             f"Biblioteca de padroes vencedores:\n{self._winning_patterns_prompt(limit=2) or 'Sem padroes registrados ainda.'}"
@@ -3889,6 +3921,8 @@ class BibleVideoFactoryService:
             "Use SEMPRE o Character Bible e o mesmo prompt mestre unico dos personagens recorrentes durante toda a temporada.\n"
             "Nao regenere o episodio inteiro.\n\n"
             "NAO gere uma nova variacao aleatoria: regenere a cena para corrigir diretamente as metricas que ficaram abaixo da meta.\n"
+            "PROIBIDO fazer apenas ajustes cosmeticos ou sinonimos: a nova cena precisa mudar o evento dramatico local, a oposicao, a descoberta ou o corte final quando essas forem as metricas prioritarias.\n"
+            "Se conflito estiver fraco, introduza confronto, risco ou obstaculo visivel. Se revelacao estiver fraca, entregue descoberta nova. Se cliffhanger estiver fraco, termine antes da resolucao, no ponto de maior tensao.\n"
             "Cada campo retornado precisa refletir o plano corretivo: title e narration corrigem gancho, emocao, conflito, revelacao, suspense e cliffhanger; "
             "prompt_visual, prompt_video, prompt_animation, prompt_cinematic, camera_movement e sound_effects corrigem o visual cinematografico.\n\n"
             f"Serie: {series.name}\n"
