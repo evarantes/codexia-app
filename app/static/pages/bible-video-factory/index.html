@@ -546,6 +546,13 @@
                             <div><strong>Nova nota:</strong> {{ currentScript.optimization_state.new_score || 0 }}</div>
                             <div><strong>Melhor nota:</strong> {{ currentScript.optimization_state.best_score || 0 }}</div>
                         </div>
+                        <div class="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 text-sm">
+                            <div><strong>Metrica bloqueadora:</strong> {{ currentScript.optimization_state.blocking_metric || '-' }}</div>
+                            <div><strong>Bloco sendo corrigido:</strong> {{ currentScript.optimization_state.corrected_block || '-' }}</div>
+                            <div><strong>Nota antes:</strong> {{ currentScript.optimization_state.previous_metric_score || 0 }}</div>
+                            <div><strong>Nota depois:</strong> {{ currentScript.optimization_state.new_metric_score || 0 }}</div>
+                            <div><strong>Ganho obtido:</strong> {{ currentScript.optimization_state.metric_gain || 0 }}</div>
+                        </div>
                         <div class="mt-3 text-sm"><strong>Percentual de conclusao:</strong> {{ currentScript.optimization_state.completion_percentage || 0 }}%</div>
                         <div v-if="optimizationReport" class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                             <div class="rounded-lg bg-white border p-3">
@@ -602,6 +609,10 @@
                                         <span class="px-2 py-1 rounded border bg-white">Visual: {{ frame.scene_analysis?.visual_score || 0 }}</span>
                                         <span v-if="sceneAssistData(frame).near_approval" class="px-2 py-1 rounded border bg-violet-50 text-violet-800 border-violet-200">Quase aprovada: faltam {{ sceneAssistData(frame).score_gap }} ponto(s)</span>
                                         <span v-if="sceneAssistData(frame).blocking_metric" class="px-2 py-1 rounded border bg-rose-50 text-rose-700 border-rose-200">Metrica bloqueadora: {{ sceneAssistData(frame).blocking_metric }} ({{ sceneAssistData(frame).blocking_metric_score }})</span>
+                                        <span v-if="sceneAssistData(frame).last_component_attempt?.block_label" class="px-2 py-1 rounded border bg-sky-50 text-sky-700 border-sky-200">Bloco corrigido: {{ sceneAssistData(frame).last_component_attempt.block_label }}</span>
+                                        <span v-if="sceneAssistData(frame).last_component_attempt?.metric_label" class="px-2 py-1 rounded border bg-white">Nota antes: {{ sceneAssistData(frame).last_component_attempt.previous_metric_score || 0 }}</span>
+                                        <span v-if="sceneAssistData(frame).last_component_attempt?.metric_label" class="px-2 py-1 rounded border bg-white">Nota depois: {{ sceneAssistData(frame).last_component_attempt.new_metric_score || 0 }}</span>
+                                        <span v-if="sceneAssistData(frame).last_component_attempt?.metric_label" class="px-2 py-1 rounded border" :class="(sceneAssistData(frame).last_component_attempt.metric_gain || 0) > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'">Ganho obtido: {{ sceneAssistData(frame).last_component_attempt.metric_gain || 0 }}</span>
                                     </div>
                                     <div class="text-sm mt-3"><strong>Narrativa:</strong> {{ frame.narrative || frame.narration }}</div>
                                     <div class="text-sm mt-2"><strong>Emocao:</strong> {{ frame.emotion || 'Sem emocao definida' }}</div>
@@ -616,6 +627,10 @@
                                     </div>
                                     <div v-if="frame.optimization_meta?.version_history?.length" class="mt-3 text-xs text-slate-600">
                                         <strong>Historico:</strong> {{ frame.optimization_meta.version_history.map(item => `v${item.version}:${item.score} ${item.status}`).join(' | ') }}
+                                    </div>
+                                    <div v-if="sceneAssistData(frame).last_component_attempt?.metric_label" class="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+                                        <div><strong>Ultima correcao por componente:</strong> {{ sceneAssistData(frame).last_component_attempt.metric_label }} no bloco {{ sceneAssistData(frame).last_component_attempt.block_label }}</div>
+                                        <div class="mt-1"><strong>Nota antes:</strong> {{ sceneAssistData(frame).last_component_attempt.previous_metric_score || 0 }} | <strong>Nota depois:</strong> {{ sceneAssistData(frame).last_component_attempt.new_metric_score || 0 }} | <strong>Ganho:</strong> {{ sceneAssistData(frame).last_component_attempt.metric_gain || 0 }}</div>
                                     </div>
                                     <div v-if="sceneAssistData(frame).show_suggestion" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 space-y-2">
                                         <div><strong>Travada pela metrica:</strong> {{ sceneAssistData(frame).blocking_metric }} ({{ sceneAssistData(frame).blocking_metric_score }}/100)</div>

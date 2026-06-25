@@ -385,6 +385,11 @@ class BibleVideoFactoryService:
             "previous_score": self._normalize_int(state.get("previous_score"), 0),
             "new_score": self._normalize_int(state.get("new_score"), 0),
             "best_score": self._normalize_int(state.get("best_score"), 0),
+            "blocking_metric": self._normalize_text(state.get("blocking_metric")),
+            "corrected_block": self._normalize_text(state.get("corrected_block")),
+            "previous_metric_score": self._normalize_int(state.get("previous_metric_score"), 0),
+            "new_metric_score": self._normalize_int(state.get("new_metric_score"), 0),
+            "metric_gain": self._normalize_int(state.get("metric_gain"), 0),
             "completion_percentage": self._clamp_score(state.get("completion_percentage")),
             "status": self._normalize_text(state.get("status") or "idle"),
             "reason": self._normalize_text(state.get("reason")),
@@ -610,6 +615,27 @@ class BibleVideoFactoryService:
             "assisted_approval": False,
             "approval_mode": "",
             "approval_note": "",
+            "last_component_attempt": {},
+            "recent_component_attempts": [],
+        }
+
+    def _normalize_component_attempt(self, payload: Any) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        fields = [self._normalize_text(item) for item in self._ensure_list(payload.get("fields")) if self._normalize_text(item)]
+        return {
+            "metric_key": self._normalize_text(payload.get("metric_key")),
+            "metric_label": self._normalize_text(payload.get("metric_label")),
+            "block_label": self._normalize_text(payload.get("block_label")),
+            "fields": fields,
+            "previous_metric_score": self._clamp_score(payload.get("previous_metric_score")),
+            "new_metric_score": self._clamp_score(payload.get("new_metric_score")),
+            "metric_gain": self._normalize_int(payload.get("metric_gain"), 0),
+            "previous_scene_score": self._clamp_score(payload.get("previous_scene_score")),
+            "new_scene_score": self._clamp_score(payload.get("new_scene_score")),
+            "scene_gain": self._normalize_int(payload.get("scene_gain"), 0),
+            "decision": self._normalize_text(payload.get("decision")),
+            "created_at": self._normalize_text(payload.get("created_at") or datetime.utcnow().isoformat()),
         }
 
     def _normalize_scene_optimization_meta(self, meta: Any, scene_number: int = 0, current_score: int = 0, approval_status: str = "pending") -> Dict[str, Any]:
@@ -629,6 +655,28 @@ class BibleVideoFactoryService:
         base["assisted_approval"] = bool(base.get("assisted_approval"))
         base["approval_mode"] = self._normalize_text(base.get("approval_mode"))
         base["approval_note"] = self._normalize_text(base.get("approval_note"))
+        base["last_component_attempt"] = self._normalize_component_attempt(base.get("last_component_attempt"))
+        component_history = []
+        for item in self._ensure_list(base.get("recent_component_attempts")):
+            normalized_item = self._normalize_component_attempt(item)
+            if normalized_item:
+                component_history.append(normalized_item)
+        if base["last_component_attempt"]:
+            component_history.append(base["last_component_attempt"])
+        deduped_component_history = []
+        seen_component_keys = set()
+        for item in component_history:
+            dedupe_key = (
+                item.get("created_at"),
+                item.get("metric_key"),
+                item.get("previous_scene_score"),
+                item.get("new_scene_score"),
+            )
+            if dedupe_key in seen_component_keys:
+                continue
+            seen_component_keys.add(dedupe_key)
+            deduped_component_history.append(item)
+        base["recent_component_attempts"] = deduped_component_history[-12:]
         history = []
         for item in self._ensure_list(base.get("version_history")):
             if not isinstance(item, dict):
@@ -1205,6 +1253,7 @@ class BibleVideoFactoryService:
             "failed_max_attempts": max_attempts_reached and self._normalize_int(analysis.get("scene_score"), 0) < minimum_score,
             "show_suggestion": bool(suggestion_payload),
             "suggestion": suggestion_payload,
+            "last_component_attempt": meta.get("last_component_attempt") if isinstance(meta.get("last_component_attempt"), dict) else {},
         }
 
     def _episode_scores_from_payload(self, payload: Optional[Dict[str, Any]]) -> Dict[str, int]:
@@ -1248,6 +1297,282 @@ class BibleVideoFactoryService:
             "Preserve a coerencia com as cenas aprovadas e com o Character Bible. "
             f"Biblioteca de padroes vencedores:\n{self._winning_patterns_prompt(limit=2) or 'Sem padroes registrados ainda.'}"
         )
+
+    def _scene_component_catalog(self) -> Dict[str, Dict[str, Any]]:
+        return {
+            "hook_score": {
+                "metric_label": "gancho",
+                "block_label": "abertura da cena",
+                "frame_fields": ["title", "narration"],
+                "source_fields": [],
+                "instructions": [
+                    "Reescreva apenas a abertura da cena para criar curiosidade ou urgencia imediata.",
+                    "Nao altere o restante da narrativa alem do primeiro gancho textual.",
+                ],
+            },
+            "emotion_score": {
+                "metric_label": "emocao",
+                "block_label": "camada emocional",
+                "frame_fields": ["emotion", "narration"],
+                "source_fields": [],
+                "instructions": [
+                    "Reescreva apenas o trecho emocional e a linha de emocao dominante.",
+                    "Preserve o evento da cena, mudando apenas a intensidade emotiva.",
+                ],
+            },
+            "conflict_score": {
+                "metric_label": "conflito",
+                "block_label": "trecho de conflito",
+                "frame_fields": ["narration"],
+                "source_fields": [],
+                "instructions": [
+                    "Reescreva apenas o trecho que introduz oposicao, risco ou obstaculo.",
+                    "Mantenha o inicio e o final da cena; troque somente o bloco de conflito.",
+                ],
+            },
+            "revelation_score": {
+                "metric_label": "revelacao",
+                "block_label": "trecho de revelacao",
+                "frame_fields": ["narration"],
+                "source_fields": [],
+                "instructions": [
+                    "Reescreva apenas a frase ou paragrafo que deve entregar descoberta, pista ou verdade nova.",
+                    "Nao altere as outras partes da cena alem do bloco de revelacao.",
+                ],
+            },
+            "suspense_score": {
+                "metric_label": "suspense",
+                "block_label": "trecho de suspense",
+                "frame_fields": ["narration"],
+                "source_fields": [],
+                "instructions": [
+                    "Reescreva apenas o trecho que aumenta tensao e posterga a resolucao.",
+                    "Preserve o evento principal, mexendo so no build-up do suspense.",
+                ],
+            },
+            "visual_score": {
+                "metric_label": "visual",
+                "block_label": "bloco visual cinematografico",
+                "frame_fields": ["prompt_visual", "prompt_image", "prompt_video", "camera_movement"],
+                "source_fields": ["visual_description", "prompt_video", "prompt_animation", "prompt_cinematic", "sound_effects"],
+                "instructions": [
+                    "Reescreva apenas os prompts visuais e cinematograficos.",
+                    "Nao altere narrativa, titulo, emocao nem estrutura dramatica da cena.",
+                ],
+            },
+            "cliffhanger_score": {
+                "metric_label": "cliffhanger",
+                "block_label": "fechamento da cena",
+                "frame_fields": ["narration"],
+                "source_fields": ["prompt_cinematic"],
+                "instructions": [
+                    "Reescreva apenas o fechamento para terminar antes da resolucao.",
+                    "Nao altere a base da cena; mude so o corte final e o ultimo impulso de tensao.",
+                ],
+            },
+        }
+
+    def _build_component_repair_request(
+        self,
+        frame: Dict[str, Any],
+        source: Dict[str, Any],
+        repair_plan: Dict[str, Any],
+        aggressive: bool = False,
+    ) -> Dict[str, Any]:
+        weak_metrics = repair_plan.get("weak_metrics") or []
+        primary_metric = weak_metrics[0] if weak_metrics else {}
+        metric_key = self._normalize_text(primary_metric.get("key"))
+        component = self._scene_component_catalog().get(metric_key, {})
+        frame_fields = [field for field in self._ensure_list(component.get("frame_fields")) if self._normalize_text(field)]
+        source_fields = [field for field in self._ensure_list(component.get("source_fields")) if self._normalize_text(field)]
+        current_component_payload = {}
+        for field in frame_fields:
+            current_component_payload[field] = self._normalize_text((frame or {}).get(field))
+        for field in source_fields:
+            current_component_payload[field] = self._normalize_text((source or {}).get(field) or (frame or {}).get(field))
+        metric_label = self._normalize_text(component.get("metric_label") or primary_metric.get("label"))
+        block_label = self._normalize_text(component.get("block_label") or "bloco principal")
+        extra_style = (
+            "Use uma correcao mais agressiva, com maior intensidade dramatica, mas sem quebrar a fidelidade biblica."
+            if aggressive
+            else "Use uma correcao cirurgica e incremental, mexendo apenas no componente indicado."
+        )
+        return {
+            "metric_key": metric_key,
+            "metric_label": metric_label,
+            "block_label": block_label,
+            "frame_fields": frame_fields,
+            "source_fields": source_fields,
+            "allowed_fields": frame_fields + [field for field in source_fields if field not in frame_fields],
+            "current_metric_score": self._normalize_int(primary_metric.get("current_score"), 0),
+            "target_metric_score": self._normalize_int(primary_metric.get("target_score"), repair_plan.get("minimum_score")),
+            "instructions": [self._normalize_text(item) for item in self._ensure_list(component.get("instructions")) if self._normalize_text(item)],
+            "current_component_payload": current_component_payload,
+            "request_text": self._normalize_text(
+                f"Otimizacao por componente. Corrija somente a metrica {metric_label} no {block_label}. "
+                f"Nota atual da metrica: {self._normalize_int(primary_metric.get('current_score'), 0)}/100. "
+                f"Meta: {self._normalize_int(primary_metric.get('target_score'), repair_plan.get('minimum_score'))}/100. "
+                f"Campos permitidos: {', '.join(frame_fields + source_fields)}. "
+                f"{extra_style} "
+                f"Instrucoes especificas: {' '.join(component.get('instructions') or [])} "
+                "Todo o restante da cena deve permanecer intacto."
+            ),
+        }
+
+    def _optimize_storyboard_scene_component(
+        self,
+        db: Session,
+        script: BibleVideoScript,
+        scene_number: int,
+        improvement_request: str = "",
+        allow_locked_approved: bool = False,
+        aggressive: bool = False,
+        return_outcome: bool = False,
+    ) -> Dict[str, Any]:
+        episode = db.query(BibleVideoEpisode).filter(BibleVideoEpisode.id == script.episode_id).first()
+        series = db.query(BibleVideoSeries).filter(BibleVideoSeries.id == script.series_id).first()
+        if not episode or not series:
+            raise ValueError("Serie/episodio nao encontrados para otimizar a cena por componente.")
+        profile_config = self.resolve_series_profile(series)
+        storyboard = self._get_storyboard(script)
+        scene_sources = self._get_scene_sources(script)
+        target_frame = next((item for item in storyboard if int(item.get("scene_number") or 0) == int(scene_number or 0)), None)
+        if not target_frame:
+            raise ValueError("Cena do storyboard nao encontrada.")
+        if allow_locked_approved:
+            self._ensure_scene_optimizable(target_frame, "otimizar a cena")
+        else:
+            self._ensure_scene_editable(target_frame, "otimizar a cena")
+        target_source = next((item for item in scene_sources if int(item.get("scene_number") or 0) == int(scene_number or 0)), {})
+        character_profiles = self._get_character_profiles_for_series(db, script.series_id)
+        scenario_profiles = self._get_scenario_profiles_for_series(db, script.series_id)
+        repair_plan = self._build_scene_metric_repair_plan(target_frame, profile_config=profile_config)
+        weak_metrics = repair_plan.get("weak_metrics") or []
+        if not weak_metrics:
+            payload = self.serialize_script(script)
+            outcome = {
+                "scene_number": scene_number,
+                "previous_score": self._normalize_int(((target_frame.get("scene_analysis") or {}).get("scene_score")), 0),
+                "new_score": self._normalize_int(((target_frame.get("scene_analysis") or {}).get("scene_score")), 0),
+                "best_score": self._normalize_int((((target_frame.get("optimization_meta") or {}).get("best_score"))), self._normalize_int(((target_frame.get("scene_analysis") or {}).get("scene_score")), 0)),
+                "status": "sem_correcao_necessaria",
+                "saved": False,
+                "metrics_below_target": [],
+                "metrics_attempted": [],
+            }
+            return {"payload": payload, "outcome": outcome} if return_outcome else payload
+        component_request = self._build_component_repair_request(target_frame, target_source, repair_plan, aggressive=aggressive)
+        logger.info(
+            "scene_component_repair scene=%s metric=%s block=%s fields=%s current_metric_score=%s target_metric_score=%s",
+            scene_number,
+            component_request.get("metric_label"),
+            component_request.get("block_label"),
+            component_request.get("allowed_fields") or [],
+            component_request.get("current_metric_score"),
+            component_request.get("target_metric_score"),
+        )
+        fallback = {field: component_request["current_component_payload"].get(field) for field in component_request.get("allowed_fields") or []}
+        prompt = (
+            "Otimize apenas UM componente de uma unica cena do storyboard em JSON.\n"
+            f"Retorne SOMENTE estes campos: {', '.join(component_request.get('allowed_fields') or [])}.\n"
+            "Nao inclua outros campos. Nao reescreva a cena inteira. Preserve todo o restante exatamente como esta.\n"
+            "A resposta deve alterar apenas o bloco responsavel pela metrica mais fraca.\n\n"
+            f"Serie: {series.name}\n"
+            f"Episodio: {episode.title}\n"
+            f"Cena: {scene_number}\n"
+            f"Cena atual: {self._json_dumps(target_frame)[:2600]}\n"
+            f"Dados atuais do componente: {self._json_dumps(component_request.get('current_component_payload'))[:1800]}\n"
+            f"Diagnostico metrico: {self._json_dumps(repair_plan)[:3200]}\n"
+            f"Character Bible: {self._json_dumps(character_profiles)[:4000]}\n"
+            f"Scenario Bible: {self._json_dumps(scenario_profiles)[:3000]}\n"
+            f"Pedido principal: {component_request.get('request_text')}\n"
+            f"Melhorias adicionais: {self._normalize_text(improvement_request)}\n"
+            f"Biblioteca de padroes vencedores: {self._winning_patterns_prompt(limit=2) or 'Sem padroes registrados ainda.'}\n"
+            "Importante: devolva apenas o trecho corrigido desse bloco, preservando os outros elementos da cena."
+        )
+        data = self._generate_json(
+            prompt,
+            system_prompt="Voce e editor narrativo biblico. Corrija apenas o componente mais fraco da cena, sem alterar o restante.",
+            fallback=fallback,
+        )
+        component_metric_key = self._normalize_text(component_request.get("metric_key"))
+        current_analysis = self._normalize_scene_analysis(target_frame.get("scene_analysis"), minimum_score=self._scene_minimum_score(profile_config))
+        merged_frame = dict(target_frame)
+        merged_source = dict(target_source)
+        for field in component_request.get("frame_fields") or []:
+            if isinstance(data, dict) and field in data:
+                merged_frame[field] = data.get(field)
+        for field in component_request.get("source_fields") or []:
+            if isinstance(data, dict) and field in data:
+                merged_source[field] = data.get(field)
+                if field in {"prompt_video", "prompt_animation", "prompt_cinematic"}:
+                    merged_frame[field] = data.get(field)
+        refreshed_frame_analysis = self._analyze_storyboard_scene(
+            {
+                **merged_frame,
+                "prompt_video": self._normalize_text(merged_frame.get("prompt_video") or merged_source.get("prompt_video") or target_frame.get("prompt_video")),
+            },
+            profile_config=profile_config,
+        )
+        candidate_frame = self._normalize_storyboard_frame(
+            {
+                **target_frame,
+                **merged_frame,
+                "scene_number": scene_number,
+                "approval_status": "pending",
+                "scene_analysis": refreshed_frame_analysis,
+            },
+            scene_number,
+        )
+        candidate_source = self._build_candidate_source(
+            candidate_frame,
+            target_source,
+            {field: merged_source.get(field) for field in component_request.get("source_fields") or []},
+            episode,
+            series,
+            refreshed_frame_analysis,
+            optimization_meta=(target_frame.get("optimization_meta") if isinstance(target_frame, dict) else {}),
+        )
+        previous_metric_score = self._normalize_int(current_analysis.get(component_metric_key), 0)
+        new_metric_score = self._normalize_int(refreshed_frame_analysis.get(component_metric_key), previous_metric_score)
+        attempt_context = {
+            "metric_key": component_metric_key,
+            "metric_label": component_request.get("metric_label"),
+            "block_label": component_request.get("block_label"),
+            "fields": component_request.get("allowed_fields") or [],
+            "previous_metric_score": previous_metric_score,
+            "new_metric_score": new_metric_score,
+            "metric_gain": new_metric_score - previous_metric_score,
+            "previous_scene_score": current_analysis.get("scene_score"),
+            "new_scene_score": refreshed_frame_analysis.get("scene_score"),
+            "scene_gain": self._normalize_int(refreshed_frame_analysis.get("scene_score"), 0) - self._normalize_int(current_analysis.get("scene_score"), 0),
+            "decision": "",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        outcome = self._apply_quality_locked_scene_update(
+            db,
+            script,
+            series,
+            episode,
+            scene_number,
+            target_frame,
+            candidate_frame,
+            candidate_source,
+            attempt_context=attempt_context,
+        )
+        outcome["metrics_below_target"] = [item.get("label") for item in weak_metrics]
+        outcome["metrics_attempted"] = [component_request.get("metric_label")] if component_request.get("metric_label") else outcome["metrics_below_target"][:1]
+        outcome["primary_metric"] = self._normalize_text(component_request.get("metric_label"))
+        outcome["blocking_metric"] = self._normalize_text(component_request.get("metric_label"))
+        outcome["corrected_block"] = self._normalize_text(component_request.get("block_label"))
+        outcome["corrected_fields"] = list(component_request.get("allowed_fields") or [])
+        outcome["previous_metric_score"] = previous_metric_score
+        outcome["new_metric_score"] = new_metric_score
+        outcome["metric_gain"] = new_metric_score - previous_metric_score
+        payload = self.serialize_script(script)
+        if return_outcome:
+            return {"payload": payload, "outcome": outcome}
+        return payload
 
     def _ensure_scene_editable(self, frame: Optional[Dict[str, Any]], action_label: str = "alterar"):
         status = self._normalize_text((frame or {}).get("approval_status") or "pending").lower()
@@ -1381,6 +1706,7 @@ class BibleVideoFactoryService:
         current_frame: Dict[str, Any],
         candidate_frame: Dict[str, Any],
         candidate_source: Dict[str, Any],
+        attempt_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         storyboard = self._get_storyboard(script)
         scene_sources = self._get_scene_sources(script)
@@ -1405,6 +1731,11 @@ class BibleVideoFactoryService:
         current_meta["attempts_used"] = self._normalize_int(current_meta.get("attempts_used"), 0) + 1
         current_meta["last_status"] = "melhorou" if improved else "descartada"
         current_meta["version_history"] = (current_meta.get("version_history") or []) + [history_entry]
+        normalized_attempt_context = self._normalize_component_attempt(attempt_context)
+        if normalized_attempt_context:
+            normalized_attempt_context["decision"] = "aceita" if improved else "descartada"
+            current_meta["last_component_attempt"] = normalized_attempt_context
+            current_meta["recent_component_attempts"] = (current_meta.get("recent_component_attempts") or []) + [normalized_attempt_context]
         outcome = {
             "scene_number": scene_number,
             "previous_score": current_analysis["scene_score"],
@@ -1418,6 +1749,17 @@ class BibleVideoFactoryService:
             "status": "descartada",
             "saved": False,
         }
+        if normalized_attempt_context:
+            outcome.update(
+                {
+                    "blocking_metric": normalized_attempt_context.get("metric_label"),
+                    "corrected_block": normalized_attempt_context.get("block_label"),
+                    "corrected_fields": normalized_attempt_context.get("fields") or [],
+                    "previous_metric_score": normalized_attempt_context.get("previous_metric_score"),
+                    "new_metric_score": normalized_attempt_context.get("new_metric_score"),
+                    "metric_gain": normalized_attempt_context.get("metric_gain"),
+                }
+            )
         if not improved:
             current_meta["best_score"] = max(self._normalize_int(current_meta.get("best_score"), 0), current_analysis["scene_score"])
             current_meta["last_version_action"] = "descartada"
@@ -4068,12 +4410,13 @@ class BibleVideoFactoryService:
                 "A nova versao precisa introduzir obstaculo concreto, tensao urgente e corte final mais forte que a versao atual. "
                 + self._build_scene_improvement_feedback(target, profile_config=profile_config)
             )
-            response = self.regenerate_storyboard_scene(
+            response = self._optimize_storyboard_scene_component(
                 db,
                 current_script,
                 scene_number,
                 improvement_request=aggressive_request,
                 allow_locked_approved=True,
+                aggressive=True,
                 return_outcome=True,
             )
             outcome = response.get("outcome") if isinstance(response, dict) else {}
@@ -4368,7 +4711,7 @@ class BibleVideoFactoryService:
                     **final_payload,
                     "auto_improve_result": session_result,
                 }
-            response = self.regenerate_storyboard_scene(
+            response = self._optimize_storyboard_scene_component(
                 db,
                 current_script,
                 scene_number,
@@ -4388,6 +4731,11 @@ class BibleVideoFactoryService:
                 "metrics_attempted": outcome.get("metrics_attempted") if isinstance(outcome.get("metrics_attempted"), list) else [],
                 "decision": "aceita" if bool(outcome.get("saved")) else "descartada",
                 "status": self._normalize_text(outcome.get("status") or "descartada"),
+                "blocking_metric": self._normalize_text(outcome.get("blocking_metric")),
+                "corrected_block": self._normalize_text(outcome.get("corrected_block")),
+                "previous_metric_score": self._normalize_int(outcome.get("previous_metric_score"), 0),
+                "new_metric_score": self._normalize_int(outcome.get("new_metric_score"), 0),
+                "metric_gain": self._normalize_int(outcome.get("metric_gain"), 0),
             }
             session_result["attempts"].append(attempt_result)
             session_result["improved"] = bool(session_result.get("improved")) or bool(outcome.get("saved"))
@@ -4397,13 +4745,18 @@ class BibleVideoFactoryService:
                 self._normalize_int(outcome.get("new_score"), analysis["scene_score"]),
             )
             logger.info(
-                "manual_scene_auto_improve_attempt scene=%s attempt=%s previous_score=%s new_score=%s weak_metrics=%s attempted_metrics=%s decision=%s",
+                "manual_scene_auto_improve_attempt scene=%s attempt=%s previous_score=%s new_score=%s weak_metrics=%s attempted_metrics=%s blocking_metric=%s corrected_block=%s metric_before=%s metric_after=%s metric_gain=%s decision=%s",
                 self._normalize_int(scene_number, 0),
                 attempt_result["attempt"],
                 attempt_result["previous_score"],
                 attempt_result["new_score"],
                 attempt_result["metrics_below_target"],
                 attempt_result["metrics_attempted"],
+                attempt_result["blocking_metric"],
+                attempt_result["corrected_block"],
+                attempt_result["previous_metric_score"],
+                attempt_result["new_metric_score"],
+                attempt_result["metric_gain"],
                 attempt_result["decision"],
             )
             current_script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script.id).first()
@@ -4535,6 +4888,11 @@ class BibleVideoFactoryService:
                 "previous_score": 0,
                 "new_score": 0,
                 "best_score": self._normalize_int(report.get("melhor_nota_alcancada"), 0),
+                "blocking_metric": "",
+                "corrected_block": "",
+                "previous_metric_score": 0,
+                "new_metric_score": 0,
+                "metric_gain": 0,
                 "completion_percentage": self._calculate_optimization_completion(progress_scene_numbers, eligible_scene_numbers),
                 "status": "running",
                 "reason": "",
@@ -4629,7 +4987,13 @@ class BibleVideoFactoryService:
                         break
                     repair_plan = self._build_scene_metric_repair_plan(frame, profile_config=profile_config)
                     weak_metric_labels = [item.get("label") for item in (repair_plan.get("weak_metrics") or [])]
-                    attempted_metric_labels = list(repair_plan.get("priority_metrics") or weak_metric_labels)
+                    scene_sources = self._get_scene_sources(current_script)
+                    source_frame = next((item for item in scene_sources if int(item.get("scene_number") or 0) == scene_number), {})
+                    component_request = self._build_component_repair_request(frame, source_frame, repair_plan)
+                    attempted_metric_labels = [component_request.get("metric_label")] if component_request.get("metric_label") else list(repair_plan.get("priority_metrics") or weak_metric_labels[:1])
+                    current_blocking_metric = self._normalize_text(component_request.get("metric_label"))
+                    current_corrected_block = self._normalize_text(component_request.get("block_label"))
+                    current_metric_score = self._normalize_int(component_request.get("current_metric_score"), 0)
                     self._persist_optimization_state(
                         db,
                         current_script,
@@ -4640,9 +5004,17 @@ class BibleVideoFactoryService:
                             "previous_score": analysis["scene_score"],
                             "new_score": 0,
                             "best_score": self._normalize_int(meta.get("best_score"), analysis["scene_score"]),
+                            "blocking_metric": current_blocking_metric,
+                            "corrected_block": current_corrected_block,
+                            "previous_metric_score": current_metric_score,
+                            "new_metric_score": 0,
+                            "metric_gain": 0,
                             "completion_percentage": self._calculate_optimization_completion(progress_scene_numbers, eligible_scene_numbers),
                             "status": "running",
-                            "message": f"Otimizando cena {scene_number} na rodada {round_number}.",
+                            "message": (
+                                f"Otimizando cena {scene_number} na rodada {round_number}: "
+                                f"corrigindo {current_corrected_block or 'bloco principal'} para elevar {current_blocking_metric or 'a metrica bloqueadora'}."
+                            ),
                             "report": report,
                             "history": (self._optimization_state(current_script).get("history") or []) + [
                                 {
@@ -4652,6 +5024,11 @@ class BibleVideoFactoryService:
                                     "previous_score": analysis["scene_score"],
                                     "metrics_below_target": weak_metric_labels,
                                     "metrics_attempted": attempted_metric_labels,
+                                    "blocking_metric": current_blocking_metric,
+                                    "corrected_block": current_corrected_block,
+                                    "previous_metric_score": current_metric_score,
+                                    "new_metric_score": 0,
+                                    "metric_gain": 0,
                                     "status": "processando",
                                     "created_at": datetime.utcnow().isoformat(),
                                 }
@@ -4659,7 +5036,7 @@ class BibleVideoFactoryService:
                         },
                         commit=True,
                     )
-                    response = self.regenerate_storyboard_scene(
+                    response = self._optimize_storyboard_scene_component(
                         db,
                         current_script,
                         scene_number,
@@ -4682,12 +5059,17 @@ class BibleVideoFactoryService:
                     metrics_attempted = outcome.get("metrics_attempted") if isinstance(outcome.get("metrics_attempted"), list) else attempted_metric_labels
                     decision_label = "aceita" if bool(outcome.get("saved")) else "descartada"
                     logger.info(
-                        "scene_attempt_result scene=%s previous_score=%s new_score=%s weak_metrics=%s attempted_metrics=%s decision=%s",
+                        "scene_attempt_result scene=%s previous_score=%s new_score=%s weak_metrics=%s attempted_metrics=%s blocking_metric=%s corrected_block=%s metric_before=%s metric_after=%s metric_gain=%s decision=%s",
                         scene_number,
                         self._normalize_int(outcome.get("previous_score"), 0),
                         self._normalize_int(outcome.get("new_score"), 0),
                         metrics_below_target,
                         metrics_attempted,
+                        self._normalize_text(outcome.get("blocking_metric")),
+                        self._normalize_text(outcome.get("corrected_block")),
+                        self._normalize_int(outcome.get("previous_metric_score"), 0),
+                        self._normalize_int(outcome.get("new_metric_score"), 0),
+                        self._normalize_int(outcome.get("metric_gain"), 0),
                         decision_label,
                     )
                     logger.info(
@@ -4706,6 +5088,11 @@ class BibleVideoFactoryService:
                         "best_score": self._normalize_int(outcome.get("best_score"), analysis["scene_score"]),
                         "metrics_below_target": metrics_below_target,
                         "metrics_attempted": metrics_attempted,
+                        "blocking_metric": self._normalize_text(outcome.get("blocking_metric")),
+                        "corrected_block": self._normalize_text(outcome.get("corrected_block")),
+                        "previous_metric_score": self._normalize_int(outcome.get("previous_metric_score"), 0),
+                        "new_metric_score": self._normalize_int(outcome.get("new_metric_score"), 0),
+                        "metric_gain": self._normalize_int(outcome.get("metric_gain"), 0),
                         "status": self._normalize_text(outcome.get("status") or "descartada"),
                         "created_at": datetime.utcnow().isoformat(),
                     }
@@ -4719,9 +5106,18 @@ class BibleVideoFactoryService:
                             "previous_score": self._normalize_int(outcome.get("previous_score"), 0),
                             "new_score": self._normalize_int(outcome.get("new_score"), 0),
                             "best_score": self._normalize_int(outcome.get("best_score"), analysis["scene_score"]),
+                            "blocking_metric": self._normalize_text(outcome.get("blocking_metric")),
+                            "corrected_block": self._normalize_text(outcome.get("corrected_block")),
+                            "previous_metric_score": self._normalize_int(outcome.get("previous_metric_score"), 0),
+                            "new_metric_score": self._normalize_int(outcome.get("new_metric_score"), 0),
+                            "metric_gain": self._normalize_int(outcome.get("metric_gain"), 0),
                             "completion_percentage": self._calculate_optimization_completion(progress_scene_numbers, eligible_scene_numbers),
                             "status": self._normalize_text(outcome.get("status") or "descartada"),
-                            "message": f"Cena {scene_number}: {self._normalize_text(outcome.get('status') or 'descartada')}.",
+                            "message": (
+                                f"Cena {scene_number}: {self._normalize_text(outcome.get('status') or 'descartada')} ao corrigir "
+                                f"{self._normalize_text(outcome.get('corrected_block') or current_corrected_block or 'bloco principal')} "
+                                f"para elevar {self._normalize_text(outcome.get('blocking_metric') or current_blocking_metric or 'a metrica bloqueadora')}."
+                            ),
                             "report": report,
                             "history": (self._optimization_state(current_script).get("history") or []) + [event],
                         },
@@ -4736,6 +5132,11 @@ class BibleVideoFactoryService:
                                 "melhor_nota": self._normalize_int(outcome.get("best_score"), 0),
                                 "metricas_abaixo_da_meta": metrics_below_target,
                                 "metricas_tentadas": metrics_attempted,
+                                "metrica_bloqueadora": self._normalize_text(outcome.get("blocking_metric")),
+                                "bloco_corrigido": self._normalize_text(outcome.get("corrected_block")),
+                                "nota_antes_metrica": self._normalize_int(outcome.get("previous_metric_score"), 0),
+                                "nota_depois_metrica": self._normalize_int(outcome.get("new_metric_score"), 0),
+                                "ganho_metrica": self._normalize_int(outcome.get("metric_gain"), 0),
                                 "status": self._normalize_text(outcome.get("status") or "melhorou"),
                             }
                         )
@@ -4748,6 +5149,11 @@ class BibleVideoFactoryService:
                                 "melhor_nota": self._normalize_int(outcome.get("best_score"), analysis["scene_score"]),
                                 "metricas_abaixo_da_meta": metrics_below_target,
                                 "metricas_tentadas": metrics_attempted,
+                                "metrica_bloqueadora": self._normalize_text(outcome.get("blocking_metric")),
+                                "bloco_corrigido": self._normalize_text(outcome.get("corrected_block")),
+                                "nota_antes_metrica": self._normalize_int(outcome.get("previous_metric_score"), 0),
+                                "nota_depois_metrica": self._normalize_int(outcome.get("new_metric_score"), 0),
+                                "ganho_metrica": self._normalize_int(outcome.get("metric_gain"), 0),
                                 "decisao_final": decision_label,
                             }
                         )
@@ -4856,6 +5262,11 @@ class BibleVideoFactoryService:
                 "previous_score": 0,
                 "new_score": 0,
                 "best_score": report.get("melhor_nota_alcancada", 0),
+                "blocking_metric": self._normalize_text(self._optimization_state(current_script).get("blocking_metric")),
+                "corrected_block": self._normalize_text(self._optimization_state(current_script).get("corrected_block")),
+                "previous_metric_score": self._normalize_int(self._optimization_state(current_script).get("previous_metric_score"), 0),
+                "new_metric_score": self._normalize_int(self._optimization_state(current_script).get("new_metric_score"), 0),
+                "metric_gain": self._normalize_int(self._optimization_state(current_script).get("metric_gain"), 0),
                 "completion_percentage": 100 if not report.get("motivo_bloqueio") else self._calculate_optimization_completion(progress_scene_numbers, eligible_scene_numbers),
                 "status": completion_status,
                 "reason": completion_reason,
