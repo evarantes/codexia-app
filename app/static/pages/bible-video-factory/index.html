@@ -600,6 +600,8 @@
                                         <span class="px-2 py-1 rounded border bg-white">Revelacao: {{ frame.scene_analysis?.revelation_score || 0 }}</span>
                                         <span class="px-2 py-1 rounded border bg-white">Suspense: {{ frame.scene_analysis?.suspense_score || 0 }}</span>
                                         <span class="px-2 py-1 rounded border bg-white">Visual: {{ frame.scene_analysis?.visual_score || 0 }}</span>
+                                        <span v-if="sceneAssistData(frame).near_approval" class="px-2 py-1 rounded border bg-violet-50 text-violet-800 border-violet-200">Quase aprovada: faltam {{ sceneAssistData(frame).score_gap }} ponto(s)</span>
+                                        <span v-if="sceneAssistData(frame).blocking_metric" class="px-2 py-1 rounded border bg-rose-50 text-rose-700 border-rose-200">Metrica bloqueadora: {{ sceneAssistData(frame).blocking_metric }} ({{ sceneAssistData(frame).blocking_metric_score }})</span>
                                     </div>
                                     <div class="text-sm mt-3"><strong>Narrativa:</strong> {{ frame.narrative || frame.narration }}</div>
                                     <div class="text-sm mt-2"><strong>Emocao:</strong> {{ frame.emotion || 'Sem emocao definida' }}</div>
@@ -615,13 +617,38 @@
                                     <div v-if="frame.optimization_meta?.version_history?.length" class="mt-3 text-xs text-slate-600">
                                         <strong>Historico:</strong> {{ frame.optimization_meta.version_history.map(item => `v${item.version}:${item.score} ${item.status}`).join(' | ') }}
                                     </div>
+                                    <div v-if="sceneAssistData(frame).show_suggestion" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 space-y-2">
+                                        <div><strong>Travada pela metrica:</strong> {{ sceneAssistData(frame).blocking_metric }} ({{ sceneAssistData(frame).blocking_metric_score }}/100)</div>
+                                        <div><strong>Exemplo de texto sugerido:</strong> {{ sceneAssistData(frame).suggestion?.example_text }}</div>
+                                        <div class="text-xs text-amber-800"><strong>Motivo:</strong> {{ sceneAssistData(frame).suggestion?.reason }}</div>
+                                    </div>
                                     <div class="mt-4 flex gap-2 flex-wrap">
                                         <button @click="generateStoryboardPreview(frame.scene_number)" class="bg-indigo-700 text-white px-3 py-2 rounded text-xs">Gerar preview</button>
                                         <button @click="approveStoryboardScene(frame.scene_number)" class="bg-emerald-600 text-white px-3 py-2 rounded text-xs">Aprovar cena</button>
+                                        <button v-if="sceneAssistData(frame).can_approve_with_observation" @click="approveStoryboardSceneWithObservation(frame.scene_number)" class="bg-teal-600 text-white px-3 py-2 rounded text-xs">Aprovar com observacao</button>
                                         <button v-if="frame.approval_status === 'approved'" @click="unapproveStoryboardScene(frame.scene_number)" class="bg-slate-700 text-white px-3 py-2 rounded text-xs">Desaprovar Cena</button>
                                         <button v-if="frame.approval_status === 'approved' && frame.optimization_meta?.locked_for_optimization" @click="unlockSceneForOptimization(frame.scene_number)" class="bg-violet-700 text-white px-3 py-2 rounded text-xs">Desbloquear cena para otimizacao</button>
                                         <button v-else @click="regenerateStoryboardScene(frame.scene_number)" class="bg-amber-500 text-slate-900 px-3 py-2 rounded text-xs">Regenerar cena</button>
                                         <button v-if="frame.approval_status !== 'approved'" @click="autoImproveStoryboardScene(frame.scene_number)" class="bg-cyan-600 text-white px-3 py-2 rounded text-xs">Auto Melhorar Cena</button>
+                                        <button v-if="frame.approval_status !== 'approved'" @click="forceImproveStoryboardScene(frame.scene_number)" class="bg-fuchsia-700 text-white px-3 py-2 rounded text-xs">Forcar melhoria com IA forte</button>
+                                        <button v-if="sceneAssistData(frame).show_suggestion" @click="applySceneSuggestion(frame.scene_number)" class="bg-orange-600 text-white px-3 py-2 rounded text-xs">Aplicar sugestao</button>
+                                        <button v-if="frame.approval_status !== 'approved'" @click="toggleManualSceneEditor(frame)" class="bg-slate-800 text-white px-3 py-2 rounded text-xs">{{ manualSceneDrafts[String(frame.scene_number)] ? 'Fechar edicao manual' : 'Editar cena manualmente' }}</button>
+                                    </div>
+                                    <div v-if="manualSceneDrafts[String(frame.scene_number)]" class="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                                        <div class="font-semibold text-sm">Edicao manual com reanalise</div>
+                                        <input v-model="manualSceneDraft(frame.scene_number, frame).title" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" placeholder="Titulo da cena">
+                                        <textarea v-model="manualSceneDraft(frame.scene_number, frame).narration" class="w-full border rounded-lg px-3 py-2 text-sm h-28 bg-white" placeholder="Narrativa"></textarea>
+                                        <input v-model="manualSceneDraft(frame.scene_number, frame).emotion" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" placeholder="Emocao">
+                                        <textarea v-model="manualSceneDraft(frame.scene_number, frame).prompt_visual" class="w-full border rounded-lg px-3 py-2 text-sm h-20 bg-white" placeholder="Prompt visual"></textarea>
+                                        <textarea v-model="manualSceneDraft(frame.scene_number, frame).prompt_image" class="w-full border rounded-lg px-3 py-2 text-sm h-20 bg-white" placeholder="Prompt imagem"></textarea>
+                                        <textarea v-model="manualSceneDraft(frame.scene_number, frame).prompt_video" class="w-full border rounded-lg px-3 py-2 text-sm h-20 bg-white" placeholder="Prompt video"></textarea>
+                                        <input v-model="manualSceneDraft(frame.scene_number, frame).camera_movement" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" placeholder="Movimento de camera">
+                                        <input v-model.number="manualSceneDraft(frame.scene_number, frame).duration" type="number" min="1" max="600" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" placeholder="Duracao">
+                                        <input v-model="manualSceneDraft(frame.scene_number, frame).suggested_soundtrack" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" placeholder="Trilha">
+                                        <div class="flex flex-wrap gap-2">
+                                            <button @click="reanalyzeStoryboardScene(frame.scene_number)" class="bg-emerald-700 text-white px-3 py-2 rounded text-xs">Reanalisar cena</button>
+                                            <button @click="toggleManualSceneEditor(frame)" class="bg-white border border-slate-300 text-slate-700 px-3 py-2 rounded text-xs">Cancelar</button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -888,6 +915,7 @@
                     currentScript: null,
                     currentScenes: [],
                     sceneDiagnostics: null,
+                    manualSceneDrafts: {},
                     allowReoptimizeApproved: false,
                     optimizationPollingTimer: null,
                     jobs: [],
@@ -1192,9 +1220,13 @@
                     return 'bg-rose-50 text-rose-700 border-rose-200';
                 },
                 sceneStatusLabel(frame) {
+                    const assist = frame?.assist_data || {};
+                    if ((frame?.approval_status || '').toLowerCase() === 'approved' && frame?.optimization_meta?.assisted_approval) return 'Aprovada c/ obs.';
                     if ((frame?.approval_status || '').toLowerCase() === 'approved') return 'Aprovada';
+                    if (assist?.near_approval) return 'Quase aprovada';
                     const status = String(frame?.optimization_meta?.last_status || 'pendente').toLowerCase();
                     if (status === 'aprovada') return 'Aprovada';
+                    if (status === 'quase_aprovada') return 'Aprovada c/ obs.';
                     if (status === 'melhorou') return 'Melhorou';
                     if (status === 'descartada') return 'Descartada';
                     return 'Pendente';
@@ -1202,6 +1234,8 @@
                 sceneStatusBadgeClass(frame) {
                     const label = this.sceneStatusLabel(frame);
                     if (label === 'Aprovada') return 'bg-emerald-900 text-white border-emerald-900';
+                    if (label === 'Aprovada c/ obs.') return 'bg-teal-700 text-white border-teal-700';
+                    if (label === 'Quase aprovada') return 'bg-violet-100 text-violet-800 border-violet-300';
                     if (label === 'Melhorou') return 'bg-emerald-100 text-emerald-800 border-emerald-300';
                     if (label === 'Descartada') return 'bg-rose-100 text-rose-800 border-rose-300';
                     return 'bg-amber-100 text-amber-800 border-amber-300';
@@ -1217,6 +1251,99 @@
                     if (label === 'Mantida') return 'bg-sky-100 text-sky-800 border-sky-300';
                     if (label === 'Descartada') return 'bg-rose-100 text-rose-800 border-rose-300';
                     return 'bg-amber-100 text-amber-800 border-amber-300';
+                },
+                sceneAssistData(frame) {
+                    return frame?.assist_data || {};
+                },
+                manualSceneDraft(sceneNumber, frame = null) {
+                    const key = String(sceneNumber);
+                    if (!this.manualSceneDrafts[key] && frame) {
+                        this.manualSceneDrafts[key] = {
+                            title: frame.title || '',
+                            narration: frame.narration || frame.narrative || '',
+                            emotion: frame.emotion || '',
+                            prompt_visual: frame.prompt_visual || '',
+                            prompt_image: frame.prompt_image || frame.prompt_visual || '',
+                            prompt_video: frame.prompt_video || '',
+                            camera_movement: frame.camera_movement || '',
+                            duration: Number(frame.duration || 20),
+                            suggested_soundtrack: frame.suggested_soundtrack || ''
+                        };
+                    }
+                    return this.manualSceneDrafts[key];
+                },
+                toggleManualSceneEditor(frame) {
+                    const key = String(frame.scene_number);
+                    if (this.manualSceneDrafts[key]) {
+                        delete this.manualSceneDrafts[key];
+                        return;
+                    }
+                    this.manualSceneDraft(frame.scene_number, frame);
+                },
+                async approveStoryboardSceneWithObservation(sceneNumber) {
+                    try {
+                        const notes = window.prompt('Observação para aprovação assistida:', 'Aprovada com observação por estar até 3 pontos abaixo da meta.') || '';
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/approve-with-observation`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ notes })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao aprovar a cena com observação.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess(`Cena ${sceneNumber} aprovada com observação.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao aprovar com observação.');
+                    }
+                },
+                async forceImproveStoryboardScene(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/force-improve`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao forçar melhoria da cena.');
+                        this.currentScript = data;
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        const result = data.force_improve_result || {};
+                        this.notifySuccess(`Força IA forte executada na cena ${sceneNumber}. Nota final: ${Number(result.final_score || 0)}. Melhor nota: ${Number(result.best_score || 0)}.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao forçar melhoria com IA forte.');
+                    }
+                },
+                async applySceneSuggestion(sceneNumber) {
+                    try {
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/apply-suggestion`, { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao aplicar sugestão da cena.');
+                        this.currentScript = data;
+                        delete this.manualSceneDrafts[String(sceneNumber)];
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess(`Sugestão aplicada na cena ${sceneNumber} e reanalisada.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao aplicar sugestão.');
+                    }
+                },
+                async reanalyzeStoryboardScene(sceneNumber) {
+                    try {
+                        const draft = this.manualSceneDraft(sceneNumber);
+                        const res = await this.authFetch(`/bible-video-factory/scripts/${this.selectedScriptId}/storyboard/${sceneNumber}/manual-update`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(draft || {})
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao reanalisar a cena editada.');
+                        this.currentScript = data;
+                        delete this.manualSceneDrafts[String(sceneNumber)];
+                        await this.loadSelectedScript();
+                        await this.bootstrap();
+                        this.notifySuccess(`Cena ${sceneNumber} atualizada manualmente e reanalisada.`);
+                    } catch (e) {
+                        this.notifyError(e.message || 'Erro ao reanalisar a cena.');
+                    }
                 },
                 logSceneCounts(origin, receivedCount = null) {
                     const renderedCount = (this.renderScenes || []).length;

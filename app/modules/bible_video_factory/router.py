@@ -179,6 +179,22 @@ class AutoOptimizeRequest(BaseModel):
     allow_reoptimize_approved: bool = False
 
 
+class SceneObservationRequest(BaseModel):
+    notes: Optional[str] = ""
+
+
+class SceneManualUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    narration: Optional[str] = None
+    emotion: Optional[str] = None
+    prompt_visual: Optional[str] = None
+    prompt_image: Optional[str] = None
+    prompt_video: Optional[str] = None
+    camera_movement: Optional[str] = None
+    duration: Optional[float] = Field(default=None, ge=1, le=600)
+    suggested_soundtrack: Optional[str] = None
+
+
 class MetricRequest(BaseModel):
     job_id: Optional[int] = None
     series_id: Optional[int] = None
@@ -544,6 +560,17 @@ def approve_storyboard_scene(script_id: int, scene_number: int, db: Session = De
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/approve-with-observation")
+def approve_storyboard_scene_with_observation(script_id: int, scene_number: int, payload: SceneObservationRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().approve_storyboard_scene_with_observation(db, script, scene_number, note=payload.notes or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/scripts/{script_id}/storyboard/{scene_number}/unapprove")
 def unapprove_storyboard_scene(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
@@ -551,6 +578,28 @@ def unapprove_storyboard_scene(script_id: int, scene_number: int, db: Session = 
         raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
     try:
         return get_service().unapprove_storyboard_scene(db, script, scene_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/apply-suggestion")
+def apply_storyboard_scene_suggestion(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().apply_scene_suggestion(db, script, scene_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/manual-update")
+def update_storyboard_scene_manually(script_id: int, scene_number: int, payload: SceneManualUpdateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().update_storyboard_scene_manually(db, script, scene_number, payload.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -600,6 +649,17 @@ def auto_improve_storyboard_scene(script_id: int, scene_number: int, db: Session
         raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
     try:
         return get_service().auto_improve_storyboard_scene(db, script, scene_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/scripts/{script_id}/storyboard/{scene_number}/force-improve")
+def force_improve_storyboard_scene(script_id: int, scene_number: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    script = db.query(BibleVideoScript).filter(BibleVideoScript.id == script_id, BibleVideoScript.user_id == current_user.id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="Roteiro nao encontrado.")
+    try:
+        return get_service().force_improve_storyboard_scene(db, script, scene_number)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
