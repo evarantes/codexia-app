@@ -127,41 +127,6 @@ class PromptRequest(BaseModel):
     is_active: bool = True
 
 
-class ConfigRequest(BaseModel):
-    text_provider: str = "openai"
-    voice_provider: str = "elevenlabs"
-    image_provider: str = "openai"
-    video_provider: str = "luma"
-    music_provider: str = "musicgen"
-    caption_provider: str = "native"
-    thumbnail_provider: str = "openai"
-    text_api_key: Optional[str] = None
-    voice_api_key: Optional[str] = None
-    image_api_key: Optional[str] = None
-    video_api_key: Optional[str] = None
-    youtube_api_key: Optional[str] = None
-    tiktok_api_key: Optional[str] = None
-    instagram_api_key: Optional[str] = None
-    default_voice: Optional[str] = None
-    default_voice_speed: float = Field(default=1.0, ge=0.5, le=2.0)
-    default_voice_emotion: Optional[str] = None
-    default_voice_intensity: float = Field(default=0.7, ge=0.0, le=1.0)
-    default_language: str = "pt-BR"
-    default_cta: Optional[str] = None
-    default_next_episode_cta: Optional[str] = None
-    default_playlist: Optional[str] = None
-    made_for_kids_default: bool = False
-    daily_spend_limit: float = 0.0
-    monthly_spend_limit: float = 0.0
-    text_cost_unit: float = 0.0
-    voice_cost_unit: float = 0.0
-    image_cost_unit: float = 0.0
-    video_cost_unit: float = 0.0
-    music_cost_unit: float = 0.0
-    caption_cost_unit: float = 0.0
-    thumbnail_cost_unit: float = 0.0
-
-
 class JobCreateRequest(BaseModel):
     script_id: int
     platform: str = "youtube"
@@ -449,6 +414,8 @@ async def generate_script(episode_id: int, request: Request, db: Session = Depen
             next_episode_cta=next_episode_cta,
         )
         return get_service().serialize_script(script)
+    except HTTPException:
+        raise
     except Exception as e:
         tb = traceback.format_exc()
         print("[BibleVideoFactory] Erro ao gerar roteiro:", str(e))
@@ -915,16 +882,11 @@ def get_config(db: Session = Depends(get_db), current_user: User = Depends(get_c
 
 
 @router.post("/config")
-def save_config(payload: ConfigRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    service = get_service()
-    row = service.get_or_create_config(db, current_user.id)
-    for key, value in payload.model_dump().items():
-        if key.endswith("_api_key") and value in (None, ""):
-            continue
-        setattr(row, key, value)
-    db.commit()
-    db.refresh(row)
-    return service.serialize_config(row)
+def save_config():
+    raise HTTPException(
+        status_code=410,
+        detail="As configuracoes da Fabrica de Videos Biblicos agora sao editadas somente na aba principal Configuracoes do Codexia.",
+    )
 
 
 @router.get("/jobs")

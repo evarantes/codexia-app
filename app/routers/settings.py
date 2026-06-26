@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Settings
+from app.models import Settings, User
+from app.modules.bible_video_factory.models import BibleVideoConfig
+from app.routers.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import requests
@@ -10,12 +12,13 @@ import os
 import subprocess
 import tempfile
 import time
+from app.services.provider_config import normalize_secret, resolve_global_provider_settings
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
 
 def _mask_configured(value: Optional[str]) -> bool:
-    return bool(str(value or "").strip())
+    return bool(normalize_secret(value))
 
 
 def _safe_float(value, digits: int = 2):
@@ -30,6 +33,99 @@ def _safe_int(value):
         return int(value)
     except Exception:
         return None
+
+
+def _default_factory_settings_payload() -> Dict[str, Any]:
+    return {
+        "text_provider": "openai",
+        "voice_provider": "elevenlabs",
+        "image_provider": "openai",
+        "video_provider": "luma",
+        "music_provider": "musicgen",
+        "caption_provider": "native",
+        "thumbnail_provider": "openai",
+        "default_voice": None,
+        "default_voice_speed": 1.0,
+        "default_voice_emotion": None,
+        "default_voice_intensity": 0.7,
+        "default_language": "pt-BR",
+        "default_cta": "Inscreva-se para acompanhar os proximos episodios biblicos.",
+        "default_next_episode_cta": "No proximo episodio, a historia continua com mais tensao e revelacao.",
+        "default_playlist": None,
+        "made_for_kids_default": False,
+        "daily_spend_limit": 0.0,
+        "monthly_spend_limit": 0.0,
+        "text_cost_unit": 0.0,
+        "voice_cost_unit": 0.0,
+        "image_cost_unit": 0.0,
+        "video_cost_unit": 0.0,
+        "music_cost_unit": 0.0,
+        "caption_cost_unit": 0.0,
+        "thumbnail_cost_unit": 0.0,
+    }
+
+
+def _get_latest_factory_config(db: Session, user_id: Optional[int] = None) -> Optional[BibleVideoConfig]:
+    query = db.query(BibleVideoConfig)
+    if user_id is not None:
+        query = query.filter(BibleVideoConfig.user_id == user_id)
+    return query.order_by(BibleVideoConfig.id.desc()).first()
+
+
+def _get_or_create_factory_config(db: Session, user_id: Optional[int] = None) -> BibleVideoConfig:
+    row = _get_latest_factory_config(db, user_id=user_id)
+    if row:
+        return row
+    defaults = _default_factory_settings_payload()
+    row = BibleVideoConfig(user_id=user_id, **defaults)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _serialize_factory_settings(row: Optional[BibleVideoConfig]) -> Dict[str, Any]:
+    payload = _default_factory_settings_payload()
+    if not row:
+        return payload
+    payload.update({
+        "id": row.id,
+        "user_id": row.user_id,
+        "text_provider": row.text_provider,
+        "voice_provider": row.voice_provider,
+        "image_provider": row.image_provider,
+        "video_provider": row.video_provider,
+        "music_provider": row.music_provider,
+        "caption_provider": row.caption_provider,
+        "thumbnail_provider": row.thumbnail_provider,
+        "default_voice": row.default_voice,
+        "default_voice_speed": float(row.default_voice_speed or 1.0),
+        "default_voice_emotion": row.default_voice_emotion,
+        "default_voice_intensity": float(row.default_voice_intensity or 0.7),
+        "default_language": row.default_language or "pt-BR",
+        "default_cta": row.default_cta,
+        "default_next_episode_cta": row.default_next_episode_cta,
+        "default_playlist": row.default_playlist,
+        "made_for_kids_default": bool(row.made_for_kids_default),
+        "daily_spend_limit": float(row.daily_spend_limit or 0),
+        "monthly_spend_limit": float(row.monthly_spend_limit or 0),
+        "text_cost_unit": float(row.text_cost_unit or 0),
+        "voice_cost_unit": float(row.voice_cost_unit or 0),
+        "image_cost_unit": float(row.image_cost_unit or 0),
+        "video_cost_unit": float(row.video_cost_unit or 0),
+        "music_cost_unit": float(row.music_cost_unit or 0),
+        "caption_cost_unit": float(row.caption_cost_unit or 0),
+        "thumbnail_cost_unit": float(row.thumbnail_cost_unit or 0),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    })
+    return payload
+
+
+def _serialize_settings_payload(settings: Settings, db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:
+    payload = {column.name: getattr(settings, column.name) for column in Settings.__table__.columns}
+    payload["bible_video_factory"] = _serialize_factory_settings(_get_latest_factory_config(db, user_id=user_id))
+    return payload
 
 
 def _provider_card(
@@ -233,9 +329,10 @@ class SettingsUpdate(BaseModel):
     instagram_access_token: Optional[str] = None
     # TikTok
     tiktok_access_token: Optional[str] = None
+    bible_video_factory: Optional[Dict[str, Any]] = None
 
 @router.get("/")
-def get_settings(db: Session = Depends(get_db)):
+def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     settings = db.query(Settings).order_by(Settings.id.desc()).first()
     if not settings:
         # Criar configurações padrão se não existirem
@@ -243,20 +340,20 @@ def get_settings(db: Session = Depends(get_db)):
         db.add(settings)
         db.commit()
         db.refresh(settings)
-    return settings
+    return _serialize_settings_payload(settings, db, user_id=current_user.id)
 
 
 @router.get("/ai-credits")
 def get_ai_credits(db: Session = Depends(get_db)):
     settings = db.query(Settings).order_by(Settings.id.desc()).first()
     providers: List[Dict[str, Any]] = []
-
-    openrouter_key = (getattr(settings, "openrouter_api_key", None) or os.getenv("OPENROUTER_API_KEY") or "").strip()
-    elevenlabs_key = (getattr(settings, "elevenlabs_api_key", None) or os.getenv("ELEVENLABS_API_KEY") or "").strip()
-    suno_key = (getattr(settings, "suno_api_key", None) or os.getenv("SUNO_API_KEY") or "").strip()
-    openai_key = (getattr(settings, "openai_api_key", None) or os.getenv("OPENAI_API_KEY") or "").strip()
-    edenai_key = (getattr(settings, "edenai_api_key", None) or os.getenv("EDENAI_API_KEY") or "").strip()
-    hf_token = (os.getenv("HUGGINGFACE_TOKEN") or "").strip()
+    resolved = resolve_global_provider_settings(settings)
+    openrouter_key = resolved["openrouter_api_key"]["value"] or ""
+    elevenlabs_key = resolved["elevenlabs_api_key"]["value"] or ""
+    suno_key = resolved["suno_api_key"]["value"] or ""
+    openai_key = resolved["openai_api_key"]["value"] or ""
+    edenai_key = resolved["edenai_api_key"]["value"] or ""
+    hf_token = resolved["huggingface_token"]["value"] or ""
 
     providers.append(
         _fetch_openrouter_credits(openrouter_key) if openrouter_key else _provider_card(
@@ -325,7 +422,7 @@ def get_ai_credits(db: Session = Depends(get_db)):
     }
 
 @router.post("/")
-def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_db)):
+def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     settings = db.query(Settings).order_by(Settings.id.desc()).first()
     if not settings:
         settings = Settings()
@@ -483,10 +580,56 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
     if settings_update.tiktok_access_token is not None:
         v = str(settings_update.tiktok_access_token).strip()
         settings.tiktok_access_token = v or None
+
+    if isinstance(settings_update.bible_video_factory, dict):
+        factory_row = _get_or_create_factory_config(db, user_id=current_user.id)
+        factory_payload = {**_default_factory_settings_payload(), **settings_update.bible_video_factory}
+        factory_string_defaults = {
+            "text_provider": "openai",
+            "voice_provider": "elevenlabs",
+            "image_provider": "openai",
+            "video_provider": "luma",
+            "music_provider": "musicgen",
+            "caption_provider": "native",
+            "thumbnail_provider": "openai",
+            "default_language": "pt-BR",
+        }
+        factory_optional_text_fields = {
+            "default_voice",
+            "default_voice_emotion",
+            "default_cta",
+            "default_next_episode_cta",
+            "default_playlist",
+        }
+        factory_float_fields = {
+            "default_voice_speed",
+            "default_voice_intensity",
+            "daily_spend_limit",
+            "monthly_spend_limit",
+            "text_cost_unit",
+            "voice_cost_unit",
+            "image_cost_unit",
+            "video_cost_unit",
+            "music_cost_unit",
+            "caption_cost_unit",
+            "thumbnail_cost_unit",
+        }
+        for field, default_value in factory_string_defaults.items():
+            value = str(factory_payload.get(field, default_value) or "").strip()
+            setattr(factory_row, field, value or default_value)
+        for field in factory_optional_text_fields:
+            value = str(factory_payload.get(field) or "").strip()
+            setattr(factory_row, field, value or None)
+        factory_row.made_for_kids_default = bool(factory_payload.get("made_for_kids_default"))
+        for field in factory_float_fields:
+            try:
+                setattr(factory_row, field, float(factory_payload.get(field) or 0))
+            except Exception:
+                pass
     
     db.commit()
     db.refresh(settings)
-    return settings
+    return _serialize_settings_payload(settings, db, user_id=current_user.id)
 
 @router.post("/amazon/kdp/test")
 def test_amazon_kdp_connection(db: Session = Depends(get_db)):

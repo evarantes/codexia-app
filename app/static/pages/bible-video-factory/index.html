@@ -60,6 +60,15 @@
             </div>
 
             <section v-if="activeTab === 'dashboard'" class="space-y-6">
+                <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <div class="font-semibold text-indigo-900">Preferencias e custos da Fabrica agora ficam na aba principal Configuracoes</div>
+                        <div class="text-sm text-indigo-700 mt-1">Use o painel principal do Codexia para ajustar provedores, CTA, playlist, voz padrao e limites de custo sem manter uma segunda tela de configuracao.</div>
+                    </div>
+                    <a href="/static/index.html#settings-bible-video-factory" class="inline-flex items-center justify-center bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-800">
+                        <i class="fas fa-arrow-up-right-from-square mr-2"></i>Abrir Configuracoes
+                    </a>
+                </div>
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div class="bg-white rounded-xl shadow p-6">
                         <h2 class="text-xl font-bold mb-4">Resumo da Fabrica</h2>
@@ -631,6 +640,22 @@
                                     <div v-if="sceneAssistData(frame).last_component_attempt?.metric_label" class="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
                                         <div><strong>Ultima correcao por componente:</strong> {{ sceneAssistData(frame).last_component_attempt.metric_label }} no bloco {{ sceneAssistData(frame).last_component_attempt.block_label }}</div>
                                         <div class="mt-1"><strong>Nota antes:</strong> {{ sceneAssistData(frame).last_component_attempt.previous_metric_score || 0 }} | <strong>Nota depois:</strong> {{ sceneAssistData(frame).last_component_attempt.new_metric_score || 0 }} | <strong>Ganho:</strong> {{ sceneAssistData(frame).last_component_attempt.metric_gain || 0 }}</div>
+                                        <div class="mt-1"><strong>Versao:</strong> {{ versionDecisionLabel(frame.optimization_meta) }} | <strong>Decisao:</strong> {{ sceneAssistData(frame).last_component_attempt.decision || '-' }} | <strong>Solucao:</strong> {{ sceneAssistData(frame).last_component_attempt.solution_type || 'reescrita incremental' }}</div>
+                                        <div v-if="sceneAssistData(frame).last_component_attempt.before_text" class="mt-2 whitespace-pre-wrap"><strong>Texto antes:</strong> {{ sceneAssistData(frame).last_component_attempt.before_text }}</div>
+                                        <div v-if="sceneAssistData(frame).last_component_attempt.after_text" class="mt-2 whitespace-pre-wrap"><strong>Texto depois:</strong> {{ sceneAssistData(frame).last_component_attempt.after_text }}</div>
+                                    </div>
+                                    <div v-if="sceneAssistData(frame).scene_blocks?.length" class="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+                                        <div class="font-semibold">Estrutura da cena por blocos</div>
+                                        <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                            <div v-for="block in sceneAssistData(frame).scene_blocks" :key="`scene-block-${frame.scene_number}-${block.block_key}`" class="rounded-lg border p-2" :class="block.good ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <div class="font-medium">{{ block.block_key }}</div>
+                                                    <div class="text-xs">{{ block.score || 0 }}/{{ block.target_score || 80 }}</div>
+                                                </div>
+                                                <div class="mt-1 text-xs text-slate-600">{{ block.block_label }}</div>
+                                                <div class="mt-1 text-xs whitespace-pre-wrap line-clamp-4">{{ block.content || 'Sem conteudo definido.' }}</div>
+                                            </div>
+                                        </div>
                                     </div>
                                     <div v-if="sceneAssistData(frame).show_suggestion" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 space-y-2">
                                         <div><strong>Travada pela metrica:</strong> {{ sceneAssistData(frame).blocking_metric }} ({{ sceneAssistData(frame).blocking_metric_score }}/100)</div>
@@ -788,96 +813,6 @@
                 </div>
             </section>
 
-            <section v-if="activeTab === 'config'" class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                <div class="bg-white rounded-xl shadow p-6">
-                    <h2 class="text-xl font-bold mb-4">Configuracao de APIs e providers</h2>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <select v-model="config.text_provider" class="w-full border rounded-lg px-3 py-2">
-                            <option>openai</option>
-                            <option>openrouter</option>
-                            <option>gemini</option>
-                        </select>
-                        <select v-model="config.voice_provider" class="w-full border rounded-lg px-3 py-2">
-                            <option>elevenlabs</option>
-                            <option>openai_tts</option>
-                            <option>edge_tts</option>
-                        </select>
-                        <select v-model="config.image_provider" class="w-full border rounded-lg px-3 py-2">
-                            <option>openai</option>
-                            <option>runway</option>
-                            <option>kling</option>
-                        </select>
-                        <select v-model="config.video_provider" class="w-full border rounded-lg px-3 py-2">
-                            <option>luma</option>
-                            <option>kling</option>
-                            <option>runway</option>
-                            <option>moviepy_ffmpeg</option>
-                        </select>
-                        <select v-model="config.music_provider" class="w-full border rounded-lg px-3 py-2">
-                            <option>musicgen</option>
-                            <option>suno</option>
-                            <option>native</option>
-                        </select>
-                        <select v-model="config.thumbnail_provider" class="w-full border rounded-lg px-3 py-2">
-                            <option>openai</option>
-                            <option>native</option>
-                        </select>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-                        <input v-model="config.text_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key texto">
-                        <input v-model="config.voice_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key voz">
-                        <input v-model="config.image_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key imagem">
-                        <input v-model="config.video_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key video">
-                        <input v-model="config.youtube_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key YouTube">
-                        <input v-model="config.tiktok_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key TikTok">
-                        <input v-model="config.instagram_api_key" type="password" class="w-full border rounded-lg px-3 py-2" placeholder="API key Instagram">
-                        <input v-model="config.default_playlist" class="w-full border rounded-lg px-3 py-2" placeholder="Playlist padrao">
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-                        <input v-model="config.default_voice" class="w-full border rounded-lg px-3 py-2" placeholder="Voz padrao">
-                        <input v-model.number="config.default_voice_speed" type="number" step="0.1" class="w-full border rounded-lg px-3 py-2" placeholder="Velocidade">
-                        <input v-model="config.default_voice_emotion" class="w-full border rounded-lg px-3 py-2" placeholder="Emocao">
-                        <input v-model.number="config.default_voice_intensity" type="number" step="0.1" class="w-full border rounded-lg px-3 py-2" placeholder="Intensidade">
-                    </div>
-                    <textarea v-model="config.default_cta" class="w-full border rounded-lg px-3 py-2 h-20 mt-4" placeholder="CTA padrao"></textarea>
-                    <textarea v-model="config.default_next_episode_cta" class="w-full border rounded-lg px-3 py-2 h-20 mt-3" placeholder="CTA proximo episodio"></textarea>
-                    <button @click="saveConfig" class="mt-4 bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold">Salvar configuracao</button>
-                </div>
-
-                <div class="bg-white rounded-xl shadow p-6">
-                    <h2 class="text-xl font-bold mb-4">Controle de custos e metricas</h2>
-                    <div class="grid grid-cols-2 gap-3">
-                        <input v-model.number="config.text_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo texto">
-                        <input v-model.number="config.voice_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo voz">
-                        <input v-model.number="config.image_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo imagem">
-                        <input v-model.number="config.video_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo animacao/video">
-                        <input v-model.number="config.music_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo musica">
-                        <input v-model.number="config.caption_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo legenda">
-                        <input v-model.number="config.thumbnail_cost_unit" type="number" step="0.0001" class="w-full border rounded-lg px-3 py-2" placeholder="Custo thumbnail">
-                        <input v-model.number="config.daily_spend_limit" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2" placeholder="Limite diario">
-                        <input v-model.number="config.monthly_spend_limit" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2 col-span-2" placeholder="Limite mensal">
-                    </div>
-
-                    <div class="mt-6 border-t pt-6">
-                        <h3 class="font-bold mb-3">Registrar metricas</h3>
-                        <div class="grid grid-cols-2 gap-3">
-                            <select v-model="metricForm.job_id" class="w-full border rounded-lg px-3 py-2 col-span-2">
-                                <option value="">Job relacionado</option>
-                                <option v-for="item in jobs" :key="item.id" :value="item.id">{{ item.title }}</option>
-                            </select>
-                            <input v-model="metricForm.platform" class="w-full border rounded-lg px-3 py-2" placeholder="Plataforma">
-                            <input v-model="metricForm.video_id" class="w-full border rounded-lg px-3 py-2" placeholder="Video ID">
-                            <input v-model.number="metricForm.view_count" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Views">
-                            <input v-model.number="metricForm.ctr" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2" placeholder="CTR">
-                            <input v-model.number="metricForm.retention" type="number" step="0.01" class="w-full border rounded-lg px-3 py-2" placeholder="Retencao">
-                            <input v-model.number="metricForm.subscribers_gained" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Inscritos ganhos">
-                            <input v-model.number="metricForm.likes" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Likes">
-                            <input v-model.number="metricForm.comments" type="number" class="w-full border rounded-lg px-3 py-2" placeholder="Comentarios">
-                        </div>
-                        <button @click="saveMetric" class="mt-4 bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold">Salvar metricas</button>
-                    </div>
-                </div>
-            </section>
         </main>
     </div>
 
@@ -897,8 +832,7 @@
                         { id: 'script', label: 'Roteiro e Cenas', icon: 'fas fa-clapperboard' },
                         { id: 'storyboard', label: 'Storyboard', icon: 'fas fa-images' },
                         { id: 'assets', label: 'Assets', icon: 'fas fa-user-group' },
-                        { id: 'queue', label: 'Fila de Producao', icon: 'fas fa-diagram-project' },
-                        { id: 'config', label: 'Configuracoes e Custos', icon: 'fas fa-gear' }
+                        { id: 'queue', label: 'Fila de Producao', icon: 'fas fa-diagram-project' }
                     ],
                     kanbanStages: [
                         { id: 'idea', label: 'Ideia' },
@@ -938,6 +872,7 @@
                     scenarios: [],
                     prompts: [],
                     metrics: [],
+                    globalAiCredits: [],
                     config: {
                         text_provider: 'openai',
                         voice_provider: 'elevenlabs',
@@ -1101,6 +1036,86 @@
                 },
                 optimizationReport() {
                     return this.currentScript?.optimization_state?.report || null;
+                },
+                providerCreditsById() {
+                    const map = {};
+                    for (const item of (this.globalAiCredits || [])) {
+                        if (item && item.id) map[item.id] = item;
+                    }
+                    return map;
+                },
+                factoryGlobalProviderRows() {
+                    const textPreference = String(this.config?.text_provider || 'openrouter').toLowerCase() === 'openai'
+                        ? ['openai', 'openrouter']
+                        : ['openrouter', 'openai'];
+                    const voicePreference = String(this.config?.voice_provider || 'elevenlabs').toLowerCase();
+                    const imagePreference = String(this.config?.image_provider || 'openai').toLowerCase();
+                    const videoPreference = String(this.config?.video_provider || 'luma').toLowerCase();
+                    const musicPreference = String(this.config?.music_provider || 'musicgen').toLowerCase();
+
+                    const textCard = this.pickPreferredProviderCard(textPreference);
+                    const voiceCard = voicePreference === 'openai_tts'
+                        ? this.pickPreferredProviderCard(['openai'])
+                        : this.pickPreferredProviderCard(voicePreference === 'edenai' ? ['edenai', 'elevenlabs'] : ['elevenlabs', 'edenai']);
+                    const imageCard = this.pickPreferredProviderCard(
+                        imagePreference === 'edenai' ? ['edenai', 'openai'] : ['openai', 'edenai']
+                    );
+                    const videoCard = videoPreference === 'edenai'
+                        ? this.pickPreferredProviderCard(['edenai', 'openai'])
+                        : this.pickPreferredProviderCard(['openai', 'edenai']);
+                    const musicCard = musicPreference === 'suno'
+                        ? this.pickPreferredProviderCard(['suno', 'huggingface'])
+                        : this.pickPreferredProviderCard(['huggingface', 'suno']);
+
+                    return [
+                        this.buildFactoryProviderRow(
+                            'Texto/LLM',
+                            this.providerLabel(textCard?.id || textPreference[0] || 'openrouter'),
+                            textCard,
+                            'Usa primeiro as chaves globais da aba Configuracoes para roteiro, cenas e otimizacao.',
+                            null
+                        ),
+                        voicePreference === 'edge_tts'
+                            ? this.buildStaticFactoryProviderRow('Voz', 'Edge TTS (local)', 'OK', 'bg-emerald-100 text-emerald-800', 'Voz local sem chave. As configuracoes globais continuam disponiveis para fallback quando aplicavel.', 'local')
+                            : this.buildFactoryProviderRow(
+                                'Voz',
+                                this.providerLabel(voiceCard?.id || voicePreference || 'elevenlabs'),
+                                voiceCard,
+                                'Usa provedores globais de voz/TTS do painel principal do Codexia.',
+                                null,
+                                voicePreference === 'openai_tts'
+                            ),
+                        this.buildFactoryProviderRow(
+                            'Imagem',
+                            this.providerLabel(imageCard?.id || imagePreference || 'openai'),
+                            imageCard,
+                            `Preferencia atual da Fabrica: ${this.providerLabel(imagePreference || 'openai')}.`,
+                            null,
+                            false
+                        ),
+                        videoPreference === 'moviepy_ffmpeg'
+                            ? this.buildStaticFactoryProviderRow('Video', 'MoviePy/FFmpeg (local)', 'OK', 'bg-emerald-100 text-emerald-800', 'Pipeline local configurado. Quando houver geracao externa, a Fabrica usa os provedores globais conectados.', 'local')
+                            : this.buildFactoryProviderRow(
+                                'Video',
+                                videoPreference === 'luma'
+                                    ? 'Luma'
+                                    : this.providerLabel(videoCard?.id || videoPreference || 'openai'),
+                                videoCard,
+                                `Preferencia atual da Fabrica: ${this.providerLabel(videoPreference || 'luma')}.`,
+                                videoPreference === 'luma' ? 'preferencia' : null,
+                                videoPreference === 'luma'
+                            ),
+                        musicPreference === 'native'
+                            ? this.buildStaticFactoryProviderRow('Musica', 'Native', 'OK', 'bg-emerald-100 text-emerald-800', 'Trilha nativa/local habilitada. Suno e MusicGen globais continuam disponiveis quando configurados.', 'local')
+                            : this.buildFactoryProviderRow(
+                                'Musica',
+                                musicPreference === 'suno' ? 'Suno' : 'MusicGen',
+                                musicCard,
+                                'A Fabrica usa a configuracao global de musica do Codexia.',
+                                null,
+                                musicPreference === 'musicgen'
+                            ),
+                    ];
                 }
             },
             methods: {
@@ -1158,6 +1173,92 @@
                 notifyError(message) {
                     this.error = message;
                     this.success = '';
+                },
+                providerLabel(value) {
+                    const key = String(value || '').toLowerCase();
+                    const map = {
+                        openrouter: 'OpenRouter',
+                        openai: 'OpenAI',
+                        elevenlabs: 'ElevenLabs',
+                        edenai: 'Eden AI',
+                        huggingface: 'MusicGen',
+                        suno: 'Suno',
+                        luma: 'Luma',
+                        moviepy_ffmpeg: 'MoviePy/FFmpeg',
+                        openai_tts: 'OpenAI TTS',
+                        edge_tts: 'Edge TTS',
+                        gemini: 'Gemini',
+                        native: 'Native',
+                        kling: 'Kling',
+                        runway: 'Runway'
+                    };
+                    return map[key] || (value ? String(value) : 'Nao configurado');
+                },
+                pickPreferredProviderCard(preferredIds = []) {
+                    const cards = this.providerCreditsById || {};
+                    for (const id of preferredIds) {
+                        const card = cards[id];
+                        if (card && card.configured) return card;
+                    }
+                    for (const id of preferredIds) {
+                        const card = cards[id];
+                        if (card) return card;
+                    }
+                    return null;
+                },
+                providerStatusMeta(card, fallbackConfigured = false) {
+                    const rawMessage = String(card?.message || '').toLowerCase();
+                    if (!card) {
+                        if (fallbackConfigured) {
+                            return { label: 'Configurado', badgeClass: 'bg-sky-100 text-sky-800', source: 'preferencia' };
+                        }
+                        return { label: 'Nao configurado', badgeClass: 'bg-slate-200 text-slate-700', source: null };
+                    }
+                    if (card.status === 'ok') {
+                        if ((card.id === 'openrouter' && Number(card.estimated_balance || 0) <= 0) || (card.id === 'suno' && Number(card.remaining || 0) <= 0)) {
+                            return { label: 'Sem saldo', badgeClass: 'bg-amber-100 text-amber-800', source: 'settings' };
+                        }
+                        if (card.id === 'elevenlabs' && card.remaining !== null && Number(card.remaining || 0) <= 0) {
+                            return { label: 'Sem saldo', badgeClass: 'bg-amber-100 text-amber-800', source: 'settings' };
+                        }
+                        return { label: 'OK', badgeClass: 'bg-emerald-100 text-emerald-800', source: 'settings' };
+                    }
+                    if (card.status === 'portal_only') {
+                        return { label: 'Configurado', badgeClass: 'bg-sky-100 text-sky-800', source: 'settings' };
+                    }
+                    if (card.status === 'missing') {
+                        return { label: 'Nao configurado', badgeClass: 'bg-slate-200 text-slate-700', source: null };
+                    }
+                    if (rawMessage.includes('invalid_api_key') || rawMessage.includes('incorrect api key') || rawMessage.includes('unauthorized') || rawMessage.includes('401')) {
+                        return { label: 'Chave invalida', badgeClass: 'bg-rose-100 text-rose-800', source: 'settings' };
+                    }
+                    if (rawMessage.includes('insufficient') || rawMessage.includes('quota') || rawMessage.includes('credit') || rawMessage.includes('saldo') || rawMessage.includes('402') || rawMessage.includes('limit')) {
+                        return { label: 'Sem saldo', badgeClass: 'bg-amber-100 text-amber-800', source: 'settings' };
+                    }
+                    if (fallbackConfigured || card.configured) {
+                        return { label: 'Configurado', badgeClass: 'bg-sky-100 text-sky-800', source: 'settings' };
+                    }
+                    return { label: 'Nao configurado', badgeClass: 'bg-slate-200 text-slate-700', source: null };
+                },
+                buildFactoryProviderRow(category, provider, card, defaultMessage, forceSource = null, fallbackConfigured = false) {
+                    const meta = this.providerStatusMeta(card, fallbackConfigured);
+                    return {
+                        category,
+                        provider,
+                        statusLabel: meta.label,
+                        badgeClass: meta.badgeClass,
+                        message: card?.message || defaultMessage,
+                        source: forceSource || meta.source || (card?.configured ? 'settings' : null)
+                    };
+                },
+                buildStaticFactoryProviderRow(category, provider, statusLabel, badgeClass, message, source) {
+                    return { category, provider, statusLabel, badgeClass, message, source };
+                },
+                async loadGlobalProviderCredits() {
+                    const res = await this.authFetch('/settings/ai-credits');
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.detail || 'Falha ao consultar provedores globais.');
+                    this.globalAiCredits = Array.isArray(data.providers) ? data.providers : [];
                 },
                 formatMoney(value) {
                     const num = Number(value || 0);
@@ -1384,9 +1485,13 @@
                 async bootstrap() {
                     this.loading = true;
                     try {
-                        const res = await this.authFetch('/bible-video-factory/bootstrap');
-                        const data = await res.json();
-                        if (!res.ok) throw new Error(data.detail || 'Falha ao carregar a fabrica.');
+                        const [bootstrapRes, creditsRes] = await Promise.all([
+                            this.authFetch('/bible-video-factory/bootstrap'),
+                            this.authFetch('/settings/ai-credits')
+                        ]);
+                        const data = await bootstrapRes.json();
+                        const creditsData = await creditsRes.json();
+                        if (!bootstrapRes.ok) throw new Error(data.detail || 'Falha ao carregar a fabrica.');
                         this.dashboard = data.dashboard || this.dashboard;
                         this.series = data.series || [];
                         this.jobs = data.jobs || [];
@@ -1395,6 +1500,7 @@
                         this.scenarios = data.scenarios || [];
                         this.metrics = data.metrics || [];
                         this.config = { ...this.config, ...(data.config || {}) };
+                        this.globalAiCredits = Array.isArray(creditsData?.providers) ? creditsData.providers : [];
                         if (this.selectedSeriesId) {
                             await this.loadEpisodes(this.selectedSeriesId);
                         }
@@ -2011,22 +2117,6 @@
                         await this.bootstrap();
                     } catch (e) {
                         this.notifyError(e.message || 'Erro ao salvar prompt.');
-                    }
-                },
-                async saveConfig() {
-                    try {
-                        const res = await this.authFetch('/bible-video-factory/config', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(this.config)
-                        });
-                        const data = await res.json();
-                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar configuracao.');
-                        this.config = { ...this.config, ...data };
-                        this.notifySuccess('Configuracao salva com sucesso.');
-                        await this.bootstrap();
-                    } catch (e) {
-                        this.notifyError(e.message || 'Erro ao salvar configuracao.');
                     }
                 },
                 async saveMetric() {

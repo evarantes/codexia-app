@@ -3404,6 +3404,105 @@
                             <p class="text-xs text-gray-500 mt-2">Para usar no YouTube Auto, selecione “Minha voz (ElevenLabs)” em Estilo de Voz.</p>
                         </div>
                     </div>
+                    <div id="settings-bible-video-factory" class="border-t pt-4 mt-6 mb-4">
+                        <div class="flex items-start justify-between gap-3 mb-4">
+                            <div>
+                                <h3 class="text-lg font-bold mb-1 text-indigo-700">Fabrica de Videos Biblicos</h3>
+                                <p class="text-xs text-gray-500">As preferencias da Fabrica foram centralizadas aqui. A tela propria de configuracao foi removida da Fabrica para evitar duplicidade.</p>
+                            </div>
+                            <a href="/static/pages/bible-video-factory/index.html" class="text-sm font-semibold text-indigo-700 hover:text-indigo-900">Abrir Fabrica</a>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label class="block font-bold mb-2">Provedor de texto</label>
+                                <select v-model="settings.bible_video_factory.text_provider" class="w-full border p-2 rounded bg-white">
+                                    <option value="openai">OpenAI</option>
+                                    <option value="openrouter">OpenRouter</option>
+                                    <option value="gemini">Gemini</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Provedor de voz</label>
+                                <select v-model="settings.bible_video_factory.voice_provider" class="w-full border p-2 rounded bg-white">
+                                    <option value="elevenlabs">ElevenLabs</option>
+                                    <option value="edenai">Eden AI</option>
+                                    <option value="openai_tts">OpenAI TTS</option>
+                                    <option value="edge_tts">Edge TTS</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Provedor de imagem</label>
+                                <select v-model="settings.bible_video_factory.image_provider" class="w-full border p-2 rounded bg-white">
+                                    <option value="openai">OpenAI</option>
+                                    <option value="edenai">Eden AI</option>
+                                    <option value="luma">Luma</option>
+                                    <option value="runway">Runway</option>
+                                    <option value="kling">Kling</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Provedor de video</label>
+                                <select v-model="settings.bible_video_factory.video_provider" class="w-full border p-2 rounded bg-white">
+                                    <option value="luma">Luma</option>
+                                    <option value="openai">OpenAI</option>
+                                    <option value="edenai">Eden AI</option>
+                                    <option value="kling">Kling</option>
+                                    <option value="runway">Runway</option>
+                                    <option value="moviepy_ffmpeg">MoviePy/FFmpeg</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Provedor de musica</label>
+                                <select v-model="settings.bible_video_factory.music_provider" class="w-full border p-2 rounded bg-white">
+                                    <option value="musicgen">MusicGen</option>
+                                    <option value="suno">Suno</option>
+                                    <option value="native">Native</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">Provedor de thumbnail</label>
+                                <select v-model="settings.bible_video_factory.thumbnail_provider" class="w-full border p-2 rounded bg-white">
+                                    <option value="openai">OpenAI</option>
+                                    <option value="edenai">Eden AI</option>
+                                    <option value="native">Native</option>
+                                </select>
+                            </div>
+                            <input v-model="settings.bible_video_factory.default_playlist" class="w-full border p-2 rounded bg-white" placeholder="Playlist padrao">
+                            <input v-model="settings.bible_video_factory.default_voice" class="w-full border p-2 rounded bg-white" placeholder="Voz padrao">
+                            <input v-model.number="settings.bible_video_factory.default_voice_speed" type="number" min="0.5" max="2" step="0.1" class="w-full border p-2 rounded bg-white" placeholder="Velocidade da voz">
+                            <input v-model="settings.bible_video_factory.default_voice_emotion" class="w-full border p-2 rounded bg-white" placeholder="Emocao predominante">
+                            <input v-model.number="settings.bible_video_factory.default_voice_intensity" type="number" min="0" max="1" step="0.1" class="w-full border p-2 rounded bg-white" placeholder="Intensidade da voz">
+                            <input v-model="settings.bible_video_factory.default_language" class="w-full border p-2 rounded bg-white" placeholder="Idioma padrao">
+                        </div>
+                        <div class="mt-4">
+                            <label class="block font-bold mb-2">CTA padrao de inscricao</label>
+                            <textarea v-model="settings.bible_video_factory.default_cta" rows="3" class="w-full border p-2 rounded bg-white" placeholder="Mensagem padrao de inscricao"></textarea>
+                        </div>
+                        <div class="mt-4">
+                            <label class="block font-bold mb-2">CTA padrao do proximo episodio</label>
+                            <textarea v-model="settings.bible_video_factory.default_next_episode_cta" rows="3" class="w-full border p-2 rounded bg-white" placeholder="Gancho padrao do proximo episodio"></textarea>
+                        </div>
+                        <div class="mt-4">
+                            <label class="inline-flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                <input v-model="settings.bible_video_factory.made_for_kids_default" type="checkbox" class="h-4 w-4">
+                                Marcar novos videos como conteudo infantil por padrao
+                            </label>
+                        </div>
+                        <div class="mt-6 bg-gray-50 border rounded-lg p-4">
+                            <h4 class="font-bold mb-3">Custos e metricas da Fabrica</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <input v-model.number="settings.bible_video_factory.text_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo texto">
+                                <input v-model.number="settings.bible_video_factory.voice_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo voz">
+                                <input v-model.number="settings.bible_video_factory.image_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo imagem">
+                                <input v-model.number="settings.bible_video_factory.video_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo video">
+                                <input v-model.number="settings.bible_video_factory.music_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo musica">
+                                <input v-model.number="settings.bible_video_factory.caption_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo legenda">
+                                <input v-model.number="settings.bible_video_factory.thumbnail_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo thumbnail">
+                                <input v-model.number="settings.bible_video_factory.daily_spend_limit" type="number" step="0.01" class="w-full border p-2 rounded bg-white" placeholder="Limite diario">
+                                <input v-model.number="settings.bible_video_factory.monthly_spend_limit" type="number" step="0.01" class="w-full border p-2 rounded bg-white md:col-span-2" placeholder="Limite mensal">
+                            </div>
+                        </div>
+                    </div>
                     <div class="mb-4">
                         <label class="block font-bold mb-2">Mercado Pago Access Token</label>
                         <input v-model="settings.mercadopago_access_token" type="password" class="w-full border p-2 rounded">
@@ -4378,7 +4477,34 @@
                         edenai_api_key: '',
                         elevenlabs_api_key: '',
                         elevenlabs_voice_id: '',
-                        elevenlabs_voice_name: ''
+                        elevenlabs_voice_name: '',
+                        bible_video_factory: {
+                            text_provider: 'openai',
+                            voice_provider: 'elevenlabs',
+                            image_provider: 'openai',
+                            video_provider: 'luma',
+                            music_provider: 'musicgen',
+                            caption_provider: 'native',
+                            thumbnail_provider: 'openai',
+                            default_voice: '',
+                            default_voice_speed: 1.0,
+                            default_voice_emotion: '',
+                            default_voice_intensity: 0.7,
+                            default_language: 'pt-BR',
+                            default_cta: '',
+                            default_next_episode_cta: '',
+                            default_playlist: '',
+                            made_for_kids_default: false,
+                            daily_spend_limit: 0,
+                            monthly_spend_limit: 0,
+                            text_cost_unit: 0,
+                            voice_cost_unit: 0,
+                            image_cost_unit: 0,
+                            video_cost_unit: 0,
+                            music_cost_unit: 0,
+                            caption_cost_unit: 0,
+                            thumbnail_cost_unit: 0
+                        }
                     },
                     elevenlabsSampleFile: null,
                     elevenlabsVoiceCreating: false,
@@ -5449,7 +5575,15 @@
                 async fetchSettings() {
                     try {
                         const res = await this.authFetch('/settings/');
-                        this.settings = await res.json();
+                        const data = await res.json();
+                        this.settings = {
+                            ...this.settings,
+                            ...(data || {}),
+                            bible_video_factory: {
+                                ...this.settings.bible_video_factory,
+                                ...((data && data.bible_video_factory) || {})
+                            }
+                        };
                         await this.fetchAiCredits();
                     } catch (e) { console.error(e); }
                 },
@@ -7397,7 +7531,13 @@
                         const data = await res.json().catch(() => null);
                         if (res.ok) {
                             if (data && typeof data === 'object') {
-                                try { Object.assign(this.settings, data); } catch (e) {}
+                                try {
+                                    Object.assign(this.settings, data);
+                                    this.settings.bible_video_factory = {
+                                        ...this.settings.bible_video_factory,
+                                        ...((data && data.bible_video_factory) || {})
+                                    };
+                                } catch (e) {}
                             }
                             try { await this.fetchAiCredits(); } catch (e) {}
                             this.saveMessage = "Configurações salvas com sucesso!";
