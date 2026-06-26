@@ -486,12 +486,45 @@ def run_migrations(engine):
     except Exception as e:
         print(f"Critical Migration Error: {e}")
 
+def _upsert_admin_user(db, tenant, email: str, password: str, name: str | None, label: str) -> None:
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        print(f"{label} encontrado. Atualizando senha de {email}...")
+        user.hashed_password = get_password_hash(password)
+        if name:
+            user.name = name
+        user.is_admin = True
+        user.role = "admin"
+        db.commit()
+        return
+    user = User(
+        email=email,
+        name=name,
+        tenant_id=tenant.id,
+        hashed_password=get_password_hash(password),
+        is_admin=True,
+        role="admin",
+        must_change_password=False,
+    )
+    db.add(user)
+    db.commit()
+    print(f"{label} criado com sucesso (tenant Default).")
+
+
 def create_admin_master():
-    """Cria admin master a partir de ADMIN_EMAIL/ADMIN_PASSWORD. Usa tenant Default."""
+    """Cria admin principal com ADMIN_* e admin temporario com ADMINTEMP_* quando presentes."""
     admin_email = os.getenv("ADMIN_EMAIL", "").strip()
     admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
     admin_name = os.getenv("ADMIN_NAME", "").strip() or None
-    if not admin_email or not admin_password:
+    admin_temp_email = os.getenv("ADMINTEMP_EMAIL", "").strip()
+    admin_temp_password = os.getenv("ADMINTEMP_PASSWORD", "").strip()
+    admin_temp_name = os.getenv("ADMINTEMP_NAME", "").strip() or None
+    admin_specs = []
+    if admin_email and admin_password:
+        admin_specs.append(("Admin master", admin_email, admin_password, admin_name))
+    if admin_temp_email and admin_temp_password:
+        admin_specs.append(("Admin temporario", admin_temp_email, admin_temp_password, admin_temp_name))
+    if not admin_specs:
         return
     db = SessionLocal()
     try:
@@ -502,29 +535,8 @@ def create_admin_master():
             db.add(tenant)
             db.commit()
             db.refresh(tenant)
-        user = db.query(User).filter(User.email == admin_email).first()
-        if user:
-            # Force update password to ensure access recovery
-            print(f"Admin master encontrado. Atualizando senha de {admin_email}...")
-            user.hashed_password = get_password_hash(admin_password)
-            if admin_name:
-                user.name = admin_name
-            user.is_admin = True
-            user.role = "admin"
-            db.commit()
-            return
-        user = User(
-            email=admin_email,
-            name=admin_name,
-            tenant_id=tenant.id,
-            hashed_password=get_password_hash(admin_password),
-            is_admin=True,
-            role="admin",
-            must_change_password=False,
-        )
-        db.add(user)
-        db.commit()
-        print("Admin master criado com sucesso (tenant Default).")
+        for label, email, password, name in admin_specs:
+            _upsert_admin_user(db, tenant, email, password, name, label)
     except Exception as e:
         print(f"Erro ao criar admin master: {e}")
     finally:
