@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import base64
 import openai
@@ -79,7 +80,7 @@ class AIContentGenerator:
             self.elevenlabs_voice_id = getattr(settings, "elevenlabs_voice_id", None)
             self.elevenlabs_voice_name = getattr(settings, "elevenlabs_voice_name", None)
             self.provider = settings.ai_provider or "openrouter"
-        
+
         # Fallback to env vars
         if not self.api_key: self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.gemini_key: self.gemini_key = os.getenv("GEMINI_API_KEY")
@@ -156,6 +157,47 @@ class AIContentGenerator:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        class _ProviderHTTPError(Exception):
+            def __init__(self, status_code: int, target_url: str, body_preview: str = "", model_id: str = ""):
+                self.status_code = int(status_code or 0)
+                self.target_url = str(target_url or "")
+                self.body_preview = str(body_preview or "")
+                self.model_id = str(model_id or "")
+                super().__init__(f"HTTP {self.status_code} em {self.target_url}: {self.body_preview}".strip())
+
+        def _error_status_code(exc: Exception) -> Optional[int]:
+            status = getattr(exc, "status_code", None)
+            if status is None:
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
+            try:
+                return int(status) if status is not None else None
+            except Exception:
+                return None
+
+        def _is_retryable_status(status_code: Optional[int]) -> bool:
+            return int(status_code or 0) in {429, 502, 503, 504}
+
+        def _retry_delay_seconds(attempt_number: int) -> int:
+            return 2 if int(attempt_number or 1) <= 1 else 3
+
+        def _call_with_retry(call_fn):
+            max_attempts = 3
+            last_exc = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    text = call_fn()
+                    return text
+                except Exception as exc:
+                    last_exc = exc
+                    status_code = _error_status_code(exc)
+                    retryable = _is_retryable_status(status_code)
+                    if retryable and attempt < max_attempts:
+                        delay_seconds = _retry_delay_seconds(attempt)
+                        time.sleep(delay_seconds)
+                        continue
+                    raise last_exc
+
         def _http_chat(url: str, api_key: str, extra_headers: Optional[Dict[str, str]], model_id: str, allow_json_mode: bool) -> str:
             hdrs = {
                 "Authorization": f"Bearer {api_key}",
@@ -181,7 +223,7 @@ class AIContentGenerator:
                 except Exception:
                     body = ""
                 body = " ".join(str(body).split())
-                raise Exception(f"HTTP {r.status_code} em {url}: {body}".strip())
+                raise _ProviderHTTPError(r.status_code, url, body_preview=body, model_id=model_id)
             try:
                 data = r.json()
             except Exception:
@@ -279,14 +321,18 @@ class AIContentGenerator:
                     })
                     try:
                         if or_client is not None:
-                            text = _call_chat(or_client, model_id, allow_json_mode=bool(json_mode))
+                            text = _call_with_retry(
+                                lambda: _call_chat(or_client, model_id, allow_json_mode=bool(json_mode)),
+                            )
                         else:
-                            text = _http_chat(
-                                "https://openrouter.ai/api/v1/chat/completions",
-                                self.openrouter_key,
-                                http_headers,
-                                model_id,
-                                allow_json_mode=bool(json_mode),
+                            text = _call_with_retry(
+                                lambda: _http_chat(
+                                    "https://openrouter.ai/api/v1/chat/completions",
+                                    self.openrouter_key,
+                                    http_headers,
+                                    model_id,
+                                    allow_json_mode=bool(json_mode),
+                                ),
                             )
                         self._dbg_textgen_event("B", "openrouter success", {
                             "model_id": model_id,
@@ -297,14 +343,18 @@ class AIContentGenerator:
                         return text
                     except Exception:
                         if or_client is not None:
-                            text = _call_chat(or_client, model_id, allow_json_mode=False)
+                            text = _call_with_retry(
+                                lambda: _call_chat(or_client, model_id, allow_json_mode=False),
+                            )
                         else:
-                            text = _http_chat(
-                                "https://openrouter.ai/api/v1/chat/completions",
-                                self.openrouter_key,
-                                http_headers,
-                                model_id,
-                                allow_json_mode=False,
+                            text = _call_with_retry(
+                                lambda: _http_chat(
+                                    "https://openrouter.ai/api/v1/chat/completions",
+                                    self.openrouter_key,
+                                    http_headers,
+                                    model_id,
+                                    allow_json_mode=False,
+                                ),
                             )
                         self._dbg_textgen_event("B", "openrouter success without json_mode", {
                             "model_id": model_id,
@@ -350,14 +400,18 @@ class AIContentGenerator:
                     })
                     try:
                         if oa_client is not None:
-                            text = _call_chat(oa_client, model_id, allow_json_mode=bool(json_mode))
+                            text = _call_with_retry(
+                                lambda: _call_chat(oa_client, model_id, allow_json_mode=bool(json_mode)),
+                            )
                         else:
-                            text = _http_chat(
-                                "https://api.openai.com/v1/chat/completions",
-                                self.api_key,
-                                None,
-                                model_id,
-                                allow_json_mode=bool(json_mode),
+                            text = _call_with_retry(
+                                lambda: _http_chat(
+                                    "https://api.openai.com/v1/chat/completions",
+                                    self.api_key,
+                                    None,
+                                    model_id,
+                                    allow_json_mode=bool(json_mode),
+                                ),
                             )
                         self._dbg_textgen_event("C", "openai direct success", {
                             "model_id": model_id,
@@ -368,14 +422,18 @@ class AIContentGenerator:
                         return text
                     except Exception:
                         if oa_client is not None:
-                            text = _call_chat(oa_client, model_id, allow_json_mode=False)
+                            text = _call_with_retry(
+                                lambda: _call_chat(oa_client, model_id, allow_json_mode=False),
+                            )
                         else:
-                            text = _http_chat(
-                                "https://api.openai.com/v1/chat/completions",
-                                self.api_key,
-                                None,
-                                model_id,
-                                allow_json_mode=False,
+                            text = _call_with_retry(
+                                lambda: _http_chat(
+                                    "https://api.openai.com/v1/chat/completions",
+                                    self.api_key,
+                                    None,
+                                    model_id,
+                                    allow_json_mode=False,
+                                ),
                             )
                         self._dbg_textgen_event("C", "openai direct success without json_mode", {
                             "model_id": model_id,
