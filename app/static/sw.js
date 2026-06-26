@@ -1,4 +1,4 @@
-const CACHE_NAME = 'codexia-v4';
+const CACHE_NAME = 'codexia-v5';
 const urlsToCache = [
   '/',
   '/static/index.html',
@@ -54,6 +54,8 @@ self.addEventListener('fetch', event => {
 
     if (url.origin === self.location.origin) {
       const p = url.pathname || '';
+      const accepts = event.request.headers.get('accept') || '';
+      const isHtmlRequest = event.request.mode === 'navigate' || accepts.includes('text/html');
       if (
         p.startsWith('/api/') ||
         p.startsWith('/auth/') ||
@@ -66,6 +68,10 @@ self.addEventListener('fetch', event => {
         p.startsWith('/settings') ||
         p.startsWith('/static/music/')
       ) {
+        return;
+      }
+      // Nao manter HTML de telas administrativas em cache para evitar servir UIs antigas apos deploy.
+      if (isHtmlRequest || p === '/' || p.endsWith('.html') || p.startsWith('/static/pages/')) {
         return;
       }
       if (/\.(mp3|wav|m4a|aac|ogg|mp4|webm)$/i.test(p)) return;
