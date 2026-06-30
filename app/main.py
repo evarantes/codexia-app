@@ -31,6 +31,96 @@ APP_ENV = os.getenv("APP_ENV", "production").lower()
 IS_PRODUCTION = APP_ENV == "production"
 DEPLOY_MARKER = "auto-optimize-attempt-reset-v1"
 
+SETTINGS_UNIFICATION_TEXT_COLUMNS = [
+    "text_provider",
+    "voice_provider",
+    "image_provider",
+    "video_provider",
+    "music_provider",
+    "caption_provider",
+    "thumbnail_provider",
+    "default_voice",
+    "default_voice_emotion",
+    "default_language",
+    "default_cta",
+    "default_next_episode_cta",
+    "default_playlist",
+]
+
+SETTINGS_UNIFICATION_FLOAT_COLUMNS = [
+    "default_voice_speed",
+    "default_voice_intensity",
+    "daily_spend_limit",
+    "monthly_spend_limit",
+    "text_cost_unit",
+    "voice_cost_unit",
+    "image_cost_unit",
+    "video_cost_unit",
+    "music_cost_unit",
+    "caption_cost_unit",
+    "thumbnail_cost_unit",
+]
+
+SETTINGS_UNIFICATION_BOOL_COLUMNS = {
+    "made_for_kids_default": {"postgresql": "BOOLEAN DEFAULT FALSE", "default": "BOOLEAN DEFAULT 0"},
+}
+
+
+def ensure_settings_unification_columns(engine):
+    inspector = inspect(engine)
+    if "settings" not in inspector.get_table_names():
+        return {"expected": [], "missing": [], "applied": [], "still_missing": []}
+
+    dialect = (getattr(getattr(engine, "dialect", None), "name", "") or "").lower()
+    is_postgres = dialect in ("postgresql", "postgres")
+    float_type = "DOUBLE PRECISION" if is_postgres else "REAL"
+
+    expected_columns = {}
+    for column_name in SETTINGS_UNIFICATION_TEXT_COLUMNS:
+        expected_columns[column_name] = "TEXT"
+    for column_name in SETTINGS_UNIFICATION_FLOAT_COLUMNS:
+        expected_columns[column_name] = float_type
+    for column_name, type_map in SETTINGS_UNIFICATION_BOOL_COLUMNS.items():
+        expected_columns[column_name] = type_map["postgresql"] if is_postgres else type_map["default"]
+
+    existing_columns = {c["name"] for c in inspector.get_columns("settings")}
+    missing_columns = [column_name for column_name in expected_columns if column_name not in existing_columns]
+    applied_statements = []
+
+    if not missing_columns:
+        return {
+            "expected": list(expected_columns.keys()),
+            "missing": [],
+            "applied": [],
+            "still_missing": [],
+        }
+
+    with engine.connect() as conn:
+        for column_name in missing_columns:
+            column_type = expected_columns[column_name]
+            if is_postgres:
+                sql = f"ALTER TABLE settings ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            else:
+                sql = f"ALTER TABLE settings ADD COLUMN {column_name} {column_type}"
+            conn.execute(text(sql))
+            applied_statements.append(sql)
+        conn.commit()
+
+    refreshed_columns = {c["name"] for c in inspect(engine).get_columns("settings")}
+    still_missing = [column_name for column_name in expected_columns if column_name not in refreshed_columns]
+
+    if applied_statements:
+        print(f"Settings unification migration applied columns: {missing_columns}")
+    if still_missing:
+        print(f"Settings unification migration still missing columns: {still_missing}")
+
+    return {
+        "expected": list(expected_columns.keys()),
+        "missing": missing_columns,
+        "applied": applied_statements,
+        "still_missing": still_missing,
+    }
+
 
 def _build_metadata() -> dict:
     commit_sha = (
@@ -74,6 +164,12 @@ def run_migrations(engine):
         inspector = inspect(engine)
         dialect = (getattr(getattr(engine, "dialect", None), "name", "") or "").lower()
         datetime_type = "TIMESTAMP" if dialect in ("postgresql", "postgres") else "DATETIME"
+
+        try:
+            ensure_settings_unification_columns(engine)
+            inspector = inspect(engine)
+        except Exception as e:
+            print(f"Failed to ensure settings unification columns: {e}")
 
         if "settings" in inspector.get_table_names():
             try:
