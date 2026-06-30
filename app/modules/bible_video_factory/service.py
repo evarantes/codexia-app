@@ -5,6 +5,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
@@ -26,6 +27,11 @@ from app.modules.bible_video_factory.models import (
     BibleVideoSeries,
 )
 from app.services.ai_generator import AIContentGenerator
+from app.services.global_settings_service import (
+    backfill_settings_from_legacy,
+    build_global_settings_service,
+    get_or_create_latest_settings,
+)
 from app.services.task_manager import create_task, get_task, update_task
 from app.services.video_generator import VideoGenerator
 from app.services.youtube_service import YouTubeService
@@ -2772,24 +2778,18 @@ class BibleVideoFactoryService:
             "total": total,
         }
 
-    def get_or_create_config(self, db: Session, user_id: Optional[int]) -> BibleVideoConfig:
-        row = (
-            db.query(BibleVideoConfig)
-            .filter(BibleVideoConfig.user_id == user_id)
-            .order_by(BibleVideoConfig.id.desc())
-            .first()
+    def get_or_create_config(self, db: Session, user_id: Optional[int]):
+        settings = get_or_create_latest_settings(db)
+        settings = backfill_settings_from_legacy(db, settings=settings, user_id=user_id)
+        global_settings = build_global_settings_service(db=db, user_id=user_id, settings=settings)
+        payload = global_settings.get_bible_video_factory_settings()
+        return SimpleNamespace(
+            id=getattr(settings, "id", None),
+            user_id=getattr(settings, "user_id", user_id),
+            created_at=None,
+            updated_at=None,
+            **payload,
         )
-        if row:
-            return row
-        row = BibleVideoConfig(
-            user_id=user_id,
-            default_cta="Inscreva-se para acompanhar os proximos episodios biblicos.",
-            default_next_episode_cta="No proximo episodio, a historia continua com mais tensao e revelacao.",
-        )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return row
 
     def serialize_series(self, row: BibleVideoSeries) -> Dict[str, Any]:
         profile_config = self.resolve_series_profile(row)
@@ -3133,47 +3133,37 @@ class BibleVideoFactoryService:
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
-    def serialize_config(self, row: BibleVideoConfig) -> Dict[str, Any]:
-        def _masked(value: Optional[str]) -> bool:
-            return bool(self._normalize_text(value))
-
+    def serialize_config(self, row: Any) -> Dict[str, Any]:
         return {
-            "id": row.id,
-            "user_id": row.user_id,
-            "text_provider": row.text_provider,
-            "voice_provider": row.voice_provider,
-            "image_provider": row.image_provider,
-            "video_provider": row.video_provider,
-            "music_provider": row.music_provider,
-            "caption_provider": row.caption_provider,
-            "thumbnail_provider": row.thumbnail_provider,
-            "text_api_key_configured": _masked(row.text_api_key),
-            "voice_api_key_configured": _masked(row.voice_api_key),
-            "image_api_key_configured": _masked(row.image_api_key),
-            "video_api_key_configured": _masked(row.video_api_key),
-            "youtube_api_key_configured": _masked(row.youtube_api_key),
-            "tiktok_api_key_configured": _masked(row.tiktok_api_key),
-            "instagram_api_key_configured": _masked(row.instagram_api_key),
-            "default_voice": row.default_voice,
-            "default_voice_speed": float(row.default_voice_speed or 1.0),
-            "default_voice_emotion": row.default_voice_emotion,
-            "default_voice_intensity": float(row.default_voice_intensity or 0.7),
-            "default_language": row.default_language,
-            "default_cta": row.default_cta,
-            "default_next_episode_cta": row.default_next_episode_cta,
-            "default_playlist": row.default_playlist,
-            "made_for_kids_default": bool(row.made_for_kids_default),
-            "daily_spend_limit": float(row.daily_spend_limit or 0),
-            "monthly_spend_limit": float(row.monthly_spend_limit or 0),
-            "text_cost_unit": float(row.text_cost_unit or 0),
-            "voice_cost_unit": float(row.voice_cost_unit or 0),
-            "image_cost_unit": float(row.image_cost_unit or 0),
-            "video_cost_unit": float(row.video_cost_unit or 0),
-            "music_cost_unit": float(row.music_cost_unit or 0),
-            "caption_cost_unit": float(row.caption_cost_unit or 0),
-            "thumbnail_cost_unit": float(row.thumbnail_cost_unit or 0),
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "id": getattr(row, "id", None),
+            "user_id": getattr(row, "user_id", None),
+            "text_provider": getattr(row, "text_provider", None),
+            "voice_provider": getattr(row, "voice_provider", None),
+            "image_provider": getattr(row, "image_provider", None),
+            "video_provider": getattr(row, "video_provider", None),
+            "music_provider": getattr(row, "music_provider", None),
+            "caption_provider": getattr(row, "caption_provider", None),
+            "thumbnail_provider": getattr(row, "thumbnail_provider", None),
+            "default_voice": getattr(row, "default_voice", None),
+            "default_voice_speed": float(getattr(row, "default_voice_speed", 1.0) or 1.0),
+            "default_voice_emotion": getattr(row, "default_voice_emotion", None),
+            "default_voice_intensity": float(getattr(row, "default_voice_intensity", 0.7) or 0.7),
+            "default_language": getattr(row, "default_language", None),
+            "default_cta": getattr(row, "default_cta", None),
+            "default_next_episode_cta": getattr(row, "default_next_episode_cta", None),
+            "default_playlist": getattr(row, "default_playlist", None),
+            "made_for_kids_default": bool(getattr(row, "made_for_kids_default", False)),
+            "daily_spend_limit": float(getattr(row, "daily_spend_limit", 0) or 0),
+            "monthly_spend_limit": float(getattr(row, "monthly_spend_limit", 0) or 0),
+            "text_cost_unit": float(getattr(row, "text_cost_unit", 0) or 0),
+            "voice_cost_unit": float(getattr(row, "voice_cost_unit", 0) or 0),
+            "image_cost_unit": float(getattr(row, "image_cost_unit", 0) or 0),
+            "video_cost_unit": float(getattr(row, "video_cost_unit", 0) or 0),
+            "music_cost_unit": float(getattr(row, "music_cost_unit", 0) or 0),
+            "caption_cost_unit": float(getattr(row, "caption_cost_unit", 0) or 0),
+            "thumbnail_cost_unit": float(getattr(row, "thumbnail_cost_unit", 0) or 0),
+            "created_at": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
+            "updated_at": row.updated_at.isoformat() if getattr(row, "updated_at", None) else None,
         }
 
     def serialize_job(self, row: BibleVideoJob) -> Dict[str, Any]:
@@ -4838,7 +4828,6 @@ class BibleVideoFactoryService:
         initial_eligible = set()
         blocked_scenes = set()
         exhausted_scene_numbers = set()
-        #region debug-point auto-optimize-blocked-initial-selection
         for frame in initial_storyboard:
             analysis = self._normalize_scene_analysis(frame.get("scene_analysis"), minimum_score=minimum_scene_score)
             scene_number = self._normalize_int(frame.get("scene_number"), 0)
@@ -4907,7 +4896,6 @@ class BibleVideoFactoryService:
         )
         final_payload = self.serialize_script(current_script)
         stop_reason = ""
-        #region debug-point auto-optimize-blocked-rounds
         for round_number in range(1, 4):
             if self._should_stop_optimization(db, current_script):
                 stop_reason = "Otimizacao interrompida pelo usuario."

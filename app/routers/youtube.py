@@ -4470,6 +4470,11 @@ def process_video_generation(request: VideoRequest, task_id):
             voice_gender=voice_gender,
         )
         video_path = video_result["video_url"]
+        render_report = video_result.get("render_report") if isinstance(video_result, dict) else {}
+        if not isinstance(render_report, dict):
+            render_report = {}
+        sync_validation = render_report.get("sync_validation")
+        audio_generation = render_report.get("audio_generation")
         _raise_if_cancelled()
         
         # Path absoluto para upload (compatível com Docker e /data/media)
@@ -4501,6 +4506,8 @@ def process_video_generation(request: VideoRequest, task_id):
                 "description": description,
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
+                "audio_generation": audio_generation,
+                "sync_validation": sync_validation,
             })
             try:
                 dbn = SessionLocal()
@@ -4531,6 +4538,8 @@ def process_video_generation(request: VideoRequest, task_id):
                 "description": script.get("description"),
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
+                "audio_generation": audio_generation,
+                "sync_validation": sync_validation,
             })
             try:
                 dbn = SessionLocal()

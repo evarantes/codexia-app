@@ -13,7 +13,6 @@ from typing import Optional, Callable, List, Dict, Any
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 
-
 class VideoGenerator:
     def __init__(self, output_dir=None, ai_service=None):
         self.output_dir = output_dir or VIDEO_OUTPUT_DIR
@@ -28,13 +27,37 @@ class VideoGenerator:
             "epic": "Music: Impact Andante by Kevin MacLeod\nFree download: https://filmmusic.io/song/3898-impact-andante\nLicense (CC BY 4.0): https://filmmusic.io/standard-license",
             "happy": "Music: Carefree by Kevin MacLeod\nFree download: https://filmmusic.io/song/3476-carefree\nLicense (CC BY 4.0): https://filmmusic.io/standard-license"
         }
+        self._last_tts_debug: Dict[str, Any] = {}
         # self._ensure_fallback_music() removido do init para evitar delay no startup
+
+    def _summarize_tts_failure(self, tts_debug: Optional[Dict[str, Any]]) -> str:
+        info = dict(tts_debug or {})
+        configured = str(info.get("configured_provider") or "desconhecido").strip()
+        used = str(info.get("provider_used") or "").strip()
+        attempts = info.get("attempts") or []
+        parts = [f"Provider configurado: {configured}."]
+        if used:
+            parts.append(f"Provider usado: {used}.")
+        if attempts:
+            items = []
+            for attempt in attempts[:6]:
+                provider = str(attempt.get("provider") or "desconhecido").strip()
+                status = str(attempt.get("status") or "unknown").strip()
+                reason = str(attempt.get("reason") or "").strip()
+                items.append(f"{provider}={status}" + (f" ({reason})" if reason else ""))
+            if items:
+                parts.append("Tentativas: " + "; ".join(items) + ".")
+        summary = str(info.get("error_summary") or "").strip()
+        if summary:
+            parts.append(summary)
+        return " ".join(part for part in parts if part).strip()
 
     def _ffprobe_duration_seconds(self, path: str) -> float:
         try:
             import subprocess
+            abs_path = os.path.abspath(path)
             r = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", abs_path],
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -49,6 +72,69 @@ class VideoGenerator:
         except Exception:
             return 0.0
 
+    def _ffprobe_stream_duration_seconds(self, path: str) -> float:
+        try:
+            import subprocess
+            abs_path = os.path.abspath(path)
+            r = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    abs_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if r.returncode != 0:
+                return 0.0
+            s = (r.stdout or "").strip()
+            return float(s) if s else 0.0
+        except Exception:
+            return 0.0
+
+    def _measure_rendered_video_duration_seconds(self, path: str, attempts: int = 4, retry_delay_sec: float = 0.6) -> float:
+        abs_path = os.path.abspath(path or "")
+        if not abs_path or not os.path.exists(abs_path):
+            return 0.0
+
+        def _moviepy_duration() -> float:
+            try:
+                try:
+                    from moviepy.editor import VideoFileClip
+                except ImportError:
+                    from moviepy import VideoFileClip
+                clip = VideoFileClip(abs_path)
+                try:
+                    return float(getattr(clip, "duration", 0) or 0.0)
+                finally:
+                    clip.close()
+            except Exception:
+                return 0.0
+
+        attempts = max(1, int(attempts or 1))
+        retry_delay_sec = max(0.0, float(retry_delay_sec or 0.0))
+        measured = 0.0
+        for attempt_idx in range(attempts):
+            for probe in (
+                self._ffprobe_duration_seconds,
+                self._ffprobe_stream_duration_seconds,
+                lambda candidate: _moviepy_duration(),
+            ):
+                try:
+                    duration = float(probe(abs_path) or 0.0)
+                except Exception:
+                    duration = 0.0
+                if duration > 0.1:
+                    return duration
+                measured = max(measured, duration)
+            if attempt_idx < attempts - 1 and retry_delay_sec > 0:
+                time.sleep(retry_delay_sec * float(attempt_idx + 1))
+        return measured
+
     def _ensure_playable_mp4(self, path: str) -> str:
         try:
             if not path or not os.path.exists(path):
@@ -58,7 +144,7 @@ class VideoGenerator:
         except Exception:
             raise
 
-        dur = self._ffprobe_duration_seconds(path)
+        dur = self._measure_rendered_video_duration_seconds(path)
         if dur >= 0.5:
             return path
 
@@ -72,7 +158,7 @@ class VideoGenerator:
                 timeout=180,
             )
             if r.returncode == 0 and os.path.exists(fixed) and os.path.getsize(fixed) > 1024 * 50:
-                dur2 = self._ffprobe_duration_seconds(fixed)
+                dur2 = self._measure_rendered_video_duration_seconds(fixed)
                 if dur2 >= 0.5:
                     try:
                         os.replace(fixed, path)
@@ -341,8 +427,76 @@ class VideoGenerator:
             cap = t[:180].rstrip()
         return cap
 
+    def _is_meta_instruction_fragment(self, text: str) -> bool:
+        normalized = unicodedata.normalize("NFKD", self._clean_text(text)).encode("ascii", "ignore").decode("ascii").lower().strip()
+        if not normalized:
+            return True
+        if re.search(r"https?://|www\.|@[\w.-]+", normalized):
+            return False
+        meta_prefixes = (
+            "manter", "reforcar", "reforcar", "aumentar", "reduzir", "evitar", "usar", "incluir",
+            "mostrar", "destacar", "tom ", "ritmo", "foco", "camera", "camera ", "transicao",
+            "transicao ", "tempo ", "duracao", "duracao ", "estilo ", "consistencia", "consistencia ",
+        )
+        if normalized.startswith(meta_prefixes):
+            return True
+        words = re.findall(r"[a-z0-9]+", normalized)
+        if not words:
+            return True
+        abstract_only = {
+            "suspense", "gancho", "emocao", "emocional", "conflito", "revelacao", "visual",
+            "estrutura", "metrica", "introducao", "desenvolvimento", "conclusao", "resumo",
+            "objetivo", "dica", "cta", "chamada", "cena", "pergunta",
+        }
+        if len(words) <= 3 and all(word in abstract_only for word in words):
+            return True
+        return False
+
+    def _strip_structural_markers(self, text: str) -> str:
+        raw = self._clean_text(text)
+        if not raw:
+            return ""
+
+        label_pattern = (
+            r"(gancho|pergunta|cta|cena(?:\s+\d+)?|observa(?:cao|caoes|coes|caoes|cao|ção|ções)?|"
+            r"nota|m[eé]trica|estrutura|introdu[cç][aã]o|desenvolvimento|conclus[aã]o|"
+            r"chamada|dica|objetivo|resumo)"
+        )
+
+        kept_parts: List[str] = []
+        fragments = re.findall(r"[^.!?\n]+[.!?]?", raw)
+        for fragment in fragments:
+            candidate = (fragment or "").strip(" \t-•*")
+            if not candidate:
+                continue
+
+            while True:
+                match = re.match(rf"^\s*{label_pattern}\s*[:\-–—]\s*(.*)$", candidate, flags=re.IGNORECASE)
+                if not match:
+                    break
+                label = unicodedata.normalize("NFKD", match.group(1)).encode("ascii", "ignore").decode("ascii").lower().strip()
+                remainder = (match.group(2) or "").strip()
+                if not remainder or self._is_meta_instruction_fragment(remainder):
+                    candidate = ""
+                    break
+                candidate = remainder
+                if label.startswith(("observ", "nota", "met", "estrut")) and self._is_meta_instruction_fragment(candidate):
+                    candidate = ""
+                    break
+
+            if not candidate:
+                continue
+
+            candidate = re.sub(rf"(?i)\b{label_pattern}\s*[:\-–—]\s*", "", candidate)
+            candidate = re.sub(r"\s+", " ", candidate).strip(" \t-•*")
+            if candidate:
+                kept_parts.append(candidate)
+
+        merged = " ".join(kept_parts).strip()
+        return re.sub(r"\s+", " ", merged).strip()
+
     def _normalize_tts_text(self, text: str) -> str:
-        t = self._clean_text(text)
+        t = self._strip_structural_markers(text)
         if not t:
             return ""
         t = unicodedata.normalize("NFKC", t)
@@ -354,6 +508,957 @@ class VideoGenerator:
         t = re.sub(r"\s+([,.;:!?])", r"\1", t)
         t = re.sub(r"\s+", " ", t).strip()
         return t
+
+    def _estimate_narration_seconds(self, text: str) -> float:
+        cleaned = self._normalize_tts_text(text)
+        if not cleaned:
+            return 0.0
+        word_count = len(cleaned.split())
+        if word_count <= 0:
+            return 0.0
+        return max(2.5, round(word_count / 2.45, 2))
+
+    def _count_words(self, text: str) -> int:
+        try:
+            return len(re.findall(r"\w+", str(text or ""), flags=re.UNICODE))
+        except Exception:
+            return len(str(text or "").split())
+
+    def _estimate_voice_words_per_minute(self, voice_style: Optional[str] = None, voice_gender: Optional[str] = None) -> float:
+        style = str(voice_style or "").strip().lower()
+        gender = str(voice_gender or "").strip().lower()
+        base_wpm = 147.0
+        if style in {"soft_prayer", "prayer", "meditation", "calm", "serene"}:
+            base_wpm = 128.0
+        elif style in {"human", "natural", "warm"}:
+            base_wpm = 145.0
+        elif style in {"energetic", "fast", "commercial"}:
+            base_wpm = 158.0
+        if gender == "male":
+            base_wpm -= 2.0
+        elif gender == "female":
+            base_wpm += 1.0
+        return max(118.0, min(165.0, base_wpm))
+
+    def _estimate_text_duration_with_voice(self, text: str, voice_style: Optional[str] = None, voice_gender: Optional[str] = None) -> float:
+        cleaned = self._normalize_tts_text(text)
+        if not cleaned:
+            return 0.0
+        words = self._count_words(cleaned)
+        if words <= 0:
+            return 0.0
+        wpm = self._estimate_voice_words_per_minute(voice_style=voice_style, voice_gender=voice_gender)
+        punctuation_pauses = len(re.findall(r"[.!?;:]", cleaned))
+        seconds = (float(words) / max(1.0, wpm)) * 60.0
+        seconds += min(6.0, punctuation_pauses * 0.18)
+        return round(max(2.0, seconds), 2)
+
+    def _format_duration_hms(self, duration_sec: float) -> str:
+        total = max(0, int(round(float(duration_sec or 0.0))))
+        minutes, seconds = divmod(total, 60)
+        return f"{minutes} min {seconds:02d} s"
+
+    def _resolve_requested_duration_range_sec(self, plan: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        plan = plan if isinstance(plan, dict) else {}
+        raw_candidates = {
+            "min_sec": plan.get("target_duration_min_sec") or plan.get("duration_min_sec"),
+            "max_sec": plan.get("target_duration_max_sec") or plan.get("duration_max_sec"),
+            "min_min": plan.get("target_duration_min") or plan.get("duration_min"),
+            "max_min": plan.get("target_duration_max") or plan.get("duration_max"),
+            "target_sec": plan.get("target_duration_sec"),
+            "target_min": plan.get("target_duration_min"),
+        }
+
+        def _as_float(value: Any) -> Optional[float]:
+            try:
+                num = float(value)
+            except Exception:
+                return None
+            return num if num > 0 else None
+
+        min_sec = _as_float(raw_candidates["min_sec"])
+        max_sec = _as_float(raw_candidates["max_sec"])
+        min_min = _as_float(raw_candidates["min_min"])
+        max_min = _as_float(raw_candidates["max_min"])
+        target_sec = _as_float(raw_candidates["target_sec"])
+        target_min = _as_float(raw_candidates["target_min"])
+
+        if min_sec is None and min_min is not None:
+            min_sec = min_min * 60.0
+        if max_sec is None and max_min is not None:
+            max_sec = max_min * 60.0
+        if target_sec is None and target_min is not None:
+            target_sec = target_min * 60.0
+        if min_sec is None and target_sec is not None:
+            min_sec = target_sec
+        if max_sec is None and target_sec is not None:
+            max_sec = target_sec
+        if min_sec is None and max_sec is not None:
+            min_sec = max_sec
+        if max_sec is None and min_sec is not None:
+            max_sec = min_sec
+        if min_sec is None:
+            min_sec = 0.0
+        if max_sec is None:
+            max_sec = min_sec
+        if max_sec and min_sec and max_sec < min_sec:
+            max_sec = min_sec
+        target = target_sec if target_sec is not None else (max_sec or min_sec or 0.0)
+        return {
+            "min_sec": round(float(min_sec or 0.0), 2),
+            "max_sec": round(float(max_sec or 0.0), 2),
+            "target_sec": round(float(target or 0.0), 2),
+        }
+
+    def _resolve_channel_name(self, plan: Optional[Dict[str, Any]] = None) -> str:
+        plan = plan if isinstance(plan, dict) else {}
+        candidates = [
+            plan.get("channel_name"),
+            os.getenv("YOUTUBE_CHANNEL_NAME"),
+            os.getenv("CHANNEL_NAME"),
+            os.getenv("SITE_NAME"),
+        ]
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value:
+                return value[:80]
+        try:
+            from app.services.youtube_service import YouTubeService
+            stats = YouTubeService().get_channel_stats()
+            title = str((stats or {}).get("title") or "").strip() if isinstance(stats, dict) else ""
+            if title:
+                return title[:80]
+        except Exception:
+            pass
+        return "Herdeiros das Promessas"
+
+    def _default_opening_text(self, channel_name: str) -> str:
+        safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
+        return (
+            f"Seja muito bem-vindo ao canal {safe_channel}. "
+            "Abra o seu coracao, respire com calma e permaneça comigo ate o final desta mensagem."
+        )
+
+    def _default_closing_text(self) -> str:
+        return (
+            "Se esta mensagem falou ao seu coracao, inscreva-se no canal, ative o sininho, "
+            "curta e compartilhe este video para que mais pessoas sejam alcancadas pela Palavra de Deus."
+        )
+
+    def _redistribute_body_text_to_scenes(self, body_text: str, scenes: List[Dict[str, Any]]) -> List[str]:
+        if not scenes:
+            return []
+        cleaned_body = self._normalize_tts_text(body_text)
+        if not cleaned_body:
+            return ["" for _ in scenes]
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned_body) if s and s.strip()]
+        if not sentences:
+            return [cleaned_body] + ["" for _ in scenes[1:]]
+
+        weights: List[int] = []
+        for scene in scenes:
+            estimated = int(max(1, round(float(scene.get("_estimated_narration_sec") or self._estimate_narration_seconds(scene.get("_tts_text") or scene.get("text") or "")))))
+            weights.append(max(1, estimated))
+        total_weight = sum(weights) or len(scenes)
+        total_words = sum(max(1, self._count_words(sentence)) for sentence in sentences)
+        target_words = [max(8, int(round(total_words * (weight / float(total_weight))))) for weight in weights]
+
+        distributed: List[str] = []
+        cursor = 0
+        for idx, target in enumerate(target_words):
+            if idx == len(target_words) - 1:
+                chunk_sentences = sentences[cursor:]
+            else:
+                chunk_sentences = []
+                chunk_words = 0
+                while cursor < len(sentences):
+                    candidate = sentences[cursor]
+                    candidate_words = max(1, self._count_words(candidate))
+                    if chunk_sentences and chunk_words >= target:
+                        break
+                    chunk_sentences.append(candidate)
+                    chunk_words += candidate_words
+                    cursor += 1
+                if not chunk_sentences and cursor < len(sentences):
+                    chunk_sentences = [sentences[cursor]]
+                    cursor += 1
+            distributed.append(" ".join(chunk_sentences).strip())
+
+        while len(distributed) < len(scenes):
+            distributed.append(distributed[-1] if distributed else "")
+        return distributed[:len(scenes)]
+
+    def _condense_body_text_to_fit(self, body_text: str, scenes: List[Dict[str, Any]], target_max_sec: float, voice_style: Optional[str] = None, voice_gender: Optional[str] = None, kind: Optional[str] = None) -> Dict[str, Any]:
+        clean_body = self._normalize_tts_text(body_text)
+        if not clean_body:
+            return {"body_text": "", "scene_texts": ["" for _ in scenes], "used_ai": False, "attempted": False}
+        estimated_now = self._estimate_text_duration_with_voice(clean_body, voice_style=voice_style, voice_gender=voice_gender)
+        if target_max_sec <= 0 or estimated_now <= target_max_sec:
+            return {
+                "body_text": clean_body,
+                "scene_texts": [self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "") for scene in scenes],
+                "used_ai": False,
+                "attempted": False,
+            }
+
+        reduction_ratio = max(0.45, min(0.94, float(target_max_sec) / max(1.0, estimated_now)))
+        target_words = max(24, int(self._count_words(clean_body) * reduction_ratio))
+        condensed = clean_body
+        used_ai = False
+
+        if self.ai_service and hasattr(self.ai_service, "_generate_text"):
+            try:
+                safe_kind = str(kind or "story").strip().lower() or "story"
+                prompt = (
+                    f"Reescreva o texto abaixo para narracao em video no formato {safe_kind}, "
+                    f"mantendo a mensagem, os personagens e a progressao dramatica, mas reduzindo para cerca de {target_words} palavras. "
+                    "Remova repeticoes, trechos redundantes e voltas desnecessarias. "
+                    "Nao adicione saudacao, nao adicione CTA, nao use titulos de secao, nao use markdown, nao use listas. "
+                    "Retorne apenas o texto final enxuto em portugues.\n\n"
+                    f"TEXTO:\n{clean_body[:12000]}"
+                )
+                ai_result = self.ai_service._generate_text(
+                    prompt,
+                    system_prompt="Voce e um editor de narracao para YouTube. Entregue apenas o texto final em portugues.",
+                    temperature=0.3,
+                    json_mode=False,
+                )
+                normalized = self._normalize_tts_text(ai_result)
+                if normalized:
+                    condensed = normalized
+                    used_ai = True
+            except Exception:
+                condensed = clean_body
+
+        if condensed == clean_body:
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_body) if s and s.strip()]
+            kept: List[str] = []
+            current_words = 0
+            for idx, sentence in enumerate(sentences):
+                sentence_words = max(1, self._count_words(sentence))
+                remaining = len(sentences) - idx
+                if current_words + sentence_words > target_words and kept and remaining > 1:
+                    continue
+                kept.append(sentence)
+                current_words += sentence_words
+                if current_words >= target_words and remaining <= 1:
+                    break
+            condensed = " ".join(kept).strip() or clean_body
+            if self._count_words(condensed) > target_words:
+                trimmed_words = condensed.split()[:target_words]
+                condensed = " ".join(trimmed_words).strip()
+                if condensed and not re.search(r"[.!?]$", condensed):
+                    condensed = condensed.rstrip(",;:") + "."
+
+        condensed_estimate = self._estimate_text_duration_with_voice(condensed, voice_style=voice_style, voice_gender=voice_gender)
+        if condensed and target_max_sec > 0 and condensed_estimate > target_max_sec:
+            trim_ratio = max(0.45, min(0.95, float(target_max_sec) / max(1.0, condensed_estimate)))
+            final_target_words = max(18, int(self._count_words(condensed) * trim_ratio))
+            final_words = condensed.split()[:final_target_words]
+            condensed = " ".join(final_words).strip()
+            if condensed and not re.search(r"[.!?]$", condensed):
+                condensed = condensed.rstrip(",;:") + "."
+
+        scene_texts = self._redistribute_body_text_to_scenes(condensed, scenes)
+        return {
+            "body_text": condensed,
+            "scene_texts": scene_texts,
+            "used_ai": used_ai,
+            "attempted": True,
+        }
+
+    def prepare_final_narration_text(self, plan: Optional[Dict[str, Any]], scenes: List[Dict[str, Any]], voice_style: Optional[str] = None, voice_gender: Optional[str] = None) -> Dict[str, Any]:
+        plan = plan if isinstance(plan, dict) else {}
+        kind = str(plan.get("kind") or "story").strip().lower() or "story"
+        channel_name = self._resolve_channel_name(plan)
+        opening_text = self._default_opening_text(channel_name)
+        closing_text = self._default_closing_text()
+        cleaned_scene_texts = [self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "") for scene in scenes]
+        body_text = " ".join(text for text in cleaned_scene_texts if text).strip()
+        duration_range = self._resolve_requested_duration_range_sec(plan)
+        max_total_sec = float(duration_range.get("max_sec") or 0.0)
+        min_total_sec = float(duration_range.get("min_sec") or 0.0)
+
+        planning_attempts: List[Dict[str, Any]] = []
+        planning_max_total_sec = float(max_total_sec) * 0.96 if max_total_sec > 0 else 0.0
+        opening_est = self._estimate_text_duration_with_voice(opening_text, voice_style=voice_style, voice_gender=voice_gender)
+        closing_est = self._estimate_text_duration_with_voice(closing_text, voice_style=voice_style, voice_gender=voice_gender)
+        scene_texts = list(cleaned_scene_texts)
+
+        for attempt in range(3):
+            body_est = self._estimate_text_duration_with_voice(body_text, voice_style=voice_style, voice_gender=voice_gender)
+            total_est = opening_est + body_est + closing_est
+            planning_attempts.append({
+                "attempt": attempt + 1,
+                "body_word_count": self._count_words(body_text),
+                "estimated_total_duration_sec": round(total_est, 2),
+                "within_requested_range": bool((not min_total_sec or total_est >= min_total_sec) and (not max_total_sec or total_est <= max_total_sec)),
+                "within_planning_budget": bool((not min_total_sec or total_est >= min_total_sec) and (not planning_max_total_sec or total_est <= planning_max_total_sec)),
+            })
+            if not planning_max_total_sec or total_est <= planning_max_total_sec:
+                break
+            target_body_max_sec = max(8.0, planning_max_total_sec - opening_est - closing_est)
+            condensed = self._condense_body_text_to_fit(
+                body_text,
+                scenes,
+                target_max_sec=target_body_max_sec,
+                voice_style=voice_style,
+                voice_gender=voice_gender,
+                kind=kind,
+            )
+            new_body_text = self._normalize_tts_text(condensed.get("body_text") or "")
+            if not new_body_text or new_body_text == body_text:
+                break
+            body_text = new_body_text
+            scene_texts = [self._normalize_tts_text(text) for text in (condensed.get("scene_texts") or [])]
+            if len(scene_texts) != len(scenes):
+                scene_texts = self._redistribute_body_text_to_scenes(body_text, scenes)
+
+        full_text_parts = [opening_text.strip(), body_text.strip(), closing_text.strip()]
+        full_text = " ".join(part for part in full_text_parts if part).strip()
+        opening_est = self._estimate_text_duration_with_voice(opening_text, voice_style=voice_style, voice_gender=voice_gender)
+        body_est = self._estimate_text_duration_with_voice(body_text, voice_style=voice_style, voice_gender=voice_gender)
+        closing_est = self._estimate_text_duration_with_voice(closing_text, voice_style=voice_style, voice_gender=voice_gender)
+        total_est = opening_est + body_est + closing_est
+
+        if len(scene_texts) != len(scenes):
+            scene_texts = self._redistribute_body_text_to_scenes(body_text, scenes)
+
+        scene_estimates: List[float] = []
+        for idx, scene_text in enumerate(scene_texts):
+            scene_est = self._estimate_text_duration_with_voice(scene_text, voice_style=voice_style, voice_gender=voice_gender)
+            if scene_est <= 0 and idx < len(scenes):
+                scene_est = self._estimate_text_duration_with_voice(scenes[idx].get("_tts_text") or scenes[idx].get("text") or "", voice_style=voice_style, voice_gender=voice_gender)
+            scene_estimates.append(max(0.0, scene_est))
+
+        return {
+            "channel_name": channel_name,
+            "opening_text": opening_text,
+            "body_text": body_text,
+            "closing_text": closing_text,
+            "full_text": full_text,
+            "voice_words_per_minute": round(self._estimate_voice_words_per_minute(voice_style=voice_style, voice_gender=voice_gender), 2),
+            "char_count": len(full_text),
+            "word_count": self._count_words(full_text),
+            "opening_duration_est_sec": round(opening_est, 2),
+            "body_duration_est_sec": round(body_est, 2),
+            "closing_duration_est_sec": round(closing_est, 2),
+            "estimated_total_duration_sec": round(total_est, 2),
+            "planning_target_max_sec": round(planning_max_total_sec, 2) if planning_max_total_sec > 0 else 0.0,
+            "requested_duration_range_sec": duration_range,
+            "scene_texts": scene_texts,
+            "scene_estimated_durations_sec": [round(value, 2) for value in scene_estimates],
+            "planning_attempts": planning_attempts,
+        }
+
+    def _slice_caption_timeline(self, timeline: List[Dict[str, Any]], start_sec: float, end_sec: float) -> List[Dict[str, Any]]:
+        if not isinstance(timeline, list) or end_sec <= start_sec:
+            return []
+        sliced: List[Dict[str, Any]] = []
+        for item in timeline:
+            try:
+                item_start = float(item.get("start") or 0.0)
+                item_end = float(item.get("end") or 0.0)
+            except Exception:
+                continue
+            if item_end <= start_sec or item_start >= end_sec:
+                continue
+            local_start = max(start_sec, item_start) - start_sec
+            local_end = min(end_sec, item_end) - start_sec
+            caption = str(item.get("caption") or "").strip()
+            if local_end > local_start and caption:
+                sliced.append({
+                    "start": round(local_start, 3),
+                    "end": round(local_end, 3),
+                    "caption": caption,
+                })
+        if sliced:
+            sliced[0]["start"] = 0.0
+            sliced[-1]["end"] = round(max(0.0, end_sec - start_sec), 3)
+        return sliced
+
+    def _clean_image_prompt_seed(self, prompt: str, max_chars: int = 180) -> str:
+        cleaned = self._clean_text(prompt)
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"(?i)\bphotorealistic\b|\bcinematic\b|\bphotography\b|\brepresenting\b", " ", cleaned)
+        cleaned = re.sub(r"(?i)\bfocus on this exact moment\s*:\s*", " ", cleaned)
+        cleaned = re.sub(r"(?i)\bshow the exact narrated moment\s*:\s*", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+        if len(cleaned) > max_chars:
+            cleaned = cleaned[:max_chars].rsplit(" ", 1)[0].strip()
+        return cleaned
+
+    def _compact_narrative_moment(self, text: str, max_chars: int = 120) -> str:
+        cleaned = self._normalize_tts_text(text)
+        if not cleaned:
+            return ""
+        first_sentence = re.split(r"(?<=[.!?])\s+", cleaned)[0].strip()
+        compact = first_sentence or cleaned
+        if len(compact) > max_chars:
+            compact = compact[:max_chars].rsplit(" ", 1)[0].strip()
+        return compact
+
+    def _strip_visual_prompt_labels(self, text: str) -> str:
+        cleaned = self._clean_text(text)
+        if not cleaned:
+            return ""
+        cleaned = re.sub(
+            r"(?i)\b(personagem|ambiente|iluminacao|iluminação|momento(?:\s+narrativo)?|narrativa|continuidade|estilo)\s*:\s*",
+            " ",
+            cleaned,
+        )
+        return re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+
+    def _normalize_semantic_text(self, text: str) -> str:
+        cleaned = self._strip_visual_prompt_labels(text)
+        if not cleaned:
+            return ""
+        return unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii").lower()
+
+    def _extract_semantic_tags(self, text: str, catalog: Dict[str, List[str]]) -> List[str]:
+        normalized = self._normalize_semantic_text(text)
+        if not normalized:
+            return []
+        matches: List[str] = []
+        for label, keywords in catalog.items():
+            for keyword in keywords:
+                keyword_norm = self._normalize_semantic_text(keyword)
+                if not keyword_norm:
+                    continue
+                if re.search(rf"(?<!\w){re.escape(keyword_norm)}(?!\w)", normalized):
+                    matches.append(label)
+                    break
+        return matches
+
+    def _extract_character_tags(self, text: str) -> List[str]:
+        if not text:
+            return []
+        cleaned = self._strip_visual_prompt_labels(text)
+        if not cleaned:
+            return []
+        normalized_full = unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii").lower()
+        known_character_aliases = {
+            "jesus": "Jesus",
+            "cristo": "Jesus",
+            "pedro": "Pedro",
+            "paulo": "Paulo",
+            "maria": "Maria",
+            "jose": "Jose",
+            "joao": "Joao",
+            "davi": "Davi",
+            "daniel": "Daniel",
+            "moises": "Moises",
+            "abraao": "Abraao",
+            "jaco": "Jaco",
+            "isaque": "Isaque",
+            "elias": "Elias",
+            "eliseu": "Eliseu",
+            "marta": "Marta",
+            "lazaro": "Lazaro",
+        }
+        tokens = re.findall(
+            r"\b[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]{1,}(?:\s+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]{1,})?\b",
+            cleaned,
+        )
+        blacklist = {
+            "cena", "gancho", "pergunta", "observacao", "nota", "metrica", "estrutura", "introducao",
+            "desenvolvimento", "conclusao", "resumo", "chamada", "dica", "objetivo", "momento",
+            "narrativa", "continuidade", "estilo", "personagem", "ambiente", "iluminacao",
+            "ele", "ela", "eles", "elas", "dele", "dela", "deles", "delas", "se", "ao", "aos",
+            "aquela", "aquele", "aquelas", "aqueles", "depois", "antes", "durante", "entao",
+            "quando", "enquanto", "apos", "logo", "assim", "mesmo", "mesma", "same", "then",
+            "agora", "ali", "aqui", "isso", "isto", "essa", "esse", "essas", "esses",
+            "momento narrativo", "historia", "história", "cenario", "cenario visual",
+        }
+        seen: List[str] = []
+        for alias, label in known_character_aliases.items():
+            if re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", normalized_full) and label not in seen:
+                seen.append(label)
+        for token in tokens:
+            normalized = unicodedata.normalize("NFKD", token).encode("ascii", "ignore").decode("ascii").lower().strip()
+            parts = [part for part in normalized.split() if part]
+            if not parts:
+                continue
+            if any(part in blacklist for part in parts):
+                continue
+            if len(parts) == 1 and parts[0] not in known_character_aliases and not re.search(r"\b(?:[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]{2,})\b", token):
+                continue
+            if token not in seen:
+                seen.append(token)
+        return seen[:3]
+
+    def _build_semantic_scene_profile(self, scene: Dict[str, Any], scene_number: int) -> Dict[str, Any]:
+        raw_text = str(scene.get("text") or "").strip()
+        clean_text = str(scene.get("_tts_text") or raw_text).strip()
+        prompt_seed = self._clean_image_prompt_seed(str(scene.get("image_prompt") or scene.get("visual_prompt") or ""))
+        semantic_prompt_seed = self._strip_visual_prompt_labels(prompt_seed)
+        source_text = f"{clean_text or raw_text} {semantic_prompt_seed}".strip()
+
+        environment_catalog = {
+            "temple": ["templo", "santuario", "sanctuary", "altar"],
+            "corridor": ["corredor", "hallway", "passagem", "passage"],
+            "chamber": ["camara", "câmara", "chamber", "sala secreta", "secret chamber"],
+            "desert": ["deserto", "desert"],
+            "sea": ["mar", "oceano", "sea", "shore"],
+            "city": ["cidade", "city", "street", "rua", "market", "mercado"],
+            "home": ["casa", "home", "room", "quarto"],
+            "mountain": ["montanha", "mountain", "hill", "colina"],
+        }
+        action_catalog = {
+            "reading": ["ler", "lendo", "examina", "examinar", "pergaminho", "scroll", "study"],
+            "watching": ["olha", "observa", "encara", "watching", "gazes"],
+            "walking": ["caminha", "walking", "anda", "passos", "walks"],
+            "running": ["corre", "running", "fug", "sprint", "rush"],
+            "revealing": ["revela", "revelacao", "revelação", "descobre", "finds", "encontra", "mapa"],
+            "crying": ["chora", "cry", "tears", "lagrimas", "lágrimas"],
+            "praying": ["ora", "prayer", "rez", "prays"],
+            "speaking": ["fala", "diz", "declara", "speaks", "asks"],
+        }
+        emotion_catalog = {
+            "tension": ["tensao", "tensão", "suspense", "medo", "fear", "tense"],
+            "hope": ["esperanca", "esperança", "hope", "promessa", "promise"],
+            "grief": ["triste", "dor", "luto", "weeps", "cry", "sorrow"],
+            "joy": ["alegria", "joy", "rejoice", "celebra"],
+            "awe": ["gloria", "glória", "milagre", "awe", "wonder"],
+        }
+        time_catalog = {
+            "night": ["noite", "night", "moon", "midnight"],
+            "dawn": ["amanhecer", "sunrise", "dawn"],
+            "day": ["dia", "daylight", "afternoon"],
+            "sunset": ["entardecer", "sunset", "twilight"],
+            "ancient": ["antigo", "ancient", "biblico", "biblical", "era"],
+        }
+        weather_catalog = {
+            "storm": ["storm", "tempest", "rain", "chuva", "thunder"],
+            "clear": ["clear", "sunny", "limpo", "calmo"],
+            "fog": ["fog", "mist", "neblina"],
+        }
+        lighting_catalog = {
+            "torchlight": ["tocha", "torch", "warm light", "warm torch"],
+            "golden": ["golden", "dourad", "sunset glow"],
+            "soft": ["soft light", "suave", "diffused"],
+            "dark": ["escuro", "sombrio", "shadow", "dark"],
+        }
+        viewpoint_catalog = {
+            "close_up": ["close", "close-up", "detalhe", "detail"],
+            "wide": ["wide", "panoramic", "establishing", "amplo"],
+            "pov": ["pov", "point of view", "first person"],
+            "medium": ["medium shot", "waist", "half body"],
+        }
+        style_catalog = {
+            "cinematic_realism": ["cinematic", "realism", "realistic", "film"],
+            "documentary": ["documentary", "docu"],
+            "epic": ["epic", "heroic", "grand"],
+            "pastoral": ["pastoral", "gentle", "soft"],
+        }
+
+        profile = {
+            "scene_number": int(scene_number),
+            "moment": self._compact_narrative_moment(clean_text or raw_text),
+            "characters": self._extract_character_tags(clean_text or raw_text),
+            "environment": self._extract_semantic_tags(source_text, environment_catalog),
+            "action": self._extract_semantic_tags(source_text, action_catalog),
+            "emotion": self._extract_semantic_tags(source_text, emotion_catalog),
+            "time": self._extract_semantic_tags(source_text, time_catalog),
+            "weather": self._extract_semantic_tags(source_text, weather_catalog),
+            "lighting": self._extract_semantic_tags(source_text, lighting_catalog),
+            "viewpoint": self._extract_semantic_tags(source_text, viewpoint_catalog),
+            "style": self._extract_semantic_tags(source_text, style_catalog) or ["cinematic_realism"],
+            "prompt_seed": prompt_seed,
+        }
+        signature_tokens = set(self._scene_visual_signature({"text": raw_text, "image_prompt": prompt_seed}))
+        for key in ("characters", "environment", "action", "emotion", "time", "weather", "lighting", "viewpoint", "style"):
+            signature_tokens.update(str(item).lower() for item in (profile.get(key) or []))
+        profile["signature"] = sorted(signature_tokens)
+        return profile
+
+    def _build_visual_transition_decision(self, previous_profile: Dict[str, Any], current_profile: Dict[str, Any]) -> Dict[str, Any]:
+        def _diff(key: str) -> Dict[str, Any]:
+            prev = {str(item).lower() for item in (previous_profile.get(key) or []) if str(item).strip()}
+            curr = {str(item).lower() for item in (current_profile.get(key) or []) if str(item).strip()}
+            return {
+                "changed": bool(prev and curr and prev != curr),
+                "introduced": sorted(curr - prev) if not prev else [],
+                "dropped": sorted(prev - curr) if not curr else [],
+                "added": sorted(curr - prev),
+                "removed": sorted(prev - curr),
+            }
+
+        dimensions = {key: _diff(key) for key in ("characters", "environment", "action", "emotion", "time", "weather", "lighting", "viewpoint", "style")}
+        character_change = dimensions["characters"]["changed"]
+        environment_change = dimensions["environment"]["changed"]
+        action_change = dimensions["action"]["changed"]
+        emotion_change = dimensions["emotion"]["changed"]
+        lighting_change = dimensions["lighting"]["changed"]
+        relevant_soft_changes = sum(1 for changed in (action_change, emotion_change, lighting_change) if changed)
+        should_generate_new = bool(
+            character_change
+            or environment_change
+            or relevant_soft_changes >= 2
+        )
+
+        changed_labels: List[str] = []
+        for key, label in (
+            ("characters", "personagem"),
+            ("environment", "cenario"),
+            ("action", "acao principal"),
+            ("emotion", "emocao"),
+            ("time", "momento temporal"),
+            ("weather", "clima"),
+            ("lighting", "iluminacao"),
+            ("viewpoint", "ponto de vista"),
+            ("style", "estilo"),
+        ):
+            if dimensions[key]["changed"]:
+                changed_labels.append(label)
+
+        if should_generate_new:
+            justification = "Nova imagem por mudanca semantica em " + ", ".join(changed_labels[:4]) if changed_labels else "Nova imagem para preservar clareza semantica"
+        else:
+            reuse_basis = changed_labels[:2]
+            if reuse_basis:
+                justification = "Reutiliza imagem com pequenas variacoes porque a continuidade visual segue dominante, apesar de leves mudancas em " + ", ".join(reuse_basis)
+            else:
+                justification = "Reutiliza imagem porque personagem, ambiente, luz e momento dramatico permanecem coerentes"
+
+        return {
+            "should_generate_new": bool(should_generate_new),
+            "changed_dimensions": changed_labels,
+            "justification": justification,
+            "dimensions": dimensions,
+        }
+
+    def _build_visual_continuity_anchor(self, title: str, scenes: List[Any], plan: Optional[Dict[str, Any]] = None) -> str:
+        profiles = [
+            self._build_semantic_scene_profile(scene if isinstance(scene, dict) else {"text": str(scene or ""), "image_prompt": ""}, idx + 1)
+            for idx, scene in enumerate(scenes[:3])
+        ]
+        def _dominant_values(key: str, *, min_hits: int = 2, fallback_hits: int = 1, max_items: int = 2) -> List[str]:
+            counts: Dict[str, int] = {}
+            ordered: List[str] = []
+            for profile in profiles:
+                seen_local = set()
+                for item in (profile.get(key) or []):
+                    label = str(item).strip()
+                    if not label:
+                        continue
+                    normalized = label.lower()
+                    if normalized in seen_local:
+                        continue
+                    seen_local.add(normalized)
+                    counts[normalized] = counts.get(normalized, 0) + 1
+                    if label not in ordered:
+                        ordered.append(label)
+            preferred = [item for item in ordered if counts.get(item.lower(), 0) >= min_hits]
+            if preferred:
+                return preferred[:max_items]
+            return [item for item in ordered if counts.get(item.lower(), 0) >= fallback_hits][:max_items]
+
+        common_characters = _dominant_values("characters", min_hits=2, fallback_hits=1)
+        common_environment = _dominant_values("environment", min_hits=2, fallback_hits=1)
+        common_style = _dominant_values("style", min_hits=1, fallback_hits=1, max_items=1)
+
+        bits: List[str] = []
+        clean_title = (title or "").strip()
+        if clean_title:
+            bits.append(f"Historia: {clean_title[:72]}")
+        if common_characters:
+            bits.append("Mesma identidade visual de " + ", ".join(common_characters[:2]))
+        if common_environment:
+            bits.append("Mesmo universo visual em " + ", ".join(common_environment[:2]))
+        bits.append("Manter roupa, idade, iluminacao, epoca e paleta coerentes entre as cenas")
+        if common_style:
+            bits.append("Estilo " + ", ".join(common_style[:2]).replace("_", " "))
+        return ". ".join(bit for bit in bits if bit).strip()
+
+    def _scene_visual_signature(self, scene: Any) -> set:
+        if isinstance(scene, dict):
+            prompt = str(scene.get("image_prompt") or scene.get("visual_prompt") or "").strip()
+            text = str(scene.get("text") or "").strip()
+        else:
+            prompt = ""
+            text = str(scene or "").strip()
+        base = f"{prompt} {text}".lower()
+        tokens = re.findall(r"[a-zA-ZÀ-ÿ0-9']+", base)
+        stop = {
+            "the", "and", "with", "this", "that", "from", "into", "para", "com", "uma", "um", "de", "do", "da", "dos",
+            "das", "que", "sobre", "scene", "cena", "photorealistic", "cinematic", "representing", "narration",
+            "story", "video", "shot", "light", "lighting", "camera", "mood", "realistic", "natural",
+        }
+        return {token for token in tokens if len(token) > 2 and token not in stop}
+
+    def _should_force_new_visual(self, previous_scene: Any, current_scene: Any) -> bool:
+        prev_profile = self._build_semantic_scene_profile(
+            previous_scene if isinstance(previous_scene, dict) else {"text": str(previous_scene or ""), "image_prompt": ""},
+            0,
+        )
+        curr_profile = self._build_semantic_scene_profile(
+            current_scene if isinstance(current_scene, dict) else {"text": str(current_scene or ""), "image_prompt": ""},
+            0,
+        )
+        transition = self._build_visual_transition_decision(prev_profile, curr_profile)
+        return bool(transition.get("should_generate_new"))
+
+    def _target_visual_count(
+        self,
+        scenes: List[Any],
+        plan: Optional[Dict[str, Any]] = None,
+        *,
+        ai_available: bool = True,
+        use_single_bg: bool = False,
+        selected_image_count: int = 0,
+    ) -> int:
+        scene_count = max(0, len(scenes or []))
+        if scene_count <= 1:
+            return max(1, scene_count)
+        if selected_image_count > 0:
+            return min(scene_count, selected_image_count)
+        if use_single_bg:
+            return 1
+
+        total_seconds = 0.0
+        for scene in scenes:
+            if isinstance(scene, dict):
+                total_seconds += float(scene.get("_estimated_narration_sec") or self._estimate_narration_seconds(scene.get("text") or ""))
+            else:
+                total_seconds += self._estimate_narration_seconds(str(scene or ""))
+        if isinstance(plan, dict):
+            try:
+                target_duration = float(plan.get("target_duration_sec") or 0)
+                if target_duration > total_seconds:
+                    total_seconds = target_duration
+            except Exception:
+                pass
+
+        base_target = max(1, int(round(total_seconds / 14.0))) if total_seconds else scene_count
+        base_target = min(scene_count, base_target)
+
+        forced_breaks = 0
+        continuity_hits = 0
+        comparisons = 0
+        for idx in range(1, scene_count):
+            comparisons += 1
+            force_new = self._should_force_new_visual(scenes[idx - 1], scenes[idx])
+            if force_new:
+                forced_breaks += 1
+            else:
+                continuity_hits += 1
+        continuity_ratio = (float(continuity_hits) / float(comparisons)) if comparisons else 0.0
+
+        duration_floor = 1
+        if total_seconds >= 18:
+            duration_floor = 2
+        if total_seconds >= 36:
+            duration_floor = 3
+        if total_seconds >= 60:
+            duration_floor = 4
+
+        scene_floor = 1
+        if scene_count >= 4:
+            scene_floor = 2
+        if scene_count >= 7:
+            scene_floor = 3
+        if scene_count >= 10:
+            scene_floor = 4
+
+        min_required = max(1, forced_breaks + 1, duration_floor, scene_floor)
+        base_target = max(base_target, min_required)
+
+        if not ai_available:
+            reduced_target = max(min_required, base_target - 1)
+            base_target = min(scene_count, reduced_target)
+
+        if continuity_ratio >= 0.78 and scene_count >= 6:
+            reduced_target = max(min_required, base_target - 1)
+            if total_seconds <= 24 and scene_count <= 4:
+                reduced_target = max(1, min(reduced_target, 2))
+            base_target = reduced_target
+
+        return max(1, min(scene_count, base_target))
+
+    def _compose_visual_prompt_for_group(self, scenes: List[Dict[str, Any]], group_indexes: List[int], continuity_anchor: str) -> str:
+        if not group_indexes:
+            return continuity_anchor or "Cinematic keyframe with continuity"
+        lead_scene = scenes[group_indexes[0]]
+        lead_profile = lead_scene.get("_visual_semantic_profile") or self._build_semantic_scene_profile(lead_scene, group_indexes[0] + 1)
+        moment = self._compact_narrative_moment(" ".join(str(scenes[idx].get("_tts_text") or scenes[idx].get("text") or "") for idx in group_indexes), max_chars=100)
+        clauses: List[str] = []
+        if lead_profile.get("characters"):
+            clauses.append("Personagem: " + ", ".join(lead_profile["characters"][:2]))
+        if lead_profile.get("environment"):
+            clauses.append("Ambiente: " + ", ".join(lead_profile["environment"][:2]).replace("_", " "))
+        if lead_profile.get("lighting"):
+            clauses.append("Iluminacao: " + ", ".join(lead_profile["lighting"][:2]).replace("_", " "))
+        if moment:
+            clauses.append("Momento narrativo: " + moment)
+        if continuity_anchor:
+            clauses.append("Continuidade: " + continuity_anchor[:120])
+        clauses.append("Estilo: realismo cinematografico, elegante, natural")
+        prompt = ". ".join(clause.strip().rstrip(".") for clause in clauses if clause).strip()
+        if len(prompt) > 360:
+            prompt = prompt[:360].rsplit(" ", 1)[0].strip(" ,.;:-")
+        return prompt
+
+    def _build_visual_groups(
+        self,
+        scenes: List[Dict[str, Any]],
+        plan: Optional[Dict[str, Any]] = None,
+        *,
+        ai_available: bool = True,
+        use_single_bg: bool = False,
+        selected_image_count: int = 0,
+    ) -> Dict[str, Any]:
+        scene_count = len(scenes or [])
+        if scene_count <= 0:
+            return {"target_image_count": 0, "groups": [], "scene_to_group": {}, "scene_decisions": []}
+
+        profiles: List[Dict[str, Any]] = []
+        for idx, scene in enumerate(scenes):
+            profile = self._build_semantic_scene_profile(scene, idx + 1)
+            scene["_visual_semantic_profile"] = profile
+            profiles.append(profile)
+
+        target_count = self._target_visual_count(
+            scenes,
+            plan,
+            ai_available=ai_available,
+            use_single_bg=use_single_bg,
+            selected_image_count=selected_image_count,
+        )
+        ideal_group_size = max(1, int(math.ceil(float(scene_count) / float(max(1, target_count)))))
+        groups: List[Dict[str, Any]] = []
+        current_indexes: List[int] = []
+        scene_decisions: List[Dict[str, Any]] = []
+
+        def _flush_group() -> None:
+            if not current_indexes:
+                return
+            lead_profile = profiles[current_indexes[0]]
+            groups.append({
+                "group_id": len(groups),
+                "scene_indexes": list(current_indexes),
+                "semantic_summary": {
+                    "characters": lead_profile.get("characters") or [],
+                    "environment": lead_profile.get("environment") or [],
+                    "action": lead_profile.get("action") or [],
+                    "moment": lead_profile.get("moment") or "",
+                },
+            })
+            current_indexes.clear()
+
+        for idx in range(scene_count):
+            current_indexes.append(idx)
+            if idx == 0:
+                scene_decisions.append({
+                    "scene_index": 0,
+                    "decision": "new_image",
+                    "justification": "Primeira cena define a base visual e a continuidade do video",
+                })
+            remaining_scenes = scene_count - (idx + 1)
+            remaining_groups = target_count - (len(groups) + 1)
+            if remaining_scenes <= 0:
+                _flush_group()
+                continue
+            transition = self._build_visual_transition_decision(profiles[idx], profiles[idx + 1])
+            force_new = transition["should_generate_new"]
+            enough_for_split = len(current_indexes) >= ideal_group_size and remaining_scenes >= max(1, remaining_groups)
+            if force_new:
+                scene_decisions.append({
+                    "scene_index": idx + 1,
+                    "decision": "new_image",
+                    "justification": transition["justification"],
+                })
+            else:
+                scene_decisions.append({
+                    "scene_index": idx + 1,
+                    "decision": "reuse_image",
+                    "justification": transition["justification"],
+                })
+            if remaining_groups > 0 and (force_new or enough_for_split):
+                _flush_group()
+
+        scene_to_group: Dict[int, int] = {}
+        for group in groups:
+            for scene_idx in group.get("scene_indexes") or []:
+                scene_to_group[int(scene_idx)] = int(group["group_id"])
+        return {
+            "target_image_count": max(1, len(groups)),
+            "groups": groups,
+            "scene_to_group": scene_to_group,
+            "scene_decisions": scene_decisions,
+        }
+
+    def _plan_scene_visual_durations(
+        self,
+        scenes: List[Dict[str, Any]],
+        requested_total_duration: Optional[float],
+        title_duration: float,
+        end_duration: float,
+        scene_decisions: Optional[List[Dict[str, Any]]] = None,
+        transition_duration: float = 0.0,
+    ) -> Dict[str, Any]:
+        scene_decisions = scene_decisions or []
+        scene_count = len(scenes or [])
+        if scene_count <= 0:
+            return {
+                "requested_duration_sec": float(requested_total_duration or 0.0),
+                "target_body_duration_sec": 0.0,
+                "allocated_scene_durations": [],
+                "baseline_body_duration_sec": 0.0,
+            }
+
+        baseline_scene_durations: List[float] = []
+        weights: List[float] = []
+        for idx, scene in enumerate(scenes):
+            estimated = float(scene.get("_estimated_narration_sec") or self._estimate_narration_seconds(scene.get("text") or ""))
+            estimated = max(2.5, estimated)
+            decision = scene_decisions[idx] if idx < len(scene_decisions) else {}
+            is_new = str(decision.get("decision") or "") == "new_image"
+            weight = estimated
+            if is_new:
+                weight += 0.65
+            if idx == 0:
+                weight += 0.35
+            if idx == scene_count - 1:
+                weight += 0.25
+            baseline_scene_durations.append(estimated)
+            weights.append(weight)
+
+        baseline_body_duration = sum(baseline_scene_durations) + max(0.0, transition_duration * max(0, scene_count - 1))
+        if not requested_total_duration or requested_total_duration <= (title_duration + end_duration):
+            requested_total_duration = baseline_body_duration + title_duration + end_duration
+
+        target_body_duration = max(
+            baseline_body_duration,
+            float(requested_total_duration) - float(title_duration) - float(end_duration)
+        )
+        allocated = list(baseline_scene_durations)
+        extra_budget = max(0.0, target_body_duration - baseline_body_duration)
+        if extra_budget > 0:
+            stretch_weights: List[float] = []
+            for idx, base in enumerate(baseline_scene_durations):
+                decision = scene_decisions[idx] if idx < len(scene_decisions) else {}
+                is_reuse = str(decision.get("decision") or "") != "new_image"
+                stretch_weight = max(1.0, base) * (1.2 if is_reuse else 0.8)
+                if idx == 0 or idx == scene_count - 1:
+                    stretch_weight += 0.25
+                stretch_weights.append(stretch_weight)
+            total_stretch = sum(stretch_weights) or float(scene_count)
+            allocated = [
+                round(base + (extra_budget * (stretch_weight / total_stretch)), 2)
+                for base, stretch_weight in zip(baseline_scene_durations, stretch_weights)
+            ]
+            rounding_gap = round(target_body_duration - sum(allocated), 2)
+            if allocated and abs(rounding_gap) >= 0.01:
+                allocated[-1] = round(max(baseline_scene_durations[-1], allocated[-1] + rounding_gap), 2)
+
+        return {
+            "requested_duration_sec": float(requested_total_duration or 0.0),
+            "target_body_duration_sec": round(target_body_duration, 2),
+            "allocated_scene_durations": allocated,
+            "baseline_body_duration_sec": round(baseline_body_duration, 2),
+        }
 
     def _split_caption_units(self, text: str, max_words: int = 10, max_chars: int = 68) -> List[str]:
         cleaned = self._normalize_tts_text(text)
@@ -683,22 +1788,52 @@ class VideoGenerator:
 
         style = (voice_style or "human").lower()
         gender = (voice_gender or "female").lower()
+        tts_debug: Dict[str, Any] = {
+            "configured_provider": None,
+            "provider_used": None,
+            "fallback_used": False,
+            "requested_voice_style": style,
+            "requested_voice_gender": gender,
+            "input_char_count": len(clean_text),
+            "input_word_count": len(re.findall(r"\w+", clean_text, flags=re.UNICODE)),
+            "attempts": [],
+        }
+        self._last_tts_debug = tts_debug
+
+        def _record_attempt(provider: str, status: str, reason: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
+            item: Dict[str, Any] = {"provider": provider, "status": status}
+            if reason:
+                item["reason"] = str(reason)[:500]
+            if details:
+                item["details"] = details
+            tts_debug.setdefault("attempts", []).append(item)
         
         print(f"Gerando áudio para: '{clean_text[:30]}...' (Style: {style}, Gender: {gender})")
         
-        openai_voice = "onyx"
-        if style in ["my_voice", "myvoice", "minha_voz", "minhavoz"]:
-            openai_voice = "my_voice"
-        elif style in ["human", "humana"] or style.startswith("human"):
-            openai_voice = "onyx" if gender == "male" else "nova"
-        elif style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
-            openai_voice = "echo" if gender == "male" else "nova"
-        elif style in ["child", "infantil"]:
-            openai_voice = "echo" if gender == "male" else "shimmer"
-        elif style in ["angelic", "angelical"]:
-            openai_voice = "fable"
-        elif style in ["robotic", "robotica", "robótica"]:
-            openai_voice = None
+        openai_voice = None
+        if self.ai_service and hasattr(self.ai_service, "select_tts_voice_hint"):
+            try:
+                openai_voice = self.ai_service.select_tts_voice_hint(
+                    voice_style=style,
+                    voice_gender=gender,
+                )
+            except Exception:
+                openai_voice = None
+        if not openai_voice:
+            openai_voice = "onyx"
+            if style in ["my_voice", "myvoice", "minha_voz", "minhavoz"]:
+                openai_voice = "my_voice"
+            elif style in ["human", "humana"] or style.startswith("human"):
+                openai_voice = "onyx" if gender == "male" else "nova"
+            elif style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
+                openai_voice = "echo" if gender == "male" else "nova"
+            elif style in ["child", "infantil"]:
+                openai_voice = "echo" if gender == "male" else "shimmer"
+            elif style in ["angelic", "angelical"]:
+                openai_voice = "fable"
+            elif style in ["robotic", "robotica", "robótica"]:
+                openai_voice = None
+        tts_debug["requested_voice_hint"] = openai_voice
 
         def _infer_voice_settings(txt: str, is_male: bool, style_tag: str) -> dict:
             t = (txt or "").lower()
@@ -818,7 +1953,22 @@ class VideoGenerator:
             try:
                 print(f"Tentando TTS premium ({openai_voice})...")
                 voice_settings = _infer_voice_settings(clean_text, is_male=(gender == "male"), style_tag=style)
-                audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice, voice_settings=voice_settings)
+                audio_content = None
+                if hasattr(self.ai_service, "generate_audio_with_diagnostics"):
+                    premium_debug = self.ai_service.generate_audio_with_diagnostics(clean_text, voice=openai_voice, voice_settings=voice_settings)
+                    if isinstance(premium_debug, dict):
+                        for key, value in premium_debug.items():
+                            if key not in {"attempts", "audio_content"}:
+                                tts_debug[key] = value
+                        for attempt in premium_debug.get("attempts") or []:
+                            if isinstance(attempt, dict):
+                                tts_debug.setdefault("attempts", []).append(dict(attempt))
+                        audio_content = premium_debug.get("audio_content")
+                else:
+                    audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice, voice_settings=voice_settings)
+                    if audio_content:
+                        tts_debug["provider_used"] = "premium_unknown"
+                        _record_attempt("premium_unknown", "success", "Audio gerado via ai_service sem diagnostico detalhado.")
                 if audio_content:
                     filename = f"{uuid.uuid4()}.mp3"
                     path = os.path.join(self.output_dir, filename)
@@ -830,14 +1980,24 @@ class VideoGenerator:
                     except Exception:
                         dur = 0.0
                     if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
+                        tts_debug["provider_used"] = tts_debug.get("provider_used") or "premium_unknown"
+                        tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                        tts_debug["output_path"] = path
                         print(f"TTS premium sucesso: {path} ({dur:.2f}s)")
                         return path
+                    _record_attempt(
+                        str(tts_debug.get("provider_used") or "premium_unknown"),
+                        "failed",
+                        "Provider retornou bytes, mas o arquivo salvo ficou invalido.",
+                        {"duration_sec": round(float(dur or 0.0), 2)},
+                    )
                     try:
                         if os.path.exists(path):
                             os.remove(path)
                     except Exception:
                         pass
             except Exception as e:
+                _record_attempt("premium_pipeline", "failed", str(e))
                 print(f"TTS premium falhou, tentando fallback: {e}")
 
         # 3. Edge TTS (Qualidade Natural Gratuita - Microsoft)
@@ -882,11 +2042,18 @@ class VideoGenerator:
                 except Exception:
                     dur = 0.0
                 if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
+                    _record_attempt("edge_tts", "success", "Fallback Edge TTS gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                    tts_debug["provider_used"] = "edge_tts"
+                    tts_debug["fallback_used"] = True
+                    tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                    tts_debug["output_path"] = path
                     print(f"Edge TTS sucesso: {path} ({dur:.2f}s)")
                     return path
                 else:
+                    _record_attempt("edge_tts", "failed", "Arquivo gerado invalido ou vazio.", {"duration_sec": round(float(dur or 0.0), 2)})
                     print(f"Edge TTS gerou arquivo vazio ou falhou (Size check failed). Path: {path}")
             except Exception as e:
+                 _record_attempt("edge_tts", "failed", str(e))
                  print(f"Edge TTS falhou: {e}")
 
         # 4. Fallback gTTS (Robótico)
@@ -905,12 +2072,21 @@ class VideoGenerator:
             except Exception:
                 dur = 0.0
             if os.path.exists(path) and os.path.getsize(path) > 100 and dur > 0.2:
+                _record_attempt("gtts", "success", "Fallback gTTS gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                tts_debug["provider_used"] = "gtts"
+                tts_debug["fallback_used"] = True
+                tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                tts_debug["output_path"] = path
                 print(f"gTTS sucesso: {path} ({dur:.2f}s)")
                 return path
             else:
+                 _record_attempt("gtts", "failed", "Arquivo gerado vazio ou invalido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                 tts_debug["error_summary"] = self._summarize_tts_failure(tts_debug)
                  print("gTTS gerou arquivo vazio.")
                  return None
         except Exception as e:
+            _record_attempt("gtts", "failed", str(e))
+            tts_debug["error_summary"] = self._summarize_tts_failure(tts_debug)
             print(f"Erro no TTS Final (gTTS): {e}")
             return None
 
@@ -1061,26 +2237,15 @@ class VideoGenerator:
         norm_bp = (base_prompt or "").strip().lower()
         strict_worship = any(k in norm_bp for k in ["christian", "worship", "gospel", "louvor", "jesus", "cristo", "cruz", "calvario", "golgota"])
         parts = [
-            f"{base_prompt}. Must align with the narration context. ",
-            "High quality, cinematic lighting, vibrant colors, bright, inspiring, family-friendly, G-rated. ",
-            "Photorealistic cinematic photography, warm natural lighting, bright color palette, pleasant peaceful hopeful mood. Wide shot. ",
+            f"{base_prompt}. ",
+            "Biblical cinematic realism, elegant composition, natural light, family-friendly, visually coherent with the narration. ",
         ]
         if strict_worship:
-            parts.append("Brazilian gospel worship context, respectful and reverent. ")
+            parts.append("Respectful gospel atmosphere. ")
         parts += [
-            "Realistic humans (no dolls), natural skin, proportional anatomy. ",
-            "Avoid close-up portraits. No visible face details. Prefer back view or silhouettes. ",
-            "No sci-fi, no futuristic, no cyberpunk, no robots, no androids, no cyborgs, no machinery, no laboratory, no wires. ",
-            "No horror, no monsters, no zombies, no undead, no gore, no blood. ",
-        ]
-        parts.append("No macabre, no creepy, no occult, no satanic symbols, no pentagrams, no demons, no skulls, no skeletons, no cemetery, no graves, no dark mood, no scary lighting. ")
-        parts += [
-            "No creepy, no uncanny, no doll-like. ",
-            "No deformed, no disfigured, no mutated, no bad anatomy, no extra limbs, no bad hands, no extra fingers, no melted face, no distorted faces. ",
-            "No masks, no face paint, no skull makeup, no halloween costume. ",
-            "No dystopian, no apocalyptic. ",
-            "No text, no watermark, no logo.",
-            "Negative prompt: (horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, distorted faces, demons, intense fear, skull, skeleton, corpse, mask, face paint).",
+            "Prefer medium or wide shot, realistic humans, natural anatomy, subtle emotion, professional color palette. ",
+            "Avoid extreme facial close-up. No text, watermark or logo. ",
+            "Negative prompt: horror, gore, occult, demons, skulls, cemetery, dystopian, sci-fi, robots, distorted anatomy, extra limbs, uncanny faces.",
         ]
         final_prompt = "".join(parts)
         if not self.ai_service:
@@ -1184,44 +2349,6 @@ class VideoGenerator:
             return clip.with_audio(audio_clip)
         return clip.set_audio(audio_clip)
 
-    def _render_debug_dir(self, debug_id: Optional[str] = None) -> str:
-        did = (debug_id or "").strip() or uuid.uuid4().hex
-        base = os.path.join("generated_assets", "render_errors", did)
-        try:
-            os.makedirs(base, exist_ok=True)
-        except Exception:
-            pass
-        return base
-
-    def _clip_debug_info(self, clip) -> dict:
-        info = {"type": type(clip).__name__ if clip is not None else None}
-        if clip is None:
-            return info
-        try:
-            info["duration"] = float(getattr(clip, "duration", 0) or 0)
-        except Exception:
-            info["duration"] = None
-        try:
-            info["size"] = getattr(clip, "size", None)
-        except Exception:
-            info["size"] = None
-        try:
-            a = getattr(clip, "audio", None)
-            if a is not None:
-                try:
-                    info["audio_type"] = type(a).__name__
-                except Exception:
-                    info["audio_type"] = "unknown"
-                try:
-                    info["audio_duration"] = float(getattr(a, "duration", 0) or 0)
-                except Exception:
-                    info["audio_duration"] = None
-            else:
-                info["audio_type"] = None
-        except Exception:
-            info["audio_type"] = "error"
-        return info
-
     def _assert_clip_not_none(self, clip, label: str, meta: Optional[dict] = None):
         if clip is None:
             extra = ""
@@ -1231,20 +2358,6 @@ class VideoGenerator:
             except Exception:
                 extra = ""
             raise Exception(f"Clip None detectado: {label}{extra}")
-
-    def _write_render_error_log(self, out_dir: str, payload: dict):
-        try:
-            import json
-            p = os.path.join(out_dir, "error.json")
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-        except Exception:
-            try:
-                p = os.path.join(out_dir, "error.txt")
-                with open(p, "w", encoding="utf-8") as f:
-                    f.write(str(payload))
-            except Exception:
-                pass
 
     def _clip_from_rgba(self, rgba_arr, duration):
         try:
@@ -1305,6 +2418,119 @@ class VideoGenerator:
         except Exception as e:
             print(f"Erro ao aplicar Ken Burns: {e}")
             return clip
+
+    def _clip_resize(self, clip, resize_value):
+        if hasattr(clip, "resized"):
+            return clip.resized(resize_value)
+        return clip.resize(resize_value)
+
+    def _clip_with_position(self, clip, position):
+        if hasattr(clip, "with_position"):
+            return clip.with_position(position)
+        return clip.set_position(position)
+
+    def _motion_plan_for_scene(self, scene_idx: int, total_scenes: int, reuse_count: int = 0, reused_visual: bool = False) -> Dict[str, Any]:
+        if reused_visual:
+            variants = [
+                "push_in", "push_out", "slow_zoom", "pan_left", "pan_right", "tilt_up", "tilt_down",
+                "drift", "parallax", "orbit_leve", "camera_breathing", "dolly_out",
+                "leve_handheld", "slow_rotation", "depth_movement", "foreground_parallax",
+                "rack_focus_digital",
+            ]
+        else:
+            variants = [
+                "push_in", "slow_zoom", "push_out", "pan_left", "pan_right",
+                "tilt_up", "dolly_in", "drift", "depth_movement",
+            ]
+        effect_name = variants[(scene_idx + reuse_count) % len(variants)]
+        zoom_factor = 1.06 + (((scene_idx + reuse_count) % 4) * 0.02)
+        if reused_visual:
+            zoom_factor = min(1.16, zoom_factor + 0.02)
+        return {
+            "name": effect_name,
+            "zoom_factor": zoom_factor,
+            "reused_visual": bool(reused_visual),
+            "scene_number": int(scene_idx) + 1,
+            "total_scenes": int(total_scenes),
+        }
+
+    def _apply_motion_effect(self, clip, size, motion_plan: Optional[Dict[str, Any]] = None):
+        plan = motion_plan or {}
+        effect_name = str(plan.get("name") or "zoom_in").strip().lower()
+        zoom_factor = float(plan.get("zoom_factor") or 1.10)
+        if effect_name in {"zoom_in", "push_in", "dolly_in", "slow_zoom"}:
+            return self._apply_ken_burns(clip, size, zoom_factor=zoom_factor)
+        try:
+            try:
+                from moviepy.editor import CompositeVideoClip
+            except ImportError:
+                from moviepy import CompositeVideoClip
+
+            width, height = size
+            duration = max(0.1, float(getattr(clip, "duration", 0) or 0.1))
+
+            def _progress(t: float) -> float:
+                try:
+                    return max(0.0, min(1.0, float(t) / duration))
+                except Exception:
+                    return 0.0
+
+            if effect_name in {"zoom_out", "dolly_out", "push_out"}:
+                start_zoom = max(1.08, zoom_factor + 0.05)
+                end_zoom = max(1.0, zoom_factor - 0.04)
+
+                def _resize_func(t: float):
+                    p = _progress(t)
+                    return start_zoom - ((start_zoom - end_zoom) * p)
+
+                zoomed = self._clip_resize(clip, _resize_func)
+                return self._clip_with_position(zoomed, "center")
+
+            resized = self._clip_resize(clip, zoom_factor)
+            extra_x = max(0.0, float(getattr(resized, "w", width) or width) - float(width))
+            extra_y = max(0.0, float(getattr(resized, "h", height) or height) - float(height))
+
+            def _position(t: float):
+                p = _progress(t)
+                if effect_name == "pan_left":
+                    return (-extra_x * p, -extra_y / 2.0)
+                if effect_name == "pan_right":
+                    return (-extra_x * (1.0 - p), -extra_y / 2.0)
+                if effect_name == "tilt_up":
+                    return (-extra_x / 2.0, -extra_y * p)
+                if effect_name == "tilt_down":
+                    return (-extra_x / 2.0, -extra_y * (1.0 - p))
+                if effect_name in {"parallax_soft", "parallax"}:
+                    return (-extra_x * (0.2 + (0.6 * p)), -extra_y * (0.15 + (0.3 * (1.0 - p))))
+                if effect_name == "drift_diag":
+                    return (-extra_x * (0.15 + (0.55 * p)), -extra_y * (0.15 + (0.45 * p)))
+                if effect_name in {"slow_drift", "drift"}:
+                    return (-extra_x * (0.1 + (0.35 * p)), -extra_y * 0.35)
+                if effect_name == "camera_breathing":
+                    breathe = math.sin(p * math.pi * 2.0) * 0.08
+                    return (-extra_x * (0.45 + breathe), -extra_y * (0.45 - breathe))
+                if effect_name in {"orbit_soft", "orbit_leve", "slow_rotation"}:
+                    orbit = math.sin(p * math.pi) * 0.28
+                    return (-extra_x * (0.3 + orbit), -extra_y * (0.25 + (0.2 * (1.0 - p))))
+                if effect_name == "leve_handheld":
+                    shake_x = math.sin(p * math.pi * 3.0) * 0.05
+                    shake_y = math.cos(p * math.pi * 2.0) * 0.03
+                    return (-extra_x * (0.45 + shake_x), -extra_y * (0.45 + shake_y))
+                if effect_name == "depth_movement":
+                    depth = math.sin(p * math.pi) * 0.12
+                    return (-extra_x * (0.18 + (0.52 * p)), -extra_y * (0.28 + depth))
+                if effect_name == "foreground_parallax":
+                    return (-extra_x * (0.05 + (0.75 * p)), -extra_y * (0.25 + (0.2 * p)))
+                if effect_name == "rack_focus_digital":
+                    wobble = math.sin(p * math.pi * 1.5) * 0.1
+                    return (-extra_x * (0.4 + wobble), -extra_y * 0.4)
+                return ("center", "center")
+
+            moved = self._clip_with_position(resized, _position)
+            composed = CompositeVideoClip([moved], size=size)
+            return self._set_clip_duration(composed, duration)
+        except Exception:
+            return self._apply_ken_burns(clip, size, zoom_factor=zoom_factor)
 
     def _freeze_last_frame_clip(self, clip, duration):
         """Repete o ultimo frame valido para evitar padding preto quando o audio passa do video."""
@@ -1439,9 +2665,19 @@ class VideoGenerator:
             "aspect_ratio": aspect_ratio,
             "video_size": None,
         }
-        debug_id = uuid.uuid4().hex
+        render_report: Dict[str, Any] = {
+            "original_script": {"title": None, "scenes": []},
+            "narration_for_tts": [],
+            "narration_plan": {},
+            "audio_generation": {},
+            "sync_validation": {},
+            "visual_plan": {},
+            "scene_visuals": [],
+            "effects_applied": [],
+        }
         try:
             title = plan.get('title', 'Vídeo Sem Título')
+            render_report["original_script"]["title"] = title
             try:
                 plan = self.review_plan(plan)
             except Exception:
@@ -1461,13 +2697,15 @@ class VideoGenerator:
                     raw_scenes = []
 
             def _scene_prompt_for_fragment(base_prompt: str, fragment_text: str) -> str:
-                frag = (fragment_text or "").strip()
-                bp = (base_prompt or "").strip()
+                frag = self._compact_narrative_moment(fragment_text, max_chars=100)
+                bp = self._clean_image_prompt_seed(base_prompt, max_chars=150)
                 if bp and frag:
-                    return f"{bp}. Focus on this exact moment: {frag[:180]}"
+                    return f"{bp}. Momento: {frag}"
                 if bp:
                     return bp
-                return f"Photorealistic cinematic photography representing: {frag[:140]}"
+                if frag:
+                    return f"Personagem e ambiente coerentes. Momento: {frag}"
+                return "Personagem e ambiente coerentes. Estilo cinematografico natural."
 
             def _materialize_scenes(raw_list):
                 scenes_local = []
@@ -1581,6 +2819,31 @@ class VideoGenerator:
                     fallback_text = "Conteúdo em preparação."
                 scenes = [{"text": fallback_text, "image_prompt": plan.get("image_prompt") if isinstance(plan, dict) else ""}]
 
+            for idx, scene in enumerate(scenes):
+                if isinstance(scene, dict):
+                    original_text = str(scene.get("text") or "").strip()
+                    original_prompt = str(scene.get("image_prompt") or "").strip()
+                else:
+                    original_text = str(scene or "").strip()
+                    original_prompt = ""
+                    scenes[idx] = {"text": original_text, "image_prompt": original_prompt}
+                    scene = scenes[idx]
+                cleaned_tts = self._normalize_tts_text(original_text)
+                estimated_sec = self._estimate_narration_seconds(cleaned_tts or original_text)
+                scene["_tts_text"] = cleaned_tts
+                scene["_estimated_narration_sec"] = estimated_sec
+                render_report["original_script"]["scenes"].append({
+                    "scene_number": idx + 1,
+                    "original_text": original_text,
+                    "image_prompt": original_prompt,
+                })
+                render_report["narration_for_tts"].append({
+                    "scene_number": idx + 1,
+                    "original_text": original_text,
+                    "clean_text": cleaned_tts,
+                    "estimated_duration_sec": estimated_sec,
+                })
+
             # Enriquecimento: IA gera image_prompts profissionais com base na narração (imagens próprias para vídeo profissional)
             # Skip enrichment if music mode (handled by generator) or if images were preselected
             selected_raw_pre = plan.get("selected_images") or plan.get("images") or []
@@ -1592,6 +2855,48 @@ class VideoGenerator:
                         scenes = enriched["scenes"]
                 except Exception as e:
                     print(f"Aviso: enriquecimento de image_prompts falhou, usando prompts existentes: {e}")
+
+            for idx, scene in enumerate(scenes):
+                if not isinstance(scene, dict):
+                    scenes[idx] = {"text": str(scene or "").strip(), "image_prompt": ""}
+                    scene = scenes[idx]
+                scene["_tts_text"] = self._normalize_tts_text(scene.get("text") or "")
+                scene["_estimated_narration_sec"] = self._estimate_narration_seconds(scene.get("_tts_text") or scene.get("text") or "")
+
+            narration_plan = self.prepare_final_narration_text(
+                plan,
+                scenes,
+                voice_style=voice_style,
+                voice_gender=voice_gender,
+            )
+            for idx, scene in enumerate(scenes):
+                planned_scene_texts = narration_plan.get("scene_texts") or []
+                planned_scene_estimates = narration_plan.get("scene_estimated_durations_sec") or []
+                if idx < len(planned_scene_texts):
+                    scene["_tts_text"] = self._normalize_tts_text(planned_scene_texts[idx] or scene.get("_tts_text") or scene.get("text") or "")
+                if idx < len(planned_scene_estimates):
+                    scene["_estimated_narration_sec"] = float(planned_scene_estimates[idx] or scene.get("_estimated_narration_sec") or 0.0)
+                if idx < len(render_report["narration_for_tts"]):
+                    render_report["narration_for_tts"][idx]["clean_text"] = scene.get("_tts_text") or ""
+                    render_report["narration_for_tts"][idx]["estimated_duration_sec"] = round(float(scene.get("_estimated_narration_sec") or 0.0), 2)
+            render_report["narration_plan"] = {
+                "channel_name": narration_plan.get("channel_name"),
+                "opening_text": narration_plan.get("opening_text"),
+                "body_text": narration_plan.get("body_text"),
+                "closing_text": narration_plan.get("closing_text"),
+                "full_text": narration_plan.get("full_text"),
+                "char_count": narration_plan.get("char_count"),
+                "word_count": narration_plan.get("word_count"),
+                "voice_words_per_minute": narration_plan.get("voice_words_per_minute"),
+                "opening_duration_est_sec": narration_plan.get("opening_duration_est_sec"),
+                "body_duration_est_sec": narration_plan.get("body_duration_est_sec"),
+                "closing_duration_est_sec": narration_plan.get("closing_duration_est_sec"),
+                "estimated_total_duration_sec": narration_plan.get("estimated_total_duration_sec"),
+                "requested_duration_range_sec": narration_plan.get("requested_duration_range_sec"),
+                "planning_attempts": narration_plan.get("planning_attempts") or [],
+                "has_automatic_opening": bool(narration_plan.get("opening_text")),
+                "has_automatic_closing": bool(narration_plan.get("closing_text")),
+            }
 
             # Otimização de memória: Reduzir resolução para 720p para evitar OOM em tiers gratuitos
             if aspect_ratio == "16:9":
@@ -1622,6 +2927,53 @@ class VideoGenerator:
                     selected_image_paths = [selected_primary_path]
                 elif not music_file_path:
                     use_single_bg = False
+
+            continuity_anchor = self._build_visual_continuity_anchor(title, scenes, plan if isinstance(plan, dict) else None)
+            visual_group_plan = self._build_visual_groups(
+                scenes,
+                plan if isinstance(plan, dict) else None,
+                ai_available=bool(self.ai_service),
+                use_single_bg=bool(use_single_bg),
+                selected_image_count=len(selected_image_paths),
+            )
+            for group in visual_group_plan.get("groups") or []:
+                group["prompt"] = self._compose_visual_prompt_for_group(scenes, group.get("scene_indexes") or [], continuity_anchor)
+            render_report["visual_plan"] = {
+                "continuity_anchor": continuity_anchor,
+                "requested_image_count": int(visual_group_plan.get("target_image_count") or 0),
+                "group_count": len(visual_group_plan.get("groups") or []),
+                "groups": [
+                    {
+                        "group_id": int(group.get("group_id") or 0),
+                        "scene_numbers": [int(idx) + 1 for idx in (group.get("scene_indexes") or [])],
+                        "semantic_summary": group.get("semantic_summary") or {},
+                        "prompt": str(group.get("prompt") or "")[:600],
+                    }
+                    for group in (visual_group_plan.get("groups") or [])
+                ],
+                "scene_decisions": [
+                    {
+                        "scene_number": int(item.get("scene_index") or 0) + 1,
+                        "decision": item.get("decision"),
+                        "justification": item.get("justification"),
+                    }
+                    for item in (visual_group_plan.get("scene_decisions") or [])
+                ],
+            }
+            group_lookup = {
+                int(group.get("group_id") or 0): group
+                for group in (visual_group_plan.get("groups") or [])
+            }
+            scene_to_group = {
+                int(k): int(v)
+                for k, v in (visual_group_plan.get("scene_to_group") or {}).items()
+            }
+            scene_decision_lookup = {
+                int(item.get("scene_index") or 0): item
+                for item in (visual_group_plan.get("scene_decisions") or [])
+            }
+            generated_group_paths: Dict[int, str] = {}
+            generated_group_sources: Dict[int, str] = {}
 
             if use_single_bg and scenes and not music_file_path and not selected_image_paths:
                 try:
@@ -1822,74 +3174,271 @@ class VideoGenerator:
                     raise Exception("Nenhuma cena visual gerada para o clipe musical.")
 
             # --- MODO NORMAL (NARRADO) ---
-            # 1. Slide de Título (Com capa se disponível)
             if progress_callback:
-                progress_callback(5, "Criando slide de título...")
-                
-            # Limpeza do título para evitar mostrar créditos ou URLs
+                progress_callback(5, "Planejando narracao final...")
+
             clean_title = title
             if "Music:" in clean_title:
                 clean_title = clean_title.split("Music:")[0].strip()
             if "http" in clean_title:
                 clean_title = clean_title.split("http")[0].strip()
-            # Limita tamanho do título no slide
             if len(clean_title) > 100:
                 clean_title = clean_title[:97] + "..."
 
-            title_audio_path = self.generate_audio(clean_title, voice_style=voice_style, voice_gender=voice_gender)
-            debug_ctx["title_audio_path"] = title_audio_path
-            
+            planning_meta = render_report.get("narration_plan") or {}
+            requested_range = planning_meta.get("requested_duration_range_sec") or {}
+            min_requested_duration = float(requested_range.get("min_sec") or 0.0)
+            max_requested_duration = float(requested_range.get("max_sec") or 0.0)
+            target_requested_duration = float(requested_range.get("target_sec") or 0.0)
+            range_tolerance = 0.05
+            duration_range_report = {
+                "requested_duration_min_sec": round(min_requested_duration, 2),
+                "requested_duration_max_sec": round(max_requested_duration, 2),
+                "requested_duration_target_sec": round(target_requested_duration, 2),
+                "estimated_full_narration_duration_sec": round(float(planning_meta.get("estimated_total_duration_sec") or 0.0), 2),
+                "actual_audio_duration_sec": 0.0,
+                "range_reference_only": True,
+                "attempted_replanning_after_real_audio": False,
+                "kept_complete_narration": False,
+                "decision": "pending",
+                "decision_reason": "",
+                "above_requested_range_sec": 0.0,
+                "below_requested_range_sec": 0.0,
+                "within_requested_range": False,
+            }
+
+            final_narration_text = str(planning_meta.get("full_text") or "").strip()
+            if not final_narration_text:
+                raise Exception("Falha ao montar a narracao final antes do TTS.")
+            render_report["audio_generation"] = {
+                "final_text_sent_to_tts": final_narration_text,
+                "text_char_count": len(final_narration_text),
+                "text_word_count": self._count_words(final_narration_text),
+            }
+
+            main_audio_path = None
+            main_audio_clip = None
+            actual_total_audio_dur = 0.0
+            planning_target_max_sec = float(planning_meta.get("planning_target_max_sec") or 0.0)
+            real_audio_target_max_sec = planning_target_max_sec or (max_requested_duration * 0.97 if max_requested_duration > 0 else 0.0)
+            for narration_attempt in range(4):
+                main_audio_path = self.generate_audio(final_narration_text, voice_style=voice_style, voice_gender=voice_gender)
+                tts_debug = dict(self._last_tts_debug or {})
+                tts_debug["final_text_sent_to_tts"] = final_narration_text
+                tts_debug["attempt_number"] = narration_attempt + 1
+                render_report["audio_generation"] = tts_debug
+                debug_ctx["audio_path"] = main_audio_path
+                debug_ctx["tts_provider_configured"] = tts_debug.get("configured_provider")
+                debug_ctx["tts_provider_used"] = tts_debug.get("provider_used")
+                debug_ctx["tts_fallback_used"] = tts_debug.get("fallback_used")
+                if not main_audio_path or not os.path.exists(main_audio_path):
+                    raise Exception(
+                        "Falha ao gerar o audio final da narracao. "
+                        + self._summarize_tts_failure(tts_debug)
+                    )
+                if main_audio_clip is not None:
+                    try:
+                        main_audio_clip.close()
+                    except Exception:
+                        pass
+                main_audio_clip = AudioFileClip(main_audio_path)
+                self._assert_clip_not_none(main_audio_clip, "main_narration_audio_clip", {"path": main_audio_path})
+                actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
+                if actual_total_audio_dur <= 0:
+                    raise Exception("Audio final gerado com duracao invalida.")
+                render_report["audio_generation"]["provider_used"] = (
+                    render_report["audio_generation"].get("provider_used")
+                    or tts_debug.get("provider_used")
+                )
+                render_report["audio_generation"]["fallback_used"] = bool(
+                    render_report["audio_generation"].get("fallback_used")
+                )
+                render_report["audio_generation"]["final_audio_duration_sec"] = round(actual_total_audio_dur, 2)
+                render_report["audio_generation"]["output_path"] = main_audio_path
+
+                max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))
+                min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= (min_requested_duration * (1.0 - range_tolerance)))
+                above_requested_range_sec = max(0.0, actual_total_audio_dur - max_requested_duration) if max_requested_duration > 0 else 0.0
+                below_requested_range_sec = max(0.0, min_requested_duration - actual_total_audio_dur) if min_requested_duration > 0 else 0.0
+                duration_range_report["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
+                duration_range_report["above_requested_range_sec"] = round(above_requested_range_sec, 2)
+                duration_range_report["below_requested_range_sec"] = round(below_requested_range_sec, 2)
+                duration_range_report["within_requested_range"] = bool(max_ok and min_ok)
+                if max_ok and min_ok:
+                    duration_range_report["decision"] = "within_requested_range"
+                    duration_range_report["decision_reason"] = "Narracao completa ficou dentro da faixa solicitada."
+                    break
+                if not max_ok and narration_attempt >= 3:
+                    duration_range_report["kept_complete_narration"] = True
+                    duration_range_report["decision"] = "keep_complete_narration_outside_range"
+                    duration_range_report["decision_reason"] = "Duracao final excedeu a faixa de referencia, mas a narracao foi mantida completa para nao cortar o audio."
+                    break
+                if not max_ok:
+                    duration_range_report["attempted_replanning_after_real_audio"] = True
+                else:
+                    duration_range_report["kept_complete_narration"] = True
+                    duration_range_report["decision"] = "keep_complete_narration_below_range"
+                    duration_range_report["decision_reason"] = "Duracao final ficou abaixo da faixa de referencia, mas a narracao foi mantida completa e a timeline segue o audio real."
+                    break
+
+                current_body_text = str(planning_meta.get("body_text") or "").strip()
+                current_opening = str(planning_meta.get("opening_text") or "").strip()
+                current_closing = str(planning_meta.get("closing_text") or "").strip()
+                opening_duration_est = self._estimate_text_duration_with_voice(current_opening, voice_style=voice_style, voice_gender=voice_gender)
+                closing_duration_est = self._estimate_text_duration_with_voice(current_closing, voice_style=voice_style, voice_gender=voice_gender)
+                current_body_estimate = self._estimate_text_duration_with_voice(current_body_text, voice_style=voice_style, voice_gender=voice_gender)
+                body_actual_estimate = max(1.0, actual_total_audio_dur - opening_duration_est - closing_duration_est)
+                target_body_max_sec = max(8.0, (real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur) - opening_duration_est - closing_duration_est)
+                if max_requested_duration > 0 and actual_total_audio_dur > 0:
+                    shrink_ratio = max(0.35, min(0.95, float(real_audio_target_max_sec or max_requested_duration) / max(1.0, actual_total_audio_dur)))
+                    proportional_target = min(current_body_estimate, body_actual_estimate) * shrink_ratio
+                    target_body_max_sec = max(8.0, min(target_body_max_sec, proportional_target))
+
+                condensed = self._condense_body_text_to_fit(
+                    current_body_text,
+                    scenes,
+                    target_max_sec=target_body_max_sec,
+                    voice_style=voice_style,
+                    voice_gender=voice_gender,
+                    kind=plan.get("kind") if isinstance(plan, dict) else None,
+                )
+                new_body_text = self._normalize_tts_text(condensed.get("body_text") or "")
+                if not new_body_text or new_body_text == current_body_text:
+                    duration_range_report["kept_complete_narration"] = True
+                    duration_range_report["decision"] = "keep_complete_narration_after_failed_replan"
+                    duration_range_report["decision_reason"] = "Nao foi possivel resumir mais sem comprometer a narracao; o processo seguiu com o audio completo como referencia oficial."
+                    break
+                planning_meta["body_text"] = new_body_text
+                scene_texts = condensed.get("scene_texts") or self._redistribute_body_text_to_scenes(new_body_text, scenes)
+                planning_meta["scene_texts"] = scene_texts
+                planning_meta["body_duration_est_sec"] = round(self._estimate_text_duration_with_voice(new_body_text, voice_style=voice_style, voice_gender=voice_gender), 2)
+                planning_meta["word_count"] = self._count_words(" ".join([current_opening, new_body_text, current_closing]).strip())
+                planning_meta["char_count"] = len(" ".join([current_opening, new_body_text, current_closing]).strip())
+                planning_meta["planning_target_max_sec"] = round(real_audio_target_max_sec, 2) if real_audio_target_max_sec > 0 else 0.0
+                planning_meta["estimated_total_duration_sec"] = round(
+                    float(planning_meta.get("opening_duration_est_sec") or 0.0)
+                    + float(planning_meta.get("body_duration_est_sec") or 0.0)
+                    + float(planning_meta.get("closing_duration_est_sec") or 0.0),
+                    2,
+                )
+                planning_meta["full_text"] = " ".join([current_opening, new_body_text, current_closing]).strip()
+                render_report["audio_generation"]["replanned_text_sent_to_tts"] = planning_meta["full_text"]
+                planning_meta.setdefault("planning_attempts", []).append({
+                    "attempt": len(planning_meta.get("planning_attempts") or []) + 1,
+                    "body_word_count": self._count_words(new_body_text),
+                    "estimated_total_duration_sec": planning_meta.get("estimated_total_duration_sec"),
+                    "replanned_after_real_audio": True,
+                    "actual_audio_duration_sec": round(actual_total_audio_dur, 2),
+                    "target_body_max_sec": round(target_body_max_sec, 2),
+                })
+                for idx, scene in enumerate(scenes):
+                    if idx < len(scene_texts):
+                        scene["_tts_text"] = self._normalize_tts_text(scene_texts[idx] or scene.get("_tts_text") or scene.get("text") or "")
+                        scene["_estimated_narration_sec"] = self._estimate_text_duration_with_voice(scene["_tts_text"], voice_style=voice_style, voice_gender=voice_gender)
+                    if idx < len(render_report["narration_for_tts"]):
+                        render_report["narration_for_tts"][idx]["clean_text"] = scene.get("_tts_text") or ""
+                        render_report["narration_for_tts"][idx]["estimated_duration_sec"] = round(float(scene.get("_estimated_narration_sec") or 0.0), 2)
+                planning_meta["scene_estimated_durations_sec"] = [round(float(scene.get("_estimated_narration_sec") or 0.0), 2) for scene in scenes]
+                render_report["narration_plan"] = planning_meta
+                final_narration_text = str(planning_meta.get("full_text") or "").strip()
+
+            estimated_total_duration = float(planning_meta.get("estimated_total_duration_sec") or 0.0)
+            duration_range_report["estimated_full_narration_duration_sec"] = round(estimated_total_duration, 2)
+            if duration_range_report["decision"] == "pending":
+                duration_range_report["kept_complete_narration"] = bool(not duration_range_report["within_requested_range"])
+                duration_range_report["decision"] = "keep_complete_narration_outside_range" if not duration_range_report["within_requested_range"] else "within_requested_range"
+                duration_range_report["decision_reason"] = (
+                    "Narracao final ficou fora da faixa de referencia, mas o processo manteve o audio completo como fonte oficial da timeline."
+                    if not duration_range_report["within_requested_range"]
+                    else "Narracao completa ficou dentro da faixa solicitada."
+                )
+            planning_meta["duration_range_report"] = duration_range_report
+            render_report["narration_plan"] = planning_meta
+            opening_est = float(planning_meta.get("opening_duration_est_sec") or 0.0)
+            closing_est = float(planning_meta.get("closing_duration_est_sec") or 0.0)
+            body_est = float(planning_meta.get("body_duration_est_sec") or 0.0)
+            scale_ratio = (actual_total_audio_dur / estimated_total_duration) if estimated_total_duration > 0 else 1.0
+            title_clip_duration = max(2.0, round(opening_est * scale_ratio, 2)) if opening_est > 0 else 2.5
+            end_clip_duration = max(2.0, round(closing_est * scale_ratio, 2)) if closing_est > 0 else 3.0
+            if (title_clip_duration + end_clip_duration) >= actual_total_audio_dur:
+                title_clip_duration = max(1.6, min(title_clip_duration, actual_total_audio_dur * 0.22))
+                end_clip_duration = max(1.8, min(end_clip_duration, actual_total_audio_dur * 0.24))
+            body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - end_clip_duration)
+
+            full_caption_timeline = self._build_caption_timeline(final_narration_text, actual_total_audio_dur, audio_path=main_audio_path)
+            if not full_caption_timeline:
+                raise Exception("Falha ao gerar a timeline de legendas a partir do audio final.")
+
+            requested_duration = actual_total_audio_dur
+            duration_plan = self._plan_scene_visual_durations(
+                scenes,
+                requested_duration,
+                title_duration=title_clip_duration,
+                end_duration=end_clip_duration,
+                scene_decisions=visual_group_plan.get("scene_decisions") or [],
+                transition_duration=0.0,
+            )
+            planned_scene_durations = duration_plan.get("allocated_scene_durations") or [float(scene.get("_estimated_narration_sec") or 5.0) for scene in scenes]
+            render_report["duration_plan"] = duration_plan
+            render_report["duration_plan"]["requested_duration_min_sec"] = round(min_requested_duration, 2)
+            render_report["duration_plan"]["requested_duration_max_sec"] = round(max_requested_duration, 2)
+            render_report["duration_plan"]["requested_duration_target_sec"] = round(target_requested_duration, 2)
+            render_report["duration_plan"]["requested_duration_is_reference_only"] = True
+            render_report["duration_plan"]["planned_total_audio_duration_sec"] = round(estimated_total_duration, 2)
+            render_report["duration_plan"]["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
+            render_report["duration_plan"]["opening_duration_sec"] = round(title_clip_duration, 2)
+            render_report["duration_plan"]["end_duration_sec"] = round(end_clip_duration, 2)
+            render_report["duration_plan"]["body_audio_duration_sec"] = round(body_audio_target, 2)
+            render_report["duration_plan"]["range_decision"] = duration_range_report.get("decision")
+            render_report["duration_plan"]["range_decision_reason"] = duration_range_report.get("decision_reason")
+            render_report["duration_plan"]["above_requested_range_sec"] = duration_range_report.get("above_requested_range_sec")
+            render_report["duration_plan"]["below_requested_range_sec"] = duration_range_report.get("below_requested_range_sec")
+
             start_bg_path = selected_primary_path if selected_primary_path and os.path.exists(selected_primary_path) else None
             if not start_bg_path:
                 start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not start_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 start_bg_path = video_bg_path
             _track_image_path(start_bg_path)
-            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path)
-            
+            title_footer = f"Canal {planning_meta.get('channel_name')}" if planning_meta.get("channel_name") else None
+            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path, footer_text=title_footer)
             clip_title = ImageClip(img_title)
             self._assert_clip_not_none(clip_title, "title_slide")
-            
-            if title_audio_path:
-                audio_clip = AudioFileClip(title_audio_path)
-                self._assert_clip_not_none(audio_clip, "title_audio_clip", {"path": title_audio_path})
-                dur = float(getattr(audio_clip, "duration", 0) or 0)
-                if dur <= 0:
-                    dur = 3.0
-                clip_title = self._set_clip_duration(clip_title, dur)
-                clip_title = self._set_clip_audio(clip_title, audio_clip)
-            else:
-                clip_title = self._set_clip_duration(clip_title, 3.0)
-                
+            clip_title = self._set_clip_duration(clip_title, title_clip_duration)
+            opening_caption_timeline = self._slice_caption_timeline(full_caption_timeline, 0.0, title_clip_duration)
+            opening_overlays = []
+            for item in opening_caption_timeline:
+                overlay_arr = self.create_text_overlay(str(item.get("caption") or "").strip(), size=video_size, text_color=(255, 255, 255))
+                overlay_clip = self._clip_from_rgba(overlay_arr, float(item.get("end") or 0.0) - float(item.get("start") or 0.0))
+                overlay_clip = self._set_clip_start(overlay_clip, float(item.get("start") or 0.0))
+                opening_overlays.append(overlay_clip)
+            clip_title = CompositeVideoClip([clip_title] + opening_overlays, size=video_size) if opening_overlays else clip_title
             clips.append(clip_title)
-            
-            # 2. Cenas
+
             total_scenes = len(scenes)
             debug_ctx["scene_count"] = int(total_scenes)
+            min_scene_visual_duration = 2.2 if total_scenes <= 2 else 2.8
+            render_report["duration_plan"]["min_scene_visual_duration_sec"] = round(min_scene_visual_duration, 2)
+            scene_time_cursor = title_clip_duration
+
             for i, scene in enumerate(scenes):
                 debug_ctx["stage"] = "scene_loop"
                 debug_ctx["scene_index"] = int(i)
-                scene_progress = 10 + int((i / total_scenes) * 70)
+                scene_progress = 10 + int((i / max(1, total_scenes)) * 70)
                 if progress_callback:
                     progress_callback(scene_progress, f"Processando cena {i+1} de {total_scenes}...")
-                    
+
                 if isinstance(scene, str):
                     text = scene
-                    # Auto-generate prompt for text-only scenes to ensure visuals
                     image_prompt = f"Photorealistic cinematic photography representing: {text[:100]}"
                 else:
                     text = scene.get('text', '')
                     image_prompt = scene.get('image_prompt', '')
-                    
-                    # Fallback: Se não houver prompt de imagem, cria um baseado no texto
                     if not image_prompt and text:
-                        print(f"Aviso: Cena {i+1} sem image_prompt. Criando a partir do texto.")
                         image_prompt = f"Photorealistic cinematic photography representing: {text[:100]}"
 
-                # Limpeza de segurança para evitar metadados no vídeo
-                clean_text = self._normalize_tts_text(text)
-                
-                # GARANTIA DE IMAGEM (Substitui lógica antiga)
+                clean_text = (scene.get("_tts_text") if isinstance(scene, dict) else "") or self._normalize_tts_text(text)
+
                 def _scene_status(message, scene_idx=i, total=total_scenes, pct=scene_progress):
                     if progress_callback:
                         progress_callback(pct, f"Cena {scene_idx+1}/{total}: {message}")
@@ -1897,37 +3446,55 @@ class VideoGenerator:
                 bg_image_path = None
                 prompt_key = None
                 reused_from_pool = False
+                visual_source = "generated_group"
+                visual_group_id = scene_to_group.get(i, i)
+                visual_group = group_lookup.get(visual_group_id, {})
+                scene_decision = scene_decision_lookup.get(i, {})
                 if selected_image_paths:
                     bg_image_path = selected_image_paths[i % len(selected_image_paths)]
+                    visual_source = "selected_image"
                 elif use_single_bg and video_bg_paths:
                     try:
                         import random
                         bg_image_path = random.choice(video_bg_paths)
                     except Exception:
                         bg_image_path = video_bg_paths[0]
+                    visual_source = "single_bg_pool"
                 else:
-                    prompt_key = (
-                        str(aspect_ratio).strip(),
-                        (image_prompt or "").strip().lower() or clean_text[:220].strip().lower(),
-                    )
-                    cached = image_cache.get(prompt_key)
-                    if cached and os.path.exists(cached):
-                        bg_image_path = cached
+                    if visual_group_id in generated_group_paths and os.path.exists(generated_group_paths[visual_group_id]):
+                        bg_image_path = generated_group_paths[visual_group_id]
+                        reused_from_pool = True
+                        visual_source = generated_group_sources.get(visual_group_id) or "reused_group_image"
                     else:
-                        try:
-                            bg_image_path = self._ensure_image_for_scene(
-                                image_prompt,
-                                text_fallback=clean_text,
-                                aspect_ratio=aspect_ratio,
-                                status_callback=_scene_status,
-                                max_rounds=image_max_rounds,
-                                allow_non_ai_fallback=allow_non_ai_fallback
-                            )
-                        except Exception:
-                            bg_image_path = None
+                        group_prompt = str(visual_group.get("prompt") or image_prompt or "").strip()
+                        prompt_key = (
+                            str(aspect_ratio).strip(),
+                            group_prompt.lower() or clean_text[:220].strip().lower(),
+                        )
+                        cached = image_cache.get(prompt_key)
+                        if cached and os.path.exists(cached):
+                            bg_image_path = cached
+                            visual_source = "cached_group_image"
+                        else:
+                            try:
+                                bg_image_path = self._ensure_image_for_scene(
+                                    group_prompt or image_prompt,
+                                    text_fallback=clean_text,
+                                    aspect_ratio=aspect_ratio,
+                                    status_callback=_scene_status,
+                                    max_rounds=image_max_rounds,
+                                    allow_non_ai_fallback=allow_non_ai_fallback
+                                )
+                                visual_source = "generated_group"
+                            except Exception:
+                                bg_image_path = None
+                            if bg_image_path:
+                                generated_group_paths[visual_group_id] = bg_image_path
+                                generated_group_sources[visual_group_id] = visual_source
                         if (not bg_image_path) and allow_image_reuse and scene_image_pool:
                             bg_image_path = scene_image_pool[i % len(scene_image_pool)]
                             reused_from_pool = True
+                            visual_source = "reused_pool_image"
                             _scene_status("Reutilizando imagem valida com variacao de movimento para manter o video completo...")
 
                 if not bg_image_path:
@@ -1946,63 +3513,63 @@ class VideoGenerator:
                 _track_image_path(bg_image_path)
                 debug_ctx["bg_image_path"] = bg_image_path
 
-                # Fallback colors
                 bg_colors = [(24, 24, 24), (30, 30, 30), (36, 36, 36), (42, 42, 42)]
                 bg_color = bg_colors[i % len(bg_colors)]
-                
-                # Gerar Audio da cena
-                start_audio = time.time()
-                audio_path = self.generate_audio(clean_text, voice_style=voice_style, voice_gender=voice_gender)
-                debug_ctx["audio_path"] = audio_path
-                print(f"DEBUG: Audio da cena {i+1} gerado em {time.time() - start_audio:.2f}s")
-                
-                screen_text = ""
-                if isinstance(scene, dict):
-                    screen_text = (scene.get("caption") or scene.get("on_screen_text") or "").strip()
-                if not screen_text:
-                    screen_text = self._make_caption(clean_text)
-
                 if use_single_bg and video_bg_frame is not None:
                     bg_frame = video_bg_frame
                 else:
                     bg_frame = self.create_text_image("", size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
 
                 bg_clip = ImageClip(bg_frame)
-                if audio_path:
-                    audio_clip_scene = AudioFileClip(audio_path)
-                    self._assert_clip_not_none(audio_clip_scene, "scene_audio_clip", {"path": audio_path, "scene_index": i})
-                    scene_dur = float(getattr(audio_clip_scene, "duration", 0) or 0)
-                else:
-                    audio_clip_scene = None
-                    scene_dur = 5
-
                 self._assert_clip_not_none(bg_clip, "scene_bg_clip", {"scene_index": i})
-                if scene_dur <= 0:
-                    scene_dur = 5.0
+                planned_scene_duration = float(planned_scene_durations[i]) if i < len(planned_scene_durations) else float(scene.get("_estimated_narration_sec") or 5.0)
+                scene_dur = max(planned_scene_duration or 0.0, min_scene_visual_duration)
                 bg_clip = self._set_clip_duration(bg_clip, scene_dur)
                 reuse_count = int(scene_reuse_counts.get(bg_image_path, 0))
                 scene_reuse_counts[bg_image_path] = reuse_count + 1
-                zoom_factor = 1.06 + (((i + reuse_count) % 4) * 0.02)
-                if reused_from_pool:
-                    zoom_factor = min(1.16, zoom_factor + 0.02)
-                bg_clip = self._apply_ken_burns(bg_clip, video_size, zoom_factor=zoom_factor)
+                motion_plan = self._motion_plan_for_scene(
+                    i,
+                    total_scenes,
+                    reuse_count=reuse_count,
+                    reused_visual=bool(reused_from_pool or scene_reuse_counts.get(bg_image_path, 0) > 1),
+                )
+                bg_clip = self._apply_motion_effect(bg_clip, video_size, motion_plan)
+                render_report["effects_applied"].append({
+                    "scene_number": i + 1,
+                    "image_group_id": visual_group_id + 1,
+                    "effect": motion_plan.get("name"),
+                    "zoom_factor": motion_plan.get("zoom_factor"),
+                    "transition": "crossfade" if total_scenes > 1 else "none",
+                })
+                render_report["scene_visuals"].append({
+                    "scene_number": i + 1,
+                    "image_group_id": visual_group_id + 1,
+                    "reused": bool(reused_from_pool or scene_reuse_counts.get(bg_image_path, 0) > 1),
+                    "source": visual_source,
+                    "decision": scene_decision.get("decision"),
+                    "justification": scene_decision.get("justification"),
+                    "image_path": bg_image_path,
+                    "prompt": str((visual_group.get("prompt") or image_prompt or "")).strip()[:600],
+                    "clean_narration": clean_text,
+                    "audio_duration_sec": round(planned_scene_duration, 2),
+                    "planned_visual_duration_sec": round(planned_scene_duration, 2),
+                    "final_visual_duration_sec": round(scene_dur, 2),
+                })
 
-                caption_source = clean_text or screen_text
-                caption_timeline = self._build_caption_timeline(caption_source, scene_dur, audio_path=audio_path)
+                scene_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, scene_time_cursor + scene_dur)
                 overlay_clips = []
-                if caption_timeline:
-                    for item in caption_timeline:
-                        caption = str(item.get("caption") or "").strip()
-                        start = float(item.get("start") or 0.0)
-                        end = float(item.get("end") or 0.0)
-                        if not caption or end <= start:
-                            continue
-                        overlay_arr = self.create_text_overlay(caption, size=video_size, text_color=(255, 255, 255))
-                        overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
-                        overlay_clip = self._set_clip_start(overlay_clip, start)
-                        overlay_clips.append(overlay_clip)
+                for item in scene_caption_timeline:
+                    caption = str(item.get("caption") or "").strip()
+                    start = float(item.get("start") or 0.0)
+                    end = float(item.get("end") or 0.0)
+                    if not caption or end <= start:
+                        continue
+                    overlay_arr = self.create_text_overlay(caption, size=video_size, text_color=(255, 255, 255))
+                    overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
+                    overlay_clip = self._set_clip_start(overlay_clip, start)
+                    overlay_clips.append(overlay_clip)
                 if not overlay_clips:
-                    overlay_arr = self.create_text_overlay(screen_text, size=video_size, text_color=(255, 255, 255))
+                    overlay_arr = self.create_text_overlay(self._make_caption(clean_text), size=video_size, text_color=(255, 255, 255))
                     overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
                     overlay_clips = [overlay_clip]
 
@@ -2010,54 +3577,36 @@ class VideoGenerator:
                     self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
                 clip_scene = CompositeVideoClip([bg_clip] + overlay_clips, size=video_size)
                 self._assert_clip_not_none(clip_scene, "scene_composite_clip", {"scene_index": i})
-                
-                if audio_clip_scene:
-                    clip_scene = self._set_clip_audio(clip_scene, audio_clip_scene)
-                else:
-                    print(f"AVISO: Cena {i+1} sem áudio gerado. Mantendo duração padrão.")
-                    
                 clips.append(clip_scene)
-                
-                pass
-                
-                # Limpeza de imagens temporárias
+                scene_time_cursor += scene_dur
+
                 if bg_image_path and "temp_" in bg_image_path and bg_image_path not in cached_temp_paths:
                     try:
                         os.remove(bg_image_path)
                     except Exception:
                         pass
-                        
-                # Memory Cleanup entre cenas
                 gc.collect()
-                
-            # 3. Slide Final (CTA)
+
             if progress_callback:
                 progress_callback(85, "Criando slide final...")
-                
-            end_text = "Inscreva-se no Canal!\nLink na Bio."
-            audio_end_path = self.generate_audio("Inscreva-se no canal e ative o sininho.", voice_style=voice_style, voice_gender=voice_gender)
-            debug_ctx["end_audio_path"] = audio_end_path
-            
+
+            end_text = "Inscreva-se no canal"
             end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
             if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
                 end_bg_path = video_bg_path
             _track_image_path(end_bg_path)
-            img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path)
-            
+            img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path, footer_text="Compartilhe esta mensagem")
             clip_end = ImageClip(img_end)
             self._assert_clip_not_none(clip_end, "end_slide")
-            
-            if audio_end_path:
-                audio_clip_end = AudioFileClip(audio_end_path)
-                self._assert_clip_not_none(audio_clip_end, "end_audio_clip", {"path": audio_end_path})
-                dur = float(getattr(audio_clip_end, "duration", 0) or 0)
-                if dur <= 0:
-                    dur = 3.0
-                clip_end = self._set_clip_duration(clip_end, dur)
-                clip_end = self._set_clip_audio(clip_end, audio_clip_end)
-            else:
-                clip_end = self._set_clip_duration(clip_end, 3.0)
-                
+            clip_end = self._set_clip_duration(clip_end, end_clip_duration)
+            end_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, actual_total_audio_dur)
+            end_overlays = []
+            for item in end_caption_timeline:
+                overlay_arr = self.create_text_overlay(str(item.get("caption") or "").strip(), size=video_size, text_color=(255, 255, 255))
+                overlay_clip = self._clip_from_rgba(overlay_arr, float(item.get("end") or 0.0) - float(item.get("start") or 0.0))
+                overlay_clip = self._set_clip_start(overlay_clip, float(item.get("start") or 0.0))
+                end_overlays.append(overlay_clip)
+            clip_end = CompositeVideoClip([clip_end] + end_overlays, size=video_size) if end_overlays else clip_end
             clips.append(clip_end)
             
             # Concatenar todos
@@ -2108,6 +3657,9 @@ class VideoGenerator:
             if final_dur <= 0:
                 raise Exception("final_clip com duração inválida (<=0) após concatenação.")
 
+            if not music_file_path:
+                final_clip = self._set_clip_audio(final_clip, main_audio_clip)
+
             try:
                 if getattr(final_clip, "audio", None) is not None:
                     ad = float(getattr(final_clip.audio, "duration", 0) or 0)
@@ -2130,6 +3682,42 @@ class VideoGenerator:
                             final_dur = final_dur
             except Exception:
                 pass
+
+            if not music_file_path:
+                try:
+                    final_dur = float(getattr(final_clip, "duration", 0) or 0.0)
+                except Exception:
+                    final_dur = 0.0
+                caption_duration = 0.0
+                if full_caption_timeline:
+                    try:
+                        caption_duration = float(full_caption_timeline[-1].get("end") or 0.0)
+                    except Exception:
+                        caption_duration = 0.0
+                audio_video_diff = abs(final_dur - actual_total_audio_dur)
+                audio_caption_diff = abs(caption_duration - actual_total_audio_dur)
+                sync_validation = {
+                    "planned_text_duration_sec": round(float(estimated_total_duration or 0.0), 2),
+                    "audio_duration_sec": round(float(actual_total_audio_dur or 0.0), 2),
+                    "captions_duration_sec": round(float(caption_duration or 0.0), 2),
+                    "video_duration_sec": round(float(final_dur or 0.0), 2),
+                    "audio_caption_diff_sec": round(audio_caption_diff, 2),
+                    "audio_video_diff_sec": round(audio_video_diff, 2),
+                    "captions_synced_with_audio": bool(audio_caption_diff <= 0.25),
+                    "video_synced_with_audio": bool(audio_video_diff <= 0.25),
+                    "has_automatic_opening": bool((planning_meta.get("opening_text") or "").strip()),
+                    "has_automatic_closing": bool((planning_meta.get("closing_text") or "").strip()),
+                    "timeline_source": "real_audio_duration",
+                }
+                render_report["sync_validation"] = sync_validation
+                if not sync_validation["captions_synced_with_audio"]:
+                    raise Exception("Falha de validacao: legenda nao terminou junto com o audio final.")
+                if not sync_validation["video_synced_with_audio"]:
+                    raise Exception("Falha de validacao: video nao terminou junto com o audio final.")
+                if not sync_validation["has_automatic_opening"]:
+                    raise Exception("Falha de validacao: abertura automatica ausente.")
+                if not sync_validation["has_automatic_closing"]:
+                    raise Exception("Falha de validacao: encerramento automatico ausente.")
 
             try:
                 final_clip.get_frame(0.0)
@@ -2219,61 +3807,10 @@ class VideoGenerator:
                 except Exception as e:
                     print(f"Erro ao adicionar música de fundo: {e}")
 
-            target_duration = plan.get("target_duration_sec")
-            if target_duration:
-                try:
-                    target_duration = float(target_duration)
-                except Exception:
-                    target_duration = None
-            if target_duration and target_duration > 1 and final_clip:
-                try:
-                    current = float(final_clip.duration or 0)
-                except Exception:
-                    current = 0
-                if current > (target_duration + 0.5):
-                    final_clip = self._subclip(final_clip, 0, target_duration)
-                elif current and current < (target_duration - 0.5):
-                    extra = target_duration - current
-                    print(
-                        f"Aviso: vídeo ficou {extra:.1f}s abaixo da duração alvo; "
-                        "mantendo duração real para evitar tela preta/silêncio artificial."
-                    )
-
             # Output
             if progress_callback:
                 progress_callback(95, "Renderizando arquivo final...")
 
-            # #region debug-point A:render-write-phase
-            def _dbg_render_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
-                try:
-                    import json as _json
-                    import urllib.request as _urlreq
-                    _p = ".dbg/render-stuck-86.env"
-                    _u, _s = "http://127.0.0.1:7777/event", "render-stuck-86"
-                    try:
-                        with open(_p, "r", encoding="utf-8") as _f:
-                            _c = _f.read()
-                        for _line in _c.splitlines():
-                            if _line.startswith("DEBUG_SERVER_URL="):
-                                _u = _line.split("=", 1)[1].strip() or _u
-                            elif _line.startswith("DEBUG_SESSION_ID="):
-                                _s = _line.split("=", 1)[1].strip() or _s
-                    except Exception:
-                        pass
-                    _payload = {
-                        "sessionId": _s,
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": "app/services/video_generator.py:write_videofile",
-                        "msg": f"[DEBUG] {msg}",
-                        "data": data or {},
-                    }
-                    _req = _urlreq.Request(_u, data=_json.dumps(_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                    _urlreq.urlopen(_req, timeout=2).read()
-                except Exception:
-                    pass
-            # #endregion
-                
             filename = f"{uuid.uuid4()}.mp4"
             output_path = os.path.join(self.output_dir, filename)
             
@@ -2300,7 +3837,6 @@ class VideoGenerator:
                                     pass
                                 try:
                                     if value == 1 or value == total or (old_value is not None and int(value) != int(old_value) and int(value) % 25 == 0):
-                                        _dbg_render_event("A", "write_videofile progress", {"bar": bar, "value": value, "total": total, "task_progress": min(99, pct)})
                                 except Exception:
                                     pass
                     write_logger = RenderProgressLogger(progress_callback)
@@ -2318,15 +3854,6 @@ class VideoGenerator:
             bitrate = "1800k" if is_long_video else "3500k"
             
             debug_ctx["stage"] = "write_videofile"
-            _render_started_at = time.time()
-            _dbg_render_event("A", "write_videofile start", {
-                "output_path": output_path,
-                "clip_count": len(clips or []),
-                "bitrate": bitrate,
-                "is_long_video": bool(is_long_video),
-                "final_clip": self._clip_debug_info(final_clip),
-            })
-            # #region debug-point C:render-heartbeat
             _render_hb_stop = None
             _render_hb_thread = None
             try:
@@ -2344,26 +3871,13 @@ class VideoGenerator:
                                     progress_callback(96 if _size > 0 else 95, "Renderizando arquivo final...")
                             except Exception:
                                 pass
-                            _dbg_render_event(
-                                "C",
-                                "write_videofile heartbeat",
-                                {
-                                    "elapsed_sec": round(time.time() - _render_started_at, 2),
-                                    "output_exists": bool(_exists),
-                                    "output_size": int(_size),
-                                    "size_changed": bool(_size != _last_size),
-                                },
-                            )
                             _last_size = _size
                         except Exception as _hb_err:
-                            _dbg_render_event("C", "write_videofile heartbeat error", {"error": str(_hb_err)})
 
                 _render_hb_thread = _threading.Thread(target=_render_heartbeat, daemon=True)
                 _render_hb_thread.start()
             except Exception as _hb_start_err:
-                _dbg_render_event("C", "write_videofile heartbeat start error", {"error": str(_hb_start_err)})
-            # #endregion
-            try:
+                        try:
                 final_clip.write_videofile(
                     output_path, 
                     fps=24, 
@@ -2384,76 +3898,14 @@ class VideoGenerator:
                         _render_hb_stop.set()
                 except Exception:
                     pass
-                _dbg_render_event("A", "write_videofile success", {
-                    "elapsed_sec": round(time.time() - _render_started_at, 2),
-                    "output_exists": bool(os.path.exists(output_path)),
-                    "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
-                })
             except Exception as e:
                 try:
                     if _render_hb_stop:
                         _render_hb_stop.set()
                 except Exception:
                     pass
-                _dbg_render_event("B", "write_videofile exception", {
-                    "elapsed_sec": round(time.time() - _render_started_at, 2),
-                    "error": str(e),
-                    "output_exists": bool(os.path.exists(output_path)),
-                    "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
-                })
-                try:
-                    import traceback
-                    failures = []
-                    try:
-                        for ci, c in enumerate(list(clips or [])):
-                            if c is None:
-                                failures.append({"clip_index": ci, "where": "clip", "error": "clip is None"})
-                                continue
-                            try:
-                                dur = float(getattr(c, "duration", 0) or 0)
-                            except Exception:
-                                dur = 0
-                            times = [0.0]
-                            if dur > 0.25:
-                                times.append(max(0.0, dur - 0.05))
-                            for tt in times:
-                                try:
-                                    c.get_frame(tt)
-                                except Exception as ex:
-                                    failures.append({"clip_index": ci, "where": f"get_frame(t={tt})", "error": str(ex)})
-                                    break
-                            try:
-                                a = getattr(c, "audio", None)
-                                if a is not None:
-                                    try:
-                                        a.get_frame(0.0)
-                                    except Exception as ax:
-                                        failures.append({"clip_index": ci, "where": "audio.get_frame(0.0)", "error": str(ax)})
-                            except Exception:
-                                pass
-                    except Exception:
-                        failures = failures or []
-                    out_dir = self._render_debug_dir(debug_id)
-                    payload = {
-                        "debug_id": debug_id,
-                        "error": str(e),
-                        "traceback": traceback.format_exc(),
-                        "context": debug_ctx,
-                        "clips": [self._clip_debug_info(c) for c in (clips or [])],
-                        "final_clip": self._clip_debug_info(final_clip),
-                        "postmortem_failures": failures,
-                    }
-                    self._write_render_error_log(out_dir, payload)
-                    print(f"Render error log salvo em: {out_dir}")
-                except Exception:
-                    pass
                 raise
             output_path = self._ensure_playable_mp4(output_path)
-            _dbg_render_event("E", "post-process playable mp4", {
-                "output_path": output_path,
-                "output_exists": bool(os.path.exists(output_path)),
-                "output_size": (os.path.getsize(output_path) if os.path.exists(output_path) else 0),
-            })
             
             
             abs_path = os.path.abspath(output_path)
@@ -2461,812 +3913,82 @@ class VideoGenerator:
             
             if progress_callback:
                 progress_callback(100, "Vídeo renderizado com sucesso!")
-            
-            return {"video_url": f"{VIDEO_URL_PREFIX}/{filename}", "music_credit": used_music_credit, "used_images": used_image_urls}
-            
-        except Exception as e:
-            try:
-                import traceback
-                out_dir = self._render_debug_dir(debug_id)
-                payload = {
-                    "debug_id": debug_id,
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                    "context": debug_ctx,
-                    "clips": [self._clip_debug_info(c) for c in (clips or [])],
-                    "final_clip": self._clip_debug_info(final_clip),
-                }
-                self._write_render_error_log(out_dir, payload)
-                print(f"Render error log salvo em: {out_dir}")
-            except Exception:
-                pass
-            print(f"Erro na geração do vídeo: {e} (debug_id={debug_id})")
-            raise Exception(f"{e} | debug_id={debug_id} | log_dir=/generated_assets/render_errors/{debug_id}/") from e
-        finally:
-            # Resource Cleanup
-            print("Limpando recursos de memória...")
-            try:
-                if final_clip:
-                    final_clip.close()
-                if bg_music:
-                    bg_music.close()
-                for clip in clips:
-                    try:
-                        clip.close()
-                        if clip.audio:
-                            clip.audio.close()
-                    except:
-                        pass
-            except Exception as e:
-                print(f"Erro ao limpar recursos: {e}")
-                
-            # Force GC
-            gc.collect()
-            try:
-                for p in list(cached_temp_paths):
-                    try:
-                        if p and os.path.exists(p):
-                            os.remove(p)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
 
-    def create_music_video(self, music_path, scenes=None, title="Música", aspect_ratio="9:16", lyrics: Optional[str] = None, author_text: Optional[str] = None, watermark_enabled: bool = True, sync_mode: str = "auto", captions_enabled: bool = True, progress_callback: Optional[Callable[[int, str], None]] = None, image_options: Optional[dict] = None):
-        """Gera clipe (vídeo) com a música como áudio e cenas baseadas na letra. Sem TTS."""
-        try:
-            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
-        except ImportError:
-            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip, concatenate_audioclips
-        
-        if not os.path.exists(music_path):
-            raise FileNotFoundError(f"Arquivo de música não encontrado: {music_path}")
-        video_size = (720, 1280) if aspect_ratio == "9:16" else (1280, 720)
-        allow_non_ai_fallback = False
-        clips = []
-        try:
-            audio_clip = AudioFileClip(music_path)
-            total_duration = audio_clip.duration
-            if progress_callback:
-                try:
-                    progress_callback(5, "Preparando áudio...")
-                except Exception:
-                    pass
-            if scenes is None:
-                scenes = []
-
-            lyric_text = lyrics
-            if isinstance(scenes, dict):
-                lyric_text = lyric_text or scenes.get("lyrics")
-                scenes = scenes.get("scenes") or []
-            if not isinstance(scenes, list):
-                scenes = []
-
-            clean_title = self._clean_title(title)
-            warnings = []
-
-            credit = None
-            if watermark_enabled:
-                at = (author_text or "").strip()
-                if at:
-                    credit = f"Autor: {at} • © {time.strftime('%Y')}"
-                else:
-                    credit = f"© {time.strftime('%Y')}"
-
-            def _normalize(s: str) -> str:
-                t = (s or "").strip().lower()
-                if not t:
-                    return ""
-                t = unicodedata.normalize("NFKD", t)
-                t = "".join(ch for ch in t if not unicodedata.combining(ch))
-                t = re.sub(r"[^a-z0-9\s]", " ", t)
-                t = re.sub(r"\s+", " ", t).strip()
-                return t
-
-            def _is_label_line(line: str) -> bool:
-                if not line:
-                    return False
-                return bool(re.match(r"^(verso|refr[aã]o|pr[eé]-?refr[aã]o|ponte|intro|outro|coro|bridge|chorus)\b", line.strip(), flags=re.IGNORECASE))
-
-            def _clean_lyrics_lines(lyrics_raw: str):
-                raw = [l.strip() for l in (lyrics_raw or "").splitlines() if l.strip()]
-                out = []
-                for l in raw:
-                    if _is_label_line(l):
-                        continue
-                    l2 = re.sub(r"^\[.*?\]\s*", "", l).strip()
-                    if not l2:
-                        continue
-                    out.append(l2)
-                return out
-
-            lyrics_lines_all = _clean_lyrics_lines(lyric_text or "")
-            lyrics_lines_for_timeline = lyrics_lines_all[:]
-            lyrics_lines_for_captions = lyrics_lines_all[:] if captions_enabled else []
-
-            force_storyboard = isinstance(image_options, dict) and bool(image_options.get("force_storyboard"))
-            pre_generated_images = None
-            if isinstance(image_options, dict):
-                pre_generated_images = image_options.get("pre_generated_images")
-            pre_generated_images_override = None
-            timeline_override = None
-            if force_storyboard and isinstance(pre_generated_images, list) and pre_generated_images:
-                pre = [str(x).strip() for x in pre_generated_images if isinstance(x, str) and str(x).strip()]
-                if len(pre) > 20:
-                    pre = pre[:20]
-                while len(pre) < 15:
-                    pre.append(pre[-1])
-                pre_generated_images_override = pre
-
-                n = len(pre_generated_images_override)
-                seg_dur = float(total_duration) / float(max(1, n))
-                grouped_caps = []
-                if lyrics_lines_for_timeline:
-                    chunk = max(1, int(math.ceil(len(lyrics_lines_for_timeline) / float(max(1, n)))))
-                    for i in range(n):
-                        start_i = i * chunk
-                        end_i = min(len(lyrics_lines_for_timeline), (i + 1) * chunk)
-                        part = lyrics_lines_for_timeline[start_i:end_i]
-                        cap = " ".join([p for p in part if p])[:220].strip()
-                        grouped_caps.append(cap)
-                while len(grouped_caps) < n:
-                    grouped_caps.append(grouped_caps[-1] if grouped_caps else "")
-
-                t = 0.0
-                tl = []
-                for i in range(n):
-                    start = t
-                    end = float(total_duration) if i == (n - 1) else min(float(total_duration), start + seg_dur)
-                    t = end
-                    tl.append({"start": start, "end": end, "caption": grouped_caps[i] if captions_enabled else ""})
-                timeline_override = tl
-
-            max_scenes_env = os.getenv("MUSIC_CLIP_MAX_SCENES", "").strip()
-            try:
-                max_scenes = int(max_scenes_env) if max_scenes_env else 18
-            except Exception:
-                max_scenes = 18
-            max_scenes = max(6, min(max_scenes, 40))
-
-            mode_norm = (sync_mode or "auto").strip().lower()
-            explicit_strict = mode_norm in {"perfect", "precise", "strict"}
-            enforce_voice_sync_env = (os.getenv("MUSIC_CLIP_ENFORCE_VOICE_SYNC") or "1").strip().lower()
-            enforce_voice_sync = enforce_voice_sync_env not in {"0", "false", "no", "off"}
-            strict_sync = explicit_strict or (enforce_voice_sync and captions_enabled and bool(lyrics_lines_for_captions) and mode_norm in {"auto", ""})
-            if force_storyboard:
-                strict_sync = False
-                explicit_strict = False
-            if explicit_strict and not lyrics_lines_for_captions:
-                raise Exception("Para sincronização perfeita, informe a letra da música.")
-            if strict_sync and lyrics_lines_for_timeline:
-                max_scenes = max(max_scenes, min(len(lyrics_lines_for_timeline), 120))
-
-            segments = None
-            transcribe_error = None
-            if (not force_storyboard) and self.ai_service and lyrics_lines_for_captions:
-                try:
-                    if hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
-                        info = self.ai_service.transcribe_audio_segments_detailed(music_path, language="pt")
-                        if isinstance(info, dict):
-                            segments = info.get("segments")
-                            transcribe_error = info.get("error")
-                        else:
-                            segments = None
-                    else:
-                        segments = self.ai_service.transcribe_audio_segments(music_path, language="pt")
-                except Exception as e:
-                    segments = None
-                    transcribe_error = str(e)
-
-            def _transcribe_error_meta(err):
-                if isinstance(err, dict):
-                    et = str(err.get("type") or err.get("code") or "").strip().lower()
-                    em = str(err.get("message") or "").strip()
-                    es = err.get("status")
-                    te = f"{et} {em}".strip().lower()
-                    return et, em, es, te
-                s = str(err or "").strip()
-                return "", s, None, s.lower()
-
-            if explicit_strict and not segments:
-                err_type, err_msg, err_status, te = _transcribe_error_meta(transcribe_error)
-                if transcribe_error == "missing_api_key":
-                    warnings.append("Sincronização perfeita indisponível (OpenAI não configurada). Gerando clipe sem legenda.")
-                elif err_type == "insufficient_quota" or "insufficient_quota" in te or "exceeded your current quota" in te:
-                    warnings.append("Sincronização perfeita indisponível (OpenAI retornou insufficient_quota na transcrição). Gerando clipe sem legenda.")
-                elif transcribe_error == "file_not_found":
-                    warnings.append("Sincronização perfeita indisponível (arquivo de áudio não encontrado para transcrição). Gerando clipe sem legenda.")
-                elif te:
-                    warnings.append("Sincronização perfeita indisponível (falha ao transcrever na OpenAI). Gerando clipe sem legenda.")
-                else:
-                    warnings.append("Sincronização perfeita indisponível (não foi possível transcrever o áudio). Gerando clipe sem legenda.")
-                captions_enabled = False
-                lyrics_lines_for_captions = []
-                strict_sync = False
-            if strict_sync and not segments:
-                err_type, err_msg, err_status, te = _transcribe_error_meta(transcribe_error)
-                if transcribe_error == "missing_api_key":
-                    warnings.append("Legendas desativadas: OpenAI não configurada para detecção de voz.")
-                elif err_type == "insufficient_quota" or "insufficient_quota" in te or "exceeded your current quota" in te:
-                    warnings.append("Legendas desativadas: OpenAI retornou insufficient_quota na detecção de voz.")
-                elif te:
-                    warnings.append("Legendas desativadas: falha ao transcrever o áudio para detecção de voz.")
-                captions_enabled = False
-                lyrics_lines_for_captions = []
-                strict_sync = False
-            if progress_callback:
-                try:
-                    progress_callback(18, "Sincronizando letra e áudio...")
-                except Exception:
-                    pass
-
-            def _merge_segments(segs, strict: bool = False):
-                blocks = []
-                cur = None
-                cur_words = None
-                for s in (segs or []):
-                    if not isinstance(s, dict):
-                        continue
-                    try:
-                        st = float(s.get("start"))
-                        en = float(s.get("end"))
-                    except Exception:
-                        continue
-                    if en <= st:
-                        continue
-                    txt = str(s.get("text") or "").strip()
-                    if not txt:
-                        continue
-                    wraw = s.get("words") if isinstance(s, dict) else None
-                    wlist = None
-                    if isinstance(wraw, list) and wraw:
-                        ww = []
-                        for w in wraw:
-                            if not isinstance(w, dict):
-                                continue
-                            try:
-                                ws = float(w.get("start"))
-                                we = float(w.get("end"))
-                            except Exception:
-                                continue
-                            wd = str(w.get("word") or w.get("text") or "").strip()
-                            if not wd or we <= ws:
-                                continue
-                            ww.append({"start": ws, "end": we, "word": wd})
-                        if ww:
-                            wlist = ww
-                    if cur is None:
-                        cur = {"start": max(0.0, st), "end": en, "text": txt}
-                        cur_words = wlist[:] if isinstance(wlist, list) else None
-                    else:
-                        cur["end"] = en
-                        cur["text"] = (cur["text"] + " " + txt).strip()
-                        if isinstance(cur_words, list) and isinstance(wlist, list):
-                            cur_words.extend(wlist)
-                        elif cur_words is None and isinstance(wlist, list):
-                            cur_words = wlist[:]
-                    dur = float(cur["end"]) - float(cur["start"])
-                    if strict:
-                        if dur >= 1.8 or len(cur["text"]) >= 44:
-                            if isinstance(cur_words, list) and cur_words:
-                                try:
-                                    cur["start"] = max(0.0, min(float(w.get("start")) for w in cur_words))
-                                    cur["end"] = max(float(cur["start"]) + 0.15, max(float(w.get("end")) for w in cur_words))
-                                except Exception:
-                                    pass
-                                cur["words"] = cur_words
-                            blocks.append(cur)
-                            cur = None
-                            cur_words = None
-                            continue
-                    if dur >= 3.6 or len(cur["text"]) >= 84:
-                        if isinstance(cur_words, list) and cur_words:
-                            try:
-                                cur["start"] = max(0.0, min(float(w.get("start")) for w in cur_words))
-                                cur["end"] = max(float(cur["start"]) + 0.15, max(float(w.get("end")) for w in cur_words))
-                            except Exception:
-                                pass
-                            cur["words"] = cur_words
-                        blocks.append(cur)
-                        cur = None
-                        cur_words = None
-                if cur is not None:
-                    if isinstance(cur_words, list) and cur_words:
-                        try:
-                            cur["start"] = max(0.0, min(float(w.get("start")) for w in cur_words))
-                            cur["end"] = max(float(cur["start"]) + 0.15, max(float(w.get("end")) for w in cur_words))
-                        except Exception:
-                            pass
-                        cur["words"] = cur_words
-                    blocks.append(cur)
-                if blocks:
-                    if not strict:
-                        if blocks[0]["start"] > 0.25:
-                            blocks[0]["start"] = 0.0
-                        if blocks[-1]["end"] < (total_duration - 0.2):
-                            blocks[-1]["end"] = float(total_duration)
-                return blocks
-
-            def _align_blocks_to_lyrics(blocks, lines):
-                if not blocks or not lines:
-                    return {}
-                b = blocks[:]
-                l = lines[:]
-                if len(b) > 120:
-                    b = b[:120]
-                    b[-1]["end"] = float(total_duration)
-                if len(l) > 180:
-                    l = l[:180]
-                m = len(b)
-                n = len(l)
-                skip_block = 0.55
-                skip_line = 0.25
-                neg_inf = -1e18
-                dp = [[neg_inf] * (n + 1) for _ in range(m + 1)]
-                prev = [[None] * (n + 1) for _ in range(m + 1)]
-                dp[0][0] = 0.0
-
-                score_cache = {}
-
-                def _score(i, j):
-                    key = (i, j)
-                    if key in score_cache:
-                        return score_cache[key]
-                    s1 = _normalize(b[i]["text"])
-                    s2 = _normalize(l[j])
-                    if not s1 or not s2:
-                        sc = 0.0
-                    else:
-                        sc = difflib.SequenceMatcher(None, s1, s2).ratio()
-                    score_cache[key] = sc
-                    return sc
-
-                for i in range(m + 1):
-                    for j in range(n + 1):
-                        base = dp[i][j]
-                        if base <= neg_inf / 2:
-                            continue
-                        if i < m:
-                            cand = base - skip_block
-                            if cand > dp[i + 1][j]:
-                                dp[i + 1][j] = cand
-                                prev[i + 1][j] = (i, j, "skip_block")
-                        if j < n:
-                            cand = base - skip_line
-                            if cand > dp[i][j + 1]:
-                                dp[i][j + 1] = cand
-                                prev[i][j + 1] = (i, j, "skip_line")
-                        if i < m and j < n:
-                            sc = _score(i, j)
-                            cand = base + sc
-                            if cand > dp[i + 1][j + 1]:
-                                dp[i + 1][j + 1] = cand
-                                prev[i + 1][j + 1] = (i, j, "match")
-
-                best_j = 0
-                best_val = neg_inf
-                for j in range(n + 1):
-                    if dp[m][j] > best_val:
-                        best_val = dp[m][j]
-                        best_j = j
-
-                mapping = {}
-                i = m
-                j = best_j
-                while i > 0 or j > 0:
-                    step = prev[i][j]
-                    if not step:
-                        break
-                    pi, pj, action = step
-                    if action == "match":
-                        mapping[pi] = pj
-                    i, j = pi, pj
-                return mapping
-
-            timeline = []
-            if isinstance(timeline_override, list) and timeline_override:
-                timeline = timeline_override
-            elif strict_sync and segments and isinstance(segments, list) and lyrics_lines_for_captions:
-                lead_ms_raw = (os.getenv("MUSIC_CLIP_CAPTION_LEAD_MS") or "").strip()
-                try:
-                    lead_ms = float(lead_ms_raw) if lead_ms_raw else 0.0
-                except Exception:
-                    lead_ms = 0.0
-                lead_sec = max(-0.9, min(0.9, lead_ms / 1000.0))
-
-                blocks = _merge_segments(segments, strict=True)
-                mapping = _align_blocks_to_lyrics(blocks, lyrics_lines_for_captions)
-
-                line_spans = {}
-                for b_idx, line_idx in (mapping or {}).items():
-                    if b_idx is None or line_idx is None:
-                        continue
-                    if b_idx < 0 or b_idx >= len(blocks):
-                        continue
-                    if line_idx < 0 or line_idx >= len(lyrics_lines_for_captions):
-                        continue
-                    b = blocks[b_idx]
-                    st = float(b.get("start") or 0.0)
-                    en = float(b.get("end") or 0.0)
-                    if en <= st:
-                        continue
-                    span = line_spans.get(line_idx)
-                    if not span:
-                        line_spans[line_idx] = {"start": st, "end": en}
-                    else:
-                        span["start"] = min(float(span["start"]), st)
-                        span["end"] = max(float(span["end"]), en)
-
-                items = []
-                for li, sp in (line_spans or {}).items():
-                    if sp is None:
-                        continue
-                    try:
-                        sst = float(sp.get("start") or 0.0)
-                        een = float(sp.get("end") or 0.0)
-                    except Exception:
-                        continue
-                    if een <= sst:
-                        continue
-                    if abs(lead_sec) > 0.0001:
-                        sst = max(0.0, sst - lead_sec)
-                        een = max(sst + 0.25, een - lead_sec)
-                    if li < 0 or li >= len(lyrics_lines_for_captions):
-                        continue
-                    cap = lyrics_lines_for_captions[li]
-                    if not str(cap or "").strip():
-                        continue
-                    items.append({"start": sst, "end": een, "caption": cap})
-
-                if not items:
-                    timeline.append({"start": 0.0, "end": float(total_duration), "caption": ""})
-                else:
-                    items.sort(key=lambda x: float(x.get("start") or 0.0))
-                    last_end = 0.0
-                    for it in items:
-                        st = max(0.0, float(it.get("start") or 0.0))
-                        en = min(float(total_duration), float(it.get("end") or 0.0))
-                        if st < last_end:
-                            st = last_end
-                        if en <= st:
-                            continue
-                        if (st - last_end) > 0.35:
-                            timeline.append({"start": last_end, "end": st, "caption": ""})
-                        timeline.append({"start": st, "end": en, "caption": str(it.get("caption") or "").strip()})
-                        last_end = en
-                    if (float(total_duration) - last_end) > 0.35:
-                        timeline.append({"start": last_end, "end": float(total_duration), "caption": ""})
-                    if timeline:
-                        timeline[0]["start"] = 0.0
-                        timeline[-1]["end"] = float(total_duration)
-            elif lyrics_lines_for_timeline:
-                n = min(max_scenes, len(lyrics_lines_for_timeline))
-                if n <= 0:
-                    n = 1
-                seg_dur = float(total_duration) / float(n)
-                t = 0.0
-                for i in range(n):
-                    start = t
-                    end = float(total_duration) if i == (n - 1) else min(float(total_duration), start + seg_dur)
-                    t = end
-                    cap = lyrics_lines_for_timeline[min(i, len(lyrics_lines_for_timeline) - 1)]
-                    timeline.append({"start": start, "end": end, "caption": cap})
-            else:
-                n = max(1, len(scenes)) if scenes else 1
-                seg_dur = float(total_duration) / float(n)
-                for i in range(n):
-                    start = float(i) * seg_dur
-                    end = float(total_duration) if i == (n - 1) else float(i + 1) * seg_dur
-                    sc = scenes[i] if i < len(scenes) else {}
-                    cap = sc.get("text") if isinstance(sc, dict) else str(sc)
-                    timeline.append({"start": start, "end": end, "caption": str(cap or "").strip()})
-
-            if timeline:
-                next_non_empty = ""
-                next_caption_by_idx = [""] * len(timeline)
-                for i in range(len(timeline) - 1, -1, -1):
-                    cap = str((timeline[i] or {}).get("caption") or "").strip()
-                    if cap:
-                        next_non_empty = cap
-                    next_caption_by_idx[i] = next_non_empty
-                prev_non_empty = ""
-                for i in range(len(timeline)):
-                    cap = str((timeline[i] or {}).get("caption") or "").strip()
-                    if cap:
-                        prev_non_empty = cap
-                        timeline[i]["prompt_text"] = cap
-                    else:
-                        fb = next_caption_by_idx[i] or prev_non_empty or str(lyric_text or "").strip()
-                        timeline[i]["prompt_text"] = fb[:280] if fb else ""
-
-            limit = max_scenes
-            if strict_sync and timeline and not str(timeline[0].get("caption") or "").strip():
-                limit = min(60, max_scenes + 1)
-            if len(timeline) > limit:
-                timeline = timeline[:limit]
-                timeline[-1]["end"] = float(total_duration)
-
-            sum_prev = 0.0
-            for it in timeline:
-                dur = max(0.6, float(it["end"]) - float(it["start"]))
-                it["duration"] = dur
-                sum_prev += dur
-            if timeline and not strict_sync:
-                drift = float(total_duration) - float(sum_prev)
-                if abs(drift) > 0.35:
-                    timeline[-1]["duration"] = max(0.8, float(timeline[-1]["duration"]) + drift)
-            if progress_callback:
-                try:
-                    progress_callback(22, "Planejando cenas...")
-                except Exception:
-                    pass
-
-            def _prompt_for_caption(caption: str) -> str:
-                cap = (caption or "").strip()
-                if not cap:
-                    return "cinematic music video scene"
-                norm_full = _normalize(lyric_text or "")
-                norm_cap = _normalize(cap)
-                is_christian = any(k in norm_full for k in [
-                    "jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "ressurreicao",
-                    "tumulo", "sepulcro", "sangue", "redencao", "salvacao", "mestre",
-                    "coroa", "espinhos", "pregos", "cravo", "veu",
-                    "pecado", "sacrificio", "agonia", "penalidade", "perdao", "paz", "vitoria",
-                ]) or any(k in norm_cap for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "sepulcro", "redencao", "salvacao", "pecado", "sacrificio"])
-
-                stop = {
-                    "a", "o", "os", "as", "um", "uma", "uns", "umas", "de", "da", "do", "das", "dos", "em", "no", "na", "nos", "nas",
-                    "para", "pra", "por", "com", "sem", "que", "se", "e", "ou", "ao", "aos", "à", "às", "me", "te", "seu", "sua", "seus", "suas",
-                    "meu", "minha", "meus", "minhas", "teu", "tua", "teus", "tuas", "lhe", "lhes", "eu", "tu", "ele", "ela", "nós", "nos", "vós",
-                    "você", "voces", "vocês", "eles", "elas", "isso", "isto", "aquilo", "aqui", "ali", "la", "lá", "hoje", "agora", "sempre", "nunca",
-                    "mais", "menos", "muito", "muita", "muitos", "muitas", "tão", "também", "ja", "já", "ainda", "entao", "então", "porque", "porquê",
-                    "quando", "onde", "como", "quem", "qual", "quais", "tudo", "todo", "toda", "todos", "todas",
-                }
-
-                translate = {
-                    "jesus": "Jesus",
-                    "cristo": "Jesus Christ",
-                    "senhor": "the Lord",
-                    "deus": "God",
-                    "espirito": "Holy Spirit",
-                    "espírito": "Holy Spirit",
-                    "igreja": "church",
-                    "templo": "church",
-                    "altar": "altar",
-                    "cruz": "wooden cross",
-                    "calvario": "Calvary hill",
-                    "golgota": "Golgotha hill",
-                    "ressuscitou": "resurrection",
-                    "ressurreicao": "resurrection",
-                    "salvacao": "salvation",
-                    "redencao": "redemption",
-                    "perdao": "forgiveness",
-                    "graca": "grace",
-                    "gloria": "glorious light",
-                    "paz": "peace",
-                    "vitoria": "victory",
-                    "cura": "healing",
-                    "libertacao": "deliverance",
-                    "liberdade": "freedom",
-                    "adoracao": "worship",
-                    "louvor": "worship",
-                    "fogo": "holy fire energy (non-violent)",
-                    "avivamento": "revival",
-                }
-
-                def _has_any(norm: str, keys: List[str]) -> bool:
-                    if not norm:
-                        return False
-                    for k in keys:
-                        if k and k in norm:
-                            return True
-                    return False
-
-                def _safe_scene_descriptor() -> str:
-                    n = f"{norm_full} {norm_cap}".strip()
-                    if _has_any(n, ["lodebar", "lodeba", "lodeb", "lo debar"]):
-                        return "Ancient biblical desert village at sunrise, warm golden light, hopeful, peaceful, family-friendly, wide shot, no faces."
-                    if _has_any(n, ["deserto", "solidao", "solidão", "vento", "areia"]):
-                        return "Peaceful desert landscape at sunrise, warm light, gentle wind, hopeful atmosphere, family-friendly, wide shot, no faces."
-                    if _has_any(n, ["crucifica", "crucificaçao", "crucificação", "calvario", "golgota", "pregos", "espinhos"]) or _has_any(n, ["cruz", "jesus", "cristo"]):
-                        return "Reverent Christian scene: Jesus on the cross on Calvary hill, non-graphic, no blood, no wounds, no suffering focus, glowing sunrise light, hopeful, family-friendly, wide shot, silhouettes only."
-                    if _has_any(n, ["sepulcro", "tumulo", "túmulo", "ressuscitou", "ressurreicao", "ressurreição", "ressuscita"]):
-                        return "Reverent Christian scene: the empty tomb at sunrise with gentle rays of light, peaceful and hopeful, family-friendly, wide shot, no scary elements, no faces."
-                    if _has_any(n, ["igreja", "culto", "adoracao", "adoração", "louvor", "altar"]):
-                        return "Joyful church worship service, people singing with joy, hands raised, warm bright lighting, family-friendly, wide shot, faces not visible."
-                    if _has_any(n, ["perdao", "perdão", "graca", "graça", "paz", "vitoria", "vitória", "cura", "libertacao", "libertação"]):
-                        return "Uplifting symbolic Christian scene with warm bright light, peaceful atmosphere, family-friendly, wide shot, no faces, no dark mood."
-                    return "Uplifting worship music video scene inspired by the lyrics, warm bright light, family-friendly, wide shot, no faces."
-
-                def _keywords_pt(text: str) -> List[str]:
-                    raw = (text or "").strip()
-                    if not raw:
-                        return []
-                    t = unicodedata.normalize("NFKD", raw)
-                    t = "".join(ch for ch in t if not unicodedata.combining(ch))
-                    t = re.sub(r"[^a-zA-Z0-9\s]", " ", t)
-                    t = re.sub(r"\s+", " ", t).strip().lower()
-                    words = [w for w in t.split(" ") if w and len(w) >= 3 and w not in stop]
-                    uniq = []
-                    seen = set()
-                    for w in words:
-                        if w in seen:
-                            continue
-                        seen.add(w)
-                        uniq.append(w)
-                        if len(uniq) >= 8:
-                            break
-                    return uniq
-
-                kws = _keywords_pt(cap)
-                if not kws:
-                    kws = _keywords_pt(lyric_text or "")
-                eng = [translate.get(k, k) for k in kws[:8]]
-                eng_list = ", ".join(eng) if eng else "worship, joy, faith, bright light"
-                base_style = "High quality, cinematic lighting, vibrant colors, bright, inspiring, family-friendly, G-rated. Photorealistic cinematic photography, warm natural lighting, bright color palette, wide shot, peaceful hopeful mood. Avoid faces."
-                safety = (
-                    "Negative prompt: horror, macabre, zombie, gore, violence, blood, dark spirits, scary, creepy, unsettling, death, "
-                    "distorted faces, demons, intense fear, skull, skeleton, corpse, mask, face paint, halloween costume, "
-                    "dark mood, low-key lighting, disturbing, occult, satanic, pentagram, cemetery, graves, "
-                    "weapons, disfigured, mutated, deformed, uncanny, doll-like, dystopian, apocalyptic, text, watermark, logo."
-                )
-                scene_desc = _safe_scene_descriptor()
-                if is_christian:
-                    return f"Brazilian gospel worship music video. Scene: {scene_desc} Keywords: {eng_list}. {base_style} {safety}"
-                return f"Family-friendly music video scene. Scene: {scene_desc} Keywords: {eng_list}. {base_style} {safety}"
-
-            semantic_prompts = []
-            if self.ai_service and hasattr(self.ai_service, "generate_semantic_visual_prompts_from_lyrics"):
-                try:
-                    prompt_slots = [str((it or {}).get("prompt_text") or (it or {}).get("caption") or "").strip() for it in (timeline or [])]
-                    semantic_prompts = self.ai_service.generate_semantic_visual_prompts_from_lyrics(
-                        lyric_text or "",
-                        prompt_slots,
-                        title=clean_title,
-                        options=image_options,
-                    ) or []
-                    if not isinstance(semantic_prompts, list):
-                        semantic_prompts = []
-                except Exception as e:
-                    print(f"Erro ao gerar storyboard semântico: {e}")
-                    semantic_prompts = []
-
-            for i, it in enumerate(timeline):
-                caption = (it.get("caption") or "").strip()
-                prompt_caption = (it.get("prompt_text") or caption or "").strip()
-                duration = float(it.get("duration") or 0)
-                if duration <= 0:
+            render_report["visual_plan"]["generated_image_count"] = len({
+                item.get("image_path") for item in render_report["scene_visuals"] if item.get("image_path")
+            })
+            render_report["visual_plan"]["generated_new_images"] = len({
+                item.get("image_path")
+                for item in render_report["scene_visuals"]
+                if str(item.get("source") or "").startswith(("generated", "cached"))
+            })
+            render_report["visual_plan"]["reused_scene_numbers"] = [
+                int(item.get("scene_number") or 0)
+                for item in render_report["scene_visuals"]
+                if bool(item.get("reused"))
+            ]
+            image_duration_map: Dict[str, float] = {}
+            image_usage_counts: Dict[str, int] = {}
+            for item in render_report["scene_visuals"]:
+                path = str(item.get("image_path") or "").strip()
+                if not path:
                     continue
-                if i == 0 and strict_sync and not caption:
-                    norm_full = _normalize(lyric_text or "")
-                    is_christian_song = any(k in norm_full for k in ["jesus", "cristo", "cruz", "calvario", "golgota", "ressuscitou", "redencao", "salvacao", "sangue", "pecado", "sacrificio"])
-                    opening = (
-                        f"Cinematic opening shot for a Christian music video titled '{clean_title[:80]}'. "
-                        "A wooden cross silhouette on a hill at sunrise, gentle rays of light, reverent, hopeful, non-graphic."
-                        if is_christian_song
-                        else f"Cinematic opening shot for a music video titled '{clean_title[:80]}', symbolic, inspiring, wide shot, non-graphic."
-                    )
-                    image_prompt = opening + " No text, no watermark, no logo."
-                elif semantic_prompts and i < len(semantic_prompts) and str(semantic_prompts[i] or "").strip():
-                    image_prompt = str(semantic_prompts[i] or "").strip()
-                else:
-                    image_prompt = _prompt_for_caption(prompt_caption)
-                if progress_callback:
-                    try:
-                        total = max(1, len(timeline))
-                        p = 25 + int((float(i) / float(total)) * 60.0)
-                        progress_callback(min(90, max(0, p)), f"Gerando cena {i+1}/{total}...")
-                    except Exception:
-                        pass
-
-                def _clip_status(message, scene_idx=i, total=len(timeline)):
-                    print(f"[Clip][Cena {scene_idx+1}/{total}] {message}")
-                    if progress_callback:
-                        try:
-                            pct = 25 + int((float(scene_idx) / float(max(1, total))) * 60.0)
-                            progress_callback(min(90, max(0, pct)), f"Cena {scene_idx+1}/{total}: {str(message or '').strip()[:160]}")
-                        except Exception:
-                            pass
-                bg_image_path = None
-                if isinstance(pre_generated_images_override, list) and i < len(pre_generated_images_override):
-                    bg_image_path = self._resolve_input_image_path(pre_generated_images_override[i])
-                else:
-                    bg_image_path = self._ensure_image_for_scene(
-                        image_prompt,
-                        text_fallback=caption[:120],
-                        aspect_ratio=aspect_ratio,
-                        status_callback=_clip_status,
-                        allow_non_ai_fallback=allow_non_ai_fallback
-                    )
-                if not bg_image_path:
-                    raise Exception(f"Falha ao gerar imagem da cena {i+1}.")
-                bg_colors = [(24, 24, 24), (30, 30, 30), (36, 36, 36)]
-                bg_color = bg_colors[i % len(bg_colors)]
-                if (i == 0 and strict_sync and not caption) or (i == 0 and not captions_enabled):
-                    title_text = clean_title.strip()
-                    if title_text and len(title_text) > 110:
-                        title_text = title_text[:107] + "..."
-                    if watermark_enabled and (author_text or "").strip():
-                        title_screen = f"{title_text}\n\n{(author_text or '').strip()}"
-                    else:
-                        title_screen = title_text
-                    img = self.create_text_image(self._clean_text(title_screen), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
-                else:
-                    overlay_text = caption if captions_enabled else ""
-                    if i == 0 and captions_enabled and clean_title and caption:
-                        overlay_text = f"{clean_title}\n\n{caption}"
-                    img = self.create_text_image(self._clean_text(overlay_text), size=video_size, bg_color=bg_color, bg_image_path=bg_image_path, footer_text=credit)
-                clip = ImageClip(img)
-                clip = self._set_clip_duration(clip, duration)
-                clips.append(clip)
-                if progress_callback:
-                    try:
-                        total = max(1, len(timeline))
-                        p = 30 + int((float(i + 1) / float(total)) * 60.0)
-                        progress_callback(min(92, max(0, p)), f"Cena {i+1}/{total} pronta.")
-                    except Exception:
-                        pass
-                if bg_image_path and "temp_" in bg_image_path:
-                    try:
-                        os.remove(bg_image_path)
-                    except Exception:
-                        pass
-                gc.collect()
-            if progress_callback:
-                try:
-                    progress_callback(95, "Renderizando vídeo...")
-                except Exception:
-                    pass
-            final = concatenate_videoclips(clips)
-            final = self._set_clip_audio(final, audio_clip)
-            filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
-            output_path = os.path.join(self.output_dir, filename)
-            ffmpeg_params = ["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"]
-            at = (author_text or "").strip()
-            if watermark_enabled and at:
-                year = time.strftime("%Y")
-                ffmpeg_params += [
-                    "-metadata", f"artist={at}",
-                    "-metadata", f"copyright=© {year} {at}",
-                    "-metadata", "comment=Video criado no Codexia",
-                ]
-            final.write_videofile(
-                output_path,
-                fps=24,
-                codec="libx264",
-                audio_codec="aac",
-                threads=1,
-                ffmpeg_params=ffmpeg_params,
-                logger=None
+                image_duration_map[path] = image_duration_map.get(path, 0.0) + float(item.get("final_visual_duration_sec") or 0.0)
+                image_usage_counts[path] = image_usage_counts.get(path, 0) + 1
+            render_report["visual_plan"]["average_image_duration_sec"] = round(
+                (sum(image_duration_map.values()) / max(1, len(image_duration_map))),
+                2,
+            ) if image_duration_map else 0.0
+            render_report["visual_plan"]["reused_image_count"] = sum(
+                1 for count in image_usage_counts.values() if count > 1
             )
-            output_path = self._ensure_playable_mp4(output_path)
-            for c in clips:
-                try:
-                    c.close()
-                except Exception:
-                    pass
-            final.close()
-            audio_clip.close()
-            out = {"video_url": f"{VIDEO_URL_PREFIX}/{filename}"}
-            if warnings:
-                uniq = []
-                seen = set()
-                for w in warnings:
-                    ww = str(w or "").strip()
-                    if not ww or ww in seen:
-                        continue
-                    seen.add(ww)
-                    uniq.append(ww)
-                if uniq:
-                    out["warning"] = " ".join(uniq)[:500]
-            return out
+            render_report["duration_plan"]["obtained_duration_sec"] = round(
+                float(self._measure_rendered_video_duration_seconds(output_path) or 0.0),
+                2,
+            )
+            render_report["duration_plan"]["title_duration_sec"] = round(float(title_clip_duration or 0.0), 2)
+            render_report["duration_plan"]["end_duration_sec"] = round(float(end_clip_duration or 0.0), 2)
+            requested_duration_final = float(render_report["duration_plan"].get("requested_duration_target_sec") or 0.0)
+            obtained_duration_final = float(render_report["duration_plan"].get("obtained_duration_sec") or 0.0)
+            if requested_duration_final > 0:
+                diff_pct = abs(obtained_duration_final - requested_duration_final) / requested_duration_final
+            else:
+                diff_pct = 0.0
+            render_report["duration_plan"]["tolerance_pct"] = 5.0
+            render_report["duration_plan"]["within_tolerance"] = bool(requested_duration_final <= 0 or diff_pct <= 0.05)
+            render_report["duration_plan"]["difference_sec"] = round(obtained_duration_final - requested_duration_final, 2)
+            render_report["duration_plan"]["estimated_full_narration_duration_sec"] = round(float(planning_meta.get("estimated_total_duration_sec") or 0.0), 2)
+            render_report["duration_plan"]["actual_audio_duration_sec"] = round(float(actual_total_audio_dur or 0.0), 2)
+            render_report["duration_plan"]["above_requested_range_sec"] = round(max(0.0, obtained_duration_final - max_requested_duration), 2) if max_requested_duration > 0 else 0.0
+            render_report["duration_plan"]["below_requested_range_sec"] = round(max(0.0, min_requested_duration - obtained_duration_final), 2) if min_requested_duration > 0 else 0.0
+            render_report["duration_plan"]["within_requested_range"] = bool(
+                (min_requested_duration <= 0 or obtained_duration_final >= min_requested_duration)
+                and (max_requested_duration <= 0 or obtained_duration_final <= max_requested_duration)
+            )
+            if not render_report["duration_plan"].get("range_decision"):
+                render_report["duration_plan"]["range_decision"] = (
+                    "within_requested_range"
+                    if render_report["duration_plan"]["within_requested_range"]
+                    else "keep_complete_narration_outside_range"
+                )
+            if not render_report["duration_plan"].get("range_decision_reason"):
+                render_report["duration_plan"]["range_decision_reason"] = (
+                    "Narracao completa ficou dentro da faixa solicitada."
+                    if render_report["duration_plan"]["within_requested_range"]
+                    else "Duracao final ficou fora da faixa de referencia, mas o sistema manteve a narracao completa para nao cortar o audio."
+                )
+            render_report["video_url"] = f"{VIDEO_URL_PREFIX}/{filename}"
+            render_report["file_path"] = output_path
+
+            return {
+                "video_url": f"{VIDEO_URL_PREFIX}/{filename}",
+                "music_credit": used_music_credit,
+                "used_images": used_image_urls,
+                "render_report": render_report,
+            }
+            
         except Exception as e:
-            for c in clips:
-                try:
-                    c.close()
-                except Exception:
-                    pass
-            raise e
+                raise e
 
     def generate_simple_video(self, title, script_lines, output_filename="video.mp4"):
         # Mantendo compatibilidade com código antigo se necessário

@@ -1,10 +1,16 @@
 from pathlib import Path
+from dotenv import load_dotenv
+import os
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante para Coolify/Traefik
+
+# Carregar variáveis de ambiente antes de inicializar banco/config dependentes de env.
+load_dotenv()
+
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, social_media, image_storyboard, whatsapp
 from app.modules.ai_factory import router as ai_factory
@@ -13,16 +19,12 @@ from app.modules.bible_video_factory import router as bible_video_factory
 from app.modules.bible_video_factory import models as bible_video_factory_models
 from app.modules.humor_factory import router as humor_factory
 from app.modules.humor_factory import models as humor_models
-from dotenv import load_dotenv
-import os
 from contextlib import asynccontextmanager
 from app.services.monitor_service import monitor_service
+from app.services.global_settings_service import backfill_settings_from_legacy, get_or_create_latest_settings
 from sqlalchemy import text, inspect
 from app.models import User
 from app.routers.auth import get_password_hash
-
-# Carregar variáveis de ambiente
-load_dotenv()
 # Trigger reload: 1
 
 APP_ENV = os.getenv("APP_ENV", "production").lower()
@@ -379,6 +381,10 @@ def run_migrations(engine):
                         "pexels_api_key", "pixabay_api_key", "elevenlabs_api_key",
                         "edenai_api_key",
                         "elevenlabs_voice_id", "elevenlabs_voice_name",
+                        "text_provider", "voice_provider", "image_provider", "video_provider",
+                        "music_provider", "caption_provider", "thumbnail_provider",
+                        "default_voice", "default_voice_emotion", "default_language",
+                        "default_cta", "default_next_episode_cta", "default_playlist",
                         "whatsapp_phone_number_id", "whatsapp_access_token",
                         "whatsapp_verify_token", "whatsapp_allowed_numbers",
                         "telegram_bot_token", "telegram_allowed_chat_ids",
@@ -391,6 +397,26 @@ def run_migrations(engine):
                                 conn.execute(text(f"ALTER TABLE settings ADD COLUMN {col} TEXT"))
                                 conn.commit()
                             except Exception as e: print(f"Error adding {col}: {e}")
+
+                    for col in [
+                        "default_voice_speed", "default_voice_intensity", "daily_spend_limit",
+                        "monthly_spend_limit", "text_cost_unit", "voice_cost_unit",
+                        "image_cost_unit", "video_cost_unit", "music_cost_unit",
+                        "caption_cost_unit", "thumbnail_cost_unit"
+                    ]:
+                        if col not in settings_columns:
+                            try:
+                                print(f"Migrating: Adding {col} to settings...")
+                                conn.execute(text(f"ALTER TABLE settings ADD COLUMN {col} REAL"))
+                                conn.commit()
+                            except Exception as e: print(f"Error adding {col}: {e}")
+
+                    if "made_for_kids_default" not in settings_columns:
+                        try:
+                            print("Migrating: Adding made_for_kids_default to settings...")
+                            conn.execute(text("ALTER TABLE settings ADD COLUMN made_for_kids_default BOOLEAN DEFAULT 0"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding made_for_kids_default: {e}")
 
                     if "ai_provider" not in settings_columns:
                         try:
@@ -552,6 +578,16 @@ async def lifespan(app: FastAPI):
             run_migrations(engine)
         except Exception as e:
             print(f"Migration warning (app continua): {e}")
+
+        try:
+            db = SessionLocal()
+            try:
+                settings_row = get_or_create_latest_settings(db)
+                backfill_settings_from_legacy(db, settings=settings_row)
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"Legacy settings backfill warning (app continua): {e}")
         
         try:
             create_admin_master()

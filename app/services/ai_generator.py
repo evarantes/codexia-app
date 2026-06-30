@@ -9,9 +9,52 @@ from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app.models import Settings
+from app.services.global_settings_service import (
+    backfill_settings_from_legacy,
+    build_global_settings_service,
+    get_or_create_latest_settings,
+)
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 load_dotenv()
+
+PLACEHOLDER_MARKERS = (
+    "sua_chave",
+    "your_api_key",
+    "your-key",
+    "placeholder",
+    "changeme",
+    "change_me",
+    "replace_me",
+    "insira_sua_chave",
+    "coloque_sua_chave",
+)
+
+PLACEHOLDER_VALUES = {
+    "sk-...",
+    "sk-or-...",
+    "api_key",
+    "token",
+}
+
+
+def _normalize_secret_value(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    compact = lowered.replace(" ", "").replace("-", "_")
+    if lowered in PLACEHOLDER_VALUES or compact in PLACEHOLDER_VALUES:
+        return None
+    if any(marker in compact for marker in PLACEHOLDER_MARKERS):
+        return None
+    return raw
+
+
+def _extract_setting_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value.get("value")
+    return value
 
 class AIContentGenerator:
     def __init__(self):
@@ -29,6 +72,9 @@ class AIContentGenerator:
         self.elevenlabs_key = None
         self.elevenlabs_voice_id = None
         self.elevenlabs_voice_name = None
+        self.voice_provider = "elevenlabs"
+        self.default_voice = None
+        self.default_language = "pt-BR"
         self.provider = "openai"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN")
 
@@ -38,6 +84,9 @@ class AIContentGenerator:
         settings = None
         try:
             settings = db.query(Settings).order_by(Settings.id.desc()).first()
+            if settings is None:
+                settings = get_or_create_latest_settings(db)
+            settings = backfill_settings_from_legacy(db, settings=settings)
         except OperationalError as e:
             print(f"AVISO: Falha ao carregar Settings do banco (migração pendente?): {e}")
         except SQLAlchemyError as e:
@@ -61,95 +110,335 @@ class AIContentGenerator:
         self.elevenlabs_key = None
         self.elevenlabs_voice_id = None
         self.elevenlabs_voice_name = None
+        self.voice_provider = "elevenlabs"
+        self.default_voice = None
+        self.default_language = "pt-BR"
         self.provider = "openrouter"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN") # Para MusicGen
 
         if settings:
-            self.api_key = settings.openai_api_key
-            self.gemini_key = settings.gemini_api_key
-            self.deepseek_key = settings.deepseek_api_key
-            self.groq_key = settings.groq_api_key
-            self.anthropic_key = settings.anthropic_api_key
-            self.mistral_key = settings.mistral_api_key
-            self.openrouter_key = settings.openrouter_api_key
+            self.gemini_key = _normalize_secret_value(settings.gemini_api_key)
+            self.deepseek_key = _normalize_secret_value(settings.deepseek_api_key)
+            self.groq_key = _normalize_secret_value(settings.groq_api_key)
+            self.anthropic_key = _normalize_secret_value(settings.anthropic_api_key)
+            self.mistral_key = _normalize_secret_value(settings.mistral_api_key)
+            self.openrouter_key = _normalize_secret_value(settings.openrouter_api_key)
             self.openrouter_model = getattr(settings, "openrouter_model", None)
-            self.edenai_key = getattr(settings, "edenai_api_key", None)
-            self.leonardo_key = getattr(settings, "leonardo_api_key", None)
+            self.leonardo_key = _normalize_secret_value(getattr(settings, "leonardo_api_key", None))
             self.leonardo_model_id = getattr(settings, "leonardo_model_id", None)
-            self.elevenlabs_key = settings.elevenlabs_api_key
-            self.elevenlabs_voice_id = getattr(settings, "elevenlabs_voice_id", None)
-            self.elevenlabs_voice_name = getattr(settings, "elevenlabs_voice_name", None)
             self.provider = settings.ai_provider or "openrouter"
+        try:
+            global_settings = build_global_settings_service(db=db, settings=settings)
+            ai_settings = global_settings.get_ai_provider_settings()
+            bible_video_settings = global_settings.get_bible_video_factory_settings()
+            self.api_key = _normalize_secret_value(_extract_setting_value(ai_settings.get("openai_api_key"))) or self.api_key
+            self.edenai_key = _normalize_secret_value(_extract_setting_value(ai_settings.get("edenai_api_key"))) or self.edenai_key
+            self.elevenlabs_key = _normalize_secret_value(_extract_setting_value(ai_settings.get("elevenlabs_api_key"))) or self.elevenlabs_key
+            self.elevenlabs_voice_id = _extract_setting_value(ai_settings.get("elevenlabs_voice_id")) or self.elevenlabs_voice_id
+            self.elevenlabs_voice_name = _extract_setting_value(ai_settings.get("elevenlabs_voice_name")) or self.elevenlabs_voice_name
+            self.voice_provider = str((bible_video_settings or {}).get("voice_provider") or self.voice_provider or "elevenlabs").strip().lower() or "elevenlabs"
+            self.default_voice = (bible_video_settings or {}).get("default_voice") or self.default_voice
+            self.default_language = str((bible_video_settings or {}).get("default_language") or self.default_language or "pt-BR").strip() or "pt-BR"
+        except Exception as e:
+            print(f"AVISO: Falha ao carregar configuracao central de voz: {e}")
 
         # Fallback to env vars
-        if not self.api_key: self.api_key = os.getenv("OPENAI_API_KEY")
-        if not self.gemini_key: self.gemini_key = os.getenv("GEMINI_API_KEY")
-        if not self.deepseek_key: self.deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-        if not self.groq_key: self.groq_key = os.getenv("GROQ_API_KEY")
-        if not self.anthropic_key: self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        if not self.mistral_key: self.mistral_key = os.getenv("MISTRAL_API_KEY")
-        if not self.openrouter_key: self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if not self.api_key: self.api_key = _normalize_secret_value(os.getenv("OPENAI_API_KEY"))
+        if not self.gemini_key: self.gemini_key = _normalize_secret_value(os.getenv("GEMINI_API_KEY"))
+        if not self.deepseek_key: self.deepseek_key = _normalize_secret_value(os.getenv("DEEPSEEK_API_KEY"))
+        if not self.groq_key: self.groq_key = _normalize_secret_value(os.getenv("GROQ_API_KEY"))
+        if not self.anthropic_key: self.anthropic_key = _normalize_secret_value(os.getenv("ANTHROPIC_API_KEY"))
+        if not self.mistral_key: self.mistral_key = _normalize_secret_value(os.getenv("MISTRAL_API_KEY"))
+        if not self.openrouter_key: self.openrouter_key = _normalize_secret_value(os.getenv("OPENROUTER_API_KEY"))
         if not self.openrouter_model: self.openrouter_model = os.getenv("OPENROUTER_MODEL")
-        if not self.edenai_key: self.edenai_key = os.getenv("EDENAI_API_KEY")
-        if not self.leonardo_key: self.leonardo_key = os.getenv("LEONARDO_API_KEY")
+        if not self.edenai_key: self.edenai_key = _normalize_secret_value(os.getenv("EDENAI_API_KEY"))
+        if not self.leonardo_key: self.leonardo_key = _normalize_secret_value(os.getenv("LEONARDO_API_KEY"))
         if not self.leonardo_model_id: self.leonardo_model_id = os.getenv("LEONARDO_MODEL_ID")
-        if not self.elevenlabs_key: self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
+        if not self.elevenlabs_key: self.elevenlabs_key = _normalize_secret_value(os.getenv("ELEVENLABS_API_KEY"))
+        if not self.elevenlabs_voice_id: self.elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID")
+        if not self.default_language: self.default_language = os.getenv("DEFAULT_LANGUAGE") or "pt-BR"
+
+    def _normalize_voice_provider(self, provider: Optional[str]) -> str:
+        raw = str(provider or "").strip().lower()
+        aliases = {
+            "eleven": "elevenlabs",
+            "11labs": "elevenlabs",
+            "eden_ai": "edenai",
+            "openai": "openai_tts",
+            "openai-tts": "openai_tts",
+            "edge": "edge_tts",
+        }
+        return aliases.get(raw, raw or "elevenlabs")
+
+    def _tts_provider_order(self, preferred_provider: Optional[str] = None) -> List[str]:
+        configured = self._normalize_voice_provider(preferred_provider or self.voice_provider)
+        premium_order = ["elevenlabs", "edenai", "openai_tts"]
+        if configured == "edenai":
+            premium_order = ["edenai", "elevenlabs", "openai_tts"]
+        elif configured == "openai_tts":
+            premium_order = ["openai_tts", "elevenlabs", "edenai"]
+        elif configured in {"edge_tts", "gtts"}:
+            premium_order = ["elevenlabs", "edenai", "openai_tts"]
+        unique: List[str] = []
+        for item in premium_order:
+            if item not in unique:
+                unique.append(item)
+        return unique
+
+    def _looks_like_voice_id(self, value: Optional[str]) -> bool:
+        raw = str(value or "").strip()
+        return bool(raw) and raw.isalnum() and len(raw) >= 10
+
+    def _normalize_voice_choice(self, value: Optional[str]) -> str:
+        return str(value or "").strip()
+
+    def _is_automatic_voice_choice(self, value: Optional[str]) -> bool:
+        raw = self._normalize_voice_choice(value).lower()
+        return raw in {"", "auto", "automatic", "automatica", "automático", "automatico", "padrão", "padrao"}
+
+    def _is_custom_elevenlabs_voice_choice(self, value: Optional[str]) -> bool:
+        raw = self._normalize_voice_choice(value)
+        lowered = raw.lower()
+        custom_voice_id = str(self.elevenlabs_voice_id or "").strip()
+        custom_voice_name = str(self.elevenlabs_voice_name or "").strip().lower()
+        aliases = {"my_voice", "myvoice", "minha_voz", "minhavoz", "custom"}
+        if custom_voice_name:
+            aliases.add(custom_voice_name)
+        if custom_voice_id:
+            aliases.add(custom_voice_id.lower())
+        return lowered in aliases
+
+    def _automatic_voice_hint(
+        self,
+        voice_style: Optional[str] = None,
+        voice_gender: Optional[str] = None,
+        preferred_provider: Optional[str] = None,
+    ) -> Optional[str]:
+        style = str(voice_style or "human").strip().lower()
+        gender = str(voice_gender or "female").strip().lower()
+        configured_provider = self._normalize_voice_provider(preferred_provider or self.voice_provider)
+
+        if style in ["robotic", "robotica", "robótica"]:
+            return None
+
+        if configured_provider == "elevenlabs":
+            if style in ["child", "infantil"]:
+                return "echo" if gender == "male" else "shimmer"
+            if style in ["angelic", "angelical"]:
+                return "fable"
+            if style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
+                return "echo" if gender == "male" else "nova"
+            return "onyx" if gender == "male" else "nova"
+
+        if style in ["child", "infantil"]:
+            return "echo" if gender == "male" else "shimmer"
+        if style in ["angelic", "angelical"]:
+            return "fable"
+        if style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
+            return "echo" if gender == "male" else "nova"
+        return "onyx" if gender == "male" else "nova"
+
+    def select_tts_voice_hint(
+        self,
+        voice_style: Optional[str] = None,
+        voice_gender: Optional[str] = None,
+        preferred_provider: Optional[str] = None,
+        explicit_voice: Optional[str] = None,
+    ) -> Optional[str]:
+        self._load_config()
+        explicit = self._normalize_voice_choice(explicit_voice)
+        configured_provider = self._normalize_voice_provider(preferred_provider or self.voice_provider)
+        configured_default = self._normalize_voice_choice(self.default_voice)
+
+        if explicit and not self._is_automatic_voice_choice(explicit):
+            if configured_provider == "elevenlabs" and self._is_custom_elevenlabs_voice_choice(explicit):
+                return "my_voice"
+            return explicit
+
+        if configured_default and not self._is_automatic_voice_choice(configured_default):
+            if configured_provider == "elevenlabs" and self._is_custom_elevenlabs_voice_choice(configured_default):
+                return "my_voice"
+            return configured_default
+
+        return self._automatic_voice_hint(
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+            preferred_provider=preferred_provider,
+        )
+
+    def _resolve_elevenlabs_voice_selection(self, voice_hint: Optional[str]) -> Dict[str, Any]:
+        raw_hint = self._normalize_voice_choice(voice_hint)
+        hint = raw_hint.lower()
+        custom_voice_id = str(self.elevenlabs_voice_id or "").strip()
+        custom_voice_name = str(self.elevenlabs_voice_name or "").strip() or None
+        env_voice_male = os.getenv("ELEVENLABS_VOICE_ID_MALE", "").strip()
+        env_voice_female = os.getenv("ELEVENLABS_VOICE_ID_FEMALE", "").strip()
+        env_voice_default = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+
+        voice_map = {
+            "nova": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+            "shimmer": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+            "onyx": env_voice_male or "VR6AewLTigWG4xSOukaG",
+            "echo": env_voice_male or "VR6AewLTigWG4xSOukaG",
+            "fable": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
+        }
+
+        explicit_voice_id = ""
+        if raw_hint.startswith("voice_id:"):
+            explicit_voice_id = raw_hint.split(":", 1)[1].strip()
+        elif raw_hint.startswith("elevenlabs:"):
+            explicit_voice_id = raw_hint.split(":", 1)[1].strip()
+        elif self._looks_like_voice_id(raw_hint):
+            explicit_voice_id = raw_hint
+
+        if explicit_voice_id:
+            return {
+                "requested_voice_hint": raw_hint or None,
+                "effective_voice_hint": "explicit_voice_id",
+                "voice_id_used": explicit_voice_id,
+                "voice_name_used": custom_voice_name if explicit_voice_id == custom_voice_id else None,
+                "voice_selection_source": "request_explicit_voice_id",
+            }
+
+        if self._is_custom_elevenlabs_voice_choice(raw_hint) and custom_voice_id:
+            return {
+                "requested_voice_hint": raw_hint or None,
+                "effective_voice_hint": "my_voice",
+                "voice_id_used": custom_voice_id,
+                "voice_name_used": custom_voice_name,
+                "voice_selection_source": "settings_elevenlabs_voice_id",
+            }
+
+        resolved_voice_id = env_voice_default or voice_map.get(hint, env_voice_female or "EXAVITQu4vr4xnSDxMaL")
+        return {
+            "requested_voice_hint": raw_hint or None,
+            "effective_voice_hint": hint or "nova",
+            "voice_id_used": resolved_voice_id or None,
+            "voice_name_used": None,
+            "voice_selection_source": "env_or_provider_default",
+        }
+
+    def _generate_audio_openai_tts(self, text: str, voice_hint: str = "nova", voice_settings: Optional[Dict[str, Any]] = None):
+        if not self.api_key or not text or not text.strip():
+            return None
+        try:
+            voice = (voice_hint or self.default_voice or "nova").strip() or "nova"
+            if voice.lower() in {"my_voice", "myvoice", "minha_voz", "minhavoz"}:
+                voice = "nova"
+            model = (os.getenv("OPENAI_TTS_MODEL") or "gpt-4o-mini-tts").strip() or "gpt-4o-mini-tts"
+            client = openai.OpenAI(api_key=(self.api_key or "").strip(), timeout=180.0)
+            response = client.audio.speech.create(
+                model=model,
+                voice=voice,
+                input=text[:4096],
+            )
+            if hasattr(response, "read"):
+                data = response.read()
+            else:
+                data = getattr(response, "content", None)
+            if isinstance(data, (bytes, bytearray)) and data:
+                return bytes(data)
+            return None
+        except Exception as e:
+            print(f"OpenAI TTS error: {e}")
+            return None
+
+    def generate_audio_with_diagnostics(self, text, voice="onyx", voice_settings: Optional[Dict[str, Any]] = None, preferred_provider: Optional[str] = None) -> Dict[str, Any]:
+        self._load_config()
+        configured_provider = self._normalize_voice_provider(preferred_provider or self.voice_provider)
+        attempts: List[Dict[str, Any]] = []
+        provider_order = self._tts_provider_order(preferred_provider=preferred_provider)
+        diagnostics: Dict[str, Any] = {
+            "configured_provider": configured_provider,
+            "provider_order": provider_order,
+            "provider_used": None,
+            "fallback_used": False,
+            "attempts": attempts,
+            "audio_content": None,
+            "default_language": self.default_language,
+            "default_voice": self.default_voice,
+            "requested_voice_hint": str(voice or "").strip() or None,
+            "effective_voice_hint": str(voice or "").strip() or None,
+            "voice_id_used": None,
+            "voice_name_used": None,
+            "voice_selection_source": None,
+        }
+
+        def _add_attempt(provider: str, status: str, reason: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
+            item: Dict[str, Any] = {"provider": provider, "status": status}
+            if reason:
+                item["reason"] = str(reason)[:500]
+            if details:
+                item["details"] = details
+            attempts.append(item)
+
+        providers = {
+            "edenai": {
+                "available": bool((self.edenai_key or "").strip()),
+                "reason": "edenai_api_key ausente nas configuracoes centrais e no ambiente.",
+                "fn": self._generate_audio_edenai_elevenlabs,
+            },
+            "elevenlabs": {
+                "available": bool((self.elevenlabs_key or "").strip()),
+                "reason": "elevenlabs_api_key ausente nas configuracoes centrais e no ambiente.",
+                "fn": self._generate_audio_elevenlabs,
+            },
+            "openai_tts": {
+                "available": bool((self.api_key or "").strip()),
+                "reason": "openai_api_key ausente nas configuracoes centrais e no ambiente.",
+                "fn": self._generate_audio_openai_tts,
+            },
+        }
+
+        if configured_provider not in providers and configured_provider not in {"edge_tts", "gtts"}:
+            _add_attempt(configured_provider, "skipped", "Provider configurado nao e suportado pelo pipeline premium atual.")
+
+        if configured_provider in {"edge_tts", "gtts"}:
+            _add_attempt(configured_provider, "skipped", "Provider configurado nao e premium; providers premium serao tentados primeiro.")
+
+        for idx, provider in enumerate(provider_order):
+            provider_meta = providers.get(provider)
+            if not provider_meta:
+                _add_attempt(provider, "skipped", "Provider nao mapeado para TTS premium.")
+                continue
+            if not provider_meta["available"]:
+                _add_attempt(provider, "skipped", provider_meta["reason"])
+                continue
+            try:
+                provider_voice_meta: Dict[str, Any] = {}
+                if provider == "elevenlabs":
+                    provider_voice_meta = self._resolve_elevenlabs_voice_selection(voice)
+                elif provider == "openai_tts":
+                    provider_voice_meta = {
+                        "requested_voice_hint": str(voice or "").strip() or None,
+                        "effective_voice_hint": str((voice or self.default_voice or "nova")).strip() or "nova",
+                        "voice_id_used": None,
+                        "voice_name_used": str((voice or self.default_voice or "nova")).strip() or "nova",
+                        "voice_selection_source": "request_or_provider_default",
+                    }
+                audio_content = provider_meta["fn"](text, voice, voice_settings=voice_settings)
+                if audio_content:
+                    diagnostics["provider_used"] = provider
+                    diagnostics["fallback_used"] = bool(idx > 0 or provider != configured_provider)
+                    diagnostics["audio_content"] = audio_content
+                    for key, value in provider_voice_meta.items():
+                        diagnostics[key] = value
+                    _add_attempt(provider, "success", "Audio gerado com sucesso.", provider_voice_meta or None)
+                    return diagnostics
+                _add_attempt(provider, "failed", "Provider retornou resposta vazia.")
+            except Exception as e:
+                _add_attempt(provider, "failed", str(e))
+
+        diagnostics["error_summary"] = "Nenhum provider premium conseguiu gerar audio."
+        return diagnostics
 
     def _has_text_provider(self) -> bool:
         return bool((self.openrouter_key or "").strip() or (self.api_key or "").strip())
 
-    # #region debug-point A:textgen-failure-signal
-    def _dbg_textgen_event(self, hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
-        try:
-            import json as _json
-            import urllib.request as _urlreq
-            _p = ".dbg/prayer-ai-failure.env"
-            _u, _s = "http://127.0.0.1:7777/event", "prayer-ai-failure"
-            try:
-                with open(_p, "r", encoding="utf-8") as _f:
-                    _c = _f.read()
-                for _line in _c.splitlines():
-                    if _line.startswith("DEBUG_SERVER_URL="):
-                        _u = _line.split("=", 1)[1].strip() or _u
-                    elif _line.startswith("DEBUG_SESSION_ID="):
-                        _s = _line.split("=", 1)[1].strip() or _s
-            except Exception:
-                pass
-            _payload = {
-                "sessionId": _s,
-                "runId": "pre-fix",
-                "hypothesisId": hypothesis_id,
-                "location": "app/services/ai_generator.py",
-                "msg": f"[DEBUG] {msg}",
-                "data": data or {},
-            }
-            _req = _urlreq.Request(
-                _u,
-                data=_json.dumps(_payload, ensure_ascii=False).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-            )
-            _urlreq.urlopen(_req, timeout=2).read()
-        except Exception:
-            pass
-    # #endregion
-
     def _generate_text(self, prompt, system_prompt=None, temperature=0.7, json_mode=False):
         """Gera texto via OpenRouter com fallback para OpenAI direto."""
         self._load_config()
-        self._dbg_textgen_event("A", "_generate_text start", {
-            "provider_setting": self.provider,
-            "has_openrouter_key": bool((self.openrouter_key or "").strip()),
-            "has_openai_key": bool((self.api_key or "").strip()),
-            "openrouter_model": (self.openrouter_model or "").strip(),
-            "json_mode": bool(json_mode),
-            "temperature": temperature,
-            "prompt_len": len(str(prompt or "")),
-            "system_prompt_len": len(str(system_prompt or "")),
-        })
         if not self._has_text_provider():
-            self._dbg_textgen_event("A", "_generate_text missing provider", {
-                "json_mode": bool(json_mode),
-            })
             return "{}" if json_mode else "Conteúdo gerado por IA (Simulação - Sem Chave)"
 
         messages = []
@@ -315,10 +604,6 @@ class AIContentGenerator:
                     continue
                 seen.add(model_id)
                 try:
-                    self._dbg_textgen_event("B", "openrouter attempt", {
-                        "model_id": model_id,
-                        "json_mode": bool(json_mode),
-                    })
                     try:
                         if or_client is not None:
                             text = _call_with_retry(
@@ -334,12 +619,6 @@ class AIContentGenerator:
                                     allow_json_mode=bool(json_mode),
                                 ),
                             )
-                        self._dbg_textgen_event("B", "openrouter success", {
-                            "model_id": model_id,
-                            "response_len": len(str(text or "")),
-                            "response_preview": str(text or "")[:220],
-                            "used_json_mode": bool(json_mode),
-                        })
                         return text
                     except Exception:
                         if or_client is not None:
@@ -356,19 +635,9 @@ class AIContentGenerator:
                                     allow_json_mode=False,
                                 ),
                             )
-                        self._dbg_textgen_event("B", "openrouter success without json_mode", {
-                            "model_id": model_id,
-                            "response_len": len(str(text or "")),
-                            "response_preview": str(text or "")[:220],
-                        })
                         return text
                 except Exception as e:
                     errors.append(f"OpenRouter[{model_id}]: {e}")
-                    self._dbg_textgen_event("B", "openrouter exception", {
-                        "model_id": model_id,
-                        "error_type": e.__class__.__name__,
-                        "error": str(e)[:500],
-                    })
             return None
 
         def _try_openai() -> Optional[str]:
@@ -394,10 +663,6 @@ class AIContentGenerator:
                     continue
                 seen.add(model_id)
                 try:
-                    self._dbg_textgen_event("C", "openai direct attempt", {
-                        "model_id": model_id,
-                        "json_mode": bool(json_mode),
-                    })
                     try:
                         if oa_client is not None:
                             text = _call_with_retry(
@@ -413,12 +678,6 @@ class AIContentGenerator:
                                     allow_json_mode=bool(json_mode),
                                 ),
                             )
-                        self._dbg_textgen_event("C", "openai direct success", {
-                            "model_id": model_id,
-                            "response_len": len(str(text or "")),
-                            "response_preview": str(text or "")[:220],
-                            "used_json_mode": bool(json_mode),
-                        })
                         return text
                     except Exception:
                         if oa_client is not None:
@@ -435,19 +694,9 @@ class AIContentGenerator:
                                     allow_json_mode=False,
                                 ),
                             )
-                        self._dbg_textgen_event("C", "openai direct success without json_mode", {
-                            "model_id": model_id,
-                            "response_len": len(str(text or "")),
-                            "response_preview": str(text or "")[:220],
-                        })
                         return text
                 except Exception as e:
                     errors.append(f"OpenAI[{model_id}]: {e}")
-                    self._dbg_textgen_event("C", "openai direct exception", {
-                        "model_id": model_id,
-                        "error_type": e.__class__.__name__,
-                        "error": str(e)[:500],
-                    })
             return None
 
         prov = (self.provider or "").strip().lower()
@@ -473,9 +722,6 @@ class AIContentGenerator:
             if text is not None:
                 return text
 
-        self._dbg_textgen_event("D", "_generate_text failed", {
-            "errors": errors[:8],
-        })
         raise Exception(" | ".join(errors) if errors else "Nenhum provedor de texto disponível.")
 
     def generate_book_section(self, section_type, context_text, title, existing_content=None):
@@ -1154,13 +1400,6 @@ class AIContentGenerator:
         if kind_norm not in {"story", "devotional", "prayer"}:
             kind_norm = "story"
         safe_kind = "história" if kind_norm == "story" else ("devocional" if kind_norm == "devotional" else "reflexão com oração")
-        self._dbg_textgen_event("E", "generate_story_or_devotional_text start", {
-            "kind": kind_norm,
-            "duration_min_minutes": duration_min_minutes,
-            "duration_max_minutes": duration_max_minutes,
-            "instruction_len": len(str(instruction or "")),
-            "instruction_preview": str(instruction or "")[:220],
-        })
         min_m = max(1, int(duration_min_minutes or 1))
         max_m = int(duration_max_minutes) if duration_max_minutes else min_m
         if max_m < min_m:
@@ -1224,18 +1463,8 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
-            self._dbg_textgen_event("E", "generate_story_or_devotional_text success", {
-                "kind": kind_norm,
-                "content_len": len(str(content or "")),
-                "content_preview": str(content or "")[:220],
-            })
             return (self._normalize_narration_text(content) or content).strip()
         except Exception as e:
-            self._dbg_textgen_event("E", "generate_story_or_devotional_text exception", {
-                "kind": kind_norm,
-                "error_type": e.__class__.__name__,
-                "error": str(e)[:500],
-            })
             print(f"Erro ao gerar {safe_kind}: {e}")
             raise
 
@@ -2937,19 +3166,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
 
     def generate_audio(self, text, voice="onyx", voice_settings: Optional[Dict[str, Any]] = None):
         """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""
-        self._load_config()
-
-        if self.edenai_key:
-            audio_content = self._generate_audio_edenai_elevenlabs(text, voice, voice_settings=voice_settings)
-            if audio_content:
-                return audio_content
-
-        if self.elevenlabs_key:
-            audio_content = self._generate_audio_elevenlabs(text, voice, voice_settings=voice_settings)
-            if audio_content:
-                return audio_content
-
-        return None
+        diagnostics = self.generate_audio_with_diagnostics(text, voice=voice, voice_settings=voice_settings)
+        return diagnostics.get("audio_content")
 
     def _generate_audio_edenai_elevenlabs(self, text: str, voice_hint: str = "onyx", voice_settings: Optional[Dict[str, Any]] = None):
         if not (self.edenai_key or "").strip() or not text or not text.strip():
@@ -3023,25 +3241,10 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not self.elevenlabs_key or not text or not text.strip():
             return None
         try:
-            # Permite customização por ambiente sem quebrar compatibilidade.
-            env_voice_male = os.getenv("ELEVENLABS_VOICE_ID_MALE", "").strip()
-            env_voice_female = os.getenv("ELEVENLABS_VOICE_ID_FEMALE", "").strip()
-            env_voice_default = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
-
-            # Mapeia hints para voice_id do ElevenLabs (defaults públicos estáveis).
-            voice_map = {
-                "nova": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
-                "shimmer": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
-                "onyx": env_voice_male or "VR6AewLTigWG4xSOukaG",
-                "echo": env_voice_male or "VR6AewLTigWG4xSOukaG",
-                "fable": env_voice_female or "EXAVITQu4vr4xnSDxMaL",
-            }
-            hint = (voice_hint or "").strip().lower()
-            custom_voice_id = (self.elevenlabs_voice_id or "").strip()
-            if hint in ["my_voice", "myvoice", "minha_voz", "minhavoz", "custom"] and custom_voice_id:
-                voice_id = custom_voice_id
-            else:
-                voice_id = env_voice_default or voice_map.get(hint, env_voice_female or "EXAVITQu4vr4xnSDxMaL")
+            voice_meta = self._resolve_elevenlabs_voice_selection(voice_hint)
+            voice_id = str(voice_meta.get("voice_id_used") or "").strip()
+            if not voice_id:
+                return None
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             headers = {"xi-api-key": self.elevenlabs_key, "Content-Type": "application/json"}
             settings = {
