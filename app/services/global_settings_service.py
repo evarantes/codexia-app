@@ -1,12 +1,14 @@
 import os
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Settings
-from app.modules.bible_video_factory.models import BibleVideoConfig
+
+if TYPE_CHECKING:
+    from app.modules.bible_video_factory.models import BibleVideoConfig
 
 
 PLACEHOLDER_MARKERS = (
@@ -150,7 +152,9 @@ def get_or_create_latest_settings(db: Session) -> Settings:
 def get_latest_legacy_bible_video_config(
     db: Optional[Session] = None,
     user_id: Optional[int] = None,
-) -> Optional[BibleVideoConfig]:
+) -> Optional["BibleVideoConfig"]:
+    from app.modules.bible_video_factory.models import BibleVideoConfig
+
     if db is not None:
         try:
             query = db.query(BibleVideoConfig)
@@ -238,7 +242,7 @@ def backfill_settings_from_legacy(
     db: Session,
     settings: Optional[Settings] = None,
     user_id: Optional[int] = None,
-    legacy_bible_video_config: Optional[BibleVideoConfig] = None,
+    legacy_bible_video_config: Optional["BibleVideoConfig"] = None,
 ) -> Settings:
     settings_obj = settings or get_or_create_latest_settings(db)
     legacy = legacy_bible_video_config or get_latest_legacy_bible_video_config(db, user_id=user_id)
@@ -298,7 +302,7 @@ class GlobalSettingsService:
         db: Optional[Session] = None,
         user_id: Optional[int] = None,
         settings: Optional[Settings] = None,
-        legacy_bible_video_config: Optional[BibleVideoConfig] = None,
+        legacy_bible_video_config: Optional["BibleVideoConfig"] = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
@@ -436,7 +440,7 @@ def build_global_settings_service(
     db: Optional[Session] = None,
     user_id: Optional[int] = None,
     settings: Optional[Settings] = None,
-    legacy_bible_video_config: Optional[BibleVideoConfig] = None,
+    legacy_bible_video_config: Optional["BibleVideoConfig"] = None,
 ) -> GlobalSettingsService:
     return GlobalSettingsService(
         db=db,

@@ -3837,6 +3837,7 @@ class VideoGenerator:
                                     pass
                                 try:
                                     if value == 1 or value == total or (old_value is not None and int(value) != int(old_value) and int(value) % 25 == 0):
+                                        pass
                                 except Exception:
                                     pass
                     write_logger = RenderProgressLogger(progress_callback)
@@ -3873,11 +3874,14 @@ class VideoGenerator:
                                 pass
                             _last_size = _size
                         except Exception as _hb_err:
+                            pass
 
                 _render_hb_thread = _threading.Thread(target=_render_heartbeat, daemon=True)
                 _render_hb_thread.start()
             except Exception as _hb_start_err:
-                        try:
+                pass
+
+            try:
                 final_clip.write_videofile(
                     output_path, 
                     fps=24, 
