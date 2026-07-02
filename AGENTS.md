@@ -13,7 +13,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Key notes
-- **Database**: Without `DATABASE_URL`, the app falls back to SQLite (`vibraface.db` in the workspace root). This is sufficient for local development and testing.
+- **Database**: `DATABASE_URL` is mandatory for production, staging/homologation, and functional validation. SQLite is allowed only with explicit local opt-in (`APP_ENV=development` or `ENABLE_SQLITE_DEV=true`).
 - **Redis**: Without `REDIS_URL`, Redis/RQ initialization fails gracefully and a `MockQueue` runs tasks synchronously. Background worker features (video rendering) are degraded but CRUD/UI works fine.
 - **System deps**: `ffmpeg` (pre-installed) and `imagemagick` are required for video/image processing. ImageMagick must be installed via `apt-get install -y imagemagick`.
 - **Auth**: The `/token` endpoint accepts `application/x-www-form-urlencoded` with `username` (email) and `password` fields (OAuth2 password flow). It returns a JWT bearer token.

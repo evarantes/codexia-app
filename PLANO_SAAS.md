@@ -75,8 +75,8 @@ codexia/
 - **Rotas relativas:** `/youtube/...`, `/books/...`, etc. (sem prefixo /api em várias)
 
 ### Database
-- **Padrão:** `sqlite:////data/vibraface.db`
-- **Postgres:** `DATABASE_URL` (postgres:// ou postgresql://)
+- **Padrão operacional:** PostgreSQL via `DATABASE_URL` (postgres:// ou postgresql://)
+- **SQLite local:** permitido somente com opt-in explícito (`APP_ENV=development` ou `ENABLE_SQLITE_DEV=true`)
 - **Migração legado:** Se `/app/vibraface.db` existe e `/data/vibraface.db` não → `shutil.copy2`
 - **Alembic:** Configurado (env.py) mas sem revisions em `alembic/versions/`
 - **Migrações atuais:** Inline em `run_migrations()` (main.py) com `inspector` + `ALTER TABLE`
@@ -86,7 +86,7 @@ codexia/
 ## Plano de Execução
 
 ### ETAPA 1 — Fundação do banco + migração segura ✓
-- [x] DATABASE_URL + fallback SQLite em /data (já existe)
+- [x] DATABASE_URL com SQLite somente em modo local explícito
 - [x] Cópia /app → /data na primeira execução (já existe)
 - [x] Adicionar Tenant model + tenant_id em User
 - [x] Migração: tenants table, user.tenant_id, tenant "Default"

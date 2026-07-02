@@ -10,6 +10,8 @@ from app.redis_client import conn
 
 load_dotenv()
 
+from app.database import DATABASE_DISPLAY
+
 listen = ['default']
 
 if __name__ == '__main__':
@@ -17,7 +19,7 @@ if __name__ == '__main__':
         print("Redis connection not available. Exiting.")
         exit(1)
         
-    print(f"Starting Worker... Listening on {listen}")
+    print(f"Starting Worker... Listening on {listen} | Banco: {DATABASE_DISPLAY}")
     queues = [Queue(name, connection=conn) for name in listen]
     worker = Worker(queues, connection=conn)
     worker.work()

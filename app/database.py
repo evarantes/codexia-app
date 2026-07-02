@@ -4,78 +4,89 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Se DATABASE_URL for Postgres, usar direto e NÃO mexer com /data
+APP_ENV = (os.getenv("APP_ENV", "production") or "production").strip().lower()
+ENABLE_SQLITE_DEV = (os.getenv("ENABLE_SQLITE_DEV", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+DATABASE_POLICY_ERROR = "DATABASE_URL não configurada. O Codexia requer PostgreSQL para este ambiente."
+POSTGRES_REQUIRED_ENVS = {"production", "homologation", "staging", "functional_validation", "validation"}
+SQLITE_DEV_MODE = APP_ENV not in POSTGRES_REQUIRED_ENVS and (ENABLE_SQLITE_DEV or APP_ENV in {"development", "local"})
+
+
+def _can_write_dir(path: str) -> bool:
+    try:
+        if not os.path.isdir(path):
+            return False
+        test_path = os.path.join(path, f".__writetest__{os.getpid()}")
+        with open(test_path, "wb") as f:
+            f.write(b"1")
+        try:
+            os.remove(test_path)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _raise_database_policy_error(extra: str = "") -> None:
+    message = DATABASE_POLICY_ERROR
+    if extra:
+        message = f"{message} {extra}".strip()
+    raise RuntimeError(message)
+
+
+def _resolve_sqlite_dev_url():
+    # SQLite é permitido apenas em modo local explícito.
+    data_dir = "/data"
+    sqlite_db_path = os.getenv("SQLITE_DB_PATH", "").strip()
+    use_data_dir = False
+
+    if os.name == "posix":
+        if sqlite_db_path:
+            if sqlite_db_path.startswith("/"):
+                return f"sqlite:////{sqlite_db_path.lstrip('/')}", f"SQLite (Custom: {sqlite_db_path})"
+            return f"sqlite:///{sqlite_db_path}", f"SQLite (Custom: {sqlite_db_path})"
+        if os.path.isdir(data_dir):
+            if _can_write_dir(data_dir):
+                use_data_dir = True
+        else:
+            try:
+                os.makedirs(data_dir, exist_ok=True)
+                if _can_write_dir(data_dir):
+                    use_data_dir = True
+            except Exception:
+                pass
+    elif sqlite_db_path:
+        return f"sqlite:///{sqlite_db_path}", f"SQLite (Custom: {sqlite_db_path})"
+
+    if use_data_dir:
+        db_path = "/data/vibraface.db"
+        if os.path.exists("/app/vibraface.db") and not os.path.exists(db_path):
+            try:
+                shutil.copy2("/app/vibraface.db", db_path)
+            except Exception:
+                pass
+        return "sqlite:////data/vibraface.db", "SQLite (/data/vibraface.db)"
+
+    db_path = "vibraface.db"
+    return f"sqlite:///{db_path}", f"SQLite (Local: {db_path})"
+
+
+# PostgreSQL é obrigatório fora do modo local explícito.
 _raw = os.getenv("DATABASE_URL", "").strip()
 if _raw and (_raw.lower().startswith("postgres://") or _raw.lower().startswith("postgresql://")):
     SQLALCHEMY_DATABASE_URL = _raw.replace("postgres://", "postgresql://", 1) if _raw.startswith("postgres://") else _raw
     DATABASE_DISPLAY = "PostgreSQL"
+elif _raw:
+    if not _raw.lower().startswith("sqlite://"):
+        _raise_database_policy_error("DATABASE_URL inválida. Informe uma URL PostgreSQL válida.")
+    if not SQLITE_DEV_MODE:
+        _raise_database_policy_error()
+    SQLALCHEMY_DATABASE_URL = _raw
+    DATABASE_DISPLAY = f"SQLite (Explicit URL: {_raw})"
 else:
-    if _raw:
-        # Outro DATABASE_URL explícito (ex: sqlite custom)
-        SQLALCHEMY_DATABASE_URL = _raw
-        DATABASE_DISPLAY = f"SQLite/Outro ({_raw})"
-    else:
-        # Sem DATABASE_URL: SQLite
-        # Tenta usar /data (persistente no Coolify) se possível/existir
-        # Caso contrário (local/dev), usa diretório local
-        DATA_DIR = "/data"
-        SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "").strip()
-        
-        # Verifica se /data existe e é gravável ou se estamos em Linux (container)
-        use_data_dir = False
-        if os.name == 'posix':
-            def _can_write_dir(p: str) -> bool:
-                try:
-                    if not os.path.isdir(p):
-                        return False
-                    test_path = os.path.join(p, f".__writetest__{os.getpid()}")
-                    with open(test_path, "wb") as f:
-                        f.write(b"1")
-                    try:
-                        os.remove(test_path)
-                    except Exception:
-                        pass
-                    return True
-                except Exception:
-                    return False
-
-            if SQLITE_DB_PATH:
-                if SQLITE_DB_PATH.startswith("/"):
-                    SQLALCHEMY_DATABASE_URL = f"sqlite:////{SQLITE_DB_PATH.lstrip('/')}"
-                else:
-                    SQLALCHEMY_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
-                DATABASE_DISPLAY = f"SQLite (Custom: {SQLITE_DB_PATH})"
-                use_data_dir = False
-            else:
-                if os.path.isdir(DATA_DIR):
-                    if _can_write_dir(DATA_DIR):
-                        use_data_dir = True
-                else:
-                    try:
-                        os.makedirs(DATA_DIR, exist_ok=True)
-                        if _can_write_dir(DATA_DIR):
-                            use_data_dir = True
-                    except Exception:
-                        pass
-        elif SQLITE_DB_PATH:
-            SQLALCHEMY_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
-            DATABASE_DISPLAY = f"SQLite (Custom: {SQLITE_DB_PATH})"
-            use_data_dir = False
-
-        if use_data_dir:
-            DB_PATH = "/data/vibraface.db"
-            if os.path.exists("/app/vibraface.db") and not os.path.exists(DB_PATH):
-                try:
-                    shutil.copy2("/app/vibraface.db", DB_PATH)
-                except:
-                    pass
-            SQLALCHEMY_DATABASE_URL = "sqlite:////data/vibraface.db"
-            DATABASE_DISPLAY = "SQLite (/data/vibraface.db)"
-        else:
-            # Fallback para local (desenvolvimento ou sem volume)
-            DB_PATH = "vibraface.db"
-            SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
-            DATABASE_DISPLAY = f"SQLite (Local: {DB_PATH})"
+    if not SQLITE_DEV_MODE:
+        _raise_database_policy_error()
+    SQLALCHEMY_DATABASE_URL, DATABASE_DISPLAY = _resolve_sqlite_dev_url()
 
 # SQLite requires specific args, PostgreSQL does not
 connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}

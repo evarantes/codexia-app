@@ -11,7 +11,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante
 # Carregar variáveis de ambiente antes de inicializar banco/config dependentes de env.
 load_dotenv()
 
-from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
+from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY, SQLITE_DEV_MODE, ENABLE_SQLITE_DEV
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, social_media, image_storyboard, whatsapp
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
@@ -667,7 +667,10 @@ def create_admin_master():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: cada passo em try/except para não derrubar o app (Render/Coolify)
-    print(f"Iniciando aplicação... APP_ENV={APP_ENV} | Banco: {DATABASE_DISPLAY}")
+    print(
+        f"Iniciando aplicação... APP_ENV={APP_ENV} | Banco: {DATABASE_DISPLAY} | "
+        f"SQLite Dev={'on' if SQLITE_DEV_MODE else 'off'} | ENABLE_SQLITE_DEV={'on' if ENABLE_SQLITE_DEV else 'off'}"
+    )
     
     try:
         try:
@@ -1248,9 +1251,11 @@ def check_db_status():
         with engine.connect() as conn:
             result = conn.execute(text("SELECT 1"))
             return {
-                "status": "connected", 
-                "database_url_configured": "postgres" in os.getenv('DATABASE_URL', ''),
-                "url_prefix": os.getenv('DATABASE_URL', 'sqlite')[:10]
+                "status": "connected",
+                "database_url_present": bool((os.getenv("DATABASE_URL", "") or "").strip()),
+                "database_url_is_postgres": "postgres" in os.getenv("DATABASE_URL", ""),
+                "database_display": DATABASE_DISPLAY,
+                "sqlite_dev_mode": bool(SQLITE_DEV_MODE),
             }
     except Exception as e:
         return {"status": "error", "detail": str(e)}

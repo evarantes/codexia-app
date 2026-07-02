@@ -1,5 +1,5 @@
 """
-Alembic env: usa DATABASE_URL (Postgres) ou SQLite em /data.
+Alembic env: usa PostgreSQL por padrao e permite SQLite apenas em modo local explicito.
 Registra metadata dos models do app para gerar migrações.
 """
 import os
@@ -8,8 +8,11 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from alembic import context
+from dotenv import load_dotenv
 
-# Carrega app.database (cria /data e migra SQLite se necessário)
+load_dotenv()
+
+# Carrega app.database respeitando a politica central de banco.
 from app.database import SQLALCHEMY_DATABASE_URL
 from app.database import Base
 

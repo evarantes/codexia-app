@@ -53,10 +53,11 @@ Vá na aba **Environment Variables** e adicione:
 
 ### ⚠️ IMPORTANTE: ERRO DE LOGIN (DATABASE_URL)
 Se você estiver migrando do Render, é possível que você tenha copiado a variável `DATABASE_URL` antiga.
-**VOCÊ DEVE DELETAR A VARIÁVEL `DATABASE_URL` NO COOLIFY!**
+**NÃO remova `DATABASE_URL` em produção/homologação. O Codexia requer PostgreSQL nesses ambientes.**
 
 - Se `DATABASE_URL` estiver definida com um endereço do Render (`postgres://...`), o sistema tentará conectar no banco antigo que não existe mais, causando **Erro 500 no Login**.
-- **Solução:** Vá em Environment Variables, encontre `DATABASE_URL` e clique no ícone de lixeira para removê-la. O sistema usará automaticamente o banco local (SQLite) em `/data/vibraface.db`.
+- **Solução:** Vá em Environment Variables e corrija `DATABASE_URL` para a instância PostgreSQL válida do ambiente atual.
+- **SQLite** deve ser usado apenas em modo local explícito de desenvolvimento (`APP_ENV=development` ou `ENABLE_SQLITE_DEV=true`), nunca como fallback automático de produção.
 
 ## 3. Fazer o Deploy
 
