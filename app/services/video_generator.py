@@ -243,7 +243,16 @@ class VideoGenerator:
             return np.array(base)
         return np.array(base.convert("RGB"))
 
-    def create_text_overlay(self, text, size=(1080, 1920), text_color=(255, 255, 255), footer_text: Optional[str] = None):
+    def create_text_overlay(
+        self,
+        text,
+        size=(1080, 1920),
+        text_color=(255, 255, 255),
+        footer_text: Optional[str] = None,
+        max_lines: int = 2,
+        vertical_anchor: str = "bottom",
+        reserved_bottom_ratio: float = 0.0,
+    ):
         from PIL import Image, ImageDraw, ImageFont
         import numpy as np
 
@@ -278,28 +287,20 @@ class VideoGenerator:
                     lines.append(cur)
                     cur = w
                     continue
-                acc = ""
-                for ch in w:
-                    test2 = acc + ch
-                    if measure(test2, f) <= max_w:
-                        acc = test2
-                    else:
-                        if acc:
-                            lines.append(acc)
-                        acc = ch
-                cur = acc
+                # Nunca cortamos palavras; reduzimos a fonte em iterações anteriores.
+                cur = w
             if cur:
                 lines.append(cur)
             return lines
 
         w, h = size
         margin_x = int(w * 0.07)
-        margin_bottom = int(h * 0.10)
+        margin_bottom = max(int(h * 0.12), int(h * max(0.0, float(reserved_bottom_ratio or 0.0))))
         max_w = max(120, w - 2 * margin_x)
-        max_h = max(120, int(h * 0.42))
+        max_h = max(72, int(h * 0.15))
 
-        base_size = max(26, min(78, int(w * 0.060)))
-        min_size = max(18, min(34, int(w * 0.030)))
+        base_size = max(24, min(72, int(w * 0.055)))
+        min_size = max(16, min(30, int(w * 0.026)))
 
         chosen_font = None
         chosen_lines = []
@@ -322,7 +323,7 @@ class VideoGenerator:
             except Exception:
                 line_h = int(fs * 1.20)
             total_h = len(lines) * line_h
-            if lines and total_h <= max_h:
+            if lines and len(lines) <= max_lines and total_h <= max_h:
                 chosen_font = font
                 chosen_lines = lines
                 chosen_line_h = line_h
@@ -340,9 +341,9 @@ class VideoGenerator:
                 font = ImageFont.load_default()
             lines = wrap_words(text, font, max_w)
             line_h = int(getattr(font, "size", min_size) * 1.20)
-            max_lines = max(1, int(max_h / max(1, line_h)))
-            if len(lines) > max_lines:
-                keep = lines[:max_lines]
+            fitted_max_lines = max(1, min(max_lines, int(max_h / max(1, line_h))))
+            if len(lines) > fitted_max_lines:
+                keep = lines[:fitted_max_lines]
                 last = keep[-1]
                 ell = "..."
                 while last and measure(last + ell, font) > max_w:
@@ -354,8 +355,11 @@ class VideoGenerator:
             chosen_line_h = line_h
 
         text_block_h = len(chosen_lines) * chosen_line_h
-        y = h - margin_bottom - text_block_h
-        y = max(int(h * 0.08), y)
+        if str(vertical_anchor or "").strip().lower() == "top":
+            y = max(int(h * 0.08), int(h * 0.08))
+        else:
+            y = h - margin_bottom - text_block_h
+            y = max(int(h * 0.08), y)
 
         outline = (0, 0, 0, 255)
         fill = (int(text_color[0]), int(text_color[1]), int(text_color[2]), 255)
@@ -363,6 +367,7 @@ class VideoGenerator:
             b = draw.textbbox((0, 0), line, font=chosen_font)
             tw = b[2] - b[0]
             x = int((w - tw) / 2)
+            draw.text((x + 3, y + 3), line, font=chosen_font, fill=(0, 0, 0, 160))
             for off in [(2, 2), (-2, -2), (2, -2), (-2, 2), (0, 2), (2, 0), (-2, 0), (0, -2)]:
                 draw.text((x + off[0], y + off[1]), line, font=chosen_font, fill=outline)
             draw.text((x, y), line, font=chosen_font, fill=fill)
@@ -428,7 +433,7 @@ class VideoGenerator:
         return cap
 
     def _is_meta_instruction_fragment(self, text: str) -> bool:
-        normalized = unicodedata.normalize("NFKD", self._clean_text(text)).encode("ascii", "ignore").decode("ascii").lower().strip()
+        normalized = self._fold_text_for_matching(self._clean_text(text))
         if not normalized:
             return True
         if re.search(r"https?://|www\.|@[\w.-]+", normalized):
@@ -452,6 +457,14 @@ class VideoGenerator:
             return True
         return False
 
+    def _fold_text_for_matching(self, text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        normalized = unicodedata.normalize("NFKD", raw)
+        normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+        return normalized.lower().strip()
+
     def _strip_structural_markers(self, text: str) -> str:
         raw = self._clean_text(text)
         if not raw:
@@ -464,7 +477,7 @@ class VideoGenerator:
         )
 
         kept_parts: List[str] = []
-        fragments = re.findall(r"[^.!?\n]+[.!?]?", raw)
+        fragments = re.findall(r'[^.!?…\n]+(?:[.!?…]+["”’\']?|$)', raw)
         for fragment in fragments:
             candidate = (fragment or "").strip(" \t-•*")
             if not candidate:
@@ -474,7 +487,7 @@ class VideoGenerator:
                 match = re.match(rf"^\s*{label_pattern}\s*[:\-–—]\s*(.*)$", candidate, flags=re.IGNORECASE)
                 if not match:
                     break
-                label = unicodedata.normalize("NFKD", match.group(1)).encode("ascii", "ignore").decode("ascii").lower().strip()
+                label = self._fold_text_for_matching(match.group(1))
                 remainder = (match.group(2) or "").strip()
                 if not remainder or self._is_meta_instruction_fragment(remainder):
                     candidate = ""
@@ -502,8 +515,6 @@ class VideoGenerator:
         t = unicodedata.normalize("NFKC", t)
         t = re.sub(r"https?://\S+|www\.\S+", " ", t, flags=re.IGNORECASE)
         t = re.sub(r"\b[\w.+-]+@[\w.-]+\.\w+\b", " ", t)
-        t = t.replace("&", " e ")
-        t = t.replace("/", " / ")
         t = re.sub(r"[_*#`~<>|]+", " ", t)
         t = re.sub(r"\s+([,.;:!?])", r"\1", t)
         t = re.sub(r"\s+", " ", t).strip()
@@ -636,13 +647,13 @@ class VideoGenerator:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
         return (
             f"Seja muito bem-vindo ao canal {safe_channel}. "
-            "Abra o seu coracao, respire com calma e permaneça comigo ate o final desta mensagem."
+            "Abra o seu coração, respire com calma e permaneça comigo até o final desta mensagem."
         )
 
     def _default_closing_text(self) -> str:
         return (
-            "Se esta mensagem falou ao seu coracao, inscreva-se no canal, ative o sininho, "
-            "curta e compartilhe este video para que mais pessoas sejam alcancadas pela Palavra de Deus."
+            "Se esta mensagem falou ao seu coração, inscreva-se no canal, ative o sininho, "
+            "curta e compartilhe este vídeo para que mais pessoas sejam alcançadas pela Palavra de Deus."
         )
 
     def _redistribute_body_text_to_scenes(self, body_text: str, scenes: List[Dict[str, Any]]) -> List[str]:
@@ -872,9 +883,6 @@ class VideoGenerator:
                     "end": round(local_end, 3),
                     "caption": caption,
                 })
-        if sliced:
-            sliced[0]["start"] = 0.0
-            sliced[-1]["end"] = round(max(0.0, end_sec - start_sec), 3)
         return sliced
 
     def _clean_image_prompt_seed(self, prompt: str, max_chars: int = 180) -> str:
@@ -914,7 +922,7 @@ class VideoGenerator:
         cleaned = self._strip_visual_prompt_labels(text)
         if not cleaned:
             return ""
-        return unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii").lower()
+        return self._fold_text_for_matching(cleaned)
 
     def _extract_semantic_tags(self, text: str, catalog: Dict[str, List[str]]) -> List[str]:
         normalized = self._normalize_semantic_text(text)
@@ -937,7 +945,7 @@ class VideoGenerator:
         cleaned = self._strip_visual_prompt_labels(text)
         if not cleaned:
             return []
-        normalized_full = unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii").lower()
+        normalized_full = self._fold_text_for_matching(cleaned)
         known_character_aliases = {
             "jesus": "Jesus",
             "cristo": "Jesus",
@@ -976,7 +984,7 @@ class VideoGenerator:
             if re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", normalized_full) and label not in seen:
                 seen.append(label)
         for token in tokens:
-            normalized = unicodedata.normalize("NFKD", token).encode("ascii", "ignore").decode("ascii").lower().strip()
+            normalized = self._fold_text_for_matching(token)
             parts = [part for part in normalized.split() if part]
             if not parts:
                 continue
@@ -1460,47 +1468,96 @@ class VideoGenerator:
             "baseline_body_duration_sec": round(baseline_body_duration, 2),
         }
 
-    def _split_caption_units(self, text: str, max_words: int = 10, max_chars: int = 68) -> List[str]:
+    def _split_caption_units(self, text: str, max_words: int = 8, max_chars: int = 54) -> List[str]:
         cleaned = self._normalize_tts_text(text)
         if not cleaned:
             return []
         units: List[str] = []
+
+        def flush_piece(piece: str):
+            words = [w for w in str(piece or "").split() if w]
+            if not words:
+                return
+            current_words: List[str] = []
+            for word in words:
+                candidate = " ".join(current_words + [word]).strip()
+                if current_words and (len(current_words) + 1 > max_words or len(candidate) > max_chars):
+                    units.append(" ".join(current_words).strip())
+                    current_words = [word]
+                else:
+                    current_words.append(word)
+            if current_words:
+                units.append(" ".join(current_words).strip())
+
+        sentence_parts = [
+            part.strip()
+            for part in re.findall(r'[^.!?…\n]+(?:[.!?…]+["”’\']?|$)', cleaned)
+            if str(part or "").strip()
+        ]
+        if not sentence_parts:
+            sentence_parts = [cleaned]
+
+        normalized_pieces: List[str] = []
+        for sentence in sentence_parts:
+            soft_parts = [part.strip() for part in re.split(r"(?<=[,;:])\s+", sentence) if part and part.strip()]
+            normalized_pieces.extend(soft_parts or [sentence.strip()])
+
         current = ""
         current_words = 0
-        for part in re.split(r"(?<=[.!?;:,])\s+|\n+", cleaned):
-            piece = (part or "").strip()
-            if not piece:
-                continue
+        for piece in normalized_pieces:
             piece_words = len(piece.split())
-            if not current:
-                current = piece
-                current_words = piece_words
-            elif (
-                current_words + piece_words <= max_words
-                and len(f"{current} {piece}".strip()) <= max_chars
-            ):
-                current = f"{current} {piece}".strip()
-                current_words += piece_words
-            else:
+            if piece_words <= max_words and len(piece) <= max_chars:
+                if (
+                    current
+                    and current_words + piece_words <= max_words
+                    and len(f"{current} {piece}".strip()) <= max_chars
+                    and not re.search(r"[.!?…]$", current)
+                ):
+                    current = f"{current} {piece}".strip()
+                    current_words += piece_words
+                else:
+                    if current:
+                        units.append(current.strip())
+                    current = piece
+                    current_words = piece_words
+                continue
+
+            if current:
                 units.append(current.strip())
-                current = piece
-                current_words = piece_words
+                current = ""
+                current_words = 0
+            flush_piece(piece)
+
         if current.strip():
             units.append(current.strip())
 
-        if not units:
-            words = cleaned.split()
-            for i in range(0, len(words), max_words):
-                chunk = " ".join(words[i:i + max_words]).strip()
-                if chunk:
-                    units.append(chunk)
+        units = [unit.strip() for unit in units if unit and unit.strip()]
         return units
+
+    def _join_caption_tokens(self, tokens: List[str]) -> str:
+        caption = ""
+        for raw in tokens:
+            token = str(raw or "").strip()
+            if not token:
+                continue
+            if not caption:
+                caption = token
+                continue
+            if re.match(r"^[,.;:!?…)\]\}%]+$", token):
+                caption += token
+            elif re.match(r"^['\"“”‘’`]+$", token):
+                caption += token
+            elif caption.endswith(("(", "[", "{", "“", '"', "‘", "'")):
+                caption += token
+            else:
+                caption += f" {token}"
+        return caption.strip()
 
     def _caption_timeline_from_text(self, narration: str, duration: float) -> List[Dict[str, Any]]:
         total_duration = float(duration or 0.0)
         if total_duration <= 0:
             return []
-        chunks = self._split_caption_units(narration, max_words=10, max_chars=68)
+        chunks = self._split_caption_units(narration, max_words=8, max_chars=54)
         if not chunks:
             return []
 
@@ -1562,7 +1619,7 @@ class VideoGenerator:
                 nonlocal current, timeline
                 if not current:
                     return
-                caption = " ".join(str(w.get("word") or "").strip() for w in current).strip()
+                caption = self._join_caption_tokens([str(w.get("word") or "").strip() for w in current])
                 if not caption:
                     current = []
                     return
@@ -1575,16 +1632,16 @@ class VideoGenerator:
             for word in words:
                 token = str(word.get("word") or "").strip()
                 current.append(word)
-                caption = " ".join(str(w.get("word") or "").strip() for w in current).strip()
+                caption = self._join_caption_tokens([str(w.get("word") or "").strip() for w in current])
                 dur = float(current[-1].get("end") or 0.0) - float(current[0].get("start") or 0.0)
                 hard_break = bool(re.search(r"[.!?…]$", token))
                 soft_break = bool(re.search(r"[,;:]$", token))
                 if (
-                    len(current) >= 9
-                    or len(caption) >= 62
-                    or dur >= 3.2
+                    len(current) >= 6
+                    or len(caption) >= 42
+                    or dur >= 2.4
                     or hard_break
-                    or (soft_break and dur >= 1.5)
+                    or (soft_break and dur >= 1.2)
                 ):
                     flush_words()
             flush_words()
@@ -1608,7 +1665,7 @@ class VideoGenerator:
                 continue
             if seg_end <= seg_start:
                 continue
-            units = self._split_caption_units(text, max_words=10, max_chars=68)
+            units = self._split_caption_units(text, max_words=8, max_chars=54)
             if not units:
                 continue
             seg_duration = seg_end - seg_start
@@ -2671,6 +2728,8 @@ class VideoGenerator:
             "narration_plan": {},
             "audio_generation": {},
             "sync_validation": {},
+            "text_integrity": {},
+            "utf8_audit": {},
             "visual_plan": {},
             "scene_visuals": [],
             "effects_applied": [],
@@ -3368,6 +3427,29 @@ class VideoGenerator:
             full_caption_timeline = self._build_caption_timeline(final_narration_text, actual_total_audio_dur, audio_path=main_audio_path)
             if not full_caption_timeline:
                 raise Exception("Falha ao gerar a timeline de legendas a partir do audio final.")
+            caption_text_joined = " ".join(
+                str(item.get("caption") or "").strip()
+                for item in full_caption_timeline
+                if str(item.get("caption") or "").strip()
+            ).strip()
+            normalized_tts_text = re.sub(r"\s+", " ", final_narration_text).strip()
+            normalized_caption_text = re.sub(r"\s+", " ", caption_text_joined).strip()
+            render_report["utf8_audit"] = {
+                "final_text_sent_to_tts_unicode_escape": normalized_tts_text.encode("unicode_escape").decode("ascii"),
+                "captions_source_text_unicode_escape": normalized_caption_text.encode("unicode_escape").decode("ascii"),
+                "texts_identical_after_whitespace_normalization": normalized_caption_text == normalized_tts_text,
+                "tts_text_length": len(normalized_tts_text),
+                "captions_text_length": len(normalized_caption_text),
+            }
+            render_report["text_integrity"] = {
+                "final_text_sent_to_tts": final_narration_text,
+                "captions_source_text": caption_text_joined,
+                "tts_contains_non_ascii": bool(re.search(r"[^\x00-\x7F]", final_narration_text)),
+                "captions_contain_non_ascii": bool(re.search(r"[^\x00-\x7F]", caption_text_joined)),
+                "tts_contains_punctuation": bool(re.search(r"[,.!?;:…\"“”'‘’\-–—]", final_narration_text)),
+                "captions_contain_punctuation": bool(re.search(r"[,.!?;:…\"“”'‘’\-–—]", caption_text_joined)),
+                "captions_match_narration_source": normalized_caption_text == normalized_tts_text,
+            }
 
             requested_duration = actual_total_audio_dur
             duration_plan = self._plan_scene_visual_durations(
@@ -3389,6 +3471,9 @@ class VideoGenerator:
             render_report["duration_plan"]["opening_duration_sec"] = round(title_clip_duration, 2)
             render_report["duration_plan"]["end_duration_sec"] = round(end_clip_duration, 2)
             render_report["duration_plan"]["body_audio_duration_sec"] = round(body_audio_target, 2)
+            render_report["visual_plan"]["caption_max_lines"] = 2
+            render_report["visual_plan"]["caption_reserved_bottom_ratio"] = 0.14
+            render_report["visual_plan"]["caption_vertical_anchor"] = "bottom"
             render_report["duration_plan"]["range_decision"] = duration_range_report.get("decision")
             render_report["duration_plan"]["range_decision_reason"] = duration_range_report.get("decision_reason")
             render_report["duration_plan"]["above_requested_range_sec"] = duration_range_report.get("above_requested_range_sec")
@@ -3405,13 +3490,8 @@ class VideoGenerator:
             clip_title = ImageClip(img_title)
             self._assert_clip_not_none(clip_title, "title_slide")
             clip_title = self._set_clip_duration(clip_title, title_clip_duration)
-            opening_caption_timeline = self._slice_caption_timeline(full_caption_timeline, 0.0, title_clip_duration)
             opening_overlays = []
-            for item in opening_caption_timeline:
-                overlay_arr = self.create_text_overlay(str(item.get("caption") or "").strip(), size=video_size, text_color=(255, 255, 255))
-                overlay_clip = self._clip_from_rgba(overlay_arr, float(item.get("end") or 0.0) - float(item.get("start") or 0.0))
-                overlay_clip = self._set_clip_start(overlay_clip, float(item.get("start") or 0.0))
-                opening_overlays.append(overlay_clip)
+            render_report["visual_plan"]["opening_caption_suppressed"] = True
             clip_title = CompositeVideoClip([clip_title] + opening_overlays, size=video_size) if opening_overlays else clip_title
             clips.append(clip_title)
 
@@ -3564,14 +3644,32 @@ class VideoGenerator:
                     end = float(item.get("end") or 0.0)
                     if not caption or end <= start:
                         continue
-                    overlay_arr = self.create_text_overlay(caption, size=video_size, text_color=(255, 255, 255))
+                    overlay_arr = self.create_text_overlay(
+                        caption,
+                        size=video_size,
+                        text_color=(255, 255, 255),
+                        reserved_bottom_ratio=0.14,
+                    )
                     overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
                     overlay_clip = self._set_clip_start(overlay_clip, start)
                     overlay_clips.append(overlay_clip)
                 if not overlay_clips:
-                    overlay_arr = self.create_text_overlay(self._make_caption(clean_text), size=video_size, text_color=(255, 255, 255))
-                    overlay_clip = self._clip_from_rgba(overlay_arr, scene_dur)
-                    overlay_clips = [overlay_clip]
+                    fallback_caption_timeline = self._caption_timeline_from_text(clean_text, scene_dur)
+                    for item in fallback_caption_timeline:
+                        caption = str(item.get("caption") or "").strip()
+                        start = float(item.get("start") or 0.0)
+                        end = float(item.get("end") or 0.0)
+                        if not caption or end <= start:
+                            continue
+                        overlay_arr = self.create_text_overlay(
+                            caption,
+                            size=video_size,
+                            text_color=(255, 255, 255),
+                            reserved_bottom_ratio=0.14,
+                        )
+                        overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
+                        overlay_clip = self._set_clip_start(overlay_clip, start)
+                        overlay_clips.append(overlay_clip)
 
                 for overlay_clip in overlay_clips:
                     self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
@@ -3602,7 +3700,12 @@ class VideoGenerator:
             end_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, actual_total_audio_dur)
             end_overlays = []
             for item in end_caption_timeline:
-                overlay_arr = self.create_text_overlay(str(item.get("caption") or "").strip(), size=video_size, text_color=(255, 255, 255))
+                overlay_arr = self.create_text_overlay(
+                    str(item.get("caption") or "").strip(),
+                    size=video_size,
+                    text_color=(255, 255, 255),
+                    reserved_bottom_ratio=0.18,
+                )
                 overlay_clip = self._clip_from_rgba(overlay_arr, float(item.get("end") or 0.0) - float(item.get("start") or 0.0))
                 overlay_clip = self._set_clip_start(overlay_clip, float(item.get("start") or 0.0))
                 end_overlays.append(overlay_clip)
