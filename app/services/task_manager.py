@@ -73,6 +73,31 @@ def request_cancel_task(task_id: str, message: str = "Cancelado pelo usuário.")
     finally:
         db.close()
 
+
+def reset_task_for_retry(task_id: str, progress: int = 1, message: str = "Reiniciando tarefa...") -> Optional[Dict[str, Any]]:
+    _control_set(task_id, {"cancel": False, "deleted": False})
+    db = SessionLocal()
+    try:
+        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if not row:
+            return None
+        row.status = "processing"
+        try:
+            row.progress = int(progress)
+        except Exception:
+            row.progress = 1
+        row.message = message
+        db.commit()
+        current = _db_to_dict(row)
+        video_tasks[task_id] = current
+        _redis_set(task_id, current)
+        return current
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
 def mark_task_deleted(task_id: str):
     _control_set(task_id, {"deleted": True})
     try:
