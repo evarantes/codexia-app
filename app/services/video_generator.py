@@ -72,6 +72,13 @@ class VideoGenerator:
         except Exception:
             return 0.0
 
+    def _is_ffprobe_available(self) -> bool:
+        try:
+            import shutil
+            return bool(shutil.which("ffprobe"))
+        except Exception:
+            return False
+
     def _ffprobe_stream_duration_seconds(self, path: str) -> float:
         try:
             import subprocess
@@ -1849,6 +1856,7 @@ class VideoGenerator:
             "configured_provider": None,
             "provider_used": None,
             "fallback_used": False,
+            "ffprobe_available": self._is_ffprobe_available(),
             "requested_voice_style": style,
             "requested_voice_gender": gender,
             "input_char_count": len(clean_text),
@@ -2093,21 +2101,69 @@ class VideoGenerator:
                 if t.is_alive():
                     raise TimeoutError("Edge TTS timeout")
 
+                ffprobe_available = bool(tts_debug.get("ffprobe_available"))
+                file_size = 0
+                if os.path.exists(path):
+                    try:
+                        file_size = int(os.path.getsize(path) or 0)
+                    except Exception:
+                        file_size = 0
                 dur = 0.0
                 try:
                     dur = float(self._ffprobe_duration_seconds(path) or 0)
                 except Exception:
                     dur = 0.0
-                if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
-                    _record_attempt("edge_tts", "success", "Fallback Edge TTS gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                estimated_dur = 0.0
+                used_estimated_duration = False
+                if file_size > 500 and dur <= 0.2 and not ffprobe_available:
+                    estimated_dur = float(
+                        self._estimate_text_duration_with_voice(
+                            clean_text,
+                            voice_style=style,
+                            voice_gender=gender,
+                        ) or 0.0
+                    )
+                    if estimated_dur > 0.2:
+                        used_estimated_duration = True
+                        dur = estimated_dur
+
+                if os.path.exists(path) and file_size > 500 and dur > 0.2:
+                    _record_attempt(
+                        "edge_tts",
+                        "success",
+                        "Fallback Edge TTS gerou audio valido.",
+                        {
+                            "duration_sec": round(float(dur or 0.0), 2),
+                            "duration_source": "estimated_from_text" if used_estimated_duration else "ffprobe",
+                            "measured_duration_sec": round(float(self._ffprobe_duration_seconds(path) or 0.0), 2) if ffprobe_available else 0.0,
+                            "estimated_duration_sec": round(float(estimated_dur or 0.0), 2) if used_estimated_duration else 0.0,
+                            "ffprobe_available": ffprobe_available,
+                            "file_size_bytes": file_size,
+                        },
+                    )
                     tts_debug["provider_used"] = "edge_tts"
                     tts_debug["fallback_used"] = True
+                    tts_debug["edge_tts_file_size_bytes"] = file_size
+                    tts_debug["edge_tts_duration_source"] = "estimated_from_text" if used_estimated_duration else "ffprobe"
+                    tts_debug["edge_tts_measured_duration_sec"] = round(float(self._ffprobe_duration_seconds(path) or 0.0), 2) if ffprobe_available else 0.0
+                    tts_debug["edge_tts_estimated_duration_sec"] = round(float(estimated_dur or 0.0), 2) if used_estimated_duration else 0.0
                     tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
                     tts_debug["output_path"] = path
                     print(f"Edge TTS sucesso: {path} ({dur:.2f}s)")
                     return path
                 else:
-                    _record_attempt("edge_tts", "failed", "Arquivo gerado invalido ou vazio.", {"duration_sec": round(float(dur or 0.0), 2)})
+                    _record_attempt(
+                        "edge_tts",
+                        "failed",
+                        "Arquivo gerado invalido ou vazio.",
+                        {
+                            "duration_sec": round(float(dur or 0.0), 2),
+                            "duration_source": "estimated_from_text" if used_estimated_duration else "ffprobe",
+                            "estimated_duration_sec": round(float(estimated_dur or 0.0), 2),
+                            "ffprobe_available": ffprobe_available,
+                            "file_size_bytes": file_size,
+                        },
+                    )
                     print(f"Edge TTS gerou arquivo vazio ou falhou (Size check failed). Path: {path}")
             except Exception as e:
                  _record_attempt("edge_tts", "failed", str(e))

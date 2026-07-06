@@ -43,7 +43,7 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
-from app.services.task_manager import create_task, update_task, get_task, is_task_cancel_requested, request_cancel_task
+from app.services.task_manager import create_task, update_task, get_task, is_task_cancel_requested, request_cancel_task, reset_task_for_retry
 from app.services.youtube_auto_responder import auto_thank_comments
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
@@ -231,6 +231,97 @@ def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]
             filtered.append(row)
     filtered.sort(key=lambda r: (0 if str(r.status or "").lower() == "processing" else 1, r.created_at or datetime.utcnow(), str(r.id)))
     return filtered
+
+
+def _story_video_stale_minutes() -> int:
+    try:
+        raw = int((os.getenv("VIDEO_TASK_STALE_MINUTES") or "").strip() or "180")
+    except Exception:
+        raw = 180
+    return max(30, min(7 * 24 * 60, raw))
+
+
+def _story_video_pending_expiration_minutes() -> int:
+    try:
+        raw = int((os.getenv("VIDEO_TASK_PENDING_EXPIRATION_MINUTES") or "").strip() or "720")
+    except Exception:
+        raw = 720
+    return max(_story_video_stale_minutes(), min(14 * 24 * 60, raw))
+
+
+def _task_row_reference_dt(row: VideoTask) -> Optional[datetime]:
+    dt = getattr(row, "updated_at", None) or getattr(row, "created_at", None)
+    if not dt:
+        return None
+    try:
+        if getattr(dt, "tzinfo", None) is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except Exception:
+        pass
+    return dt
+
+
+def _task_payload_timestamp(value: Optional[str]) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if getattr(dt, "tzinfo", None) is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]] = None) -> Dict[str, Any]:
+    rows = rows or _load_story_video_task_rows(db, limit=100)
+    now = datetime.utcnow()
+    stale_minutes = _story_video_stale_minutes()
+    pending_expiration_minutes = _story_video_pending_expiration_minutes()
+    cleaned: List[Dict[str, Any]] = []
+    changed = False
+    for row in rows:
+        status = str(row.status or "").lower()
+        ref_dt = _task_row_reference_dt(row)
+        if not ref_dt:
+            continue
+        age_minutes = max(0.0, (now - ref_dt).total_seconds() / 60.0)
+        if status == "processing" and age_minutes >= stale_minutes:
+            message = (
+                f"Falha automática: tarefa travada sem atualização há mais de "
+                f"{stale_minutes} min. Nova geração liberada."
+            )
+            row.status = "failed"
+            row.message = message
+            cleaned.append({
+                "task_id": str(row.id),
+                "status_before": "processing",
+                "status_after": "failed",
+                "age_minutes": round(age_minutes, 2),
+            })
+            changed = True
+        elif status == "pending" and age_minutes >= pending_expiration_minutes:
+            row.status = "cancelled"
+            row.message = (
+                f"Cancelado automaticamente: tarefa antiga removida da fila após "
+                f"{pending_expiration_minutes} min sem execução."
+            )
+            cleaned.append({
+                "task_id": str(row.id),
+                "status_before": "pending",
+                "status_after": "cancelled",
+                "age_minutes": round(age_minutes, 2),
+            })
+            changed = True
+    if changed:
+        db.commit()
+    return {
+        "changed": changed,
+        "cleaned": cleaned,
+        "stale_minutes": stale_minutes,
+        "pending_expiration_minutes": pending_expiration_minutes,
+    }
 
 def _story_video_task_item_from_row(row: VideoTask, position: int) -> Dict[str, Any]:
     result_obj = _video_task_result_obj(row) or {}
@@ -449,6 +540,11 @@ def _kick_story_video_task_queue() -> Optional[str]:
         rows = _load_story_video_task_rows(db, limit=100)
         if not rows:
             return None
+        cleanup_info = _cleanup_story_video_task_queue(db, rows=rows)
+        if cleanup_info.get("changed"):
+            rows = _load_story_video_task_rows(db, limit=100)
+            if not rows:
+                return None
         processing = next((r for r in rows if str(r.status or "").lower() == "processing"), None)
         if processing:
             return processing.id
@@ -3660,7 +3756,6 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     try:
-        status = str((task.get("status") or "")).lower()
         if status in {"processing"}:
             updated_at_s = (task.get("updated_at") or task.get("created_at") or "").strip()
             if updated_at_s:
@@ -3821,8 +3916,7 @@ def cancel_task(task_id: str):
         current_progress = 0
     request_cancel_task(task_id, message="Cancelado pelo usuário.")
     update_task(task_id, status="cancelled", progress=current_progress, message="Cancelado pelo usuário.")
-    if status == "pending":
-        _kick_story_video_task_queue_async()
+    _kick_story_video_task_queue_async()
     return {"message": "Cancelado", "task_id": task_id, "status": "cancelled"}
 
 @router.post("/tasks/cancel_all")
@@ -3911,14 +4005,28 @@ def retry_task(task_id: str):
     task = get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
-    status = str((task.get("status") or "")).lower()
     progress = task.get("progress")
     try:
         progress_n = int(progress) if progress is not None else 0
     except Exception:
         progress_n = 0
+    updated_at_s = (task.get("updated_at") or task.get("created_at") or "").strip()
+    task_dt = _task_payload_timestamp(updated_at_s)
+    stale_minutes = _story_video_stale_minutes()
+    is_stale_processing = bool(
+        status == "processing"
+        and task_dt
+        and (datetime.utcnow() - task_dt > timedelta(minutes=stale_minutes))
+    )
     if status == "completed":
         raise HTTPException(status_code=400, detail="Tarefa já concluída.")
+    if is_stale_processing:
+        stale_message = (
+            f"Falha automática para retry seguro: tarefa travada sem atualização há mais de "
+            f"{stale_minutes} min."
+        )
+        update_task(task_id, status="failed", progress=progress_n, message=stale_message)
+        status = "failed"
     if status == "processing" and progress_n >= 5:
         raise HTTPException(status_code=409, detail="Tarefa já está em processamento.")
     result = task.get("result") if isinstance(task.get("result"), dict) else {}
@@ -3929,7 +4037,7 @@ def retry_task(task_id: str):
         req = VideoRequest(**payload)
     except Exception:
         raise HTTPException(status_code=400, detail="Payload inválido para reiniciar a tarefa.")
-    update_task(task_id, status="processing", progress=1, message="Reiniciando geração local...")
+    reset_task_for_retry(task_id, progress=1, message="Reiniciando geração local...")
     t = threading.Thread(target=process_video_generation, args=(req, task_id), daemon=True)
     t.start()
     return {"message": "Reiniciado", "task_id": task_id}
@@ -4493,7 +4601,7 @@ def process_video_generation(request: VideoRequest, task_id):
 
             fallback_title = (request.topic or "Vídeo").strip()
             
-            yt_service.upload_video(
+            upload_result = yt_service.upload_video(
                 abs_video_path,
                 title=script.get('title') or fallback_title,
                 description=description,
