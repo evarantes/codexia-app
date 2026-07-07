@@ -362,8 +362,12 @@ class VideoGenerator:
             chosen_line_h = line_h
 
         text_block_h = len(chosen_lines) * chosen_line_h
-        if str(vertical_anchor or "").strip().lower() == "top":
+        anchor = str(vertical_anchor or "").strip().lower()
+        if anchor == "top":
             y = max(int(h * 0.08), int(h * 0.08))
+        elif anchor == "center":
+            y = int((h - text_block_h) / 2)
+            y = max(int(h * 0.08), y)
         else:
             y = h - margin_bottom - text_block_h
             y = max(int(h * 0.08), y)
@@ -652,10 +656,7 @@ class VideoGenerator:
 
     def _default_opening_text(self, channel_name: str) -> str:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
-        return (
-            f"Seja muito bem-vindo ao canal {safe_channel}. "
-            "Abra o seu coração, respire com calma e permaneça comigo até o final desta mensagem."
-        )
+        return f"{safe_channel}. Uma mensagem para o seu coração."
 
     def _default_closing_text(self) -> str:
         return (
@@ -1314,6 +1315,213 @@ class VideoGenerator:
         if len(prompt) > 360:
             prompt = prompt[:360].rsplit(" ", 1)[0].strip(" ,.;:-")
         return prompt
+
+    def _compose_opening_cover_prompt(
+        self,
+        title: str,
+        scenes: List[Dict[str, Any]],
+        continuity_anchor: str,
+        plan: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        first_scene = scenes[0] if scenes else {}
+        if not isinstance(first_scene, dict):
+            first_scene = {"text": str(first_scene or ""), "image_prompt": ""}
+        profile = first_scene.get("_visual_semantic_profile") or self._build_semantic_scene_profile(first_scene, 1)
+        title_clean = self._clean_text(title or (plan or {}).get("title") or "").strip()
+        first_text = str(first_scene.get("_tts_text") or first_scene.get("text") or "").strip()
+        first_prompt = self._clean_image_prompt_seed(
+            str(first_scene.get("image_prompt") or first_scene.get("visual_prompt") or ""),
+            max_chars=220,
+        )
+        moment = self._compact_narrative_moment(first_text, max_chars=120)
+        clauses: List[str] = []
+        if title_clean:
+            clauses.append(f"Theme: {title_clean[:90]}")
+        if profile.get("characters"):
+            clauses.append("Characters: " + ", ".join(profile.get("characters")[:3]))
+        if profile.get("environment"):
+            clauses.append("Setting: " + ", ".join(str(item).replace("_", " ") for item in profile.get("environment")[:2]))
+        if moment:
+            clauses.append("Narrative moment: " + moment)
+        if first_prompt:
+            clauses.append("Visual direction: " + first_prompt)
+        if continuity_anchor:
+            clauses.append("Continuity: " + continuity_anchor[:140])
+        clauses.append(
+            "Opening cover frame for a cinematic biblical video, elegant composition, emotional and reverent mood, "
+            "clear focal point, center-safe framing for title overlay, natural dramatic light, no text, no watermark, no logo"
+        )
+        prompt = ". ".join(clause.strip().rstrip(".") for clause in clauses if clause).strip()
+        return prompt[:700].rsplit(" ", 1)[0].strip(" ,.;:-") if len(prompt) > 700 else prompt
+
+    def _resolve_opening_background_image(
+        self,
+        title: str,
+        scenes: List[Dict[str, Any]],
+        continuity_anchor: str,
+        *,
+        plan: Optional[Dict[str, Any]] = None,
+        selected_primary_path: Optional[str] = None,
+        cover_image_path: Optional[str] = None,
+        video_bg_path: Optional[str] = None,
+        aspect_ratio: str = "9:16",
+        image_max_rounds: int = 2,
+        allow_non_ai_fallback: bool = False,
+        status_callback=None,
+        generated_group_paths: Optional[Dict[int, str]] = None,
+        generated_group_sources: Optional[Dict[int, str]] = None,
+        scene_to_group: Optional[Dict[int, int]] = None,
+    ) -> Dict[str, Any]:
+        provided_cover = str(cover_image_path or "").strip()
+        if provided_cover and os.path.exists(provided_cover):
+            return {
+                "path": provided_cover,
+                "source": "provided_cover_image",
+                "generated": False,
+                "generation_attempted": False,
+                "generation_error": None,
+                "fallback_reason": None,
+            }
+
+        first_scene = scenes[0] if scenes else {}
+        if not isinstance(first_scene, dict):
+            first_scene = {"text": str(first_scene or ""), "image_prompt": ""}
+        first_scene_text = str(first_scene.get("_tts_text") or first_scene.get("text") or "").strip()
+        opening_prompt = self._compose_opening_cover_prompt(title, scenes, continuity_anchor, plan=plan)
+        opening_generation_error = None
+
+        if opening_prompt:
+            try:
+                opening_path = self._ensure_image_for_scene(
+                    opening_prompt,
+                    text_fallback=(first_scene_text or title)[:220],
+                    aspect_ratio=aspect_ratio,
+                    status_callback=status_callback,
+                    max_rounds=image_max_rounds,
+                    # A abertura precisa revelar falha real da capa temática;
+                    # o fallback genérico só entra depois, explicitamente.
+                    allow_non_ai_fallback=False,
+                )
+                if opening_path:
+                    opening_group_id = 0
+                    if isinstance(scene_to_group, dict) and 0 in scene_to_group:
+                        opening_group_id = int(scene_to_group.get(0) or 0)
+                    if generated_group_paths is not None and opening_group_id not in generated_group_paths:
+                        generated_group_paths[opening_group_id] = opening_path
+                    if generated_group_sources is not None and opening_group_id not in generated_group_sources:
+                        generated_group_sources[opening_group_id] = "opening_theme_image"
+                    return {
+                        "path": opening_path,
+                        "source": "generated_opening_cover",
+                        "generated": True,
+                        "generation_attempted": True,
+                        "generation_error": None,
+                        "fallback_reason": None,
+                    }
+            except Exception as exc:
+                opening_generation_error = str(exc)
+
+        selected_path = str(selected_primary_path or "").strip()
+        if selected_path and os.path.exists(selected_path):
+            return {
+                "path": selected_path,
+                "source": "selected_first_scene_image",
+                "generated": False,
+                "generation_attempted": bool(opening_prompt),
+                "generation_error": opening_generation_error,
+                "fallback_reason": "thematic_generation_failed_using_first_scene_image" if opening_generation_error else None,
+            }
+
+        pooled_background = str(video_bg_path or "").strip()
+        if pooled_background and os.path.exists(pooled_background):
+            return {
+                "path": pooled_background,
+                "source": "video_background_pool",
+                "generated": False,
+                "generation_attempted": bool(opening_prompt),
+                "generation_error": opening_generation_error,
+                "fallback_reason": "thematic_generation_failed_using_video_background_pool" if opening_generation_error else None,
+            }
+
+        return {
+            "path": None,
+            "source": "fallback_background",
+            "generated": False,
+            "generation_attempted": bool(opening_prompt),
+            "generation_error": opening_generation_error or ("opening_cover_prompt_unavailable" if not opening_prompt else None),
+            "fallback_reason": "thematic_generation_failed_no_other_opening_image_available",
+        }
+
+    def _apply_soft_fade(self, clip, fade_in_sec: float = 0.45, fade_out_sec: float = 0.30):
+        try:
+            clip_duration = float(getattr(clip, "duration", 0.0) or 0.0)
+        except Exception:
+            clip_duration = 0.0
+        if clip_duration <= 0:
+            return clip
+
+        fade_in = max(0.0, min(float(fade_in_sec or 0.0), clip_duration * 0.45))
+        fade_out = max(0.0, min(float(fade_out_sec or 0.0), clip_duration * 0.35))
+        result = clip
+        try:
+            if fade_in > 0:
+                if hasattr(result, "fadein"):
+                    result = result.fadein(fade_in)
+                elif hasattr(result, "crossfadein"):
+                    result = result.crossfadein(fade_in)
+                else:
+                    try:
+                        from moviepy.editor import vfx
+                    except ImportError:
+                        from moviepy import vfx
+                    result = result.fx(vfx.fadein, fade_in)
+            if fade_out > 0:
+                if hasattr(result, "fadeout"):
+                    result = result.fadeout(fade_out)
+                elif hasattr(result, "crossfadeout"):
+                    result = result.crossfadeout(fade_out)
+                else:
+                    try:
+                        from moviepy.editor import vfx
+                    except ImportError:
+                        from moviepy import vfx
+                    result = result.fx(vfx.fadeout, fade_out)
+        except Exception:
+            return clip
+        return result
+
+    def _build_opening_title_overlay(
+        self,
+        title: str,
+        size,
+        *,
+        footer_text: Optional[str] = None,
+        duration: float = 2.0,
+    ):
+        safe_title = str(title or "").strip()
+        if not safe_title:
+            return None
+        overlay_arr = self.create_text_overlay(
+            safe_title,
+            size=size,
+            text_color=(255, 255, 255),
+            footer_text=footer_text,
+            max_lines=3,
+            vertical_anchor="center",
+            reserved_bottom_ratio=0.0,
+        )
+        overlay_clip = self._clip_from_rgba(overlay_arr, duration)
+        overlay_clip = self._apply_motion_effect(
+            overlay_clip,
+            size,
+            {"name": "slow_zoom", "zoom_factor": 1.04, "scene_number": 0, "total_scenes": 1},
+        )
+        overlay_clip = self._apply_soft_fade(
+            overlay_clip,
+            fade_in_sec=min(0.65, float(duration or 0.0) * 0.28),
+            fade_out_sec=min(0.40, float(duration or 0.0) * 0.18),
+        )
+        return overlay_clip
 
     def _build_visual_groups(
         self,
@@ -3535,19 +3743,74 @@ class VideoGenerator:
             render_report["duration_plan"]["above_requested_range_sec"] = duration_range_report.get("above_requested_range_sec")
             render_report["duration_plan"]["below_requested_range_sec"] = duration_range_report.get("below_requested_range_sec")
 
-            start_bg_path = selected_primary_path if selected_primary_path and os.path.exists(selected_primary_path) else None
-            if not start_bg_path:
-                start_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
-            if not start_bg_path and video_bg_path and os.path.exists(video_bg_path):
-                start_bg_path = video_bg_path
+            def _opening_status(message: str):
+                if progress_callback:
+                    progress_callback(9, f"Abertura: {message}")
+
+            opening_visual = self._resolve_opening_background_image(
+                title,
+                scenes,
+                continuity_anchor,
+                plan=plan if isinstance(plan, dict) else None,
+                selected_primary_path=selected_primary_path,
+                cover_image_path=cover_image_path,
+                video_bg_path=video_bg_path,
+                aspect_ratio=aspect_ratio,
+                image_max_rounds=image_max_rounds,
+                allow_non_ai_fallback=allow_non_ai_fallback,
+                status_callback=_opening_status,
+                generated_group_paths=generated_group_paths,
+                generated_group_sources=generated_group_sources,
+                scene_to_group=scene_to_group,
+            )
+            start_bg_path = opening_visual.get("path") if isinstance(opening_visual, dict) else None
             _track_image_path(start_bg_path)
             title_footer = f"Canal {planning_meta.get('channel_name')}" if planning_meta.get("channel_name") else None
-            img_title = self.create_text_image(clean_title, size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path, footer_text=title_footer)
+            img_title = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path, footer_text=None)
             clip_title = ImageClip(img_title)
             self._assert_clip_not_none(clip_title, "title_slide")
-            clip_title = self._set_clip_duration(clip_title, title_clip_duration)
+            opening_visual_duration = max(2.0, round(float(title_clip_duration or 0.0), 2))
+            title_clip_duration = opening_visual_duration
+            clip_title = self._set_clip_duration(clip_title, opening_visual_duration)
+            clip_title = self._apply_motion_effect(
+                clip_title,
+                video_size,
+                {"name": "slow_zoom", "zoom_factor": 1.06, "scene_number": 0, "total_scenes": max(1, len(scenes))},
+            )
+            clip_title = self._apply_soft_fade(
+                clip_title,
+                fade_in_sec=min(0.60, opening_visual_duration * 0.20),
+                fade_out_sec=min(0.35, opening_visual_duration * 0.14),
+            )
             opening_overlays = []
+            title_overlay_duration = max(2.0, min(opening_visual_duration, 2.6))
+            title_overlay = self._build_opening_title_overlay(
+                clean_title,
+                video_size,
+                footer_text=title_footer,
+                duration=title_overlay_duration,
+            )
+            if title_overlay is not None:
+                opening_overlays.append(title_overlay)
             render_report["visual_plan"]["opening_caption_suppressed"] = True
+            render_report["visual_plan"]["opening_background_source"] = (
+                opening_visual.get("source") if isinstance(opening_visual, dict) else "fallback_background"
+            )
+            render_report["visual_plan"]["opening_background_generated"] = bool(
+                isinstance(opening_visual, dict) and opening_visual.get("generated")
+            )
+            render_report["visual_plan"]["opening_background_generation_attempted"] = bool(
+                isinstance(opening_visual, dict) and opening_visual.get("generation_attempted")
+            )
+            render_report["visual_plan"]["opening_background_generation_error"] = (
+                opening_visual.get("generation_error") if isinstance(opening_visual, dict) else None
+            )
+            render_report["visual_plan"]["opening_background_fallback_reason"] = (
+                opening_visual.get("fallback_reason") if isinstance(opening_visual, dict) else None
+            )
+            render_report["visual_plan"]["opening_visual_duration_sec"] = round(opening_visual_duration, 2)
+            render_report["visual_plan"]["opening_title_overlay_duration_sec"] = round(title_overlay_duration, 2)
+            render_report["visual_plan"]["opening_title_animation"] = "fade_plus_slow_zoom"
             clip_title = CompositeVideoClip([clip_title] + opening_overlays, size=video_size) if opening_overlays else clip_title
             clips.append(clip_title)
 
