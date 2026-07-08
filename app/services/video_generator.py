@@ -250,6 +250,198 @@ class VideoGenerator:
             return np.array(base)
         return np.array(base.convert("RGB"))
 
+    def _caption_font_candidates(self) -> List[str]:
+        return [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "DejaVuSans-Bold.ttf",
+            "arial.ttf",
+        ]
+
+    def _load_caption_font(self, font_size: int):
+        from PIL import ImageFont
+
+        for fp in self._caption_font_candidates():
+            try:
+                return ImageFont.truetype(fp, font_size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    def _measure_caption_text_width(self, draw, text: str, font) -> float:
+        try:
+            return float(draw.textlength(text, font=font))
+        except Exception:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            return float(bbox[2] - bbox[0])
+
+    def _wrap_caption_words(self, text: str, draw, font, max_width: int) -> List[str]:
+        words = [w for w in str(text or "").split() if w]
+        lines: List[str] = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if self._measure_caption_text_width(draw, candidate, font) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = word
+                continue
+            current = word
+        if current:
+            lines.append(current)
+        return lines
+
+    def _caption_layout_metrics(
+        self,
+        text: str,
+        size=(1080, 1920),
+        max_lines: int = 2,
+        reserved_bottom_ratio: float = 0.0,
+    ) -> Dict[str, Any]:
+        from PIL import Image, ImageDraw
+
+        cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+        img = Image.new("RGBA", size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        w, h = size
+        margin_x = int(w * 0.07)
+        max_width = max(120, w - 2 * margin_x)
+        max_height = max(72, int(h * 0.15))
+        base_size = max(24, min(72, int(w * 0.055)))
+        min_size = max(14, min(28, int(w * 0.022)))
+
+        last_font = self._load_caption_font(min_size)
+        last_lines = self._wrap_caption_words(cleaned, draw, last_font, max_width)
+        last_line_h = int(getattr(last_font, "size", min_size) * 1.20)
+
+        for font_size in range(base_size, min_size - 1, -2):
+            font = self._load_caption_font(font_size)
+            lines = self._wrap_caption_words(cleaned, draw, font, max_width)
+            line_h = int(getattr(font, "size", font_size) * 1.20)
+            total_h = len(lines) * line_h
+            last_font = font
+            last_lines = lines
+            last_line_h = line_h
+            if lines and len(lines) <= max_lines and total_h <= max_height:
+                return {
+                    "fits": True,
+                    "font": font,
+                    "lines": lines,
+                    "line_h": line_h,
+                }
+
+        return {
+            "fits": False,
+            "font": last_font,
+            "lines": last_lines,
+            "line_h": last_line_h,
+        }
+
+    def _split_caption_text_for_overlay(
+        self,
+        text: str,
+        size=(1080, 1920),
+        max_lines: int = 2,
+        reserved_bottom_ratio: float = 0.0,
+    ) -> List[str]:
+        cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+        if not cleaned:
+            return []
+        if self._caption_layout_metrics(
+            cleaned,
+            size=size,
+            max_lines=max_lines,
+            reserved_bottom_ratio=reserved_bottom_ratio,
+        ).get("fits"):
+            return [cleaned]
+
+        words = [w for w in cleaned.split() if w]
+        if len(words) <= 1:
+            return [cleaned]
+
+        chunks: List[str] = []
+        current_words: List[str] = []
+        idx = 0
+        while idx < len(words):
+            candidate_words = current_words + [words[idx]]
+            candidate = " ".join(candidate_words).strip()
+            if self._caption_layout_metrics(
+                candidate,
+                size=size,
+                max_lines=max_lines,
+                reserved_bottom_ratio=reserved_bottom_ratio,
+            ).get("fits"):
+                current_words = candidate_words
+                idx += 1
+                continue
+            if current_words:
+                chunks.append(" ".join(current_words).strip())
+                current_words = []
+                continue
+            chunks.append(words[idx])
+            idx += 1
+
+        if current_words:
+            chunks.append(" ".join(current_words).strip())
+
+        return [chunk for chunk in chunks if chunk] or [cleaned]
+
+    def _expand_caption_item_for_overlay(
+        self,
+        item: Dict[str, Any],
+        size=(1080, 1920),
+        max_lines: int = 2,
+        reserved_bottom_ratio: float = 0.0,
+    ) -> List[Dict[str, Any]]:
+        caption = re.sub(r"\s+", " ", str((item or {}).get("caption") or "").strip())
+        try:
+            start = float((item or {}).get("start") or 0.0)
+            end = float((item or {}).get("end") or 0.0)
+        except Exception:
+            return []
+        if not caption or end <= start:
+            return []
+
+        chunks = self._split_caption_text_for_overlay(
+            caption,
+            size=size,
+            max_lines=max_lines,
+            reserved_bottom_ratio=reserved_bottom_ratio,
+        )
+        if len(chunks) <= 1:
+            clone = dict(item or {})
+            clone["caption"] = caption
+            clone["start"] = round(start, 3)
+            clone["end"] = round(end, 3)
+            return [clone]
+
+        total_duration = max(0.01, end - start)
+        weights = [max(1, len(chunk.split())) for chunk in chunks]
+        total_weight = max(1, sum(weights))
+        expanded: List[Dict[str, Any]] = []
+        cursor = start
+        for idx, chunk in enumerate(chunks):
+            if idx == len(chunks) - 1:
+                chunk_end = end
+            else:
+                portion = weights[idx] / total_weight
+                chunk_duration = max(0.35, total_duration * portion)
+                remaining_min = 0.35 * max(0, len(chunks) - idx - 1)
+                chunk_end = min(end - remaining_min, cursor + chunk_duration)
+            chunk_end = max(cursor + 0.01, chunk_end)
+            clone = dict(item or {})
+            clone["caption"] = chunk
+            clone["start"] = round(cursor, 3)
+            clone["end"] = round(chunk_end, 3)
+            expanded.append(clone)
+            cursor = chunk_end
+        if expanded:
+            expanded[-1]["end"] = round(end, 3)
+        return expanded
+
     def create_text_overlay(
         self,
         text,
@@ -267,99 +459,24 @@ class VideoGenerator:
         img = Image.new("RGBA", size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        font_candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "DejaVuSans-Bold.ttf",
-            "arial.ttf",
-        ]
-
-        def measure(s: str, f):
-            try:
-                return draw.textlength(s, font=f)
-            except Exception:
-                b = draw.textbbox((0, 0), s, font=f)
-                return float(b[2] - b[0])
-
-        def wrap_words(s: str, f, max_w: int):
-            words = [w for w in (s or "").split() if w]
-            lines = []
-            cur = ""
-            for w in words:
-                test = w if not cur else f"{cur} {w}"
-                if measure(test, f) <= max_w:
-                    cur = test
-                    continue
-                if cur:
-                    lines.append(cur)
-                    cur = w
-                    continue
-                # Nunca cortamos palavras; reduzimos a fonte em iterações anteriores.
-                cur = w
-            if cur:
-                lines.append(cur)
-            return lines
-
         w, h = size
         margin_x = int(w * 0.07)
         margin_bottom = max(int(h * 0.12), int(h * max(0.0, float(reserved_bottom_ratio or 0.0))))
-        max_w = max(120, w - 2 * margin_x)
-        max_h = max(72, int(h * 0.15))
-
-        base_size = max(24, min(72, int(w * 0.055)))
-        min_size = max(16, min(30, int(w * 0.026)))
-
-        chosen_font = None
-        chosen_lines = []
-        chosen_line_h = 0
-
-        for fs in range(base_size, min_size - 1, -2):
-            font = None
-            for fp in font_candidates:
-                try:
-                    font = ImageFont.truetype(fp, fs)
-                    break
-                except Exception:
-                    continue
-            if font is None:
-                font = ImageFont.load_default()
-
-            lines = wrap_words(text, font, max_w)
-            try:
-                line_h = int(getattr(font, "size", fs) * 1.20)
-            except Exception:
-                line_h = int(fs * 1.20)
-            total_h = len(lines) * line_h
-            if lines and len(lines) <= max_lines and total_h <= max_h:
-                chosen_font = font
-                chosen_lines = lines
-                chosen_line_h = line_h
-                break
-
+        layout = self._caption_layout_metrics(
+            text,
+            size=size,
+            max_lines=max_lines,
+            reserved_bottom_ratio=reserved_bottom_ratio,
+        )
+        chosen_font = layout.get("font")
+        chosen_lines = list(layout.get("lines") or [])
+        chosen_line_h = int(layout.get("line_h") or 0)
         if chosen_font is None:
-            font = None
-            for fp in font_candidates:
-                try:
-                    font = ImageFont.truetype(fp, min_size)
-                    break
-                except Exception:
-                    continue
-            if font is None:
-                font = ImageFont.load_default()
-            lines = wrap_words(text, font, max_w)
-            line_h = int(getattr(font, "size", min_size) * 1.20)
-            fitted_max_lines = max(1, min(max_lines, int(max_h / max(1, line_h))))
-            if len(lines) > fitted_max_lines:
-                keep = lines[:fitted_max_lines]
-                last = keep[-1]
-                ell = "..."
-                while last and measure(last + ell, font) > max_w:
-                    last = last[:-1].rstrip()
-                keep[-1] = (last + ell).strip() if last else ell
-                lines = keep
-            chosen_font = font
-            chosen_lines = lines
-            chosen_line_h = line_h
+            chosen_font = self._load_caption_font(max(14, min(28, int(w * 0.022))))
+        if chosen_line_h <= 0:
+            chosen_line_h = int(getattr(chosen_font, "size", 18) * 1.20)
+        if len(chosen_lines) > max_lines:
+            chosen_lines = chosen_lines[:max_lines]
 
         text_block_h = len(chosen_lines) * chosen_line_h
         anchor = str(vertical_anchor or "").strip().lower()
@@ -388,7 +505,7 @@ class VideoGenerator:
         if footer:
             footer_fs = max(14, min(34, int(w * 0.028)))
             footer_font = None
-            for fp in font_candidates:
+            for fp in self._caption_font_candidates():
                 try:
                     footer_font = ImageFont.truetype(fp, footer_fs)
                     break
@@ -1906,9 +2023,14 @@ class VideoGenerator:
         return approx
 
     def _build_caption_timeline(self, narration: str, duration: float, audio_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        details = self._build_caption_timeline_details(narration, duration, audio_path=audio_path)
+        timeline = details.get("timeline") if isinstance(details, dict) else None
+        return timeline if isinstance(timeline, list) else []
+
+    def _build_caption_timeline_details(self, narration: str, duration: float, audio_path: Optional[str] = None) -> Dict[str, Any]:
         total_duration = float(duration or 0.0)
         if total_duration <= 0:
-            return []
+            return {"timeline": [], "source": "empty"}
         if audio_path and self.ai_service and hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
             try:
                 info = self.ai_service.transcribe_audio_segments_detailed(audio_path, language="pt")
@@ -1916,10 +2038,191 @@ class VideoGenerator:
                 if isinstance(segments, list) and segments:
                     timed = self._caption_timeline_from_segments(segments, total_duration)
                     if timed:
-                        return timed
+                        return {"timeline": timed, "source": "real_segments"}
             except Exception:
                 pass
-        return self._caption_timeline_from_text(narration, total_duration)
+        return {
+            "timeline": self._caption_timeline_from_text(narration, total_duration),
+            "source": "text_fallback",
+        }
+
+    def _find_scene_text_ranges_in_body(self, body_text: str, scenes: List[Dict[str, Any]]) -> List[Dict[str, int]]:
+        normalized_body = self._normalize_tts_text(body_text)
+        ranges: List[Dict[str, int]] = []
+        cursor = 0
+        for scene in scenes or []:
+            scene_text = self._normalize_tts_text((scene or {}).get("_tts_text") or (scene or {}).get("text") or "")
+            if not scene_text:
+                ranges.append({"start": cursor, "end": cursor})
+                continue
+            found = normalized_body.find(scene_text, cursor)
+            if found < 0:
+                found = normalized_body.find(scene_text)
+            if found < 0:
+                start = cursor
+                end = cursor + len(scene_text)
+            else:
+                start = found
+                end = found + len(scene_text)
+            ranges.append({"start": start, "end": end})
+            cursor = max(cursor, end)
+        return ranges
+
+    def _find_caption_position_in_body(self, body_text: str, caption_text: str, search_cursor: int = 0) -> Dict[str, int]:
+        normalized_body = self._normalize_tts_text(body_text)
+        normalized_caption = self._normalize_tts_text(caption_text)
+        if not normalized_body or not normalized_caption:
+            return {"start": max(0, int(search_cursor or 0)), "end": max(0, int(search_cursor or 0))}
+        found = normalized_body.find(normalized_caption, max(0, int(search_cursor or 0)))
+        if found < 0 and search_cursor:
+            found = normalized_body.find(normalized_caption, max(0, int(search_cursor or 0)) - 80)
+        if found < 0:
+            found = normalized_body.find(normalized_caption)
+        if found < 0:
+            found = max(0, min(len(normalized_body), int(search_cursor or 0)))
+        return {"start": found, "end": min(len(normalized_body), found + len(normalized_caption))}
+
+    def _legacy_scene_index_for_time(self, moment_sec: float, legacy_windows: List[Dict[str, float]]) -> int:
+        try:
+            moment = float(moment_sec or 0.0)
+        except Exception:
+            moment = 0.0
+        for idx, window in enumerate(legacy_windows or []):
+            start = float(window.get("start") or 0.0)
+            end = float(window.get("end") or 0.0)
+            if moment >= start and moment < end:
+                return idx
+        if legacy_windows:
+            return max(0, len(legacy_windows) - 1)
+        return 0
+
+    def _build_scene_caption_sync_map(
+        self,
+        full_timeline: List[Dict[str, Any]],
+        scenes: List[Dict[str, Any]],
+        planning_meta: Dict[str, Any],
+        legacy_scene_windows: List[Dict[str, float]],
+        title_duration: float,
+        end_duration: float,
+        actual_total_audio_dur: float,
+        timeline_source: str = "text_fallback",
+    ) -> Dict[str, Any]:
+        scene_count = len(scenes or [])
+        empty_result = {
+            "timeline_source": timeline_source,
+            "scene_timelines": [[] for _ in range(scene_count)],
+            "scene_required_durations": [0.0 for _ in range(scene_count)],
+            "block_sync_report": {
+                "total_blocks": 0,
+                "largest_delay_estimated_sec": 0.0,
+                "largest_advance_estimated_sec": 0.0,
+                "blocks_with_risk_of_drift": 0,
+                "risky_block_indices": [],
+            },
+        }
+        if not isinstance(full_timeline, list) or not full_timeline or scene_count <= 0:
+            return empty_result
+
+        body_text = self._normalize_tts_text((planning_meta or {}).get("body_text") or "")
+        if not body_text:
+            return empty_result
+
+        body_start = max(0.0, float(title_duration or 0.0))
+        body_end = max(body_start, float(actual_total_audio_dur or 0.0) - max(0.0, float(end_duration or 0.0)))
+        scene_ranges = self._find_scene_text_ranges_in_body(body_text, scenes)
+        per_scene_global: List[List[Dict[str, Any]]] = [[] for _ in range(scene_count)]
+        search_cursor = 0
+
+        for block_idx, item in enumerate(full_timeline):
+            try:
+                item_start = float(item.get("start") or 0.0)
+                item_end = float(item.get("end") or 0.0)
+            except Exception:
+                continue
+            if item_end <= body_start or item_start >= body_end:
+                continue
+            caption = str(item.get("caption") or "").strip()
+            if not caption:
+                continue
+
+            position = self._find_caption_position_in_body(body_text, caption, search_cursor=search_cursor)
+            cap_start = int(position.get("start") or 0)
+            cap_end = int(position.get("end") or cap_start)
+            search_cursor = max(search_cursor, cap_end)
+            midpoint = (cap_start + cap_end) / 2.0
+
+            scene_idx = 0
+            for idx, item_range in enumerate(scene_ranges):
+                start = int(item_range.get("start") or 0)
+                end = int(item_range.get("end") or start)
+                if midpoint >= start and midpoint <= max(start, end):
+                    scene_idx = idx
+                    break
+                if idx == len(scene_ranges) - 1 and midpoint > max(start, end):
+                    scene_idx = idx
+
+            legacy_scene_idx = self._legacy_scene_index_for_time((item_start + item_end) / 2.0, legacy_scene_windows)
+            per_scene_global[scene_idx].append({
+                "block_index": block_idx,
+                "caption": caption,
+                "global_start": max(body_start, item_start),
+                "global_end": min(body_end, item_end),
+                "legacy_scene_index": legacy_scene_idx,
+                "assigned_scene_index": scene_idx,
+            })
+
+        scene_timelines: List[List[Dict[str, Any]]] = [[] for _ in range(scene_count)]
+        scene_required_durations: List[float] = []
+        largest_delay = 0.0
+        largest_advance = 0.0
+        risky_blocks: List[int] = []
+
+        for idx in range(scene_count):
+            items = per_scene_global[idx]
+            legacy_start = float((legacy_scene_windows[idx] if idx < len(legacy_scene_windows) else {}).get("start") or body_start)
+            if not items:
+                scene_required_durations.append(0.0)
+                continue
+            actual_scene_start = min(float(item.get("global_start") or body_start) for item in items)
+            local_items: List[Dict[str, Any]] = []
+            for item in items:
+                global_start = float(item.get("global_start") or actual_scene_start)
+                global_end = float(item.get("global_end") or global_start)
+                local_start = max(0.0, global_start - actual_scene_start)
+                local_end = max(local_start, global_end - actual_scene_start)
+                drift_estimated = round(actual_scene_start - legacy_start, 3)
+                if drift_estimated > 0:
+                    largest_delay = max(largest_delay, drift_estimated)
+                elif drift_estimated < 0:
+                    largest_advance = max(largest_advance, abs(drift_estimated))
+                is_risky = bool(abs(drift_estimated) >= 0.25 or int(item.get("legacy_scene_index") or 0) != idx)
+                if is_risky:
+                    risky_blocks.append(int(item.get("block_index") or 0))
+                local_items.append({
+                    "block_index": int(item.get("block_index") or 0),
+                    "caption": str(item.get("caption") or "").strip(),
+                    "start": round(local_start, 3),
+                    "end": round(local_end, 3),
+                    "global_start": round(global_start, 3),
+                    "global_end": round(global_end, 3),
+                    "estimated_drift_sec": drift_estimated,
+                    "risk_of_drift": is_risky,
+                })
+            scene_timelines[idx] = local_items
+            scene_required_durations.append(round(max(float(item.get("end") or 0.0) for item in local_items), 3))
+
+        return {
+            "timeline_source": timeline_source,
+            "scene_timelines": scene_timelines,
+            "scene_required_durations": scene_required_durations,
+            "block_sync_report": {
+                "total_blocks": sum(len(items) for items in scene_timelines),
+                "largest_delay_estimated_sec": round(largest_delay, 3),
+                "largest_advance_estimated_sec": round(largest_advance, 3),
+                "blocks_with_risk_of_drift": len(risky_blocks),
+                "risky_block_indices": sorted(set(risky_blocks)),
+            },
+        }
 
     def review_plan(self, plan: dict):
         if not isinstance(plan, dict):
@@ -3688,7 +3991,13 @@ class VideoGenerator:
                 end_clip_duration = max(1.8, min(end_clip_duration, actual_total_audio_dur * 0.24))
             body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - end_clip_duration)
 
-            full_caption_timeline = self._build_caption_timeline(final_narration_text, actual_total_audio_dur, audio_path=main_audio_path)
+            caption_timeline_details = self._build_caption_timeline_details(
+                final_narration_text,
+                actual_total_audio_dur,
+                audio_path=main_audio_path,
+            )
+            full_caption_timeline = caption_timeline_details.get("timeline") or []
+            caption_timeline_source = str(caption_timeline_details.get("source") or "text_fallback")
             if not full_caption_timeline:
                 raise Exception("Falha ao gerar a timeline de legendas a partir do audio final.")
             caption_text_joined = " ".join(
@@ -3818,6 +4127,34 @@ class VideoGenerator:
             debug_ctx["scene_count"] = int(total_scenes)
             min_scene_visual_duration = 2.2 if total_scenes <= 2 else 2.8
             render_report["duration_plan"]["min_scene_visual_duration_sec"] = round(min_scene_visual_duration, 2)
+            final_scene_durations = [
+                max(
+                    float(planned_scene_durations[i]) if i < len(planned_scene_durations) else float(scene.get("_estimated_narration_sec") or 5.0),
+                    min_scene_visual_duration,
+                )
+                for i, scene in enumerate(scenes)
+            ]
+            legacy_scene_windows = []
+            legacy_scene_cursor = float(title_clip_duration or 0.0)
+            for scene_dur in final_scene_durations:
+                scene_dur = float(scene_dur or 0.0)
+                legacy_scene_windows.append({
+                    "start": round(legacy_scene_cursor, 3),
+                    "end": round(legacy_scene_cursor + scene_dur, 3),
+                })
+                legacy_scene_cursor += scene_dur
+            scene_caption_sync = self._build_scene_caption_sync_map(
+                full_caption_timeline,
+                scenes,
+                planning_meta,
+                legacy_scene_windows=legacy_scene_windows,
+                title_duration=title_clip_duration,
+                end_duration=end_clip_duration,
+                actual_total_audio_dur=actual_total_audio_dur,
+                timeline_source=caption_timeline_source,
+            )
+            render_report["sync_validation"]["caption_timeline_source"] = caption_timeline_source
+            render_report["sync_validation"]["caption_block_sync"] = scene_caption_sync.get("block_sync_report") or {}
             scene_time_cursor = title_clip_duration
 
             for i, scene in enumerate(scenes):
@@ -3922,7 +4259,12 @@ class VideoGenerator:
                 bg_clip = ImageClip(bg_frame)
                 self._assert_clip_not_none(bg_clip, "scene_bg_clip", {"scene_index": i})
                 planned_scene_duration = float(planned_scene_durations[i]) if i < len(planned_scene_durations) else float(scene.get("_estimated_narration_sec") or 5.0)
-                scene_dur = max(planned_scene_duration or 0.0, min_scene_visual_duration)
+                required_caption_duration = 0.0
+                if isinstance(scene_caption_sync, dict):
+                    sync_durations = scene_caption_sync.get("scene_required_durations") or []
+                    if i < len(sync_durations):
+                        required_caption_duration = float(sync_durations[i] or 0.0)
+                scene_dur = max(planned_scene_duration or 0.0, min_scene_visual_duration, required_caption_duration)
                 bg_clip = self._set_clip_duration(bg_clip, scene_dur)
                 reuse_count = int(scene_reuse_counts.get(bg_image_path, 0))
                 scene_reuse_counts[bg_image_path] = reuse_count + 1
@@ -3955,9 +4297,25 @@ class VideoGenerator:
                     "final_visual_duration_sec": round(scene_dur, 2),
                 })
 
-                scene_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, scene_time_cursor + scene_dur)
+                scene_caption_timeline = []
+                if isinstance(scene_caption_sync, dict):
+                    sync_timelines = scene_caption_sync.get("scene_timelines") or []
+                    if i < len(sync_timelines):
+                        scene_caption_timeline = list(sync_timelines[i] or [])
+                if not scene_caption_timeline:
+                    scene_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, scene_time_cursor + scene_dur)
                 overlay_clips = []
+                expanded_scene_timeline = []
                 for item in scene_caption_timeline:
+                    expanded_scene_timeline.extend(
+                        self._expand_caption_item_for_overlay(
+                            item,
+                            size=video_size,
+                            max_lines=2,
+                            reserved_bottom_ratio=0.14,
+                        )
+                    )
+                for item in expanded_scene_timeline:
                     caption = str(item.get("caption") or "").strip()
                     start = float(item.get("start") or 0.0)
                     end = float(item.get("end") or 0.0)
@@ -3974,7 +4332,17 @@ class VideoGenerator:
                     overlay_clips.append(overlay_clip)
                 if not overlay_clips:
                     fallback_caption_timeline = self._caption_timeline_from_text(clean_text, scene_dur)
+                    expanded_fallback_timeline = []
                     for item in fallback_caption_timeline:
+                        expanded_fallback_timeline.extend(
+                            self._expand_caption_item_for_overlay(
+                                item,
+                                size=video_size,
+                                max_lines=2,
+                                reserved_bottom_ratio=0.14,
+                            )
+                        )
+                    for item in expanded_fallback_timeline:
                         caption = str(item.get("caption") or "").strip()
                         start = float(item.get("start") or 0.0)
                         end = float(item.get("end") or 0.0)
@@ -4018,7 +4386,17 @@ class VideoGenerator:
             clip_end = self._set_clip_duration(clip_end, end_clip_duration)
             end_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, actual_total_audio_dur)
             end_overlays = []
+            expanded_end_timeline = []
             for item in end_caption_timeline:
+                expanded_end_timeline.extend(
+                    self._expand_caption_item_for_overlay(
+                        item,
+                        size=video_size,
+                        max_lines=2,
+                        reserved_bottom_ratio=0.18,
+                    )
+                )
+            for item in expanded_end_timeline:
                 overlay_arr = self.create_text_overlay(
                     str(item.get("caption") or "").strip(),
                     size=video_size,
@@ -4129,8 +4507,9 @@ class VideoGenerator:
                     "video_synced_with_audio": bool(audio_video_diff <= 0.25),
                     "has_automatic_opening": bool((planning_meta.get("opening_text") or "").strip()),
                     "has_automatic_closing": bool((planning_meta.get("closing_text") or "").strip()),
-                    "timeline_source": "real_audio_duration",
+                    "timeline_source": caption_timeline_source,
                 }
+                sync_validation["caption_block_sync"] = scene_caption_sync.get("block_sync_report") or {}
                 render_report["sync_validation"] = sync_validation
                 if not sync_validation["captions_synced_with_audio"]:
                     raise Exception("Falha de validacao: legenda nao terminou junto com o audio final.")
