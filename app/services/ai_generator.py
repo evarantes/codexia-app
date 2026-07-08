@@ -1819,7 +1819,16 @@ REGRAS IMPORTANTES:
         except Exception as e:
             return {"error": str(e)}
 
-    def generate_story_image_prompts(self, story_text: str, n: int = 4, kind: str = "story") -> list:
+    def generate_story_image_prompts(
+        self,
+        story_text: str,
+        n: int = 4,
+        kind: str = "story",
+        story_context: str = "",
+        story_title: str = "",
+        scene_number: int = 1,
+        previous_scene_text: str = "",
+    ) -> list:
         self._load_config()
         try:
             count = int(n or 1)
@@ -1830,6 +1839,19 @@ REGRAS IMPORTANTES:
         text = (story_text or "").strip()
         if not text:
             return []
+        director = self._build_biblical_story_director(
+            story_title=story_title,
+            story_context=story_context,
+            scene_text=text,
+        )
+        director_block = self._biblical_director_prompt_block(director, text)
+        scene_card = self._build_cinematic_scene_card(
+            director=director,
+            scene_text=text,
+            scene_number=scene_number,
+            previous_scene_text=previous_scene_text,
+        )
+        scene_card_block = self._cinematic_scene_card_prompt_block(scene_card)
 
         safe_kind = (kind or "story").strip().lower()
         if safe_kind not in {"story", "devotional", "prayer"}:
@@ -1851,8 +1873,15 @@ REGRAS IMPORTANTES:
             prompts = []
             for i in range(count):
                 prompts.append(
-                    f"Photorealistic cinematic photography inspired by this {kind_pt} message: {base}. "
-                    f"{prayer_visual_rule}{styles[i % len(styles)]}. Realistic humans (no dolls), natural skin, pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
+                    self._compose_biblical_safe_prompt(
+                        director,
+                        text,
+                        scene_card=scene_card,
+                        base_prompt=(
+                            f"Photorealistic cinematic photography inspired by this {kind_pt} message: {base}. "
+                            f"{prayer_visual_rule}{styles[i % len(styles)]}. Realistic humans (no dolls), natural skin, pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
+                        ),
+                    )
                 )
             return prompts
 
@@ -1873,6 +1902,13 @@ REGRAS IMPORTANTES:
         - Pessoas: aparência humana realista, proporções naturais, expressão serena (evitar "doll-like", "uncanny", "creepy").
         - Proibido: terror, monstros, gore, sangue, mutilação, olhos deformados, rosto desfigurado, assustador, grotesco, distópico, apocalíptico, sombrio.
         - Se for reflexão com oração: priorize atmosfera angelical, contemplativa, relaxante, luz celestial suave, paz interior, reverência cristã, sem exageros visuais.
+        - DIRETOR BÍBLICO / NARRATIVO OBRIGATÓRIO:
+        {director_block}
+        - FICHA CINEMATOGRÁFICA DA CENA:
+        {scene_card_block}
+        - O prompt final deve nascer da ficha cinematográfica da cena, não apenas do texto bruto.
+        - Diga exatamente quem aparece em cena e quem não pode aparecer.
+        - Evite Jesus genérico; represente a ação específica da cena.
         - Retorne APENAS um JSON válido:
           {{ "prompts": ["...", "..."] }}
         """
@@ -1895,16 +1931,33 @@ REGRAS IMPORTANTES:
         while len(prompts) < count:
             base = text.replace("\n", " ").strip()[:320]
             prompts.append(
-                f"Photorealistic cinematic photography inspired by this {kind_pt} message: {base}. "
-                f"{prayer_visual_rule}Realistic humans (no dolls), pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
+                self._compose_biblical_safe_prompt(
+                    director,
+                    text,
+                    scene_card=scene_card,
+                    base_prompt=(
+                        f"Photorealistic cinematic photography inspired by this {kind_pt} message: {base}. "
+                        f"{prayer_visual_rule}Realistic humans (no dolls), pleasant mood, no horror, no monsters, no gore. No text, no watermark, no logo."
+                    ),
+                )
             )
 
         clean = []
         for p in prompts[:count]:
             if isinstance(p, str) and p.strip():
-                clean.append(p.strip()[:900])
+                clean.append(self._validate_biblical_visual_prompt(p.strip(), director, text, scene_card=scene_card)[:900])
         while len(clean) < count:
-            clean.append(f"Photorealistic cinematic photography inspired by this {kind_pt} message. {prayer_visual_rule}Pleasant mood, no horror, no monsters, no gore. No text.")
+            clean.append(
+                self._compose_biblical_safe_prompt(
+                    director,
+                    text,
+                    scene_card=scene_card,
+                    base_prompt=(
+                        f"Photorealistic cinematic photography inspired by this {kind_pt} message. "
+                        f"{prayer_visual_rule}Pleasant mood, no horror, no monsters, no gore. No text."
+                    ),
+                )[:900]
+            )
         return clean[:count]
 
     def _visual_global_style(self) -> str:
@@ -1919,6 +1972,327 @@ REGRAS IMPORTANTES:
         t = unicodedata.normalize("NFKD", t)
         t = "".join(ch for ch in t if not unicodedata.combining(ch))
         return t
+
+    def _infer_scene_emotions(self, text: str) -> List[str]:
+        norm = self._normalize_for_rules(text or "")
+        mapping = [
+            ("faith", ["fe", "faith", "cre", "believe", "confianca", "confiança"]),
+            ("hope", ["esperanca", "esperança", "hope"]),
+            ("fear", ["medo", "fear", "temor", "assustada", "assustado"]),
+            ("compassion", ["compaixao", "compaixão", "misericordia", "misericórdia", "mercy"]),
+            ("urgency", ["multidao", "multidão", "crowd", "pressa", "urgencia", "urgência"]),
+            ("reverence", ["adoracao", "adoração", "reverencia", "reverência", "worship"]),
+            ("wonder", ["milagre", "miracle", "assombro", "wonder"]),
+            ("shame", ["vergonha", "shame"]),
+        ]
+        detected: List[str] = []
+        for label, terms in mapping:
+            if any(term in norm for term in terms):
+                detected.append(label)
+        if not detected:
+            detected.append("reverence")
+        return detected[:4]
+
+    def _build_biblical_story_director(
+        self,
+        story_title: str = "",
+        story_context: str = "",
+        scene_text: str = "",
+    ) -> Dict[str, Any]:
+        combined = " ".join(
+            part.strip()
+            for part in [story_title or "", story_context or "", scene_text or ""]
+            if str(part or "").strip()
+        )
+        norm = self._normalize_for_rules(combined)
+        scene_norm = self._normalize_for_rules(scene_text or "")
+        director: Dict[str, Any] = {
+            "story_id": "generic_biblical_story",
+            "main_story": (story_title or "Biblical story").strip() or "Biblical story",
+            "main_characters": ["Jesus", "biblical people relevant to the narration"],
+            "allowed_characters": ["Jesus", "supporting biblical people relevant to the exact scene"],
+            "forbidden_characters": ["Roman soldiers outside the narrated context"],
+            "location": "ancient biblical setting matching the narration",
+            "biblical_period": "1st century biblical world when relevant",
+            "event_narrative": (scene_text or story_context or story_title or "biblical narrative moment").strip(),
+            "important_objects": ["objects explicitly mentioned in the narration"],
+            "emotions": self._infer_scene_emotions(scene_text or story_context or story_title),
+            "forbidden_events": [
+                "crucifixion when not explicitly narrated",
+                "resurrection when not explicitly narrated",
+                "Last Supper when not explicitly narrated",
+                "ascension when not explicitly narrated",
+                "nativity when not explicitly narrated",
+            ],
+            "forbidden_objects": [
+                "cross when not explicitly narrated",
+                "crown of thorns when not explicitly narrated",
+                "Golgotha when not explicitly narrated",
+            ],
+            "chronology_rule": "Do not depict biblical events outside the chronology of the narrated story.",
+        }
+
+        if any(term in norm for term in ["fluxo de sangue", "issue of blood", "hemorrhage", "hemorrhoissa"]):
+            director.update({
+                "story_id": "woman_with_blood_flow",
+                "main_story": "Woman with the issue of blood",
+                "main_characters": ["Jesus", "woman with the issue of blood", "disciples", "crowd"],
+                "allowed_characters": ["Jesus", "woman with the issue of blood", "disciples", "crowd"],
+                "forbidden_characters": ["Roman soldiers", "Jesus in a later passion scene", "apostles at the Last Supper"],
+                "location": "crowded ancient streets in Galilee or Capernaum",
+                "biblical_period": "during Jesus' public ministry before the crucifixion",
+                "important_objects": ["lower garment hem", "ancient robes", "dusty street"],
+                "forbidden_events": [
+                    "crucifixion",
+                    "Golgotha",
+                    "crown of thorns",
+                    "Last Supper",
+                    "resurrection",
+                    "ascension",
+                    "nativity of Jesus",
+                ],
+                "forbidden_objects": [
+                    "cross",
+                    "execution stakes",
+                    "Roman spears",
+                    "thorns crown",
+                ],
+            })
+            if any(term in scene_norm for term in ["orla", "vestes", "garment", "cloak", "mantle", "touch"]):
+                director["event_narrative"] = "the woman reaches from below and touches the lower hem of Jesus' tunic with her hand in faith while Jesus walks through the surrounding crowd"
+        elif any(term in norm for term in ["mulher samaritana", "samaritana", "woman of samaria", "john 4", "joao 4", "joão 4", "poco de jaco", "poço de jaco", "jacob's well", "samaria"]):
+            director.update({
+                "story_id": "samaritan_woman",
+                "main_story": "Jesus and the Samaritan woman at Jacob's well",
+                "main_characters": ["Jesus", "Samaritan woman"],
+                "allowed_characters": ["Jesus", "Samaritan woman", "disciples when the narration mentions them"],
+                "forbidden_characters": ["Roman soldiers", "Jesus in a later passion scene", "disciples at the Last Supper", "infant Jesus"],
+                "location": "Jacob's well in Samaria",
+                "biblical_period": "during Jesus' public ministry before the crucifixion",
+                "important_objects": ["water jar", "stone well", "ancient road", "midday sunlight"],
+                "forbidden_events": [
+                    "crucifixion",
+                    "Golgotha",
+                    "Last Supper",
+                    "resurrection",
+                    "ascension",
+                    "nativity of Jesus",
+                ],
+                "forbidden_objects": [
+                    "cross",
+                    "crown of thorns",
+                    "Roman execution scene",
+                ],
+            })
+            if any(term in scene_norm for term in ["poco", "poço", "agua", "água", "jarro", "water", "well"]):
+                director["event_narrative"] = "Jesus speaks with the Samaritan woman beside Jacob's well"
+
+        return director
+
+    def _biblical_director_prompt_block(self, director: Dict[str, Any], scene_text: str) -> str:
+        return (
+            f"- História principal: {director.get('main_story')}\n"
+            f"- Evento exato da cena: {(scene_text or director.get('event_narrative') or '').strip()}\n"
+            f"- Personagens permitidos: {', '.join(director.get('allowed_characters') or [])}\n"
+            f"- Personagens proibidos: {', '.join(director.get('forbidden_characters') or [])}\n"
+            f"- Objetos importantes: {', '.join(director.get('important_objects') or [])}\n"
+            f"- Objetos proibidos: {', '.join(director.get('forbidden_objects') or [])}\n"
+            f"- Eventos proibidos: {', '.join(director.get('forbidden_events') or [])}\n"
+            f"- Local: {director.get('location')}\n"
+            f"- Período bíblico: {director.get('biblical_period')}\n"
+            f"- Emoções da cena: {', '.join(director.get('emotions') or [])}\n"
+            f"- Regra cronológica: {director.get('chronology_rule')}"
+        )
+
+    def _infer_cinematic_camera(self, director: Dict[str, Any], scene_text: str) -> str:
+        norm = self._normalize_for_rules(scene_text or "")
+        story_id = str(director.get("story_id") or "")
+        if story_id == "woman_with_blood_flow":
+            if any(term in norm for term in ["orla", "vestes", "garment", "mantle", "touch", "toca"]):
+                return "medium shot with partial close-up on the woman's hand touching the lower hem of Jesus' tunic while keeping Jesus and the surrounding crowd visible"
+            return "handheld medium shot moving through the crowd, emphasizing the woman reaching toward the lower hem of Jesus' tunic"
+        if story_id == "samaritan_woman":
+            return "medium two-shot at eye level, gently framing both faces and the stone well"
+        if any(term in norm for term in ["multidao", "multidão", "crowd"]):
+            return "medium shot with layered depth through the crowd"
+        if any(term in norm for term in ["conversa", "dialog", "fala", "speaks"]):
+            return "medium two-shot with natural eye-level perspective"
+        return "medium cinematic shot with clear subject isolation"
+
+    def _infer_cinematic_lighting(self, director: Dict[str, Any], scene_text: str) -> str:
+        norm = self._normalize_for_rules(scene_text or "")
+        story_id = str(director.get("story_id") or "")
+        if story_id == "samaritan_woman" or any(term in norm for term in ["poco", "poço", "well", "midday", "meio-dia"]):
+            return "natural midday sunlight with soft warm highlights and realistic stone reflections"
+        if story_id == "woman_with_blood_flow" or any(term in norm for term in ["multidao", "multidão", "crowd", "street", "rua"]):
+            return "warm natural daylight with soft dust diffusion and gentle highlights on the main action"
+        if any(term in norm for term in ["milagre", "miracle", "fe", "faith"]):
+            return "soft natural light with subtle divine warmth, never surreal"
+        return "natural cinematic daylight with realistic contrast and serene atmosphere"
+
+    def _infer_visual_focus(self, director: Dict[str, Any], scene_text: str) -> str:
+        norm = self._normalize_for_rules(scene_text or "")
+        story_id = str(director.get("story_id") or "")
+        if story_id == "woman_with_blood_flow":
+            return "partial close-up on the woman's hand touching the lower hem of Jesus' tunic"
+        if story_id == "samaritan_woman":
+            return "the exchange between Jesus and the Samaritan woman beside the well and water jar"
+        if any(term in norm for term in ["mao", "mão", "hand", "touch", "toca"]):
+            return "the exact physical action described in the narration"
+        if any(term in norm for term in ["conversa", "dialog", "fala", "speaks"]):
+            return "the facial interaction and body language of the conversation"
+        return "the main narrated action, centered and visually unambiguous"
+
+    def _build_scene_continuity_note(self, director: Dict[str, Any], previous_scene_text: str, scene_text: str) -> str:
+        previous_clean = (previous_scene_text or "").strip()
+        if previous_clean:
+            return (
+                "Maintain wardrobe, geography, and character continuity from the previous scene while advancing the action. "
+                f"Previous scene reference: {previous_clean[:180]}"
+            )
+        story_id = str(director.get("story_id") or "")
+        if story_id == "woman_with_blood_flow":
+            return "Establish continuity in the same ancient crowded street, keeping Jesus, the woman, and the surrounding crowd coherent."
+        if story_id == "samaritan_woman":
+            return "Keep continuity at Jacob's well with the same stone setting, Jesus, the woman, and the water jar."
+        return "Establish this scene as a coherent continuation of the same biblical story world."
+
+    def _infer_negative_scene_direction(self, director: Dict[str, Any], scene_text: str) -> str:
+        story_id = str(director.get("story_id") or "")
+        if story_id == "woman_with_blood_flow":
+            return (
+                "Do not depict Jesus placing his hand on the woman's head or blessing her with a frontal gesture unless the narration explicitly says so. "
+                "The initiative must come from the woman's hand touching the lower hem of Jesus' tunic, with the crowd still present around them."
+            )
+        return ""
+
+    def _build_cinematic_scene_card(
+        self,
+        director: Dict[str, Any],
+        scene_text: str,
+        scene_number: int = 1,
+        previous_scene_text: str = "",
+    ) -> Dict[str, Any]:
+        scene_event = (scene_text or director.get("event_narrative") or "").strip()
+        emotions = director.get("emotions") or ["reverence"]
+        dominant_emotion = emotions[0] if emotions else "reverence"
+        return {
+            "main_story": director.get("main_story"),
+            "scene_number": max(1, int(scene_number or 1)),
+            "location": director.get("location"),
+            "biblical_period": director.get("biblical_period"),
+            "characters_present": list(director.get("allowed_characters") or []),
+            "forbidden_characters": list(director.get("forbidden_characters") or []),
+            "primary_action": (
+                "the woman's hand touches the lower hem of Jesus' tunic while he walks through the crowd"
+                if str(director.get("story_id") or "") == "woman_with_blood_flow"
+                else scene_event
+            ),
+            "dominant_emotion": dominant_emotion,
+            "important_objects": list(director.get("important_objects") or []),
+            "camera_framing": self._infer_cinematic_camera(director, scene_event),
+            "lighting": self._infer_cinematic_lighting(director, scene_event),
+            "visual_focus": self._infer_visual_focus(director, scene_event),
+            "continuity_with_previous_scene": self._build_scene_continuity_note(director, previous_scene_text, scene_event),
+            "negative_scene_direction": self._infer_negative_scene_direction(director, scene_event),
+            "forbidden_objects": list(director.get("forbidden_objects") or []),
+            "forbidden_events": list(director.get("forbidden_events") or []),
+        }
+
+    def _cinematic_scene_card_prompt_block(self, scene_card: Dict[str, Any]) -> str:
+        return (
+            f"- História principal: {scene_card.get('main_story')}\n"
+            f"- Número da cena: {scene_card.get('scene_number')}\n"
+            f"- Local: {scene_card.get('location')}\n"
+            f"- Período bíblico: {scene_card.get('biblical_period')}\n"
+            f"- Personagens presentes: {', '.join(scene_card.get('characters_present') or [])}\n"
+            f"- Personagens proibidos: {', '.join(scene_card.get('forbidden_characters') or [])}\n"
+            f"- Ação principal: {scene_card.get('primary_action')}\n"
+            f"- Emoção dominante: {scene_card.get('dominant_emotion')}\n"
+            f"- Objetos importantes: {', '.join(scene_card.get('important_objects') or [])}\n"
+            f"- Enquadramento/câmera: {scene_card.get('camera_framing')}\n"
+            f"- Iluminação: {scene_card.get('lighting')}\n"
+            f"- Foco visual: {scene_card.get('visual_focus')}\n"
+            f"- Continuidade com a cena anterior: {scene_card.get('continuity_with_previous_scene')}\n"
+            f"- Direção negativa: {scene_card.get('negative_scene_direction')}\n"
+            f"- Objetos proibidos: {', '.join(scene_card.get('forbidden_objects') or [])}\n"
+            f"- Eventos proibidos: {', '.join(scene_card.get('forbidden_events') or [])}"
+        )
+
+    def _compose_biblical_safe_prompt(
+        self,
+        director: Dict[str, Any],
+        scene_text: str,
+        base_prompt: str = "",
+        scene_card: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        base = (base_prompt or "").strip()
+        scene_event = (scene_text or director.get("event_narrative") or "").strip()
+        allowed = ", ".join(director.get("allowed_characters") or [])
+        forbidden_characters = ", ".join(director.get("forbidden_characters") or [])
+        important_objects = ", ".join(director.get("important_objects") or [])
+        forbidden_events = ", ".join(director.get("forbidden_events") or [])
+        forbidden_objects = ", ".join(director.get("forbidden_objects") or [])
+        emotions = ", ".join(director.get("emotions") or [])
+        scene_card = scene_card or self._build_cinematic_scene_card(director, scene_event)
+        card_characters = ", ".join(scene_card.get("characters_present") or [])
+        card_objects = ", ".join(scene_card.get("important_objects") or [])
+        contextual = (
+            f"Biblical cinematic scene from {director.get('main_story')}. "
+            f"Scene number: {scene_card.get('scene_number')}. "
+            f"Exact scene event: {scene_event}. "
+            f"Characters on screen: {card_characters or allowed}. "
+            f"Forbidden characters: {forbidden_characters}. "
+            f"Setting: {director.get('location')}, {director.get('biblical_period')}. "
+            f"Primary action: {scene_card.get('primary_action')}. "
+            f"Visual focus: {scene_card.get('visual_focus')}. "
+            f"Camera framing: {scene_card.get('camera_framing')}. "
+            f"Lighting: {scene_card.get('lighting')}. "
+            f"Continuity with previous scene: {scene_card.get('continuity_with_previous_scene')}. "
+            f"Negative scene direction: {scene_card.get('negative_scene_direction')}. "
+            f"Important objects when relevant: {card_objects or important_objects}. "
+            f"Emotional tone: {scene_card.get('dominant_emotion') or emotions}. "
+            f"Do not show out-of-chronology events such as {forbidden_events}. "
+            f"Do not include forbidden objects such as {forbidden_objects}. "
+            "No cross or crucifixion unless the narration is explicitly about that moment. "
+            "No text, no watermark, no logo."
+        ).strip()
+        merged = f"{base}. {contextual}" if base else contextual
+        return self._sanitize_and_contextualize_image_prompt(merged)
+
+    def _find_biblical_prompt_violations(self, prompt: str, director: Dict[str, Any]) -> List[str]:
+        norm = self._normalize_for_rules(prompt or "")
+        if not norm:
+            return []
+        checks = {
+            "crucifixion": ["crucifixion", "crucified", "cross", "cruz", "golgotha", "calvary", "crown of thorns", "coroa de espinhos"],
+            "last_supper": ["last supper", "ultima ceia", "última ceia"],
+            "resurrection": ["resurrection", "ressurreicao", "ressurreição", "empty tomb"],
+            "ascension": ["ascension", "ascensao", "ascensão", "jesus ascending"],
+            "nativity": ["nativity", "nascimento de jesus", "manger", "baby jesus"],
+        }
+        violations: List[str] = []
+        for label, terms in checks.items():
+            if any(term in norm for term in terms):
+                violations.append(label)
+        return violations
+
+    def _validate_biblical_visual_prompt(
+        self,
+        prompt: str,
+        director: Dict[str, Any],
+        scene_text: str,
+        scene_card: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        cleaned = (prompt or "").strip()
+        if not cleaned:
+            return self._compose_biblical_safe_prompt(director, scene_text, scene_card=scene_card)
+        violations = self._find_biblical_prompt_violations(cleaned, director)
+        if violations:
+            cleaned = self._compose_biblical_safe_prompt(director, scene_text, base_prompt=cleaned[:220], scene_card=scene_card)
+        else:
+            cleaned = self._compose_biblical_safe_prompt(director, scene_text, base_prompt=cleaned, scene_card=scene_card)
+        return cleaned[:900]
 
     def _visual_negative_for_text(self, text: str) -> str:
         base = self._visual_global_negative()
@@ -1970,6 +2344,16 @@ REGRAS IMPORTANTES:
         t = re.sub(r"\s+", " ", t).strip()
 
         norm = self._normalize_for_rules(t)
+        positive_visual_context = re.sub(r"(?i)\bdo not show\b[^.]*\.", " ", t)
+        positive_visual_context = re.sub(r"(?i)\bdo not include\b[^.]*\.", " ", positive_visual_context)
+        positive_visual_context = re.sub(r"(?i)\bno cross or crucifixion unless\b[^.]*\.", " ", positive_visual_context)
+        positive_visual_context = re.sub(r"(?i)\bforbidden characters\b[^.]*\.", " ", positive_visual_context)
+        positive_visual_context = re.sub(r"(?i)\bpersonagens proibidos\b[^.]*\.", " ", positive_visual_context)
+        positive_visual_context = re.sub(r"(?i)\bnegative\s*prompt\b[^.]*\.", " ", positive_visual_context)
+        positive_visual_context = re.sub(r"(?i)\bbefore the crucifixion\b", " ", positive_visual_context)
+        positive_visual_context = re.sub(r"(?i)\bcrucified jesus\b", " ", positive_visual_context)
+        positive_visual_context = re.sub(r"\s+", " ", positive_visual_context).strip()
+        norm_positive = self._normalize_for_rules(positive_visual_context)
         is_revelation = any(k in norm for k in [
             "apocalipse", "revelation", "joao", "john",
             "candeeiro", "candelabro", "lampstand", "seven lamp",
@@ -1979,12 +2363,15 @@ REGRAS IMPORTANTES:
             "vestes de gloria", "robe of glory", "glorious robe",
             "filho do homem", "son of man",
         ])
-        is_christ_passion = any(k in norm for k in [
+        has_jesus_reference = any(k in norm_positive for k in [
             "jesus", "jesus christ", "cristo", "christ",
+        ])
+        has_passion_reference = any(k in norm_positive for k in [
             "crucificacao", "crucifixion", "crucificado", "crucified",
             "coroa de espinhos", "crown of thorns", "cross", "cruz",
             "calvario", "calvary", "golgota", "golgotha",
         ])
+        is_christ_passion = has_jesus_reference and has_passion_reference
 
         banned_words = [
             "monster", "monstrosity", "demon", "demonic", "devil", "satanic",
@@ -2126,8 +2513,42 @@ REGRAS IMPORTANTES:
 
         import json
         # Uma única chamada: gera um image_prompt detalhado por cena a partir da narração
-        scenes_desc = "\n".join([f"Cena {idx+1} (narração): {text}" for idx, text in need_prompts])
+        scene_cards: Dict[int, Dict[str, Any]] = {}
+        scene_directors: Dict[int, Dict[str, Any]] = {}
+        scenes_desc_parts: List[str] = []
+        for order, (scene_idx, text) in enumerate(need_prompts, start=1):
+            previous_scene_text = ""
+            if scene_idx > 0 and scene_idx - 1 < len(scenes) and isinstance(scenes[scene_idx - 1], dict):
+                previous_scene_text = str(scenes[scene_idx - 1].get("text") or "").strip()
+            scene_director = self._build_biblical_story_director(
+                story_title=str(plan.get("title") or "Vídeo"),
+                story_context=str(plan.get("story_context") or ""),
+                scene_text=text,
+            )
+            scene_card = self._build_cinematic_scene_card(
+                director=scene_director,
+                scene_text=text,
+                scene_number=order,
+                previous_scene_text=previous_scene_text,
+            )
+            scene_directors[scene_idx] = scene_director
+            scene_cards[scene_idx] = scene_card
+            scenes_desc_parts.append(
+                f"Cena {order} (narração): {text}\n"
+                f"Ficha cinematográfica:\n{self._cinematic_scene_card_prompt_block(scene_card)}"
+            )
+        scenes_desc = "\n\n".join(scenes_desc_parts)
         title = plan.get("title") or "Vídeo"
+        story_context = plan.get("story_context") or "\n".join(
+            str(scene.get("text") or "").strip()
+            for scene in scenes
+            if isinstance(scene, dict) and str(scene.get("text") or "").strip()
+        )
+        director = self._build_biblical_story_director(
+            story_title=str(title or ""),
+            story_context=str(story_context or ""),
+            scene_text=scenes_desc,
+        )
 
         style = self._visual_global_style()
         neg = self._visual_negative_for_text(scenes_desc)
@@ -2140,10 +2561,16 @@ REGRAS IMPORTANTES:
         Narrações por cena:
         {scenes_desc}
 
+        DIRETOR BÍBLICO / NARRATIVO:
+        {self._biblical_director_prompt_block(director, scenes_desc)}
+
         Para CADA cena acima, crie UMA descrição visual (image_prompt) em INGLÊS com as regras:
         - Faça internamente uma leitura exegética: protagonista, cenário, ação/emoção principal; diferencie metáfora vs literal.
         - Interpretação contextual: jamais interpretar passagens bíblicas de forma literal e sombria; traduza descrições visionárias para glória divina, transcendência e luz cinematográfica, nunca para terror.
         - Representar fielmente a ideia e o clima da narração, evitando genericidade.
+        - Cada prompt deve nascer da ficha cinematográfica da própria cena.
+        - Diga explicitamente quem aparece e quem não aparece.
+        - Evite Jesus genérico quando a cena exige uma ação específica.
         - Estilo obrigatório: {style}.
         - Estética e tom: santidade, adoração, esperança; luz celestial (god rays), brilho dourado, contraste (chiaroscuro) para glória, não para medo; paleta dourado/branco celestial/azul profundo/tons quentes.
         - Composição obrigatória: uma única cena coerente, sem colagem abstrata, sem múltiplos rostos fundidos, sem sobreposição caótica de pessoas, sem anatomia quebrada.
@@ -2176,11 +2603,26 @@ REGRAS IMPORTANTES:
             prompts_list = data.get("image_prompts") or []
             if not isinstance(prompts_list, list):
                 return plan
-            for k, (scene_idx, _) in enumerate(need_prompts):
+            for k, (scene_idx, scene_text) in enumerate(need_prompts):
                 if k < len(prompts_list) and scene_idx < len(scenes):
                     prompt_text = (prompts_list[k] or "").strip()
                     if prompt_text and isinstance(scenes[scene_idx], dict):
-                        scenes[scene_idx]["image_prompt"] = self._sanitize_and_contextualize_image_prompt(prompt_text)[:500]
+                        scene_director = scene_directors.get(scene_idx) or self._build_biblical_story_director(
+                            story_title=str(title or ""),
+                            story_context=str(story_context or ""),
+                            scene_text=scene_text,
+                        )
+                        scene_card = scene_cards.get(scene_idx) or self._build_cinematic_scene_card(
+                            director=scene_director,
+                            scene_text=scene_text,
+                            scene_number=k + 1,
+                        )
+                        scenes[scene_idx]["image_prompt"] = self._validate_biblical_visual_prompt(
+                            prompt_text,
+                            scene_director,
+                            str(scenes[scene_idx].get("text") or ""),
+                            scene_card=scene_card,
+                        )[:500]
             plan["scenes"] = scenes
         except Exception as e:
             print(f"Erro ao enriquecer image_prompts com IA: {e}")
