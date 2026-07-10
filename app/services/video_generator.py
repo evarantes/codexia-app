@@ -250,6 +250,183 @@ class VideoGenerator:
             return np.array(base)
         return np.array(base.convert("RGB"))
 
+    def _hex_to_rgb(self, value: Any, default=(255, 255, 255)):
+        raw = str(value or "").strip().lstrip("#")
+        if len(raw) == 3:
+            raw = "".join(ch * 2 for ch in raw)
+        if len(raw) != 6:
+            return default
+        try:
+            return tuple(int(raw[idx:idx + 2], 16) for idx in (0, 2, 4))
+        except Exception:
+            return default
+
+    def _fit_image_within(self, image, max_width: int, max_height: int):
+        from PIL import Image
+
+        width = max(1, int(getattr(image, "width", max_width) or max_width))
+        height = max(1, int(getattr(image, "height", max_height) or max_height))
+        scale = min(float(max_width) / float(width), float(max_height) / float(height), 1.0)
+        resized = image.resize((max(1, int(width * scale)), max(1, int(height * scale))), Image.LANCZOS)
+        return resized
+
+    def _build_logo_overlay(self, logo_path: str, size, *, duration: float, position: str = "top_center", opacity: float = 0.92, width_ratio: float = 0.18):
+        if not logo_path or not os.path.exists(logo_path):
+            return None
+        try:
+            from PIL import Image
+            import numpy as np
+        except Exception:
+            return None
+
+        try:
+            base = Image.new("RGBA", size, (0, 0, 0, 0))
+            logo = Image.open(logo_path).convert("RGBA")
+            max_width = max(60, int(size[0] * float(width_ratio or 0.18)))
+            max_height = max(60, int(size[1] * 0.12))
+            logo = self._fit_image_within(logo, max_width, max_height)
+
+            alpha = logo.getchannel("A")
+            alpha = alpha.point(lambda px: int(max(0, min(255, px * float(opacity or 1.0)))))
+            logo.putalpha(alpha)
+
+            x = int((size[0] - logo.width) / 2)
+            y = int(size[1] * 0.06)
+            position_norm = str(position or "").strip().lower()
+            if position_norm == "top_right":
+                x = int(size[0] - logo.width - (size[0] * 0.06))
+            elif position_norm == "top_left":
+                x = int(size[0] * 0.06)
+            elif position_norm == "center":
+                y = int((size[1] - logo.height) / 2)
+
+            base.alpha_composite(logo, (max(0, x), max(0, y)))
+            overlay_clip = self._clip_from_rgba(np.array(base, dtype=np.uint8), duration)
+            return overlay_clip
+        except Exception:
+            return None
+
+    def _resolve_closing_background_image(
+        self,
+        branding: Dict[str, Any],
+        *,
+        opening_visual: Optional[Dict[str, Any]] = None,
+        last_scene_image_path: Optional[str] = None,
+        cover_image_path: Optional[str] = None,
+        selected_primary_path: Optional[str] = None,
+        video_bg_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        candidates = [
+            ("branding_closing_image", branding.get("closing_image_path")),
+            ("branding_opening_image", branding.get("opening_image_path")),
+            ("opening_visual", (opening_visual or {}).get("path") if isinstance(opening_visual, dict) else None),
+            ("last_scene_image", last_scene_image_path),
+            ("cover_image", cover_image_path),
+            ("selected_primary", selected_primary_path),
+            ("video_background", video_bg_path),
+        ]
+        for source, value in candidates:
+            path = self._resolve_input_image_path(str(value or "").strip())
+            if path and os.path.exists(path):
+                return {"path": path, "source": source}
+        return {"path": None, "source": "fallback_background"}
+
+    def _build_cinematic_endcard_frame(
+        self,
+        branding: Dict[str, Any],
+        *,
+        background_path: Optional[str],
+        size,
+    ):
+        from PIL import Image, ImageDraw
+        import numpy as np
+
+        primary_color = self._hex_to_rgb(branding.get("primary_color"), default=(246, 231, 176))
+        secondary_color = self._hex_to_rgb(branding.get("secondary_color"), default=(255, 255, 255))
+        base_rgb = self.create_text_image("", size=size, bg_color=(16, 16, 16), bg_image_path=background_path, footer_text=None)
+        base = Image.fromarray(base_rgb).convert("RGBA")
+        w, h = size
+
+        # Darken background for better CTA readability without using plain color.
+        scrim = Image.new("RGBA", size, (6, 8, 12, 120))
+        base.alpha_composite(scrim)
+
+        gradient = Image.new("RGBA", size, (0, 0, 0, 0))
+        gdraw = ImageDraw.Draw(gradient)
+        for idx in range(h):
+            alpha = int(145 * (idx / max(1, h)))
+            gdraw.line([(0, idx), (w, idx)], fill=(5, 8, 12, alpha))
+        base.alpha_composite(gradient)
+
+        draw = ImageDraw.Draw(base)
+        title_font = self._load_caption_font(max(26, min(44, int(w * 0.034))))
+        cta_font = self._load_caption_font(max(28, min(54, int(w * 0.041))))
+        sub_font = self._load_caption_font(max(18, min(28, int(w * 0.022))))
+
+        logo_path = str(branding.get("logo_path") or "").strip()
+        logo_bottom = int(h * 0.12)
+        if logo_path and os.path.exists(logo_path):
+            try:
+                logo = Image.open(logo_path).convert("RGBA")
+                logo = self._fit_image_within(logo, max(90, int(w * 0.24)), max(90, int(h * 0.14)))
+                base.alpha_composite(logo, (int((w - logo.width) / 2), int(h * 0.10)))
+                logo_bottom = int(h * 0.10) + logo.height
+            except Exception:
+                logo_bottom = int(h * 0.12)
+
+        channel_name = str(branding.get("channel_name") or "").strip()
+        if channel_name:
+            bbox = draw.textbbox((0, 0), channel_name, font=title_font)
+            tw = bbox[2] - bbox[0]
+            draw.text(((w - tw) / 2, logo_bottom + int(h * 0.03)), channel_name, font=title_font, fill=primary_color)
+
+        lines = list(branding.get("final_message_lines") or [])[:3]
+        cta_y = max(int(h * 0.40), logo_bottom + int(h * 0.12))
+        for idx, line in enumerate(lines):
+            bbox = draw.textbbox((0, 0), line, font=cta_font)
+            tw = bbox[2] - bbox[0]
+            shadow_y = cta_y + (idx * int(h * 0.065))
+            draw.text(((w - tw) / 2 + 2, shadow_y + 2), line, font=cta_font, fill=(0, 0, 0, 180))
+            draw.text(((w - tw) / 2, shadow_y), line, font=cta_font, fill=secondary_color if idx > 0 else primary_color)
+
+        subtitle = "Uma mensagem de fe para continuar com voce."
+        bbox = draw.textbbox((0, 0), subtitle, font=sub_font)
+        tw = bbox[2] - bbox[0]
+        subtitle_y = min(int(h * 0.84), cta_y + max(1, len(lines)) * int(h * 0.067) + int(h * 0.05))
+        draw.text(((w - tw) / 2, subtitle_y), subtitle, font=sub_font, fill=(235, 235, 235))
+
+        return np.array(base.convert("RGB"))
+
+    def _apply_audio_fadeout(self, clip, duration: float = 0.8):
+        if clip is None:
+            return None
+        try:
+            clip_duration = float(getattr(clip, "duration", 0.0) or 0.0)
+        except Exception:
+            clip_duration = 0.0
+        fade = max(0.0, min(float(duration or 0.0), clip_duration * 0.35))
+        if fade <= 0:
+            return clip
+        try:
+            if hasattr(clip, "audio_fadeout"):
+                return clip.audio_fadeout(fade)
+            try:
+                from moviepy.editor import afx
+            except ImportError:
+                from moviepy import afx
+            return clip.fx(afx.audio_fadeout, fade)
+        except Exception:
+            return clip
+
+    def _apply_scene_transition_style(self, clip, transition_sec: float = 0.18):
+        if clip is None:
+            return None
+        return self._apply_soft_fade(
+            clip,
+            fade_in_sec=max(0.08, float(transition_sec or 0.18) * 0.65),
+            fade_out_sec=max(0.10, float(transition_sec or 0.18)),
+        )
+
     def _caption_font_candidates(self) -> List[str]:
         return [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -776,10 +953,100 @@ class VideoGenerator:
         return f"{safe_channel}. Uma mensagem para o seu coração."
 
     def _default_closing_text(self) -> str:
-        return (
-            "Se esta mensagem falou ao seu coração, inscreva-se no canal, ative o sininho, "
-            "curta e compartilhe este vídeo para que mais pessoas sejam alcançadas pela Palavra de Deus."
+        return ""
+
+    def _resolve_channel_branding(self, plan: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        plan = plan if isinstance(plan, dict) else {}
+        branding = plan.get("branding") if isinstance(plan.get("branding"), dict) else {}
+        channel_name = self._resolve_channel_name(plan)
+
+        def _pick(*values):
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
+        logo_info: Dict[str, Any] = {}
+        try:
+            from app.services.global_settings_service import build_global_settings_service
+
+            logo_info = build_global_settings_service().resolve_official_channel_logo()
+        except Exception:
+            logo_info = {}
+
+        logo_candidate = _pick(
+            branding.get("logo"),
+            branding.get("logo_path"),
+            branding.get("logo_url"),
+            plan.get("channel_logo"),
+            plan.get("channel_logo_path"),
+            plan.get("channel_logo_url"),
+            logo_info.get("selected_value"),
         )
+        opening_image_candidate = _pick(
+            branding.get("opening_image"),
+            branding.get("opening_image_path"),
+            branding.get("opening_image_url"),
+            plan.get("opening_image"),
+            plan.get("opening_image_path"),
+            plan.get("opening_image_url"),
+        )
+        closing_image_candidate = _pick(
+            branding.get("closing_image"),
+            branding.get("closing_image_path"),
+            branding.get("closing_image_url"),
+            plan.get("closing_image"),
+            plan.get("closing_image_path"),
+            plan.get("closing_image_url"),
+        )
+
+        final_message = branding.get("final_message") or plan.get("final_message") or [
+            "Inscreva-se no canal",
+            "Ative o sininho",
+            "Compartilhe esta mensagem",
+        ]
+        if isinstance(final_message, str):
+            final_message = [line.strip() for line in re.split(r"[\r\n]+", final_message) if line.strip()]
+        elif isinstance(final_message, (list, tuple)):
+            final_message = [str(line).strip() for line in final_message if str(line or "").strip()]
+        else:
+            final_message = []
+        if not final_message:
+            final_message = ["Inscreva-se no canal", "Ative o sininho", "Compartilhe esta mensagem"]
+
+        primary_color = _pick(branding.get("primary_color"), plan.get("primary_color"), "#F6E7B0")
+        secondary_color = _pick(branding.get("secondary_color"), plan.get("secondary_color"), "#FFFFFF")
+
+        return {
+            "channel_name": channel_name,
+            "logo_candidate": logo_candidate,
+            "logo_path": self._resolve_input_image_path(logo_candidate),
+            "opening_image_candidate": opening_image_candidate,
+            "opening_image_path": self._resolve_input_image_path(opening_image_candidate),
+            "closing_image_candidate": closing_image_candidate,
+            "closing_image_path": self._resolve_input_image_path(closing_image_candidate),
+            "primary_color": primary_color,
+            "secondary_color": secondary_color,
+            "font": _pick(branding.get("font"), plan.get("font"), "DejaVuSans-Bold"),
+            "title_style": _pick(branding.get("title_style"), plan.get("title_style"), "cinematic_minimal"),
+            "entry_animation": _pick(branding.get("entry_animation"), plan.get("entry_animation"), "fade"),
+            "exit_animation": _pick(branding.get("exit_animation"), plan.get("exit_animation"), "fade_out"),
+            "final_message_lines": final_message[:3],
+            "logo_source": logo_info.get("selected_source"),
+            "future_ready": {
+                "logo": bool(logo_candidate),
+                "opening_image": bool(opening_image_candidate),
+                "closing_image": bool(closing_image_candidate),
+                "primary_color": primary_color,
+                "secondary_color": secondary_color,
+                "font": _pick(branding.get("font"), plan.get("font")),
+                "title_style": _pick(branding.get("title_style"), plan.get("title_style")),
+                "entry_animation": _pick(branding.get("entry_animation"), plan.get("entry_animation")),
+                "exit_animation": _pick(branding.get("exit_animation"), plan.get("exit_animation")),
+                "final_message": final_message,
+            },
+        }
 
     def _redistribute_body_text_to_scenes(self, body_text: str, scenes: List[Dict[str, Any]]) -> List[str]:
         if not scenes:
@@ -3297,6 +3564,7 @@ class VideoGenerator:
             "sync_validation": {},
             "text_integrity": {},
             "utf8_audit": {},
+            "branding": {},
             "visual_plan": {},
             "scene_visuals": [],
             "effects_applied": [],
@@ -3308,6 +3576,8 @@ class VideoGenerator:
                 plan = self.review_plan(plan)
             except Exception:
                 pass
+            branding_profile = self._resolve_channel_branding(plan if isinstance(plan, dict) else {})
+            render_report["branding"] = dict(branding_profile)
             force_single_bg = bool(plan.get("single_bg")) or str(plan.get("image_mode") or "").strip().lower() == "single"
             if force_single_bg:
                 use_single_bg = True
@@ -3980,16 +4250,21 @@ class VideoGenerator:
                 )
             planning_meta["duration_range_report"] = duration_range_report
             render_report["narration_plan"] = planning_meta
+            closing_has_narration = bool(str(planning_meta.get("closing_text") or "").strip())
+            cinematic_end_pause_sec = 0.5
             opening_est = float(planning_meta.get("opening_duration_est_sec") or 0.0)
             closing_est = float(planning_meta.get("closing_duration_est_sec") or 0.0)
             body_est = float(planning_meta.get("body_duration_est_sec") or 0.0)
             scale_ratio = (actual_total_audio_dur / estimated_total_duration) if estimated_total_duration > 0 else 1.0
             title_clip_duration = max(2.0, round(opening_est * scale_ratio, 2)) if opening_est > 0 else 2.5
-            end_clip_duration = max(2.0, round(closing_est * scale_ratio, 2)) if closing_est > 0 else 3.0
-            if (title_clip_duration + end_clip_duration) >= actual_total_audio_dur:
+            end_clip_duration = max(2.0, round(closing_est * scale_ratio, 2)) if closing_est > 0 else 3.2
+            voice_closing_duration = end_clip_duration if closing_has_narration else 0.0
+            silent_cinematic_tail_sec = 0.0 if closing_has_narration else (cinematic_end_pause_sec + end_clip_duration)
+            target_video_duration = max(actual_total_audio_dur, actual_total_audio_dur + silent_cinematic_tail_sec)
+            if (title_clip_duration + voice_closing_duration) >= actual_total_audio_dur:
                 title_clip_duration = max(1.6, min(title_clip_duration, actual_total_audio_dur * 0.22))
-                end_clip_duration = max(1.8, min(end_clip_duration, actual_total_audio_dur * 0.24))
-            body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - end_clip_duration)
+                voice_closing_duration = max(0.0, min(voice_closing_duration, actual_total_audio_dur * 0.24))
+            body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - voice_closing_duration)
 
             caption_timeline_details = self._build_caption_timeline_details(
                 final_narration_text,
@@ -4029,7 +4304,7 @@ class VideoGenerator:
                 scenes,
                 requested_duration,
                 title_duration=title_clip_duration,
-                end_duration=end_clip_duration,
+                end_duration=voice_closing_duration,
                 scene_decisions=visual_group_plan.get("scene_decisions") or [],
                 transition_duration=0.0,
             )
@@ -4043,6 +4318,10 @@ class VideoGenerator:
             render_report["duration_plan"]["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
             render_report["duration_plan"]["opening_duration_sec"] = round(title_clip_duration, 2)
             render_report["duration_plan"]["end_duration_sec"] = round(end_clip_duration, 2)
+            render_report["duration_plan"]["voice_closing_duration_sec"] = round(voice_closing_duration, 2)
+            render_report["duration_plan"]["cinematic_end_pause_sec"] = round(cinematic_end_pause_sec, 2)
+            render_report["duration_plan"]["cinematic_closing_tail_sec"] = round(silent_cinematic_tail_sec, 2)
+            render_report["duration_plan"]["target_video_duration_sec"] = round(target_video_duration, 2)
             render_report["duration_plan"]["body_audio_duration_sec"] = round(body_audio_target, 2)
             render_report["visual_plan"]["caption_max_lines"] = 2
             render_report["visual_plan"]["caption_reserved_bottom_ratio"] = 0.14
@@ -4073,6 +4352,8 @@ class VideoGenerator:
                 scene_to_group=scene_to_group,
             )
             start_bg_path = opening_visual.get("path") if isinstance(opening_visual, dict) else None
+            if branding_profile.get("opening_image_path"):
+                start_bg_path = branding_profile.get("opening_image_path")
             _track_image_path(start_bg_path)
             title_footer = f"Canal {planning_meta.get('channel_name')}" if planning_meta.get("channel_name") else None
             img_title = self.create_text_image("", size=video_size, bg_color=(20, 20, 20), bg_image_path=start_bg_path, footer_text=None)
@@ -4092,6 +4373,21 @@ class VideoGenerator:
                 fade_out_sec=min(0.35, opening_visual_duration * 0.14),
             )
             opening_overlays = []
+            opening_logo = self._build_logo_overlay(
+                str(branding_profile.get("logo_path") or "").strip(),
+                video_size,
+                duration=min(opening_visual_duration, 2.8),
+                position="top_center",
+                opacity=0.86,
+                width_ratio=0.14,
+            )
+            if opening_logo is not None:
+                opening_logo = self._apply_soft_fade(
+                    opening_logo,
+                    fade_in_sec=min(0.55, opening_visual_duration * 0.18),
+                    fade_out_sec=min(0.35, opening_visual_duration * 0.12),
+                )
+                opening_overlays.append(opening_logo)
             title_overlay_duration = max(2.0, min(opening_visual_duration, 2.6))
             title_overlay = self._build_opening_title_overlay(
                 clean_title,
@@ -4120,6 +4416,7 @@ class VideoGenerator:
             render_report["visual_plan"]["opening_visual_duration_sec"] = round(opening_visual_duration, 2)
             render_report["visual_plan"]["opening_title_overlay_duration_sec"] = round(title_overlay_duration, 2)
             render_report["visual_plan"]["opening_title_animation"] = "fade_plus_slow_zoom"
+            render_report["visual_plan"]["opening_logo_present"] = bool(opening_logo is not None)
             clip_title = CompositeVideoClip([clip_title] + opening_overlays, size=video_size) if opening_overlays else clip_title
             clips.append(clip_title)
 
@@ -4149,13 +4446,15 @@ class VideoGenerator:
                 planning_meta,
                 legacy_scene_windows=legacy_scene_windows,
                 title_duration=title_clip_duration,
-                end_duration=end_clip_duration,
+                end_duration=voice_closing_duration,
                 actual_total_audio_dur=actual_total_audio_dur,
                 timeline_source=caption_timeline_source,
             )
             render_report["sync_validation"]["caption_timeline_source"] = caption_timeline_source
             render_report["sync_validation"]["caption_block_sync"] = scene_caption_sync.get("block_sync_report") or {}
             scene_time_cursor = title_clip_duration
+            last_story_scene_clip = None
+            last_story_scene_image_path = None
 
             for i, scene in enumerate(scenes):
                 debug_ctx["stage"] = "scene_loop"
@@ -4362,7 +4661,10 @@ class VideoGenerator:
                     self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
                 clip_scene = CompositeVideoClip([bg_clip] + overlay_clips, size=video_size)
                 self._assert_clip_not_none(clip_scene, "scene_composite_clip", {"scene_index": i})
+                clip_scene = self._apply_scene_transition_style(clip_scene, transition_sec=0.16)
                 clips.append(clip_scene)
+                last_story_scene_clip = clip_scene
+                last_story_scene_image_path = bg_image_path
                 scene_time_cursor += scene_dur
 
                 if bg_image_path and "temp_" in bg_image_path and bg_image_path not in cached_temp_paths:
@@ -4375,39 +4677,52 @@ class VideoGenerator:
             if progress_callback:
                 progress_callback(85, "Criando slide final...")
 
-            end_text = "Inscreva-se no canal"
-            end_bg_path = cover_image_path if cover_image_path and os.path.exists(cover_image_path) else None
-            if not end_bg_path and video_bg_path and os.path.exists(video_bg_path):
-                end_bg_path = video_bg_path
+            if not closing_has_narration and last_story_scene_clip is not None and cinematic_end_pause_sec > 0:
+                pause_clip = self._freeze_last_frame_clip(last_story_scene_clip, cinematic_end_pause_sec)
+                if pause_clip is not None:
+                    pause_clip = self._apply_soft_fade(
+                        pause_clip,
+                        fade_in_sec=min(0.12, cinematic_end_pause_sec * 0.3),
+                        fade_out_sec=min(0.18, cinematic_end_pause_sec * 0.6),
+                    )
+                    clips.append(pause_clip)
+
+            closing_background = self._resolve_closing_background_image(
+                branding_profile,
+                opening_visual=opening_visual if isinstance(opening_visual, dict) else None,
+                last_scene_image_path=last_story_scene_image_path,
+                cover_image_path=cover_image_path,
+                selected_primary_path=selected_primary_path,
+                video_bg_path=video_bg_path,
+            )
+            end_bg_path = closing_background.get("path")
             _track_image_path(end_bg_path)
-            img_end = self.create_text_image(end_text, size=video_size, bg_color=(20, 20, 20), bg_image_path=end_bg_path, footer_text="Compartilhe esta mensagem")
+            img_end = self._build_cinematic_endcard_frame(
+                branding_profile,
+                background_path=end_bg_path,
+                size=video_size,
+            )
             clip_end = ImageClip(img_end)
             self._assert_clip_not_none(clip_end, "end_slide")
             clip_end = self._set_clip_duration(clip_end, end_clip_duration)
-            end_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, actual_total_audio_dur)
-            end_overlays = []
-            expanded_end_timeline = []
-            for item in end_caption_timeline:
-                expanded_end_timeline.extend(
-                    self._expand_caption_item_for_overlay(
-                        item,
-                        size=video_size,
-                        max_lines=2,
-                        reserved_bottom_ratio=0.18,
-                    )
-                )
-            for item in expanded_end_timeline:
-                overlay_arr = self.create_text_overlay(
-                    str(item.get("caption") or "").strip(),
-                    size=video_size,
-                    text_color=(255, 255, 255),
-                    reserved_bottom_ratio=0.18,
-                )
-                overlay_clip = self._clip_from_rgba(overlay_arr, float(item.get("end") or 0.0) - float(item.get("start") or 0.0))
-                overlay_clip = self._set_clip_start(overlay_clip, float(item.get("start") or 0.0))
-                end_overlays.append(overlay_clip)
-            clip_end = CompositeVideoClip([clip_end] + end_overlays, size=video_size) if end_overlays else clip_end
+            clip_end = self._apply_motion_effect(
+                clip_end,
+                video_size,
+                {"name": "slow_zoom", "zoom_factor": 1.05, "scene_number": total_scenes + 1, "total_scenes": max(1, total_scenes + 1)},
+            )
+            clip_end = self._apply_soft_fade(
+                clip_end,
+                fade_in_sec=min(0.45, end_clip_duration * 0.18),
+                fade_out_sec=min(0.45, end_clip_duration * 0.20),
+            )
             clips.append(clip_end)
+            render_report["visual_plan"]["closing_background_source"] = closing_background.get("source")
+            render_report["visual_plan"]["closing_logo_present"] = bool(branding_profile.get("logo_path"))
+            render_report["visual_plan"]["closing_caption_suppressed"] = True
+            render_report["visual_plan"]["closing_message_lines"] = list(branding_profile.get("final_message_lines") or [])
+            render_report["visual_plan"]["cinematic_closing_enabled"] = True
+            render_report["visual_plan"]["closing_mode"] = "silent_endcard" if not closing_has_narration else "narrated_closing"
+            render_report["visual_plan"]["closing_ken_burns"] = "slow_zoom"
             
             # Concatenar todos
             debug_ctx["stage"] = "concat"
@@ -4458,13 +4773,40 @@ class VideoGenerator:
                 raise Exception("final_clip com duração inválida (<=0) após concatenação.")
 
             if not music_file_path:
-                final_clip = self._set_clip_audio(final_clip, main_audio_clip)
+                narration_audio_track = main_audio_clip
+                if silent_cinematic_tail_sec > 0:
+                    try:
+                        silence_tail = AudioClip(
+                            lambda t: 0,
+                            duration=float(silent_cinematic_tail_sec),
+                            fps=int(getattr(main_audio_clip, "fps", 44100) or 44100),
+                        )
+                        narration_audio_track = concatenate_audioclips([main_audio_clip, silence_tail])
+                    except Exception:
+                        narration_audio_track = main_audio_clip
+                final_clip = self._set_clip_audio(final_clip, narration_audio_track)
+                try:
+                    final_dur = float(getattr(final_clip, "duration", 0) or 0)
+                except Exception:
+                    final_dur = final_dur
 
             try:
                 if getattr(final_clip, "audio", None) is not None:
                     ad = float(getattr(final_clip.audio, "duration", 0) or 0)
                     if ad > 0:
-                        if final_dur > ad + 0.2:
+                        expected_video_duration = float(target_video_duration or ad)
+                        if silent_cinematic_tail_sec > 0:
+                            if final_dur > expected_video_duration + 0.2:
+                                final_clip = self._subclip(final_clip, 0, expected_video_duration)
+                            elif final_dur < expected_video_duration - 0.2:
+                                extra = expected_video_duration - final_dur
+                                hold = self._freeze_last_frame_clip(final_clip, extra)
+                                if hold is not None:
+                                    combined = concatenate_videoclips([final_clip, hold], method="compose")
+                                    final_clip = self._set_clip_audio(combined, final_clip.audio)
+                                else:
+                                    final_clip = self._set_clip_duration(final_clip, expected_video_duration)
+                        elif final_dur > ad + 0.2:
                             final_clip = self._subclip(final_clip, 0, ad)
                         elif final_dur < ad - 0.2:
                             extra = ad - final_dur
@@ -4494,19 +4836,23 @@ class VideoGenerator:
                         caption_duration = float(full_caption_timeline[-1].get("end") or 0.0)
                     except Exception:
                         caption_duration = 0.0
-                audio_video_diff = abs(final_dur - actual_total_audio_dur)
+                video_sync_target = float(target_video_duration or actual_total_audio_dur)
+                audio_video_diff = abs(final_dur - video_sync_target)
                 audio_caption_diff = abs(caption_duration - actual_total_audio_dur)
                 sync_validation = {
                     "planned_text_duration_sec": round(float(estimated_total_duration or 0.0), 2),
                     "audio_duration_sec": round(float(actual_total_audio_dur or 0.0), 2),
                     "captions_duration_sec": round(float(caption_duration or 0.0), 2),
                     "video_duration_sec": round(float(final_dur or 0.0), 2),
+                    "video_sync_target_sec": round(float(video_sync_target or 0.0), 2),
                     "audio_caption_diff_sec": round(audio_caption_diff, 2),
                     "audio_video_diff_sec": round(audio_video_diff, 2),
                     "captions_synced_with_audio": bool(audio_caption_diff <= 0.25),
                     "video_synced_with_audio": bool(audio_video_diff <= 0.25),
+                    "video_extends_past_narration_for_cinematic_closing": bool(silent_cinematic_tail_sec > 0),
+                    "cinematic_closing_tail_sec": round(float(silent_cinematic_tail_sec or 0.0), 2),
                     "has_automatic_opening": bool((planning_meta.get("opening_text") or "").strip()),
-                    "has_automatic_closing": bool((planning_meta.get("closing_text") or "").strip()),
+                    "has_automatic_closing": bool((planning_meta.get("closing_text") or "").strip()) or bool(silent_cinematic_tail_sec > 0),
                     "timeline_source": caption_timeline_source,
                 }
                 sync_validation["caption_block_sync"] = scene_caption_sync.get("block_sync_report") or {}
@@ -4598,6 +4944,10 @@ class VideoGenerator:
                     
                     bg_music = bg_music.with_duration(final_clip.duration)
                     bg_music = bg_music.with_volume_scaled(bg_volume)
+                    bg_music = self._apply_audio_fadeout(
+                        bg_music,
+                        duration=min(1.4, max(0.8, float(end_clip_duration or 0.0) * 0.40)),
+                    )
                     
                     if has_voice_audio:
                         final_audio = CompositeAudioClip([bg_music, final_clip.audio])
@@ -4605,6 +4955,7 @@ class VideoGenerator:
                         final_audio = bg_music
                         
                     final_clip = final_clip.with_audio(final_audio)
+                    render_report["visual_plan"]["background_music_fade_out"] = True
                 except Exception as e:
                     print(f"Erro ao adicionar música de fundo: {e}")
 
