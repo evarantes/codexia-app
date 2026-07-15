@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import uuid
 import base64
@@ -2293,6 +2294,399 @@ REGRAS IMPORTANTES:
         else:
             cleaned = self._compose_biblical_safe_prompt(director, scene_text, base_prompt=cleaned, scene_card=scene_card)
         return cleaned[:900]
+
+    def _extract_storyboard_beats(self, text: str) -> List[str]:
+        raw = str(text or "").replace("\r", "\n").strip()
+        if not raw:
+            return []
+        parts = re.split(r'(?<=[.!?])\s+|\n+', raw)
+        beats = [str(part or "").strip(" -") for part in parts if str(part or "").strip(" -")]
+        if len(beats) > 1:
+            return beats
+        if len(raw) <= 260:
+            return [raw]
+        midpoint = max(1, len(raw) // 2)
+        candidates = [". ", "; ", ", ", " "]
+        split_at = midpoint
+        for marker in candidates:
+            pos = raw.find(marker, midpoint)
+            if pos > 40:
+                split_at = pos + len(marker.strip())
+                break
+        left = raw[:split_at].strip(" ,.;:-")
+        right = raw[split_at:].strip(" ,.;:-")
+        return [item for item in [left, right] if item]
+
+    def _build_scene_caption_text(self, scene_text: str) -> str:
+        beats = self._extract_storyboard_beats(scene_text)
+        if not beats:
+            return ""
+        caption = beats[0]
+        if len(caption) <= 150:
+            return caption
+        trimmed = caption[:147].rsplit(" ", 1)[0].strip(" ,.;:-")
+        return trimmed or caption[:150]
+
+    def _scene_signature_tokens(self, text: str, prompt: str = "") -> List[str]:
+        norm = self._normalize_for_rules(f"{text or ''} {prompt or ''}")
+        tokens = [token for token in re.split(r"[^a-z0-9]+", norm) if len(token) >= 4]
+        unique_tokens: List[str] = []
+        seen = set()
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            unique_tokens.append(token)
+        return unique_tokens[:24]
+
+    def _scene_similarity_ratio(self, previous_scene: Optional[Dict[str, Any]], current_scene: Dict[str, Any]) -> float:
+        if not isinstance(previous_scene, dict) or not isinstance(current_scene, dict):
+            return 0.0
+        prev_tokens = set(
+            self._scene_signature_tokens(
+                str(previous_scene.get("text") or ""),
+                str(previous_scene.get("image_prompt") or previous_scene.get("prompt_cinematic") or ""),
+            )
+        )
+        curr_tokens = set(
+            self._scene_signature_tokens(
+                str(current_scene.get("text") or ""),
+                str(current_scene.get("image_prompt") or current_scene.get("prompt_cinematic") or ""),
+            )
+        )
+        if not prev_tokens or not curr_tokens:
+            return 0.0
+        return len(prev_tokens.intersection(curr_tokens)) / float(max(1, len(prev_tokens.union(curr_tokens))))
+
+    def _merge_storyboard_scenes(self, left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+        merged = dict(left or {})
+        merged["text"] = " ".join(
+            part.strip()
+            for part in [str((left or {}).get("text") or ""), str((right or {}).get("text") or "")]
+            if part and part.strip()
+        ).strip()
+        merged["caption"] = str((left or {}).get("caption") or (right or {}).get("caption") or "").strip()
+        merged["image_prompt"] = str((left or {}).get("image_prompt") or (right or {}).get("image_prompt") or "").strip()
+        return merged
+
+    def _rebalance_storyboard_scenes(
+        self,
+        scenes: List[Dict[str, Any]],
+        target_min: int = 8,
+        target_max: int = 15,
+    ) -> List[Dict[str, Any]]:
+        rebalanced = [dict(scene or {}) for scene in (scenes or []) if isinstance(scene, dict) and str(scene.get("text") or "").strip()]
+        target_min = max(1, int(target_min or 8))
+        target_max = max(target_min, int(target_max or 15))
+        while len(rebalanced) < target_min:
+            best_idx = -1
+            best_split: List[str] = []
+            for idx, scene in enumerate(rebalanced):
+                beats = self._extract_storyboard_beats(str(scene.get("text") or ""))
+                if len(beats) >= 2:
+                    candidate = [beats[0].strip(), " ".join(beats[1:]).strip()]
+                    if all(candidate):
+                        if len(" ".join(candidate)) > len(" ".join(best_split or [])):
+                            best_idx = idx
+                            best_split = candidate
+            if best_idx < 0 or len(best_split) < 2:
+                break
+            original = dict(rebalanced[best_idx])
+            left = dict(original)
+            right = dict(original)
+            left["text"] = best_split[0]
+            right["text"] = best_split[1]
+            left["caption"] = self._build_scene_caption_text(left["text"])
+            right["caption"] = self._build_scene_caption_text(right["text"])
+            rebalanced[best_idx:best_idx + 1] = [left, right]
+        while len(rebalanced) > target_max:
+            merge_idx = None
+            merge_score = None
+            for idx in range(len(rebalanced) - 1):
+                pair_len = len(str(rebalanced[idx].get("text") or "")) + len(str(rebalanced[idx + 1].get("text") or ""))
+                if merge_score is None or pair_len < merge_score:
+                    merge_score = pair_len
+                    merge_idx = idx
+            if merge_idx is None:
+                break
+            merged = self._merge_storyboard_scenes(rebalanced[merge_idx], rebalanced[merge_idx + 1])
+            rebalanced[merge_idx:merge_idx + 2] = [merged]
+        return rebalanced
+
+    def _build_cinematic_story_continuity_anchor(self, title: str, scenes: List[Dict[str, Any]]) -> str:
+        first_text = str((scenes[0] or {}).get("text") or "").strip() if scenes else ""
+        anchor_parts = [
+            str(title or "").strip(),
+            first_text[:180],
+            "Maintain wardrobe, geography, mood, lighting logic, and recurring characters across the full video.",
+        ]
+        return " ".join(part for part in anchor_parts if part).strip()
+
+    def _infer_scene_motion_effect(
+        self,
+        scene_card: Dict[str, Any],
+        scene_text: str,
+        scene_number: int,
+        total_scenes: int,
+    ) -> str:
+        scene_norm = self._normalize_for_rules(str(scene_text or ""))
+        card_norm = self._normalize_for_rules(
+            " ".join(
+                [
+                    str(scene_card.get("camera_framing") or ""),
+                    str(scene_card.get("visual_focus") or ""),
+                    str(scene_card.get("primary_action") or ""),
+                ]
+            )
+        )
+        if any(term in scene_norm for term in ["crowd", "multidao", "street", "rua", "atravessa", "passando", "meio"]):
+            return "parallax"
+        if any(term in scene_norm for term in ["dialog", "conversa", "disse", "falou", "procura", "olha", "well", "poco"]):
+            return "drift"
+        if any(term in scene_norm for term in ["milagre", "cura", "alivio", "paz", "filha", "peace", "heal", "healing"]):
+            return "slow_zoom"
+        if any(term in scene_norm for term in ["touch", "toca", "orla", "veste", "mao", "hand"]) or any(term in card_norm for term in ["close", "hem", "detail", "touch"]):
+            return "push_in"
+        if any(term in scene_norm for term in ["miracle", "wonder", "revelation", "revelacao"]) or any(term in card_norm for term in ["wonder", "revelation"]):
+            return "dolly_in"
+        if scene_number >= max(1, total_scenes - 1):
+            return "slow_zoom"
+        return "depth_movement" if scene_number % 2 == 0 else "slow_zoom"
+
+    def _compose_cinematic_prompt_from_scene_card(
+        self,
+        director: Dict[str, Any],
+        scene_card: Dict[str, Any],
+        scene_text: str,
+        continuity_anchor: str = "",
+        movement_hint: str = "",
+        variation_note: str = "",
+    ) -> str:
+        characters = ", ".join(scene_card.get("characters_present") or director.get("allowed_characters") or [])
+        important_objects = ", ".join(scene_card.get("important_objects") or director.get("important_objects") or [])
+        base_prompt = (
+            f"Photorealistic cinematic film still. {scene_card.get('location')}. {scene_card.get('biblical_period')}. "
+            f"Characters on screen: {characters}. Primary action: {scene_card.get('primary_action')}. "
+            f"Emotion: {scene_card.get('dominant_emotion')}. Camera framing: {scene_card.get('camera_framing')}. "
+            f"Lighting: {scene_card.get('lighting')}. Visual focus: {scene_card.get('visual_focus')}. "
+            f"Important objects: {important_objects}. Continuity anchor: {continuity_anchor or scene_card.get('continuity_with_previous_scene')}. "
+            f"Camera movement feeling: {movement_hint or 'slow cinematic movement'}. "
+            f"{variation_note.strip()} "
+            "Single coherent scene, natural anatomy, realistic biblical wardrobe, no text, no watermark, no logo."
+        ).strip()
+        return self._compose_biblical_safe_prompt(
+            director,
+            scene_text,
+            base_prompt=base_prompt,
+            scene_card=scene_card,
+        )[:900]
+
+    def _build_cinematic_storyboard_qc(self, scenes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        analyses: List[Dict[str, Any]] = []
+        problematic: List[int] = []
+        repeated: List[int] = []
+        previous_scene: Optional[Dict[str, Any]] = None
+        for idx, scene in enumerate(scenes):
+            scene_number = int(scene.get("scene_number") or idx + 1)
+            prompt_text = str(scene.get("image_prompt") or scene.get("prompt_cinematic") or "").strip()
+            caption_text = str(scene.get("caption") or "").strip()
+            motion_hint = str(scene.get("camera_movement") or scene.get("motion_effect") or "").strip()
+            scene_card = scene.get("scene_card") if isinstance(scene.get("scene_card"), dict) else {}
+            issues: List[str] = []
+            prompt_words = len([word for word in prompt_text.split() if word.strip()])
+            prompt_score = 100 if prompt_words >= 32 else max(55, min(100, 55 + (prompt_words * 2)))
+            caption_score = 100 if caption_text and len(caption_text) <= 160 else 72 if caption_text else 58
+            continuity_score = 92 if str(scene_card.get("continuity_with_previous_scene") or "").strip() else 70
+            motion_score = 96 if motion_hint else 64
+            repetition_ratio = self._scene_similarity_ratio(previous_scene, scene)
+            repetition_penalty = 0
+            if prompt_words < 22:
+                issues.append("prompt_short")
+            if not caption_text:
+                issues.append("caption_missing")
+            elif len(caption_text) > 180:
+                issues.append("caption_too_long")
+            if not motion_hint:
+                issues.append("camera_motion_missing")
+            if repetition_ratio >= 0.74:
+                repetition_penalty = 24
+                repeated.append(scene_number)
+                issues.append("repetitive_visual")
+            scene_score = max(
+                0,
+                min(
+                    100,
+                    int(round(((prompt_score * 0.4) + (continuity_score * 0.2) + (motion_score * 0.2) + (caption_score * 0.2)) - repetition_penalty)),
+                ),
+            )
+            status = "pass" if scene_score >= 78 and not issues else "needs_regeneration"
+            if status != "pass":
+                problematic.append(scene_number)
+            analysis = {
+                "scene_number": scene_number,
+                "scene_score": scene_score,
+                "prompt_score": int(prompt_score),
+                "continuity_score": int(continuity_score),
+                "motion_score": int(motion_score),
+                "caption_score": int(caption_score),
+                "repetition_ratio": round(repetition_ratio, 3),
+                "issues": issues,
+                "status": status,
+            }
+            scene["scene_qc"] = analysis
+            scene["scene_qc_status"] = status
+            analyses.append(analysis)
+            previous_scene = scene
+        average_score = round(sum(item["scene_score"] for item in analyses) / float(max(1, len(analyses))), 2)
+        return {
+            "scene_count": len(scenes),
+            "average_scene_score": average_score,
+            "problematic_scene_numbers": problematic,
+            "repeated_scene_numbers": repeated,
+            "regeneration_required": bool(problematic),
+            "scene_analyses": analyses,
+        }
+
+    def build_cinematic_engine_v2_plan(
+        self,
+        plan: Dict[str, Any],
+        target_scene_count: Optional[int] = None,
+        min_scene_count: int = 8,
+        max_scene_count: int = 15,
+    ) -> Dict[str, Any]:
+        if not isinstance(plan, dict):
+            return plan
+        raw_scenes = plan.get("scenes") or []
+        if not isinstance(raw_scenes, list) or not raw_scenes:
+            return plan
+
+        title = str(plan.get("title") or "Video").strip() or "Video"
+        story_context = str(plan.get("story_context") or plan.get("description") or "").strip()
+        normalized_scenes: List[Dict[str, Any]] = []
+        for raw_scene in raw_scenes:
+            if isinstance(raw_scene, str):
+                scene_dict = {"text": raw_scene.strip(), "image_prompt": ""}
+            elif isinstance(raw_scene, dict):
+                scene_dict = dict(raw_scene)
+            else:
+                continue
+            scene_text = str(
+                scene_dict.get("text")
+                or scene_dict.get("narration")
+                or scene_dict.get("narration_text")
+                or ""
+            ).strip()
+            if not scene_text:
+                continue
+            scene_dict["text"] = scene_text
+            scene_dict["image_prompt"] = str(scene_dict.get("image_prompt") or scene_dict.get("visual_prompt") or "").strip()
+            scene_dict["caption"] = str(scene_dict.get("caption") or scene_dict.get("on_screen_text") or "").strip()
+            normalized_scenes.append(scene_dict)
+
+        if not normalized_scenes:
+            return plan
+
+        desired_count = int(target_scene_count or len(normalized_scenes) or min_scene_count)
+        desired_count = max(int(min_scene_count or 8), min(int(max_scene_count or 15), desired_count))
+        normalized_scenes = self._rebalance_storyboard_scenes(
+            normalized_scenes,
+            target_min=min_scene_count,
+            target_max=max_scene_count,
+        )
+        if len(normalized_scenes) > desired_count:
+            normalized_scenes = self._rebalance_storyboard_scenes(
+                normalized_scenes,
+                target_min=desired_count,
+                target_max=desired_count,
+            )
+
+        continuity_anchor = self._build_cinematic_story_continuity_anchor(title, normalized_scenes)
+        enhanced_scenes: List[Dict[str, Any]] = []
+        for idx, scene in enumerate(normalized_scenes, start=1):
+            previous_scene_text = str((enhanced_scenes[-1] or {}).get("text") or "").strip() if enhanced_scenes else ""
+            scene_text = str(scene.get("text") or "").strip()
+            scene_director = scene.get("scene_director") if isinstance(scene.get("scene_director"), dict) else None
+            if not scene_director:
+                scene_director = self._build_biblical_story_director(
+                    story_title=title,
+                    story_context=story_context or continuity_anchor,
+                    scene_text=scene_text,
+                )
+            scene_card = scene.get("scene_card") if isinstance(scene.get("scene_card"), dict) else None
+            if not scene_card:
+                scene_card = self._build_cinematic_scene_card(
+                    director=scene_director,
+                    scene_text=scene_text,
+                    scene_number=idx,
+                    previous_scene_text=previous_scene_text,
+                )
+            movement_hint = str(scene.get("camera_movement") or scene.get("motion_effect") or "").strip()
+            if not movement_hint:
+                movement_hint = self._infer_scene_motion_effect(scene_card, scene_text, idx, len(normalized_scenes))
+            cinematic_prompt = str(scene.get("prompt_cinematic") or scene.get("image_prompt") or "").strip()
+            if len(cinematic_prompt.split()) < 22:
+                cinematic_prompt = self._compose_cinematic_prompt_from_scene_card(
+                    scene_director,
+                    scene_card,
+                    scene_text,
+                    continuity_anchor=continuity_anchor,
+                    movement_hint=movement_hint,
+                )
+            enhanced_scene = dict(scene)
+            enhanced_scene.update(
+                {
+                    "scene_number": idx,
+                    "title": str(scene.get("title") or f"Cena {idx}").strip(),
+                    "caption": str(scene.get("caption") or "").strip() or self._build_scene_caption_text(scene_text),
+                    "image_prompt": cinematic_prompt[:900],
+                    "prompt_cinematic": cinematic_prompt[:900],
+                    "scene_director": scene_director,
+                    "scene_card": scene_card,
+                    "camera_movement": movement_hint,
+                    "motion_effect": movement_hint,
+                    "visual_continuity_anchor": continuity_anchor,
+                }
+            )
+            enhanced_scenes.append(enhanced_scene)
+
+        qc_before = self._build_cinematic_storyboard_qc(enhanced_scenes)
+        regenerated_scene_numbers: List[int] = []
+        for scene_number in qc_before.get("problematic_scene_numbers") or []:
+            idx = max(0, int(scene_number) - 1)
+            if idx >= len(enhanced_scenes):
+                continue
+            scene = enhanced_scenes[idx]
+            previous_text = str((enhanced_scenes[idx - 1] or {}).get("text") or "").strip() if idx > 0 else ""
+            variation_note = (
+                "Advance the dramatic beat with a new visual angle, do not repeat the previous scene composition. "
+                f"Previous scene reference: {previous_text[:160]}"
+            ).strip()
+            scene["image_prompt"] = self._compose_cinematic_prompt_from_scene_card(
+                scene.get("scene_director") if isinstance(scene.get("scene_director"), dict) else {},
+                scene.get("scene_card") if isinstance(scene.get("scene_card"), dict) else {},
+                str(scene.get("text") or ""),
+                continuity_anchor=continuity_anchor,
+                movement_hint=str(scene.get("camera_movement") or ""),
+                variation_note=variation_note,
+            )[:900]
+            scene["prompt_cinematic"] = scene["image_prompt"]
+            scene["qc_regenerated"] = True
+            regenerated_scene_numbers.append(int(scene_number))
+
+        qc_after = self._build_cinematic_storyboard_qc(enhanced_scenes)
+        plan["scenes"] = enhanced_scenes
+        plan["cinematic_engine_v2"] = {
+            "enabled": True,
+            "version": "sprint1",
+            "target_scene_count": desired_count,
+            "actual_scene_count": len(enhanced_scenes),
+            "continuity_anchor": continuity_anchor,
+            "regenerated_scene_numbers": regenerated_scene_numbers,
+            "quality_control": qc_after,
+            "quality_control_before_regeneration": qc_before,
+            "premium_ending_ready": True,
+        }
+        return plan
 
     def _visual_negative_for_text(self, text: str) -> str:
         base = self._visual_global_negative()

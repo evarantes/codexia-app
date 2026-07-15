@@ -3345,6 +3345,56 @@ class VideoGenerator:
             "total_scenes": int(total_scenes),
         }
 
+    def _motion_plan_override_from_scene(self, scene: Dict[str, Any], default_plan: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        if not isinstance(scene, dict):
+            return default_plan
+        base = dict(default_plan or {})
+        raw_hint = " ".join(
+            str(value or "").strip()
+            for value in [
+                scene.get("motion_effect"),
+                scene.get("camera_movement"),
+                (scene.get("scene_card") or {}).get("camera_framing") if isinstance(scene.get("scene_card"), dict) else "",
+            ]
+            if str(value or "").strip()
+        ).lower()
+        if not raw_hint:
+            return default_plan
+
+        effect_name = ""
+        if any(term in raw_hint for term in ["push_in", "zoom in", "slow_zoom", "close-up", "close up"]):
+            effect_name = "push_in"
+        elif any(term in raw_hint for term in ["push_out", "zoom out", "dolly_out", "pull back"]):
+            effect_name = "dolly_out"
+        elif any(term in raw_hint for term in ["dolly_in", "reveal in"]):
+            effect_name = "dolly_in"
+        elif any(term in raw_hint for term in ["parallax", "depth", "crowd", "layered"]):
+            effect_name = "parallax"
+        elif any(term in raw_hint for term in ["pan left", "pan_left"]):
+            effect_name = "pan_left"
+        elif any(term in raw_hint for term in ["pan right", "pan_right"]):
+            effect_name = "pan_right"
+        elif any(term in raw_hint for term in ["tilt up", "tilt_up"]):
+            effect_name = "tilt_up"
+        elif any(term in raw_hint for term in ["tilt down", "tilt_down"]):
+            effect_name = "tilt_down"
+        elif any(term in raw_hint for term in ["handheld", "hand held"]):
+            effect_name = "leve_handheld"
+        elif any(term in raw_hint for term in ["drift", "float"]):
+            effect_name = "drift"
+        elif any(term in raw_hint for term in ["slow zoom", "zoom"]):
+            effect_name = "slow_zoom"
+
+        if not effect_name:
+            return default_plan
+        base["name"] = effect_name
+        base["requested_by_scene"] = True
+        if effect_name in {"push_in", "slow_zoom", "dolly_in"}:
+            base["zoom_factor"] = max(float(base.get("zoom_factor") or 1.08), 1.10)
+        elif effect_name in {"dolly_out", "push_out"}:
+            base["zoom_factor"] = max(float(base.get("zoom_factor") or 1.08), 1.08)
+        return base
+
     def _apply_motion_effect(self, clip, size, motion_plan: Optional[Dict[str, Any]] = None):
         plan = motion_plan or {}
         effect_name = str(plan.get("name") or "zoom_in").strip().lower()
@@ -3576,6 +3626,7 @@ class VideoGenerator:
                 plan = self.review_plan(plan)
             except Exception:
                 pass
+            cinematic_v2_meta = plan.get("cinematic_engine_v2") if isinstance(plan, dict) and isinstance(plan.get("cinematic_engine_v2"), dict) else {}
             branding_profile = self._resolve_channel_branding(plan if isinstance(plan, dict) else {})
             render_report["branding"] = dict(branding_profile)
             force_single_bg = bool(plan.get("single_bg")) or str(plan.get("image_mode") or "").strip().lower() == "single"
@@ -3616,6 +3667,7 @@ class VideoGenerator:
                     if isinstance(scene, str):
                         scene_text = scene
                     elif isinstance(scene, dict):
+                        scene_payload = dict(scene)
                         scene_text = scene.get('text', '')
                         scene_prompt = scene.get('image_prompt', '')
                     else:
@@ -3655,21 +3707,29 @@ class VideoGenerator:
                             if len(buf) + 1 + len(p) <= target_chars:
                                 buf = f"{buf} {p}"
                                 continue
-                            scenes_local.append({
+                            split_scene = dict(scene_payload) if isinstance(scene, dict) else {}
+                            split_scene.update({
                                 "text": buf.strip(),
                                 "image_prompt": _scene_prompt_for_fragment(scene_prompt, buf.strip()),
                             })
+                            split_scene["caption"] = str(split_scene.get("caption") or self._make_caption(buf.strip())).strip()
+                            scenes_local.append(split_scene)
                             buf = p
                         if buf.strip():
-                            scenes_local.append({
+                            split_scene = dict(scene_payload) if isinstance(scene, dict) else {}
+                            split_scene.update({
                                 "text": buf.strip(),
                                 "image_prompt": _scene_prompt_for_fragment(scene_prompt, buf.strip()),
                             })
+                            split_scene["caption"] = str(split_scene.get("caption") or self._make_caption(buf.strip())).strip()
+                            scenes_local.append(split_scene)
                     else:
-                        scenes_local.append({
+                        base_scene = dict(scene_payload) if isinstance(scene, dict) else {}
+                        base_scene.update({
                             "text": scene_text,
                             "image_prompt": _scene_prompt_for_fragment(scene_prompt, scene_text),
                         })
+                        scenes_local.append(base_scene)
                 return scenes_local
 
             scenes = _materialize_scenes(raw_scenes)
@@ -3838,6 +3898,14 @@ class VideoGenerator:
                 "continuity_anchor": continuity_anchor,
                 "requested_image_count": int(visual_group_plan.get("target_image_count") or 0),
                 "group_count": len(visual_group_plan.get("groups") or []),
+                "cinematic_engine_v2": {
+                    "enabled": bool(cinematic_v2_meta.get("enabled")),
+                    "version": cinematic_v2_meta.get("version"),
+                    "target_scene_count": cinematic_v2_meta.get("target_scene_count"),
+                    "actual_scene_count": cinematic_v2_meta.get("actual_scene_count"),
+                    "regenerated_scene_numbers": list(cinematic_v2_meta.get("regenerated_scene_numbers") or []),
+                    "quality_control": cinematic_v2_meta.get("quality_control") if isinstance(cinematic_v2_meta.get("quality_control"), dict) else {},
+                } if cinematic_v2_meta else {},
                 "groups": [
                     {
                         "group_id": int(group.get("group_id") or 0),
@@ -4573,12 +4641,14 @@ class VideoGenerator:
                     reuse_count=reuse_count,
                     reused_visual=bool(reused_from_pool or scene_reuse_counts.get(bg_image_path, 0) > 1),
                 )
+                motion_plan = self._motion_plan_override_from_scene(scene if isinstance(scene, dict) else {}, motion_plan)
                 bg_clip = self._apply_motion_effect(bg_clip, video_size, motion_plan)
                 render_report["effects_applied"].append({
                     "scene_number": i + 1,
                     "image_group_id": visual_group_id + 1,
                     "effect": motion_plan.get("name"),
                     "zoom_factor": motion_plan.get("zoom_factor"),
+                    "requested_by_scene": bool(motion_plan.get("requested_by_scene")),
                     "transition": "crossfade" if total_scenes > 1 else "none",
                 })
                 render_report["scene_visuals"].append({
@@ -4590,6 +4660,10 @@ class VideoGenerator:
                     "justification": scene_decision.get("justification"),
                     "image_path": bg_image_path,
                     "prompt": str((visual_group.get("prompt") or image_prompt or "")).strip()[:600],
+                    "camera_movement": str((scene or {}).get("camera_movement") or (scene or {}).get("motion_effect") or "").strip() if isinstance(scene, dict) else "",
+                    "dominant_emotion": str((((scene or {}).get("scene_card") or {}).get("dominant_emotion") or "").strip()) if isinstance(scene, dict) else "",
+                    "scene_qc_status": str((scene or {}).get("scene_qc_status") or "").strip() if isinstance(scene, dict) else "",
+                    "scene_qc": (scene or {}).get("scene_qc") if isinstance(scene, dict) and isinstance((scene or {}).get("scene_qc"), dict) else {},
                     "clean_narration": clean_text,
                     "audio_duration_sec": round(planned_scene_duration, 2),
                     "planned_visual_duration_sec": round(planned_scene_duration, 2),

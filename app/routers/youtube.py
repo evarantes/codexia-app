@@ -4434,18 +4434,23 @@ def process_video_generation(request: VideoRequest, task_id):
                 m = max(1, m)
                 try:
                     spm_raw = (os.getenv("YOUTUBE_SCENES_PER_MINUTE") or "").strip()
-                    spm = float(spm_raw) if spm_raw else 1.6
+                    spm = float(spm_raw) if spm_raw else 1.35
                 except Exception:
-                    spm = 1.6
-                spm = max(0.8, min(3.0, spm))
+                    spm = 1.35
+                spm = max(0.8, min(2.4, spm))
+                try:
+                    min_raw = (os.getenv("YOUTUBE_SCENES_MIN") or "").strip()
+                    min_scenes = int(min_raw) if min_raw else 8
+                except Exception:
+                    min_scenes = 8
                 try:
                     max_raw = (os.getenv("YOUTUBE_SCENES_MAX") or "").strip()
-                    max_scenes = int(max_raw) if max_raw else 60
+                    max_scenes = int(max_raw) if max_raw else 15
                 except Exception:
-                    max_scenes = 60
-                max_scenes = max(20, min(120, max_scenes))
-                min_scenes = 4 if m <= 2 else 6
-                return max(min_scenes, min(max_scenes, int(m * spm)))
+                    max_scenes = 15
+                min_scenes = max(4, min(15, min_scenes))
+                max_scenes = max(min_scenes, min(18, max_scenes))
+                return max(min_scenes, min(max_scenes, int(round(m * spm))))
 
             def _compact_scenes(raw: Any, target_count: int) -> List[Dict[str, Any]]:
                 scenes_in: List[Dict[str, Any]] = []
@@ -4543,6 +4548,16 @@ def process_video_generation(request: VideoRequest, task_id):
                     script["scenes"] = compacted
             except Exception:
                 pass
+
+            try:
+                script = ai_service.build_cinematic_engine_v2_plan(
+                    script,
+                    target_scene_count=_target_scene_count(requested_minutes),
+                    min_scene_count=8,
+                    max_scene_count=15,
+                )
+            except Exception as e:
+                print(f"Aviso: Codexia Cinematic Engine V2 nao conseguiu enriquecer o storyboard: {e}")
 
             script["target_duration_sec"] = int(requested_minutes * 60)
             script["target_duration_min"] = int(requested_minutes)
