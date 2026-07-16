@@ -950,10 +950,86 @@ class VideoGenerator:
 
     def _default_opening_text(self, channel_name: str) -> str:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
-        return f"{safe_channel}. Uma mensagem para o seu coração."
+        return f"No canal {safe_channel}, prepare o seu coracao para uma historia biblica que pode transformar o seu dia."
 
-    def _default_closing_text(self) -> str:
-        return ""
+    def _default_reflection_text(self, plan: Optional[Dict[str, Any]] = None, scenes: Optional[List[Dict[str, Any]]] = None) -> str:
+        plan = plan if isinstance(plan, dict) else {}
+        title = str(plan.get("title") or "").strip()
+        base_theme = title or "esta mensagem"
+        return (
+            f"Que a reflexao final sobre {base_theme} nos lembre que Deus continua presente, "
+            "cura o coracao e responde a quem persevera em fe."
+        )
+
+    def _default_closing_text(self, channel_name: str) -> str:
+        safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
+        return (
+            f"Se esta mensagem falou com voce, curta este video, comente o que Deus ministrou ao seu coracao, "
+            f"compartilhe com quem precisa desta palavra, inscreva-se no canal {safe_channel} e ative o sininho para nao perder as proximas mensagens."
+        )
+
+    def _compose_segmented_narration_audio(
+        self,
+        *,
+        main_text: str,
+        cta_text: str,
+        voice_style: Optional[str] = None,
+        voice_gender: Optional[str] = None,
+        pause_duration_sec: float = 1.25,
+    ) -> Dict[str, Any]:
+        try:
+            from moviepy.editor import AudioFileClip, concatenate_audioclips, AudioClip
+        except ImportError:
+            from moviepy import AudioFileClip, concatenate_audioclips, AudioClip
+
+        main_audio_path = self.generate_audio(main_text, voice_style=voice_style, voice_gender=voice_gender)
+        if not main_audio_path or not os.path.exists(main_audio_path):
+            raise Exception("Falha ao gerar o audio principal da narracao.")
+
+        main_audio_clip = AudioFileClip(main_audio_path)
+        cta_audio_path = None
+        cta_audio_clip = None
+        silence_clip = None
+        combined_clip = None
+        combined_audio_path = main_audio_path
+        pause_duration_sec = max(0.0, float(pause_duration_sec or 0.0))
+        try:
+            if cta_text:
+                cta_audio_path = self.generate_audio(cta_text, voice_style=voice_style, voice_gender=voice_gender)
+                if not cta_audio_path or not os.path.exists(cta_audio_path):
+                    raise Exception("Falha ao gerar o audio do CTA.")
+                cta_audio_clip = AudioFileClip(cta_audio_path)
+                fps = int(getattr(main_audio_clip, "fps", 44100) or 44100)
+                if pause_duration_sec > 0:
+                    silence_clip = AudioClip(lambda t: 0, duration=pause_duration_sec, fps=fps)
+                    combined_clip = concatenate_audioclips([main_audio_clip, silence_clip, cta_audio_clip])
+                else:
+                    combined_clip = concatenate_audioclips([main_audio_clip, cta_audio_clip])
+                combined_audio_path = os.path.join(self.output_dir, f"narration_{uuid.uuid4().hex}.mp3")
+                combined_clip.write_audiofile(
+                    combined_audio_path,
+                    fps=fps,
+                    nbytes=2,
+                    codec="mp3",
+                    bitrate="192k",
+                    logger=None,
+                )
+
+            return {
+                "audio_path": combined_audio_path,
+                "main_audio_path": main_audio_path,
+                "cta_audio_path": cta_audio_path,
+                "main_duration_sec": round(float(getattr(main_audio_clip, "duration", 0.0) or 0.0), 2),
+                "cta_duration_sec": round(float(getattr(cta_audio_clip, "duration", 0.0) or 0.0), 2) if cta_audio_clip is not None else 0.0,
+                "pause_duration_sec": round(pause_duration_sec, 2),
+            }
+        finally:
+            for clip in [combined_clip, silence_clip, cta_audio_clip, main_audio_clip]:
+                try:
+                    if clip is not None:
+                        clip.close()
+                except Exception:
+                    pass
 
     def _resolve_channel_branding(self, plan: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         plan = plan if isinstance(plan, dict) else {}
@@ -1002,9 +1078,9 @@ class VideoGenerator:
         )
 
         final_message = branding.get("final_message") or plan.get("final_message") or [
+            "Curta, comente e compartilhe",
             "Inscreva-se no canal",
             "Ative o sininho",
-            "Compartilhe esta mensagem",
         ]
         if isinstance(final_message, str):
             final_message = [line.strip() for line in re.split(r"[\r\n]+", final_message) if line.strip()]
@@ -1013,7 +1089,7 @@ class VideoGenerator:
         else:
             final_message = []
         if not final_message:
-            final_message = ["Inscreva-se no canal", "Ative o sininho", "Compartilhe esta mensagem"]
+            final_message = ["Curta, comente e compartilhe", "Inscreva-se no canal", "Ative o sininho"]
 
         primary_color = _pick(branding.get("primary_color"), plan.get("primary_color"), "#F6E7B0")
         secondary_color = _pick(branding.get("secondary_color"), plan.get("secondary_color"), "#FFFFFF")
@@ -1175,9 +1251,13 @@ class VideoGenerator:
         kind = str(plan.get("kind") or "story").strip().lower() or "story"
         channel_name = self._resolve_channel_name(plan)
         opening_text = self._default_opening_text(channel_name)
-        closing_text = self._default_closing_text()
+        reflection_text = self._normalize_tts_text(str(plan.get("reflection_text") or "").strip()) or self._default_reflection_text(plan, scenes)
+        closing_text = self._default_closing_text(channel_name)
+        pause_duration_sec = 1.25
+        end_screen_target_duration_sec = 15.0
         cleaned_scene_texts = [self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "") for scene in scenes]
-        body_text = " ".join(text for text in cleaned_scene_texts if text).strip()
+        story_text = " ".join(text for text in cleaned_scene_texts if text).strip()
+        body_text = " ".join(part for part in [story_text, reflection_text] if part).strip()
         duration_range = self._resolve_requested_duration_range_sec(plan)
         max_total_sec = float(duration_range.get("max_sec") or 0.0)
         min_total_sec = float(duration_range.get("min_sec") or 0.0)
@@ -1186,11 +1266,13 @@ class VideoGenerator:
         planning_max_total_sec = float(max_total_sec) * 0.96 if max_total_sec > 0 else 0.0
         opening_est = self._estimate_text_duration_with_voice(opening_text, voice_style=voice_style, voice_gender=voice_gender)
         closing_est = self._estimate_text_duration_with_voice(closing_text, voice_style=voice_style, voice_gender=voice_gender)
+        reflection_est = self._estimate_text_duration_with_voice(reflection_text, voice_style=voice_style, voice_gender=voice_gender)
+        story_est = self._estimate_text_duration_with_voice(story_text, voice_style=voice_style, voice_gender=voice_gender)
         scene_texts = list(cleaned_scene_texts)
 
         for attempt in range(3):
             body_est = self._estimate_text_duration_with_voice(body_text, voice_style=voice_style, voice_gender=voice_gender)
-            total_est = opening_est + body_est + closing_est
+            total_est = opening_est + body_est + closing_est + pause_duration_sec
             planning_attempts.append({
                 "attempt": attempt + 1,
                 "body_word_count": self._count_words(body_text),
@@ -1222,7 +1304,9 @@ class VideoGenerator:
         opening_est = self._estimate_text_duration_with_voice(opening_text, voice_style=voice_style, voice_gender=voice_gender)
         body_est = self._estimate_text_duration_with_voice(body_text, voice_style=voice_style, voice_gender=voice_gender)
         closing_est = self._estimate_text_duration_with_voice(closing_text, voice_style=voice_style, voice_gender=voice_gender)
-        total_est = opening_est + body_est + closing_est
+        story_est = self._estimate_text_duration_with_voice(story_text, voice_style=voice_style, voice_gender=voice_gender)
+        reflection_est = self._estimate_text_duration_with_voice(reflection_text, voice_style=voice_style, voice_gender=voice_gender)
+        total_est = opening_est + body_est + closing_est + pause_duration_sec
 
         if len(scene_texts) != len(scenes):
             scene_texts = self._redistribute_body_text_to_scenes(body_text, scenes)
@@ -1237,21 +1321,29 @@ class VideoGenerator:
         return {
             "channel_name": channel_name,
             "opening_text": opening_text,
+            "story_text": story_text,
+            "reflection_text": reflection_text,
             "body_text": body_text,
+            "cta_text": closing_text,
             "closing_text": closing_text,
             "full_text": full_text,
             "voice_words_per_minute": round(self._estimate_voice_words_per_minute(voice_style=voice_style, voice_gender=voice_gender), 2),
             "char_count": len(full_text),
             "word_count": self._count_words(full_text),
             "opening_duration_est_sec": round(opening_est, 2),
+            "story_duration_est_sec": round(story_est, 2),
+            "reflection_duration_est_sec": round(reflection_est, 2),
             "body_duration_est_sec": round(body_est, 2),
             "closing_duration_est_sec": round(closing_est, 2),
+            "cta_duration_est_sec": round(closing_est, 2),
             "estimated_total_duration_sec": round(total_est, 2),
             "planning_target_max_sec": round(planning_max_total_sec, 2) if planning_max_total_sec > 0 else 0.0,
             "requested_duration_range_sec": duration_range,
             "scene_texts": scene_texts,
             "scene_estimated_durations_sec": [round(value, 2) for value in scene_estimates],
             "planning_attempts": planning_attempts,
+            "pause_duration_sec": round(pause_duration_sec, 2),
+            "end_screen_target_duration_sec": round(end_screen_target_duration_sec, 2),
         }
 
     def _slice_caption_timeline(self, timeline: List[Dict[str, Any]], start_sec: float, end_sec: float) -> List[Dict[str, Any]]:
@@ -2947,6 +3039,75 @@ class VideoGenerator:
                  _record_attempt("edge_tts", "failed", str(e))
                  print(f"Edge TTS falhou: {e}")
 
+        # 4. Fallback offline no Windows via System.Speech
+        if os.name == "nt":
+            try:
+                import base64
+                import subprocess
+
+                print("Tentando Fallback Windows SAPI...")
+                filename = f"{uuid.uuid4()}.wav"
+                path = os.path.join(self.output_dir, filename)
+                path_ps = path.replace("'", "''")
+                text_ps = clean_text.replace("'", "''")
+                desired_gender = "Male" if gender == "male" else "Female"
+                culture_prefix = "pt" if lang == "pt" else "en"
+                script = f"""
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$voice = $synth.GetInstalledVoices() |
+    ForEach-Object {{ $_.VoiceInfo }} |
+    Where-Object {{ $_.Culture.Name -like '{culture_prefix}*' -and $_.Gender.ToString() -eq '{desired_gender}' }} |
+    Select-Object -First 1
+if (-not $voice) {{
+    $voice = $synth.GetInstalledVoices() | ForEach-Object {{ $_.VoiceInfo }} | Select-Object -First 1
+}}
+if ($voice) {{
+    $synth.SelectVoice($voice.Name)
+}}
+$synth.Rate = 0
+$synth.Volume = 100
+$synth.SetOutputToWaveFile('{path_ps}')
+$synth.Speak('{text_ps}')
+$synth.Dispose()
+"""
+                encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+                proc = subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    raise Exception((proc.stderr or proc.stdout or "System.Speech retornou erro").strip())
+
+                dur = 0.0
+                try:
+                    dur = float(self._ffprobe_duration_seconds(path) or 0)
+                except Exception:
+                    dur = 0.0
+                if dur <= 0.2:
+                    dur = float(
+                        self._estimate_text_duration_with_voice(
+                            clean_text,
+                            voice_style=style,
+                            voice_gender=gender,
+                        ) or 0.0
+                    )
+                if os.path.exists(path) and os.path.getsize(path) > 1000 and dur > 0.2:
+                    _record_attempt("windows_sapi", "success", "Fallback offline local gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                    tts_debug["provider_used"] = "windows_sapi"
+                    tts_debug["fallback_used"] = True
+                    tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                    tts_debug["output_path"] = path
+                    print(f"Windows SAPI sucesso: {path} ({dur:.2f}s)")
+                    return path
+                _record_attempt("windows_sapi", "failed", "Arquivo WAV invalido ou vazio.", {"duration_sec": round(float(dur or 0.0), 2)})
+            except Exception as e:
+                _record_attempt("windows_sapi", "failed", str(e))
+                print(f"Windows SAPI falhou: {e}")
+
         # 4. Fallback gTTS (Robótico)
         try:
             from gtts import gTTS
@@ -4174,10 +4335,21 @@ class VideoGenerator:
             final_narration_text = str(planning_meta.get("full_text") or "").strip()
             if not final_narration_text:
                 raise Exception("Falha ao montar a narracao final antes do TTS.")
+            main_story_narration_text = " ".join(
+                part for part in [
+                    str(planning_meta.get("opening_text") or "").strip(),
+                    str(planning_meta.get("body_text") or "").strip(),
+                ]
+                if part
+            ).strip()
+            cta_narration_text = str(planning_meta.get("cta_text") or planning_meta.get("closing_text") or "").strip()
+            pause_before_cta_sec = float(planning_meta.get("pause_duration_sec") or 1.25)
             render_report["audio_generation"] = {
                 "final_text_sent_to_tts": final_narration_text,
                 "text_char_count": len(final_narration_text),
                 "text_word_count": self._count_words(final_narration_text),
+                "cta_text_sent_to_tts": cta_narration_text,
+                "pause_before_cta_sec": round(pause_before_cta_sec, 2),
             }
 
             main_audio_path = None
@@ -4186,12 +4358,28 @@ class VideoGenerator:
             planning_target_max_sec = float(planning_meta.get("planning_target_max_sec") or 0.0)
             real_audio_target_max_sec = planning_target_max_sec or (max_requested_duration * 0.97 if max_requested_duration > 0 else 0.0)
             for narration_attempt in range(4):
-                main_audio_path = self.generate_audio(final_narration_text, voice_style=voice_style, voice_gender=voice_gender)
+                segmented_audio = self._compose_segmented_narration_audio(
+                    main_text=main_story_narration_text or final_narration_text,
+                    cta_text=cta_narration_text,
+                    voice_style=voice_style,
+                    voice_gender=voice_gender,
+                    pause_duration_sec=pause_before_cta_sec,
+                )
+                main_audio_path = segmented_audio.get("audio_path")
                 tts_debug = dict(self._last_tts_debug or {})
                 tts_debug["final_text_sent_to_tts"] = final_narration_text
                 tts_debug["attempt_number"] = narration_attempt + 1
+                tts_debug["segmented_audio"] = {
+                    "main_audio_path": segmented_audio.get("main_audio_path"),
+                    "cta_audio_path": segmented_audio.get("cta_audio_path"),
+                    "pause_duration_sec": segmented_audio.get("pause_duration_sec"),
+                    "main_duration_sec": segmented_audio.get("main_duration_sec"),
+                    "cta_duration_sec": segmented_audio.get("cta_duration_sec"),
+                }
                 render_report["audio_generation"] = tts_debug
                 debug_ctx["audio_path"] = main_audio_path
+                debug_ctx["title_audio_path"] = segmented_audio.get("main_audio_path")
+                debug_ctx["end_audio_path"] = segmented_audio.get("cta_audio_path")
                 debug_ctx["tts_provider_configured"] = tts_debug.get("configured_provider")
                 debug_ctx["tts_provider_used"] = tts_debug.get("provider_used")
                 debug_ctx["tts_fallback_used"] = tts_debug.get("fallback_used")
@@ -4219,6 +4407,9 @@ class VideoGenerator:
                 )
                 render_report["audio_generation"]["final_audio_duration_sec"] = round(actual_total_audio_dur, 2)
                 render_report["audio_generation"]["output_path"] = main_audio_path
+                render_report["audio_generation"]["pause_before_cta_sec"] = segmented_audio.get("pause_duration_sec")
+                render_report["audio_generation"]["main_narration_duration_sec"] = segmented_audio.get("main_duration_sec")
+                render_report["audio_generation"]["cta_duration_sec"] = segmented_audio.get("cta_duration_sec")
 
                 max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))
                 min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= (min_requested_duration * (1.0 - range_tolerance)))
@@ -4282,7 +4473,8 @@ class VideoGenerator:
                 planning_meta["estimated_total_duration_sec"] = round(
                     float(planning_meta.get("opening_duration_est_sec") or 0.0)
                     + float(planning_meta.get("body_duration_est_sec") or 0.0)
-                    + float(planning_meta.get("closing_duration_est_sec") or 0.0),
+                    + float(planning_meta.get("closing_duration_est_sec") or 0.0)
+                    + float(planning_meta.get("pause_duration_sec") or 0.0),
                     2,
                 )
                 planning_meta["full_text"] = " ".join([current_opening, new_body_text, current_closing]).strip()
@@ -4305,6 +4497,14 @@ class VideoGenerator:
                 planning_meta["scene_estimated_durations_sec"] = [round(float(scene.get("_estimated_narration_sec") or 0.0), 2) for scene in scenes]
                 render_report["narration_plan"] = planning_meta
                 final_narration_text = str(planning_meta.get("full_text") or "").strip()
+                main_story_narration_text = " ".join(
+                    part for part in [
+                        str(planning_meta.get("opening_text") or "").strip(),
+                        str(planning_meta.get("body_text") or "").strip(),
+                    ]
+                    if part
+                ).strip()
+                cta_narration_text = str(planning_meta.get("cta_text") or planning_meta.get("closing_text") or "").strip()
 
             estimated_total_duration = float(planning_meta.get("estimated_total_duration_sec") or 0.0)
             duration_range_report["estimated_full_narration_duration_sec"] = round(estimated_total_duration, 2)
@@ -4319,20 +4519,24 @@ class VideoGenerator:
             planning_meta["duration_range_report"] = duration_range_report
             render_report["narration_plan"] = planning_meta
             closing_has_narration = bool(str(planning_meta.get("closing_text") or "").strip())
-            cinematic_end_pause_sec = 0.5
+            pause_before_cta_sec = float(planning_meta.get("pause_duration_sec") or pause_before_cta_sec or 1.25)
+            end_screen_target_duration_sec = float(planning_meta.get("end_screen_target_duration_sec") or 15.0)
             opening_est = float(planning_meta.get("opening_duration_est_sec") or 0.0)
             closing_est = float(planning_meta.get("closing_duration_est_sec") or 0.0)
+            reflection_est = float(planning_meta.get("reflection_duration_est_sec") or 0.0)
             body_est = float(planning_meta.get("body_duration_est_sec") or 0.0)
             scale_ratio = (actual_total_audio_dur / estimated_total_duration) if estimated_total_duration > 0 else 1.0
-            title_clip_duration = max(2.0, round(opening_est * scale_ratio, 2)) if opening_est > 0 else 2.5
-            end_clip_duration = max(2.0, round(closing_est * scale_ratio, 2)) if closing_est > 0 else 3.2
-            voice_closing_duration = end_clip_duration if closing_has_narration else 0.0
-            silent_cinematic_tail_sec = 0.0 if closing_has_narration else (cinematic_end_pause_sec + end_clip_duration)
+            title_clip_duration = min(5.0, max(3.0, round(opening_est * scale_ratio, 2))) if opening_est > 0 else 3.4
+            cta_clip_duration = min(15.0, max(8.0, round(closing_est * scale_ratio, 2))) if closing_has_narration else 0.0
+            end_clip_duration = min(18.0, max(12.0, round(end_screen_target_duration_sec, 2)))
+            voice_closing_duration = cta_clip_duration if closing_has_narration else 0.0
+            silent_cinematic_tail_sec = end_clip_duration
             target_video_duration = max(actual_total_audio_dur, actual_total_audio_dur + silent_cinematic_tail_sec)
             if (title_clip_duration + voice_closing_duration) >= actual_total_audio_dur:
                 title_clip_duration = max(1.6, min(title_clip_duration, actual_total_audio_dur * 0.22))
                 voice_closing_duration = max(0.0, min(voice_closing_duration, actual_total_audio_dur * 0.24))
-            body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - voice_closing_duration)
+            reflection_duration_sec = round(max(0.0, reflection_est * scale_ratio), 2) if reflection_est > 0 else 0.0
+            body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - voice_closing_duration - pause_before_cta_sec)
 
             caption_timeline_details = self._build_caption_timeline_details(
                 final_narration_text,
@@ -4372,7 +4576,7 @@ class VideoGenerator:
                 scenes,
                 requested_duration,
                 title_duration=title_clip_duration,
-                end_duration=voice_closing_duration,
+                end_duration=voice_closing_duration + pause_before_cta_sec,
                 scene_decisions=visual_group_plan.get("scene_decisions") or [],
                 transition_duration=0.0,
             )
@@ -4385,12 +4589,28 @@ class VideoGenerator:
             render_report["duration_plan"]["planned_total_audio_duration_sec"] = round(estimated_total_duration, 2)
             render_report["duration_plan"]["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
             render_report["duration_plan"]["opening_duration_sec"] = round(title_clip_duration, 2)
+            render_report["duration_plan"]["reflection_duration_sec"] = reflection_duration_sec
+            render_report["duration_plan"]["pause_before_cta_sec"] = round(pause_before_cta_sec, 2)
+            render_report["duration_plan"]["cta_duration_sec"] = round(voice_closing_duration, 2)
             render_report["duration_plan"]["end_duration_sec"] = round(end_clip_duration, 2)
             render_report["duration_plan"]["voice_closing_duration_sec"] = round(voice_closing_duration, 2)
-            render_report["duration_plan"]["cinematic_end_pause_sec"] = round(cinematic_end_pause_sec, 2)
+            render_report["duration_plan"]["cinematic_end_pause_sec"] = round(pause_before_cta_sec, 2)
             render_report["duration_plan"]["cinematic_closing_tail_sec"] = round(silent_cinematic_tail_sec, 2)
             render_report["duration_plan"]["target_video_duration_sec"] = round(target_video_duration, 2)
             render_report["duration_plan"]["body_audio_duration_sec"] = round(body_audio_target, 2)
+            render_report["requested_duration_sec"] = round(target_requested_duration or max_requested_duration or min_requested_duration or 0.0, 2)
+            render_report["estimated_script_duration_sec"] = round(estimated_total_duration, 2)
+            render_report["narration_duration_sec"] = round(actual_total_audio_dur, 2)
+            render_report["intro_duration_sec"] = round(title_clip_duration, 2)
+            render_report["reflection_duration_sec"] = reflection_duration_sec
+            render_report["cta_duration_sec"] = round(voice_closing_duration, 2)
+            render_report["end_screen_duration_sec"] = round(end_clip_duration, 2)
+            render_report["narration_completed"] = False
+            render_report["story_completed"] = False
+            render_report["cta_rendered"] = False
+            render_report["end_screen_rendered"] = False
+            render_report["plain_background_detected_at_end"] = False
+            render_report["unexpected_extra_video_created"] = False
             render_report["visual_plan"]["caption_max_lines"] = 2
             render_report["visual_plan"]["caption_reserved_bottom_ratio"] = 0.14
             render_report["visual_plan"]["caption_vertical_anchor"] = "bottom"
@@ -4751,13 +4971,13 @@ class VideoGenerator:
             if progress_callback:
                 progress_callback(85, "Criando slide final...")
 
-            if not closing_has_narration and last_story_scene_clip is not None and cinematic_end_pause_sec > 0:
-                pause_clip = self._freeze_last_frame_clip(last_story_scene_clip, cinematic_end_pause_sec)
+            if last_story_scene_clip is not None and pause_before_cta_sec > 0:
+                pause_clip = self._freeze_last_frame_clip(last_story_scene_clip, pause_before_cta_sec)
                 if pause_clip is not None:
                     pause_clip = self._apply_soft_fade(
                         pause_clip,
-                        fade_in_sec=min(0.12, cinematic_end_pause_sec * 0.3),
-                        fade_out_sec=min(0.18, cinematic_end_pause_sec * 0.6),
+                        fade_in_sec=min(0.12, pause_before_cta_sec * 0.3),
+                        fade_out_sec=min(0.18, pause_before_cta_sec * 0.6),
                     )
                     clips.append(pause_clip)
 
@@ -4770,7 +4990,35 @@ class VideoGenerator:
                 video_bg_path=video_bg_path,
             )
             end_bg_path = closing_background.get("path")
+            if not end_bg_path:
+                generated_end_bg = self._generate_fallback_background(video_size)
+                if generated_end_bg and os.path.exists(generated_end_bg):
+                    closing_background = {"path": generated_end_bg, "source": "generated_fallback_background"}
+                    end_bg_path = generated_end_bg
             _track_image_path(end_bg_path)
+            if closing_has_narration:
+                img_cta = self._build_cinematic_endcard_frame(
+                    branding_profile,
+                    background_path=end_bg_path,
+                    size=video_size,
+                )
+                clip_cta = ImageClip(img_cta)
+                self._assert_clip_not_none(clip_cta, "cta_slide")
+                clip_cta = self._set_clip_duration(clip_cta, voice_closing_duration)
+                clip_cta = self._apply_motion_effect(
+                    clip_cta,
+                    video_size,
+                    {"name": "slow_zoom", "zoom_factor": 1.04, "scene_number": total_scenes + 1, "total_scenes": max(1, total_scenes + 2)},
+                )
+                clip_cta = self._apply_soft_fade(
+                    clip_cta,
+                    fade_in_sec=min(0.35, voice_closing_duration * 0.14),
+                    fade_out_sec=min(0.35, voice_closing_duration * 0.18),
+                )
+                clips.append(clip_cta)
+                render_report["cta_rendered"] = True
+                render_report["visual_plan"]["cta_visual_mode"] = "dedicated_endcard_cta"
+
             img_end = self._build_cinematic_endcard_frame(
                 branding_profile,
                 background_path=end_bg_path,
@@ -4795,8 +5043,10 @@ class VideoGenerator:
             render_report["visual_plan"]["closing_caption_suppressed"] = True
             render_report["visual_plan"]["closing_message_lines"] = list(branding_profile.get("final_message_lines") or [])
             render_report["visual_plan"]["cinematic_closing_enabled"] = True
-            render_report["visual_plan"]["closing_mode"] = "silent_endcard" if not closing_has_narration else "narrated_closing"
+            render_report["visual_plan"]["closing_mode"] = "end_screen_after_cta" if closing_has_narration else "silent_endcard"
             render_report["visual_plan"]["closing_ken_burns"] = "slow_zoom"
+            render_report["end_screen_rendered"] = True
+            render_report["plain_background_detected_at_end"] = bool(not end_bg_path)
             
             # Concatenar todos
             debug_ctx["stage"] = "concat"
@@ -4899,6 +5149,8 @@ class VideoGenerator:
             except Exception:
                 pass
 
+            render_report["final_video_duration_sec"] = round(float(final_dur or 0.0), 2)
+
             if not music_file_path:
                 try:
                     final_dur = float(getattr(final_clip, "duration", 0) or 0.0)
@@ -4931,6 +5183,8 @@ class VideoGenerator:
                 }
                 sync_validation["caption_block_sync"] = scene_caption_sync.get("block_sync_report") or {}
                 render_report["sync_validation"] = sync_validation
+                render_report["narration_completed"] = bool(sync_validation["captions_synced_with_audio"] and sync_validation["video_synced_with_audio"])
+                render_report["story_completed"] = True
                 if not sync_validation["captions_synced_with_audio"]:
                     raise Exception("Falha de validacao: legenda nao terminou junto com o audio final.")
                 if not sync_validation["video_synced_with_audio"]:
@@ -5212,6 +5466,7 @@ class VideoGenerator:
 
             return {
                 "video_url": f"{VIDEO_URL_PREFIX}/{filename}",
+                "file_path": output_path,
                 "music_credit": used_music_credit,
                 "used_images": used_image_urls,
                 "render_report": render_report,

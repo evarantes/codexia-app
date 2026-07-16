@@ -8,6 +8,8 @@ import time
 import sys
 import multiprocessing
 import math
+import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 try:
     from filelock import FileLock, Timeout
@@ -43,7 +45,21 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
-from app.services.task_manager import create_task, update_task, get_task, is_task_cancel_requested, request_cancel_task, reset_task_for_retry
+from app.services.task_manager import (
+    create_task,
+    update_task,
+    get_task,
+    get_task_by_idempotency_key,
+    is_task_cancel_requested,
+    request_cancel_task,
+    reset_task_for_retry,
+    claim_video_task,
+    acquire_task_execution_lease,
+    heartbeat_task_execution_lease,
+    get_task_execution_lease,
+    release_task_execution_lease,
+    finalize_task_once,
+)
 from app.services.youtube_auto_responder import auto_thank_comments
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
@@ -210,6 +226,74 @@ def _story_video_task_title_from_payload(payload: Dict[str, Any]) -> str:
             return first_line[:120]
     mode = str(payload.get("mode") or "").strip().lower()
     return "Vídeo narrado" if mode in {"story", "topic"} else "Tarefa de vídeo"
+
+
+def _normalize_hash_text(value: Any, *, lower: bool = False) -> str:
+    txt = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt.lower() if lower else txt
+
+
+def _normalize_hash_list(values: Any, *, lower: bool = False) -> List[str]:
+    items: List[str] = []
+    if isinstance(values, list):
+        for item in values:
+            txt = _normalize_hash_text(item, lower=lower)
+            if txt:
+                items.append(txt)
+    return sorted(items)
+
+
+def _build_video_generation_canonical_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    mode = _normalize_hash_text(payload.get("mode") or "topic", lower=True) or "topic"
+    kind = _normalize_hash_text(payload.get("kind") or "story", lower=True) or "story"
+    image_mode = _normalize_hash_text(payload.get("image_mode") or "", lower=True)
+    voice_style = _normalize_hash_text(payload.get("voice_style") or "")
+    voice_gender = _normalize_hash_text(payload.get("voice_gender") or "", lower=True)
+    aspect_ratio = _normalize_hash_text(payload.get("aspect_ratio") or "16:9", lower=True) or "16:9"
+    override_tags = _normalize_hash_list(payload.get("override_tags") or [], lower=True)
+    selected_images = _normalize_hash_list(payload.get("selected_images") or [])
+    custom_image_paths = _normalize_hash_list(payload.get("custom_image_paths") or [])
+    canonical = {
+        "mode": mode,
+        "kind": kind,
+        "topic": _normalize_hash_text(payload.get("topic") or ""),
+        "story_content": _normalize_hash_text(payload.get("story_content") or ""),
+        "duration": max(1, min(60, int(payload.get("duration") or 5))),
+        "aspect_ratio": aspect_ratio,
+        "auto_upload": bool(payload.get("auto_upload")),
+        "voice_style": voice_style,
+        "voice_gender": voice_gender,
+        "image_mode": image_mode,
+        "thumbnail_path": _normalize_hash_text(payload.get("thumbnail_path") or ""),
+        "override_title": _normalize_hash_text(payload.get("override_title") or ""),
+        "override_description": _normalize_hash_text(payload.get("override_description") or ""),
+        "override_tags": override_tags,
+        "selected_images": selected_images,
+        "custom_image_paths": custom_image_paths,
+    }
+    return canonical
+
+
+def _build_video_generation_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
+    canonical = _build_video_generation_canonical_payload(payload)
+    canonical_json = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    request_hash = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+    return {
+        "canonical_payload": canonical,
+        "canonical_json": canonical_json,
+        "request_hash": request_hash,
+        "idempotency_key": f"ytv1:{request_hash}",
+    }
+
+
+def _video_task_dedupe_window_seconds() -> int:
+    raw = (os.getenv("YOUTUBE_VIDEO_DEDUPE_WINDOW_SECONDS") or "").strip()
+    try:
+        value = int(raw) if raw else 6 * 60 * 60
+    except Exception:
+        value = 6 * 60 * 60
+    return max(60, min(7 * 24 * 60 * 60, value))
 
 def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]:
     rows = (
@@ -472,7 +556,14 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
                         p = 0
                     if status == "processing" and p <= 1 and ("enfileirad" in msg.lower() or "enfileirando" in msg.lower()):
                         try:
-                            update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Iniciando execução local...")
+                            lease = get_task_execution_lease(tid) or {}
+                            lease_exp = _parse_dt(lease.get("lease_expires_at"))
+                            if lease_exp and lease_exp > datetime.utcnow():
+                                return
+                        except Exception:
+                            pass
+                        try:
+                            update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Recuperando a mesma tarefa com exclusividade...")
                         except Exception:
                             pass
                         try:
@@ -919,6 +1010,72 @@ def _build_scheduled_mirror_index(db: Session) -> Dict[str, ScheduledVideo]:
             continue
     return index
 
+
+_SCHEDULED_AUTO_ALLOWED_SOURCES = {"manual_schedule", "schedule_plan", "scheduled_automation"}
+_SCHEDULED_AUTO_BLOCKED_SOURCES = {"generated_story", "production_queue", "derived_short", "derived_from_scheduled"}
+
+
+def _load_scheduled_video_payload(video: Optional[ScheduledVideo]) -> Dict[str, Any]:
+    if not video or not getattr(video, "script_data", None):
+        return {}
+    try:
+        data = json.loads(video.script_data or "{}")
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _scheduled_video_processing_policy(
+    video: Optional[ScheduledVideo],
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else _load_scheduled_video_payload(video)
+    source = str(data.get("source") or "").strip().lower()
+    status = str(getattr(video, "status", "") or "").strip().lower()
+    explicit_flag = data.get("auto_processing_eligible")
+    has_rendered_asset = bool(
+        str(data.get("video_url") or "").strip()
+        or str(getattr(video, "video_url", "") or "").strip()
+    )
+    has_source_production = bool(str(data.get("source_production_video_id") or "").strip())
+
+    policy = {
+        "source": source or "legacy_schedule",
+        "auto_process_eligible": False,
+        "reason": "scheduled_video_source_not_allowed",
+    }
+
+    if status in {"completed", "ready", "published", "awaiting_publish"}:
+        policy["reason"] = "scheduled_video_already_finished"
+        return policy
+
+    if has_source_production or source in _SCHEDULED_AUTO_BLOCKED_SOURCES:
+        policy["reason"] = "scheduled_video_source_blocked_from_auto_run"
+        return policy
+
+    if explicit_flag is not None:
+        policy["auto_process_eligible"] = bool(explicit_flag)
+        policy["reason"] = (
+            "scheduled_video_explicitly_allowed"
+            if bool(explicit_flag)
+            else "scheduled_video_explicitly_blocked"
+        )
+        return policy
+
+    if source in _SCHEDULED_AUTO_ALLOWED_SOURCES:
+        policy["auto_process_eligible"] = True
+        policy["reason"] = "scheduled_video_known_automation_source"
+        return policy
+
+    if not source and not has_rendered_asset and status in {"queued", "processing", "failed", "pending"}:
+        policy["auto_process_eligible"] = True
+        policy["reason"] = "scheduled_video_legacy_queue_item"
+        return policy
+
+    if has_rendered_asset:
+        policy["reason"] = "scheduled_video_already_has_rendered_asset"
+    return policy
+
 def _upsert_scheduled_from_production(db: Session, video: Video, mirror_index: Optional[Dict[str, ScheduledVideo]] = None):
     """Garante que vídeo READY/PUBLISHED da produção apareça na fila de aguardando publicação."""
     norm_status = _normalize_video_status(video.status)
@@ -943,6 +1100,8 @@ def _upsert_scheduled_from_production(db: Session, video: Video, mirror_index: O
         "source": "production_queue",
         "source_production_video_id": video.id,
         "production_status": norm_status,
+        "auto_processing_eligible": False,
+        "processing_mode": "publish_only",
     })
 
     target_status = "published" if norm_status == "PUBLISHED" else "completed"
@@ -1603,6 +1762,9 @@ class VideoRequest(BaseModel):
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
     image_mode: Optional[str] = None  # auto | single | multiple
+    aspect_ratio: Optional[str] = "16:9"
+    idempotency_key: Optional[str] = None
+    force_regenerate: bool = False
 
 class StoryTextGenerateRequest(BaseModel):
     kind: str = "story"  # story | devotional | prayer
@@ -1724,7 +1886,16 @@ def _generate_story_images_payload(request: StoryImagesRequest, progress_callbac
     _progress(8, "Gerando prompts de imagem por cena...")
     for idx, chunk in enumerate(scene_chunks[:count]):
         try:
-            p_list = ai_service.generate_story_image_prompts(chunk, n=1, kind=kind) or []
+            previous_chunk = scene_chunks[idx - 1] if idx > 0 and idx - 1 < len(scene_chunks) else ""
+            p_list = ai_service.generate_story_image_prompts(
+                chunk,
+                n=1,
+                kind=kind,
+                story_context=story_content,
+                story_title="YouTube Auto Biblical Story",
+                scene_number=idx + 1,
+                previous_scene_text=previous_chunk,
+            ) or []
             p = (p_list[0] if isinstance(p_list, list) and p_list else "") if p_list is not None else ""
         except Exception:
             p = ""
@@ -2537,7 +2708,7 @@ def process_create_shorts_from_scheduled_video(video_id: int, payload: Dict[str,
             description = (s.get("description") or "").strip()
             scheduled_for = now + timedelta(minutes=idx + 1)
             short_payload = {
-                "source": "derived_from_scheduled",
+                "source": "derived_short",
                 "source_scheduled_video_id": scheduled.id,
                 "parent_video_id": scheduled.id,
                 "kind": kind,
@@ -2545,6 +2716,8 @@ def process_create_shorts_from_scheduled_video(video_id: int, payload: Dict[str,
                 "title": title,
                 "description": description,
                 "video_url": video_url,
+                "auto_processing_eligible": False,
+                "processing_mode": "publish_only",
             }
             item = ScheduledVideo(
                 theme=theme,
@@ -2628,6 +2801,8 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
         "title": title,
         "description": description,
         "video_url": video_url,
+        "auto_processing_eligible": False,
+        "processing_mode": "publish_only",
     }
     if request.voice_style:
         payload["voice_style"] = request.voice_style
@@ -3009,7 +3184,7 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
         ("updated_at", "DATETIME")
     ]
     
-    # Simple migration check for SQLite
+    # Compatibilidade defensiva para schemas legados antes da migração Alembic formal
     try:
         inspector = inspect(db.get_bind())
         columns = [c["name"] for c in inspector.get_columns("scheduled_videos")]
@@ -3031,6 +3206,14 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     for item in plan:
         # Extrair dados do item
         # Se for music_mode, o item já deve vir com music_file_path
+        schedule_payload = item.get("videos", [{}])[0] if isinstance(item.get("videos"), list) else dict(item)
+        if not isinstance(schedule_payload, dict):
+            schedule_payload = {}
+        else:
+            schedule_payload = dict(schedule_payload)
+        schedule_payload["source"] = "manual_schedule"
+        schedule_payload["auto_processing_eligible"] = True
+        schedule_payload["processing_mode"] = "scheduled_automation"
         
         video = ScheduledVideo(
             theme=item.get("theme_of_day", "Geral"),
@@ -3038,7 +3221,7 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
             description=item.get("videos", [{}])[0].get("concept", "") if isinstance(item.get("videos"), list) else item.get("concept", ""),
             scheduled_for=datetime.strptime(f"{item.get('date')} {item.get('videos', [{}])[0].get('time', '12:00')}", "%Y-%m-%d %H:%M") if item.get("date") else datetime.now(),
             video_type=item.get("videos", [{}])[0].get("type", "video") if isinstance(item.get("videos"), list) else item.get("type", "video"),
-            script_data=json.dumps(item.get("videos", [{}])[0]) if isinstance(item.get("videos"), list) else json.dumps(item),
+            script_data=json.dumps(schedule_payload),
             status="queued", # Start as queued
             auto_post=item.get("videos", [{}])[0].get("auto_post", True) if isinstance(item.get("videos"), list) else item.get("auto_post", True),
             voice_style=item.get("videos", [{}])[0].get("voice_style", "human") if isinstance(item.get("videos"), list) else item.get("voice_style", "human"),
@@ -3064,28 +3247,62 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
     
     return {"message": "Schedule saved", "count": len(saved_videos)}
 
-@router.post("/schedule/{video_id}/generate")
-def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-    
+def _queue_manual_scheduled_generation(
+    video: ScheduledVideo,
+    background_tasks: BackgroundTasks,
+    db: Session,
+    *,
+    manual_action: str,
+) -> Dict[str, Any]:
+    payload = _load_scheduled_video_payload(video)
+    policy = _scheduled_video_processing_policy(video, payload)
+    source_label = str(policy.get("source") or payload.get("source") or "legacy_schedule").strip() or "legacy_schedule"
+    normalized_status = str(video.status or "").strip().lower()
+    blocked_for_manual = source_label in _SCHEDULED_AUTO_BLOCKED_SOURCES or bool(
+        str(payload.get("source_production_video_id") or "").strip()
+    )
+
+    if blocked_for_manual:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Este item ({source_label}) é somente para publicação/manual queue e não pode ser regenerado por esta rota.",
+        )
+
+    if normalized_status == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Este vídeo já está em processamento. Aguarde a conclusão para evitar geração paralela.",
+        )
+
+    if normalized_status == "queued":
+        raise HTTPException(
+            status_code=409,
+            detail="Este vídeo já está enfileirado. Não é permitido iniciar uma segunda geração paralela.",
+        )
+
+    if normalized_status == "published" or getattr(video, "uploaded_at", None):
+        raise HTTPException(
+            status_code=409,
+            detail="Este vídeo já foi publicado. Crie uma nova solicitação se precisar de outra versão.",
+        )
+
+    payload["source"] = payload.get("source") or "manual_schedule"
+    payload["auto_processing_eligible"] = True
+    payload["processing_mode"] = "manual_generation"
+    payload["manual_generation_requested"] = True
+    payload["manual_generation_action"] = manual_action
+    payload["manual_generation_requested_at"] = datetime.now().isoformat()
+
     # Limpar cache de script se existir, para forçar regeneração da IA (pois o usuário pediu explicitamente)
-    if video.script_data:
-        try:
-            data = json.loads(video.script_data)
-            changed = False
-            # Remove chaves geradas pela IA para garantir novo conteúdo
-            keys_to_remove = ["scenes", "audio_path", "background_music", "music_credit"]
-            for k in keys_to_remove:
-                if k in data:
-                    del data[k]
-                    changed = True
-            
-            if changed:
-                video.script_data = json.dumps(data)
-        except Exception as e:
-            print(f"Erro ao limpar cache do script: {e}")
+    changed = False
+    if payload:
+        keys_to_remove = ["scenes", "audio_path", "background_music", "music_credit", "render_report"]
+        for k in keys_to_remove:
+            if k in payload:
+                del payload[k]
+                changed = True
+    if changed or not video.script_data:
+        video.script_data = json.dumps(payload)
 
     # IMPORTANTE: força regeneração real.
     # Sem limpar video_url, o processador interpreta como "já pronto" e só recupera status.
@@ -3106,12 +3323,12 @@ def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, d
 
     # Limpa marcadores de erro sistêmico antigos para não poluir UI após retry
     if video.description:
-        markers = ("[ERRO]", "[SISTEMA]", "[UPLOAD_ERRO]")
+        markers = ("[ERRO]", "[SISTEMA]", "[UPLOAD_ERRO]", "[AUTO_BLOCKED]")
         cleaned_lines = [ln for ln in video.description.splitlines() if not any(m in ln for m in markers)]
         video.description = "\n".join(cleaned_lines).strip()
 
     video.status = "queued"
-    video.progress = 0 # Reset progress
+    video.progress = 0
     db.commit()
     
     # Dispara tentativa imediata quando a fila está livre.
@@ -3123,16 +3340,41 @@ def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, d
         ).first()
         if not processing:
             from app.services.video_processing import process_scheduled_video
-            background_tasks.add_task(process_scheduled_video, video_id)
+            background_tasks.add_task(process_scheduled_video, video.id, "manual")
     except Exception as e:
-        print(f"Erro ao iniciar regeneração imediata do vídeo {video_id}: {e}")
+        print(f"Erro ao iniciar geração manual explícita do vídeo {video.id}: {e}")
 
-    return {"status": "queued"}
+    return {
+        "status": "queued",
+        "id": video.id,
+        "source": policy.get("source"),
+        "manual_action": manual_action,
+    }
+
+@router.post("/schedule/{video_id}/generate")
+def generate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return _queue_manual_scheduled_generation(
+        video,
+        background_tasks,
+        db,
+        manual_action="generate",
+    )
 
 @router.post("/schedule/{video_id}/regenerate")
 def regenerate_scheduled_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Mesma coisa que generate, mas semanticamente explícito"""
-    return generate_scheduled_video(video_id, background_tasks, db)
+    video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return _queue_manual_scheduled_generation(
+        video,
+        background_tasks,
+        db,
+        manual_action="regenerate",
+    )
 
 @router.post("/schedule/{video_id}/publish-now")
 def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
@@ -3724,14 +3966,25 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         payload = request.model_dump()  # type: ignore[attr-defined]
     except Exception:
         payload = request.dict()
-
-    task_id = create_task()
+    identity = _build_video_generation_identity(payload)
+    payload["idempotency_key"] = identity["idempotency_key"]
+    payload["request_hash"] = identity["request_hash"]
     base_result = {
         "payload": payload,
         "kind": "youtube_story_video",
         "title_hint": _story_video_task_title_from_payload(payload),
+        "idempotency_key": identity["idempotency_key"],
+        "request_hash": identity["request_hash"],
     }
-    update_task(task_id, status="pending", progress=0, message="Aguardando vez na fila de produção...", result=base_result)
+    claimed = claim_video_task(
+        idempotency_key=identity["idempotency_key"],
+        request_hash=identity["request_hash"],
+        payload=payload,
+        dedupe_window_seconds=_video_task_dedupe_window_seconds(),
+        force_regenerate=bool(getattr(request, "force_regenerate", False)),
+        initial_result=base_result,
+    )
+    task_id = str(claimed.get("task_id"))
 
     db = SessionLocal()
     try:
@@ -3742,12 +3995,26 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
     finally:
         db.close()
 
-    _kick_story_video_task_queue_async()
+    if claimed.get("created_new_task"):
+        _kick_story_video_task_queue_async()
+    task_obj = claimed.get("task") if isinstance(claimed.get("task"), dict) else {}
+    task_status = str((task_obj.get("status") or "")).lower()
+    reused_existing = bool(claimed.get("reused_existing_task"))
+    reused_completed = bool(claimed.get("reused_completed_task"))
     return {
-        "message": "Vídeo enviado para a fila de produção.",
+        "message": (
+            "Esta geração já está em andamento."
+            if reused_existing and not reused_completed
+            else ("Resultado reaproveitado dentro da janela de idempotência." if reused_completed else "Vídeo enviado para a fila de produção.")
+        ),
         "task_id": task_id,
-        "queued": bool(already_processing or (queue_position and queue_position > 1)),
-        "queue_position": queue_position or 1,
+        "queued": bool(task_status in {"pending", "processing"} and (already_processing or (queue_position and queue_position > 1))),
+        "queue_position": queue_position or (1 if task_status in {"pending", "processing"} else 0),
+        "reused_existing_task": reused_existing,
+        "reused_completed_task": reused_completed,
+        "idempotency_key": identity["idempotency_key"],
+        "request_hash": identity["request_hash"],
+        "result": task_obj.get("result") if reused_completed else None,
     }
 
 @router.get("/task/{task_id}")
@@ -3756,7 +4023,8 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     try:
-        if status in {"processing"}:
+        task_status = str((task.get("status") or "")).lower()
+        if task_status in {"processing"}:
             updated_at_s = (task.get("updated_at") or task.get("created_at") or "").strip()
             if updated_at_s:
                 try:
@@ -3786,6 +4054,14 @@ def get_task_status(task_id: str):
                             task = get_task(task_id) or task
     except Exception:
         pass
+    return task
+
+
+@router.get("/tasks/by-idempotency")
+def get_task_status_by_idempotency(idempotency_key: str = Query(..., min_length=10)):
+    task = get_task_by_idempotency_key(idempotency_key)
+    if not task:
+        raise HTTPException(status_code=404, detail="Nenhuma tarefa encontrada para esta idempotency_key.")
     return task
 
 @router.get("/tasks/active")
@@ -4140,6 +4416,16 @@ def process_video_generation(request: VideoRequest, task_id):
         if str((t.get("status") or "")).lower() == "cancelled" or _cancel_all_active():
             raise _TaskCancelled()
 
+    def _merged_task_result(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        current = get_task(task_id) or {}
+        base = current.get("result") if isinstance(current.get("result"), dict) else {}
+        merged = dict(base or {})
+        if extra:
+            merged.update(extra)
+        return merged
+
+    executor_id = f"executor-{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex[:8]}"
+    lease_info: Dict[str, Any] = {}
     redis_lock = None
     file_lock = None
     try:
@@ -4148,6 +4434,11 @@ def process_video_generation(request: VideoRequest, task_id):
         os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
         os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+        lease_info = acquire_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
+        if not lease_info.get("acquired"):
+            print(f"Tarefa {task_id} já possui executor ativo. Ignorando segundo disparo.")
+            return
+        heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         if conn:
             try:
                 redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
@@ -4184,8 +4475,14 @@ def process_video_generation(request: VideoRequest, task_id):
         if voice_gender not in {"male", "female"}:
             voice_gender = "female"
         topic_display = request.topic if request.mode == 'topic' else ("Devocional" if kind_norm == "devotional" else ("Reflexão com Oração" if kind_norm == "prayer" else "História Personalizada"))
-        update_task(task_id, status="processing", progress=5, message=f"Iniciando geração sobre: {topic_display}")
+        update_task(task_id, status="processing", progress=5, message=f"Iniciando geração sobre: {topic_display}", result=_merged_task_result({
+            "executor_id": executor_id,
+            "executor_started_at": lease_info.get("started_at"),
+            "executor_heartbeat_at": lease_info.get("heartbeat_at"),
+            "attempt_number": int(lease_info.get("attempt_number") or 1),
+        }))
         print(f"Iniciando geração de vídeo ({request.mode}): {topic_display}")
+        heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         
         ai_service = AIContentGenerator()
         video_service = VideoGenerator(ai_service=ai_service)
@@ -4193,6 +4490,7 @@ def process_video_generation(request: VideoRequest, task_id):
         
         # 1. Gerar Roteiro
         update_task(task_id, progress=10, message="Estruturando roteiro com IA...")
+        heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         _raise_if_cancelled()
         
         def _count_words(txt: str) -> int:
@@ -4583,6 +4881,7 @@ def process_video_generation(request: VideoRequest, task_id):
             # Mapeia progresso do vídeo (0-100) para progresso da tarefa (20-90)
             task_progress = 20 + int(progress * 0.7)
             update_task(task_id, progress=task_progress, message=message)
+            heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
             _raise_if_cancelled()
             
         video_result = video_service.create_video_from_plan(
@@ -4598,6 +4897,7 @@ def process_video_generation(request: VideoRequest, task_id):
             render_report = {}
         sync_validation = render_report.get("sync_validation")
         audio_generation = render_report.get("audio_generation")
+        heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         _raise_if_cancelled()
         
         # Path absoluto para upload (compatível com Docker e /data/media)
@@ -4608,6 +4908,7 @@ def process_video_generation(request: VideoRequest, task_id):
         # 3. Upload (se solicitado)
         if request.auto_upload:
             update_task(task_id, progress=90, message="Iniciando upload para o YouTube...")
+            heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
             print("Iniciando upload para YouTube...")
             
             description = script.get('description', 'Vídeo motivacional.')
@@ -4623,7 +4924,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 tags=script.get('tags', ['motivação', 'sucesso']),
                 thumbnail_path=(request.thumbnail_path or None),
             )
-            update_task(task_id, progress=100, status="completed", message="Vídeo gerado e publicado com sucesso!", result={
+            final_payload = _merged_task_result({
                 "video_url": video_path,
                 "title": script.get("title"),
                 "description": description,
@@ -4631,31 +4932,35 @@ def process_video_generation(request: VideoRequest, task_id):
                 "kind": "story" if request.mode == "story" else "topic",
                 "audio_generation": audio_generation,
                 "sync_validation": sync_validation,
+                "executor_id": executor_id,
+                "attempt_number": int(lease_info.get("attempt_number") or 1),
             })
-            try:
-                dbn = SessionLocal()
-                n = SystemNotification(
-                    user_id=None,
-                    kind="video_generated",
-                    title="Vídeo gerado",
-                    message="Vídeo gerado e publicado com sucesso!",
-                    payload_json=json.dumps({"task_id": task_id, "video_url": video_path}, ensure_ascii=False),
-                    status="new",
-                )
-                dbn.add(n)
-                dbn.commit()
-            except Exception:
+            finalized = finalize_task_once(task_id, status="completed", progress=100, message="Vídeo gerado e publicado com sucesso!", result=final_payload)
+            if finalized.get("finalized_now"):
                 try:
-                    dbn.rollback()
+                    dbn = SessionLocal()
+                    n = SystemNotification(
+                        user_id=None,
+                        kind="video_generated",
+                        title="Vídeo gerado",
+                        message="Vídeo gerado e publicado com sucesso!",
+                        payload_json=json.dumps({"task_id": task_id, "video_url": video_path}, ensure_ascii=False),
+                        status="new",
+                    )
+                    dbn.add(n)
+                    dbn.commit()
                 except Exception:
-                    pass
-            finally:
-                try:
-                    dbn.close()
-                except Exception:
-                    pass
+                    try:
+                        dbn.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        dbn.close()
+                    except Exception:
+                        pass
         else:
-            update_task(task_id, progress=100, status="completed", message="Vídeo gerado com sucesso!", result={
+            final_payload = _merged_task_result({
                 "video_url": video_path,
                 "title": script.get("title"),
                 "description": script.get("description"),
@@ -4663,29 +4968,33 @@ def process_video_generation(request: VideoRequest, task_id):
                 "kind": "story" if request.mode == "story" else "topic",
                 "audio_generation": audio_generation,
                 "sync_validation": sync_validation,
+                "executor_id": executor_id,
+                "attempt_number": int(lease_info.get("attempt_number") or 1),
             })
-            try:
-                dbn = SessionLocal()
-                n = SystemNotification(
-                    user_id=None,
-                    kind="video_generated",
-                    title="Vídeo gerado",
-                    message="Vídeo gerado com sucesso!",
-                    payload_json=json.dumps({"task_id": task_id, "video_url": video_path}, ensure_ascii=False),
-                    status="new",
-                )
-                dbn.add(n)
-                dbn.commit()
-            except Exception:
+            finalized = finalize_task_once(task_id, status="completed", progress=100, message="Vídeo gerado com sucesso!", result=final_payload)
+            if finalized.get("finalized_now"):
                 try:
-                    dbn.rollback()
+                    dbn = SessionLocal()
+                    n = SystemNotification(
+                        user_id=None,
+                        kind="video_generated",
+                        title="Vídeo gerado",
+                        message="Vídeo gerado com sucesso!",
+                        payload_json=json.dumps({"task_id": task_id, "video_url": video_path}, ensure_ascii=False),
+                        status="new",
+                    )
+                    dbn.add(n)
+                    dbn.commit()
                 except Exception:
-                    pass
-            finally:
-                try:
-                    dbn.close()
-                except Exception:
-                    pass
+                    try:
+                        dbn.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        dbn.close()
+                    except Exception:
+                        pass
             
     except _TaskCancelled:
         try:
@@ -4701,6 +5010,8 @@ def process_video_generation(request: VideoRequest, task_id):
         print(f"Erro na tarefa {task_id}: {e}")
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
     finally:
+        if executor_id:
+            release_task_execution_lease(task_id, executor_id)
         if redis_lock:
             try:
                 redis_lock.release()

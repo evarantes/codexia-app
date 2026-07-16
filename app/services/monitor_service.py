@@ -1,6 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.services.video_processing import process_scheduled_video
-from app.database import SessionLocal, SQLALCHEMY_DATABASE_URL
+from app.database import SessionLocal
 from app.models import ChannelReport, ScheduledVideo, CommunityComment, SystemNotification, ChannelInsight, VideoTask
 import datetime
 import logging
@@ -21,6 +21,48 @@ except Exception:
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def _load_scheduled_processing_policy(video):
+    from app.routers.youtube import _load_scheduled_video_payload, _scheduled_video_processing_policy
+
+    payload = _load_scheduled_video_payload(video)
+    policy = _scheduled_video_processing_policy(video, payload)
+    return payload, policy
+
+def _append_auto_block_note(video, payload, policy, context: str):
+    payload = dict(payload or {})
+    reason = str(policy.get("reason") or "scheduled_video_source_not_allowed").strip() or "scheduled_video_source_not_allowed"
+    source = str(policy.get("source") or payload.get("source") or "legacy_schedule").strip() or "legacy_schedule"
+    note = f"[AUTO_BLOCKED]: {context}. source={source}. Motivo: {reason}."
+
+    payload["_monitor_blocked"] = True
+    payload["_monitor_blocked_reason"] = reason
+    payload["_monitor_blocked_source"] = source
+    payload["_monitor_blocked_context"] = context
+    payload["_monitor_blocked_at"] = datetime.datetime.now().isoformat()
+    try:
+        video.script_data = json.dumps(payload)
+    except Exception:
+        pass
+
+    if note not in (video.description or ""):
+        current_desc = (video.description or "").strip()
+        video.description = (current_desc + "\n\n" + note).strip() if current_desc else note
+
+def _normalize_blocked_scheduled_video(video, payload, policy, context: str):
+    _append_auto_block_note(video, payload, policy, context)
+    has_asset = bool((video.video_url or "").strip() or payload.get("video_url"))
+    status = str(video.status or "").strip().lower()
+    if has_asset:
+        if status != "published":
+            video.status = "completed"
+        try:
+            video.progress = max(int(video.progress or 0), 100)
+        except Exception:
+            video.progress = 100
+    elif status == "processing":
+        video.status = "failed"
+        video.progress = 0
 
 class MonitorService:
     def __init__(self):
@@ -62,12 +104,6 @@ class MonitorService:
                 minutes=5,
                 next_run_time=datetime.datetime.now() + datetime.timedelta(minutes=2)
             )
-            # Backup SQLite 1x por dia (só quando banco é SQLite)
-            if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-                from app.services.backup_service import run_sqlite_backup
-                self.scheduler.add_job(run_sqlite_backup, "cron", hour=3, minute=0)
-                logger.info("Backup SQLite diário agendado (03:00).")
-            
             # Executar verificação de integridade de arquivos (Self-Healing)
             # Rodar imediatamente no startup
             self.check_file_integrity()
@@ -214,6 +250,7 @@ class MonitorService:
             if stuck_videos:
                 logger.warning(f"Encontrados {len(stuck_videos)} vídeos presos em 'processing'. Verificando retries...")
                 for video in stuck_videos:
+                    payload, policy = _load_scheduled_processing_policy(video)
                     # Smart Recovery: Check if video file actually exists (maybe DB update failed)
                     recovered = False
                     if video.video_url:
@@ -229,6 +266,19 @@ class MonitorService:
                             logger.error(f"Erro ao verificar arquivo para recovery: {e}")
                     
                     if recovered:
+                        continue
+
+                    if not policy.get("auto_process_eligible"):
+                        _normalize_blocked_scheduled_video(
+                            video,
+                            payload,
+                            policy,
+                            "Startup recovery ignorou item bloqueado",
+                        )
+                        logger.info(
+                            f"Vídeo {video.id} bloqueado no recovery de startup. "
+                            f"source={policy.get('source')} reason={policy.get('reason')}"
+                        )
                         continue
 
                     # Lógica de Max Retries usando script_data (JSON)
@@ -280,6 +330,7 @@ class MonitorService:
             for video in videos:
                 if not video.video_url:
                     continue
+                payload, policy = _load_scheduled_processing_policy(video)
                     
                 from app.config import absolute_path_for_video
                 abs_path = absolute_path_for_video(video.video_url)
@@ -288,19 +339,24 @@ class MonitorService:
                     # Tentar recuperação inteligente (Auto-Heal) se houver script em cache
                     has_script_cache = False
                     try:
-                        if video.script_data:
-                            s_data = json.loads(video.script_data)
-                            if s_data.get("scenes") and isinstance(s_data.get("scenes"), list):
+                        if payload.get("scenes") and isinstance(payload.get("scenes"), list):
                                 has_script_cache = True
                     except:
                         pass
 
-                    if has_script_cache:
+                    if has_script_cache and policy.get("auto_process_eligible"):
                         logger.warning(f"Arquivo sumiu para vídeo {video.id}. Reenfileirando para recuperação GRATUITA (via cache).")
                         video.status = "queued"
                         video.progress = 0
                         # Não adiciona msg de erro pois será recuperado automaticamente
                     else:
+                        if not policy.get("auto_process_eligible"):
+                            _append_auto_block_note(
+                                video,
+                                payload,
+                                policy,
+                                "Integridade detectou item bloqueado sem permitir reenfileirar",
+                            )
                         logger.warning(f"Arquivo sumiu para vídeo {video.id} e SEM cache. Marcando como falha.")
                         video.status = "failed"
                         video.progress = 0
@@ -443,6 +499,21 @@ class MonitorService:
             # 1. Check if any video is currently processing (to avoid overload)
             processing = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").first()
             if processing:
+                processing_payload, processing_policy = _load_scheduled_processing_policy(processing)
+                if not processing_policy.get("auto_process_eligible"):
+                    _normalize_blocked_scheduled_video(
+                        processing,
+                        processing_payload,
+                        processing_policy,
+                        "Monitor encontrou item bloqueado em processing",
+                    )
+                    db.commit()
+                    logger.warning(
+                        f"Vídeo {processing.id} removido do auto-run por elegibilidade. "
+                        f"source={processing_policy.get('source')} reason={processing_policy.get('reason')}"
+                    )
+                    return
+
                 # Check for timeout (stuck video)
                 # If updated_at is missing (legacy), assume it's stuck if we are here (simplification)
                 # or rely on a reasonable default if null.
@@ -465,7 +536,31 @@ class MonitorService:
                 return
 
             # 2. Pick next queued video
-            next_video = db.query(ScheduledVideo).filter(ScheduledVideo.status == "queued").order_by(ScheduledVideo.id.asc()).first()
+            queued_candidates = (
+                db.query(ScheduledVideo)
+                .filter(ScheduledVideo.status == "queued")
+                .order_by(ScheduledVideo.id.asc())
+                .limit(100)
+                .all()
+            )
+            next_video = None
+            for candidate in queued_candidates:
+                payload, policy = _load_scheduled_processing_policy(candidate)
+                if policy.get("auto_process_eligible"):
+                    next_video = candidate
+                    break
+                _normalize_blocked_scheduled_video(
+                    candidate,
+                    payload,
+                    policy,
+                    "Monitor recusou item bloqueado na fila",
+                )
+                logger.info(
+                    f"Vídeo {candidate.id} ignorado pelo monitor. "
+                    f"source={policy.get('source')} reason={policy.get('reason')}"
+                )
+            if queued_candidates:
+                db.commit()
             
             if next_video:
                 logger.info(f"Iniciando processamento do vídeo agendado {next_video.id}...")
@@ -484,13 +579,13 @@ class MonitorService:
                             job_timeout = int(timeout_raw) if timeout_raw else 14400
                         except Exception:
                             job_timeout = 14400
-                        rq_queue.enqueue(process_scheduled_video, next_video.id, job_timeout=max(600, job_timeout))
+                        rq_queue.enqueue(process_scheduled_video, next_video.id, "auto", job_timeout=max(600, job_timeout))
                         logger.info(f"Enfileirado para worker: vídeo {next_video.id}.")
                         return
 
                     allow_inline = (os.getenv("ALLOW_INLINE_VIDEO_GENERATION") or "").strip().lower() in {"1", "true", "yes"}
                     if allow_inline:
-                        process_scheduled_video(next_video.id)
+                        process_scheduled_video(next_video.id, "auto")
                         return
                     logger.warning(f"Worker indisponível. Mantendo vídeo {next_video.id} em fila (queued) para evitar travar o servidor web.")
                     return

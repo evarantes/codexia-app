@@ -6,7 +6,34 @@ from app.database import SessionLocal
 from app.models import ScheduledVideo
 from app.services.ai_generator import AIContentGenerator
 
-def process_scheduled_video(video_id: int):
+def _load_scheduled_processing_policy(video):
+    from app.routers.youtube import _load_scheduled_video_payload, _scheduled_video_processing_policy
+
+    payload = _load_scheduled_video_payload(video)
+    policy = _scheduled_video_processing_policy(video, payload)
+    return payload, policy
+
+def _record_processing_refusal(video, payload, policy, trigger_mode: str):
+    payload = dict(payload or {})
+    reason = str(policy.get("reason") or "scheduled_video_source_not_allowed").strip() or "scheduled_video_source_not_allowed"
+    source = str(policy.get("source") or payload.get("source") or "legacy_schedule").strip() or "legacy_schedule"
+    note = f"[AUTO_BLOCKED]: Processamento {trigger_mode} recusado para source={source}. Motivo: {reason}."
+
+    payload["_processing_refused"] = True
+    payload["_processing_refused_reason"] = reason
+    payload["_processing_refused_source"] = source
+    payload["_processing_refused_trigger_mode"] = trigger_mode
+    payload["_processing_refused_at"] = datetime.datetime.now().isoformat()
+    try:
+        video.script_data = json.dumps(payload)
+    except Exception:
+        pass
+
+    current_desc = (video.description or "").strip()
+    if note not in current_desc:
+        video.description = (current_desc + "\n\n" + note).strip() if current_desc else note
+
+def process_scheduled_video(video_id: int, trigger_mode: str = "auto"):
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -50,6 +77,18 @@ def process_scheduled_video(video_id: int):
         video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
         if not video:
             return
+
+        script_data, processing_policy = _load_scheduled_processing_policy(video)
+        if not processing_policy.get("auto_process_eligible"):
+            _record_processing_refusal(video, script_data, processing_policy, trigger_mode)
+            db.commit()
+            print(
+                f"Vídeo agendado {video_id} recusado. "
+                f"source={processing_policy.get('source')} "
+                f"reason={processing_policy.get('reason')} "
+                f"trigger={trigger_mode}"
+            )
+            return
             
         # Double-check status to avoid race conditions if called from multiple places
         if video.status == "processing":
@@ -79,13 +118,8 @@ def process_scheduled_video(video_id: int):
         db.commit()
         
         # Recuperar dados do script (safe load)
-        script_data = {}
-        if video.script_data:
-            try:
-                script_data = json.loads(video.script_data)
-            except Exception as e:
-                print(f"Erro ao decodificar script_data: {e}")
-                script_data = {}
+        if not isinstance(script_data, dict):
+            script_data = {}
         
         ai_service = AIContentGenerator()
         video_service = VideoGenerator(ai_service=ai_service)
