@@ -22,6 +22,20 @@ except Exception:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _is_startup_database_bootstrap_error(exc: Exception) -> bool:
+    if isinstance(exc, UnicodeDecodeError):
+        return True
+    message = str(exc or "").lower()
+    if not message:
+        return False
+    return (
+        ("utf-8" in message and "codec can't decode" in message)
+        or "could not connect to server" in message
+        or "connection refused" in message
+        or "connection to server" in message
+    )
+
 def _load_scheduled_processing_policy(video):
     from app.routers.youtube import _load_scheduled_video_payload, _scheduled_video_processing_policy
 
@@ -309,7 +323,10 @@ class MonitorService:
                         
                 db.commit()
         except Exception as e:
-            logger.error(f"Erro ao resetar vídeos presos: {e}")
+            if _is_startup_database_bootstrap_error(e):
+                logger.warning(f"Recovery de startup ignorado por indisponibilidade/conexão do PostgreSQL: {e}")
+            else:
+                logger.error(f"Erro ao resetar vídeos presos: {e}")
         finally:
             db.close()
 
@@ -373,7 +390,10 @@ class MonitorService:
                 logger.info("Integridade ok. Todos os vídeos completos possuem arquivos.")
                 
         except Exception as e:
-            logger.error(f"Erro na verificação de integridade: {e}")
+            if _is_startup_database_bootstrap_error(e):
+                logger.warning(f"Verificação de integridade adiada por indisponibilidade/conexão do PostgreSQL: {e}")
+            else:
+                logger.error(f"Erro na verificação de integridade: {e}")
         finally:
             db.close()
 
