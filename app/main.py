@@ -11,7 +11,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware # Importante
 # Carregar variáveis de ambiente antes de inicializar banco/config dependentes de env.
 load_dotenv()
 
-from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY, SQLITE_DEV_MODE, ENABLE_SQLITE_DEV
+from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, book_factory, auth, diagnostics, hotmart, music, admin, social_media, image_storyboard, whatsapp
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
@@ -667,10 +667,7 @@ def create_admin_master():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: cada passo em try/except para não derrubar o app (Render/Coolify)
-    print(
-        f"Iniciando aplicação... APP_ENV={APP_ENV} | Banco: {DATABASE_DISPLAY} | "
-        f"SQLite Dev={'on' if SQLITE_DEV_MODE else 'off'} | ENABLE_SQLITE_DEV={'on' if ENABLE_SQLITE_DEV else 'off'}"
-    )
+    print(f"Iniciando aplicação... APP_ENV={APP_ENV} | Banco: {DATABASE_DISPLAY}")
     
     try:
         try:
@@ -1083,7 +1080,14 @@ os.makedirs("generated_assets/storyboard_images", exist_ok=True)
 app.mount("/generated_assets", StaticFiles(directory="generated_assets"), name="generated_assets")
 # Garantir que os diretórios de vídeos existem
 if os.path.isdir("/data"):
-    for _path in ("/data/media/videos", "/data/media/music", "/data/media/books", "/data/media/covers"):
+    data_paths = []
+    if os.getenv("USE_STATIC_VIDEOS", "").lower() not in ("1", "true", "yes"):
+        data_paths.append("/data/media/videos")
+    if os.getenv("USE_STATIC_MUSIC", "").lower() not in ("1", "true", "yes"):
+        data_paths.append("/data/media/music")
+    if os.getenv("USE_STATIC_BOOKS", "").lower() not in ("1", "true", "yes"):
+        data_paths.extend(("/data/media/books", "/data/media/covers"))
+    for _path in data_paths:
         try:
             os.makedirs(_path, exist_ok=True)
         except OSError as exc:
@@ -1255,7 +1259,6 @@ def check_db_status():
                 "database_url_present": bool((os.getenv("DATABASE_URL", "") or "").strip()),
                 "database_url_is_postgres": "postgres" in os.getenv("DATABASE_URL", ""),
                 "database_display": DATABASE_DISPLAY,
-                "sqlite_dev_mode": bool(SQLITE_DEV_MODE),
             }
     except Exception as e:
         return {"status": "error", "detail": str(e)}

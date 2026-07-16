@@ -6,17 +6,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-
 class DistributionAutomationError(Exception):
     pass
-
 
 def _get_env(name: str, required: bool = True) -> str:
     v = (os.getenv(name) or "").strip()
     if required and not v:
         raise DistributionAutomationError(f"Env var ausente: {name}")
     return v
-
 
 KDP_DEFAULTS = {
     "login_url": "https://kdp.amazon.com/",
@@ -37,14 +34,12 @@ KDP_DEFAULTS = {
     "publish_selector": "button[type='submit'], input[type='submit'], button[aria-label*='publicar' i], button[aria-label*='publish' i]",
 }
 
-
 def _source_value(source: Any, attr_name: str) -> Any:
     if source is None:
         return None
     if isinstance(source, dict):
         return source.get(attr_name)
     return getattr(source, attr_name, None)
-
 
 def _value_from_source_or_env(
     source: Any,
@@ -63,7 +58,6 @@ def _value_from_source_or_env(
     if required and not value:
         raise DistributionAutomationError(f"Configuração ausente: {attr_name} / {env_name}")
     return value
-
 
 def _build_kdp_config(source: Any = None) -> Dict[str, Any]:
     cfg = {
@@ -90,7 +84,6 @@ def _build_kdp_config(source: Any = None) -> Dict[str, Any]:
         },
     }
     return cfg
-
 
 def _debug_report(hypothesis_id: str, location: str, msg: str, data: Optional[Dict[str, Any]] = None):
     # #region debug-point E:report
@@ -145,7 +138,6 @@ def _debug_probe(
         except Exception:
             pass
     _debug_report(hypothesis_id, location, msg, data)
-
 
 def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
     page.goto(cfg["login_url"], wait_until="domcontentloaded")
@@ -283,13 +275,11 @@ def _login_kdp(page: Any, cfg: Dict[str, Any], out_dir: Optional[Path] = None):
     if out_dir is not None:
         _safe_capture(page, out_dir, "02_after_login")
 
-
 def _locator_count(page: Any, selector: str) -> int:
     try:
         return int(page.locator(selector).count())
     except Exception:
         return 0
-
 
 def _pick_selector(page: Any, selectors: list[str]) -> str:
     for s in selectors:
@@ -299,7 +289,6 @@ def _pick_selector(page: Any, selectors: list[str]) -> str:
         if _locator_count(page, ss) > 0:
             return ss
     return ""
-
 
 def _visible_locator_count(page: Any, selector: str) -> int:
     try:
@@ -316,7 +305,6 @@ def _visible_locator_count(page: Any, selector: str) -> int:
             continue
     return visible
 
-
 def _pick_visible_selector(page: Any, selectors: list[str]) -> str:
     for s in selectors:
         ss = str(s or "").strip()
@@ -325,7 +313,6 @@ def _pick_visible_selector(page: Any, selectors: list[str]) -> str:
         if _visible_locator_count(page, ss) > 0:
             return ss
     return ""
-
 
 def _guard_against_challenge(page: Any):
     url = ""
@@ -381,7 +368,6 @@ def _guard_against_challenge(page: Any):
             raise DistributionAutomationError(
                 f"A Amazon exibiu uma validação adicional de segurança. URL atual: {getattr(page, 'url', '')}"
             )
-
 
 def _fill_with_autofix(page: Any, cfg: Dict[str, Any], key: str, value: str, candidates: list[str]):
     cur = str(cfg.get("selectors", {}).get(key) or "").strip()
@@ -454,7 +440,6 @@ def _fill_with_autofix(page: Any, cfg: Dict[str, Any], key: str, value: str, can
         f"Falha ao preencher o campo '{key}'. Tentativas: {tried[:3]}"
     )
 
-
 def _set_files_with_autofix(page: Any, cfg: Dict[str, Any], key: str, filepath: str, candidates: list[str]):
     cur = str(cfg.get("selectors", {}).get(key) or "").strip()
     chosen = _pick_selector(page, [cur, *candidates])
@@ -466,7 +451,6 @@ def _set_files_with_autofix(page: Any, cfg: Dict[str, Any], key: str, filepath: 
         raise DistributionAutomationError(f"Falha ao enviar arquivo em '{key}'. A Amazon pode ter mudado a tela.")
     cfg["selectors"][key] = chosen
 
-
 def _click_with_autofix(page: Any, cfg: Dict[str, Any], key: str, candidates: list[str]):
     cur = str(cfg.get("selectors", {}).get(key) or "").strip()
     chosen = _pick_selector(page, [cur, *candidates])
@@ -477,7 +461,6 @@ def _click_with_autofix(page: Any, cfg: Dict[str, Any], key: str, candidates: li
     except Exception:
         raise DistributionAutomationError(f"Falha ao clicar em '{key}'. A Amazon pode ter mudado a tela.")
     cfg["selectors"][key] = chosen
-
 
 def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = True) -> Dict[str, Any]:
     cfg = _build_kdp_config(settings_obj)
@@ -524,7 +507,6 @@ def test_kdp_connection_via_browser(settings_obj: Any = None, headless: bool = T
                 browser.close()
             except Exception:
                 pass
-
 
 def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = True) -> Dict[str, Any]:
     cfg = _build_kdp_config(settings_obj)
@@ -646,12 +628,10 @@ def sync_kdp_bookshelf_via_browser(settings_obj: Any = None, headless: bool = Tr
             except Exception:
                 pass
 
-
 def _log_dir(task_id: str) -> Path:
     base = Path("generated_assets") / "distribution_logs" / (task_id or "unknown")
     base.mkdir(parents=True, exist_ok=True)
     return base
-
 
 def _write_json(path: Path, data: Dict[str, Any]):
     try:
@@ -661,7 +641,6 @@ def _write_json(path: Path, data: Dict[str, Any]):
             path.write_text(str(data), encoding="utf-8")
         except Exception:
             pass
-
 
 def _safe_capture(page: Any, out_dir: Path, name: str):
     try:
@@ -674,7 +653,6 @@ def _safe_capture(page: Any, out_dir: Path, name: str):
     except Exception:
         pass
 
-
 def _provider_prefix(provider: str) -> str:
     p = (provider or "").strip().lower()
     if p in {"onerpm", "one_rpm", "one-rpm"}:
@@ -682,7 +660,6 @@ def _provider_prefix(provider: str) -> str:
     if p in {"offstep", "off_step", "off-step"}:
         return "OFFSTEP"
     raise DistributionAutomationError("Provider inválido. Use: onerpm ou offstep.")
-
 
 def distribute_music_via_browser(
     task_id: str,
@@ -817,7 +794,6 @@ def distribute_music_via_browser(
                 browser.close()
             except Exception:
                 pass
-
 
 def publish_ebook_kdp_via_browser(
     task_id: str,
