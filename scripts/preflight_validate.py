@@ -29,6 +29,28 @@ def _compile_all_python() -> None:
     _safe_print(f"[preflight] py_compile OK em {len(py_files)} arquivos.")
 
 
+def _run_schema_consistency_check(env: dict[str, str], database_url_supplied: bool) -> None:
+    if not database_url_supplied:
+        _safe_print("[preflight] schema check ignorado: DATABASE_URL real não foi fornecida.")
+        return
+    cmd = [sys.executable, str(ROOT / "scripts" / "check_schema_consistency.py")]
+    proc = subprocess.run(
+        cmd,
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output = (proc.stdout or "") + (proc.stderr or "")
+    if output.strip():
+        for line in output.splitlines():
+            _safe_print(line)
+    if proc.returncode != 0:
+        raise RuntimeError("Schema check falhou; revise Alembic/current e as tabelas críticas.")
+
+
 def _wait_port(host: str, port: int, timeout_sec: float) -> bool:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
@@ -42,6 +64,7 @@ def _wait_port(host: str, port: int, timeout_sec: float) -> bool:
 
 def _start_uvicorn_and_verify() -> None:
     env = os.environ.copy()
+    database_url_supplied = bool((env.get("DATABASE_URL") or "").strip())
     env.setdefault("ADMIN_EMAIL", "admin@codexia.dev")
     env.setdefault("ADMIN_PASSWORD", "admin123")
     env.setdefault("ADMIN_NAME", "Admin Dev")
@@ -107,6 +130,7 @@ def _start_uvicorn_and_verify() -> None:
                 + "\n".join(lines[-40:])
             )
         _safe_print("[preflight] uvicorn iniciou sem ImportError.")
+        _run_schema_consistency_check(env, database_url_supplied)
     finally:
         if proc.poll() is None:
             proc.terminate()

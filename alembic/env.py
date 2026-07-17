@@ -1,5 +1,5 @@
 """
-Alembic env: usa PostgreSQL por padrao e permite SQLite apenas em modo local explicito.
+Alembic env: usa PostgreSQL como banco oficial do projeto.
 Registra metadata dos models do app para gerar migrações.
 """
 import os
@@ -16,8 +16,13 @@ load_dotenv()
 from app.database import SQLALCHEMY_DATABASE_URL
 from app.database import Base
 
-# Importa todos os models para registrar em Base.metadata
+# Importa todos os models declarativos para registrar em Base.metadata.
+# Sem isso, o autogenerate do Alembic ignora tabelas modulares `codexia_*`
+# e passa a divergir do schema real usado pela aplicacao.
 from app import models  # noqa: F401
+from app.modules.ai_factory import models as ai_factory_models  # noqa: F401
+from app.modules.bible_video_factory import models as bible_video_factory_models  # noqa: F401
+from app.modules.humor_factory import models as humor_factory_models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
@@ -55,7 +60,6 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            render_as_batch=True
         )
 
         with context.begin_transaction():

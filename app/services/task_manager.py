@@ -24,6 +24,39 @@ _task_schema_lock = threading.Lock()
 _TASK_DEDUPE_TABLE = "video_task_dedupe"
 _TASK_LEASE_TABLE = "video_task_leases"
 _TASK_LOCK_TABLE = "video_task_locks"
+_TASK_SCHEMA_REQUIRED_REVISION = "b8f4a7c9d321"
+_TASK_SCHEMA_COLUMNS = {
+    _TASK_DEDUPE_TABLE: {
+        "idempotency_key",
+        "request_hash",
+        "task_id",
+        "status",
+        "request_payload_json",
+        "result_json",
+        "created_at",
+        "updated_at",
+        "expires_at",
+        "completed_at",
+    },
+    _TASK_LEASE_TABLE: {
+        "task_id",
+        "executor_id",
+        "attempt_number",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "heartbeat_at",
+        "expires_at",
+        "lease_expires_at",
+    },
+    _TASK_LOCK_TABLE: {
+        "lock_key",
+        "owner_id",
+        "created_at",
+        "updated_at",
+        "expires_at",
+    },
+}
 
 
 def _utcnow() -> datetime:
@@ -83,17 +116,6 @@ def _table_column_names(db, table_name: str) -> set:
         return set()
 
 
-def _ensure_table_column(db, table_name: str, column_name: str, column_sql: str):
-    names = _table_column_names(db, table_name)
-    if column_name.lower() in names:
-        return
-    try:
-        db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}"))
-        db.commit()
-    except Exception:
-        db.rollback()
-
-
 def _ensure_task_support_tables():
     global _task_schema_ready
     if _task_schema_ready:
@@ -103,114 +125,36 @@ def _ensure_task_support_tables():
             return
         db = SessionLocal()
         try:
-            db.execute(text(
-                f"""
-                CREATE TABLE IF NOT EXISTS {_TASK_DEDUPE_TABLE} (
-                    idempotency_key VARCHAR(255) PRIMARY KEY,
-                    request_hash TEXT NOT NULL,
-                    task_id VARCHAR(64) NULL,
-                    status VARCHAR(32) NOT NULL DEFAULT 'pending',
-                    request_payload_json TEXT NULL,
-                    result_json TEXT NULL,
-                    created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL,
-                    expires_at DATETIME NULL,
-                    completed_at DATETIME NULL
+            inspector = inspect(db.bind)
+            available_tables = set(inspector.get_table_names())
+            missing_tables = []
+            missing_columns = {}
+
+            for table_name, expected_columns in _TASK_SCHEMA_COLUMNS.items():
+                if table_name not in available_tables:
+                    missing_tables.append(table_name)
+                    continue
+                table_columns = _table_column_names(db, table_name)
+                missing = sorted(col for col in expected_columns if col not in table_columns)
+                if missing:
+                    missing_columns[table_name] = missing
+
+            if missing_tables or missing_columns:
+                details = []
+                if missing_tables:
+                    details.append(f"tabelas ausentes: {', '.join(sorted(missing_tables))}")
+                if missing_columns:
+                    col_details = ", ".join(
+                        f"{table} -> {', '.join(cols)}" for table, cols in sorted(missing_columns.items())
+                    )
+                    details.append(f"colunas ausentes: {col_details}")
+                raise RuntimeError(
+                    "Schema de idempotencia de video ausente ou incompleto. "
+                    f"Detalhes: {'; '.join(details)}. "
+                    f"Aplique a migration Alembic {_TASK_SCHEMA_REQUIRED_REVISION} com `alembic upgrade head` "
+                    "no mesmo PostgreSQL usado pela aplicacao."
                 )
-                """
-            ))
-            _ensure_table_column(db, _TASK_DEDUPE_TABLE, "expires_at", "expires_at DATETIME NULL")
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_DEDUPE_TABLE}_task_id ON {_TASK_DEDUPE_TABLE} (task_id)"
-            ))
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_DEDUPE_TABLE}_updated_at ON {_TASK_DEDUPE_TABLE} (updated_at)"
-            ))
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_DEDUPE_TABLE}_expires_at ON {_TASK_DEDUPE_TABLE} (expires_at)"
-            ))
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_DEDUPE_TABLE}_status ON {_TASK_DEDUPE_TABLE} (status)"
-            ))
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_DEDUPE_TABLE}_request_hash ON {_TASK_DEDUPE_TABLE} (request_hash)"
-            ))
-            db.execute(text(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uq_{_TASK_DEDUPE_TABLE}_task_id_not_null ON {_TASK_DEDUPE_TABLE} (task_id) WHERE task_id IS NOT NULL"
-            ))
-            now = _utcnow()
-            db.execute(text(
-                f"""
-                UPDATE {_TASK_DEDUPE_TABLE}
-                SET updated_at = COALESCE(updated_at, created_at, :now),
-                    expires_at = COALESCE(expires_at, completed_at, updated_at, created_at, :now)
-                """
-            ), {"now": now})
-            db.execute(text(
-                f"""
-                CREATE TABLE IF NOT EXISTS {_TASK_LEASE_TABLE} (
-                    task_id VARCHAR(64) PRIMARY KEY,
-                    executor_id VARCHAR(255) NOT NULL,
-                    attempt_number INTEGER NOT NULL DEFAULT 1,
-                    created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL,
-                    started_at DATETIME NOT NULL,
-                    heartbeat_at DATETIME NOT NULL,
-                    expires_at DATETIME NOT NULL,
-                    lease_expires_at DATETIME NOT NULL
-                )
-                """
-            ))
-            _ensure_table_column(db, _TASK_LEASE_TABLE, "created_at", "created_at DATETIME NULL")
-            _ensure_table_column(db, _TASK_LEASE_TABLE, "updated_at", "updated_at DATETIME NULL")
-            _ensure_table_column(db, _TASK_LEASE_TABLE, "expires_at", "expires_at DATETIME NULL")
-            _ensure_table_column(db, _TASK_LEASE_TABLE, "lease_expires_at", "lease_expires_at DATETIME NULL")
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_LEASE_TABLE}_expires_at ON {_TASK_LEASE_TABLE} (expires_at)"
-            ))
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_LEASE_TABLE}_updated_at ON {_TASK_LEASE_TABLE} (updated_at)"
-            ))
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_LEASE_TABLE}_executor_id ON {_TASK_LEASE_TABLE} (executor_id)"
-            ))
-            db.execute(text(
-                f"""
-                UPDATE {_TASK_LEASE_TABLE}
-                SET created_at = COALESCE(created_at, started_at, heartbeat_at, lease_expires_at, :now),
-                    updated_at = COALESCE(updated_at, heartbeat_at, started_at, created_at, :now),
-                    expires_at = COALESCE(expires_at, lease_expires_at, heartbeat_at, started_at, :now),
-                    lease_expires_at = COALESCE(lease_expires_at, expires_at, heartbeat_at, started_at, :now)
-                """
-            ), {"now": now})
-            db.execute(text(
-                f"""
-                CREATE TABLE IF NOT EXISTS {_TASK_LOCK_TABLE} (
-                    lock_key VARCHAR(255) PRIMARY KEY,
-                    owner_id VARCHAR(255) NOT NULL,
-                    expires_at DATETIME NOT NULL,
-                    created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL
-                )
-                """
-            ))
-            _ensure_table_column(db, _TASK_LOCK_TABLE, "updated_at", "updated_at DATETIME NULL")
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_LOCK_TABLE}_expires_at ON {_TASK_LOCK_TABLE} (expires_at)"
-            ))
-            db.execute(text(
-                f"CREATE INDEX IF NOT EXISTS idx_{_TASK_LOCK_TABLE}_updated_at ON {_TASK_LOCK_TABLE} (updated_at)"
-            ))
-            db.execute(text(
-                f"""
-                UPDATE {_TASK_LOCK_TABLE}
-                SET updated_at = COALESCE(updated_at, created_at, expires_at, :now)
-                """
-            ), {"now": now})
-            db.commit()
             _task_schema_ready = True
-        except Exception:
-            db.rollback()
         finally:
             db.close()
 
