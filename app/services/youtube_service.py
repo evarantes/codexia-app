@@ -661,8 +661,8 @@ class YouTubeService:
                     'categoryId': category_id
                 },
                 'status': {
-                    'privacyStatus': 'public',
-                    'selfDeclaredMadeForKids': False, 
+                    'privacyStatus': 'unlisted',
+                    'selfDeclaredMadeForKids': False,
                 }
             }
 
