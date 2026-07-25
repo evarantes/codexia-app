@@ -1205,6 +1205,9 @@
                     <button @click="youtubeSubTab = 'analysis'; fetchAutoInsights()" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'analysis' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
                         Auto Análise
                     </button>
+                    <button @click="youtubeSubTab = 'guardian'; fetchGuardianOverview()" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'guardian' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
+                        Controle Financeiro e Eficiência
+                    </button>
                     <button @click="youtubeSubTab = 'monetization'; fetchMonetizationStatus()" :class="['px-4 py-2 rounded-full text-sm font-semibold', youtubeSubTab === 'monetization' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border']">
                         Monetização
                     </button>
@@ -2502,6 +2505,350 @@
                                         <div v-if="idea.cta_question" class="text-gray-600"><strong>Pergunta (CTA):</strong> {{ idea.cta_question }}</div>
                                     </li>
                                 </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- FINANCIAL GUARDIAN -->
+                <div v-if="youtubeSubTab === 'guardian'" class="space-y-6">
+                    <div class="bg-white rounded-lg shadow p-6 border-l-4 border-indigo-500">
+                        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                            <div>
+                                <h2 class="text-xl font-bold text-indigo-900 flex items-center gap-2">
+                                    <i class="fas fa-shield-dollar"></i> Controle Financeiro e Eficiência
+                                </h2>
+                                <p class="text-sm text-gray-600 mt-1">Observabilidade executiva 100% simulada, sem chamadas pagas, diretamente no fluxo do YouTube Auto.</p>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                <select v-model="ytGuardianPeriod" @change="fetchGuardianOverview()" class="border rounded px-3 py-2 text-sm bg-white">
+                                    <option value="today">Hoje</option>
+                                    <option value="last_7_days">Últimos 7 dias</option>
+                                    <option value="last_30_days">Últimos 30 dias</option>
+                                    <option value="current_month">Mês atual</option>
+                                    <option value="previous_month">Mês anterior</option>
+                                </select>
+                                <button @click="fetchGuardianPreEstimate()" :disabled="ytGuardianEstimateLoading" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 text-sm disabled:opacity-50">
+                                    <i v-if="ytGuardianEstimateLoading" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>Estimativa Pré-Produção</span>
+                                </button>
+                                <button @click="simulateAllGuardianScenarios()" :disabled="ytGuardianScenarioLoading" class="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 text-sm disabled:opacity-50">
+                                    <i v-if="ytGuardianScenarioLoading" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>Rodar Cenários A-G</span>
+                                </button>
+                                <button @click="fetchGuardianOverview()" :disabled="ytGuardianLoading" class="px-3 py-2 rounded bg-gray-900 text-white hover:bg-black text-sm disabled:opacity-50">
+                                    <i v-if="ytGuardianLoading" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>Atualizar Painel</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div v-if="ytGuardianScenarioMessage" class="mt-4 text-sm rounded border border-indigo-200 bg-indigo-50 text-indigo-900 px-4 py-3">
+                            {{ ytGuardianScenarioMessage }}
+                        </div>
+                    </div>
+
+                    <div v-if="ytGuardianPreEstimate" class="bg-white rounded-lg shadow p-6 border-l-4 border-sky-500">
+                        <div class="flex items-center justify-between gap-3 mb-4">
+                            <h3 class="text-lg font-bold text-sky-900 flex items-center gap-2">
+                                <i class="fas fa-calculator"></i> Estimativa Pré-Produção
+                            </h3>
+                            <span class="text-xs font-semibold px-2 py-1 rounded bg-sky-100 text-sky-800">Confiança {{ ytGuardianPreEstimate.confidence_percent }}%</span>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+                            <div class="rounded border bg-sky-50 p-3">
+                                <div class="text-gray-600">Duração prevista</div>
+                                <div class="font-bold text-sky-900 mt-1">{{ ytGuardianPreEstimate.duration_predicted_label }}</div>
+                            </div>
+                            <div class="rounded border bg-sky-50 p-3">
+                                <div class="text-gray-600">Cenas previstas</div>
+                                <div class="font-bold text-sky-900 mt-1">{{ ytGuardianPreEstimate.scenes_predicted }}</div>
+                            </div>
+                            <div class="rounded border bg-sky-50 p-3">
+                                <div class="text-gray-600">Imagens novas / reutilizadas</div>
+                                <div class="font-bold text-sky-900 mt-1">{{ ytGuardianPreEstimate.new_images_predicted }} / {{ ytGuardianPreEstimate.reused_images_predicted }}</div>
+                            </div>
+                            <div class="rounded border bg-sky-50 p-3">
+                                <div class="text-gray-600">Qualidade prevista</div>
+                                <div class="font-bold text-sky-900 mt-1">{{ ytGuardianPreEstimate.quality_predicted_score }}</div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm mt-4">
+                            <div class="rounded border p-3">
+                                <div class="text-gray-600">Custo esperado</div>
+                                <div class="font-bold mt-1">{{ formatGuardianMoney(ytGuardianPreEstimate.expected_cost) }}</div>
+                            </div>
+                            <div class="rounded border p-3">
+                                <div class="text-gray-600">Faixa provável</div>
+                                <div class="font-bold mt-1">{{ formatGuardianMoney(ytGuardianPreEstimate.probable_range.min) }} a {{ formatGuardianMoney(ytGuardianPreEstimate.probable_range.max) }}</div>
+                            </div>
+                            <div class="rounded border p-3">
+                                <div class="text-gray-600">Limite de emergência</div>
+                                <div class="font-bold mt-1">{{ formatGuardianMoney(ytGuardianPreEstimate.emergency_limit) }}</div>
+                            </div>
+                            <div class="rounded border p-3">
+                                <div class="text-gray-600">Chamadas estimadas</div>
+                                <div class="font-bold mt-1">{{ summarizeGuardianCalls(ytGuardianPreEstimate.calls_estimated) }}</div>
+                            </div>
+                        </div>
+                        <div class="mt-3 text-xs text-gray-600">{{ ytGuardianPreEstimate.note }}</div>
+                    </div>
+
+                    <div v-if="ytGuardianOverview" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                        <div class="bg-white rounded-lg shadow p-4 border">
+                            <div class="text-sm text-gray-600">Custo estimado por vídeo</div>
+                            <div class="text-2xl font-bold text-gray-900 mt-1">{{ formatGuardianMoney(ytGuardianOverview.dashboard.estimated_cost_total / Math.max(1, ytGuardianOverview.dashboard.jobs_total || 1)) }}</div>
+                            <div class="text-xs text-gray-500 mt-1">Real por vídeo: {{ formatGuardianMoney(ytGuardianOverview.dashboard.avg_cost_per_video) }}</div>
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-4 border">
+                            <div class="text-sm text-gray-600">Custo acumulado diário</div>
+                            <div class="text-2xl font-bold text-gray-900 mt-1">{{ formatGuardianMoney(ytGuardianOverview.dashboard.daily_cost_accumulated) }}</div>
+                            <div class="text-xs text-gray-500 mt-1">Mensal: {{ formatGuardianMoney(ytGuardianOverview.dashboard.monthly_cost_accumulated) }}</div>
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-4 border">
+                            <div class="text-sm text-gray-600">Economia total</div>
+                            <div class="text-2xl font-bold text-emerald-700 mt-1">{{ formatGuardianMoney((ytGuardianOverview.dashboard.economy_cache_total || 0) + (ytGuardianOverview.dashboard.economy_reuse_total || 0)) }}</div>
+                            <div class="text-xs text-gray-500 mt-1">Cache: {{ formatGuardianMoney(ytGuardianOverview.dashboard.economy_cache_total) }} • Reuso: {{ formatGuardianMoney(ytGuardianOverview.dashboard.economy_reuse_total) }}</div>
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-4 border">
+                            <div class="text-sm text-gray-600">ROI / Lucro ou prejuízo</div>
+                            <div class="text-2xl font-bold mt-1" :class="ytGuardianOverview.dashboard.profit_loss >= 0 ? 'text-emerald-700' : 'text-red-700'">
+                                {{ Number(ytGuardianOverview.dashboard.roi_percent || 0).toFixed(2) }}%
+                            </div>
+                            <div class="text-xs text-gray-500 mt-1">{{ formatGuardianMoney(ytGuardianOverview.dashboard.profit_loss) }}</div>
+                        </div>
+                    </div>
+
+                    <div v-if="ytGuardianOverview" class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                        <div class="xl:col-span-2 bg-white rounded-lg shadow p-6 border">
+                            <h3 class="text-lg font-bold text-gray-900 mb-4">Painel Financeiro e Operacional</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Jobs</div>
+                                    <div class="font-bold mt-1">Concluídos {{ ytGuardianOverview.dashboard.jobs_completed }} • Falha {{ ytGuardianOverview.dashboard.jobs_failed }} • Bloqueados {{ ytGuardianOverview.dashboard.jobs_blocked }} • Em andamento {{ ytGuardianOverview.dashboard.jobs_in_progress }}</div>
+                                </div>
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Chamadas / Tentativas</div>
+                                    <div class="font-bold mt-1">{{ ytGuardianOverview.dashboard.calls_count }} chamadas • {{ ytGuardianOverview.dashboard.attempts_count }} tentativas</div>
+                                </div>
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Tempo / Qualidade</div>
+                                    <div class="font-bold mt-1">{{ formatGuardianDuration(ytGuardianOverview.dashboard.avg_production_time_seconds) }} • score {{ Number(ytGuardianOverview.dashboard.avg_quality_score || 0).toFixed(1) }}</div>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 text-sm">
+                                <div class="rounded border p-4">
+                                    <div class="font-semibold text-gray-800 mb-2">Custo por provedor</div>
+                                    <div v-if="!(ytGuardianOverview.dashboard.provider_costs || []).length" class="text-gray-500 italic">Nenhum provedor contabilizado no período.</div>
+                                    <div v-for="item in (ytGuardianOverview.dashboard.provider_costs || []).slice(0, 5)" :key="'provider-'+item.provider" class="flex justify-between py-1 border-b last:border-b-0">
+                                        <span>{{ item.provider }}</span>
+                                        <span class="font-semibold">{{ formatGuardianMoney(item.total_cost) }} • {{ item.calls }} chamadas</span>
+                                    </div>
+                                </div>
+                                <div class="rounded border p-4">
+                                    <div class="font-semibold text-gray-800 mb-2">Custo por modelo</div>
+                                    <div v-if="!(ytGuardianOverview.dashboard.model_costs || []).length" class="text-gray-500 italic">Nenhum modelo contabilizado no período.</div>
+                                    <div v-for="item in (ytGuardianOverview.dashboard.model_costs || []).slice(0, 5)" :key="'model-'+item.model" class="flex justify-between py-1 border-b last:border-b-0">
+                                        <span>{{ item.model }}</span>
+                                        <span class="font-semibold">{{ formatGuardianMoney(item.total_cost) }} • {{ item.calls }} chamadas</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-if="ytGuardianOverview.health" class="bg-white rounded-lg shadow p-6 border">
+                            <div class="flex items-center justify-between gap-3 mb-4">
+                                <h3 class="text-lg font-bold text-gray-900">Saúde do Sistema</h3>
+                                <span :class="guardianHealthClass(ytGuardianOverview.health.status)" class="px-3 py-1 rounded-full text-xs font-bold">{{ ytGuardianOverview.health.status }}</span>
+                            </div>
+                            <div class="text-sm text-gray-700">{{ ytGuardianOverview.health.reason }}</div>
+                            <div class="grid grid-cols-2 gap-3 text-sm mt-4">
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Taxa de sucesso</div>
+                                    <div class="font-bold mt-1">{{ Number(ytGuardianOverview.health.success_rate || 0).toFixed(2) }}%</div>
+                                </div>
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Recoveries</div>
+                                    <div class="font-bold mt-1">{{ ytGuardianOverview.health.recoveries }} / {{ ytGuardianOverview.health.recoveries_stopped }}</div>
+                                </div>
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Cache hits / misses</div>
+                                    <div class="font-bold mt-1">{{ ytGuardianOverview.health.cache_hits }} / {{ ytGuardianOverview.health.cache_misses }}</div>
+                                </div>
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Etapa lenta / cara</div>
+                                    <div class="font-bold mt-1 text-xs">{{ ytGuardianOverview.health.slowest_stage || '-' }} / {{ ytGuardianOverview.health.most_expensive_stage || '-' }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="ytGuardianOverview" class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div class="bg-white rounded-lg shadow p-6 border">
+                            <h3 class="text-lg font-bold text-gray-900 mb-4">Comparação de Eficiência</h3>
+                            <div class="space-y-3 text-sm">
+                                <div class="flex justify-between border-b pb-2">
+                                    <span>Custo médio</span>
+                                    <span class="font-semibold">{{ ytGuardianOverview.comparison.trend_summary.cost }}</span>
+                                </div>
+                                <div class="flex justify-between border-b pb-2">
+                                    <span>Qualidade</span>
+                                    <span class="font-semibold">{{ ytGuardianOverview.comparison.trend_summary.quality }}</span>
+                                </div>
+                                <div class="flex justify-between border-b pb-2">
+                                    <span>Tempo</span>
+                                    <span class="font-semibold">{{ ytGuardianOverview.comparison.trend_summary.time }}</span>
+                                </div>
+                                <div class="flex justify-between pb-2">
+                                    <span>Eficiência</span>
+                                    <span class="font-semibold">{{ ytGuardianOverview.comparison.trend_summary.efficiency }}</span>
+                                </div>
+                            </div>
+                            <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Receita</div>
+                                    <div class="font-bold mt-1">{{ formatGuardianMoney(ytGuardianOverview.dashboard.revenue_total) }}</div>
+                                </div>
+                                <div class="rounded border p-3">
+                                    <div class="text-gray-600">Lucro / prejuízo</div>
+                                    <div class="font-bold mt-1">{{ formatGuardianMoney(ytGuardianOverview.dashboard.profit_loss) }}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-6 border">
+                            <h3 class="text-lg font-bold text-gray-900 mb-4">Indicador de Progresso Real</h3>
+                            <div class="text-xl font-bold" :class="guardianProgressClass(ytGuardianOverview.progress_indicator.label)">
+                                {{ ytGuardianOverview.progress_indicator.label }}
+                            </div>
+                            <div class="text-sm text-gray-700 mt-2">{{ ytGuardianOverview.progress_indicator.reason }}</div>
+                            <div class="mt-4">
+                                <div class="text-sm font-semibold text-gray-800 mb-1">Métricas que sustentam a conclusão</div>
+                                <div v-if="(ytGuardianOverview.progress_indicator.supporting_metrics || []).length" class="text-sm text-gray-700 space-y-1">
+                                    <div v-for="item in ytGuardianOverview.progress_indicator.supporting_metrics" :key="'support-'+item">- {{ item }}</div>
+                                </div>
+                                <div v-else class="text-sm text-gray-500 italic">Nenhuma métrica positiva forte no período.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="ytGuardianOverview" class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div class="bg-white rounded-lg shadow p-6 border">
+                            <div class="flex items-center justify-between gap-3 mb-4">
+                                <h3 class="text-lg font-bold text-gray-900">Cenários Simulados</h3>
+                                <div class="text-xs text-gray-500">A-G com persistência real e zero chamadas pagas</div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <button v-for="scenario in (ytGuardianOverview.scenarios || [])" :key="'scenario-'+scenario.code" @click="simulateGuardianScenario(scenario.code)" :disabled="ytGuardianScenarioLoading" class="rounded border px-4 py-3 text-left hover:bg-gray-50 disabled:opacity-50">
+                                    <div class="font-semibold text-gray-900">Cenário {{ scenario.code }}</div>
+                                    <div class="text-sm text-gray-600 mt-1">{{ scenario.label }}</div>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg shadow p-6 border">
+                            <h3 class="text-lg font-bold text-gray-900 mb-4">Despesas e Receitas</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                <select v-model="ytGuardianLedgerForm.entry_kind" class="border rounded px-3 py-2 bg-white">
+                                    <option value="expense">Despesa</option>
+                                    <option value="revenue">Receita</option>
+                                </select>
+                                <input v-model="ytGuardianLedgerForm.category" class="border rounded px-3 py-2" placeholder="Categoria">
+                                <input v-model="ytGuardianLedgerForm.provider" class="border rounded px-3 py-2" placeholder="Provedor (opcional)">
+                                <input v-model="ytGuardianLedgerForm.model" class="border rounded px-3 py-2" placeholder="Modelo (opcional)">
+                                <input v-model="ytGuardianLedgerForm.currency" class="border rounded px-3 py-2" placeholder="Moeda">
+                                <input v-model="ytGuardianLedgerForm.amount" type="number" step="0.01" class="border rounded px-3 py-2" placeholder="Valor">
+                                <input v-model="ytGuardianLedgerForm.description" class="border rounded px-3 py-2 md:col-span-2" placeholder="Descrição">
+                                <input v-model="ytGuardianLedgerForm.reference" class="border rounded px-3 py-2" placeholder="Referência / comprovante">
+                                <input v-model="ytGuardianLedgerForm.occurred_at" type="datetime-local" class="border rounded px-3 py-2" placeholder="Data">
+                                <textarea v-model="ytGuardianLedgerForm.notes" class="border rounded px-3 py-2 md:col-span-2" rows="2" placeholder="Observação"></textarea>
+                            </div>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <button @click="saveGuardianLedgerEntry()" :disabled="ytGuardianLedgerSaving" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm disabled:opacity-50">
+                                    <i v-if="ytGuardianLedgerSaving" class="fas fa-spinner fa-spin"></i>
+                                    <span v-else>{{ ytGuardianLedgerEditingId ? 'Salvar edição' : 'Registrar' }}</span>
+                                </button>
+                                <button @click="resetGuardianLedgerForm()" class="px-4 py-2 rounded border bg-white hover:bg-gray-100 text-sm">Limpar</button>
+                            </div>
+                            <div class="mt-4 text-sm text-gray-700">
+                                <div>Total investido: <strong>{{ formatGuardianMoney(ytGuardianOverview.ledger_summary.total_invested) }}</strong></div>
+                                <div>Despesa mensal: <strong>{{ formatGuardianMoney(ytGuardianOverview.ledger_summary.monthly_expense) }}</strong></div>
+                                <div>Receita mensal: <strong>{{ formatGuardianMoney(ytGuardianOverview.ledger_summary.monthly_revenue) }}</strong></div>
+                                <div>Falta para break-even: <strong>{{ formatGuardianMoney(ytGuardianOverview.ledger_summary.remaining_to_break_even) }}</strong></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="ytGuardianOverview" class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div class="bg-white rounded-lg shadow p-6 border">
+                            <h3 class="text-lg font-bold text-gray-900 mb-4">Jobs e Timeline</h3>
+                            <div v-if="!(ytGuardianOverview.recent_jobs || []).length" class="text-sm text-gray-500 italic">Nenhum job financeiro encontrado ainda.</div>
+                            <div v-else class="space-y-2">
+                                <button v-for="job in ytGuardianOverview.recent_jobs" :key="'job-'+job.task_id" @click="openGuardianTimeline(job.task_id)" class="w-full text-left rounded border px-4 py-3 hover:bg-gray-50">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <div>
+                                            <div class="font-semibold text-gray-900">{{ job.title }}</div>
+                                            <div class="text-xs text-gray-500 mt-1">Task {{ job.task_id }} <span v-if="job.scenario_code">• Cenário {{ job.scenario_code }}</span></div>
+                                        </div>
+                                        <div class="text-right">
+                                            <div class="text-xs font-semibold uppercase" :class="guardianJobStatusClass(job.status)">{{ job.status }}</div>
+                                            <div class="text-xs text-gray-500 mt-1">{{ formatGuardianMoney(job.actual_cost) }}</div>
+                                        </div>
+                                    </div>
+                                </button>
+                            </div>
+                            <div class="mt-4">
+                                <h4 class="font-semibold text-gray-800 mb-2">Últimos lançamentos</h4>
+                                <div v-if="!((ytGuardianOverview.ledger_entries || []).length)" class="text-sm text-gray-500 italic">Nenhum lançamento manual ainda.</div>
+                                <div v-else class="space-y-2 text-sm">
+                                    <div v-for="entry in (ytGuardianOverview.ledger_entries || []).slice(0, 6)" :key="'ledger-'+entry.id" class="rounded border p-3">
+                                        <div class="flex items-center justify-between gap-2">
+                                            <div>
+                                                <div class="font-semibold">{{ entry.category }}</div>
+                                                <div class="text-xs text-gray-500">{{ entry.description || '-' }}</div>
+                                            </div>
+                                            <div class="text-right">
+                                                <div class="font-semibold" :class="entry.entry_kind === 'revenue' ? 'text-emerald-700' : 'text-red-700'">{{ formatGuardianMoney(entry.amount) }}</div>
+                                                <div class="text-xs text-gray-500">{{ formatDateTime(entry.occurred_at) }}</div>
+                                            </div>
+                                        </div>
+                                        <div class="mt-2 flex gap-2">
+                                            <button @click="editGuardianLedgerEntry(entry)" class="text-xs px-2 py-1 rounded border bg-white hover:bg-gray-100">Editar</button>
+                                            <button @click="deleteGuardianLedgerEntry(entry.id)" class="text-xs px-2 py-1 rounded border bg-red-50 text-red-700 hover:bg-red-100">Excluir</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg shadow p-6 border">
+                            <h3 class="text-lg font-bold text-gray-900 mb-4">Timeline de Execução</h3>
+                            <div v-if="!ytGuardianTimeline || !(ytGuardianTimeline.events || []).length" class="text-sm text-gray-500 italic">Selecione um job para abrir a timeline completa.</div>
+                            <div v-else>
+                                <div class="rounded border bg-gray-50 p-4 mb-4">
+                                    <div class="font-semibold text-gray-900">{{ ytGuardianTimeline.title || ytGuardianTimeline.task_id }}</div>
+                                    <div class="text-xs text-gray-500 mt-1">Task {{ ytGuardianTimeline.task_id }} <span v-if="ytGuardianTimeline.scenario_code">• Cenário {{ ytGuardianTimeline.scenario_code }}</span></div>
+                                    <div class="text-sm text-gray-700 mt-2">Estimado {{ formatGuardianMoney(ytGuardianTimeline.estimated_cost) }} • Real {{ formatGuardianMoney(ytGuardianTimeline.actual_cost) }} • Tempo {{ formatGuardianDuration(ytGuardianTimeline.total_duration_seconds) }}</div>
+                                </div>
+                                <div class="space-y-3 max-h-[38rem] overflow-y-auto pr-2">
+                                    <div v-for="item in ytGuardianTimeline.events" :key="'timeline-'+item.id" class="rounded border p-4">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div>
+                                                <div class="font-semibold text-gray-900">{{ item.event_type }}</div>
+                                                <div class="text-xs text-gray-500 mt-1">{{ formatDateTime(item.timestamp) }} • {{ formatGuardianDuration(item.duration_seconds) }}</div>
+                                            </div>
+                                            <span :class="guardianTimelineStatusClass(item.status)" class="px-2 py-1 rounded-full text-xs font-bold">{{ item.status }}</span>
+                                        </div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm mt-3 text-gray-700">
+                                            <div>Estimado: <strong>{{ formatGuardianMoney(item.estimated_cost) }}</strong></div>
+                                            <div>Real: <strong>{{ formatGuardianMoney(item.actual_cost) }}</strong></div>
+                                            <div>Provedor: <strong>{{ item.provider || '-' }}</strong></div>
+                                            <div>Modelo: <strong>{{ item.model || '-' }}</strong></div>
+                                            <div>Tentativa: <strong>{{ item.attempt }}</strong></div>
+                                            <div>IDs: <strong>{{ item.identifiers.task_id }}</strong><span v-if="item.identifiers.scene_number"> • cena {{ item.identifiers.scene_number }}</span></div>
+                                        </div>
+                                        <div v-if="item.reason" class="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 mt-3">{{ item.reason }}</div>
+                                        <div v-if="item.technical_note" class="text-xs text-gray-600 mt-2">{{ item.technical_note }}</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -4145,6 +4492,31 @@
                     topicSuggestionsEnqueueLoading: false,
                     monetizationLoading: false,
                     monetizationData: null,
+                    ytGuardianLoading: false,
+                    ytGuardianScenarioLoading: false,
+                    ytGuardianEstimateLoading: false,
+                    ytGuardianLedgerSaving: false,
+                    ytGuardianPeriod: 'today',
+                    ytGuardianOverview: null,
+                    ytGuardianTimeline: null,
+                    ytGuardianSelectedTaskId: '',
+                    ytGuardianPreEstimate: null,
+                    ytGuardianScenarioMessage: '',
+                    ytGuardianLedgerEditingId: null,
+                    ytGuardianLedgerForm: {
+                        entry_kind: 'expense',
+                        category: 'TRAE',
+                        provider: '',
+                        model: '',
+                        currency: 'BRL',
+                        amount: '',
+                        description: '',
+                        reference: '',
+                        notes: '',
+                        receipt_reference: '',
+                        occurred_at: '',
+                        metadata: {}
+                    },
 
                     // Content Factory
                     cfIdea: '',
@@ -5947,6 +6319,231 @@
                         alert("Erro ao carregar status de monetização.");
                     } finally {
                         this.monetizationLoading = false;
+                    }
+                },
+                formatGuardianMoney(value, currency = 'BRL') {
+                    try {
+                        const num = Number(value || 0);
+                        return num.toLocaleString('pt-BR', {
+                            style: 'currency',
+                            currency: String(currency || 'BRL').toUpperCase(),
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2
+                        });
+                    } catch (e) {
+                        return `R$ ${Number(value || 0).toFixed(2)}`;
+                    }
+                },
+                formatGuardianDuration(totalSeconds) {
+                    const total = Math.max(0, Math.round(Number(totalSeconds || 0)));
+                    const minutes = Math.floor(total / 60);
+                    const seconds = total % 60;
+                    if (minutes <= 0) return `${seconds}s`;
+                    return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+                },
+                summarizeGuardianCalls(calls) {
+                    const payload = (calls && typeof calls === 'object') ? calls : {};
+                    return Object.entries(payload)
+                        .filter(([, value]) => Number(value || 0) > 0)
+                        .map(([key, value]) => `${key}: ${value}`)
+                        .join(' • ') || '0';
+                },
+                guardianHealthClass(status) {
+                    const value = String(status || '').toLowerCase();
+                    if (value === 'saudável' || value === 'saudavel') return 'bg-emerald-100 text-emerald-800';
+                    if (value === 'crítico' || value === 'critico') return 'bg-red-100 text-red-800';
+                    return 'bg-amber-100 text-amber-800';
+                },
+                guardianProgressClass(label) {
+                    const value = String(label || '').toLowerCase();
+                    if (value.indexOf('comprovado') !== -1) return 'text-emerald-700';
+                    if (value.indexOf('parcial') !== -1) return 'text-amber-700';
+                    if (value.indexOf('regress') !== -1) return 'text-red-700';
+                    return 'text-gray-800';
+                },
+                guardianJobStatusClass(status) {
+                    const value = String(status || '').toLowerCase();
+                    if (value === 'completed') return 'text-emerald-700';
+                    if (value === 'failed' || value === 'blocked') return 'text-red-700';
+                    if (value === 'processing' || value === 'pending') return 'text-blue-700';
+                    return 'text-gray-700';
+                },
+                guardianTimelineStatusClass(status) {
+                    const value = String(status || '').toLowerCase();
+                    if (value.indexOf('warning') !== -1 || value.indexOf('blocked') !== -1) return 'bg-amber-100 text-amber-800';
+                    if (value.indexOf('failed') !== -1) return 'bg-red-100 text-red-800';
+                    if (value.indexOf('simulated') !== -1 || value.indexOf('info') !== -1) return 'bg-blue-100 text-blue-800';
+                    return 'bg-gray-100 text-gray-800';
+                },
+                buildGuardianPreEstimatePayload() {
+                    return {
+                        mode: 'story',
+                        kind: this.ytStoryKind || 'story',
+                        topic: this.ytStoryContent ? String(this.ytStoryContent).slice(0, 120) : 'Simulacao do Financial Guardian',
+                        story_content: this.ytStoryContent || this.ytStoryInstruction || '',
+                        duration: Number(this.ytStoryVideoDuration || this.ytVideoDuration || 8) || 8,
+                        auto_upload: Boolean(this.ytStoryAutoUpload),
+                        aspect_ratio: '16:9',
+                        selected_images: []
+                    };
+                },
+                async fetchGuardianOverview(opts = {}) {
+                    const silent = !!opts.silent;
+                    try {
+                        if (!silent) this.ytGuardianLoading = true;
+                        const res = await this.authFetch(`/youtube/guardian/overview?period=${encodeURIComponent(this.ytGuardianPeriod || 'today')}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao carregar o painel financeiro.'));
+                        this.ytGuardianOverview = data;
+                        const selected = String(this.ytGuardianSelectedTaskId || '').trim();
+                        const jobs = Array.isArray(data.recent_jobs) ? data.recent_jobs : [];
+                        const target = selected || (jobs.length ? String(jobs[0].task_id || '') : '');
+                        if (target) {
+                            await this.openGuardianTimeline(target, { silent: true });
+                        }
+                    } catch (e) {
+                        if (!silent) alert(e.message || String(e));
+                    } finally {
+                        this.ytGuardianLoading = false;
+                    }
+                },
+                async openGuardianTimeline(taskId, opts = {}) {
+                    const silent = !!opts.silent;
+                    const id = String(taskId || '').trim();
+                    if (!id) return;
+                    try {
+                        this.ytGuardianSelectedTaskId = id;
+                        const res = await this.authFetch(`/youtube/guardian/timeline/${encodeURIComponent(id)}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao carregar a timeline.'));
+                        this.ytGuardianTimeline = data;
+                    } catch (e) {
+                        if (!silent) alert(e.message || String(e));
+                    }
+                },
+                async fetchGuardianPreEstimate() {
+                    try {
+                        this.ytGuardianEstimateLoading = true;
+                        const payload = this.buildGuardianPreEstimatePayload();
+                        const res = await this.authFetch('/youtube/guardian/preestimate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao calcular a estimativa.'));
+                        this.ytGuardianPreEstimate = data;
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.ytGuardianEstimateLoading = false;
+                    }
+                },
+                async simulateGuardianScenario(code) {
+                    try {
+                        this.ytGuardianScenarioLoading = true;
+                        const res = await this.authFetch(`/youtube/guardian/simulate/${encodeURIComponent(String(code || '').trim())}`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao executar o cenário simulado.'));
+                        this.ytGuardianScenarioMessage = `Cenário ${data.scenario_code} validado: ${data.message}`;
+                        await this.fetchGuardianOverview({ silent: true });
+                        if (data.task_id) {
+                            await this.openGuardianTimeline(data.task_id, { silent: true });
+                        }
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.ytGuardianScenarioLoading = false;
+                    }
+                },
+                async simulateAllGuardianScenarios() {
+                    const scenarios = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+                    try {
+                        this.ytGuardianScenarioLoading = true;
+                        for (const code of scenarios) {
+                            const res = await this.authFetch(`/youtube/guardian/simulate/${encodeURIComponent(code)}`, { method: 'POST' });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, `Falha ao executar o cenário ${code}.`));
+                        }
+                        this.ytGuardianScenarioMessage = 'Cenários A-G executados com sucesso em modo 100% simulado.';
+                        await this.fetchGuardianOverview({ silent: true });
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.ytGuardianScenarioLoading = false;
+                    }
+                },
+                resetGuardianLedgerForm() {
+                    this.ytGuardianLedgerEditingId = null;
+                    this.ytGuardianLedgerForm = {
+                        entry_kind: 'expense',
+                        category: 'TRAE',
+                        provider: '',
+                        model: '',
+                        currency: 'BRL',
+                        amount: '',
+                        description: '',
+                        reference: '',
+                        notes: '',
+                        receipt_reference: '',
+                        occurred_at: '',
+                        metadata: {}
+                    };
+                },
+                editGuardianLedgerEntry(entry) {
+                    const item = (entry && typeof entry === 'object') ? entry : {};
+                    this.ytGuardianLedgerEditingId = item.id;
+                    this.ytGuardianLedgerForm = {
+                        entry_kind: item.entry_kind || 'expense',
+                        category: item.category || 'TRAE',
+                        provider: item.provider || '',
+                        model: item.model || '',
+                        currency: item.currency || 'BRL',
+                        amount: item.amount || '',
+                        description: item.description || '',
+                        reference: item.reference || '',
+                        notes: item.notes || '',
+                        receipt_reference: item.receipt_reference || '',
+                        occurred_at: item.occurred_at ? String(item.occurred_at).slice(0, 16) : '',
+                        metadata: item.metadata || {}
+                    };
+                },
+                async saveGuardianLedgerEntry() {
+                    try {
+                        this.ytGuardianLedgerSaving = true;
+                        const payload = {
+                            ...this.ytGuardianLedgerForm,
+                            amount: Number(this.ytGuardianLedgerForm.amount || 0),
+                            occurred_at: this.ytGuardianLedgerForm.occurred_at || null
+                        };
+                        const url = this.ytGuardianLedgerEditingId
+                            ? `/youtube/guardian/ledger/${encodeURIComponent(String(this.ytGuardianLedgerEditingId))}`
+                            : '/youtube/guardian/ledger';
+                        const method = this.ytGuardianLedgerEditingId ? 'PUT' : 'POST';
+                        const res = await this.authFetch(url, {
+                            method,
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao salvar lançamento.'));
+                        this.resetGuardianLedgerForm();
+                        await this.fetchGuardianOverview({ silent: true });
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.ytGuardianLedgerSaving = false;
+                    }
+                },
+                async deleteGuardianLedgerEntry(entryId) {
+                    if (!confirm('Excluir este lançamento financeiro?')) return;
+                    try {
+                        const res = await this.authFetch(`/youtube/guardian/ledger/${encodeURIComponent(String(entryId))}`, { method: 'DELETE' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao excluir lançamento.'));
+                        await this.fetchGuardianOverview({ silent: true });
+                    } catch (e) {
+                        alert(e.message || String(e));
                     }
                 },
                 formatDateTime(s) {

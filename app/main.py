@@ -1113,6 +1113,8 @@ def api_status():
 @app.get("/api/debug/db")
 def debug_db():
     """Rota temporária para debug de schema do banco."""
+    if os.getenv("APP_ENV", "").strip().lower() != "development":
+        raise HTTPException(status_code=404, detail="Not Found")
     try:
         from sqlalchemy import inspect
         inspector = inspect(engine)

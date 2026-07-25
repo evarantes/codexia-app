@@ -45,6 +45,9 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
+from app.services.financial_guardian import youtube_auto_financial_adapter
+from app.services.financial_guardian.youtube_observability import youtube_financial_guardian_observability_service
+from app.services.financial_guardian_service import financial_guardian_service
 from app.services.task_manager import (
     create_task,
     update_task,
@@ -4064,6 +4067,117 @@ def get_task_status_by_idempotency(idempotency_key: str = Query(..., min_length=
         raise HTTPException(status_code=404, detail="Nenhuma tarefa encontrada para esta idempotency_key.")
     return task
 
+
+@router.get("/guardian/overview")
+def get_financial_guardian_overview(
+    period: str = Query("today"),
+    current_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    return youtube_financial_guardian_observability_service.build_overview(
+        db,
+        user=current_user,
+        period=period,
+    )
+
+
+@router.get("/guardian/timeline/{task_id}")
+def get_financial_guardian_timeline(
+    task_id: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    payload = youtube_financial_guardian_observability_service.build_timeline(
+        db,
+        user=current_user,
+        task_id=task_id,
+    )
+    if not payload.get("found"):
+        raise HTTPException(status_code=404, detail="Timeline financeira nao encontrada para esta tarefa.")
+    return payload
+
+
+@router.post("/guardian/preestimate")
+def get_financial_guardian_preestimate(
+    payload: Dict[str, Any],
+    current_user: User = Depends(get_current_admin_user),
+):
+    return youtube_financial_guardian_observability_service.estimate_preproduction(
+        user=current_user,
+        payload=payload or {},
+    )
+
+
+@router.post("/guardian/simulate/{scenario_code}")
+def simulate_financial_guardian_scenario(
+    scenario_code: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return youtube_financial_guardian_observability_service.simulate_scenario(
+            db,
+            user=current_user,
+            scenario_code=scenario_code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/guardian/ledger")
+def list_financial_guardian_ledger(
+    current_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    return {
+        "items": youtube_financial_guardian_observability_service.list_ledger_entries(
+            db,
+            user=current_user,
+        )
+    }
+
+
+@router.post("/guardian/ledger")
+def create_financial_guardian_ledger_entry(
+    payload: Dict[str, Any],
+    current_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    return youtube_financial_guardian_observability_service.save_ledger_entry(
+        db,
+        user=current_user,
+        payload=payload or {},
+    )
+
+
+@router.put("/guardian/ledger/{entry_id}")
+def update_financial_guardian_ledger_entry(
+    entry_id: int,
+    payload: Dict[str, Any],
+    current_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    return youtube_financial_guardian_observability_service.save_ledger_entry(
+        db,
+        user=current_user,
+        payload=payload or {},
+        entry_id=entry_id,
+    )
+
+
+@router.delete("/guardian/ledger/{entry_id}")
+def delete_financial_guardian_ledger_entry(
+    entry_id: int,
+    current_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+):
+    youtube_financial_guardian_observability_service.delete_ledger_entry(
+        db,
+        user=current_user,
+        entry_id=entry_id,
+    )
+    return {"status": "deleted", "id": entry_id}
+
 @router.get("/tasks/active")
 def list_active_tasks(limit: int = 10, _admin=Depends(get_current_admin_user)):
     db = SessionLocal()
@@ -4428,6 +4542,12 @@ def process_video_generation(request: VideoRequest, task_id):
     lease_info: Dict[str, Any] = {}
     redis_lock = None
     file_lock = None
+    guardian_db = None
+    guardian_payload: Dict[str, Any] = {}
+    guardian_user_id: Optional[int] = None
+    guardian_context = None
+    guardian_preflight: Optional[Dict[str, Any]] = None
+    guardian_cache_summary: Dict[str, Any] = {"stored_assets": 0, "cache_keys": []}
     try:
         _raise_if_cancelled()
         os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -4487,6 +4607,47 @@ def process_video_generation(request: VideoRequest, task_id):
         ai_service = AIContentGenerator()
         video_service = VideoGenerator(ai_service=ai_service)
         yt_service = YouTubeService()
+        try:
+            guardian_payload = request.model_dump()  # type: ignore[attr-defined]
+        except Exception:
+            guardian_payload = request.dict()
+        guardian_db = SessionLocal()
+        guardian_task_row = guardian_db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
+        guardian_user_id = getattr(guardian_task_row, "user_id", None) if guardian_task_row else None
+        guardian_context = youtube_auto_financial_adapter.build_context(
+            task_id=str(task_id),
+            payload=guardian_payload,
+            user_id=guardian_user_id,
+            status="queued",
+        )
+        guardian_preflight = financial_guardian_service.evaluate_context_preflight(
+            guardian_db,
+            context=guardian_context,
+            config=youtube_auto_financial_adapter.build_guardrail_config(),
+            adapter=youtube_auto_financial_adapter,
+        )
+        guardian_db.commit()
+        update_task(task_id, result=_merged_task_result({
+            "financial_guardian": {
+                "source_type": "youtube_auto",
+                "preflight": guardian_preflight,
+            }
+        }))
+        if not guardian_preflight.get("allowed"):
+            final_payload = _merged_task_result({
+                "financial_guardian": {
+                    "source_type": "youtube_auto",
+                    "preflight": guardian_preflight,
+                }
+            })
+            finalize_task_once(
+                task_id,
+                status="failed",
+                progress=0,
+                message=f"Guardiao financeiro bloqueou a geracao: {guardian_preflight.get('reason') or 'limites excedidos.'}",
+                result=final_payload,
+            )
+            return
         
         # 1. Gerar Roteiro
         update_task(task_id, progress=10, message="Estruturando roteiro com IA...")
@@ -4874,6 +5035,33 @@ def process_video_generation(request: VideoRequest, task_id):
                         selected.append(v.strip())
             if selected:
                 script["selected_images"] = selected[:24]
+            if guardian_db is not None:
+                guardian_context = youtube_auto_financial_adapter.build_context(
+                    task_id=str(task_id),
+                    payload=guardian_payload,
+                    script=script,
+                    user_id=guardian_user_id,
+                    status="processing",
+                )
+                script = financial_guardian_service.hydrate_plan_with_cached_images_for_context(
+                    guardian_db,
+                    context=guardian_context,
+                    plan=script,
+                )
+                financial_guardian_service.record_context_event(
+                    guardian_db,
+                    context=guardian_context,
+                    event_type="production_started",
+                    stage="storyboard_ready",
+                    estimated_cost=guardian_context.estimated_cost,
+                    actual_cost=guardian_context.actual_cost,
+                    details={
+                        "topic_display": topic_display,
+                        "auto_upload": bool(request.auto_upload),
+                        "scene_count": len(script.get("scenes") or []) if isinstance(script.get("scenes"), list) else 0,
+                    },
+                )
+                guardian_db.commit()
         
         # 2. Gerar Vídeo (16:9)
         # Passamos uma função de callback para atualizar o progresso
@@ -4897,6 +5085,29 @@ def process_video_generation(request: VideoRequest, task_id):
             render_report = {}
         sync_validation = render_report.get("sync_validation")
         audio_generation = render_report.get("audio_generation")
+        if guardian_db is not None and guardian_context is not None:
+            scene_visuals = render_report.get("scene_visuals") if isinstance(render_report.get("scene_visuals"), list) else []
+            generated_image_paths = [
+                str(item.get("image_path") or "").strip()
+                for item in scene_visuals
+                if isinstance(item, dict) and str(item.get("image_path") or "").strip()
+            ]
+            guardian_context = youtube_auto_financial_adapter.build_context(
+                task_id=str(task_id),
+                payload=guardian_payload,
+                script=script if isinstance(script, dict) else None,
+                video_result=video_result if isinstance(video_result, dict) else None,
+                user_id=guardian_user_id,
+                status="rendered",
+            )
+            if generated_image_paths and isinstance(script, dict):
+                guardian_cache_summary = financial_guardian_service.cache_images_from_context_result(
+                    guardian_db,
+                    context=guardian_context,
+                    plan=script,
+                    image_paths=generated_image_paths,
+                )
+            guardian_db.commit()
         heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         _raise_if_cancelled()
         
@@ -4924,6 +5135,38 @@ def process_video_generation(request: VideoRequest, task_id):
                 tags=script.get('tags', ['motivação', 'sucesso']),
                 thumbnail_path=(request.thumbnail_path or None),
             )
+            guardian_summary = None
+            if guardian_db is not None and guardian_context is not None:
+                guardian_context = youtube_auto_financial_adapter.build_context(
+                    task_id=str(task_id),
+                    payload=guardian_payload,
+                    script=script if isinstance(script, dict) else None,
+                    video_result=video_result if isinstance(video_result, dict) else None,
+                    user_id=guardian_user_id,
+                    status="completed",
+                )
+                guardian_summary = {
+                    "source_type": "youtube_auto",
+                    "preflight": guardian_preflight,
+                    "cache_summary": guardian_cache_summary,
+                    "estimated_cost": guardian_context.estimated_cost,
+                    "actual_cost": guardian_context.actual_cost,
+                    "estimated_savings": round(max(0.0, guardian_context.estimated_cost - guardian_context.actual_cost), 4),
+                }
+                financial_guardian_service.record_context_event(
+                    guardian_db,
+                    context=guardian_context,
+                    event_type="production_completed",
+                    stage="upload_completed",
+                    estimated_cost=guardian_context.estimated_cost,
+                    actual_cost=guardian_context.actual_cost,
+                    details={
+                        "cache_summary": guardian_cache_summary,
+                        "upload_result": upload_result if isinstance(upload_result, dict) else {},
+                        "estimated_savings": guardian_summary["estimated_savings"],
+                    },
+                )
+                guardian_db.commit()
             final_payload = _merged_task_result({
                 "video_url": video_path,
                 "title": script.get("title"),
@@ -4934,6 +5177,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 "sync_validation": sync_validation,
                 "executor_id": executor_id,
                 "attempt_number": int(lease_info.get("attempt_number") or 1),
+                "financial_guardian": guardian_summary,
             })
             finalized = finalize_task_once(task_id, status="completed", progress=100, message="Vídeo gerado e publicado com sucesso!", result=final_payload)
             if finalized.get("finalized_now"):
@@ -4960,6 +5204,37 @@ def process_video_generation(request: VideoRequest, task_id):
                     except Exception:
                         pass
         else:
+            guardian_summary = None
+            if guardian_db is not None and guardian_context is not None:
+                guardian_context = youtube_auto_financial_adapter.build_context(
+                    task_id=str(task_id),
+                    payload=guardian_payload,
+                    script=script if isinstance(script, dict) else None,
+                    video_result=video_result if isinstance(video_result, dict) else None,
+                    user_id=guardian_user_id,
+                    status="completed",
+                )
+                guardian_summary = {
+                    "source_type": "youtube_auto",
+                    "preflight": guardian_preflight,
+                    "cache_summary": guardian_cache_summary,
+                    "estimated_cost": guardian_context.estimated_cost,
+                    "actual_cost": guardian_context.actual_cost,
+                    "estimated_savings": round(max(0.0, guardian_context.estimated_cost - guardian_context.actual_cost), 4),
+                }
+                financial_guardian_service.record_context_event(
+                    guardian_db,
+                    context=guardian_context,
+                    event_type="production_completed",
+                    stage="render_completed",
+                    estimated_cost=guardian_context.estimated_cost,
+                    actual_cost=guardian_context.actual_cost,
+                    details={
+                        "cache_summary": guardian_cache_summary,
+                        "estimated_savings": guardian_summary["estimated_savings"],
+                    },
+                )
+                guardian_db.commit()
             final_payload = _merged_task_result({
                 "video_url": video_path,
                 "title": script.get("title"),
@@ -4970,6 +5245,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 "sync_validation": sync_validation,
                 "executor_id": executor_id,
                 "attempt_number": int(lease_info.get("attempt_number") or 1),
+                "financial_guardian": guardian_summary,
             })
             finalized = finalize_task_once(task_id, status="completed", progress=100, message="Vídeo gerado com sucesso!", result=final_payload)
             if finalized.get("finalized_now"):
@@ -5008,8 +5284,33 @@ def process_video_generation(request: VideoRequest, task_id):
             pass
     except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")
+        if guardian_context is not None:
+            try:
+                if guardian_db is None:
+                    guardian_db = SessionLocal()
+                financial_guardian_service.record_context_event(
+                    guardian_db,
+                    context=guardian_context,
+                    event_type="production_failed",
+                    stage="execution",
+                    severity="warning",
+                    estimated_cost=getattr(guardian_context, "estimated_cost", 0.0),
+                    actual_cost=getattr(guardian_context, "actual_cost", 0.0),
+                    details={"error": str(e)[:500]},
+                )
+                guardian_db.commit()
+            except Exception:
+                try:
+                    guardian_db.rollback()
+                except Exception:
+                    pass
         update_task(task_id, status="failed", message=f"Erro: {str(e)}")
     finally:
+        if guardian_db is not None:
+            try:
+                guardian_db.close()
+            except Exception:
+                pass
         if executor_id:
             release_task_execution_lease(task_id, executor_id)
         if redis_lock:
