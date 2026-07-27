@@ -9,11 +9,15 @@ from datetime import timedelta
 
 # Configura conexão
 db = SessionLocal()
+target_email = (os.getenv("DEBUG_LOGIN_EMAIL") or os.getenv("ADMIN_EMAIL") or "").strip()
+target_password = (os.getenv("DEBUG_LOGIN_PASSWORD") or "").strip()
 
-print(f"Checking user evarantes2@gmail.com in DB...")
+print(f"Checking user {target_email or '[missing DEBUG_LOGIN_EMAIL]'} in DB...")
 
 try:
-    user = db.query(User).filter(User.email == "evarantes2@gmail.com").first()
+    if not target_email:
+        raise RuntimeError("Set DEBUG_LOGIN_EMAIL or ADMIN_EMAIL before running this script.")
+    user = db.query(User).filter(User.email == target_email).first()
     
     if not user:
         print("ERROR: User not found!")
@@ -21,9 +25,8 @@ try:
         print(f"User found: ID={user.id}, Email={user.email}, Role={user.role}, Tenant={user.tenant_id}")
         
         # Check password
-        password = "123456"
-        is_valid = verify_password(password, user.hashed_password)
-        print(f"Password '{password}' valid? {is_valid}")
+        is_valid = verify_password(target_password, user.hashed_password)
+        print(f"Password configured valid? {is_valid}")
         
         if is_valid:
             try:

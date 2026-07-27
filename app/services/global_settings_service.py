@@ -6,6 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Settings
+from app.modules.bible_video_factory.editorial_intelligence import (
+    DEFAULT_EDITORIAL_INTELLIGENCE_SETTINGS,
+)
 
 if TYPE_CHECKING:
     from app.modules.bible_video_factory.models import BibleVideoConfig
@@ -84,6 +87,7 @@ OFFICIAL_FACTORY_SETTINGS_DEFAULTS: Dict[str, Any] = {
     "music_cost_unit": 0.0,
     "caption_cost_unit": 0.0,
     "thumbnail_cost_unit": 0.0,
+    **DEFAULT_EDITORIAL_INTELLIGENCE_SETTINGS,
 }
 
 OFFICIAL_FACTORY_TEXT_FIELDS = {
@@ -100,6 +104,14 @@ OFFICIAL_FACTORY_TEXT_FIELDS = {
     "default_cta",
     "default_next_episode_cta",
     "default_playlist",
+    "editorial_intelligence_mode",
+    "editorial_intelligence_provider",
+    "primary_provider",
+    "fallback_provider",
+    "editorial_provider",
+    "editorial_fallback_provider",
+    "provider_priority",
+    "approved_models",
 }
 
 OFFICIAL_FACTORY_FLOAT_FIELDS = {
@@ -116,7 +128,11 @@ OFFICIAL_FACTORY_FLOAT_FIELDS = {
     "thumbnail_cost_unit",
 }
 
-OFFICIAL_FACTORY_BOOL_FIELDS = {"made_for_kids_default"}
+OFFICIAL_FACTORY_BOOL_FIELDS = {
+    "made_for_kids_default",
+    "editorial_intelligence_enabled",
+    "editorial_intelligence_fail_open",
+}
 
 OFFICIAL_FACTORY_SETTINGS_FIELDS = tuple(OFFICIAL_FACTORY_SETTINGS_DEFAULTS.keys())
 

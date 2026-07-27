@@ -19,3 +19,5 @@ app/static/icons/*
 .idea/
 .vscode/
 client_secret.json
+artifacts/
+.tmp_*

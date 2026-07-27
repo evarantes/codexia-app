@@ -22,6 +22,9 @@ except Exception:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+_SCHEDULED_DISPATCHING_STATUS = "dispatching"
+_SCHEDULED_DISPATCHING_TIMEOUT_SECONDS = 300
+
 
 def _is_startup_database_bootstrap_error(exc: Exception) -> bool:
     if isinstance(exc, UnicodeDecodeError):
@@ -42,6 +45,44 @@ def _load_scheduled_processing_policy(video):
     payload = _load_scheduled_video_payload(video)
     policy = _scheduled_video_processing_policy(video, payload)
     return payload, policy
+
+
+def _recover_stale_dispatching_videos(db, *, stale_after_seconds: int = _SCHEDULED_DISPATCHING_TIMEOUT_SECONDS) -> int:
+    now = datetime.datetime.now()
+    recovered = 0
+    stuck_items = (
+        db.query(ScheduledVideo)
+        .filter(ScheduledVideo.status == _SCHEDULED_DISPATCHING_STATUS)
+        .all()
+    )
+    for video in stuck_items:
+        updated_at = getattr(video, "updated_at", None) or getattr(video, "scheduled_for", None) or now
+        age_seconds = max(0.0, float((now - updated_at).total_seconds()))
+        if age_seconds < max(30, int(stale_after_seconds)):
+            continue
+        video.status = "queued"
+        video.progress = 0
+        recovered += 1
+        logger.warning(f"Vídeo {video.id} ficou preso em dispatching por {int(age_seconds)}s. Retornando para queued.")
+    return recovered
+
+
+def _claim_video_for_dispatch(db, video_id: int) -> bool:
+    updated = (
+        db.query(ScheduledVideo)
+        .filter(
+            ScheduledVideo.id == video_id,
+            ScheduledVideo.status == "queued",
+        )
+        .update(
+            {
+                ScheduledVideo.status: _SCHEDULED_DISPATCHING_STATUS,
+                ScheduledVideo.updated_at: datetime.datetime.now(),
+            },
+            synchronize_session=False,
+        )
+    )
+    return bool(updated)
 
 def _append_auto_block_note(video, payload, policy, context: str):
     payload = dict(payload or {})
@@ -260,6 +301,9 @@ class MonitorService:
         """Reseta vídeos que ficaram presos em 'processing' devido a reinicialização do servidor"""
         db = SessionLocal()
         try:
+            recovered_dispatching = _recover_stale_dispatching_videos(db)
+            if recovered_dispatching:
+                logger.warning(f"Recovery de startup: {recovered_dispatching} vídeos retornaram de dispatching para queued.")
             stuck_videos = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").all()
             if stuck_videos:
                 logger.warning(f"Encontrados {len(stuck_videos)} vídeos presos em 'processing'. Verificando retries...")
@@ -516,6 +560,16 @@ class MonitorService:
         """Verifica se há vídeos na fila e inicia processamento"""
         db = SessionLocal()
         try:
+            recovered_dispatching = _recover_stale_dispatching_videos(db)
+            if recovered_dispatching:
+                db.commit()
+
+            dispatching = db.query(ScheduledVideo).filter(ScheduledVideo.status == _SCHEDULED_DISPATCHING_STATUS).first()
+            if dispatching:
+                last_update = dispatching.updated_at or dispatching.scheduled_for or datetime.datetime.now()
+                logger.info(f"Fila ocupada: Vídeo {dispatching.id} está em dispatching (Atualizado em: {last_update}).")
+                return
+
             # 1. Check if any video is currently processing (to avoid overload)
             processing = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").first()
             if processing:
@@ -583,6 +637,11 @@ class MonitorService:
                 db.commit()
             
             if next_video:
+                if not _claim_video_for_dispatch(db, next_video.id):
+                    db.rollback()
+                    logger.info(f"Vídeo {next_video.id} não pôde ser reservado para dispatch. Outro processo assumiu o item.")
+                    return
+                db.commit()
                 logger.info(f"Iniciando processamento do vídeo agendado {next_video.id}...")
                 try:
                     workers_ok = False
@@ -607,9 +666,19 @@ class MonitorService:
                     if allow_inline:
                         process_scheduled_video(next_video.id, "auto")
                         return
+                    reserved_video = db.query(ScheduledVideo).filter(ScheduledVideo.id == next_video.id).first()
+                    if reserved_video and reserved_video.status == _SCHEDULED_DISPATCHING_STATUS:
+                        reserved_video.status = "queued"
+                        reserved_video.progress = 0
+                        db.commit()
                     logger.warning(f"Worker indisponível. Mantendo vídeo {next_video.id} em fila (queued) para evitar travar o servidor web.")
                     return
                 except Exception as e:
+                    reserved_video = db.query(ScheduledVideo).filter(ScheduledVideo.id == next_video.id).first()
+                    if reserved_video and reserved_video.status == _SCHEDULED_DISPATCHING_STATUS:
+                        reserved_video.status = "queued"
+                        reserved_video.progress = 0
+                        db.commit()
                     logger.error(f"Falha ao enfileirar vídeo {next_video.id} no worker: {e}")
                     return
             else:

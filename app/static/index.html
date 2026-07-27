@@ -3836,6 +3836,57 @@
                             </label>
                         </div>
                         <div class="mt-6 bg-gray-50 border rounded-lg p-4">
+                            <h4 class="font-bold mb-3">Politica Oficial de IA</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-2">Provider principal</label>
+                                    <select v-model="settings.bible_video_factory.primary_provider" class="w-full border p-2 rounded bg-white">
+                                        <option value="OpenAI">OpenAI</option>
+                                        <option value="OpenRouter">OpenRouter</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Provider de fallback</label>
+                                    <select v-model="settings.bible_video_factory.fallback_provider" class="w-full border p-2 rounded bg-white">
+                                        <option value="OpenRouter">OpenRouter</option>
+                                        <option value="OpenAI">OpenAI</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Provider editorial</label>
+                                    <select v-model="settings.bible_video_factory.editorial_provider" class="w-full border p-2 rounded bg-white">
+                                        <option value="OpenAI">OpenAI</option>
+                                        <option value="OpenRouter">OpenRouter</option>
+                                        <option value="Local">Local</option>
+                                        <option value="Disabled">Disabled</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Fallback editorial</label>
+                                    <select v-model="settings.bible_video_factory.editorial_fallback_provider" class="w-full border p-2 rounded bg-white">
+                                        <option value="OpenRouter">OpenRouter</option>
+                                        <option value="OpenAI">OpenAI</option>
+                                        <option value="Local">Local</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2">Ordem de providers</label>
+                                    <input v-model="settings.bible_video_factory.provider_priority" class="w-full border p-2 rounded bg-white" placeholder="OpenAI,OpenRouter">
+                                </div>
+                                <div class="flex items-center">
+                                    <label class="inline-flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                        <input v-model="settings.bible_video_factory.editorial_intelligence_fail_open" type="checkbox" class="h-4 w-4">
+                                        Fail-open editorial habilitado
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="mt-4">
+                                <label class="block font-bold mb-2">Modelos aprovados</label>
+                                <textarea v-model="settings.bible_video_factory.approved_models" rows="4" class="w-full border p-2 rounded bg-white" placeholder="OpenAI:gpt-4o-mini&#10;OpenRouter:openai/gpt-4o-mini"></textarea>
+                                <p class="text-xs text-gray-500 mt-2">Use um modelo por linha no formato Provider:Modelo. O editorial so usa modelos explicitamente aprovados.</p>
+                            </div>
+                        </div>
+                        <div class="mt-6 bg-gray-50 border rounded-lg p-4">
                             <h4 class="font-bold mb-3">Custos e metricas da Fabrica</h4>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                 <input v-model.number="settings.bible_video_factory.text_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo texto">
@@ -4875,7 +4926,17 @@
                             video_cost_unit: 0,
                             music_cost_unit: 0,
                             caption_cost_unit: 0,
-                            thumbnail_cost_unit: 0
+                            thumbnail_cost_unit: 0,
+                            editorial_intelligence_enabled: true,
+                            editorial_intelligence_fail_open: true,
+                            editorial_intelligence_mode: 'pre_narration',
+                            editorial_intelligence_provider: 'OpenAI',
+                            primary_provider: 'OpenAI',
+                            fallback_provider: 'OpenRouter',
+                            editorial_provider: 'OpenAI',
+                            editorial_fallback_provider: 'OpenRouter',
+                            provider_priority: 'OpenAI,OpenRouter',
+                            approved_models: 'OpenAI:gpt-4o-mini\nOpenRouter:openai/gpt-4o-mini'
                         }
                     },
                     elevenlabsSampleFile: null,

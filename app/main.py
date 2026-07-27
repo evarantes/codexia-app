@@ -45,6 +45,14 @@ SETTINGS_UNIFICATION_TEXT_COLUMNS = [
     "default_cta",
     "default_next_episode_cta",
     "default_playlist",
+    "editorial_intelligence_mode",
+    "editorial_intelligence_provider",
+    "primary_provider",
+    "fallback_provider",
+    "editorial_provider",
+    "editorial_fallback_provider",
+    "provider_priority",
+    "approved_models",
 ]
 
 SETTINGS_UNIFICATION_FLOAT_COLUMNS = [
@@ -63,6 +71,8 @@ SETTINGS_UNIFICATION_FLOAT_COLUMNS = [
 
 SETTINGS_UNIFICATION_BOOL_COLUMNS = {
     "made_for_kids_default": {"postgresql": "BOOLEAN DEFAULT FALSE", "default": "BOOLEAN DEFAULT 0"},
+    "editorial_intelligence_enabled": {"postgresql": "BOOLEAN DEFAULT TRUE", "default": "BOOLEAN DEFAULT 1"},
+    "editorial_intelligence_fail_open": {"postgresql": "BOOLEAN DEFAULT TRUE", "default": "BOOLEAN DEFAULT 1"},
 }
 
 
@@ -481,6 +491,10 @@ def run_migrations(engine):
                         "music_provider", "caption_provider", "thumbnail_provider",
                         "default_voice", "default_voice_emotion", "default_language",
                         "default_cta", "default_next_episode_cta", "default_playlist",
+                        "editorial_intelligence_mode", "editorial_intelligence_provider",
+                        "primary_provider", "fallback_provider",
+                        "editorial_provider", "editorial_fallback_provider",
+                        "provider_priority", "approved_models",
                         "whatsapp_phone_number_id", "whatsapp_access_token",
                         "whatsapp_verify_token", "whatsapp_allowed_numbers",
                         "telegram_bot_token", "telegram_allowed_chat_ids",
@@ -513,6 +527,20 @@ def run_migrations(engine):
                             conn.execute(text("ALTER TABLE settings ADD COLUMN made_for_kids_default BOOLEAN DEFAULT 0"))
                             conn.commit()
                         except Exception as e: print(f"Error adding made_for_kids_default: {e}")
+
+                    if "editorial_intelligence_enabled" not in settings_columns:
+                        try:
+                            print("Migrating: Adding editorial_intelligence_enabled to settings...")
+                            conn.execute(text("ALTER TABLE settings ADD COLUMN editorial_intelligence_enabled BOOLEAN DEFAULT 1"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding editorial_intelligence_enabled: {e}")
+
+                    if "editorial_intelligence_fail_open" not in settings_columns:
+                        try:
+                            print("Migrating: Adding editorial_intelligence_fail_open to settings...")
+                            conn.execute(text("ALTER TABLE settings ADD COLUMN editorial_intelligence_fail_open BOOLEAN DEFAULT 1"))
+                            conn.commit()
+                        except Exception as e: print(f"Error adding editorial_intelligence_fail_open: {e}")
 
                     if "ai_provider" not in settings_columns:
                         try:
@@ -1122,9 +1150,15 @@ def debug_db():
         users_cols = [c["name"] for c in inspector.get_columns("users")] if "users" in tables else []
         sv_cols = [c["name"] for c in inspector.get_columns("scheduled_videos")] if "scheduled_videos" in tables else []
         
-        # Check admin user
+        debug_email = (os.getenv("ADMIN_EMAIL") or "").strip()
+        debug_sql = "SELECT id, email, role, is_admin FROM users WHERE is_admin = true ORDER BY id ASC LIMIT 1"
+        debug_params = {}
+        if debug_email:
+            debug_sql = "SELECT id, email, role, is_admin FROM users WHERE email = :email LIMIT 1"
+            debug_params["email"] = debug_email
+
         with engine.connect() as conn:
-            r = conn.execute(text("SELECT id, email, role, is_admin FROM users WHERE email='evarantes2@gmail.com'"))
+            r = conn.execute(text(debug_sql), debug_params)
             user = r.fetchone()
             user_info = dict(user._mapping) if user else "Not Found"
             
@@ -1230,21 +1264,26 @@ def debug_reset_user():
     if os.getenv("ALLOW_DEBUG_ROUTES", "").lower() not in ("1", "true", "yes"):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Not Found")
+    target_email = (os.getenv("DEBUG_RESET_USER_EMAIL") or os.getenv("ADMIN_EMAIL") or "").strip()
+    target_password = (os.getenv("DEBUG_RESET_USER_PASSWORD") or "").strip()
+    if not target_email or not target_password:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Configure DEBUG_RESET_USER_EMAIL e DEBUG_RESET_USER_PASSWORD para usar esta rota.")
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == "evarantes2@gmail.com").first()
+        user = db.query(User).filter(User.email == target_email).first()
         if user:
             db.delete(user)
             db.commit()
-        hashed_password = get_password_hash("123456")
+        hashed_password = get_password_hash(target_password)
         new_user = User(
-            email="evarantes2@gmail.com",
+            email=target_email,
             hashed_password=hashed_password,
             must_change_password=True
         )
         db.add(new_user)
         db.commit()
-        return {"status": "User evarantes2@gmail.com reset to 123456"}
+        return {"status": f"User {target_email} reset successfully"}
     except Exception as e:
         return {"error": str(e)}
     finally:

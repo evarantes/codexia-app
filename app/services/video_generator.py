@@ -12,6 +12,16 @@ import math
 from typing import Optional, Callable, List, Dict, Any
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
+from app.services.safe_text_layout import SafeTextLayout
+
+CAPTION_SAFE_AREA_X_RATIO = 0.06
+CAPTION_SAFE_AREA_TOP_RATIO = 0.08
+CAPTION_SAFE_AREA_BOTTOM_RATIO = 0.08
+DEFAULT_SCENE_TRANSITION_SEC = 0.30
+DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.40
+DEFAULT_OPENING_SILENCE_SEC = 3.50
+DEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30
+DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20
 
 class VideoGenerator:
     def __init__(self, output_dir=None, ai_service=None):
@@ -337,6 +347,7 @@ class VideoGenerator:
         *,
         background_path: Optional[str],
         size,
+        layout_report: Optional[Dict[str, Any]] = None,
     ):
         from PIL import Image, ImageDraw
         import numpy as np
@@ -359,9 +370,20 @@ class VideoGenerator:
         base.alpha_composite(gradient)
 
         draw = ImageDraw.Draw(base)
-        title_font = self._load_caption_font(max(26, min(44, int(w * 0.034))))
-        cta_font = self._load_caption_font(max(28, min(54, int(w * 0.041))))
-        sub_font = self._load_caption_font(max(18, min(28, int(w * 0.022))))
+        safe_margin_x = int(w * 0.08)
+        safe_margin_y = int(h * 0.08)
+        layout_engine = self._build_safe_text_layout(
+            size=size,
+            safe_area={"top": 0.08, "bottom": 0.08, "left": 0.08, "right": 0.08},
+        )
+
+        def _area_from_pixels(left_px: int, top_px: int, right_px: int, bottom_px: int) -> Dict[str, float]:
+            return {
+                "left": max(0.0, min(1.0, float(left_px) / max(1.0, float(w)))),
+                "top": max(0.0, min(1.0, float(top_px) / max(1.0, float(h)))),
+                "right": max(0.0, min(1.0, float(w - right_px) / max(1.0, float(w)))),
+                "bottom": max(0.0, min(1.0, float(h - bottom_px) / max(1.0, float(h)))),
+            }
 
         logo_path = str(branding.get("logo_path") or "").strip()
         logo_bottom = int(h * 0.12)
@@ -374,26 +396,180 @@ class VideoGenerator:
             except Exception:
                 logo_bottom = int(h * 0.12)
 
-        channel_name = str(branding.get("channel_name") or "").strip()
-        if channel_name:
-            bbox = draw.textbbox((0, 0), channel_name, font=title_font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((w - tw) / 2, logo_bottom + int(h * 0.03)), channel_name, font=title_font, fill=primary_color)
+        title_lines = [
+            str(line or "").strip()
+            for line in list(branding.get("channel_title_lines") or [])
+            if str(line or "").strip()
+        ][:2]
+        if not title_lines:
+            fallback_name = str(branding.get("channel_name") or "").strip()
+            if fallback_name:
+                title_lines = [fallback_name]
+
+        report_payload: Dict[str, Any] = {
+            "resolution": f"{w}x{h}",
+            "safe_area": {"top": 0.08, "bottom": 0.08, "left": 0.08, "right": 0.08},
+            "channel_title_lines": title_lines,
+            "sections": {},
+        }
+
+        title_block_bottom = max(safe_margin_y, logo_bottom + int(h * 0.04))
+        if title_lines:
+            title_gap = max(8, int(h * 0.014))
+            title_primary_area = _area_from_pixels(
+                safe_margin_x,
+                title_block_bottom,
+                w - safe_margin_x,
+                title_block_bottom + int(h * 0.12),
+            )
+            title_primary_layout = layout_engine.fit_text_block(
+                fixed_lines=[title_lines[0]],
+                area=title_primary_area,
+                preferred_font_size=max(38, min(74, int(w * 0.052))),
+                min_font_size=max(24, min(34, int(w * 0.026))),
+                max_lines=1,
+                line_spacing_ratio=1.10,
+            )
+            if not title_primary_layout.get("fits"):
+                raise ValueError("Endcard layout failure: channel name does not fit safe area.")
+            title_primary_layout = layout_engine.render_text_block(
+                draw=draw,
+                layout=title_primary_layout,
+                fill=(primary_color[0], primary_color[1], primary_color[2], 255),
+                shadow=(0, 0, 0, 180),
+            )
+            report_payload["sections"]["channel_name"] = {
+                "text_fits": bool(title_primary_layout.get("fits")),
+                "overflow_detected": bool(title_primary_layout.get("overflow_detected")),
+                "font_size_used": int(title_primary_layout.get("font_size_used") or 0),
+                "line_count": int(title_primary_layout.get("line_count") or 0),
+                "lines": list(title_primary_layout.get("lines") or []),
+            }
+            title_block_bottom = max(
+                title_block_bottom,
+                max((box.get("y", 0) + box.get("height", 0)) for box in title_primary_layout.get("rendered_boxes") or [{"y": title_block_bottom, "height": int(h * 0.08)}]),
+            )
+
+            if len(title_lines) > 1:
+                slogan_top = title_block_bottom + title_gap
+                slogan_area = _area_from_pixels(
+                    safe_margin_x,
+                    slogan_top,
+                    w - safe_margin_x,
+                    slogan_top + int(h * 0.10),
+                )
+                slogan_layout = layout_engine.fit_text_block(
+                    fixed_lines=[title_lines[1]],
+                    area=slogan_area,
+                    preferred_font_size=max(28, min(58, int(w * 0.040))),
+                    min_font_size=max(20, min(30, int(w * 0.022))),
+                    max_lines=1,
+                    line_spacing_ratio=1.10,
+                )
+                if not slogan_layout.get("fits"):
+                    raise ValueError("Endcard layout failure: channel slogan does not fit safe area.")
+                slogan_layout = layout_engine.render_text_block(
+                    draw=draw,
+                    layout=slogan_layout,
+                    fill=(secondary_color[0], secondary_color[1], secondary_color[2], 255),
+                    shadow=(0, 0, 0, 180),
+                )
+                report_payload["sections"]["channel_slogan"] = {
+                    "text_fits": bool(slogan_layout.get("fits")),
+                    "overflow_detected": bool(slogan_layout.get("overflow_detected")),
+                    "font_size_used": int(slogan_layout.get("font_size_used") or 0),
+                    "line_count": int(slogan_layout.get("line_count") or 0),
+                    "lines": list(slogan_layout.get("lines") or []),
+                }
+                title_block_bottom = max(
+                    title_block_bottom,
+                    max((box.get("y", 0) + box.get("height", 0)) for box in slogan_layout.get("rendered_boxes") or [{"y": slogan_top, "height": int(h * 0.06)}]),
+                )
 
         lines = list(branding.get("final_message_lines") or [])[:3]
-        cta_y = max(int(h * 0.40), logo_bottom + int(h * 0.12))
-        for idx, line in enumerate(lines):
-            bbox = draw.textbbox((0, 0), line, font=cta_font)
-            tw = bbox[2] - bbox[0]
-            shadow_y = cta_y + (idx * int(h * 0.065))
-            draw.text(((w - tw) / 2 + 2, shadow_y + 2), line, font=cta_font, fill=(0, 0, 0, 180))
-            draw.text(((w - tw) / 2, shadow_y), line, font=cta_font, fill=secondary_color if idx > 0 else primary_color)
+        cta_top = max(int(h * 0.44), title_block_bottom + int(h * 0.07))
+        cta_area = _area_from_pixels(
+            safe_margin_x,
+            cta_top,
+            w - safe_margin_x,
+            min(h - safe_margin_y - int(h * 0.12), cta_top + int(h * 0.26)),
+        )
+        cta_layout = layout_engine.fit_text_block(
+            fixed_lines=lines,
+            area=cta_area,
+            preferred_font_size=max(28, min(54, int(w * 0.041))),
+            min_font_size=max(20, min(32, int(w * 0.025))),
+            max_lines=max(1, len(lines)),
+            line_spacing_ratio=1.22,
+        )
+        if not cta_layout.get("fits"):
+            raise ValueError("Endcard layout failure: CTA block does not fit safe area.")
+        cta_layout = layout_engine.render_text_block(
+            draw=draw,
+            layout=cta_layout,
+            fill=(secondary_color[0], secondary_color[1], secondary_color[2], 255),
+            shadow=(0, 0, 0, 180),
+        )
+        report_payload["sections"]["cta"] = {
+            "text_fits": bool(cta_layout.get("fits")),
+            "overflow_detected": bool(cta_layout.get("overflow_detected")),
+            "font_size_used": int(cta_layout.get("font_size_used") or 0),
+            "line_count": int(cta_layout.get("line_count") or 0),
+            "lines": list(cta_layout.get("lines") or []),
+        }
 
-        subtitle = "Uma mensagem de fe para continuar com voce."
-        bbox = draw.textbbox((0, 0), subtitle, font=sub_font)
-        tw = bbox[2] - bbox[0]
-        subtitle_y = min(int(h * 0.84), cta_y + max(1, len(lines)) * int(h * 0.067) + int(h * 0.05))
-        draw.text(((w - tw) / 2, subtitle_y), subtitle, font=sub_font, fill=(235, 235, 235))
+        subtitle = "Uma mensagem de fé para continuar com você."
+        subtitle_area = _area_from_pixels(
+            safe_margin_x,
+            h - safe_margin_y - int(h * 0.10),
+            w - safe_margin_x,
+            h - safe_margin_y,
+        )
+        subtitle_layout = layout_engine.fit_text_block(
+            fixed_lines=[subtitle],
+            area=subtitle_area,
+            preferred_font_size=max(18, min(28, int(w * 0.022))),
+            min_font_size=max(16, min(24, int(w * 0.018))),
+            max_lines=1,
+            line_spacing_ratio=1.10,
+        )
+        if not subtitle_layout.get("fits"):
+            raise ValueError("Endcard layout failure: closing subtitle does not fit safe area.")
+        subtitle_layout = layout_engine.render_text_block(
+            draw=draw,
+            layout=subtitle_layout,
+            fill=(235, 235, 235, 255),
+            shadow=(0, 0, 0, 180),
+        )
+        report_payload["sections"]["closing_phrase"] = {
+            "text_fits": bool(subtitle_layout.get("fits")),
+            "overflow_detected": bool(subtitle_layout.get("overflow_detected")),
+            "font_size_used": int(subtitle_layout.get("font_size_used") or 0),
+            "line_count": int(subtitle_layout.get("line_count") or 0),
+            "lines": list(subtitle_layout.get("lines") or []),
+        }
+
+        if isinstance(layout_report, dict):
+            layout_report.clear()
+            overall_overflow = any(
+                bool((section or {}).get("overflow_detected"))
+                for section in (report_payload.get("sections") or {}).values()
+            )
+            overall_fits = all(
+                bool((section or {}).get("text_fits"))
+                for section in (report_payload.get("sections") or {}).values()
+            )
+            report_payload["text_fits"] = overall_fits
+            report_payload["overflow_detected"] = overall_overflow
+            report_payload["font_size_used"] = max(
+                int((section or {}).get("font_size_used") or 0)
+                for section in (report_payload.get("sections") or {}).values()
+            )
+            report_payload["line_count"] = sum(
+                int((section or {}).get("line_count") or 0)
+                for section in (report_payload.get("sections") or {}).values()
+            )
+            layout_report.update(report_payload)
 
         return np.array(base.convert("RGB"))
 
@@ -418,13 +594,13 @@ class VideoGenerator:
         except Exception:
             return clip
 
-    def _apply_scene_transition_style(self, clip, transition_sec: float = 0.18):
+    def _apply_scene_transition_style(self, clip, transition_sec: float = DEFAULT_SCENE_TRANSITION_SEC):
         if clip is None:
             return None
         return self._apply_soft_fade(
             clip,
-            fade_in_sec=max(0.08, float(transition_sec or 0.18) * 0.65),
-            fade_out_sec=max(0.10, float(transition_sec or 0.18)),
+            fade_in_sec=max(0.12, float(transition_sec or DEFAULT_SCENE_TRANSITION_SEC) * 0.70),
+            fade_out_sec=max(0.16, float(transition_sec or DEFAULT_SCENE_TRANSITION_SEC)),
         )
 
     def _caption_font_candidates(self) -> List[str]:
@@ -444,6 +620,18 @@ class VideoGenerator:
             except Exception:
                 continue
         return ImageFont.load_default()
+
+    def _build_safe_text_layout(
+        self,
+        size=(1080, 1920),
+        *,
+        safe_area: Optional[Dict[str, float]] = None,
+    ) -> SafeTextLayout:
+        return SafeTextLayout(
+            size=size,
+            font_loader=self._load_caption_font,
+            safe_area=safe_area,
+        )
 
     def _measure_caption_text_width(self, draw, text: str, font) -> float:
         try:
@@ -476,45 +664,40 @@ class VideoGenerator:
         size=(1080, 1920),
         max_lines: int = 2,
         reserved_bottom_ratio: float = 0.0,
+        safe_area_override: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
-        from PIL import Image, ImageDraw
-
-        cleaned = re.sub(r"\s+", " ", str(text or "").strip())
-        img = Image.new("RGBA", size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-
         w, h = size
-        margin_x = int(w * 0.07)
-        max_width = max(120, w - 2 * margin_x)
-        max_height = max(72, int(h * 0.15))
+        margin_x = int(w * CAPTION_SAFE_AREA_X_RATIO)
         base_size = max(24, min(72, int(w * 0.055)))
         min_size = max(14, min(28, int(w * 0.022)))
-
-        last_font = self._load_caption_font(min_size)
-        last_lines = self._wrap_caption_words(cleaned, draw, last_font, max_width)
-        last_line_h = int(getattr(last_font, "size", min_size) * 1.20)
-
-        for font_size in range(base_size, min_size - 1, -2):
-            font = self._load_caption_font(font_size)
-            lines = self._wrap_caption_words(cleaned, draw, font, max_width)
-            line_h = int(getattr(font, "size", font_size) * 1.20)
-            total_h = len(lines) * line_h
-            last_font = font
-            last_lines = lines
-            last_line_h = line_h
-            if lines and len(lines) <= max_lines and total_h <= max_height:
-                return {
-                    "fits": True,
-                    "font": font,
-                    "lines": lines,
-                    "line_h": line_h,
-                }
-
+        safe_area = {
+            "top": CAPTION_SAFE_AREA_TOP_RATIO,
+            "bottom": max(CAPTION_SAFE_AREA_BOTTOM_RATIO, float(reserved_bottom_ratio or 0.0)),
+            "left": CAPTION_SAFE_AREA_X_RATIO,
+            "right": CAPTION_SAFE_AREA_X_RATIO,
+        }
+        if isinstance(safe_area_override, dict):
+            safe_area.update({k: float(v) for k, v in safe_area_override.items() if v is not None})
+        layout = self._build_safe_text_layout(
+            size=size,
+            safe_area=safe_area,
+        )
+        metrics = layout.fit_text_block(
+            text=re.sub(r"\s+", " ", str(text or "").strip()),
+            area=safe_area,
+            preferred_font_size=base_size,
+            min_font_size=min_size,
+            max_lines=max_lines,
+            line_spacing_ratio=1.20,
+        )
         return {
-            "fits": False,
-            "font": last_font,
-            "lines": last_lines,
-            "line_h": last_line_h,
+            "fits": bool(metrics.get("fits")),
+            "font": metrics.get("font"),
+            "lines": list(metrics.get("lines") or []),
+            "line_h": int(metrics.get("line_height") or 0),
+            "font_size_used": int(metrics.get("font_size_used") or 0),
+            "overflow_detected": bool(metrics.get("overflow_detected")),
+            "layout": metrics,
         }
 
     def _split_caption_text_for_overlay(
@@ -628,6 +811,8 @@ class VideoGenerator:
         max_lines: int = 2,
         vertical_anchor: str = "bottom",
         reserved_bottom_ratio: float = 0.0,
+        layout_report: Optional[Dict[str, Any]] = None,
+        safe_area_override: Optional[Dict[str, float]] = None,
     ):
         from PIL import Image, ImageDraw, ImageFont
         import numpy as np
@@ -637,13 +822,14 @@ class VideoGenerator:
         draw = ImageDraw.Draw(img)
 
         w, h = size
-        margin_x = int(w * 0.07)
-        margin_bottom = max(int(h * 0.12), int(h * max(0.0, float(reserved_bottom_ratio or 0.0))))
+        margin_x = int(w * CAPTION_SAFE_AREA_X_RATIO)
+        margin_bottom = max(int(h * CAPTION_SAFE_AREA_BOTTOM_RATIO), int(h * max(0.0, float(reserved_bottom_ratio or 0.0))))
         layout = self._caption_layout_metrics(
             text,
             size=size,
             max_lines=max_lines,
             reserved_bottom_ratio=reserved_bottom_ratio,
+            safe_area_override=safe_area_override,
         )
         chosen_font = layout.get("font")
         chosen_lines = list(layout.get("lines") or [])
@@ -658,13 +844,13 @@ class VideoGenerator:
         text_block_h = len(chosen_lines) * chosen_line_h
         anchor = str(vertical_anchor or "").strip().lower()
         if anchor == "top":
-            y = max(int(h * 0.08), int(h * 0.08))
+            y = max(int(h * CAPTION_SAFE_AREA_TOP_RATIO), int(h * CAPTION_SAFE_AREA_TOP_RATIO))
         elif anchor == "center":
             y = int((h - text_block_h) / 2)
-            y = max(int(h * 0.08), y)
+            y = max(int(h * CAPTION_SAFE_AREA_TOP_RATIO), y)
         else:
             y = h - margin_bottom - text_block_h
-            y = max(int(h * 0.08), y)
+            y = max(int(h * CAPTION_SAFE_AREA_TOP_RATIO), y)
 
         outline = (0, 0, 0, 255)
         fill = (int(text_color[0]), int(text_color[1]), int(text_color[2]), 255)
@@ -714,6 +900,30 @@ class VideoGenerator:
             for off in [(1, 1), (-1, -1), (1, -1), (-1, 1)]:
                 draw.text((fx + off[0], fy + off[1]), footer, font=footer_font, fill=(0, 0, 0, 255))
             draw.text((fx, fy), footer, font=footer_font, fill=(255, 255, 255, 230))
+
+        if isinstance(layout_report, dict):
+            safe_area = {
+                "top": CAPTION_SAFE_AREA_TOP_RATIO,
+                "bottom": max(CAPTION_SAFE_AREA_BOTTOM_RATIO, float(reserved_bottom_ratio or 0.0)),
+                "left": CAPTION_SAFE_AREA_X_RATIO,
+                "right": CAPTION_SAFE_AREA_X_RATIO,
+            }
+            if isinstance(safe_area_override, dict):
+                safe_area.update({k: float(v) for k, v in safe_area_override.items() if v is not None})
+            layout_report.clear()
+            layout_report.update(
+                {
+                    "resolution": f"{w}x{h}",
+                    "safe_area": safe_area,
+                    "text_fits": bool(layout.get("fits")),
+                    "overflow_detected": bool(layout.get("overflow_detected")),
+                    "font_size_used": int(layout.get("font_size_used") or getattr(chosen_font, "size", 0) or 0),
+                    "line_count": len(chosen_lines),
+                    "vertical_anchor": anchor,
+                    "footer_present": bool(footer),
+                    "lines": chosen_lines,
+                }
+            )
 
         return np.array(img)
 
@@ -950,23 +1160,52 @@ class VideoGenerator:
 
     def _default_opening_text(self, channel_name: str) -> str:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
-        return f"No canal {safe_channel}, prepare o seu coracao para uma historia biblica que pode transformar o seu dia."
+        return f"No canal {safe_channel}, prepare o seu coração para uma história bíblica que pode transformar o seu dia."
 
     def _default_reflection_text(self, plan: Optional[Dict[str, Any]] = None, scenes: Optional[List[Dict[str, Any]]] = None) -> str:
         plan = plan if isinstance(plan, dict) else {}
         title = str(plan.get("title") or "").strip()
         base_theme = title or "esta mensagem"
         return (
-            f"Que a reflexao final sobre {base_theme} nos lembre que Deus continua presente, "
-            "cura o coracao e responde a quem persevera em fe."
+            f"Que a reflexão final sobre {base_theme} nos lembre que Deus continua presente, "
+            "cura o coração e responde a quem persevera em fé."
         )
 
     def _default_closing_text(self, channel_name: str) -> str:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
         return (
-            f"Se esta mensagem falou com voce, curta este video, comente o que Deus ministrou ao seu coracao, "
-            f"compartilhe com quem precisa desta palavra, inscreva-se no canal {safe_channel} e ative o sininho para nao perder as proximas mensagens."
+            f"Se esta mensagem falou com você, curta este vídeo, comente o que Deus ministrou ao seu coração, "
+            f"compartilhe com quem precisa desta palavra, inscreva-se no canal {safe_channel} e ative o sininho para não perder as próximas mensagens."
         )
+
+    def _default_channel_slogan(self) -> str:
+        return "ONDE A FÉ SE TORNA ATITUDE!"
+
+    def _resolve_endcard_channel_lines(
+        self,
+        channel_name: str,
+        channel_slogan: Optional[str] = None,
+    ) -> List[str]:
+        original_name = re.sub(r"\s+", " ", str(channel_name or "").strip())
+        safe_name = original_name
+        safe_slogan = re.sub(r"\s+", " ", str(channel_slogan or "").strip())
+        if not safe_slogan and re.search(r"onde\s+a\s+f[ée]\s+se\s+torna\s+atitude", safe_name, flags=re.IGNORECASE):
+            safe_slogan = self._default_channel_slogan()
+        if safe_slogan:
+            safe_name = re.sub(
+                r"[\s\-|,:;]*!?\s*onde\s+a\s+f[ée]\s+se\s+torna\s+atitude!?\s*$",
+                "",
+                safe_name,
+                flags=re.IGNORECASE,
+            ).strip()
+            if "!" in original_name and safe_name and not safe_name.endswith("!"):
+                safe_name = safe_name.rstrip(" .,-:;|") + "!"
+        if not safe_name:
+            safe_name = "Herdeiros das Promessas!"
+        lines = [safe_name]
+        if safe_slogan and safe_slogan.lower() != safe_name.lower():
+            lines.append(safe_slogan)
+        return lines[:2]
 
     def _compose_segmented_narration_audio(
         self,
@@ -976,6 +1215,7 @@ class VideoGenerator:
         voice_style: Optional[str] = None,
         voice_gender: Optional[str] = None,
         pause_duration_sec: float = 1.25,
+        initial_silence_duration_sec: float = 0.0,
     ) -> Dict[str, Any]:
         try:
             from moviepy.editor import AudioFileClip, concatenate_audioclips, AudioClip
@@ -990,21 +1230,40 @@ class VideoGenerator:
         cta_audio_path = None
         cta_audio_clip = None
         silence_clip = None
+        initial_silence_clip = None
         combined_clip = None
         combined_audio_path = main_audio_path
         pause_duration_sec = max(0.0, float(pause_duration_sec or 0.0))
+        initial_silence_duration_sec = max(0.0, float(initial_silence_duration_sec or 0.0))
         try:
+            fps = int(getattr(main_audio_clip, "fps", 44100) or 44100)
+            if initial_silence_duration_sec > 0:
+                initial_silence_clip = AudioClip(lambda t: 0, duration=initial_silence_duration_sec, fps=fps)
             if cta_text:
                 cta_audio_path = self.generate_audio(cta_text, voice_style=voice_style, voice_gender=voice_gender)
                 if not cta_audio_path or not os.path.exists(cta_audio_path):
                     raise Exception("Falha ao gerar o audio do CTA.")
                 cta_audio_clip = AudioFileClip(cta_audio_path)
-                fps = int(getattr(main_audio_clip, "fps", 44100) or 44100)
+                sequence = []
+                if initial_silence_clip is not None:
+                    sequence.append(initial_silence_clip)
+                sequence.append(main_audio_clip)
                 if pause_duration_sec > 0:
                     silence_clip = AudioClip(lambda t: 0, duration=pause_duration_sec, fps=fps)
-                    combined_clip = concatenate_audioclips([main_audio_clip, silence_clip, cta_audio_clip])
-                else:
-                    combined_clip = concatenate_audioclips([main_audio_clip, cta_audio_clip])
+                    sequence.append(silence_clip)
+                sequence.append(cta_audio_clip)
+                combined_clip = concatenate_audioclips(sequence)
+                combined_audio_path = os.path.join(self.output_dir, f"narration_{uuid.uuid4().hex}.mp3")
+                combined_clip.write_audiofile(
+                    combined_audio_path,
+                    fps=fps,
+                    nbytes=2,
+                    codec="mp3",
+                    bitrate="192k",
+                    logger=None,
+                )
+            elif initial_silence_clip is not None:
+                combined_clip = concatenate_audioclips([initial_silence_clip, main_audio_clip])
                 combined_audio_path = os.path.join(self.output_dir, f"narration_{uuid.uuid4().hex}.mp3")
                 combined_clip.write_audiofile(
                     combined_audio_path,
@@ -1021,10 +1280,11 @@ class VideoGenerator:
                 "cta_audio_path": cta_audio_path,
                 "main_duration_sec": round(float(getattr(main_audio_clip, "duration", 0.0) or 0.0), 2),
                 "cta_duration_sec": round(float(getattr(cta_audio_clip, "duration", 0.0) or 0.0), 2) if cta_audio_clip is not None else 0.0,
+                "initial_silence_duration_sec": round(initial_silence_duration_sec, 2),
                 "pause_duration_sec": round(pause_duration_sec, 2),
             }
         finally:
-            for clip in [combined_clip, silence_clip, cta_audio_clip, main_audio_clip]:
+            for clip in [combined_clip, initial_silence_clip, silence_clip, cta_audio_clip, main_audio_clip]:
                 try:
                     if clip is not None:
                         clip.close()
@@ -1076,6 +1336,13 @@ class VideoGenerator:
             plan.get("closing_image_path"),
             plan.get("closing_image_url"),
         )
+        channel_slogan = _pick(
+            branding.get("channel_slogan"),
+            plan.get("channel_slogan"),
+            os.getenv("YOUTUBE_CHANNEL_SLOGAN"),
+            os.getenv("CHANNEL_SLOGAN"),
+        )
+        channel_title_lines = self._resolve_endcard_channel_lines(channel_name, channel_slogan=channel_slogan)
 
         final_message = branding.get("final_message") or plan.get("final_message") or [
             "Curta, comente e compartilhe",
@@ -1096,6 +1363,8 @@ class VideoGenerator:
 
         return {
             "channel_name": channel_name,
+            "channel_slogan": channel_slogan or (channel_title_lines[1] if len(channel_title_lines) > 1 else ""),
+            "channel_title_lines": channel_title_lines,
             "logo_candidate": logo_candidate,
             "logo_path": self._resolve_input_image_path(logo_candidate),
             "opening_image_candidate": opening_image_candidate,
@@ -1253,6 +1522,7 @@ class VideoGenerator:
         opening_text = self._default_opening_text(channel_name)
         reflection_text = self._normalize_tts_text(str(plan.get("reflection_text") or "").strip()) or self._default_reflection_text(plan, scenes)
         closing_text = self._default_closing_text(channel_name)
+        intro_opening_hold_sec = DEFAULT_OPENING_SILENCE_SEC
         pause_duration_sec = 1.25
         end_screen_target_duration_sec = 15.0
         cleaned_scene_texts = [self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "") for scene in scenes]
@@ -1272,7 +1542,7 @@ class VideoGenerator:
 
         for attempt in range(3):
             body_est = self._estimate_text_duration_with_voice(body_text, voice_style=voice_style, voice_gender=voice_gender)
-            total_est = opening_est + body_est + closing_est + pause_duration_sec
+            total_est = intro_opening_hold_sec + opening_est + body_est + closing_est + pause_duration_sec
             planning_attempts.append({
                 "attempt": attempt + 1,
                 "body_word_count": self._count_words(body_text),
@@ -1306,7 +1576,7 @@ class VideoGenerator:
         closing_est = self._estimate_text_duration_with_voice(closing_text, voice_style=voice_style, voice_gender=voice_gender)
         story_est = self._estimate_text_duration_with_voice(story_text, voice_style=voice_style, voice_gender=voice_gender)
         reflection_est = self._estimate_text_duration_with_voice(reflection_text, voice_style=voice_style, voice_gender=voice_gender)
-        total_est = opening_est + body_est + closing_est + pause_duration_sec
+        total_est = intro_opening_hold_sec + opening_est + body_est + closing_est + pause_duration_sec
 
         if len(scene_texts) != len(scenes):
             scene_texts = self._redistribute_body_text_to_scenes(body_text, scenes)
@@ -1342,6 +1612,7 @@ class VideoGenerator:
             "scene_texts": scene_texts,
             "scene_estimated_durations_sec": [round(value, 2) for value in scene_estimates],
             "planning_attempts": planning_attempts,
+            "intro_opening_hold_sec": round(intro_opening_hold_sec, 2),
             "pause_duration_sec": round(pause_duration_sec, 2),
             "end_screen_target_duration_sec": round(end_screen_target_duration_sec, 2),
         }
@@ -1985,6 +2256,7 @@ class VideoGenerator:
             max_lines=3,
             vertical_anchor="center",
             reserved_bottom_ratio=0.0,
+            safe_area_override={"top": 0.08, "bottom": 0.08, "left": 0.08, "right": 0.08},
         )
         overlay_clip = self._clip_from_rgba(overlay_arr, duration)
         overlay_clip = self._apply_motion_effect(
@@ -2582,6 +2854,177 @@ class VideoGenerator:
                 "risky_block_indices": sorted(set(risky_blocks)),
             },
         }
+
+    def _build_official_scene_timeline(
+        self,
+        *,
+        scenes: List[Dict[str, Any]],
+        scene_caption_sync: Dict[str, Any],
+        planned_scene_durations: List[float],
+        opening_text: str,
+        opening_image: str,
+        title_duration: float,
+        initial_opening_silence_sec: float,
+        cta_text: str,
+        closing_image: str,
+        pause_before_cta_sec: float,
+        cta_duration: float,
+        end_duration: float,
+        timeline_source: str,
+        transition_name: str = "fade",
+    ) -> List[Dict[str, Any]]:
+        scene_count = len(scenes or [])
+        sync_timelines = scene_caption_sync.get("scene_timelines") or []
+        official_timeline: List[Dict[str, Any]] = []
+        title_duration = max(0.0, float(title_duration or 0.0))
+        initial_opening_silence_sec = max(0.0, float(initial_opening_silence_sec or 0.0))
+        pause_before_cta_sec = max(0.0, float(pause_before_cta_sec or 0.0))
+        cta_duration = max(0.0, float(cta_duration or 0.0))
+        end_duration = max(0.0, float(end_duration or 0.0))
+        if title_duration > 0:
+            opening_audio_start = min(title_duration, initial_opening_silence_sec) if str(opening_text or "").strip() else 0.0
+            opening_audio_end = title_duration if str(opening_text or "").strip() else opening_audio_start
+            opening_caption_start = opening_audio_start if str(opening_text or "").strip() else 0.0
+            opening_caption_end = opening_audio_end if str(opening_text or "").strip() else opening_caption_start
+            official_timeline.append({
+                "scene": 0,
+                "kind": "opening",
+                "text": self._normalize_tts_text(opening_text or ""),
+                "audio_start": round(opening_audio_start, 3),
+                "audio_end": round(opening_audio_end, 3),
+                "scene_start": 0.0,
+                "scene_end": round(title_duration, 3),
+                "caption_start": round(opening_caption_start, 3),
+                "caption_end": round(opening_caption_end, 3),
+                "image": opening_image or "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": False,
+                "caption_blocks": [],
+            })
+        previous_scene_end = title_duration
+
+        for idx in range(scene_count):
+            scene = scenes[idx] if idx < len(scenes) and isinstance(scenes[idx], dict) else {}
+            clean_text = self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "")
+            sync_items = list(sync_timelines[idx] or []) if idx < len(sync_timelines) else []
+            planned_audio_duration = float(planned_scene_durations[idx]) if idx < len(planned_scene_durations) else float(scene.get("_estimated_narration_sec") or 0.0)
+
+            if sync_items:
+                audio_start = min(float(item.get("global_start") or 0.0) for item in sync_items)
+                audio_end = max(float(item.get("global_end") or 0.0) for item in sync_items)
+            else:
+                audio_start = previous_scene_end + DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC
+                audio_end = audio_start + max(0.0, planned_audio_duration)
+
+            minimum_audio_start = previous_scene_end + DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC
+            shift_sec = 0.0
+            audio_start = max(previous_scene_end, float(audio_start or 0.0))
+            if audio_start < minimum_audio_start:
+                shift_sec = minimum_audio_start - audio_start
+                audio_start += shift_sec
+                audio_end += shift_sec
+            audio_end = max(audio_start, float(audio_end or 0.0))
+            scene_start = max(previous_scene_end, audio_start - (DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC))
+            caption_start = max(scene_start + DEFAULT_SCENE_IMAGE_LEAD_SEC, audio_start - DEFAULT_SCENE_CAPTION_LEAD_SEC)
+            caption_end = max(caption_start, audio_end)
+            scene_end = max(audio_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC, caption_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC)
+
+            caption_blocks: List[Dict[str, Any]] = []
+            if sync_items:
+                for block_index, item in enumerate(sync_items):
+                    block_start = float(item.get("global_start") or audio_start) + shift_sec
+                    block_end = max(block_start, float(item.get("global_end") or audio_end) + shift_sec)
+                    if block_index == 0:
+                        block_start = caption_start
+                    caption_blocks.append({
+                        "block_index": int(item.get("block_index") or block_index),
+                        "caption": str(item.get("caption") or clean_text).strip(),
+                        "start": round(max(0.0, block_start - scene_start), 3),
+                        "end": round(max(0.0, block_end - scene_start), 3),
+                        "global_start": round(block_start, 3),
+                        "global_end": round(block_end, 3),
+                        "source": "audio_timeline",
+                    })
+            elif clean_text:
+                caption_blocks.append({
+                    "block_index": 0,
+                    "caption": clean_text,
+                    "start": round(max(0.0, caption_start - scene_start), 3),
+                    "end": round(max(0.0, caption_end - scene_start), 3),
+                    "global_start": round(caption_start, 3),
+                    "global_end": round(caption_end, 3),
+                    "source": "scene_text_fallback",
+                })
+
+            entry = {
+                "scene": idx + 1,
+                "kind": "story",
+                "text": clean_text,
+                "audio_start": round(audio_start, 3),
+                "audio_end": round(audio_end, 3),
+                "scene_start": round(scene_start, 3),
+                "scene_end": round(scene_end, 3),
+                "caption_start": round(caption_start, 3),
+                "caption_end": round(caption_end, 3),
+                "image": "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": bool(sync_items and timeline_source != "text_fallback"),
+                "caption_blocks": caption_blocks,
+            }
+            official_timeline.append(entry)
+            previous_scene_end = float(entry["scene_end"])
+
+        if pause_before_cta_sec > 0 or cta_duration > 0:
+            cta_audio_start = previous_scene_end + pause_before_cta_sec
+            cta_audio_end = cta_audio_start + cta_duration
+            cta_scene_end = cta_audio_end + (DEFAULT_SCENE_AUDIO_MARGIN_SEC if cta_duration > 0 else 0.0)
+            official_timeline.append({
+                "scene": scene_count + 1,
+                "kind": "closing",
+                "text": self._normalize_tts_text(cta_text or ""),
+                "audio_start": round(cta_audio_start, 3),
+                "audio_end": round(cta_audio_end, 3),
+                "scene_start": round(previous_scene_end, 3),
+                "scene_end": round(cta_scene_end, 3),
+                "caption_start": round(cta_audio_start, 3),
+                "caption_end": round(cta_audio_end, 3),
+                "image": closing_image or "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": False,
+                "caption_blocks": [{
+                    "block_index": 0,
+                    "caption": self._normalize_tts_text(cta_text or ""),
+                    "start": round(max(0.0, cta_audio_start - previous_scene_end), 3),
+                    "end": round(max(0.0, cta_audio_end - previous_scene_end), 3),
+                    "global_start": round(cta_audio_start, 3),
+                    "global_end": round(cta_audio_end, 3),
+                    "source": "cta_timeline",
+                }] if str(cta_text or "").strip() and cta_duration > 0 else [],
+            })
+            previous_scene_end = cta_scene_end
+
+        if end_duration > 0:
+            official_timeline.append({
+                "scene": scene_count + 2,
+                "kind": "endcard",
+                "text": "",
+                "audio_start": round(previous_scene_end, 3),
+                "audio_end": round(previous_scene_end, 3),
+                "scene_start": round(previous_scene_end, 3),
+                "scene_end": round(previous_scene_end + end_duration, 3),
+                "caption_start": round(previous_scene_end, 3),
+                "caption_end": round(previous_scene_end, 3),
+                "image": closing_image or "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": False,
+                "caption_blocks": [],
+            })
+
+        return official_timeline
 
     def review_plan(self, plan: dict):
         if not isinstance(plan, dict):
@@ -4343,12 +4786,14 @@ $synth.Dispose()
                 if part
             ).strip()
             cta_narration_text = str(planning_meta.get("cta_text") or planning_meta.get("closing_text") or "").strip()
+            initial_opening_silence_sec = float(planning_meta.get("intro_opening_hold_sec") or DEFAULT_OPENING_SILENCE_SEC)
             pause_before_cta_sec = float(planning_meta.get("pause_duration_sec") or 1.25)
             render_report["audio_generation"] = {
                 "final_text_sent_to_tts": final_narration_text,
                 "text_char_count": len(final_narration_text),
                 "text_word_count": self._count_words(final_narration_text),
                 "cta_text_sent_to_tts": cta_narration_text,
+                "initial_opening_silence_sec": round(initial_opening_silence_sec, 2),
                 "pause_before_cta_sec": round(pause_before_cta_sec, 2),
             }
 
@@ -4364,6 +4809,7 @@ $synth.Dispose()
                     voice_style=voice_style,
                     voice_gender=voice_gender,
                     pause_duration_sec=pause_before_cta_sec,
+                    initial_silence_duration_sec=initial_opening_silence_sec,
                 )
                 main_audio_path = segmented_audio.get("audio_path")
                 tts_debug = dict(self._last_tts_debug or {})
@@ -4372,6 +4818,7 @@ $synth.Dispose()
                 tts_debug["segmented_audio"] = {
                     "main_audio_path": segmented_audio.get("main_audio_path"),
                     "cta_audio_path": segmented_audio.get("cta_audio_path"),
+                    "initial_silence_duration_sec": segmented_audio.get("initial_silence_duration_sec"),
                     "pause_duration_sec": segmented_audio.get("pause_duration_sec"),
                     "main_duration_sec": segmented_audio.get("main_duration_sec"),
                     "cta_duration_sec": segmented_audio.get("cta_duration_sec"),
@@ -4407,6 +4854,7 @@ $synth.Dispose()
                 )
                 render_report["audio_generation"]["final_audio_duration_sec"] = round(actual_total_audio_dur, 2)
                 render_report["audio_generation"]["output_path"] = main_audio_path
+                render_report["audio_generation"]["initial_opening_silence_sec"] = segmented_audio.get("initial_silence_duration_sec")
                 render_report["audio_generation"]["pause_before_cta_sec"] = segmented_audio.get("pause_duration_sec")
                 render_report["audio_generation"]["main_narration_duration_sec"] = segmented_audio.get("main_duration_sec")
                 render_report["audio_generation"]["cta_duration_sec"] = segmented_audio.get("cta_duration_sec")
@@ -4442,8 +4890,8 @@ $synth.Dispose()
                 opening_duration_est = self._estimate_text_duration_with_voice(current_opening, voice_style=voice_style, voice_gender=voice_gender)
                 closing_duration_est = self._estimate_text_duration_with_voice(current_closing, voice_style=voice_style, voice_gender=voice_gender)
                 current_body_estimate = self._estimate_text_duration_with_voice(current_body_text, voice_style=voice_style, voice_gender=voice_gender)
-                body_actual_estimate = max(1.0, actual_total_audio_dur - opening_duration_est - closing_duration_est)
-                target_body_max_sec = max(8.0, (real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur) - opening_duration_est - closing_duration_est)
+                body_actual_estimate = max(1.0, actual_total_audio_dur - initial_opening_silence_sec - opening_duration_est - closing_duration_est)
+                target_body_max_sec = max(8.0, (real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur) - initial_opening_silence_sec - opening_duration_est - closing_duration_est)
                 if max_requested_duration > 0 and actual_total_audio_dur > 0:
                     shrink_ratio = max(0.35, min(0.95, float(real_audio_target_max_sec or max_requested_duration) / max(1.0, actual_total_audio_dur)))
                     proportional_target = min(current_body_estimate, body_actual_estimate) * shrink_ratio
@@ -4471,7 +4919,8 @@ $synth.Dispose()
                 planning_meta["char_count"] = len(" ".join([current_opening, new_body_text, current_closing]).strip())
                 planning_meta["planning_target_max_sec"] = round(real_audio_target_max_sec, 2) if real_audio_target_max_sec > 0 else 0.0
                 planning_meta["estimated_total_duration_sec"] = round(
-                    float(planning_meta.get("opening_duration_est_sec") or 0.0)
+                    float(planning_meta.get("intro_opening_hold_sec") or 0.0)
+                    + float(planning_meta.get("opening_duration_est_sec") or 0.0)
                     + float(planning_meta.get("body_duration_est_sec") or 0.0)
                     + float(planning_meta.get("closing_duration_est_sec") or 0.0)
                     + float(planning_meta.get("pause_duration_sec") or 0.0),
@@ -4520,20 +4969,22 @@ $synth.Dispose()
             render_report["narration_plan"] = planning_meta
             closing_has_narration = bool(str(planning_meta.get("closing_text") or "").strip())
             pause_before_cta_sec = float(planning_meta.get("pause_duration_sec") or pause_before_cta_sec or 1.25)
+            initial_opening_silence_sec = float(planning_meta.get("intro_opening_hold_sec") or initial_opening_silence_sec or DEFAULT_OPENING_SILENCE_SEC)
             end_screen_target_duration_sec = float(planning_meta.get("end_screen_target_duration_sec") or 15.0)
             opening_est = float(planning_meta.get("opening_duration_est_sec") or 0.0)
             closing_est = float(planning_meta.get("closing_duration_est_sec") or 0.0)
             reflection_est = float(planning_meta.get("reflection_duration_est_sec") or 0.0)
             body_est = float(planning_meta.get("body_duration_est_sec") or 0.0)
             scale_ratio = (actual_total_audio_dur / estimated_total_duration) if estimated_total_duration > 0 else 1.0
-            title_clip_duration = min(5.0, max(3.0, round(opening_est * scale_ratio, 2))) if opening_est > 0 else 3.4
+            opening_voice_duration = round(max(0.0, opening_est * scale_ratio), 2)
+            title_clip_duration = round(max(initial_opening_silence_sec, initial_opening_silence_sec + opening_voice_duration), 2) if opening_est > 0 else round(max(3.4, initial_opening_silence_sec), 2)
             cta_clip_duration = min(15.0, max(8.0, round(closing_est * scale_ratio, 2))) if closing_has_narration else 0.0
             end_clip_duration = min(18.0, max(12.0, round(end_screen_target_duration_sec, 2)))
             voice_closing_duration = cta_clip_duration if closing_has_narration else 0.0
             silent_cinematic_tail_sec = end_clip_duration
             target_video_duration = max(actual_total_audio_dur, actual_total_audio_dur + silent_cinematic_tail_sec)
             if (title_clip_duration + voice_closing_duration) >= actual_total_audio_dur:
-                title_clip_duration = max(1.6, min(title_clip_duration, actual_total_audio_dur * 0.22))
+                title_clip_duration = max(initial_opening_silence_sec, min(title_clip_duration, actual_total_audio_dur * 0.28))
                 voice_closing_duration = max(0.0, min(voice_closing_duration, actual_total_audio_dur * 0.24))
             reflection_duration_sec = round(max(0.0, reflection_est * scale_ratio), 2) if reflection_est > 0 else 0.0
             body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - voice_closing_duration - pause_before_cta_sec)
@@ -4545,6 +4996,25 @@ $synth.Dispose()
             )
             full_caption_timeline = caption_timeline_details.get("timeline") or []
             caption_timeline_source = str(caption_timeline_details.get("source") or "text_fallback")
+            if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and final_narration_text:
+                shifted_timeline = self._caption_timeline_from_text(
+                    final_narration_text,
+                    max(0.1, actual_total_audio_dur - initial_opening_silence_sec),
+                )
+                adjusted_timeline = []
+                for item in shifted_timeline:
+                    try:
+                        start = float(item.get("start") or 0.0) + initial_opening_silence_sec
+                        end = float(item.get("end") or 0.0) + initial_opening_silence_sec
+                    except Exception:
+                        continue
+                    adjusted = dict(item)
+                    adjusted["start"] = round(min(actual_total_audio_dur, start), 3)
+                    adjusted["end"] = round(min(actual_total_audio_dur, max(start, end)), 3)
+                    adjusted_timeline.append(adjusted)
+                if adjusted_timeline:
+                    full_caption_timeline = adjusted_timeline
+                    caption_timeline_source = "text_fallback_shifted_by_opening_silence"
             if not full_caption_timeline:
                 raise Exception("Falha ao gerar a timeline de legendas a partir do audio final.")
             caption_text_joined = " ".join(
@@ -4570,6 +5040,8 @@ $synth.Dispose()
                 "captions_contain_punctuation": bool(re.search(r"[,.!?;:…\"“”'‘’\-–—]", caption_text_joined)),
                 "captions_match_narration_source": normalized_caption_text == normalized_tts_text,
             }
+            if normalized_caption_text != normalized_tts_text:
+                raise Exception("Falha de validacao: legenda-base difere do texto enviado ao TTS.")
 
             requested_duration = actual_total_audio_dur
             duration_plan = self._plan_scene_visual_durations(
@@ -4612,8 +5084,14 @@ $synth.Dispose()
             render_report["plain_background_detected_at_end"] = False
             render_report["unexpected_extra_video_created"] = False
             render_report["visual_plan"]["caption_max_lines"] = 2
-            render_report["visual_plan"]["caption_reserved_bottom_ratio"] = 0.14
+            render_report["visual_plan"]["caption_reserved_bottom_ratio"] = CAPTION_SAFE_AREA_BOTTOM_RATIO
             render_report["visual_plan"]["caption_vertical_anchor"] = "bottom"
+            render_report["visual_plan"]["safe_area_left_right_ratio"] = CAPTION_SAFE_AREA_X_RATIO
+            render_report["visual_plan"]["safe_area_top_ratio"] = CAPTION_SAFE_AREA_TOP_RATIO
+            render_report["visual_plan"]["safe_area_bottom_ratio"] = CAPTION_SAFE_AREA_BOTTOM_RATIO
+            render_report["duration_plan"]["initial_opening_silence_sec"] = round(initial_opening_silence_sec, 2)
+            render_report["duration_plan"]["opening_voice_duration_sec"] = round(opening_voice_duration, 2)
+            render_report["duration_plan"]["scene_audio_margin_sec"] = round(DEFAULT_SCENE_AUDIO_MARGIN_SEC, 2)
             render_report["duration_plan"]["range_decision"] = duration_range_report.get("decision")
             render_report["duration_plan"]["range_decision_reason"] = duration_range_report.get("decision_reason")
             render_report["duration_plan"]["above_requested_range_sec"] = duration_range_report.get("above_requested_range_sec")
@@ -4734,13 +5212,51 @@ $synth.Dispose()
                 planning_meta,
                 legacy_scene_windows=legacy_scene_windows,
                 title_duration=title_clip_duration,
-                end_duration=voice_closing_duration,
+                end_duration=voice_closing_duration + pause_before_cta_sec,
                 actual_total_audio_dur=actual_total_audio_dur,
                 timeline_source=caption_timeline_source,
             )
             render_report["sync_validation"]["caption_timeline_source"] = caption_timeline_source
             render_report["sync_validation"]["caption_block_sync"] = scene_caption_sync.get("block_sync_report") or {}
-            scene_time_cursor = title_clip_duration
+            official_scene_timeline = self._build_official_scene_timeline(
+                scenes=scenes,
+                scene_caption_sync=scene_caption_sync,
+                planned_scene_durations=planned_scene_durations,
+                opening_text=str(planning_meta.get("opening_text") or "").strip(),
+                opening_image=start_bg_path or "",
+                title_duration=title_clip_duration,
+                initial_opening_silence_sec=initial_opening_silence_sec,
+                cta_text=cta_narration_text,
+                closing_image="",
+                pause_before_cta_sec=pause_before_cta_sec,
+                cta_duration=voice_closing_duration,
+                end_duration=end_clip_duration,
+                timeline_source=caption_timeline_source,
+                transition_name="fade",
+            )
+            render_report["scene_timeline"] = official_scene_timeline
+            opening_timeline_entry = next((item for item in official_scene_timeline if str(item.get("kind") or "") == "opening"), None)
+            closing_timeline_entry = next((item for item in official_scene_timeline if str(item.get("kind") or "") == "closing"), None)
+            endcard_timeline_entry = next((item for item in official_scene_timeline if str(item.get("kind") or "") == "endcard"), None)
+            if isinstance(opening_timeline_entry, dict):
+                title_clip_duration = max(0.0, float(opening_timeline_entry.get("scene_end") or 0.0) - float(opening_timeline_entry.get("scene_start") or 0.0))
+            if isinstance(closing_timeline_entry, dict):
+                pause_before_cta_sec = max(0.0, float(closing_timeline_entry.get("audio_start") or 0.0) - float(closing_timeline_entry.get("scene_start") or 0.0))
+                voice_closing_duration = max(0.0, float(closing_timeline_entry.get("audio_end") or 0.0) - float(closing_timeline_entry.get("audio_start") or 0.0))
+            if isinstance(endcard_timeline_entry, dict):
+                end_clip_duration = max(0.0, float(endcard_timeline_entry.get("scene_end") or 0.0) - float(endcard_timeline_entry.get("scene_start") or 0.0))
+            story_timeline_entries = [item for item in official_scene_timeline if str(item.get("kind") or "") == "story"]
+            render_report["timeline_report"] = {
+                "official_scene_timeline_enabled": True,
+                "scene_count": len(official_scene_timeline),
+                "opening_present": bool(opening_timeline_entry),
+                "closing_present": bool(closing_timeline_entry),
+                "endcard_present": bool(endcard_timeline_entry),
+                "timeline_source": caption_timeline_source,
+                "image_lead_sec": round(DEFAULT_SCENE_IMAGE_LEAD_SEC, 2),
+                "caption_lead_sec": round(DEFAULT_SCENE_CAPTION_LEAD_SEC, 2),
+                "scene_audio_margin_sec": round(DEFAULT_SCENE_AUDIO_MARGIN_SEC, 2),
+            }
             last_story_scene_clip = None
             last_story_scene_image_path = None
 
@@ -4845,13 +5361,13 @@ $synth.Dispose()
 
                 bg_clip = ImageClip(bg_frame)
                 self._assert_clip_not_none(bg_clip, "scene_bg_clip", {"scene_index": i})
-                planned_scene_duration = float(planned_scene_durations[i]) if i < len(planned_scene_durations) else float(scene.get("_estimated_narration_sec") or 5.0)
-                required_caption_duration = 0.0
-                if isinstance(scene_caption_sync, dict):
-                    sync_durations = scene_caption_sync.get("scene_required_durations") or []
-                    if i < len(sync_durations):
-                        required_caption_duration = float(sync_durations[i] or 0.0)
-                scene_dur = max(planned_scene_duration or 0.0, min_scene_visual_duration, required_caption_duration)
+                scene_timeline_entry = story_timeline_entries[i] if i < len(story_timeline_entries) else {}
+                planned_scene_duration = max(0.0, float(scene_timeline_entry.get("audio_end") or 0.0) - float(scene_timeline_entry.get("audio_start") or 0.0))
+                required_caption_duration = max(0.0, float(scene_timeline_entry.get("caption_end") or 0.0) - float(scene_timeline_entry.get("caption_start") or 0.0))
+                scene_dur = max(
+                    min_scene_visual_duration,
+                    max(0.0, float(scene_timeline_entry.get("scene_end") or 0.0) - float(scene_timeline_entry.get("scene_start") or 0.0)),
+                )
                 bg_clip = self._set_clip_duration(bg_clip, scene_dur)
                 reuse_count = int(scene_reuse_counts.get(bg_image_path, 0))
                 scene_reuse_counts[bg_image_path] = reuse_count + 1
@@ -4885,18 +5401,22 @@ $synth.Dispose()
                     "scene_qc_status": str((scene or {}).get("scene_qc_status") or "").strip() if isinstance(scene, dict) else "",
                     "scene_qc": (scene or {}).get("scene_qc") if isinstance(scene, dict) and isinstance((scene or {}).get("scene_qc"), dict) else {},
                     "clean_narration": clean_text,
+                    "scene_start_sec": scene_timeline_entry.get("scene_start"),
+                    "scene_end_sec": scene_timeline_entry.get("scene_end"),
+                    "audio_start_sec": scene_timeline_entry.get("audio_start"),
+                    "audio_end_sec": scene_timeline_entry.get("audio_end"),
+                    "caption_start_sec": scene_timeline_entry.get("caption_start"),
+                    "caption_end_sec": scene_timeline_entry.get("caption_end"),
                     "audio_duration_sec": round(planned_scene_duration, 2),
+                    "required_caption_duration_sec": round(required_caption_duration, 2),
+                    "scene_audio_margin_sec": round(DEFAULT_SCENE_AUDIO_MARGIN_SEC, 2),
                     "planned_visual_duration_sec": round(planned_scene_duration, 2),
                     "final_visual_duration_sec": round(scene_dur, 2),
                 })
+                if i < len(story_timeline_entries):
+                    story_timeline_entries[i]["image"] = bg_image_path
 
-                scene_caption_timeline = []
-                if isinstance(scene_caption_sync, dict):
-                    sync_timelines = scene_caption_sync.get("scene_timelines") or []
-                    if i < len(sync_timelines):
-                        scene_caption_timeline = list(sync_timelines[i] or [])
-                if not scene_caption_timeline:
-                    scene_caption_timeline = self._slice_caption_timeline(full_caption_timeline, scene_time_cursor, scene_time_cursor + scene_dur)
+                scene_caption_timeline = list(scene_timeline_entry.get("caption_blocks") or [])
                 overlay_clips = []
                 expanded_scene_timeline = []
                 for item in scene_caption_timeline:
@@ -4905,7 +5425,7 @@ $synth.Dispose()
                             item,
                             size=video_size,
                             max_lines=2,
-                            reserved_bottom_ratio=0.14,
+                            reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
                         )
                     )
                 for item in expanded_scene_timeline:
@@ -4918,48 +5438,20 @@ $synth.Dispose()
                         caption,
                         size=video_size,
                         text_color=(255, 255, 255),
-                        reserved_bottom_ratio=0.14,
+                        reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
                     )
                     overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
                     overlay_clip = self._set_clip_start(overlay_clip, start)
                     overlay_clips.append(overlay_clip)
-                if not overlay_clips:
-                    fallback_caption_timeline = self._caption_timeline_from_text(clean_text, scene_dur)
-                    expanded_fallback_timeline = []
-                    for item in fallback_caption_timeline:
-                        expanded_fallback_timeline.extend(
-                            self._expand_caption_item_for_overlay(
-                                item,
-                                size=video_size,
-                                max_lines=2,
-                                reserved_bottom_ratio=0.14,
-                            )
-                        )
-                    for item in expanded_fallback_timeline:
-                        caption = str(item.get("caption") or "").strip()
-                        start = float(item.get("start") or 0.0)
-                        end = float(item.get("end") or 0.0)
-                        if not caption or end <= start:
-                            continue
-                        overlay_arr = self.create_text_overlay(
-                            caption,
-                            size=video_size,
-                            text_color=(255, 255, 255),
-                            reserved_bottom_ratio=0.14,
-                        )
-                        overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
-                        overlay_clip = self._set_clip_start(overlay_clip, start)
-                        overlay_clips.append(overlay_clip)
 
                 for overlay_clip in overlay_clips:
                     self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
                 clip_scene = CompositeVideoClip([bg_clip] + overlay_clips, size=video_size)
                 self._assert_clip_not_none(clip_scene, "scene_composite_clip", {"scene_index": i})
-                clip_scene = self._apply_scene_transition_style(clip_scene, transition_sec=0.16)
+                clip_scene = self._apply_scene_transition_style(clip_scene, transition_sec=DEFAULT_SCENE_TRANSITION_SEC)
                 clips.append(clip_scene)
                 last_story_scene_clip = clip_scene
                 last_story_scene_image_path = bg_image_path
-                scene_time_cursor += scene_dur
 
                 if bg_image_path and "temp_" in bg_image_path and bg_image_path not in cached_temp_paths:
                     try:
@@ -4996,6 +5488,10 @@ $synth.Dispose()
                     closing_background = {"path": generated_end_bg, "source": "generated_fallback_background"}
                     end_bg_path = generated_end_bg
             _track_image_path(end_bg_path)
+            for item in official_scene_timeline:
+                kind = str(item.get("kind") or "")
+                if kind in {"closing", "endcard"}:
+                    item["image"] = end_bg_path or ""
             if closing_has_narration:
                 img_cta = self._build_cinematic_endcard_frame(
                     branding_profile,
@@ -5180,8 +5676,14 @@ $synth.Dispose()
                     "has_automatic_opening": bool((planning_meta.get("opening_text") or "").strip()),
                     "has_automatic_closing": bool((planning_meta.get("closing_text") or "").strip()) or bool(silent_cinematic_tail_sec > 0),
                     "timeline_source": caption_timeline_source,
+                    "uses_official_scene_timeline": True,
+                    "official_scene_timeline_count": len(official_scene_timeline),
+                    "scene_image_lead_sec": round(DEFAULT_SCENE_IMAGE_LEAD_SEC, 2),
+                    "scene_caption_lead_sec": round(DEFAULT_SCENE_CAPTION_LEAD_SEC, 2),
+                    "scene_post_audio_margin_sec": round(DEFAULT_SCENE_AUDIO_MARGIN_SEC, 2),
                 }
                 sync_validation["caption_block_sync"] = scene_caption_sync.get("block_sync_report") or {}
+                sync_validation["timeline_report"] = render_report.get("timeline_report") or {}
                 render_report["sync_validation"] = sync_validation
                 render_report["narration_completed"] = bool(sync_validation["captions_synced_with_audio"] and sync_validation["video_synced_with_audio"])
                 render_report["story_completed"] = True

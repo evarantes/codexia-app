@@ -45,9 +45,11 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
+from app.services.cinematic_quality_service import CinematicQualityService
 from app.services.financial_guardian import youtube_auto_financial_adapter
 from app.services.financial_guardian.youtube_observability import youtube_financial_guardian_observability_service
 from app.services.financial_guardian_service import financial_guardian_service
+from app.services.global_settings_service import get_latest_settings, serialize_official_factory_settings
 from app.services.task_manager import (
     create_task,
     update_task,
@@ -66,6 +68,10 @@ from app.services.task_manager import (
 from app.services.youtube_auto_responder import auto_thank_comments
 from app.database import get_db, SessionLocal
 from app.services.video_factory import VideoFactory
+from app.modules.bible_video_factory.editorial_intelligence import (
+    EditorialIntelligenceService,
+    normalize_editorial_intelligence_settings,
+)
 from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
@@ -74,6 +80,15 @@ from app.routers.auth import get_current_admin_user, SECRET_KEY as _AUTH_SECRET_
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
 _CANCEL_ALL_KEY = "codexia:video_cancel_all"
 _CANCEL_ALL_TTL_SECONDS = 90
+_SCHEDULED_VIDEO_ACTIVE_STATUSES = (
+    "pending",
+    "queued",
+    "dispatching",
+    "processing",
+    "completed",
+    "ready",
+    "awaiting_publish",
+)
 # Lock file para quando Redis não está disponível (garante 1 job por vez)
 _lock_dir = "/data" if os.path.isdir("/data") else os.path.expanduser("~")
 _FACTORY_LOCK_PATH = os.path.join(_lock_dir, ".codexia_factory.lock")
@@ -673,6 +688,30 @@ def _kick_story_video_task_queue() -> Optional[str]:
 def _kick_story_video_task_queue_async():
     threading.Thread(target=_kick_story_video_task_queue, daemon=True).start()
 
+
+def _apply_youtube_auto_editorial_intelligence(
+    db: Optional[Session],
+    script: Any,
+    *,
+    ai_service: Any,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    plan = dict(script) if isinstance(script, dict) else {}
+    if not plan:
+        return plan
+    settings_row = get_latest_settings(db) if db is not None else None
+    settings_payload = normalize_editorial_intelligence_settings(
+        serialize_official_factory_settings(settings_row)
+    )
+    helper = EditorialIntelligenceService(CinematicQualityService(ai_service=ai_service))
+    result = helper.review_plan(
+        plan,
+        settings_payload,
+        task_id=str(task_id or "").strip() or None,
+    )
+    updates = result.get("plan_updates") if isinstance(result, dict) and isinstance(result.get("plan_updates"), dict) else {}
+    return updates or plan
+
 def _require_user_from_query_token(token: Optional[str], db: Session) -> User:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -904,6 +943,37 @@ def _last_log_line(logs: Optional[str], max_len: int = 220) -> str:
 def _is_mock_upload(upload_result: Any) -> bool:
     return isinstance(upload_result, dict) and upload_result.get("status") == "uploaded_mock"
 
+def _extract_uploaded_youtube_id(upload_result: Any) -> Optional[str]:
+    candidate = None
+    if isinstance(upload_result, dict):
+        if upload_result.get("error") or _is_mock_upload(upload_result):
+            return None
+        candidate = (
+            upload_result.get("id")
+            or upload_result.get("videoId")
+            or upload_result.get("youtube_video_id")
+        )
+    else:
+        candidate = upload_result
+    value = str(candidate or "").strip()
+    if not value or value in {"{}", "None"}:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,32}", value):
+        return None
+    return value
+
+def _build_youtube_watch_url(youtube_video_id: Optional[str]) -> Optional[str]:
+    video_id = str(youtube_video_id or "").strip()
+    if not video_id:
+        return None
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+def _serialize_upload_result(upload_result: Any) -> Dict[str, Any]:
+    if isinstance(upload_result, dict):
+        return dict(upload_result)
+    raw = str(upload_result or "").strip()
+    return {"raw": raw} if raw else {}
+
 def _publish_error_message(upload_result: Any, action_label: str = "publicar") -> str:
     """Mensagem amigável e consistente para falhas de upload no YouTube."""
     if _is_mock_upload(upload_result):
@@ -1078,6 +1148,75 @@ def _scheduled_video_processing_policy(
     if has_rendered_asset:
         policy["reason"] = "scheduled_video_already_has_rendered_asset"
     return policy
+
+
+def _normalize_scheduled_equivalence_value(value: Any, default: str = "") -> str:
+    normalized = re.sub(r"\s+", " ", str(value or default).strip()).lower()
+    return normalized or str(default or "").strip().lower()
+
+
+def _build_scheduled_video_equivalence_key(
+    *,
+    user_id: Optional[int],
+    theme: Any,
+    scheduled_for: Optional[datetime],
+    video_type: Any,
+) -> str:
+    safe_schedule = ""
+    if isinstance(scheduled_for, datetime):
+        safe_schedule = scheduled_for.replace(second=0, microsecond=0).isoformat()
+    return "|".join(
+        [
+            str(int(user_id)) if user_id is not None else "anonymous",
+            _normalize_scheduled_equivalence_value(theme, "geral"),
+            safe_schedule,
+            _normalize_scheduled_equivalence_value(video_type, "video"),
+        ]
+    )
+
+
+def _acquire_scheduled_video_creation_lock(db: Session, equivalence_key: str) -> None:
+    if not equivalence_key:
+        return
+    try:
+        lock_key = int(hashlib.sha256(equivalence_key.encode("utf-8")).hexdigest()[:16], 16)
+        if lock_key >= (1 << 63):
+            lock_key -= (1 << 64)
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+    except Exception:
+        # Ambiente não-PostgreSQL ou driver sem suporte: segue com o check defensivo em aplicação.
+        pass
+
+
+def _find_active_equivalent_scheduled_video(
+    db: Session,
+    *,
+    user_id: Optional[int],
+    theme: Any,
+    scheduled_for: Optional[datetime],
+    video_type: Any,
+) -> Optional[ScheduledVideo]:
+    if not isinstance(scheduled_for, datetime):
+        return None
+
+    query = db.query(ScheduledVideo).filter(
+        ScheduledVideo.scheduled_for == scheduled_for.replace(second=0, microsecond=0),
+        ScheduledVideo.status.in_(_SCHEDULED_VIDEO_ACTIVE_STATUSES),
+    )
+    if user_id is None:
+        query = query.filter(ScheduledVideo.user_id == None)
+    else:
+        query = query.filter(ScheduledVideo.user_id == int(user_id))
+
+    expected_theme = _normalize_scheduled_equivalence_value(theme, "geral")
+    expected_type = _normalize_scheduled_equivalence_value(video_type, "video")
+    for candidate in query.order_by(ScheduledVideo.id.asc()).all():
+        if _normalize_scheduled_equivalence_value(getattr(candidate, "theme", None), "geral") != expected_theme:
+            continue
+        if _normalize_scheduled_equivalence_value(getattr(candidate, "video_type", None), "video") != expected_type:
+            continue
+        return candidate
+    return None
 
 def _upsert_scheduled_from_production(db: Session, video: Video, mirror_index: Optional[Dict[str, ScheduledVideo]] = None):
     """Garante que vídeo READY/PUBLISHED da produção apareça na fila de aguardando publicação."""
@@ -1406,21 +1545,9 @@ def publish_video(video_id: int, db: Session = Depends(get_db)):
             tags=tags
         )
 
-        is_error = False
-        youtube_id = None
-        if isinstance(upload_result, dict):
-            if upload_result.get("error"):
-                is_error = True
-            elif _is_mock_upload(upload_result):
-                is_error = True
-            else:
-                youtube_id = upload_result.get("id") or str(upload_result)
-        else:
-            youtube_id = str(upload_result) if upload_result else None
-            if not youtube_id:
-                is_error = True
+        youtube_id = _extract_uploaded_youtube_id(upload_result)
 
-        if is_error or not youtube_id:
+        if not youtube_id:
             # Falha de publicação não deve destruir estado READY do vídeo gerado.
             # Isso permite corrigir credenciais e tentar publicar novamente sem reprocessar.
             video.status = "READY"
@@ -3205,6 +3332,8 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
         print(f"Migration check failed: {e}")
 
     saved_videos = []
+    created_videos = []
+    skipped_duplicates = []
     
     for item in plan:
         # Extrair dados do item
@@ -3217,13 +3346,42 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
         schedule_payload["source"] = "manual_schedule"
         schedule_payload["auto_processing_eligible"] = True
         schedule_payload["processing_mode"] = "scheduled_automation"
+        scheduled_for = datetime.strptime(
+            f"{item.get('date')} {item.get('videos', [{}])[0].get('time', '12:00')}",
+            "%Y-%m-%d %H:%M",
+        ) if item.get("date") else datetime.now().replace(second=0, microsecond=0)
+        theme = item.get("theme_of_day", "Geral")
+        video_type = item.get("videos", [{}])[0].get("type", "video") if isinstance(item.get("videos"), list) else item.get("type", "video")
+        equivalence_key = _build_scheduled_video_equivalence_key(
+            user_id=None,
+            theme=theme,
+            scheduled_for=scheduled_for,
+            video_type=video_type,
+        )
+        _acquire_scheduled_video_creation_lock(db, equivalence_key)
+        existing_video = _find_active_equivalent_scheduled_video(
+            db,
+            user_id=None,
+            theme=theme,
+            scheduled_for=scheduled_for,
+            video_type=video_type,
+        )
+        if existing_video is not None:
+            skipped_duplicates.append({
+                "existing_id": existing_video.id,
+                "theme": existing_video.theme,
+                "scheduled_for": scheduled_for.isoformat(),
+                "video_type": existing_video.video_type,
+                "status": existing_video.status,
+            })
+            continue
         
         video = ScheduledVideo(
-            theme=item.get("theme_of_day", "Geral"),
+            theme=theme,
             title=item.get("videos", [{}])[0].get("title", "Vídeo Agendado") if isinstance(item.get("videos"), list) else item.get("title", "Vídeo"),
             description=item.get("videos", [{}])[0].get("concept", "") if isinstance(item.get("videos"), list) else item.get("concept", ""),
-            scheduled_for=datetime.strptime(f"{item.get('date')} {item.get('videos', [{}])[0].get('time', '12:00')}", "%Y-%m-%d %H:%M") if item.get("date") else datetime.now(),
-            video_type=item.get("videos", [{}])[0].get("type", "video") if isinstance(item.get("videos"), list) else item.get("type", "video"),
+            scheduled_for=scheduled_for,
+            video_type=video_type,
             script_data=json.dumps(schedule_payload),
             status="queued", # Start as queued
             auto_post=item.get("videos", [{}])[0].get("auto_post", True) if isinstance(item.get("videos"), list) else item.get("auto_post", True),
@@ -3234,21 +3392,27 @@ def save_schedule(plan: List[Dict[str, Any]], background_tasks: BackgroundTasks,
         db.add(video)
         db.flush() # get ID
         saved_videos.append(video)
+        created_videos.append(video)
     
     db.commit()
     
     # Kickoff imediato do primeiro item para não depender exclusivamente do scheduler
     # (evita sensação de "não está gerando").
-    if saved_videos:
+    if created_videos:
         try:
             processing = db.query(ScheduledVideo).filter(ScheduledVideo.status == "processing").first()
             if not processing:
                 from app.services.video_processing import process_scheduled_video
-                background_tasks.add_task(process_scheduled_video, saved_videos[0].id)
+                background_tasks.add_task(process_scheduled_video, created_videos[0].id)
         except Exception as e:
             print(f"Erro ao iniciar geração imediata: {e}")
     
-    return {"message": "Schedule saved", "count": len(saved_videos)}
+    return {
+        "message": "Schedule saved",
+        "count": len(created_videos),
+        "deduplicated_count": len(skipped_duplicates),
+        "duplicates": skipped_duplicates[:20],
+    }
 
 def _queue_manual_scheduled_generation(
     video: ScheduledVideo,
@@ -3417,21 +3581,9 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
         tags=tags,
     )
 
-    is_error = False
-    video_id_value = None
-    if isinstance(upload_result, dict):
-        if upload_result.get("error"):
-            is_error = True
-        elif _is_mock_upload(upload_result):
-            is_error = True
-        else:
-            video_id_value = upload_result.get("id") or str(upload_result)
-    else:
-        video_id_value = str(upload_result) if upload_result else None
-        if not video_id_value:
-            is_error = True
+    video_id_value = _extract_uploaded_youtube_id(upload_result)
 
-    if is_error or not video_id_value:
+    if not video_id_value:
         # Mantém vídeo pronto para nova tentativa manual após configurar credenciais.
         if normalized_status in ("ready", "completed"):
             video.status = normalized_status
@@ -3444,7 +3596,12 @@ def publish_now_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     video.youtube_video_id = video_id_value
     video.status = "published"
     db.commit()
-    return {"status": "published", "youtube_video_id": video_id_value, "message": "Vídeo publicado com sucesso!"}
+    return {
+        "status": "published",
+        "youtube_video_id": video_id_value,
+        "youtube_url": _build_youtube_watch_url(video_id_value),
+        "message": "Vídeo publicado com sucesso!",
+    }
 
 @router.post("/schedule/{video_id}/republish")
 def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
@@ -3482,21 +3639,9 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
         tags=tags,
     )
 
-    is_error = False
-    video_id_value = None
-    if isinstance(upload_result, dict):
-        if upload_result.get("error"):
-            is_error = True
-        elif _is_mock_upload(upload_result):
-            is_error = True
-        else:
-            video_id_value = upload_result.get("id") or str(upload_result)
-    else:
-        video_id_value = str(upload_result) if upload_result else None
-        if not video_id_value:
-            is_error = True
+    video_id_value = _extract_uploaded_youtube_id(upload_result)
 
-    if is_error or not video_id_value:
+    if not video_id_value:
         err_msg = _publish_error_message(upload_result, action_label="republicar")
         video.description = _append_upload_error_note(video.description, err_msg)
         db.commit()
@@ -3506,7 +3651,12 @@ def republish_scheduled_video(video_id: int, db: Session = Depends(get_db)):
     video.youtube_video_id = video_id_value
     video.status = "published"
     db.commit()
-    return {"status": "published", "youtube_video_id": video_id_value, "message": "Vídeo republicado com sucesso!"}
+    return {
+        "status": "published",
+        "youtube_video_id": video_id_value,
+        "youtube_url": _build_youtube_watch_url(video_id_value),
+        "message": "Vídeo republicado com sucesso!",
+    }
 
 @router.delete("/schedule/{video_id}")
 def delete_scheduled_video(video_id: int, db: Session = Depends(get_db)):
@@ -4237,7 +4387,7 @@ def watch_task_video(task_id: str, token: Optional[str] = Query(None), db: Sessi
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     status = str((task.get("status") or "")).lower()
-    if status != "completed":
+    if status not in {"completed", "rendered_upload_failed"}:
         raise HTTPException(status_code=409, detail="Tarefa ainda não concluída.")
     result = task.get("result") or {}
     video_url = None
@@ -4273,7 +4423,7 @@ def watch_task_video_media(task_id: str, request: Request, token: Optional[str] 
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     status = str((task.get("status") or "")).lower()
-    if status != "completed":
+    if status not in {"completed", "rendered_upload_failed"}:
         raise HTTPException(status_code=409, detail="Tarefa ainda não concluída.")
     result = task.get("result") or {}
     video_url = None
@@ -5062,6 +5212,19 @@ def process_video_generation(request: VideoRequest, task_id):
                     },
                 )
                 guardian_db.commit()
+
+            update_task(task_id, progress=15, message="Aplicando revisão editorial no roteiro...")
+            heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
+            _raise_if_cancelled()
+            script = _apply_youtube_auto_editorial_intelligence(
+                guardian_db,
+                script,
+                ai_service=ai_service,
+                task_id=str(task_id),
+            )
+            update_task(task_id, result=_merged_task_result({
+                "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
+            }))
         
         # 2. Gerar Vídeo (16:9)
         # Passamos uma função de callback para atualizar o progresso
@@ -5135,6 +5298,10 @@ def process_video_generation(request: VideoRequest, task_id):
                 tags=script.get('tags', ['motivação', 'sucesso']),
                 thumbnail_path=(request.thumbnail_path or None),
             )
+            youtube_video_id = _extract_uploaded_youtube_id(upload_result)
+            youtube_url = _build_youtube_watch_url(youtube_video_id)
+            upload_payload = _serialize_upload_result(upload_result)
+            upload_status = "completed" if youtube_video_id else "failed"
             guardian_summary = None
             if guardian_db is not None and guardian_context is not None:
                 guardian_context = youtube_auto_financial_adapter.build_context(
@@ -5143,7 +5310,7 @@ def process_video_generation(request: VideoRequest, task_id):
                     script=script if isinstance(script, dict) else None,
                     video_result=video_result if isinstance(video_result, dict) else None,
                     user_id=guardian_user_id,
-                    status="completed",
+                    status="completed" if youtube_video_id else "rendered_upload_failed",
                 )
                 guardian_summary = {
                     "source_type": "youtube_auto",
@@ -5156,28 +5323,60 @@ def process_video_generation(request: VideoRequest, task_id):
                 financial_guardian_service.record_context_event(
                     guardian_db,
                     context=guardian_context,
-                    event_type="production_completed",
-                    stage="upload_completed",
+                    event_type="production_completed" if youtube_video_id else "production_failed",
+                    stage="upload_completed" if youtube_video_id else "upload_failed",
                     estimated_cost=guardian_context.estimated_cost,
                     actual_cost=guardian_context.actual_cost,
                     details={
                         "cache_summary": guardian_cache_summary,
-                        "upload_result": upload_result if isinstance(upload_result, dict) else {},
+                        "upload_result": upload_payload,
                         "estimated_savings": guardian_summary["estimated_savings"],
                     },
                 )
                 guardian_db.commit()
+            if not youtube_video_id:
+                err_msg = _publish_error_message(upload_result, action_label="publicar")
+                final_payload = _merged_task_result({
+                    "video_url": video_path,
+                    "title": script.get("title"),
+                    "description": description,
+                    "tags": script.get("tags"),
+                    "kind": "story" if request.mode == "story" else "topic",
+                    "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
+                    "audio_generation": audio_generation,
+                    "sync_validation": sync_validation,
+                    "executor_id": executor_id,
+                    "attempt_number": int(lease_info.get("attempt_number") or 1),
+                    "financial_guardian": guardian_summary,
+                    "upload_status": upload_status,
+                    "upload_result": upload_payload,
+                    "youtube_video_id": None,
+                    "youtube_url": None,
+                })
+                finalize_task_once(
+                    task_id,
+                    status="rendered_upload_failed",
+                    progress=100,
+                    message=f"Video renderizado com sucesso, mas o upload falhou: {err_msg}",
+                    result=final_payload,
+                )
+                return
             final_payload = _merged_task_result({
                 "video_url": video_path,
                 "title": script.get("title"),
                 "description": description,
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
+                "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
                 "audio_generation": audio_generation,
                 "sync_validation": sync_validation,
                 "executor_id": executor_id,
                 "attempt_number": int(lease_info.get("attempt_number") or 1),
                 "financial_guardian": guardian_summary,
+                "upload_status": upload_status,
+                "upload_result": upload_payload,
+                "youtube_video_id": youtube_video_id,
+                "youtube_url": youtube_url,
             })
             finalized = finalize_task_once(task_id, status="completed", progress=100, message="Vídeo gerado e publicado com sucesso!", result=final_payload)
             if finalized.get("finalized_now"):
@@ -5241,6 +5440,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 "description": script.get("description"),
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
+                "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
                 "audio_generation": audio_generation,
                 "sync_validation": sync_validation,
                 "executor_id": executor_id,

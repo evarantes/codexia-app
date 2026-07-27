@@ -6,6 +6,8 @@ from app.database import SessionLocal
 from app.models import ScheduledVideo
 from app.services.ai_generator import AIContentGenerator
 
+_PROCESSABLE_QUEUE_STATUSES = ("queued", "dispatching")
+
 def _load_scheduled_processing_policy(video):
     from app.routers.youtube import _load_scheduled_video_payload, _scheduled_video_processing_policy
 
@@ -32,6 +34,28 @@ def _record_processing_refusal(video, payload, policy, trigger_mode: str):
     current_desc = (video.description or "").strip()
     if note not in current_desc:
         video.description = (current_desc + "\n\n" + note).strip() if current_desc else note
+
+
+def _claim_scheduled_video_for_processing(db, video_id: int) -> bool:
+    updated = (
+        db.query(ScheduledVideo)
+        .filter(
+            ScheduledVideo.id == video_id,
+            ScheduledVideo.status.in_(_PROCESSABLE_QUEUE_STATUSES),
+        )
+        .update(
+            {
+                ScheduledVideo.status: "processing",
+                ScheduledVideo.updated_at: datetime.datetime.now(),
+            },
+            synchronize_session=False,
+        )
+    )
+    if updated:
+        db.commit()
+        return True
+    db.rollback()
+    return False
 
 def process_scheduled_video(video_id: int, trigger_mode: str = "auto"):
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -114,8 +138,14 @@ def process_scheduled_video(video_id: int, trigger_mode: str = "auto"):
              except Exception as e:
                  print(f"Erro ao verificar arquivo existente: {e}")
 
-        video.status = "processing"
-        db.commit()
+        if not _claim_scheduled_video_for_processing(db, video_id):
+            latest = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+            latest_status = getattr(latest, "status", None)
+            print(f"Vídeo agendado {video_id} não pôde ser reservado pelo worker. Status atual: {latest_status}")
+            return
+        video = db.query(ScheduledVideo).filter(ScheduledVideo.id == video_id).first()
+        if not video:
+            return
         
         # Recuperar dados do script (safe load)
         if not isinstance(script_data, dict):
