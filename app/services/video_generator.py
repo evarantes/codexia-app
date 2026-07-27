@@ -2548,7 +2548,58 @@ class VideoGenerator:
             timeline[-1]["end"] = total_duration
         return timeline
 
-    def _caption_timeline_from_segments(self, segments: List[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
+    def _realign_caption_timeline_to_narration(
+        self,
+        timeline: List[Dict[str, Any]],
+        narration: str,
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(timeline, list) or not timeline:
+            return timeline
+        normalized_narration = self._normalize_tts_text(narration)
+        narration_tokens = [token for token in normalized_narration.split() if token]
+        if not narration_tokens:
+            return timeline
+
+        target_counts = [
+            max(1, len(str(item.get("caption") or "").strip().split()))
+            for item in timeline
+        ]
+        total_target = max(1, sum(target_counts))
+        remaining_tokens = len(narration_tokens)
+        remaining_target = total_target
+        token_cursor = 0
+        aligned: List[Dict[str, Any]] = []
+
+        for idx, item in enumerate(timeline):
+            blocks_left = len(timeline) - idx
+            minimum_reserved = max(0, blocks_left - 1)
+            if idx == len(timeline) - 1:
+                take_count = remaining_tokens
+            else:
+                proportional = int(round(remaining_tokens * (target_counts[idx] / max(1, remaining_target))))
+                take_count = max(1, min(remaining_tokens - minimum_reserved, proportional))
+            if take_count <= 0:
+                take_count = max(1, remaining_tokens)
+            caption_tokens = narration_tokens[token_cursor:token_cursor + take_count]
+            if not caption_tokens and remaining_tokens > 0:
+                caption_tokens = narration_tokens[token_cursor:token_cursor + 1]
+            token_cursor += len(caption_tokens)
+            remaining_tokens = max(0, len(narration_tokens) - token_cursor)
+            remaining_target = max(0, remaining_target - target_counts[idx])
+            aligned_item = dict(item)
+            aligned_item["caption"] = " ".join(caption_tokens).strip()
+            aligned.append(aligned_item)
+
+        if aligned and token_cursor < len(narration_tokens):
+            tail = " ".join(narration_tokens[token_cursor:]).strip()
+            if tail:
+                last_caption = str(aligned[-1].get("caption") or "").strip()
+                aligned[-1]["caption"] = f"{last_caption} {tail}".strip() if last_caption else tail
+
+        aligned = [item for item in aligned if str(item.get("caption") or "").strip()]
+        return aligned or timeline
+
+    def _caption_timeline_from_segments(self, segments: List[Dict[str, Any]], duration: float, narration: str = "") -> List[Dict[str, Any]]:
         total_duration = float(duration or 0.0)
         if total_duration <= 0 or not isinstance(segments, list):
             return []
@@ -2612,7 +2663,7 @@ class VideoGenerator:
         if timeline:
             timeline[0]["start"] = 0.0
             timeline[-1]["end"] = total_duration
-            return timeline
+            return self._realign_caption_timeline_to_narration(timeline, narration)
 
         approx: List[Dict[str, Any]] = []
         for seg in segments:
@@ -2651,7 +2702,7 @@ class VideoGenerator:
         if approx:
             approx[0]["start"] = 0.0
             approx[-1]["end"] = total_duration
-        return approx
+        return self._realign_caption_timeline_to_narration(approx, narration)
 
     def _build_caption_timeline(self, narration: str, duration: float, audio_path: Optional[str] = None) -> List[Dict[str, Any]]:
         details = self._build_caption_timeline_details(narration, duration, audio_path=audio_path)
@@ -2667,9 +2718,9 @@ class VideoGenerator:
                 info = self.ai_service.transcribe_audio_segments_detailed(audio_path, language="pt")
                 segments = info.get("segments") if isinstance(info, dict) else None
                 if isinstance(segments, list) and segments:
-                    timed = self._caption_timeline_from_segments(segments, total_duration)
+                    timed = self._caption_timeline_from_segments(segments, total_duration, narration=narration)
                     if timed:
-                        return {"timeline": timed, "source": "real_segments"}
+                        return {"timeline": timed, "source": "real_segments_aligned_to_narration"}
             except Exception:
                 pass
         return {
@@ -5022,8 +5073,8 @@ $synth.Dispose()
                 for item in full_caption_timeline
                 if str(item.get("caption") or "").strip()
             ).strip()
-            normalized_tts_text = re.sub(r"\s+", " ", final_narration_text).strip()
-            normalized_caption_text = re.sub(r"\s+", " ", caption_text_joined).strip()
+            normalized_tts_text = self._normalize_tts_text(final_narration_text)
+            normalized_caption_text = self._normalize_tts_text(caption_text_joined)
             render_report["utf8_audit"] = {
                 "final_text_sent_to_tts_unicode_escape": normalized_tts_text.encode("unicode_escape").decode("ascii"),
                 "captions_source_text_unicode_escape": normalized_caption_text.encode("unicode_escape").decode("ascii"),
