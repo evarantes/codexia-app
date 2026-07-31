@@ -3,13 +3,21 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.database import SessionLocal
+from app.models import Settings
 from app.models import VideoTask
-from app.modules.bible_video_factory.models import BibleVideoJob, BibleVideoMetric
+if TYPE_CHECKING:
+    from app.modules.bible_video_factory.models import BibleVideoJob, BibleVideoMetric
+
+
+def _bible_video_models():
+    from app.modules.bible_video_factory.models import BibleVideoJob, BibleVideoMetric
+    return BibleVideoJob, BibleVideoMetric
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -68,7 +76,7 @@ class FinancialContext:
 class BibleVideoFinancialAdapter:
     source_type = "bible_video_factory"
 
-    def build_context(self, job: BibleVideoJob) -> FinancialContext:
+    def build_context(self, job: Any) -> FinancialContext:
         return FinancialContext(
             source_type=self.source_type,
             context_id=str(getattr(job, "id", "") or ""),
@@ -111,10 +119,12 @@ class BibleVideoFinancialAdapter:
             job_id = int(context_id)
         except Exception:
             return None
+        BibleVideoJob, _ = _bible_video_models()
         job = db.query(BibleVideoJob).filter(BibleVideoJob.id == job_id).first()
         return self.build_context(job) if job else None
 
     def list_contexts_for_day(self, db: Session, *, user_id: Optional[int], day_start: datetime, day_end: datetime) -> list:
+        BibleVideoJob, _ = _bible_video_models()
         return db.query(BibleVideoJob).filter(
             BibleVideoJob.user_id == user_id,
             BibleVideoJob.created_at >= day_start,
@@ -122,6 +132,7 @@ class BibleVideoFinancialAdapter:
         ).all()
 
     def build_dashboard_metrics(self, db: Session, *, user_id: Optional[int]) -> Dict[str, Any]:
+        BibleVideoJob, BibleVideoMetric = _bible_video_models()
         jobs_q = db.query(BibleVideoJob).filter(BibleVideoJob.user_id == user_id)
         metrics = db.query(BibleVideoMetric).filter(BibleVideoMetric.user_id == user_id).all()
         completed_jobs = jobs_q.filter(BibleVideoJob.status.in_(["ready", "published"])).all()
@@ -150,11 +161,25 @@ class YouTubeAutoFinancialAdapter:
     source_type = "youtube_auto"
 
     def build_guardrail_config(self) -> Any:
-        return SimpleNamespace(
-            per_video_spend_limit=_env_float("YOUTUBE_AUTO_PER_VIDEO_SPEND_LIMIT", 0.0),
-            daily_spend_limit=_env_float("YOUTUBE_AUTO_DAILY_SPEND_LIMIT", 0.0),
-            monthly_spend_limit=_env_float("YOUTUBE_AUTO_MONTHLY_SPEND_LIMIT", 0.0),
-        )
+        per_video = _env_float("YOUTUBE_AUTO_PER_VIDEO_SPEND_LIMIT", 0.0)
+        daily = _env_float("YOUTUBE_AUTO_DAILY_SPEND_LIMIT", 0.0)
+        monthly = _env_float("YOUTUBE_AUTO_MONTHLY_SPEND_LIMIT", 0.0)
+        if any(v > 0 for v in (per_video, daily, monthly)):
+            return SimpleNamespace(per_video_spend_limit=per_video, daily_spend_limit=daily, monthly_spend_limit=monthly)
+        db = SessionLocal()
+        try:
+            row = db.query(Settings).order_by(Settings.id.desc()).first()
+            if row is None:
+                return SimpleNamespace(per_video_spend_limit=0.0, daily_spend_limit=0.0, monthly_spend_limit=0.0)
+            return SimpleNamespace(
+                per_video_spend_limit=_safe_float(getattr(row, "per_video_spend_limit", 0.0), 0.0),
+                daily_spend_limit=_safe_float(getattr(row, "daily_spend_limit", 0.0), 0.0),
+                monthly_spend_limit=_safe_float(getattr(row, "monthly_spend_limit", 0.0), 0.0),
+            )
+        except Exception:
+            return SimpleNamespace(per_video_spend_limit=0.0, daily_spend_limit=0.0, monthly_spend_limit=0.0)
+        finally:
+            db.close()
 
     def _estimate_cost(self, payload: Dict[str, Any], script: Optional[Dict[str, Any]] = None, video_result: Optional[Dict[str, Any]] = None) -> float:
         try:

@@ -1,0 +1,115 @@
+{
+  "updated_at": null,
+  "entries": [
+    {
+      "token": "bate-seba",
+      "spoken_form": "bate-seba",
+      "source": "default"
+    },
+    {
+      "token": "ezequias",
+      "spoken_form": "ezequias",
+      "source": "default"
+    },
+    {
+      "token": "galileia",
+      "spoken_form": "galileia",
+      "source": "default"
+    },
+    {
+      "token": "genesaré",
+      "spoken_form": "guenezaré",
+      "source": "default"
+    },
+    {
+      "token": "getsemani",
+      "spoken_form": "getsêmani",
+      "source": "default"
+    },
+    {
+      "token": "getsêmani",
+      "spoken_form": "getsêmani",
+      "source": "default"
+    },
+    {
+      "token": "issacar",
+      "spoken_form": "issacar",
+      "source": "default"
+    },
+    {
+      "token": "jerusalem",
+      "spoken_form": "jerusalém",
+      "source": "default"
+    },
+    {
+      "token": "joquebede",
+      "spoken_form": "joquebede",
+      "source": "default"
+    },
+    {
+      "token": "mael",
+      "spoken_form": "maél",
+      "source": "default"
+    },
+    {
+      "token": "mefibosete",
+      "spoken_form": "mefibosete",
+      "source": "default"
+    },
+    {
+      "token": "melquisedeque",
+      "spoken_form": "melquisedeque",
+      "source": "default"
+    },
+    {
+      "token": "nabucodonosor",
+      "spoken_form": "nabucodonosor",
+      "source": "default"
+    },
+    {
+      "token": "naftali",
+      "spoken_form": "naftali",
+      "source": "default"
+    },
+    {
+      "token": "quiriate jearim",
+      "spoken_form": "quiriate-jearim",
+      "source": "default"
+    },
+    {
+      "token": "quiriate-jearim",
+      "spoken_form": "quiriate-jearim",
+      "source": "default"
+    },
+    {
+      "token": "seol",
+      "spoken_form": "sheol",
+      "source": "default"
+    },
+    {
+      "token": "yeshua",
+      "spoken_form": "ieshua",
+      "source": "default"
+    },
+    {
+      "token": "yeshua hamashiach",
+      "spoken_form": "ieshua hamashíarr",
+      "source": "default"
+    },
+    {
+      "token": "yhvh",
+      "spoken_form": "iavé",
+      "source": "default"
+    },
+    {
+      "token": "yhwh",
+      "spoken_form": "iavé",
+      "source": "default"
+    },
+    {
+      "token": "zorobabel",
+      "spoken_form": "zorobabel",
+      "source": "default"
+    }
+  ]
+}

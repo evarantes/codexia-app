@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 ALLOWED_EDITORIAL_INTELLIGENCE_PROVIDERS = (
     "OpenAI",
     "OpenRouter",
+    "Gemini",
+    "Claude",
     "Local",
     "Disabled",
 )
@@ -50,9 +52,9 @@ def _normalize_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     lowered = _normalize_text(value).lower()
-    if lowered in {"1", "true", "yes", "sim", "on", "enabled"}:
+    if lowered in {"1", "true", "yes", "sim", "on", "enabled", "enable"}:
         return True
-    if lowered in {"0", "false", "no", "nao", "off", "disabled"}:
+    if lowered in {"0", "false", "no", "nao", "off", "disabled", "disable"}:
         return False
     return bool(default)
 
@@ -62,6 +64,9 @@ def _normalize_provider(value: Any) -> str:
     aliases = {
         "openai": "OpenAI",
         "openrouter": "OpenRouter",
+        "gemini": "Gemini",
+        "claude": "Claude",
+        "anthropic": "Claude",
         "local": "Local",
         "disabled": "Disabled",
         "disable": "Disabled",
@@ -115,6 +120,8 @@ def _default_models_for_provider(provider: str) -> List[str]:
         return ["openai/gpt-4o-mini"]
     if provider == "OpenAI":
         return ["gpt-4o-mini"]
+    if provider in {"Gemini", "Claude"}:
+        return []
     if provider == "Local":
         return ["heuristic"]
     return []
@@ -148,7 +155,7 @@ def _resolve_provider_chain(settings: Dict[str, Any]) -> List[str]:
         providers.insert(0, requested)
     if fallback not in providers:
         providers.append(fallback)
-    filtered = [provider for provider in providers if provider in {"OpenAI", "OpenRouter", "Local"}]
+    filtered = [provider for provider in providers if provider in {"OpenAI", "OpenRouter", "Gemini", "Claude", "Local"}]
     return filtered or ["OpenAI", "OpenRouter"]
 
 

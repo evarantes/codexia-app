@@ -117,6 +117,9 @@
                 <a href="#" @click="currentTab = 'settings'" :class="{'bg-indigo-700': currentTab === 'settings'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
                     <i class="fas fa-cog"></i> Configurações
                 </a>
+                <a href="#" @click="currentTab = 'ai_routing'; fetchAiRouting()" :class="{'bg-indigo-700': currentTab === 'ai_routing'}" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-indigo-700 transition">
+                    <i class="fas fa-route"></i> Roteamento IA
+                </a>
                 <a href="#" @click="logout" class="flex items-center gap-3 py-3 px-4 rounded hover:bg-red-700 transition mt-auto text-red-200 hover:text-white">
                     <i class="fas fa-sign-out-alt"></i> Sair
                 </a>
@@ -1323,6 +1326,251 @@
                     </div>
                 </div>
 
+                <div class="bg-white rounded-lg shadow p-6 mb-8 border-l-4 border-indigo-500">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                        <div>
+                            <h2 class="text-xl font-bold text-indigo-900">Séries programadas</h2>
+                            <p class="text-sm text-gray-600">Planejamento diário com produção antecipada, revisão humana e publicação na fila existente.</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="syncSeriesNow" class="bg-gray-100 text-gray-800 px-4 py-2 rounded hover:bg-gray-200 text-sm font-semibold">
+                                <i class="fas fa-sync-alt mr-1"></i> Sincronizar
+                            </button>
+                            <button @click="seriesFormOpen = !seriesFormOpen; if (seriesFormOpen) resetSeriesForm();" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 text-sm font-semibold">
+                                <i class="fas fa-plus mr-1"></i> Nova série
+                            </button>
+                        </div>
+                    </div>
+
+                    <div v-if="seriesFormOpen" class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-6">
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Nome interno</label>
+                                <input v-model="seriesForm.name" class="w-full border rounded px-3 py-2 text-sm" placeholder="Jornada da Fé">
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="block text-sm font-bold mb-1">Tema central</label>
+                                <input v-model="seriesForm.main_theme" class="w-full border rounded px-3 py-2 text-sm" placeholder="Como manter a fé nos dias difíceis">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Tipo</label>
+                                <select v-model="seriesForm.content_type" class="w-full border rounded px-3 py-2 text-sm">
+                                    <option value="reflection">Reflexão</option>
+                                    <option value="devotional">Devocional</option>
+                                    <option value="history">História</option>
+                                    <option value="study">Estudo</option>
+                                    <option value="motivational">Motivacional</option>
+                                    <option value="other">Outro</option>
+                                </select>
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="block text-sm font-bold mb-1">Objetivo</label>
+                                <textarea v-model="seriesForm.objective" class="w-full border rounded px-3 py-2 text-sm" rows="2" placeholder="Transformação desejada ao longo da série"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Público</label>
+                                <input v-model="seriesForm.target_audience" class="w-full border rounded px-3 py-2 text-sm" placeholder="Adultos cristãos">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Tom</label>
+                                <input v-model="seriesForm.tone" class="w-full border rounded px-3 py-2 text-sm" placeholder="Acolhedor e firme">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Início</label>
+                                <input v-model="seriesForm.start_date" type="date" class="w-full border rounded px-3 py-2 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Fim</label>
+                                <input v-model="seriesForm.end_date" type="date" class="w-full border rounded px-3 py-2 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Horário publicação</label>
+                                <input v-model="seriesForm.publication_time" type="time" class="w-full border rounded px-3 py-2 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Horário produção</label>
+                                <input v-model="seriesForm.production_time" type="time" class="w-full border rounded px-3 py-2 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Fuso</label>
+                                <input v-model="seriesForm.timezone" class="w-full border rounded px-3 py-2 text-sm" placeholder="America/Sao_Paulo">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Duração (min)</label>
+                                <input v-model.number="seriesForm.duration_minutes" type="number" min="1" max="60" class="w-full border rounded px-3 py-2 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Estilo narração</label>
+                                <input v-model="seriesForm.narration_style" class="w-full border rounded px-3 py-2 text-sm" placeholder="human">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Status inicial</label>
+                                <select v-model="seriesForm.status" class="w-full border rounded px-3 py-2 text-sm">
+                                    <option value="draft">Rascunho</option>
+                                    <option value="planned">Planejada</option>
+                                    <option value="active">Ativa</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-bold mb-1">Visibilidade</label>
+                                <select v-model="seriesForm.visibility" class="w-full border rounded px-3 py-2 text-sm">
+                                    <option value="unlisted">Não listado</option>
+                                    <option value="public">Público</option>
+                                    <option value="private">Privado</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="flex gap-3 mt-4">
+                            <button @click="createSeries" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 text-sm font-semibold">Salvar série</button>
+                            <button @click="seriesFormOpen = false" class="bg-gray-100 text-gray-800 px-4 py-2 rounded hover:bg-gray-200 text-sm font-semibold">Cancelar</button>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="bg-indigo-50 text-indigo-900">
+                                    <th class="p-3 text-left">Série</th>
+                                    <th class="p-3 text-left">Tema</th>
+                                    <th class="p-3 text-left">Início</th>
+                                    <th class="p-3 text-left">Fim</th>
+                                    <th class="p-3 text-left">Horário</th>
+                                    <th class="p-3 text-left">Progresso</th>
+                                    <th class="p-3 text-left">Status</th>
+                                    <th class="p-3 text-left">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-if="seriesItems.length === 0">
+                                    <td colspan="8" class="p-4 text-center text-gray-500 italic">Nenhuma série programada ainda.</td>
+                                </tr>
+                                <tr v-for="series in seriesItems" :key="'series-'+series.id" class="border-t hover:bg-indigo-50/30">
+                                    <td class="p-3 font-semibold">{{ series.name }}</td>
+                                    <td class="p-3">{{ series.main_theme }}</td>
+                                    <td class="p-3">{{ formatDate(series.start_date) }}</td>
+                                    <td class="p-3">{{ formatDate(series.end_date) }}</td>
+                                    <td class="p-3">{{ series.publication_time }}</td>
+                                    <td class="p-3">{{ series.progress_label }}</td>
+                                    <td class="p-3">
+                                        <span class="px-2 py-1 rounded text-xs font-bold uppercase" :class="getStatusClass(series.status)">{{ series.status }}</span>
+                                    </td>
+                                    <td class="p-3 flex flex-wrap gap-2">
+                                        <button @click="openSeriesDetail(series.id)" class="text-indigo-600 hover:text-indigo-800">Abrir</button>
+                                        <button v-if="series.status !== 'active'" @click="changeSeriesStatus(series.id, 'active')" class="text-green-700 hover:text-green-900">Retomar</button>
+                                        <button v-if="series.status === 'active'" @click="changeSeriesStatus(series.id, 'paused')" class="text-yellow-700 hover:text-yellow-900">Pausar</button>
+                                        <button @click="changeSeriesStatus(series.id, 'cancelled')" class="text-red-600 hover:text-red-800">Encerrar</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div v-if="seriesReviewQueue.length > 0" class="bg-white rounded-lg shadow p-6 mb-8 border-l-4 border-amber-500">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-bold text-amber-900">Fila de revisão humana</h3>
+                        <span class="text-sm text-gray-600">{{ seriesReviewQueue.length }} episódio(s) aguardando decisão</span>
+                    </div>
+                    <div class="space-y-4">
+                        <div v-for="episode in seriesReviewQueue" :key="'review-'+episode.id" class="border rounded-lg p-4 bg-amber-50/40">
+                            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                                <div>
+                                    <div class="font-semibold text-gray-900">{{ episode.series_name }} • Episódio {{ episode.episode_number }}</div>
+                                    <div class="text-sm text-gray-700">{{ episode.planned_title }}</div>
+                                    <div class="text-xs text-gray-500 mt-1">Prazo: {{ episode.review_deadline_status && episode.review_deadline_status.seconds_remaining !== undefined ? episode.review_deadline_status.seconds_remaining + 's' : '-' }}</div>
+                                </div>
+                                <div class="flex flex-wrap gap-2">
+                                    <button @click="openSeriesEpisodePreview(episode)" class="bg-indigo-600 text-white px-3 py-2 rounded text-sm hover:bg-indigo-700">Assistir</button>
+                                    <button @click="approveSeriesEpisode(episode.id)" class="bg-green-600 text-white px-3 py-2 rounded text-sm hover:bg-green-700">Aprovar</button>
+                                    <button @click="seriesRejectEpisodeId = (seriesRejectEpisodeId === episode.id ? null : episode.id); seriesCorrectionPlan = null; seriesRejectReasons = []; seriesRejectFeedback = ''" class="bg-red-600 text-white px-3 py-2 rounded text-sm hover:bg-red-700">Reprovar</button>
+                                </div>
+                            </div>
+                            <div v-if="seriesRejectEpisodeId === episode.id" class="mt-4 bg-white border rounded-lg p-4">
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm">
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="script" v-model="seriesRejectReasons">Roteiro</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="image" v-model="seriesRejectReasons">Imagem</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="subtitle" v-model="seriesRejectReasons">Legenda</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="sync" v-model="seriesRejectReasons">Sincronização</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="opening" v-model="seriesRejectReasons">Abertura</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="ending" v-model="seriesRejectReasons">Encerramento</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="next_hook" v-model="seriesRejectReasons">Gancho</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="repetitive_content" v-model="seriesRejectReasons">Repetitivo</label>
+                                    <label class="flex items-center gap-2"><input type="checkbox" value="other" v-model="seriesRejectReasons">Outro</label>
+                                </div>
+                                <textarea v-model="seriesRejectFeedback" class="w-full border rounded p-3 text-sm mt-3" rows="3" placeholder="Explique o que deve ser corrigido"></textarea>
+                                <div class="flex flex-wrap gap-2 mt-3">
+                                    <button @click="previewSeriesCorrectionPlan(episode.id)" class="bg-gray-900 text-white px-3 py-2 rounded text-sm hover:bg-black">Ver plano de correção</button>
+                                    <button @click="rejectSeriesEpisode(episode.id)" class="bg-red-600 text-white px-3 py-2 rounded text-sm hover:bg-red-700">Confirmar reprovação</button>
+                                </div>
+                                <div v-if="seriesCorrectionPlan" class="mt-3 text-sm bg-gray-50 border rounded p-3">
+                                    <div><strong>Reutilizar:</strong> {{ (seriesCorrectionPlan.reused_components || []).join(', ') || '-' }}</div>
+                                    <div><strong>Regenerar:</strong> {{ (seriesCorrectionPlan.regenerated_components || []).join(', ') || '-' }}</div>
+                                    <div><strong>Custo estimado:</strong> {{ seriesCorrectionPlan.estimated_cost }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="selectedSeries" class="bg-white rounded-lg shadow p-6 mb-8 border-l-4 border-blue-500">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                        <div>
+                            <h3 class="text-lg font-bold text-blue-900">{{ selectedSeries.name }}</h3>
+                            <p class="text-sm text-gray-600">{{ selectedSeries.main_theme }} • {{ selectedSeries.progress_label }}</p>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button @click="changeSeriesStatus(selectedSeries.id, 'active')" class="bg-green-600 text-white px-3 py-2 rounded text-sm hover:bg-green-700">Ativar</button>
+                            <button @click="changeSeriesStatus(selectedSeries.id, 'paused')" class="bg-yellow-600 text-white px-3 py-2 rounded text-sm hover:bg-yellow-700">Pausar</button>
+                            <button @click="changeSeriesStatus(selectedSeries.id, 'cancelled')" class="bg-red-600 text-white px-3 py-2 rounded text-sm hover:bg-red-700">Arquivar</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 text-sm">
+                        <div class="bg-blue-50 rounded p-3"><strong>Status:</strong><br>{{ selectedSeries.status }}</div>
+                        <div class="bg-blue-50 rounded p-3"><strong>Publicação:</strong><br>{{ selectedSeries.publication_time }} ({{ selectedSeries.timezone }})</div>
+                        <div class="bg-blue-50 rounded p-3"><strong>Produção:</strong><br>{{ selectedSeries.production_time }} • D-{{ selectedSeries.production_lead_days }}</div>
+                        <div class="bg-blue-50 rounded p-3"><strong>Custo atual:</strong><br>{{ selectedSeries.costs ? selectedSeries.costs.actual_total : 0 }}</div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="bg-blue-50 text-blue-900">
+                                    <th class="p-3 text-left">Ep.</th>
+                                    <th class="p-3 text-left">Título</th>
+                                    <th class="p-3 text-left">Resumo</th>
+                                    <th class="p-3 text-left">Publicação</th>
+                                    <th class="p-3 text-left">Produção</th>
+                                    <th class="p-3 text-left">Status</th>
+                                    <th class="p-3 text-left">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="episode in selectedSeries.episodes" :key="'episode-'+episode.id" class="border-t align-top">
+                                    <td class="p-3 font-semibold">{{ episode.episode_number }}</td>
+                                    <td class="p-3">
+                                        <input v-model="episode.planned_title" class="w-full border rounded px-2 py-1 text-sm">
+                                        <input v-model="episode.narrated_title" class="w-full border rounded px-2 py-1 text-sm mt-1" placeholder="Título narrado">
+                                    </td>
+                                    <td class="p-3">
+                                        <textarea v-model="episode.summary" class="w-full border rounded px-2 py-1 text-sm" rows="2"></textarea>
+                                    </td>
+                                    <td class="p-3">
+                                        <input v-model="episode.publication_datetime" class="w-full border rounded px-2 py-1 text-sm">
+                                    </td>
+                                    <td class="p-3 text-gray-600">{{ episode.production_datetime }}</td>
+                                    <td class="p-3">
+                                        <span class="px-2 py-1 rounded text-xs font-bold uppercase" :class="getStatusClass(episode.status)">{{ episode.status }}</span>
+                                    </td>
+                                    <td class="p-3 flex flex-wrap gap-2">
+                                        <button @click="saveSeriesEpisode(episode)" class="text-blue-600 hover:text-blue-800">Salvar</button>
+                                        <button v-if="episode.watch_url" @click="openSeriesEpisodePreview(episode)" class="text-indigo-600 hover:text-indigo-800">Abrir</button>
+                                        <button v-if="episode.status === 'awaiting_review' || episode.status === 'publication_blocked'" @click="approveSeriesEpisode(episode.id)" class="text-green-600 hover:text-green-800">Aprovar</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <!-- Content Planner -->
                 <div class="bg-white rounded-lg shadow p-6 mb-8">
                     <h2 class="text-xl font-bold mb-4">Planejamento Automático de Conteúdo</h2>
@@ -1745,8 +1993,13 @@
                             </button>
                         </div>
                         <div>
-                            <label class="block font-bold mb-2">Duração do vídeo (min)</label>
-                            <input v-model="ytStoryVideoDuration" type="number" min="1" max="60" class="w-full border p-2 rounded">
+                            <label class="block font-bold mb-2">Duração prevista do vídeo</label>
+                            <input :value="ytStoryPredictedDurationLabel" type="text" readonly class="w-full border p-2 rounded bg-gray-50 text-gray-700 cursor-default">
+                            <div class="mt-1 text-xs text-gray-500">
+                                <span>{{ ytStoryPredictedDurationHms }}</span>
+                                <span class="mx-1">•</span>
+                                <span>{{ ytStoryPredictedDurationMeta }}</span>
+                            </div>
                         </div>
                     </div>
 
@@ -3679,6 +3932,54 @@
                         </div>
                     </div>
                 </div>
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                        <div>
+                            <h3 class="text-lg font-bold text-indigo-700">Status Operacional dos Providers</h3>
+                            <p class="text-sm text-gray-500">Sem consulta externa e sem revelar secrets. Mostra status, modelo e capabilities liberadas.</p>
+                        </div>
+                        <button @click="fetchProviderStatus" :disabled="providerStatusLoading" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 text-sm">
+                            <i v-if="providerStatusLoading" class="fas fa-spinner fa-spin mr-2"></i>
+                            <span v-else><i class="fas fa-rotate mr-2"></i> Atualizar status</span>
+                        </button>
+                    </div>
+                    <p v-if="providerStatusLoadedAt" class="text-xs text-gray-500 mb-3">Última atualização: {{ formatTimestamp(providerStatusLoadedAt) }}</p>
+                    <p v-if="providerStatusError" class="text-sm text-red-600 mb-3">{{ providerStatusError }}</p>
+                    <div v-if="providerStatus && providerStatus.providers" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        <div v-for="(item, key) in providerStatus.providers" :key="'pstatus-'+key" class="border rounded-lg p-4 bg-gray-50">
+                            <div class="flex items-start justify-between gap-2">
+                                <div>
+                                    <div class="font-bold text-gray-900">{{ String(key || '').toUpperCase() }}</div>
+                                    <div class="text-xs text-gray-600 mt-1">Modelo: {{ item.model || '-' }}</div>
+                                </div>
+                                <span class="text-xs px-2 py-1 rounded-full font-semibold" :class="aiCreditStatusClass(String(item.status || '').toLowerCase())">
+                                    {{ item.status || 'UNKNOWN' }}
+                                </span>
+                            </div>
+                            <div class="mt-3 text-sm space-y-1">
+                                <div v-if="item.operational && item.operational.no_credit" class="text-amber-800 font-semibold">NO_CREDIT</div>
+                                <div v-if="item.operational && item.operational.model_is_explicit === false" class="text-red-700 font-semibold">Modelo OpenRouter precisa ser explícito</div>
+                                <div v-if="item.operational && item.operational.voice_id_configured === false && (String(key).toLowerCase() === 'elevenlabs')" class="text-amber-800 font-semibold">Voice ID não configurado</div>
+                            </div>
+                            <div class="mt-3">
+                                <div class="text-xs font-semibold text-gray-700 mb-2">Capabilities</div>
+                                <div class="flex flex-wrap gap-2">
+                                    <span v-for="(enabled, cap) in (item.capabilities || {})" :key="'cap-'+key+'-'+cap" class="text-xs px-2 py-1 rounded border" :class="enabled ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-gray-100 border-gray-200 text-gray-600'">
+                                        {{ cap }}: {{ enabled ? 'ON' : 'OFF' }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="providerStatus && providerStatus.limits" class="mt-4 rounded border bg-white p-4 text-sm">
+                        <div class="font-bold text-gray-900 mb-2">Limites (Budget Guard)</div>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div><span class="text-gray-600">Por vídeo</span><div class="font-semibold">{{ formatGuardianMoney(providerStatus.limits.per_video_spend_limit) }}</div></div>
+                            <div><span class="text-gray-600">Diário</span><div class="font-semibold">{{ formatGuardianMoney(providerStatus.limits.daily_spend_limit) }}</div></div>
+                            <div><span class="text-gray-600">Mensal</span><div class="font-semibold">{{ formatGuardianMoney(providerStatus.limits.monthly_spend_limit) }}</div></div>
+                        </div>
+                    </div>
+                </div>
                 <div class="bg-white p-6 rounded-lg shadow max-w-2xl">
                     <div class="mb-6 p-4 bg-gray-50 border rounded-lg">
                         <label class="block font-bold mb-2 text-indigo-700">Texto/LLMs (via OpenRouter)</label>
@@ -3691,14 +3992,76 @@
 
                         <div class="mb-2">
                             <label class="block font-bold mb-2">Modelo (OpenRouter)</label>
-                            <input list="openrouter-models" v-model="settings.openrouter_model" class="w-full border p-2 rounded bg-white" placeholder="openrouter/auto">
+                            <input list="openrouter-models" v-model="settings.openrouter_model" class="w-full border p-2 rounded bg-white" placeholder="google/gemini-2.5-flash-lite">
                             <datalist id="openrouter-models">
-                                <option value="openrouter/auto">Automático (melhor disponível)</option>
+                                <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (Google)</option>
                                 <option value="openai/gpt-4o-mini">GPT-4o mini (OpenAI)</option>
                                 <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet (Anthropic)</option>
                                 <option value="deepseek/deepseek-chat">DeepSeek Chat (DeepSeek)</option>
                             </datalist>
-                            <p class="text-xs text-gray-500 mt-1">Use openrouter/auto para escolher automaticamente o melhor modelo disponível.</p>
+                            <p class="text-xs text-gray-500 mt-1">Defina um modelo explicitamente para manter custo e qualidade previsíveis.</p>
+                        </div>
+
+                        <div class="border-t pt-4 mt-4">
+                            <div class="flex items-center justify-between gap-3 mb-2">
+                                <label class="block font-bold text-indigo-700">Google Gemini</label>
+                                <button @click="testGeminiConnection" :disabled="geminiTest.loading" class="bg-white border px-3 py-2 rounded hover:bg-gray-100 text-sm font-semibold">
+                                    <i v-if="geminiTest.loading" class="fas fa-spinner fa-spin mr-2"></i>
+                                    <span v-else><i class="fas fa-plug mr-2"></i> Testar conexão</span>
+                                </button>
+                            </div>
+                            <div class="mb-2">
+                                <label class="block font-bold mb-2">Gemini API Key</label>
+                                <input v-model="settings.gemini_api_key" type="password" class="w-full border p-2 rounded bg-white" placeholder="AIza...">
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-2 text-sm">Modelo para roteiro</label>
+                                    <input v-model="settings.gemini_script_model" class="w-full border p-2 rounded bg-white" placeholder="gemini-2.0-flash">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2 text-sm">Modelo para texto</label>
+                                    <input v-model="settings.gemini_text_model" class="w-full border p-2 rounded bg-white" placeholder="gemini-2.0-flash">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2 text-sm">Modelo editorial</label>
+                                    <input v-model="settings.gemini_editorial_model" class="w-full border p-2 rounded bg-white" placeholder="gemini-2.0-flash">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2 text-sm">Modelo para análise</label>
+                                    <input v-model="settings.gemini_analysis_model" class="w-full border p-2 rounded bg-white" placeholder="gemini-2.0-flash">
+                                </div>
+                            </div>
+                            <div v-if="geminiTest.connected !== null" class="mt-2 text-sm" :class="geminiTest.connected ? 'text-green-700' : 'text-red-700'">
+                                {{ geminiTest.connected ? `Conectado (${geminiTest.model}) • ${geminiTest.latency_ms} ms` : `Falha: ${geminiTest.error}` }}
+                            </div>
+                        </div>
+
+                        <div class="border-t pt-4 mt-4">
+                            <div class="flex items-center justify-between gap-3 mb-2">
+                                <label class="block font-bold text-indigo-700">Groq (prioritário para transcrição)</label>
+                                <button @click="testGroqConnection" :disabled="groqTest.loading" class="bg-white border px-3 py-2 rounded hover:bg-gray-100 text-sm font-semibold">
+                                    <i v-if="groqTest.loading" class="fas fa-spinner fa-spin mr-2"></i>
+                                    <span v-else><i class="fas fa-plug mr-2"></i> Testar conexão</span>
+                                </button>
+                            </div>
+                            <div class="mb-2">
+                                <label class="block font-bold mb-2">Groq API Key</label>
+                                <input v-model="settings.groq_api_key" type="password" class="w-full border p-2 rounded bg-white" placeholder="gsk_...">
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block font-bold mb-2 text-sm">Modelo de transcrição</label>
+                                    <input v-model="settings.groq_transcription_model" class="w-full border p-2 rounded bg-white" placeholder="whisper-large-v3">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-2 text-sm">Modelo de texto (futuro)</label>
+                                    <input v-model="settings.groq_text_model" class="w-full border p-2 rounded bg-white" placeholder="(opcional)">
+                                </div>
+                            </div>
+                            <div v-if="groqTest.connected !== null" class="mt-2 text-sm" :class="groqTest.connected ? 'text-green-700' : 'text-red-700'">
+                                {{ groqTest.connected ? `Conectado • ${groqTest.latency_ms} ms` : `Falha: ${groqTest.error}` }}
+                            </div>
                         </div>
                     </div>
 
@@ -3716,6 +4079,55 @@
                             <label class="block font-bold mb-2">OpenAI API Key (OpenAI - qualidade máxima)</label>
                             <input v-model="settings.openai_api_key" type="password" class="w-full border p-2 rounded bg-gray-50" placeholder="sk-...">
                             <p class="text-xs text-gray-500 mt-1">Usada para geração de imagens cinematográficas e vídeos.</p>
+                        </div>
+
+                        <div class="mb-4 bg-white p-4 rounded border">
+                            <h4 class="font-bold mb-2 text-indigo-700">OpenAI — uso permitido</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_images" type="checkbox" class="h-4 w-4">
+                                    Imagens (permitido)
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_thumbnail" type="checkbox" class="h-4 w-4">
+                                    Thumbnail (permitido)
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_text" type="checkbox" class="h-4 w-4">
+                                    Texto
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_script" type="checkbox" class="h-4 w-4">
+                                    Roteiro
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_editorial" type="checkbox" class="h-4 w-4">
+                                    Editorial
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_analysis" type="checkbox" class="h-4 w-4">
+                                    Análise
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_transcription" type="checkbox" class="h-4 w-4">
+                                    Transcrição
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input v-model="settings.openai_allow_other" type="checkbox" class="h-4 w-4">
+                                    Outros
+                                </label>
+                            </div>
+                            <div class="mt-3">
+                                <label class="inline-flex items-center gap-2 text-sm font-semibold text-amber-900">
+                                    <input v-model="settings.openai_no_credit" type="checkbox" class="h-4 w-4">
+                                    OpenAI sem saldo (NO_CREDIT)
+                                </label>
+                                <p class="text-xs text-gray-600 mt-1">Use quando a chave estiver configurada, mas sem crédito. O sistema evita tentativas pagas inúteis e não fica repetindo chamadas.</p>
+                            </div>
+                            <div class="mt-3">
+                                <label class="block font-bold mb-2 text-sm">Modelo de imagem (OpenAI)</label>
+                                <input v-model="settings.openai_image_model" class="w-full border p-2 rounded bg-white" placeholder="gpt-image-1">
+                            </div>
                         </div>
 
                         <div class="mb-4">
@@ -3896,14 +4308,75 @@
                                 <input v-model.number="settings.bible_video_factory.music_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo musica">
                                 <input v-model.number="settings.bible_video_factory.caption_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo legenda">
                                 <input v-model.number="settings.bible_video_factory.thumbnail_cost_unit" type="number" step="0.0001" class="w-full border p-2 rounded bg-white" placeholder="Custo thumbnail">
+                                <input v-model.number="settings.bible_video_factory.per_video_spend_limit" type="number" step="0.01" class="w-full border p-2 rounded bg-white" placeholder="Limite por video">
                                 <input v-model.number="settings.bible_video_factory.daily_spend_limit" type="number" step="0.01" class="w-full border p-2 rounded bg-white" placeholder="Limite diario">
-                                <input v-model.number="settings.bible_video_factory.monthly_spend_limit" type="number" step="0.01" class="w-full border p-2 rounded bg-white md:col-span-2" placeholder="Limite mensal">
+                                <input v-model.number="settings.bible_video_factory.monthly_spend_limit" type="number" step="0.01" class="w-full border p-2 rounded bg-white" placeholder="Limite mensal">
+                                <input v-model.number="settings.bible_video_factory.max_quality_recovery_attempts" type="number" min="1" max="5" step="1" class="w-full border p-2 rounded bg-white" placeholder="Max tentativas recovery">
+                                <input v-model.number="settings.bible_video_factory.min_quality_recovery_score_delta" type="number" step="0.1" class="w-full border p-2 rounded bg-white md:col-span-2" placeholder="Delta minimo de score">
                             </div>
+                        </div>
+                    </div>
+                    <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                        <h3 class="text-lg font-bold text-amber-900 mb-2">YouTube Auto — Limites Financeiros (Budget Guard)</h3>
+                        <p class="text-sm text-amber-800 mb-4">Obrigatório: não operar sem limites. O Guardião financeiro bloqueia quando ultrapassa os limites configurados.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                                <label class="block font-bold mb-1 text-sm">Limite por vídeo (USD)</label>
+                                <input v-model.number="settings.per_video_spend_limit" type="number" step="0.01" min="0" class="w-full border p-2 rounded bg-white" placeholder="Ex: 0.60">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 text-sm">Limite diário (USD)</label>
+                                <input v-model.number="settings.daily_spend_limit" type="number" step="0.01" min="0" class="w-full border p-2 rounded bg-white" placeholder="Ex: 3.00">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 text-sm">Limite mensal (USD)</label>
+                                <input v-model.number="settings.monthly_spend_limit" type="number" step="0.01" min="0" class="w-full border p-2 rounded bg-white" placeholder="Ex: 50.00">
+                            </div>
+                        </div>
+                        <div v-if="ytGuardianPreEstimate" class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                            <div class="rounded border bg-white p-3">
+                                <div class="text-gray-600">Estimativa do vídeo</div>
+                                <div class="font-bold mt-1">{{ formatGuardianMoney(ytGuardianPreEstimate.expected_cost) }}</div>
+                            </div>
+                            <div class="rounded border bg-white p-3">
+                                <div class="text-gray-600">Limite por vídeo</div>
+                                <div class="font-bold mt-1">{{ formatGuardianMoney(Number(settings.per_video_spend_limit || 0)) }}</div>
+                            </div>
+                            <div class="rounded border bg-white p-3">
+                                <div class="text-gray-600">Margem</div>
+                                <div class="font-bold mt-1" :class="Number(settings.per_video_spend_limit || 0) > 0 && (Number(settings.per_video_spend_limit || 0) - Number(ytGuardianPreEstimate.expected_cost || 0)) >= 0 ? 'text-emerald-700' : 'text-red-700'">
+                                    {{ formatGuardianMoney(Number(settings.per_video_spend_limit || 0) - Number(ytGuardianPreEstimate.expected_cost || 0)) }}
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="ytGuardianPreEstimate" class="mt-4 flex flex-wrap gap-2">
+                            <button @click="settings.per_video_spend_limit = Number(ytGuardianPreEstimate.probable_range && ytGuardianPreEstimate.probable_range.max || ytGuardianPreEstimate.expected_cost || 0)" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 text-sm font-semibold">
+                                Definir limite = provável máx
+                            </button>
+                            <button @click="settings.per_video_spend_limit = Number(ytGuardianPreEstimate.emergency_limit || ytGuardianPreEstimate.expected_cost || 0)" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 text-sm font-semibold">
+                                Definir limite = emergência
+                            </button>
                         </div>
                     </div>
                     <div class="mb-4">
                         <label class="block font-bold mb-2">Mercado Pago Access Token</label>
                         <input v-model="settings.mercadopago_access_token" type="password" class="w-full border p-2 rounded">
+                    </div>
+                    <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
+                        <h3 class="text-lg font-bold text-gray-800 mb-2">Logo Oficial do Canal</h3>
+                        <p class="text-sm text-gray-600 mb-4">O YouTube Auto usará primeiro a logo oficial cadastrada aqui. Se ela não existir ou falhar, usará automaticamente a thumbnail do canal conectado no YouTube.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block font-bold mb-2">Caminho local da logo</label>
+                                <input v-model="settings.official_channel_logo_path" class="w-full border p-2 rounded bg-white" placeholder="Ex: app/static/branding/herdeiros-logo.png">
+                                <p class="text-xs text-gray-500 mt-1">Prefira PNG transparente.</p>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-2">URL da logo</label>
+                                <input v-model="settings.official_channel_logo_url" class="w-full border p-2 rounded bg-white" placeholder="https://.../logo-oficial.png">
+                                <p class="text-xs text-gray-500 mt-1">Usada se o caminho local não estiver disponível.</p>
+                            </div>
+                        </div>
                     </div>
                     <div class="mb-4">
                         <label class="block font-bold mb-2">YouTube Client ID</label>
@@ -4158,6 +4631,77 @@
                         Salvar Configurações
                     </button>
                     <p v-if="saveMessage" class="mt-4 text-green-600 font-bold">{{ saveMessage }}</p>
+                </div>
+            </div>
+
+            <div v-if="currentTab === 'ai_routing'">
+                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">
+                    <div>
+                        <h1 class="text-3xl font-bold text-gray-800">Roteamento de IA</h1>
+                        <p class="text-sm text-gray-500">Política por função (capability): principal, modelo e fallback.</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button @click="fetchAiRouting" :disabled="aiRoutingLoading" class="bg-white border px-4 py-2 rounded hover:bg-gray-100 text-sm font-semibold">
+                            <i v-if="aiRoutingLoading" class="fas fa-spinner fa-spin mr-2"></i>
+                            <span v-else><i class="fas fa-rotate mr-2"></i> Atualizar</span>
+                        </button>
+                        <button @click="saveAiRouting" :disabled="aiRoutingSaving" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 text-sm font-semibold">
+                            <i v-if="aiRoutingSaving" class="fas fa-spinner fa-spin mr-2"></i>
+                            <span v-else><i class="fas fa-save mr-2"></i> Salvar</span>
+                        </button>
+                    </div>
+                </div>
+                <p v-if="aiRoutingError" class="text-sm text-red-600 mb-4">{{ aiRoutingError }}</p>
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-left text-gray-600 border-b">
+                                    <th class="p-3">Função</th>
+                                    <th class="p-3">Principal</th>
+                                    <th class="p-3">Modelo</th>
+                                    <th class="p-3">Fallback</th>
+                                    <th class="p-3">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="(row, idx) in aiRoutingPolicies" :key="row.capability" class="border-b">
+                                    <td class="p-3 font-semibold text-gray-800">{{ row.capability }}</td>
+                                    <td class="p-3">
+                                        <select v-model="row.primary_provider" class="w-full border p-2 rounded bg-white">
+                                            <option value="gemini">Gemini</option>
+                                            <option value="openrouter">OpenRouter</option>
+                                            <option value="groq">Groq</option>
+                                            <option value="openai">OpenAI</option>
+                                        </select>
+                                    </td>
+                                    <td class="p-3">
+                                        <input v-model="row.primary_model" class="w-full border p-2 rounded bg-white" placeholder="modelo">
+                                    </td>
+                                    <td class="p-3">
+                                        <div class="flex items-center gap-2">
+                                            <input v-model="row.fallback_enabled" type="checkbox" class="h-4 w-4">
+                                            <select v-model="row.fallback_provider" class="w-full border p-2 rounded bg-white" :disabled="!row.fallback_enabled">
+                                                <option value="">Nenhum</option>
+                                                <option value="openrouter">OpenRouter</option>
+                                                <option value="gemini">Gemini</option>
+                                                <option value="groq">Groq</option>
+                                                <option value="openai">OpenAI</option>
+                                            </select>
+                                        </div>
+                                        <input v-model="row.fallback_model" class="w-full border p-2 rounded bg-white mt-2" placeholder="modelo fallback" :disabled="!row.fallback_enabled || !row.fallback_provider">
+                                    </td>
+                                    <td class="p-3">
+                                        <label class="inline-flex items-center gap-2 text-sm">
+                                            <input v-model="row.is_active" type="checkbox" class="h-4 w-4">
+                                            {{ row.is_active ? 'Ativo' : 'Inativo' }}
+                                        </label>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-3">OpenAI para texto fica bloqueada por padrão via “OpenAI — uso permitido” nas Configurações.</p>
                 </div>
             </div>
 
@@ -4547,10 +5091,12 @@
                     ytGuardianScenarioLoading: false,
                     ytGuardianEstimateLoading: false,
                     ytGuardianLedgerSaving: false,
+                    ytGuardianLedgerLoading: false,
                     ytGuardianPeriod: 'today',
                     ytGuardianOverview: null,
                     ytGuardianTimeline: null,
                     ytGuardianSelectedTaskId: '',
+                    ytGuardianLastLoadAt: 0,
                     ytGuardianPreEstimate: null,
                     ytGuardianScenarioMessage: '',
                     ytGuardianLedgerEditingId: null,
@@ -4589,6 +5135,8 @@
                     cfVideoLoading: false,
                     cfTaskId: null,
                     cfTask: null,
+                    videoGenerationInFlight: {},
+                    videoGenerationTaskKeys: {},
                     
                     // Weekly Schedule
                     scheduleMode: 'theme', // theme | music
@@ -4605,6 +5153,41 @@
                     scheduleStartDate: '',
                     schedulePlan: [],
                     scheduleLoading: false,
+                    seriesItems: [],
+                    seriesLoading: false,
+                    seriesFormOpen: false,
+                    seriesDetailLoading: false,
+                    selectedSeries: null,
+                    seriesReviewQueue: [],
+                    seriesReviewLoading: false,
+                    seriesRejectEpisodeId: null,
+                    seriesRejectReasons: [],
+                    seriesRejectFeedback: '',
+                    seriesCorrectionPlan: null,
+                    seriesForm: {
+                        name: '',
+                        main_theme: '',
+                        objective: '',
+                        target_audience: '',
+                        content_type: 'reflection',
+                        start_date: '',
+                        end_date: '',
+                        publication_time: '19:00',
+                        timezone: 'America/Sao_Paulo',
+                        production_lead_days: 1,
+                        production_time: '06:00',
+                        duration_minutes: 10,
+                        visibility: 'unlisted',
+                        tone: '',
+                        narration_style: 'human',
+                        continuity_level: 'medium',
+                        hook_intensity: 'medium',
+                        use_biblical_references: true,
+                        cta_subscribe: true,
+                        cta_next_episode: true,
+                        auto_approval: false,
+                        status: 'draft'
+                    },
                     scheduledVideos: [],
                     scheduleListQuery: '',
                     scheduleListStatus: 'all',
@@ -4843,19 +5426,39 @@
                     // Settings
                     settings: {
                         openai_api_key: '',
+                        openai_image_model: 'gpt-image-1',
+                        openai_allow_text: false,
+                        openai_allow_script: false,
+                        openai_allow_editorial: false,
+                        openai_allow_analysis: false,
+                        openai_allow_images: true,
+                        openai_allow_thumbnail: true,
+                        openai_allow_transcription: false,
+                        openai_allow_tts: false,
+                        openai_allow_embeddings: false,
+                        openai_allow_other: false,
+                        openai_no_credit: false,
                         leonardo_api_key: '',
                         leonardo_model_id: '',
                         gemini_api_key: '',
+                        gemini_script_model: 'gemini-2.0-flash',
+                        gemini_text_model: 'gemini-2.0-flash',
+                        gemini_editorial_model: 'gemini-2.0-flash',
+                        gemini_analysis_model: 'gemini-2.0-flash',
                         deepseek_api_key: '',
                         anthropic_api_key: '',
                         mistral_api_key: '',
                         openrouter_api_key: '',
-                        openrouter_model: 'openrouter/auto',
+                        openrouter_model: 'google/gemini-2.5-flash-lite',
                         groq_api_key: '',
+                        groq_transcription_model: 'whisper-large-v3',
+                        groq_text_model: '',
                         ai_provider: 'openrouter',
                         youtube_client_id: '',
                         youtube_client_secret: '',
                         youtube_refresh_token: '',
+                        official_channel_logo_path: '',
+                        official_channel_logo_url: '',
                         youtube_auto_thanks_enabled: false,
                         youtube_auto_thanks_template: 'Obrigado por assistir e comentar, {author}! Se ainda não é inscrito, se inscreva no canal e ative o sininho.\n\n{verse}',
                         youtube_auto_thanks_max_per_run: 15,
@@ -4901,6 +5504,9 @@
                         elevenlabs_api_key: '',
                         elevenlabs_voice_id: '',
                         elevenlabs_voice_name: '',
+                        daily_spend_limit: 0,
+                        monthly_spend_limit: 0,
+                        per_video_spend_limit: 0,
                         bible_video_factory: {
                             text_provider: 'openai',
                             voice_provider: 'elevenlabs',
@@ -4920,6 +5526,7 @@
                             made_for_kids_default: false,
                             daily_spend_limit: 0,
                             monthly_spend_limit: 0,
+                            per_video_spend_limit: 0,
                             text_cost_unit: 0,
                             voice_cost_unit: 0,
                             image_cost_unit: 0,
@@ -4927,6 +5534,8 @@
                             music_cost_unit: 0,
                             caption_cost_unit: 0,
                             thumbnail_cost_unit: 0,
+                            max_quality_recovery_attempts: 2,
+                            min_quality_recovery_score_delta: 1,
                             editorial_intelligence_enabled: true,
                             editorial_intelligence_fail_open: true,
                             editorial_intelligence_mode: 'pre_narration',
@@ -4986,10 +5595,38 @@
                     aiCreditsProviders: [],
                     aiCreditsLoading: false,
                     aiCreditsError: '',
-                    aiCreditsGeneratedAt: null
+                    aiCreditsGeneratedAt: null,
+                    providerStatus: null,
+                    providerStatusLoading: false,
+                    providerStatusError: '',
+                    providerStatusLoadedAt: null,
+                    geminiTest: { loading: false, connected: null, model: '', latency_ms: null, error: '' },
+                    groqTest: { loading: false, connected: null, model: '', latency_ms: null, error: '' },
+                    aiRoutingPolicies: [],
+                    aiRoutingLoading: false,
+                    aiRoutingSaving: false,
+                    aiRoutingError: ''
                 }
             },
             computed: {
+                ytStoryPredictedDurationSeconds() {
+                    return this.getYtStoryPredictedDurationSeconds();
+                },
+                ytStoryPredictedDurationMinutesValue() {
+                    const seconds = Number(this.ytStoryPredictedDurationSeconds || 0);
+                    return Math.max(1, Math.round(seconds / 60)) || 1;
+                },
+                ytStoryPredictedDurationLabel() {
+                    return this.formatNarrationDurationHuman(this.ytStoryPredictedDurationSeconds);
+                },
+                ytStoryPredictedDurationHms() {
+                    return this.formatNarrationDurationClock(this.ytStoryPredictedDurationSeconds);
+                },
+                ytStoryPredictedDurationMeta() {
+                    const wpm = Math.round(this.getYtStoryVoiceWordsPerMinute());
+                    const language = String((((this.settings || {}).bible_video_factory || {}).default_language) || 'pt-BR').trim() || 'pt-BR';
+                    return `${wpm} ppm • ${language}`;
+                },
                 filteredWhatsAppContacts() {
                     const items = Array.isArray(this.whatsappContacts) ? this.whatsappContacts : [];
                     const q = String(this.whatsappContactsFilter || '').trim().toLowerCase();
@@ -5190,6 +5827,12 @@
                         this.videoContent = content;
                     }
                 },
+                ytStoryPredictedDurationMinutesValue: {
+                    handler(value) {
+                        this.ytStoryVideoDuration = Math.max(1, Number(value || 0) || 1);
+                    },
+                    immediate: true
+                },
                 currentTab(tab) {
                     if (tab === 'book_factory') this.fetchFactoryDrafts();
                     if (tab === 'music_clip') {
@@ -5232,6 +5875,8 @@
                 await this.fetchCRMData();
                 await this.fetchScheduledVideos();
                 await this.fetchProductionQueue(); // Added
+                await this.fetchSeriesList();
+                await this.fetchSeriesReviewQueue();
                 await this.fetchStoryDrafts();
                 await this.fetchReports();
                 await this.fetchYoutubeStats(); // Check YouTube status on load
@@ -5275,10 +5920,19 @@
                     if (this.currentTab === 'youtube') {
                         this.fetchScheduledVideos();
                         this.fetchProductionQueue(); // Added
+                        this.fetchSeriesList({ keepSelected: true });
+                        this.fetchSeriesReviewQueue();
                         this.fetchStoryDrafts();
                         this.fetchReports();
                         this.fetchYoutubeStats(); // Keep status updated
                         this.fetchActiveVideoTasks({ silent: true });
+                        if (this.youtubeSubTab === 'guardian') {
+                            const now = Date.now();
+                            const last = Number(this.ytGuardianLastLoadAt || 0);
+                            if (!this.ytGuardianLoading && (now - last) > 15000) {
+                                this.fetchGuardianOverview({ silent: true });
+                            }
+                        }
                         if (this.youtubeSubTab === 'community' && this.communityAutoRefresh) {
                             const now = Date.now();
                             if (!this.communityLoading && (now - Number(this.communityLastLoadAt || 0)) > 30000) {
@@ -5325,6 +5979,143 @@
                 } catch (e) {}
             },
             methods: {
+                getYtStoryChannelName() {
+                    const youtubeTitle = String(((this.youtubeStats || {}).title) || '').trim();
+                    if (youtubeTitle && youtubeTitle.toLowerCase() !== 'desconectado') return youtubeTitle.slice(0, 80);
+                    const fallback = String(this.cfChannelName || '').trim();
+                    if (fallback) return fallback.slice(0, 80);
+                    return 'Herdeiros das Promessas';
+                },
+                stripNarrationStructuralMarkers(text) {
+                    const labels = [
+                        'Gancho',
+                        'Pergunta',
+                        'CTA',
+                        'Cena',
+                        'Introducao',
+                        'Introdução',
+                        'Desenvolvimento',
+                        'Conclusao',
+                        'Conclusão',
+                        'Observacao',
+                        'Observação',
+                        'Nota',
+                        'Objetivo',
+                        'Estrutura',
+                        'Resumo',
+                        'Metrica',
+                        'Métrica',
+                        'Chamada',
+                        'Dica'
+                    ];
+                    const raw = String(text || '');
+                    if (!raw.trim()) return '';
+                    return raw
+                        .split(/\r?\n+/)
+                        .map((line) => {
+                            let cleaned = String(line || '').trim();
+                            if (!cleaned) return '';
+                            for (const label of labels) {
+                                const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                                cleaned = cleaned.replace(new RegExp(`^${escaped}\\s*[:\\-–—]\\s*`, 'i'), '');
+                            }
+                            return cleaned.trim();
+                        })
+                        .filter(Boolean)
+                        .join(' ');
+                },
+                normalizeNarrationPreviewText(text) {
+                    let cleaned = this.stripNarrationStructuralMarkers(text);
+                    if (!cleaned) return '';
+                    cleaned = String(cleaned)
+                        .normalize('NFKC')
+                        .replace(/https?:\/\/\S+|www\.\S+/gi, ' ')
+                        .replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, ' ')
+                        .replace(/&/g, ' e ')
+                        .replace(/\//g, ' / ')
+                        .replace(/[_*#`~<>|]+/g, ' ')
+                        .replace(/\s+([,.;:!?])/g, '$1')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    return cleaned;
+                },
+                getYtStoryOpeningText() {
+                    const channelName = this.getYtStoryChannelName();
+                    return this.normalizeNarrationPreviewText(
+                        `Seja muito bem-vindo ao canal ${channelName}. Abra o seu coracao, respire com calma e permaneça comigo ate o final desta mensagem.`
+                    );
+                },
+                getYtStoryClosingText() {
+                    const customCta = String(((((this.settings || {}).bible_video_factory) || {}).default_cta) || '').trim();
+                    if (customCta) return this.normalizeNarrationPreviewText(customCta);
+                    return this.normalizeNarrationPreviewText(
+                        'Se esta mensagem falou ao seu coracao, inscreva-se no canal, ative o sininho, curta e compartilhe este video para que mais pessoas sejam alcancadas pela Palavra de Deus.'
+                    );
+                },
+                getYtStoryNarrationBodyText() {
+                    const content = this.normalizeNarrationPreviewText(this.ytStoryContent);
+                    if (content) return content;
+                    return this.normalizeNarrationPreviewText(this.ytStoryImproveInstruction || this.ytStoryInstruction || '');
+                },
+                getYtStoryVoiceWordsPerMinute() {
+                    const style = String(this.voiceStyle || '').trim().toLowerCase();
+                    const gender = String(this.voiceGender || '').trim().toLowerCase();
+                    const language = String((((this.settings || {}).bible_video_factory || {}).default_language) || '').trim().toLowerCase();
+                    let speed = Number(((((this.settings || {}).bible_video_factory) || {}).default_voice_speed) || 1);
+                    if (!Number.isFinite(speed) || speed <= 0) speed = 1;
+                    let baseWpm = 147;
+                    if (['soft_prayer', 'prayer', 'meditation', 'calm', 'serene'].includes(style)) baseWpm = 128;
+                    else if (['human', 'natural', 'warm'].includes(style)) baseWpm = 145;
+                    else if (['energetic', 'fast', 'commercial'].includes(style)) baseWpm = 158;
+                    if (gender === 'male') baseWpm -= 2;
+                    else if (gender === 'female') baseWpm += 1;
+                    if (language.startsWith('en')) baseWpm += 4;
+                    else if (language.startsWith('es')) baseWpm += 2;
+                    baseWpm = baseWpm * Math.max(0.6, Math.min(1.6, speed));
+                    return Math.max(118, Math.min(185, baseWpm));
+                },
+                estimateNarrationDurationSeconds(text) {
+                    const cleaned = this.normalizeNarrationPreviewText(text);
+                    if (!cleaned) return 0;
+                    const words = (cleaned.match(/\w+/gu) || []).length;
+                    if (!words) return 0;
+                    const wpm = this.getYtStoryVoiceWordsPerMinute();
+                    const punctuationPauses = (cleaned.match(/[.!?;:]/g) || []).length;
+                    const lineBreakPauses = (String(text || '').match(/\r?\n/g) || []).length;
+                    let seconds = (words / Math.max(1, wpm)) * 60;
+                    seconds += Math.min(6, punctuationPauses * 0.18);
+                    seconds += Math.min(4, lineBreakPauses * 0.12);
+                    return Math.max(2, Math.round(seconds * 100) / 100);
+                },
+                getYtStoryPredictedDurationSeconds() {
+                    const opening = this.getYtStoryOpeningText();
+                    const body = this.getYtStoryNarrationBodyText();
+                    const closing = this.getYtStoryClosingText();
+                    const narrationText = [opening, body, closing].filter(Boolean).join(' ').trim();
+                    if (!narrationText) {
+                        const min = Number(this.ytStoryDurationMin || 0);
+                        const max = Number(this.ytStoryDurationMax || 0);
+                        const fallbackMinutes = Math.max(1, Math.round(((min || 0) + (max || min || 1)) / (max ? 2 : 1)) || 1);
+                        return fallbackMinutes * 60;
+                    }
+                    return this.estimateNarrationDurationSeconds(narrationText);
+                },
+                formatNarrationDurationHuman(totalSeconds) {
+                    const total = Math.max(0, Math.round(Number(totalSeconds || 0)));
+                    const hours = Math.floor(total / 3600);
+                    const minutes = Math.floor((total % 3600) / 60);
+                    const seconds = total % 60;
+                    if (hours > 0) return `${hours} h ${minutes} min ${seconds} s`;
+                    return `${minutes} min ${String(seconds).padStart(2, '0')} s`;
+                },
+                formatNarrationDurationClock(totalSeconds) {
+                    const total = Math.max(0, Math.round(Number(totalSeconds || 0)));
+                    const hours = Math.floor(total / 3600);
+                    const minutes = Math.floor((total % 3600) / 60);
+                    const seconds = total % 60;
+                    const pad = (value) => String(value).padStart(2, '0');
+                    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+                },
                 getScheduledParentVideo(shortItem) {
                     const pid = shortItem && shortItem.parent_video_id ? String(shortItem.parent_video_id) : '';
                     if (!pid) return null;
@@ -5382,6 +6173,101 @@
                         this.aiCreditsError = e.message || String(e || 'Erro ao consultar saldo das IAs.');
                     } finally {
                         this.aiCreditsLoading = false;
+                    }
+                },
+                async fetchProviderStatus() {
+                    this.providerStatusLoading = true;
+                    this.providerStatusError = '';
+                    try {
+                        const res = await this.authFetch('/settings/provider-status');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao consultar status operacional.'));
+                        }
+                        this.providerStatus = data;
+                        this.providerStatusLoadedAt = Math.floor(Date.now() / 1000);
+                    } catch (e) {
+                        this.providerStatusError = e.message || String(e || 'Erro ao consultar status operacional.');
+                    } finally {
+                        this.providerStatusLoading = false;
+                    }
+                },
+                async testGeminiConnection() {
+                    this.geminiTest.loading = true;
+                    this.geminiTest.error = '';
+                    try {
+                        const res = await this.authFetch('/settings/test/gemini', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ model: this.settings.gemini_text_model || '' })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        this.geminiTest.connected = Boolean(data.connected);
+                        this.geminiTest.model = data.model || (this.settings.gemini_text_model || '');
+                        this.geminiTest.latency_ms = data.latency_ms || null;
+                        this.geminiTest.error = data.error || (res.ok ? '' : (data.detail || data.message || 'Falha ao testar Gemini.'));
+                    } catch (e) {
+                        this.geminiTest.connected = false;
+                        this.geminiTest.error = e.message || String(e || 'Falha ao testar Gemini.');
+                    } finally {
+                        this.geminiTest.loading = false;
+                    }
+                },
+                async testGroqConnection() {
+                    this.groqTest.loading = true;
+                    this.groqTest.error = '';
+                    try {
+                        const res = await this.authFetch('/settings/test/groq', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ model: this.settings.groq_transcription_model || '' })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        this.groqTest.connected = Boolean(data.connected);
+                        this.groqTest.model = data.model || (this.settings.groq_transcription_model || '');
+                        this.groqTest.latency_ms = data.latency_ms || null;
+                        this.groqTest.error = data.error || (res.ok ? '' : (data.detail || data.message || 'Falha ao testar Groq.'));
+                    } catch (e) {
+                        this.groqTest.connected = false;
+                        this.groqTest.error = e.message || String(e || 'Falha ao testar Groq.');
+                    } finally {
+                        this.groqTest.loading = false;
+                    }
+                },
+                async fetchAiRouting() {
+                    this.aiRoutingLoading = true;
+                    this.aiRoutingError = '';
+                    try {
+                        const res = await this.authFetch('/settings/ai-routing');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao carregar roteamento.'));
+                        }
+                        this.aiRoutingPolicies = Array.isArray(data.policies) ? data.policies : [];
+                    } catch (e) {
+                        this.aiRoutingError = e.message || String(e || 'Falha ao carregar roteamento.');
+                    } finally {
+                        this.aiRoutingLoading = false;
+                    }
+                },
+                async saveAiRouting() {
+                    this.aiRoutingSaving = true;
+                    this.aiRoutingError = '';
+                    try {
+                        const payload = Array.isArray(this.aiRoutingPolicies) ? this.aiRoutingPolicies : [];
+                        const res = await this.authFetch('/settings/ai-routing', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao salvar roteamento.'));
+                        }
+                    } catch (e) {
+                        this.aiRoutingError = e.message || String(e || 'Falha ao salvar roteamento.');
+                    } finally {
+                        this.aiRoutingSaving = false;
                     }
                 },
                 formatApiError(payload, fallback = 'Erro inesperado.') {
@@ -5535,6 +6421,173 @@
                         this.logout();
                     }
                     return res;
+                },
+                normalizeVideoGenerationText(value, { lower = false } = {}) {
+                    let text = String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+                    text = text.replace(/\s+/g, ' ').trim();
+                    return lower ? text.toLowerCase() : text;
+                },
+                normalizeVideoGenerationList(values, { lower = false } = {}) {
+                    if (!Array.isArray(values)) return [];
+                    return values
+                        .map((item) => this.normalizeVideoGenerationText(item, { lower }))
+                        .filter(Boolean)
+                        .sort();
+                },
+                normalizeVideoGenerationPayload(payload) {
+                    const source = payload && typeof payload === 'object' ? payload : {};
+                    const durationRaw = Number(source.duration || 5);
+                    const duration = Number.isFinite(durationRaw) ? Math.max(1, Math.min(60, Math.round(durationRaw))) : 5;
+                    return {
+                        mode: this.normalizeVideoGenerationText(source.mode || 'topic', { lower: true }) || 'topic',
+                        kind: this.normalizeVideoGenerationText(source.kind || 'story', { lower: true }) || 'story',
+                        topic: this.normalizeVideoGenerationText(source.topic || ''),
+                        story_content: this.normalizeVideoGenerationText(source.story_content || ''),
+                        duration,
+                        aspect_ratio: this.normalizeVideoGenerationText(source.aspect_ratio || '16:9', { lower: true }) || '16:9',
+                        auto_upload: !!source.auto_upload,
+                        voice_style: this.normalizeVideoGenerationText(source.voice_style || ''),
+                        voice_gender: this.normalizeVideoGenerationText(source.voice_gender || '', { lower: true }),
+                        image_mode: this.normalizeVideoGenerationText(source.image_mode || '', { lower: true }),
+                        thumbnail_path: this.normalizeVideoGenerationText(source.thumbnail_path || ''),
+                        override_title: this.normalizeVideoGenerationText(source.override_title || ''),
+                        override_description: this.normalizeVideoGenerationText(source.override_description || ''),
+                        override_tags: this.normalizeVideoGenerationList(source.override_tags || [], { lower: true }),
+                        selected_images: this.normalizeVideoGenerationList(source.selected_images || []),
+                        custom_image_paths: this.normalizeVideoGenerationList(source.custom_image_paths || []),
+                    };
+                },
+                stableStringify(value) {
+                    if (Array.isArray(value)) {
+                        return `[${value.map((item) => this.stableStringify(item)).join(',')}]`;
+                    }
+                    if (value && typeof value === 'object') {
+                        const keys = Object.keys(value).sort();
+                        return `{${keys.map((key) => `${JSON.stringify(key)}:${this.stableStringify(value[key])}`).join(',')}}`;
+                    }
+                    return JSON.stringify(value);
+                },
+                async sha256Hex(text) {
+                    const raw = String(text || '');
+                    if (!(window.crypto && window.crypto.subtle && window.TextEncoder)) {
+                        throw new Error('Crypto do navegador indisponível para calcular a idempotency_key.');
+                    }
+                    const data = new TextEncoder().encode(raw);
+                    const hash = await window.crypto.subtle.digest('SHA-256', data);
+                    return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+                },
+                async buildVideoGenerationIdentity(payload) {
+                    const canonicalPayload = this.normalizeVideoGenerationPayload(payload);
+                    const canonicalJson = this.stableStringify(canonicalPayload);
+                    const requestHash = await this.sha256Hex(canonicalJson);
+                    return {
+                        canonicalPayload,
+                        canonicalJson,
+                        requestHash,
+                        idempotencyKey: `ytv1:${requestHash}`
+                    };
+                },
+                trackVideoGenerationTaskKey(taskId, idempotencyKey) {
+                    const tid = String(taskId || '').trim();
+                    const key = String(idempotencyKey || '').trim();
+                    if (!tid || !key) return;
+                    this.videoGenerationTaskKeys = { ...(this.videoGenerationTaskKeys || {}), [tid]: key };
+                    const current = { ...((this.videoGenerationInFlight || {})[key] || {}), taskId: tid };
+                    this.videoGenerationInFlight = { ...(this.videoGenerationInFlight || {}), [key]: current };
+                },
+                releaseVideoGenerationLock(idempotencyKey) {
+                    const key = String(idempotencyKey || '').trim();
+                    if (!key) return;
+                    const inFlight = { ...(this.videoGenerationInFlight || {}) };
+                    delete inFlight[key];
+                    this.videoGenerationInFlight = inFlight;
+                },
+                releaseVideoGenerationLockByTask(taskId) {
+                    const tid = String(taskId || '').trim();
+                    if (!tid) return;
+                    const taskKeys = { ...(this.videoGenerationTaskKeys || {}) };
+                    const key = String(taskKeys[tid] || '').trim();
+                    delete taskKeys[tid];
+                    this.videoGenerationTaskKeys = taskKeys;
+                    if (key) this.releaseVideoGenerationLock(key);
+                },
+                async lookupVideoTaskByIdempotencyKey(idempotencyKey) {
+                    const key = String(idempotencyKey || '').trim();
+                    if (!key) return null;
+                    const res = await this.authFetch(`/youtube/tasks/by-idempotency?idempotency_key=${encodeURIComponent(key)}`);
+                    if (res.status === 404) return null;
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.task_id) return null;
+                    return data;
+                },
+                async submitVideoGeneration(payload) {
+                    const identity = await this.buildVideoGenerationIdentity(payload);
+                    const key = identity.idempotencyKey;
+                    const currentInflight = (this.videoGenerationInFlight || {})[key];
+                    if (currentInflight) {
+                        alert('Esta geração já está em andamento.');
+                        return {
+                            task_id: currentInflight.taskId || null,
+                            reused_existing_task: true,
+                            reused_completed_task: false,
+                            idempotency_key: key
+                        };
+                    }
+                    this.videoGenerationInFlight = {
+                        ...(this.videoGenerationInFlight || {}),
+                        [key]: { startedAt: Date.now(), taskId: null }
+                    };
+                    const requestPayload = { ...(payload || {}), idempotency_key: key };
+                    try {
+                        let res = null;
+                        try {
+                            res = await this.authFetch('/youtube/generate_video', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(requestPayload)
+                            });
+                        } catch (networkErr) {
+                            const existingTask = await this.lookupVideoTaskByIdempotencyKey(key).catch(() => null);
+                            if (existingTask && existingTask.task_id) {
+                                this.trackVideoGenerationTaskKey(existingTask.task_id, key);
+                                return {
+                                    task_id: String(existingTask.task_id),
+                                    reused_existing_task: true,
+                                    reused_completed_task: String(existingTask.status || '').toLowerCase() === 'completed',
+                                    idempotency_key: key,
+                                    result: existingTask.result || null
+                                };
+                            }
+                            this.releaseVideoGenerationLock(key);
+                            throw networkErr;
+                        }
+                        const text = await res.text().catch(() => '');
+                        let data = {};
+                        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+                        if (!res.ok || !data.task_id) {
+                            const existingTask = await this.lookupVideoTaskByIdempotencyKey(key).catch(() => null);
+                            if (existingTask && existingTask.task_id) {
+                                this.trackVideoGenerationTaskKey(existingTask.task_id, key);
+                                return {
+                                    task_id: String(existingTask.task_id),
+                                    reused_existing_task: true,
+                                    reused_completed_task: String(existingTask.status || '').toLowerCase() === 'completed',
+                                    idempotency_key: key,
+                                    result: existingTask.result || null
+                                };
+                            }
+                            this.releaseVideoGenerationLock(key);
+                            throw new Error(this.formatApiError(data.detail || data.message || text || data, 'Falha ao iniciar geração do vídeo.'));
+                        }
+                        const taskId = String(data.task_id || '').trim();
+                        if (taskId) this.trackVideoGenerationTaskKey(taskId, key);
+                        return { ...data, idempotency_key: data.idempotency_key || key };
+                    } catch (e) {
+                        if (String((e && e.message) || e).includes('Esta geração já está em andamento')) {
+                            return { reused_existing_task: true, idempotency_key: key };
+                        }
+                        throw e;
+                    }
                 },
                 async checkAuth() {
                     const token = localStorage.getItem('access_token');
@@ -6085,6 +7138,230 @@
                         this.scheduleListLoading = false;
                     }
                 },
+                buildTaskWatchUrl(taskId) {
+                    return this.appendTokenToInternalUrl(`/youtube/task/${taskId}/watch`);
+                },
+                resetSeriesForm() {
+                    this.seriesForm = {
+                        name: '',
+                        main_theme: '',
+                        objective: '',
+                        target_audience: '',
+                        content_type: 'reflection',
+                        start_date: '',
+                        end_date: '',
+                        publication_time: '19:00',
+                        timezone: 'America/Sao_Paulo',
+                        production_lead_days: 1,
+                        production_time: '06:00',
+                        duration_minutes: 10,
+                        visibility: 'unlisted',
+                        tone: '',
+                        narration_style: 'human',
+                        continuity_level: 'medium',
+                        hook_intensity: 'medium',
+                        use_biblical_references: true,
+                        cta_subscribe: true,
+                        cta_next_episode: true,
+                        auto_approval: false,
+                        status: 'draft'
+                    };
+                    this.seriesCorrectionPlan = null;
+                    this.seriesRejectEpisodeId = null;
+                    this.seriesRejectReasons = [];
+                    this.seriesRejectFeedback = '';
+                },
+                async fetchSeriesList(opts = {}) {
+                    if (this.seriesLoading) return;
+                    this.seriesLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/series');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao carregar séries.');
+                        this.seriesItems = Array.isArray(data.items) ? data.items : [];
+                        if (!opts.keepSelected || !this.selectedSeries) return;
+                        const currentId = Number(this.selectedSeries.id || 0);
+                        if (currentId) await this.openSeriesDetail(currentId, { silent: true });
+                    } catch (e) {
+                        console.error(e);
+                    } finally {
+                        this.seriesLoading = false;
+                    }
+                },
+                async openSeriesDetail(seriesId, opts = {}) {
+                    if (!seriesId) return;
+                    if (!opts.silent) this.seriesDetailLoading = true;
+                    try {
+                        const res = await this.authFetch(`/youtube/series/${seriesId}`);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao carregar série.');
+                        this.selectedSeries = data;
+                    } catch (e) {
+                        alert('Erro ao carregar série: ' + (e.message || e));
+                    } finally {
+                        if (!opts.silent) this.seriesDetailLoading = false;
+                    }
+                },
+                async fetchSeriesReviewQueue() {
+                    if (this.seriesReviewLoading) return;
+                    this.seriesReviewLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/series/review-queue');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao carregar fila de revisão.');
+                        this.seriesReviewQueue = Array.isArray(data.items) ? data.items : [];
+                    } catch (e) {
+                        console.error(e);
+                    } finally {
+                        this.seriesReviewLoading = false;
+                    }
+                },
+                async createSeries() {
+                    if (!this.seriesForm.name || !this.seriesForm.main_theme || !this.seriesForm.start_date || !this.seriesForm.end_date) {
+                        alert('Preencha nome, tema, início e fim da série.');
+                        return;
+                    }
+                    this.seriesLoading = true;
+                    try {
+                        const res = await this.authFetch('/youtube/series', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.seriesForm)
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao criar série.');
+                        this.seriesFormOpen = false;
+                        this.resetSeriesForm();
+                        await this.fetchSeriesList();
+                        await this.openSeriesDetail(data.id);
+                    } catch (e) {
+                        alert('Erro ao criar série: ' + (e.message || e));
+                    } finally {
+                        this.seriesLoading = false;
+                    }
+                },
+                async changeSeriesStatus(seriesId, status) {
+                    try {
+                        const res = await this.authFetch(`/youtube/series/${seriesId}/status`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ status })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao atualizar status.');
+                        this.selectedSeries = data;
+                        await this.fetchSeriesList({ keepSelected: false });
+                        await this.fetchSeriesReviewQueue();
+                    } catch (e) {
+                        alert('Erro ao atualizar série: ' + (e.message || e));
+                    }
+                },
+                async saveSeriesEpisode(episode) {
+                    try {
+                        const res = await this.authFetch(`/youtube/series/episodes/${episode.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                planned_title: episode.planned_title,
+                                narrated_title: episode.narrated_title,
+                                summary: episode.summary,
+                                publication_datetime: episode.publication_datetime,
+                                duration_minutes: Number(episode.duration_minutes || 10)
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao salvar episódio.');
+                        this.selectedSeries = data;
+                        await this.fetchSeriesList();
+                    } catch (e) {
+                        alert('Erro ao salvar episódio: ' + (e.message || e));
+                    }
+                },
+                async syncSeriesNow() {
+                    try {
+                        const res = await this.authFetch('/youtube/series/sync', { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao sincronizar séries.');
+                        await this.fetchSeriesList({ keepSelected: true });
+                        await this.fetchSeriesReviewQueue();
+                        if (this.selectedSeries && this.selectedSeries.id) {
+                            await this.openSeriesDetail(this.selectedSeries.id, { silent: true });
+                        }
+                        alert(`Séries sincronizadas. Produções enfileiradas: ${data.queued || 0}.`);
+                    } catch (e) {
+                        alert('Erro ao sincronizar séries: ' + (e.message || e));
+                    }
+                },
+                openSeriesEpisodePreview(episode) {
+                    if (!episode) return;
+                    const watchUrl = episode.watch_url ? this.appendTokenToInternalUrl(episode.watch_url) : '';
+                    if (watchUrl) {
+                        this.openVideoPlayer({ title: episode.planned_title, url: watchUrl });
+                    } else {
+                        alert('O vídeo ainda não está pronto para visualização.');
+                    }
+                },
+                async approveSeriesEpisode(episodeId) {
+                    try {
+                        const res = await this.authFetch(`/youtube/series/episodes/${episodeId}/approve`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao aprovar episódio.');
+                        this.selectedSeries = data;
+                        await this.fetchSeriesList();
+                        await this.fetchSeriesReviewQueue();
+                        await this.fetchScheduledVideos({ reset: true, silent: true });
+                    } catch (e) {
+                        alert('Erro ao aprovar episódio: ' + (e.message || e));
+                    }
+                },
+                async previewSeriesCorrectionPlan(episodeId) {
+                    if (!this.seriesRejectReasons.length || !String(this.seriesRejectFeedback || '').trim()) {
+                        alert('Selecione ao menos um motivo e descreva a correção necessária.');
+                        return;
+                    }
+                    try {
+                        const res = await this.authFetch(`/youtube/series/episodes/${episodeId}/correction-plan`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                reason_categories: this.seriesRejectReasons,
+                                feedback: this.seriesRejectFeedback
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao montar plano de correção.');
+                        this.seriesCorrectionPlan = data;
+                    } catch (e) {
+                        alert('Erro ao calcular correção: ' + (e.message || e));
+                    }
+                },
+                async rejectSeriesEpisode(episodeId) {
+                    if (!this.seriesCorrectionPlan) {
+                        alert('Gere o plano de correção antes de reprovar.');
+                        return;
+                    }
+                    try {
+                        const res = await this.authFetch(`/youtube/series/episodes/${episodeId}/reject`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                reason_categories: this.seriesRejectReasons,
+                                feedback: this.seriesRejectFeedback
+                            })
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || 'Falha ao reprovar episódio.');
+                        this.selectedSeries = data;
+                        this.seriesRejectEpisodeId = null;
+                        this.seriesRejectReasons = [];
+                        this.seriesRejectFeedback = '';
+                        this.seriesCorrectionPlan = null;
+                        await this.fetchSeriesList();
+                        await this.fetchSeriesReviewQueue();
+                    } catch (e) {
+                        alert('Erro ao reprovar episódio: ' + (e.message || e));
+                    }
+                },
                 applyScheduleFilters() {
                     this.scheduleListOffset = 0;
                     this.fetchScheduledVideos({ reset: true });
@@ -6322,18 +7599,9 @@
                         this.ytStoryTaskId = null;
                         this.ytStoryAssistReport = null;
                         try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
-
-                        const res = await this.authFetch('/youtube/generate_video', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-                        const text = await res.text().catch(() => '');
-                        let data = {};
-                        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
-                        if (!res.ok || !data.task_id) {
-                            const msg = data.detail || data.message || text || 'Falha ao iniciar geração do vídeo.';
-                            throw new Error(msg);
+                        const data = await this.submitVideoGeneration(payload);
+                        if (!data || !data.task_id) {
+                            throw new Error('Falha ao iniciar geração do vídeo.');
                         }
                         const taskId = String(data.task_id);
                         this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
@@ -6341,7 +7609,9 @@
                         this.ytStoryTaskId = taskId;
                         try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
                         await this.fetchActiveVideoTasks({ silent: true });
-                        if (data && data.queued) {
+                        if (data && data.reused_existing_task) {
+                            alert('Esta geração já está em andamento.');
+                        } else if (data && data.queued) {
                             const pos = Number(data.queue_position || 0);
                             alert(`Pedido enviado para a fila${pos > 0 ? ` (posição ${pos})` : ''}.`);
                         } else {
@@ -6437,20 +7707,27 @@
                     return 'bg-gray-100 text-gray-800';
                 },
                 buildGuardianPreEstimatePayload() {
+                    const selectedGenerated = (this.ytStoryGeneratedImages || [])
+                        .filter((img) => img && img.selected && img.url)
+                        .map((img) => this.normalizeStaticUrl(img.url));
+                    const selectedBank = (this.ytImageBankImages || [])
+                        .filter((img) => img && img.selected && img.url)
+                        .map((img) => this.normalizeStaticUrl(img.url));
                     return {
                         mode: 'story',
                         kind: this.ytStoryKind || 'story',
-                        topic: this.ytStoryContent ? String(this.ytStoryContent).slice(0, 120) : 'Simulacao do Financial Guardian',
+                        topic: this.ytStoryContent ? String(this.ytStoryContent).slice(0, 120) : 'Simulação do Financial Guardian',
                         story_content: this.ytStoryContent || this.ytStoryInstruction || '',
                         duration: Number(this.ytStoryVideoDuration || this.ytVideoDuration || 8) || 8,
                         auto_upload: Boolean(this.ytStoryAutoUpload),
-                        aspect_ratio: '16:9',
-                        selected_images: []
+                        aspect_ratio: this.ytStoryImagesAspectRatio || '16:9',
+                        selected_images: [...selectedGenerated, ...selectedBank],
                     };
                 },
                 async fetchGuardianOverview(opts = {}) {
                     const silent = !!opts.silent;
                     try {
+                        this.ytGuardianLastLoadAt = Date.now();
                         if (!silent) this.ytGuardianLoading = true;
                         const res = await this.authFetch(`/youtube/guardian/overview?period=${encodeURIComponent(this.ytGuardianPeriod || 'today')}`);
                         const data = await res.json().catch(() => ({}));
@@ -6947,14 +8224,12 @@
                             voice_style: this.voiceStyle || null,
                             voice_gender: this.voiceGender || null,
                         };
-                        const res = await this.authFetch('/youtube/generate_video', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-                        const data = await res.json().catch(() => ({}));
-                        if (!res.ok || !data.task_id) throw new Error(data.detail || data.message || "Falha ao iniciar geração do vídeo.");
+                        const data = await this.submitVideoGeneration(payload);
+                        if (!data || !data.task_id) throw new Error("Falha ao iniciar geração do vídeo.");
                         this.cfTaskId = String(data.task_id);
+                        if (data.reused_existing_task) {
+                            alert('Esta geração já está em andamento.');
+                        }
                         this.pollContentFactoryTask(this.cfTaskId);
                     } catch (e) {
                         alert("Erro ao gerar vídeo: " + (e.message || e));
@@ -6967,10 +8242,14 @@
                         const res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}`);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || "Falha ao consultar tarefa.");
+                        if (data && data.idempotency_key) {
+                            this.trackVideoGenerationTaskKey(taskId, data.idempotency_key);
+                        }
                         this.cfTask = data;
                         const status = String((data.status || '')).toLowerCase();
                         if (status === 'completed' || status === 'failed' || status === 'cancelled') {
                             this.cfVideoLoading = false;
+                            this.releaseVideoGenerationLockByTask(taskId);
                             return;
                         }
                         setTimeout(() => this.pollContentFactoryTask(taskId), 1500);
@@ -6998,8 +8277,7 @@
                         if (res.ok && data.text) {
                             this.ytStoryContent = data.text;
                             this.ytStoryGeneratedImages = [];
-                            const avg = Math.round((durationMin + durationMax) / 2);
-                            this.ytStoryVideoDuration = avg || this.ytStoryVideoDuration;
+                            this.ytStoryVideoDuration = this.ytStoryPredictedDurationMinutesValue || this.ytStoryVideoDuration;
                         } else {
                             alert(this.formatApiError(data.detail || data.message || data, "Erro ao gerar texto."));
                         }
@@ -7154,6 +8432,10 @@
                     this.ytStoryImagesTask = null;
                 },
                 async generateStoryVideo() {
+                    if (this.ytStoryVideoLoading) {
+                        alert('Esta geração já está em andamento.');
+                        return;
+                    }
                     this.ytStoryVideoLoading = true;
                     this.ytStoryTask = null;
                     this.ytStoryTaskId = null;
@@ -7162,7 +8444,7 @@
                     try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                     try {
                         if (this.ytStoryKind === 'prayer') this.applyPrayerVideoPreset(false);
-                        const duration = Number(this.ytStoryVideoDuration || this.ytStoryDurationMax || this.ytStoryDurationMin || 10);
+                        const duration = Number(this.ytStoryPredictedDurationMinutesValue || this.ytStoryVideoDuration || this.ytStoryDurationMax || this.ytStoryDurationMin || 10);
                         const selectedImages = this.selectedImageUrlsAll();
                         const payload = {
                             mode: 'story',
@@ -7175,31 +8457,7 @@
                             voice_gender: this.voiceGender || null,
                             image_mode: this.ytPrayerImageMode || 'single'
                         };
-                        const attempt = async () => {
-                            const res = await this.authFetch('/youtube/generate_video', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(payload)
-                            });
-                            const text = await res.text().catch(() => '');
-                            let data = {};
-                            try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
-                            if (!res.ok || !data.task_id) {
-                                const msg = this.formatApiError(data.detail || data.message || text || data, "Falha ao iniciar geração do vídeo.");
-                                throw new Error(msg);
-                            }
-                            return data;
-                        };
-                        let startData = null;
-                        for (let i = 0; i < 2; i++) {
-                            try {
-                                startData = await attempt();
-                                break;
-                            } catch (err) {
-                                if (i === 1) throw err;
-                                await new Promise(r => setTimeout(r, 800));
-                            }
-                        }
+                        const startData = await this.submitVideoGeneration(payload);
                         const taskId = startData && startData.task_id ? String(startData.task_id) : null;
                         if (taskId) {
                             this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
@@ -7208,7 +8466,9 @@
                             try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
                         }
                         await this.fetchActiveVideoTasks({ silent: true });
-                        if (startData && startData.queued) {
+                        if (startData && startData.reused_existing_task) {
+                            alert("Esta geração já está em andamento.");
+                        } else if (startData && startData.queued) {
                             const pos = Number(startData.queue_position || 0);
                             alert(`Já existe um vídeo em processamento. Este novo pedido entrou na fila${pos > 0 ? ` na posição ${pos}` : ''}.`);
                         }
@@ -7263,6 +8523,7 @@
                         this.ytStoryAssistReport = null;
                         this.ytStoryVideoLoading = false;
                         this.ytStoryTask = { status: 'cancelled', progress: (this.ytStoryTask && this.ytStoryTask.progress) ? this.ytStoryTask.progress : 0, message: 'Cancelado.' };
+                        this.releaseVideoGenerationLockByTask(this.ytStoryTaskId);
                         this.ytStoryTaskId = null;
                         try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                         await this.fetchActiveVideoTasks({ silent: true });
@@ -7280,6 +8541,7 @@
                         this.ytStoryAssistReport = null;
                         this.ytStoryVideoLoading = false;
                         this.ytStoryTask = { status: 'cancelled', progress: 0, message: 'Solicitação enviada para encerrar produção no servidor.' };
+                        this.releaseVideoGenerationLockByTask(this.ytStoryTaskId);
                         this.ytStoryTaskId = null;
                         this.ytActiveVideoTasks = [];
                         try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
@@ -7339,6 +8601,9 @@
                         } catch (e) {}
                         const res = await this.authFetch(`/youtube/task/${taskId}`);
                         const data = await res.json().catch(() => ({}));
+                        if (data && data.idempotency_key) {
+                            this.trackVideoGenerationTaskKey(taskId, data.idempotency_key);
+                        }
                         if (!res.ok) {
                             const detail = this.formatApiError(data.detail || data.message || data, "Erro ao consultar tarefa.");
                             const code = Number(res.status || 0);
@@ -7346,6 +8611,7 @@
                                 this.ytStoryVideoLoading = false;
                                 this.ytStoryTask = { status: 'failed', progress: 0, message: String(detail) };
                                 try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                                this.releaseVideoGenerationLockByTask(taskId);
                                 this.ytStoryTaskId = null;
                                 return;
                             }
@@ -7363,6 +8629,7 @@
                             this.ytStoryScheduledId = null;
                             this.ytStoryVideoLoading = false;
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                            this.releaseVideoGenerationLockByTask(taskId);
                             try {
                                 if ('Notification' in window) {
                                     if (Notification.permission === 'default') {
@@ -7383,6 +8650,7 @@
                             this.ytStoryVideoLoading = false;
                             try { alert(data.message || "Falha ao gerar vídeo."); } catch (e) {}
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                            this.releaseVideoGenerationLockByTask(taskId);
                             this.ytStoryTaskId = null;
                             this.fetchActiveVideoTasks({ silent: true });
                             return;
@@ -7390,6 +8658,7 @@
                         if (status === 'cancelled') {
                             this.ytStoryVideoLoading = false;
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                            this.releaseVideoGenerationLockByTask(taskId);
                             this.ytStoryTaskId = null;
                             this.fetchActiveVideoTasks({ silent: true });
                             return;
@@ -7421,6 +8690,7 @@
                             return;
                         }
                         this.ytStoryVideoLoading = false;
+                        this.releaseVideoGenerationLockByTask(taskId);
                         this.ytStoryTask = { status: 'failed', progress: 0, message: msg || 'Erro ao consultar tarefa.' };
                     }
                 },

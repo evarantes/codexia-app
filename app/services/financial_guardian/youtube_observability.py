@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,12 +8,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from app.models import User, VideoTask
+from app.models import ScheduledVideo, User, VideoTask
 from app.services.financial_guardian.adapters import youtube_auto_financial_adapter
 from app.services.financial_guardian_service import financial_guardian_service
 
 
 _AUDIT_TABLE = "codexia_financial_audit_events"
+_CACHE_TABLE = "codexia_asset_generation_cache"
 _LEDGER_TABLE = "codexia_financial_ledger_entries"
 
 _PERIOD_LABELS = {
@@ -109,6 +111,27 @@ def _dt_iso(value: Any) -> Optional[str]:
             pass
     text_value = str(value).strip()
     return text_value or None
+
+def _path_exists(value: Any) -> bool:
+    path = str(value or "").strip()
+    if not path:
+        return False
+    try:
+        return os.path.exists(path)
+    except Exception:
+        return False
+
+
+def _unique_strings(values: List[Any]) -> List[str]:
+    seen = set()
+    items: List[str] = []
+    for value in values:
+        text_value = str(value or "").strip()
+        if not text_value or text_value in seen:
+            continue
+        seen.add(text_value)
+        items.append(text_value)
+    return items
 
 
 def _period_bounds(period: str, now: Optional[datetime] = None) -> Tuple[datetime, datetime, str]:
@@ -242,8 +265,11 @@ class YouTubeFinancialGuardianObservabilityService:
         end: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
         self.ensure_schema(db)
-        clauses = ["user_id = :user_id", "source_type = 'youtube_auto'"]
-        params: Dict[str, Any] = {"user_id": int(user.id)}
+        clauses = ["source_type = 'youtube_auto'"]
+        params: Dict[str, Any] = {}
+        if not bool(getattr(user, "is_admin", False)):
+            clauses.insert(0, "user_id = :user_id")
+            params["user_id"] = int(user.id)
         if start is not None:
             clauses.append("occurred_at >= :start")
             params["start"] = start
@@ -448,8 +474,11 @@ class YouTubeFinancialGuardianObservabilityService:
         task_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         self.ensure_schema(db)
-        clauses = ["user_id = :user_id", "source_type = 'youtube_auto'"]
-        params: Dict[str, Any] = {"user_id": int(user.id)}
+        clauses = ["source_type = 'youtube_auto'"]
+        params: Dict[str, Any] = {}
+        if not bool(getattr(user, "is_admin", False)):
+            clauses.insert(0, "user_id = :user_id")
+            params["user_id"] = int(user.id)
         if start is not None:
             clauses.append("created_at >= :start")
             params["start"] = start
@@ -478,7 +507,9 @@ class YouTubeFinancialGuardianObservabilityService:
         end: Optional[datetime] = None,
         task_id: Optional[str] = None,
     ) -> List[VideoTask]:
-        q = db.query(VideoTask).filter(VideoTask.user_id == int(user.id))
+        q = db.query(VideoTask)
+        if not bool(getattr(user, "is_admin", False)):
+            q = q.filter(VideoTask.user_id == int(user.id))
         if task_id:
             q = q.filter(VideoTask.id == str(task_id))
         if start is not None:
@@ -499,6 +530,365 @@ class YouTubeFinancialGuardianObservabilityService:
             return True
         simulation = result.get("simulation") if isinstance(result.get("simulation"), dict) else {}
         return bool(simulation.get("scenario_code"))
+
+    def _task_result(self, row: VideoTask) -> Dict[str, Any]:
+        result = _json_loads(getattr(row, "result_json", None), {})
+        return result if isinstance(result, dict) else {}
+
+    def _task_payload(self, row: VideoTask) -> Dict[str, Any]:
+        result = self._task_result(row)
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _task_artifact_snapshot(self, row: VideoTask) -> Dict[str, Any]:
+        result = self._task_result(row)
+        payload = self._task_payload(row)
+        script = result.get("script") if isinstance(result.get("script"), dict) else {}
+        render_report = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
+        audio_generation = result.get("audio_generation") if isinstance(result.get("audio_generation"), dict) else {}
+        if not audio_generation:
+            audio_generation = render_report.get("audio_generation") if isinstance(render_report.get("audio_generation"), dict) else {}
+        official_audio_transcription = (
+            result.get("official_audio_transcription")
+            if isinstance(result.get("official_audio_transcription"), dict)
+            else {}
+        )
+        if not official_audio_transcription:
+            official_audio_transcription = (
+                render_report.get("official_audio_transcription")
+                if isinstance(render_report.get("official_audio_transcription"), dict)
+                else {}
+            )
+        scene_visuals = render_report.get("scene_visuals") if isinstance(render_report.get("scene_visuals"), list) else []
+
+        image_candidates: List[str] = []
+        for container in (
+            script.get("selected_images"),
+            payload.get("selected_images"),
+            result.get("selected_images"),
+        ):
+            if isinstance(container, list):
+                image_candidates.extend(container)
+        for visual in scene_visuals:
+            if isinstance(visual, dict):
+                image_candidates.append(visual.get("image_path"))
+        image_paths = _unique_strings(image_candidates)
+
+        audio_path = (
+            audio_generation.get("output_path")
+            or audio_generation.get("main_audio_path")
+            or script.get("reuse_existing_audio_path")
+            or ""
+        )
+        subtitle_path = (
+            official_audio_transcription.get("srt_path")
+            or official_audio_transcription.get("subtitle_path")
+            or ""
+        )
+        video_path = result.get("file_path") or render_report.get("file_path") or ""
+        video_url = result.get("video_url") or render_report.get("video_url") or ""
+        transcription_ready = bool(
+            subtitle_path
+            or official_audio_transcription.get("full_text")
+            or official_audio_transcription.get("text")
+            or official_audio_transcription.get("segments")
+            or official_audio_transcription.get("words")
+        )
+        return {
+            "script_ready": bool(script),
+            "image_paths": image_paths,
+            "image_count": len(image_paths),
+            "images_available": sum(1 for path in image_paths if _path_exists(path)),
+            "audio_path": str(audio_path or "").strip(),
+            "audio_available": _path_exists(audio_path),
+            "subtitle_path": str(subtitle_path or "").strip(),
+            "subtitle_available": _path_exists(subtitle_path),
+            "transcription_ready": transcription_ready,
+            "video_path": str(video_path or "").strip(),
+            "video_available": _path_exists(video_path),
+            "video_url": str(video_url or "").strip(),
+        }
+
+    def _audit_rollup_by_task(self, db: Session, *, user: User) -> Dict[str, Dict[str, Any]]:
+        rows = self._fetch_audit_rows(db, user=user)
+        rollup: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            details = _json_loads(row.get("details_json"), {})
+            context_json = _json_loads(row.get("context_json"), {})
+            task_id = str(row.get("context_id") or context_json.get("context_id") or "").strip()
+            if not task_id:
+                continue
+            event_type = _normalized_event_type(row.get("event_type"), details)
+            entry = rollup.setdefault(task_id, {
+                "events_total": 0,
+                "published": False,
+                "blocked": False,
+                "failed": False,
+                "last_event": None,
+                "last_event_at": None,
+            })
+            entry["events_total"] += 1
+            entry["published"] = bool(entry["published"] or event_type == "VIDEO_PUBLISHED")
+            entry["blocked"] = bool(entry["blocked"] or event_type == "BUDGET_BLOCKED")
+            entry["failed"] = bool(entry["failed"] or event_type in {"VIDEO_FAILED", "RECOVERY_STOPPED"})
+            entry["last_event"] = event_type
+            entry["last_event_at"] = _dt_iso(row.get("created_at"))
+        return rollup
+
+    def _fetch_cache_rows(self, db: Session, *, user: User) -> List[Dict[str, Any]]:
+        self.ensure_schema(db)
+        tables = set(inspect(db.bind).get_table_names())
+        if _CACHE_TABLE not in tables:
+            return []
+        rows = db.execute(text(
+            f"""
+            SELECT id, context_id, asset_kind, cache_key, file_path, hit_count, last_used_at, created_at, updated_at, meta_json
+            FROM {_CACHE_TABLE}
+            WHERE user_id = :user_id
+              AND source_type = 'youtube_auto'
+            ORDER BY updated_at DESC, id DESC
+            """
+        ), {"user_id": int(user.id)}).mappings().all()
+        return [dict(row) for row in rows]
+
+    def _build_content_registry(
+        self,
+        db: Session,
+        *,
+        user: User,
+        limit: int = 12,
+    ) -> Dict[str, Any]:
+        tasks = self._fetch_youtube_tasks(db, user=user)
+        audit_rollup = self._audit_rollup_by_task(db, user=user)
+        grouped: Dict[str, Dict[str, Any]] = {}
+
+        for row in tasks:
+            result = self._task_result(row)
+            payload = self._task_payload(row)
+            script = result.get("script") if isinstance(result.get("script"), dict) else {}
+            title_control = result.get("title_control") if isinstance(result.get("title_control"), dict) else {}
+            artifacts = self._task_artifact_snapshot(row)
+            content_fingerprint = str(payload.get("content_fingerprint") or "").strip()
+            registry_key = content_fingerprint or f"task:{row.id}"
+            created_at = _dt_iso(getattr(row, "created_at", None))
+            updated_at = _dt_iso(getattr(row, "updated_at", None))
+            audit_info = audit_rollup.get(str(row.id), {})
+
+            item = grouped.get(registry_key)
+            current_sort_key = str(updated_at or created_at or "")
+            if item is None or current_sort_key >= str(item.get("_sort_key") or ""):
+                grouped[registry_key] = {
+                    "_sort_key": current_sort_key,
+                    "task_id": str(row.id),
+                    "content_fingerprint": content_fingerprint or None,
+                    "status": str(getattr(row, "status", "") or ""),
+                    "mode": str(payload.get("mode") or "").strip() or None,
+                    "kind": str(result.get("kind") or payload.get("kind") or "").strip() or None,
+                    "internal_title": (
+                        title_control.get("internal_title")
+                        or script.get("internal_title")
+                        or payload.get("internal_title")
+                        or payload.get("topic")
+                    ),
+                    "youtube_title": (
+                        title_control.get("youtube_title")
+                        or script.get("youtube_title")
+                        or result.get("title")
+                        or payload.get("youtube_title")
+                        or payload.get("override_title")
+                        or payload.get("topic")
+                    ),
+                    "narrated_title": (
+                        title_control.get("narrated_title")
+                        or script.get("narrated_title")
+                        or payload.get("narrated_title")
+                    ),
+                    "auto_upload": bool(payload.get("auto_upload")),
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "published": bool(audit_info.get("published")),
+                    "last_guardian_event": audit_info.get("last_event"),
+                    "events_total": int(audit_info.get("events_total") or 0),
+                    "cost_control": result.get("cost_control") if isinstance(result.get("cost_control"), dict) else {},
+                    "artifacts": {
+                        "script_ready": artifacts["script_ready"],
+                        "images_registered": artifacts["image_count"],
+                        "audio_registered": bool(artifacts["audio_path"]),
+                        "video_registered": bool(artifacts["video_path"] or artifacts["video_url"]),
+                        "transcription_ready": bool(artifacts["transcription_ready"]),
+                    },
+                    "duplicate_versions": 0,
+                }
+                item = grouped[registry_key]
+            item["duplicate_versions"] = int(item.get("duplicate_versions") or 0) + 1
+
+        items = sorted(grouped.values(), key=lambda entry: str(entry.get("_sort_key") or ""), reverse=True)
+        for item in items:
+            item.pop("_sort_key", None)
+
+        fingerprinted = sum(1 for item in items if item.get("content_fingerprint"))
+        published = sum(1 for item in items if item.get("published"))
+        duplicated = sum(1 for item in items if int(item.get("duplicate_versions") or 0) > 1)
+        reusable_ready = sum(
+            1
+            for item in items
+            if bool((item.get("cost_control") or {}).get("reused_video"))
+            or bool((item.get("artifacts") or {}).get("video_registered"))
+        )
+        return {
+            "scope": "all_time",
+            "items_total": len(items),
+            "fingerprinted_total": fingerprinted,
+            "published_total": published,
+            "duplicate_groups": duplicated,
+            "reusable_ready_total": reusable_ready,
+            "recent_items": items[:max(1, int(limit or 12))],
+        }
+
+    def _build_artifact_library(
+        self,
+        db: Session,
+        *,
+        user: User,
+        limit: int = 12,
+    ) -> Dict[str, Any]:
+        tasks = self._fetch_youtube_tasks(db, user=user)
+        cache_rows = self._fetch_cache_rows(db, user=user)
+        scripts_ready = 0
+        transcription_ready = 0
+        image_registry = set()
+        image_available = set()
+        audio_registry = set()
+        audio_available = set()
+        video_registry = set()
+        video_available = set()
+        recent_artifacts: List[Dict[str, Any]] = []
+
+        for row in tasks:
+            artifacts = self._task_artifact_snapshot(row)
+            if artifacts["script_ready"]:
+                scripts_ready += 1
+            if artifacts["transcription_ready"]:
+                transcription_ready += 1
+            for path in artifacts["image_paths"]:
+                image_registry.add(path)
+                if _path_exists(path):
+                    image_available.add(path)
+            if artifacts["audio_path"]:
+                audio_registry.add(artifacts["audio_path"])
+                if artifacts["audio_available"]:
+                    audio_available.add(artifacts["audio_path"])
+            if artifacts["video_path"] or artifacts["video_url"]:
+                canonical_video = artifacts["video_path"] or artifacts["video_url"]
+                video_registry.add(canonical_video)
+                if artifacts["video_available"]:
+                    video_available.add(canonical_video)
+            recent_artifacts.append({
+                "task_id": str(row.id),
+                "status": str(getattr(row, "status", "") or ""),
+                "updated_at": _dt_iso(getattr(row, "updated_at", None)),
+                "script_ready": artifacts["script_ready"],
+                "images_registered": artifacts["image_count"],
+                "audio_registered": bool(artifacts["audio_path"]),
+                "audio_available": bool(artifacts["audio_available"]),
+                "video_registered": bool(artifacts["video_path"] or artifacts["video_url"]),
+                "video_available": bool(artifacts["video_available"]),
+                "transcription_ready": bool(artifacts["transcription_ready"]),
+            })
+
+        cache_keys = {str(row.get("cache_key") or "").strip() for row in cache_rows if str(row.get("cache_key") or "").strip()}
+        cache_available = sum(1 for row in cache_rows if _path_exists(row.get("file_path")))
+        cache_hits = sum(max(0, _safe_int(row.get("hit_count"), 0)) for row in cache_rows)
+        recent_cache = [
+            {
+                "cache_key": row.get("cache_key"),
+                "asset_kind": row.get("asset_kind"),
+                "context_id": row.get("context_id"),
+                "file_path": row.get("file_path"),
+                "available": _path_exists(row.get("file_path")),
+                "hit_count": max(0, _safe_int(row.get("hit_count"), 0)),
+                "updated_at": _dt_iso(row.get("updated_at")),
+                "last_used_at": _dt_iso(row.get("last_used_at")),
+            }
+            for row in cache_rows[:max(1, int(limit or 12))]
+        ]
+        recent_artifacts.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
+        return {
+            "scope": "all_time",
+            "scripts_ready_total": scripts_ready,
+            "transcriptions_ready_total": transcription_ready,
+            "images_registered_total": len(image_registry),
+            "images_available_total": len(image_available),
+            "audio_registered_total": len(audio_registry),
+            "audio_available_total": len(audio_available),
+            "videos_registered_total": len(video_registry),
+            "videos_available_total": len(video_available),
+            "image_cache_rows_total": len(cache_rows),
+            "image_cache_keys_total": len(cache_keys),
+            "image_cache_available_total": cache_available,
+            "image_cache_hits_total": cache_hits,
+            "recent_task_artifacts": recent_artifacts[:max(1, int(limit or 12))],
+            "recent_cached_assets": recent_cache,
+        }
+
+    def _build_shorts_summary(
+        self,
+        db: Session,
+        *,
+        user: User,
+        limit: int = 12,
+    ) -> Dict[str, Any]:
+        rows = (
+            db.query(ScheduledVideo)
+            .filter(ScheduledVideo.user_id == int(user.id))
+            .order_by(ScheduledVideo.updated_at.desc(), ScheduledVideo.id.desc())
+            .all()
+        )
+        shorts = [row for row in rows if str(getattr(row, "video_type", "") or "").strip().lower() == "short"]
+        parent_ids = {int(row.parent_video_id) for row in shorts if getattr(row, "parent_video_id", None)}
+        parent_map: Dict[int, str] = {}
+        if parent_ids:
+            parents = db.query(ScheduledVideo).filter(ScheduledVideo.id.in_(list(parent_ids))).all()
+            parent_map = {int(row.id): str(row.title or row.theme or f"ID {row.id}") for row in parents}
+
+        published = 0
+        ready = 0
+        failed = 0
+        orphaned = 0
+        recent_items: List[Dict[str, Any]] = []
+        for row in shorts:
+            status = str(getattr(row, "status", "") or "").strip().lower()
+            is_published = bool(getattr(row, "uploaded_at", None) or getattr(row, "youtube_video_id", None) or "published" in status)
+            if is_published:
+                published += 1
+            elif status in {"completed", "ready", "awaiting_publish"}:
+                ready += 1
+            elif status == "failed":
+                failed += 1
+            if getattr(row, "parent_video_id", None) and int(row.parent_video_id) not in parent_map:
+                orphaned += 1
+            recent_items.append({
+                "id": int(row.id),
+                "title": str(getattr(row, "title", None) or getattr(row, "theme", None) or f"Short {row.id}"),
+                "status": str(getattr(row, "status", "") or ""),
+                "parent_video_id": getattr(row, "parent_video_id", None),
+                "parent_title": parent_map.get(int(row.parent_video_id)) if getattr(row, "parent_video_id", None) else None,
+                "youtube_video_id": getattr(row, "youtube_video_id", None),
+                "uploaded_at": _dt_iso(getattr(row, "uploaded_at", None)),
+                "updated_at": _dt_iso(getattr(row, "updated_at", None)),
+                "video_url": getattr(row, "video_url", None),
+            })
+        recent_items.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
+        return {
+            "scope": "all_time",
+            "shorts_total": len(shorts),
+            "published_total": published,
+            "ready_total": ready,
+            "failed_total": failed,
+            "pending_total": max(0, len(shorts) - published - ready - failed),
+            "orphaned_total": orphaned,
+            "recent_items": recent_items[:max(1, int(limit or 12))],
+        }
 
     def _summarize_window(self, db: Session, *, user: User, start: datetime, end: datetime, label: str) -> Dict[str, Any]:
         audit_rows = self._fetch_audit_rows(db, user=user, start=start, end=end)
@@ -884,6 +1274,9 @@ class YouTubeFinancialGuardianObservabilityService:
         remaining_to_break_even = round(max(0.0, total_invested - month_revenue), 4)
         avg_daily_revenue = round(month_revenue / max(1, (_utcnow() - datetime(_utcnow().year, _utcnow().month, 1)).days + 1), 4)
         recovery_days = round(remaining_to_break_even / avg_daily_revenue, 2) if avg_daily_revenue > 0 else None
+        content_registry = self._build_content_registry(db, user=user)
+        artifact_library = self._build_artifact_library(db, user=user)
+        shorts_summary = self._build_shorts_summary(db, user=user)
         return {
             "source_type": "youtube_auto",
             "period": period_key,
@@ -904,6 +1297,9 @@ class YouTubeFinancialGuardianObservabilityService:
             },
             "recent_jobs": current.get("recent_jobs") or [],
             "ledger_entries": ledger_entries[:20],
+            "content_registry": content_registry,
+            "artifact_library": artifact_library,
+            "shorts_summary": shorts_summary,
             "no_paid_calls_confirmed": True,
             "scenarios": [{"code": code, "label": label} for code, label in _SIMULATION_SCENARIOS.items()],
             "generated_at": _utcnow().isoformat(),

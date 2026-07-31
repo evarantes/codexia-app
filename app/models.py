@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime
@@ -144,11 +144,32 @@ class Settings(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     openai_api_key = Column(String, nullable=True)
+    openai_image_model = Column(String, nullable=True)
+    openai_allow_text = Column(Boolean, default=False)
+    openai_allow_script = Column(Boolean, default=False)
+    openai_allow_editorial = Column(Boolean, default=False)
+    openai_allow_analysis = Column(Boolean, default=False)
+    openai_allow_images = Column(Boolean, default=True)
+    openai_allow_thumbnail = Column(Boolean, default=True)
+    openai_allow_transcription = Column(Boolean, default=False)
+    openai_allow_tts = Column(Boolean, default=False)
+    openai_allow_embeddings = Column(Boolean, default=False)
+    openai_allow_other = Column(Boolean, default=False)
+    openai_no_credit = Column(Boolean, default=False)
+    ai_cb_failure_threshold = Column(Integer, nullable=True)
+    ai_cb_cooldown_seconds = Column(Integer, nullable=True)
+    ai_cb_half_open_max_attempts = Column(Integer, nullable=True)
     leonardo_api_key = Column(String, nullable=True)
     leonardo_model_id = Column(String, nullable=True)
     gemini_api_key = Column(String, nullable=True)
+    gemini_script_model = Column(String, nullable=True)
+    gemini_text_model = Column(String, nullable=True)
+    gemini_editorial_model = Column(String, nullable=True)
+    gemini_analysis_model = Column(String, nullable=True)
     deepseek_api_key = Column(String, nullable=True)
     groq_api_key = Column(String, nullable=True)
+    groq_transcription_model = Column(String, nullable=True)
+    groq_text_model = Column(String, nullable=True)
     anthropic_api_key = Column(String, nullable=True)
     mistral_api_key = Column(String, nullable=True)
     openrouter_api_key = Column(String, nullable=True)
@@ -167,6 +188,8 @@ class Settings(Base):
     youtube_client_id = Column(String, nullable=True)
     youtube_client_secret = Column(String, nullable=True)
     youtube_refresh_token = Column(String, nullable=True)
+    official_channel_logo_path = Column(String, nullable=True)
+    official_channel_logo_url = Column(String, nullable=True)
     youtube_comments_last_sync_at = Column(DateTime, nullable=True)
     youtube_auto_thanks_enabled = Column(Boolean, default=False)
     youtube_auto_thanks_template = Column(Text, nullable=True)
@@ -225,6 +248,7 @@ class Settings(Base):
     made_for_kids_default = Column(Boolean, nullable=True)
     daily_spend_limit = Column(Float, nullable=True)
     monthly_spend_limit = Column(Float, nullable=True)
+    per_video_spend_limit = Column(Float, nullable=True)
     text_cost_unit = Column(Float, nullable=True)
     voice_cost_unit = Column(Float, nullable=True)
     image_cost_unit = Column(Float, nullable=True)
@@ -232,6 +256,8 @@ class Settings(Base):
     music_cost_unit = Column(Float, nullable=True)
     caption_cost_unit = Column(Float, nullable=True)
     thumbnail_cost_unit = Column(Float, nullable=True)
+    max_quality_recovery_attempts = Column(Integer, nullable=True)
+    min_quality_recovery_score_delta = Column(Float, nullable=True)
     editorial_intelligence_enabled = Column(Boolean, nullable=True)
     editorial_intelligence_fail_open = Column(Boolean, nullable=True)
     editorial_intelligence_mode = Column(String, nullable=True)
@@ -303,6 +329,103 @@ class ScheduledVideo(Base):
     youtube_video_id = Column(String, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SeriesPlan(Base):
+    __tablename__ = "series_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    channel_id = Column(String, nullable=True, index=True)
+    name = Column(String, nullable=False, index=True)
+    main_theme = Column(String, nullable=False, index=True)
+    objective = Column(Text, nullable=True)
+    target_audience = Column(String, nullable=True)
+    content_type = Column(String, nullable=False, default="reflection")
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    publication_time = Column(String, nullable=False, default="19:00")
+    timezone = Column(String, nullable=False, default="UTC")
+    production_lead_days = Column(Integer, nullable=False, default=1)
+    production_time = Column(String, nullable=False, default="06:00")
+    duration_minutes = Column(Integer, nullable=True)
+    visibility = Column(String, nullable=False, default="unlisted")
+    tone = Column(String, nullable=True)
+    narration_style = Column(String, nullable=True)
+    continuity_level = Column(String, nullable=True)
+    hook_intensity = Column(String, nullable=True)
+    use_biblical_references = Column(Boolean, default=True)
+    cta_subscribe = Column(Boolean, default=True)
+    cta_next_episode = Column(Boolean, default=True)
+    auto_approval = Column(Boolean, default=False)
+    status = Column(String, nullable=False, default="draft", index=True)
+    total_episodes = Column(Integer, nullable=False, default=0)
+    current_episode = Column(Integer, nullable=False, default=0)
+    editorial_plan_json = Column(Text, nullable=True)
+    editorial_memory_json = Column(Text, nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    episodes = relationship("SeriesEpisode", back_populates="series", cascade="all, delete-orphan")
+
+
+class SeriesEpisode(Base):
+    __tablename__ = "series_episodes"
+    __table_args__ = (
+        UniqueConstraint("series_id", "episode_number", name="uq_series_episodes_series_episode_number"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    series_id = Column(Integer, ForeignKey("series_plans.id"), nullable=False, index=True)
+    episode_number = Column(Integer, nullable=False, index=True)
+    planned_title = Column(String, nullable=False)
+    narrated_title = Column(String, nullable=True)
+    summary = Column(Text, nullable=True)
+    previous_episode_hook = Column(Text, nullable=True)
+    next_episode_hook = Column(Text, nullable=True)
+    publication_datetime = Column(DateTime, nullable=False, index=True)
+    production_datetime = Column(DateTime, nullable=False, index=True)
+    duration_minutes = Column(Integer, nullable=True)
+    status = Column(String, nullable=False, default="planned", index=True)
+    task_id = Column(String, ForeignKey("video_tasks.id"), nullable=True, index=True)
+    scheduled_video_id = Column(Integer, ForeignKey("scheduled_videos.id"), nullable=True, index=True)
+    content_fingerprint = Column(String, nullable=True, index=True)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    youtube_video_id = Column(String, nullable=True)
+    youtube_url = Column(String, nullable=True)
+    current_version = Column(Integer, nullable=False, default=1)
+    correction_plan_json = Column(Text, nullable=True)
+    approved_snapshot_json = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    series = relationship("SeriesPlan", back_populates="episodes")
+    reviews = relationship("EpisodeReview", back_populates="episode", cascade="all, delete-orphan")
+
+
+class EpisodeReview(Base):
+    __tablename__ = "episode_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    episode_id = Column(Integer, ForeignKey("series_episodes.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    decision = Column(String, nullable=False, index=True)
+    reason_categories = Column(Text, nullable=True)
+    feedback = Column(Text, nullable=True)
+    affected_components = Column(Text, nullable=True)
+    reused_components = Column(Text, nullable=True)
+    regenerated_components = Column(Text, nullable=True)
+    estimated_cost = Column(Float, nullable=True)
+    actual_cost = Column(Float, nullable=True)
+    result_summary = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime, default=datetime.utcnow)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    episode = relationship("SeriesEpisode", back_populates="reviews")
 
 class User(Base):
     __tablename__ = "users"

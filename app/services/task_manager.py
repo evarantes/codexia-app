@@ -284,6 +284,44 @@ def _fetch_dedupe_row_by_task_id(db, task_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def _task_result_payload_from_row(row: VideoTask) -> Dict[str, Any]:
+    if not row or not getattr(row, "result_json", None):
+        return {}
+    try:
+        result = json.loads(row.result_json)
+    except Exception:
+        return {}
+    if not isinstance(result, dict):
+        return {}
+    payload = result.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _find_equivalent_task_by_content_fingerprint(
+    db,
+    *,
+    payload: Dict[str, Any],
+    statuses: Optional[set] = None,
+    limit: int = 400,
+) -> Optional[VideoTask]:
+    desired = str((payload or {}).get("content_fingerprint") or "").strip()
+    if not desired:
+        return None
+    status_filter = statuses or {"pending", "processing", "completed"}
+    rows = (
+        db.query(VideoTask)
+        .filter(VideoTask.status.in_(list(status_filter)))
+        .order_by(VideoTask.updated_at.desc(), VideoTask.created_at.desc())
+        .limit(max(1, int(limit or 400)))
+        .all()
+    )
+    for row in rows:
+        task_payload = _task_result_payload_from_row(row)
+        if str(task_payload.get("content_fingerprint") or "").strip() == desired:
+            return row
+    return None
+
+
 def _fetch_lease_row(db, task_id: str) -> Optional[Dict[str, Any]]:
     row = db.execute(text(
         f"""
@@ -479,6 +517,12 @@ def reset_task_for_retry(task_id: str, progress: int = 1, message: str = "Reinic
     db = SessionLocal()
     try:
         _ensure_task_support_tables()
+        db.execute(text(
+            f"""
+            DELETE FROM {_TASK_LEASE_TABLE}
+            WHERE task_id = :task_id
+            """
+        ), {"task_id": task_id})
         row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
         if not row:
             return None
@@ -620,6 +664,8 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
                 import urllib.request as _urlreq
                 _p = ".dbg/render-stuck-86.env"
                 _u, _s = "http://127.0.0.1:7777/event", "render-stuck-86"
+                if not os.path.exists(_p):
+                    return
                 try:
                     with open(_p, "r", encoding="utf-8") as _f:
                         _c = _f.read()
@@ -639,7 +685,7 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
                     "data": data or {},
                 }
                 _req = _urlreq.Request(_u, data=_json.dumps(_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                _urlreq.urlopen(_req, timeout=2).read()
+                _urlreq.urlopen(_req, timeout=0.1).read()
             except Exception:
                 pass
         # #endregion
@@ -784,6 +830,13 @@ def claim_video_task(
                 task_id = str(dedupe.get("task_id") or "").strip()
                 task = db.query(VideoTask).filter(VideoTask.id == task_id).first()
                 if task:
+                    existing_user_id = getattr(task, "user_id", None)
+                    if user_id is not None and existing_user_id not in (None, int(user_id)):
+                        task = None
+                    elif user_id is not None and existing_user_id is None:
+                        task.user_id = int(user_id)
+                        db.commit()
+                if task:
                     status_norm = str(task.status or "").strip().lower()
                     dedupe_exp = _parse_dt(dedupe.get("expires_at"))
                     completed_at = _parse_dt(dedupe.get("completed_at")) or _parse_dt(getattr(task, "updated_at", None))
@@ -802,6 +855,8 @@ def claim_video_task(
                             "created_new_task": False,
                             "reused_existing_task": True,
                             "reused_completed_task": False,
+                            "duplicate_prevented": True,
+                            "matched_by": "idempotency_key",
                             "task": current,
                         }
                     if not force_regenerate and status_norm == "completed" and within_window:
@@ -813,8 +868,48 @@ def claim_video_task(
                             "created_new_task": False,
                             "reused_existing_task": True,
                             "reused_completed_task": True,
+                            "duplicate_prevented": True,
+                            "matched_by": "idempotency_key",
                             "task": current,
                         }
+            equivalent_task = _find_equivalent_task_by_content_fingerprint(db, payload=payload)
+            if equivalent_task and str(equivalent_task.id or "").strip():
+                task_id = str(equivalent_task.id or "").strip()
+                task = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+                if task and user_id is not None:
+                    existing_user_id = getattr(task, "user_id", None)
+                    if existing_user_id not in (None, int(user_id)):
+                        task = None
+                    elif existing_user_id is None:
+                        task.user_id = int(user_id)
+                        db.commit()
+                if task and (force_regenerate is False):
+                    status_norm = str(task.status or "").strip().lower()
+                    task_payload = _task_result_payload_from_row(task)
+                    _upsert_dedupe_row(
+                        db,
+                        idempotency_key=key,
+                        request_hash=req_hash,
+                        task_id=task_id,
+                        status=status_norm or "pending",
+                        payload=task_payload or payload,
+                        result_json=getattr(task, "result_json", None),
+                        expires_at=now + timedelta(seconds=max(60, int(dedupe_window_seconds or _task_dedupe_window_seconds()))),
+                        completed_at=now if status_norm == "completed" else None,
+                    )
+                    db.commit()
+                    current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
+                    video_tasks[task_id] = current
+                    _redis_set(task_id, current)
+                    return {
+                        "task_id": task_id,
+                        "created_new_task": False,
+                        "reused_existing_task": True,
+                        "reused_completed_task": bool(status_norm == "completed"),
+                        "duplicate_prevented": True,
+                        "matched_by": "content_fingerprint",
+                        "task": current,
+                    }
             task_payload = dict(initial_result or {})
             task_payload["payload"] = payload
             task_payload["idempotency_key"] = key
@@ -850,6 +945,8 @@ def claim_video_task(
                 "created_new_task": True,
                 "reused_existing_task": False,
                 "reused_completed_task": False,
+                "duplicate_prevented": False,
+                "matched_by": "new_task",
                 "task": current,
             }
         except Exception:

@@ -4,11 +4,11 @@ import json
 import base64
 from typing import Any, Dict, List, Optional
 
-import openai
 import requests
 import uuid
 
 from app.config import STATIC_DIR
+from app.services.ai_router import AICapability
 
 
 class OpenAIImageModule:
@@ -371,26 +371,17 @@ Regras para os campos:
                 return None
 
         def _openai_generate_image(prompt: str) -> Dict[str, Optional[str]]:
-            api_key = (getattr(self.ai_service, "api_key", "") or "").strip()
-            if not api_key:
-                return {"url": None, "error": "missing_api_key", "model": model}
             try:
-                client = openai.OpenAI(api_key=api_key)
-                result = client.images.generate(
-                    model="gpt-image-1",
+                image_path = self.ai_service.ai_router.generate_image(
+                    user_id=None,
+                    task_id=None,
+                    video_id=None,
+                    capability=AICapability.IMAGE_GENERATION,
                     prompt=prompt,
-                    size=size,
+                    output_dir=out_dir,
                 )
-                item0 = result.data[0] if result and getattr(result, "data", None) else None
-                image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
-                image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
-                if not image_base64:
-                    raise Exception("OpenAI não retornou b64_json na imagem.")
-                image_bytes = base64.b64decode(image_base64)
-                saved_url = _save_image_bytes(image_bytes, ext="png")
-                if not saved_url:
-                    raise Exception("Falha ao salvar imagem gerada pela OpenAI.")
-                return {"url": saved_url, "error": None, "model": model}
+                fname = os.path.basename(str(image_path))
+                return {"url": f"/static/generated_images/{fname}", "error": None, "model": model}
             except Exception as e:
                 print("OPENAI IMAGE ERROR RAW:", repr(e))
                 return {"url": None, "error": str(e)[:400], "model": model}

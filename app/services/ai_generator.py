@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app.models import Settings
+from app.services.ai_router import AIRouter, AICapability, AIOperationBlocked, AIOperationInProgress
 from app.services.global_settings_service import (
     backfill_settings_from_legacy,
     build_global_settings_service,
@@ -57,8 +58,21 @@ def _extract_setting_value(value: Any) -> Any:
         return value.get("value")
     return value
 
+
+def _env_flag_enabled(*names: str) -> bool:
+    for name in names:
+        raw = str(os.getenv(name) or "").strip().lower()
+        if raw in {"1", "true", "yes", "sim", "on", "enabled", "enable"}:
+            return True
+    return False
+
+
+_PAID_AI_DISABLE_FLAG = Path(__file__).resolve().parents[2] / "artifacts" / "financial_guardian" / "disable_paid_ai.flag"
+
+
 class AIContentGenerator:
     def __init__(self):
+        self.ai_router = AIRouter()
         self.api_key = None
         self.gemini_key = None
         self.deepseek_key = None
@@ -94,8 +108,6 @@ class AIContentGenerator:
             print(f"AVISO: Falha ao carregar Settings do banco (erro SQL): {e}")
         except Exception as e:
             print(f"AVISO: Falha ao carregar Settings do banco: {e}")
-        finally:
-            db.close()
 
         self.api_key = None
         self.gemini_key = None
@@ -142,6 +154,8 @@ class AIContentGenerator:
             self.default_language = str((bible_video_settings or {}).get("default_language") or self.default_language or "pt-BR").strip() or "pt-BR"
         except Exception as e:
             print(f"AVISO: Falha ao carregar configuracao central de voz: {e}")
+        finally:
+            db.close()
 
         # Fallback to env vars
         if not self.api_key: self.api_key = _normalize_secret_value(os.getenv("OPENAI_API_KEY"))
@@ -171,8 +185,41 @@ class AIContentGenerator:
         }
         return aliases.get(raw, raw or "elevenlabs")
 
+    def _is_production_voice_mode(self) -> bool:
+        raw_mode = str(os.getenv("VIDEO_PRODUCTION_MODE") or os.getenv("VIDEO_MODE") or "").strip().lower()
+        if raw_mode in {"1", "true", "yes", "on", "production", "prod"}:
+            return True
+        app_env = str(os.getenv("APP_ENV") or "").strip().lower()
+        return app_env == "production"
+
+    def _paid_ai_disabled(self) -> bool:
+        return _env_flag_enabled(
+            "CODEXIA_DISABLE_PAID_AI",
+            "DISABLE_PAID_AI",
+            "NO_PAID_AI",
+            "FINANCIAL_GUARDIAN_NO_PAID_MODE",
+        ) or _PAID_AI_DISABLE_FLAG.exists()
+
+    def _assert_tts_text_not_truncated(self, text: str, *, provider: str, max_chars: int) -> str:
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            raise ValueError(f"{provider} recebeu texto vazio para TTS.")
+        if len(normalized_text) > int(max_chars):
+            raise ValueError(
+                f"{provider} nao aceita este texto completo sem truncamento seguro. "
+                "O pipeline deve usar o fallback premium configurado para preservar a narracao integral."
+            )
+        return normalized_text
+
     def _tts_provider_order(self, preferred_provider: Optional[str] = None) -> List[str]:
         configured = self._normalize_voice_provider(preferred_provider or self.voice_provider)
+        if self._is_production_voice_mode():
+            premium_order = ["openai_tts", "elevenlabs"] if configured == "openai_tts" else ["elevenlabs", "openai_tts"]
+            unique: List[str] = []
+            for item in premium_order:
+                if item not in unique:
+                    unique.append(item)
+            return unique
         premium_order = ["elevenlabs", "edenai", "openai_tts"]
         if configured == "edenai":
             premium_order = ["edenai", "elevenlabs", "openai_tts"]
@@ -225,16 +272,24 @@ class AIContentGenerator:
         if configured_provider == "elevenlabs":
             if style in ["child", "infantil"]:
                 return "echo" if gender == "male" else "shimmer"
+            if style in ["young", "jovem"]:
+                return "echo" if gender == "male" else "shimmer"
             if style in ["angelic", "angelical"]:
                 return "fable"
+            if style in ["solemn", "solene", "deep", "grave"]:
+                return "onyx" if gender == "male" else "nova"
             if style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
                 return "echo" if gender == "male" else "nova"
             return "onyx" if gender == "male" else "nova"
 
         if style in ["child", "infantil"]:
             return "echo" if gender == "male" else "shimmer"
+        if style in ["young", "jovem"]:
+            return "echo" if gender == "male" else "shimmer"
         if style in ["angelic", "angelical"]:
             return "fable"
+        if style in ["solemn", "solene", "deep", "grave"]:
+            return "onyx" if gender == "male" else "nova"
         if style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
             return "echo" if gender == "male" else "nova"
         return "onyx" if gender == "male" else "nova"
@@ -323,6 +378,7 @@ class AIContentGenerator:
         if not self.api_key or not text or not text.strip():
             return None
         try:
+            normalized_text = self._assert_tts_text_not_truncated(text, provider="OpenAI TTS", max_chars=4096)
             voice = (voice_hint or self.default_voice or "nova").strip() or "nova"
             if voice.lower() in {"my_voice", "myvoice", "minha_voz", "minhavoz"}:
                 voice = "nova"
@@ -331,7 +387,7 @@ class AIContentGenerator:
             response = client.audio.speech.create(
                 model=model,
                 voice=voice,
-                input=text[:4096],
+                input=normalized_text,
             )
             if hasattr(response, "read"):
                 data = response.read()
@@ -349,6 +405,7 @@ class AIContentGenerator:
         configured_provider = self._normalize_voice_provider(preferred_provider or self.voice_provider)
         attempts: List[Dict[str, Any]] = []
         provider_order = self._tts_provider_order(preferred_provider=preferred_provider)
+        paid_ai_disabled = self._paid_ai_disabled()
         diagnostics: Dict[str, Any] = {
             "configured_provider": configured_provider,
             "provider_order": provider_order,
@@ -375,18 +432,18 @@ class AIContentGenerator:
 
         providers = {
             "edenai": {
-                "available": bool((self.edenai_key or "").strip()),
-                "reason": "edenai_api_key ausente nas configuracoes centrais e no ambiente.",
+                "available": bool((self.edenai_key or "").strip()) and not paid_ai_disabled,
+                "reason": "Modo sem consumo pago ativo; EdenAI desabilitado." if paid_ai_disabled else "edenai_api_key ausente nas configuracoes centrais e no ambiente.",
                 "fn": self._generate_audio_edenai_elevenlabs,
             },
             "elevenlabs": {
-                "available": bool((self.elevenlabs_key or "").strip()),
-                "reason": "elevenlabs_api_key ausente nas configuracoes centrais e no ambiente.",
+                "available": bool((self.elevenlabs_key or "").strip()) and not paid_ai_disabled,
+                "reason": "Modo sem consumo pago ativo; ElevenLabs desabilitado." if paid_ai_disabled else "elevenlabs_api_key ausente nas configuracoes centrais e no ambiente.",
                 "fn": self._generate_audio_elevenlabs,
             },
             "openai_tts": {
-                "available": bool((self.api_key or "").strip()),
-                "reason": "openai_api_key ausente nas configuracoes centrais e no ambiente.",
+                "available": bool((self.api_key or "").strip()) and not paid_ai_disabled,
+                "reason": "Modo sem consumo pago ativo; OpenAI TTS desabilitado." if paid_ai_disabled else "openai_api_key ausente nas configuracoes centrais e no ambiente.",
                 "fn": self._generate_audio_openai_tts,
             },
         }
@@ -396,6 +453,8 @@ class AIContentGenerator:
 
         if configured_provider in {"edge_tts", "gtts"}:
             _add_attempt(configured_provider, "skipped", "Provider configurado nao e premium; providers premium serao tentados primeiro.")
+        elif self._is_production_voice_mode() and configured_provider == "edenai":
+            _add_attempt("edenai", "skipped", "Modo producao permite apenas ElevenLabs e OpenAI TTS.")
 
         for idx, provider in enumerate(provider_order):
             provider_meta = providers.get(provider)
@@ -434,296 +493,40 @@ class AIContentGenerator:
         return diagnostics
 
     def _has_text_provider(self) -> bool:
-        return bool((self.openrouter_key or "").strip() or (self.api_key or "").strip())
+        if self._paid_ai_disabled():
+            return False
+        return bool((self.gemini_key or "").strip() or (self.openrouter_key or "").strip() or (self.api_key or "").strip())
 
-    def _generate_text(self, prompt, system_prompt=None, temperature=0.7, json_mode=False):
-        """Gera texto via OpenRouter com fallback para OpenAI direto."""
+    def _generate_text(
+        self,
+        prompt,
+        system_prompt=None,
+        temperature=0.7,
+        json_mode=False,
+        capability: str = AICapability.TEXT_GENERATION,
+        task_id: Optional[str] = None,
+        video_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ):
+        """Gera texto via Router central (policy/custo/cache/idempotencia)."""
         self._load_config()
         if not self._has_text_provider():
             return "{}" if json_mode else "Conteúdo gerado por IA (Simulação - Sem Chave)"
-
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        class _ProviderHTTPError(Exception):
-            def __init__(self, status_code: int, target_url: str, body_preview: str = "", model_id: str = ""):
-                self.status_code = int(status_code or 0)
-                self.target_url = str(target_url or "")
-                self.body_preview = str(body_preview or "")
-                self.model_id = str(model_id or "")
-                super().__init__(f"HTTP {self.status_code} em {self.target_url}: {self.body_preview}".strip())
-
-        def _error_status_code(exc: Exception) -> Optional[int]:
-            status = getattr(exc, "status_code", None)
-            if status is None:
-                response = getattr(exc, "response", None)
-                status = getattr(response, "status_code", None)
-            try:
-                return int(status) if status is not None else None
-            except Exception:
-                return None
-
-        def _is_retryable_status(status_code: Optional[int]) -> bool:
-            return int(status_code or 0) in {429, 502, 503, 504}
-
-        def _retry_delay_seconds(attempt_number: int) -> int:
-            return 2 if int(attempt_number or 1) <= 1 else 3
-
-        def _call_with_retry(call_fn):
-            max_attempts = 3
-            last_exc = None
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    text = call_fn()
-                    return text
-                except Exception as exc:
-                    last_exc = exc
-                    status_code = _error_status_code(exc)
-                    retryable = _is_retryable_status(status_code)
-                    if retryable and attempt < max_attempts:
-                        delay_seconds = _retry_delay_seconds(attempt)
-                        time.sleep(delay_seconds)
-                        continue
-                    raise last_exc
-
-        def _http_chat(url: str, api_key: str, extra_headers: Optional[Dict[str, str]], model_id: str, allow_json_mode: bool) -> str:
-            hdrs = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
-            if isinstance(extra_headers, dict):
-                for k, v in extra_headers.items():
-                    if isinstance(k, str) and k and isinstance(v, str) and v:
-                        hdrs[k] = v
-            payload: Dict[str, Any] = {
-                "model": model_id,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": 4096,
-            }
-            if allow_json_mode:
-                payload["response_format"] = {"type": "json_object"}
-            r = requests.post(url, json=payload, headers=hdrs, timeout=180)
-            if int(getattr(r, "status_code", 0) or 0) >= 400:
-                body = ""
-                try:
-                    body = (r.text or "")[:900]
-                except Exception:
-                    body = ""
-                body = " ".join(str(body).split())
-                raise _ProviderHTTPError(r.status_code, url, body_preview=body, model_id=model_id)
-            try:
-                data = r.json()
-            except Exception:
-                raw = ""
-                try:
-                    raw = (r.text or "")[:900]
-                except Exception:
-                    raw = ""
-                raw = " ".join(str(raw).split())
-                raise Exception(f"Resposta não-JSON em {url}: {raw}".strip())
-            text = ""
-            try:
-                choices = data.get("choices") if isinstance(data, dict) else None
-                if isinstance(choices, list) and choices:
-                    msg = choices[0].get("message") if isinstance(choices[0], dict) else None
-                    if isinstance(msg, dict):
-                        text = msg.get("content") or ""
-            except Exception:
-                text = ""
-            text = str(text or "").strip()
-            if not text:
-                raise Exception(f"Resposta vazia do modelo {model_id}")
-            return text
-
-        def _extract_content(response) -> str:
-            try:
-                content = response.choices[0].message.content
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    parts = []
-                    for item in content:
-                        if isinstance(item, dict):
-                            txt = item.get("text")
-                            if isinstance(txt, str) and txt.strip():
-                                parts.append(txt.strip())
-                    return "\n".join(parts).strip()
-            except Exception:
-                pass
-            return ""
-
-        def _call_chat(client, model_id: str, allow_json_mode: bool):
-            kwargs = {
-                "model": model_id,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": 4096,
-            }
-            if allow_json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            response = client.chat.completions.create(**kwargs)
-            text = _extract_content(response)
-            if not str(text or "").strip():
-                raise Exception(f"Resposta vazia do modelo {model_id}")
-            return text
-
-        errors = []
-        raw_model = (self.openrouter_model or "").strip()
-        raw_model_norm = raw_model.lower()
-
-        def _try_openrouter() -> Optional[str]:
-            if not (self.openrouter_key or "").strip():
-                return None
-            or_client = None
-            try:
-                or_client = openai.OpenAI(
-                    api_key=self.openrouter_key,
-                    base_url="https://openrouter.ai/api/v1",
-                    default_headers={"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"},
-                    timeout=180.0,
-                )
-            except TypeError:
-                try:
-                    or_client = openai.OpenAI(api_key=self.openrouter_key, base_url="https://openrouter.ai/api/v1")
-                except Exception as e:
-                    errors.append(f"OpenRouter[client]: {e}")
-                    or_client = None
-            except Exception as e:
-                errors.append(f"OpenRouter[client]: {e}")
-                or_client = None
-            candidate_models = []
-            if raw_model and raw_model_norm not in {"auto", "automático", "automatico", "melhor", "best", "openrouter/auto"}:
-                candidate_models.append(raw_model)
-            candidate_models.extend(["openai/gpt-4o-mini", "openrouter/auto"])
-            seen = set()
-            http_headers = {"HTTP-Referer": "https://codexia.com", "X-Title": "Codexia"}
-            for model_id in candidate_models:
-                if not model_id or model_id in seen:
-                    continue
-                seen.add(model_id)
-                try:
-                    try:
-                        if or_client is not None:
-                            text = _call_with_retry(
-                                lambda: _call_chat(or_client, model_id, allow_json_mode=bool(json_mode)),
-                            )
-                        else:
-                            text = _call_with_retry(
-                                lambda: _http_chat(
-                                    "https://openrouter.ai/api/v1/chat/completions",
-                                    self.openrouter_key,
-                                    http_headers,
-                                    model_id,
-                                    allow_json_mode=bool(json_mode),
-                                ),
-                            )
-                        return text
-                    except Exception:
-                        if or_client is not None:
-                            text = _call_with_retry(
-                                lambda: _call_chat(or_client, model_id, allow_json_mode=False),
-                            )
-                        else:
-                            text = _call_with_retry(
-                                lambda: _http_chat(
-                                    "https://openrouter.ai/api/v1/chat/completions",
-                                    self.openrouter_key,
-                                    http_headers,
-                                    model_id,
-                                    allow_json_mode=False,
-                                ),
-                            )
-                        return text
-                except Exception as e:
-                    errors.append(f"OpenRouter[{model_id}]: {e}")
-            return None
-
-        def _try_openai() -> Optional[str]:
-            if not (self.api_key or "").strip():
-                return None
-            oa_client = None
-            try:
-                oa_client = openai.OpenAI(api_key=self.api_key, timeout=180.0)
-            except TypeError:
-                try:
-                    oa_client = openai.OpenAI(api_key=self.api_key)
-                except Exception as e:
-                    errors.append(f"OpenAI[client]: {e}")
-                    oa_client = None
-            except Exception as e:
-                errors.append(f"OpenAI[client]: {e}")
-                oa_client = None
-            preferred = (os.getenv("OPENAI_TEXT_MODEL") or "").strip()
-            candidate_models = [m for m in [preferred, "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o", "gpt-4.1"] if m]
-            seen = set()
-            for model_id in candidate_models:
-                if not model_id or model_id in seen:
-                    continue
-                seen.add(model_id)
-                try:
-                    try:
-                        if oa_client is not None:
-                            text = _call_with_retry(
-                                lambda: _call_chat(oa_client, model_id, allow_json_mode=bool(json_mode)),
-                            )
-                        else:
-                            text = _call_with_retry(
-                                lambda: _http_chat(
-                                    "https://api.openai.com/v1/chat/completions",
-                                    self.api_key,
-                                    None,
-                                    model_id,
-                                    allow_json_mode=bool(json_mode),
-                                ),
-                            )
-                        return text
-                    except Exception:
-                        if oa_client is not None:
-                            text = _call_with_retry(
-                                lambda: _call_chat(oa_client, model_id, allow_json_mode=False),
-                            )
-                        else:
-                            text = _call_with_retry(
-                                lambda: _http_chat(
-                                    "https://api.openai.com/v1/chat/completions",
-                                    self.api_key,
-                                    None,
-                                    model_id,
-                                    allow_json_mode=False,
-                                ),
-                            )
-                        return text
-                except Exception as e:
-                    errors.append(f"OpenAI[{model_id}]: {e}")
-            return None
-
-        prov = (self.provider or "").strip().lower()
-        if prov in {"openai"}:
-            text = _try_openai()
-            if text is not None:
-                return text
-            text = _try_openrouter()
-            if text is not None:
-                return text
-        elif prov in {"openrouter"}:
-            text = _try_openrouter()
-            if text is not None:
-                return text
-            text = _try_openai()
-            if text is not None:
-                return text
-        else:
-            text = _try_openrouter()
-            if text is not None:
-                return text
-            text = _try_openai()
-            if text is not None:
-                return text
-
-        raise Exception(" | ".join(errors) if errors else "Nenhum provedor de texto disponível.")
+        try:
+            return self.ai_router.generate_text(
+                user_id=user_id,
+                task_id=task_id,
+                video_id=video_id,
+                capability=capability,
+                prompt=str(prompt or ""),
+                system_prompt=str(system_prompt or "").strip() or None,
+                temperature=float(temperature or 0.0),
+                json_mode=bool(json_mode),
+            )
+        except AIOperationInProgress as e:
+            raise Exception(f"AI_OPERATION_IN_PROGRESS:{e.operation_id}")
+        except AIOperationBlocked as e:
+            raise Exception(f"{e.code}:{str(e)}")
 
     def generate_book_section(self, section_type, context_text, title, existing_content=None):
         """Generates specific book sections like synopsis, epigraph, preface. Can rewrite existing content."""
@@ -1261,7 +1064,7 @@ class AIContentGenerator:
     def generate_motivational_script(self, topic, duration_minutes=5):
         """Gera um roteiro longo para vídeo motivacional"""
         self._load_config()
-        if not self.openrouter_key:
+        if not self._has_text_provider():
             return self._mock_response(topic, "motivational_long", duration=duration_minutes)
 
         # Estimate word count: approx 150 words per minute
@@ -3449,72 +3252,20 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
 
     def transcribe_audio_segments_detailed(self, audio_path: str, language: Optional[str] = None) -> Dict[str, Any]:
         self._load_config()
-        api_key = (self.api_key or "").strip() if self.api_key else ""
-        if not api_key:
-            return {"segments": None, "error": "missing_api_key"}
         if not audio_path or not os.path.exists(audio_path):
             return {"segments": None, "error": "file_not_found"}
-        client = openai.OpenAI(api_key=api_key)
-        def _extract_openai_error(e: Exception) -> Dict[str, Any]:
-            info: Dict[str, Any] = {}
-            status = getattr(e, "status_code", None)
-            if status is None:
-                resp = getattr(e, "response", None)
-                status = getattr(resp, "status_code", None)
-            if status is not None:
-                info["status"] = status
-
-            body = getattr(e, "body", None)
-            if body is None:
-                resp = getattr(e, "response", None)
-                try:
-                    body = resp.json() if resp is not None else None
-                except Exception:
-                    body = None
-
-            if isinstance(body, str) and body.strip():
-                try:
-                    import json
-                    body = json.loads(body)
-                except Exception:
-                    pass
-
-            if isinstance(body, dict):
-                err = body.get("error")
-                if isinstance(err, dict):
-                    if err.get("type") is not None:
-                        info["type"] = err.get("type")
-                    if err.get("code") is not None:
-                        info["code"] = err.get("code")
-                    if err.get("message") is not None:
-                        info["message"] = err.get("message")
-
-            if not info.get("message"):
-                info["message"] = str(e)
-            return info
-
-        try:
-            with open(audio_path, "rb") as f:
-                kwargs: Dict[str, Any] = {
-                    "model": "whisper-1",
-                    "file": f,
-                    "timestamp_granularities": ["word", "segment"],
-                }
-                if language:
-                    kwargs["language"] = language
-                try:
-                    res = client.audio.transcriptions.create(**kwargs)
-                except TypeError:
-                    kwargs.pop("timestamp_granularities", None)
-                    res = client.audio.transcriptions.create(**kwargs)
-        except Exception as e:
-            return {"segments": None, "error": _extract_openai_error(e)}
-
-        segments = None
-        if hasattr(res, "segments"):
-            segments = getattr(res, "segments")
-        elif isinstance(res, dict):
-            segments = res.get("segments")
+        info = self.ai_router.transcribe_audio(
+            user_id=None,
+            task_id=None,
+            video_id=None,
+            audio_path=audio_path,
+            language=language,
+        )
+        if not isinstance(info, dict):
+            return {"segments": None, "error": "invalid_response"}
+        if info.get("error"):
+            return {"segments": None, "error": info.get("error")}
+        segments = info.get("segments")
         if not isinstance(segments, list):
             return {"segments": None, "error": "no_segments"}
 
@@ -3911,6 +3662,8 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         Se falhar, levanta exceção e não tenta nenhum outro provedor.
         """
         self._load_config()
+        if self._paid_ai_disabled():
+            raise Exception("Modo sem consumo pago ativo; geracao de imagem por IA desabilitada.")
         raw_prompt = (prompt or "").strip()
         if not raw_prompt:
             return None
@@ -3926,8 +3679,6 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not (self.api_key or "").strip():
             raise Exception("OpenAI não configurada (OPENAI_API_KEY ausente).")
 
-        size = "1024x1024"
-
         neg = self._visual_negative_for_text(raw_prompt)
         full_prompt = (
             f"{raw_prompt}. "
@@ -3939,8 +3690,6 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
 
         base_dir = Path("generated_assets/openai_images")
         base_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"img_{uuid.uuid4().hex}.png"
-        out_path = base_dir / filename
 
         def _extract_openai_error_message(err: Exception) -> str:
             raw = ""
@@ -3969,36 +3718,22 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 return "O modelo de imagem da OpenAI não está disponível nessa conta/SDK. Verifique o acesso ao `gpt-image-1`."
             return f"Falha ao gerar imagem na OpenAI: {raw[:500]}"
 
-        notify("Gerando imagem com OpenAI...")
+        notify("Gerando imagem (router)...")
         try:
-            if hasattr(openai, "OpenAI"):
-                client = openai.OpenAI(api_key=(self.api_key or "").strip())
-                result = client.images.generate(
-                    model="gpt-image-1",
-                    prompt=full_prompt,
-                    size=size,
-                )
-                item0 = result.data[0] if result and getattr(result, "data", None) else None
-                image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
-            else:
-                raise Exception("SDK OpenAI desatualizado. Requer openai>=1.0.0.")
+            image_path = self.ai_router.generate_image(
+                user_id=None,
+                task_id=None,
+                video_id=None,
+                capability=AICapability.IMAGE_GENERATION,
+                prompt=full_prompt,
+                output_dir=str(base_dir),
+            )
+            fname = Path(str(image_path)).name
+            return f"/generated_assets/openai_images/{fname}"
+        except (AIOperationBlocked, AIOperationInProgress) as e:
+            raise Exception(str(e))
         except Exception as e:
-            print("OPENAI IMAGE ERROR RAW:", repr(e))
             raise Exception(_extract_openai_error_message(e))
-
-        try:
-            image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
-            if not image_base64:
-                raise Exception("OpenAI não retornou b64_json na imagem.")
-            image_bytes = base64.b64decode(image_base64)
-            with open(out_path, "wb") as f:
-                f.write(image_bytes)
-            if not out_path.exists() or out_path.stat().st_size < 1024:
-                raise Exception("OpenAI não retornou bytes válidos para a imagem.")
-            return f"/generated_assets/openai_images/{filename}"
-        except Exception as e:
-            print("OPENAI IMAGE ERROR RAW:", repr(e))
-            raise Exception(f"Falha ao processar a imagem retornada pela OpenAI: {str(e)[:500]}")
 
     def generate_audio(self, text, voice="onyx", voice_settings: Optional[Dict[str, Any]] = None):
         """Gera áudio usando Eden AI (ElevenLabs) com fallback opcional."""
@@ -4009,6 +3744,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not (self.edenai_key or "").strip() or not text or not text.strip():
             return None
         try:
+            normalized_text = self._assert_tts_text_not_truncated(text, provider="EdenAI ElevenLabs", max_chars=5000)
             hint = (voice_hint or "").strip().lower()
             custom_voice_id = (self.elevenlabs_voice_id or "").strip()
             env_voice_male = os.getenv("ELEVENLABS_VOICE_ID_MALE", "").strip()
@@ -4031,7 +3767,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             headers = {"Authorization": f"Bearer {self.edenai_key.strip()}"}
             payload = {
                 "providers": "elevenlabs",
-                "text": text[:5000],
+                "text": normalized_text,
                 "language": "pt-BR",
             }
             if voice_id:
@@ -4077,6 +3813,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not self.elevenlabs_key or not text or not text.strip():
             return None
         try:
+            normalized_text = self._assert_tts_text_not_truncated(text, provider="ElevenLabs TTS", max_chars=5000)
             voice_meta = self._resolve_elevenlabs_voice_selection(voice_hint)
             voice_id = str(voice_meta.get("voice_id_used") or "").strip()
             if not voice_id:
@@ -4095,7 +3832,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                         settings[k] = voice_settings[k]
 
             payload = {
-                "text": text[:5000],
+                "text": normalized_text,
                 "model_id": "eleven_multilingual_v2",
                 "voice_settings": settings,
             }

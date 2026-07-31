@@ -7,13 +7,16 @@ import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from openai import OpenAI
 import requests
+from app.services.ai_router import AIRouter, AICapability
 
 BASE_DIR = Path("generated_assets/storyboard_images")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 THUMB_DIR = Path("generated_assets/thumbnails")
 THUMB_DIR.mkdir(parents=True, exist_ok=True)
+PAID_AI_DISABLE_FLAG = Path(__file__).resolve().parents[2] / "artifacts" / "financial_guardian" / "disable_paid_ai.flag"
+
+ROUTER = AIRouter()
 
 SYSTEM_STYLE = """
 Você é um diretor de arte cinematográfico cristão.
@@ -35,9 +38,19 @@ def _clean_numbered_list_line(line: str) -> str:
     return s
 
 
-def _get_openai_client(api_key: Optional[str] = None) -> OpenAI:
-    key = (api_key or os.getenv("OPENAI_API_KEY") or "").strip()
-    return OpenAI(api_key=key)
+def _paid_ai_disabled() -> bool:
+    if PAID_AI_DISABLE_FLAG.exists():
+        return True
+    for name in (
+        "CODEXIA_DISABLE_PAID_AI",
+        "DISABLE_PAID_AI",
+        "NO_PAID_AI",
+        "FINANCIAL_GUARDIAN_NO_PAID_MODE",
+    ):
+        raw = str(os.getenv(name) or "").strip().lower()
+        if raw in {"1", "true", "yes", "sim", "on", "enabled", "enable"}:
+            return True
+    return False
 
 
 def build_scene_prompts(text: str, quantity: int = 15, api_key: Optional[str] = None) -> List[str]:
@@ -61,30 +74,19 @@ Regras:
 - Responder apenas em lista numerada, um prompt por linha.
 """.strip()
 
-    model_candidates = ["gpt-4.1-mini", "gpt-4o-mini"]
-    raw = ""
-    last_err: Optional[Exception] = None
-    client = _get_openai_client(api_key=api_key)
-    for m in model_candidates:
-        try:
-            response = client.chat.completions.create(
-                model=m,
-                messages=[
-                    {"role": "system", "content": "Você cria prompts visuais profissionais para geração de imagens."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.7,
-            )
-            raw = (response.choices[0].message.content or "").strip()
-            if raw:
-                break
-        except Exception as e:
-            last_err = e
-            raw = ""
-
+    if _paid_ai_disabled() and str(os.getenv("AI_COST_DRY_RUN") or "").strip().lower() not in {"1", "true", "yes", "sim", "on"}:
+        raise RuntimeError("Modo sem consumo pago ativo; storyboard e thumbnail desabilitados.")
+    raw = ROUTER.generate_text(
+        user_id=None,
+        task_id=None,
+        video_id=None,
+        capability=AICapability.TEXT_GENERATION,
+        prompt=prompt,
+        system_prompt="Você cria prompts visuais profissionais para geração de imagens.",
+        temperature=0.7,
+        json_mode=False,
+    ).strip()
     if not raw:
-        if last_err:
-            raise last_err
         return []
 
     lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
@@ -115,31 +117,23 @@ Reforço obrigatório:
 """.strip()
 
     try:
-        client = _get_openai_client(api_key=api_key)
-        result = client.images.generate(
-            model="gpt-image-1",
+        if _paid_ai_disabled() and str(os.getenv("AI_COST_DRY_RUN") or "").strip().lower() not in {"1", "true", "yes", "sim", "on"}:
+            raise RuntimeError("Modo sem consumo pago ativo; storyboard e thumbnail desabilitados.")
+        path = ROUTER.generate_image(
+            user_id=None,
+            task_id=None,
+            video_id=None,
+            capability=AICapability.IMAGE_GENERATION,
             prompt=final_prompt,
-            size="1024x1024",
+            output_dir=str(BASE_DIR),
         )
-        friendly_error = "Não foi possível gerar a imagem com OpenAI. Verifique a chave da API, saldo/créditos e modelo disponível."
-        item0 = result.data[0] if result and getattr(result, "data", None) else None
-        image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
-        filename = f"scene_{int(index):02d}_{uuid.uuid4().hex}.png"
-        path = BASE_DIR / filename
-        image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
-        if not image_base64:
-            raise Exception("OpenAI não retornou b64_json na imagem.")
-        image_bytes = base64.b64decode(image_base64)
-        with open(path, "wb") as f:
-            f.write(image_bytes)
-        if not path.exists() or path.stat().st_size < 1024:
-            raise Exception(friendly_error)
+        filename = os.path.basename(str(path))
         return {
             "scene": int(index),
             "prompt": (prompt or "").strip(),
             "file": str(path),
             "url": f"/generated_assets/storyboard_images/{filename}",
-            "model_used": "gpt-image-1",
+            "model_used": model,
         }
     except Exception as e:
         print("OPENAI IMAGE ERROR FULL:", repr(e))
@@ -294,26 +288,17 @@ def generate_thumbnail_with_text(
             "no text, no letters, no watermark."
         )
     final_prompt = f"{base_prompt}\n\nTheme: {theme}\n\nNo text in the image."
-
-    client = _get_openai_client(api_key=api_key)
-    result = client.images.generate(
-        model="gpt-image-1",
+    if _paid_ai_disabled() and str(os.getenv("AI_COST_DRY_RUN") or "").strip().lower() not in {"1", "true", "yes", "sim", "on"}:
+        raise RuntimeError("Modo sem consumo pago ativo; storyboard e thumbnail desabilitados.")
+    base_path = ROUTER.generate_image(
+        user_id=None,
+        task_id=None,
+        video_id=None,
+        capability=AICapability.THUMBNAIL_GENERATION,
         prompt=final_prompt[:6000],
-        size="1024x1024",
+        output_dir=str(THUMB_DIR),
     )
-    item0 = result.data[0] if result and getattr(result, "data", None) else None
-    image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
-    image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
-    if not image_base64:
-        raise RuntimeError("OpenAI não retornou bytes válidos para a imagem.")
-
-    base_filename = f"thumb_base_{uuid.uuid4().hex}.png"
-    base_path = THUMB_DIR / base_filename
-    image_bytes = base64.b64decode(image_base64)
-    with open(base_path, "wb") as f:
-        f.write(image_bytes)
-    if not base_path.exists() or base_path.stat().st_size < 1024:
-        raise RuntimeError("Falha ao salvar imagem base da thumbnail.")
+    base_filename = os.path.basename(str(base_path))
 
     out = overlay_thumbnail_text(str(base_path), t)
     out["base_file"] = str(base_path)

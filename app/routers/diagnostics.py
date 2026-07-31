@@ -135,7 +135,12 @@ def test_ai_connection(db: Session = Depends(get_db)):
     """
     try:
         ai_service = AIContentGenerator()
-        response = ai_service.generate_completion("Say 'Hello World'", system_message="You are a test bot.")
+        response = ai_service._generate_text(
+            "Responda apenas com: Hello World",
+            system_prompt="Você é um bot de teste. Responda apenas com texto simples.",
+            temperature=0.0,
+            json_mode=False,
+        )
         if "Hello" in response or "World" in response:
              return {"status": "success", "response": response}
         else:
@@ -189,33 +194,15 @@ def test_ai_text():
 
 
 def test_openai_image():
-    from openai import OpenAI
-    import os
-
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-    result = client.images.generate(
-        model="gpt-image-1",
-        prompt="a simple golden sunrise over mountains, cinematic, no text",
-        size="1024x1024",
-    )
-
-    return result
+    ai = AIContentGenerator()
+    return ai.generate_image("a simple golden sunrise over mountains, cinematic, no text")
 
 
 @router.post("/test-openai-image")
 def diagnostics_test_openai_image():
     try:
         result = test_openai_image()
-        print("OPENAI IMAGE TEST RESULT (raw):")
-        print(result)
-        try:
-            if hasattr(result, "model_dump"):
-                print("OPENAI IMAGE TEST RESULT (model_dump):")
-                print(result.model_dump())
-        except Exception:
-            pass
-        return {"ok": True, "result": result.model_dump() if hasattr(result, "model_dump") else str(result)}
+        return {"ok": True, "url": result}
     except Exception as e:
         import traceback
 
@@ -231,12 +218,6 @@ def diagnostics_test_openai_image():
             except Exception:
                 body = None
 
-        print("OPENAI IMAGE ERROR RAW:", repr(e))
-        if status is not None:
-            print(f"OPENAI IMAGE TEST EXCEPTION status_code={status}")
-        if body is not None:
-            print("OPENAI IMAGE TEST EXCEPTION body:")
-            print(body)
         traceback.print_exc()
         raise HTTPException(
             status_code=503,
