@@ -2,6 +2,7 @@ import uuid
 import json
 import time
 import threading
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 try:
@@ -140,6 +141,70 @@ def _ensure_task_support_tables():
                     missing_columns[table_name] = missing
 
             if missing_tables or missing_columns:
+                dialect = str(getattr(getattr(getattr(db, "bind", None), "dialect", None), "name", "") or "").lower()
+                app_env = str(os.getenv("APP_ENV") or "").strip().lower()
+                if dialect == "sqlite" and app_env in {"development", "dev"}:
+                    try:
+                        db.execute(text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {_TASK_DEDUPE_TABLE} (
+                                idempotency_key VARCHAR(255) PRIMARY KEY,
+                                request_hash TEXT NOT NULL,
+                                task_id VARCHAR(64) NULL,
+                                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                                request_payload_json TEXT NULL,
+                                result_json TEXT NULL,
+                                created_at DATETIME NOT NULL,
+                                updated_at DATETIME NOT NULL,
+                                expires_at DATETIME NULL,
+                                completed_at DATETIME NULL
+                            )
+                            """
+                        ))
+                        db.execute(text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {_TASK_LEASE_TABLE} (
+                                task_id VARCHAR(64) PRIMARY KEY,
+                                executor_id VARCHAR(255) NOT NULL,
+                                attempt_number INTEGER NOT NULL DEFAULT 1,
+                                created_at DATETIME NOT NULL,
+                                updated_at DATETIME NOT NULL,
+                                started_at DATETIME NOT NULL,
+                                heartbeat_at DATETIME NOT NULL,
+                                expires_at DATETIME NULL,
+                                lease_expires_at DATETIME NULL
+                            )
+                            """
+                        ))
+                        db.execute(text(
+                            f"""
+                            CREATE TABLE IF NOT EXISTS {_TASK_LOCK_TABLE} (
+                                lock_key VARCHAR(255) PRIMARY KEY,
+                                owner_id VARCHAR(255) NOT NULL,
+                                created_at DATETIME NOT NULL,
+                                updated_at DATETIME NOT NULL,
+                                expires_at DATETIME NOT NULL
+                            )
+                            """
+                        ))
+                        db.commit()
+                        inspector = inspect(db.bind)
+                        available_tables = set(inspector.get_table_names())
+                        missing_tables = []
+                        missing_columns = {}
+                        for table_name, expected_columns in _TASK_SCHEMA_COLUMNS.items():
+                            if table_name not in available_tables:
+                                missing_tables.append(table_name)
+                                continue
+                            table_columns = _table_column_names(db, table_name)
+                            missing = sorted(col for col in expected_columns if col not in table_columns)
+                            if missing:
+                                missing_columns[table_name] = missing
+                        if not missing_tables and not missing_columns:
+                            _task_schema_ready = True
+                            return
+                    except Exception:
+                        db.rollback()
                 details = []
                 if missing_tables:
                     details.append(f"tabelas ausentes: {', '.join(sorted(missing_tables))}")
@@ -657,6 +722,13 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
     db = SessionLocal()
     try:
         _ensure_task_support_tables()
+        try:
+            dialect = str(getattr(getattr(getattr(db, "bind", None), "dialect", None), "name", "") or "").lower()
+            app_env = str(os.getenv("APP_ENV") or "").strip().lower()
+            if dialect == "sqlite" and app_env in {"development", "dev"}:
+                db.execute(text("PRAGMA busy_timeout = 50"))
+        except Exception:
+            pass
         # #region debug-point D:task-progress-persist
         def _dbg_task_event(hypothesis_id, msg, data=None):
             try:
@@ -885,6 +957,9 @@ def claim_video_task(
                         db.commit()
                 if task and (force_regenerate is False):
                     status_norm = str(task.status or "").strip().lower()
+                    if status_norm and status_norm not in {"pending", "processing", "completed"}:
+                        task = None
+                if task and (force_regenerate is False):
                     task_payload = _task_result_payload_from_row(task)
                     _upsert_dedupe_row(
                         db,
@@ -1133,7 +1208,40 @@ def finalize_task_once(task_id: str, *, status: str, progress: int, message: str
     tid = str(task_id or "").strip()
     if not tid:
         return {"finalized_now": False, "task": None}
+    #region debug-point youtube-finalize-stuck
+    def _dbg_event(hypothesis_id, msg, data=None):
+        try:
+            import json as _json
+            import urllib.request as _urlreq
+            _p = os.path.join(".dbg", "youtube-finalize-stuck.env")
+            _u, _s = "http://127.0.0.1:7777/event", "youtube-finalize-stuck"
+            if os.path.exists(_p):
+                try:
+                    with open(_p, "r", encoding="utf-8") as _f:
+                        _c = _f.read()
+                    for _line in _c.splitlines():
+                        if _line.startswith("DEBUG_SERVER_URL="):
+                            _u = _line.split("=", 1)[1].strip() or _u
+                        elif _line.startswith("DEBUG_SESSION_ID="):
+                            _s = _line.split("=", 1)[1].strip() or _s
+                except Exception:
+                    pass
+            _run = str(os.getenv("DEBUG_RUN_ID") or "pre").strip() or "pre"
+            _payload = {
+                "sessionId": _s,
+                "runId": _run,
+                "hypothesisId": hypothesis_id,
+                "location": "app/services/task_manager.py:finalize_task_once",
+                "msg": str(msg or ""),
+                "data": data or {},
+            }
+            _req = _urlreq.Request(_u, data=_json.dumps(_payload, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json"})
+            _urlreq.urlopen(_req, timeout=0.25).read()
+        except Exception:
+            pass
+    #endregion
     _ensure_task_support_tables()
+    _dbg_event("H2", "finalize_task_once enter", {"task_id": tid, "status": status, "progress": int(progress or 0)})
     lock_info = acquire_distributed_lock(f"finalize:{tid}", timeout_seconds=15, ttl_seconds=20)
     try:
         db = SessionLocal()
@@ -1164,8 +1272,14 @@ def finalize_task_once(task_id: str, *, status: str, progress: int, message: str
             current = _db_to_dict(row, aux_meta=_task_aux_meta(db, tid))
             video_tasks[tid] = current
             _redis_set(tid, current)
+            _dbg_event("H2", "finalize_task_once committed", {"task_id": tid, "status": status, "progress": int(progress or 0)})
             return {"finalized_now": True, "task": current}
-        except Exception:
+        except Exception as e:
+            try:
+                import traceback as _tb
+                _dbg_event("H2", "finalize_task_once exception", {"task_id": tid, "error": str(e), "traceback": _tb.format_exc()[-4000:]})
+            except Exception:
+                pass
             db.rollback()
             return {"finalized_now": False, "task": get_task(tid)}
         finally:

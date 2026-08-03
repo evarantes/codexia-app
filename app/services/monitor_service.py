@@ -125,11 +125,16 @@ class MonitorService:
         self.job = None
         self.queue_job = None
         self.story_queue_job = None
+        self.series_sync_job = None
+        self.task_recovery_job = None
         self.topic_suggestions_job = None
         self.upload_job = None
         self.comments_job = None
         self.insights_job = None
         self.housekeeping_job = None
+        self.last_series_sync_at = None
+        self.last_series_sync_summary = None
+        self.last_series_sync_error = None
 
     def start(self):
         if not self.job:
@@ -151,6 +156,20 @@ class MonitorService:
                 minutes=1,
                 max_instances=1,
                 next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=45),
+            )
+            self.series_sync_job = self.scheduler.add_job(
+                self.sync_youtube_series_scheduler,
+                "interval",
+                minutes=1,
+                max_instances=1,
+                next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=55),
+            )
+            self.task_recovery_job = self.scheduler.add_job(
+                self.recover_stalled_story_video_tasks,
+                "interval",
+                minutes=1,
+                max_instances=1,
+                next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=75),
             )
             # Run upload check every 5 minutes; first run after 2 min to avoid overload at startup (Coolify/Render)
             self.upload_job = self.scheduler.add_job(
@@ -210,6 +229,98 @@ class MonitorService:
             _kick_story_video_task_queue()
         except Exception as e:
             logger.error(f"Erro ao processar fila de vídeos narrados: {e}")
+
+    def sync_youtube_series_scheduler(self):
+        self.last_series_sync_at = datetime.datetime.utcnow()
+        self.last_series_sync_error = None
+        try:
+            from app.services.youtube_series_service import youtube_series_service
+            db = SessionLocal()
+            try:
+                self.last_series_sync_summary = youtube_series_service.sync_series_scheduler(db)
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            self.last_series_sync_error = str(e)
+            logger.error(f"Erro ao sincronizar séries do YouTube: {e}")
+
+    def recover_stalled_story_video_tasks(self):
+        from app.models import VideoTask
+        from app.services.task_manager import finalize_task_once, get_task
+        from app.config import absolute_path_for_video
+
+        try:
+            stall_raw = (os.getenv("YOUTUBE_TASK_STALL_RECOVERY_SECONDS") or "").strip()
+            stall_after = int(stall_raw) if stall_raw else 7 * 60
+        except Exception:
+            stall_after = 7 * 60
+        stall_after = max(120, min(60 * 60, int(stall_after)))
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(seconds=stall_after)
+
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(VideoTask)
+                .filter(VideoTask.status == "processing")
+                .filter(VideoTask.progress >= 85)
+                .filter(VideoTask.updated_at < cutoff)
+                .order_by(VideoTask.updated_at.asc())
+                .limit(10)
+                .all()
+            )
+            for row in rows:
+                task_id = str(getattr(row, "id", "") or "").strip()
+                if not task_id:
+                    continue
+                msg = str(getattr(row, "message", "") or "")
+                if "output=" not in msg:
+                    continue
+                candidate = msg.split("output=", 1)[1].strip().split()[0].strip()
+                if not candidate.endswith(".mp4"):
+                    continue
+                video_url = f"/static/videos/{candidate}"
+                abs_path = absolute_path_for_video(video_url)
+                if not abs_path or (not os.path.exists(abs_path)):
+                    continue
+                try:
+                    mtime = datetime.datetime.utcfromtimestamp(os.path.getmtime(abs_path))
+                except Exception:
+                    mtime = None
+                if mtime and mtime > (datetime.datetime.utcnow() - datetime.timedelta(seconds=max(60, stall_after // 2))):
+                    continue
+                try:
+                    size_bytes = int(os.path.getsize(abs_path))
+                except Exception:
+                    size_bytes = 0
+                if size_bytes < 750_000:
+                    continue
+
+                current = get_task(task_id) or {}
+                base_result = current.get("result") if isinstance(current.get("result"), dict) else {}
+                merged = dict(base_result or {})
+                merged.setdefault("video_url", video_url)
+                merged.setdefault("rendering", {})
+                if isinstance(merged.get("rendering"), dict):
+                    merged["rendering"].setdefault("output_filename", candidate)
+                    merged["rendering"].setdefault("output_url", video_url)
+                merged["watchdog_recovered"] = True
+                finalize_task_once(
+                    task_id,
+                    status="completed",
+                    progress=100,
+                    message="Vídeo recuperado automaticamente (watchdog).",
+                    result=merged,
+                )
+        except Exception as e:
+            logger.error(f"Erro ao recuperar VideoTasks travadas: {e}")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def check_topic_suggestions(self):
         from app.services.youtube_service import YouTubeService
@@ -812,6 +923,27 @@ class MonitorService:
                         if yt_service is None:
                             yt_service = YouTubeService()
 
+                        try:
+                            from app.models import YouTubeAutoAuditEvent
+                            db.add(YouTubeAutoAuditEvent(
+                                event_type="upload_started",
+                                series_id=int(payload.get("series_id")) if isinstance(payload, dict) and payload.get("series_id") else None,
+                                episode_id=int(payload.get("episode_id")) if isinstance(payload, dict) and payload.get("episode_id") else None,
+                                scheduled_video_id=int(video.id),
+                                status_before=str(video.status),
+                                status_after="uploading",
+                                payload_json=json.dumps({
+                                    "platform": platform,
+                                    "scheduled_for": (video.scheduled_for.isoformat() if getattr(video, "scheduled_for", None) else None),
+                                }, ensure_ascii=False),
+                            ))
+                            db.commit()
+                        except Exception:
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+
                         logger.info(f"Iniciando upload automático do vídeo {video.id} ({video.title})...")
                         from app.config import absolute_path_for_video
                         abs_video_path = absolute_path_for_video(video.video_url)
@@ -834,8 +966,8 @@ class MonitorService:
                                 script = json.loads(video.script_data)
                                 if "tags" in script:
                                     tags = script["tags"]
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.error(f"Erro ao ler tags do script_data (scheduled_video_id={video.id}): {e}")
 
                         # Check for lateness
                         time_diff = now - video.scheduled_for
@@ -892,6 +1024,27 @@ class MonitorService:
                             video.youtube_video_id = video_id_value
                             video.status = "published"
                             logger.info(f"Vídeo {video.id} publicado com sucesso! ID: {video_id_value}")
+                            try:
+                                from app.services.youtube_series_service import youtube_series_service
+                                youtube_series_service.update_publication_state_from_schedule(db, scheduled_video_id=int(video.id))
+                            except Exception as e:
+                                logger.error(f"Erro ao sincronizar publicação do episódio a partir do ScheduledVideo {video.id}: {e}")
+                            try:
+                                from app.models import YouTubeAutoAuditEvent
+                                db.add(YouTubeAutoAuditEvent(
+                                    event_type="upload_completed",
+                                    series_id=int(payload.get("series_id")) if isinstance(payload, dict) and payload.get("series_id") else None,
+                                    episode_id=int(payload.get("episode_id")) if isinstance(payload, dict) and payload.get("episode_id") else None,
+                                    scheduled_video_id=int(video.id),
+                                    status_before="uploading",
+                                    status_after="published",
+                                    payload_json=json.dumps({
+                                        "youtube_video_id": str(video_id_value),
+                                        "uploaded_at": video.uploaded_at.isoformat() if getattr(video, "uploaded_at", None) else None,
+                                    }, ensure_ascii=False),
+                                ))
+                            except Exception:
+                                pass
                             
                         db.commit()
                         

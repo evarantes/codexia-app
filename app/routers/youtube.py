@@ -78,6 +78,46 @@ from app.redis_client import conn, queue as rq_queue
 from app.routers.auth import get_current_admin_user, SECRET_KEY as _AUTH_SECRET_KEY, ALGORITHM as _AUTH_ALGORITHM
 
 FACTORY_LOCK_KEY = "codexia:video_factory:single_worker_lock"
+
+#region debug-point youtube-finalize-stuck
+_DEBUG_ENV_PATH = os.path.join(".dbg", "youtube-finalize-stuck.env")
+
+def _dbg_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+    try:
+        import json as _json
+        import urllib.request as _urlreq
+
+        url = "http://127.0.0.1:7777/event"
+        session_id = "youtube-finalize-stuck"
+        if os.path.exists(_DEBUG_ENV_PATH):
+            try:
+                with open(_DEBUG_ENV_PATH, "r", encoding="utf-8") as f:
+                    for line in f.read().splitlines():
+                        if line.startswith("DEBUG_SERVER_URL="):
+                            url = line.split("=", 1)[1].strip() or url
+                        elif line.startswith("DEBUG_SESSION_ID="):
+                            session_id = line.split("=", 1)[1].strip() or session_id
+            except Exception:
+                pass
+
+        run_id = str(os.getenv("DEBUG_RUN_ID") or "pre").strip() or "pre"
+        payload = {
+            "sessionId": session_id,
+            "runId": run_id,
+            "hypothesisId": str(hypothesis_id or "").strip() or "NA",
+            "location": "app/routers/youtube.py",
+            "msg": str(msg or ""),
+            "data": data or {},
+        }
+        req = _urlreq.Request(
+            url,
+            data=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        _urlreq.urlopen(req, timeout=0.25).read()
+    except Exception:
+        pass
+#endregion
 _CANCEL_ALL_KEY = "codexia:video_cancel_all"
 _CANCEL_ALL_TTL_SECONDS = 90
 _SCHEDULED_VIDEO_ACTIVE_STATUSES = (
@@ -658,7 +698,9 @@ def _kick_story_video_task_queue() -> Optional[str]:
         if processing:
             return processing.id
         if _is_video_factory_busy():
-            return None
+            blocker = _load_factory_blocker_item(db, excluded_task_ids={str(r.id) for r in rows})
+            if blocker:
+                return None
         pending = next((r for r in rows if str(r.status or "").lower() == "pending"), None)
         if not pending:
             return None
@@ -4708,12 +4750,14 @@ def process_video_generation(request: VideoRequest, task_id):
         if not lease_info.get("acquired"):
             print(f"Tarefa {task_id} já possui executor ativo. Ignorando segundo disparo.")
             return
+        _dbg_event("H5", "lease acquired", {"task_id": str(task_id), "executor_id": executor_id, "lease": lease_info})
         heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         if conn:
             try:
                 redis_lock = conn.lock(FACTORY_LOCK_KEY, timeout=4 * 60 * 60, blocking_timeout=1)
                 if not redis_lock.acquire(blocking=False):
                     update_task(task_id, status="pending", progress=0, message="Servidor ocupado. Aguardando vez na fila de produção...")
+                    _dbg_event("H5", "factory busy (redis lock)", {"task_id": str(task_id), "executor_id": executor_id})
                     return
             except Exception:
                 redis_lock = None
@@ -4724,6 +4768,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 file_lock.acquire()
             except Timeout:
                 update_task(task_id, status="pending", progress=0, message="Servidor ocupado. Aguardando vez na fila de produção...")
+                _dbg_event("H5", "factory busy (file lock)", {"task_id": str(task_id), "executor_id": executor_id})
                 return
             except Exception:
                 file_lock = None
@@ -5228,10 +5273,25 @@ def process_video_generation(request: VideoRequest, task_id):
         
         # 2. Gerar Vídeo (16:9)
         # Passamos uma função de callback para atualizar o progresso
+        render_output = {"filename": None}
         def progress_callback(progress, message):
             # Mapeia progresso do vídeo (0-100) para progresso da tarefa (20-90)
             task_progress = 20 + int(progress * 0.7)
             update_task(task_id, progress=task_progress, message=message)
+            try:
+                msg_txt = str(message or "")
+                if ("output=" in msg_txt) and (not render_output.get("filename")):
+                    candidate = msg_txt.split("output=", 1)[1].strip().split()[0].strip()
+                    if candidate.endswith(".mp4"):
+                        render_output["filename"] = candidate
+                        update_task(task_id, result=_merged_task_result({
+                            "rendering": {
+                                "output_filename": candidate,
+                                "output_url": f"/static/videos/{candidate}",
+                            }
+                        }))
+            except Exception:
+                pass
             heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
             _raise_if_cancelled()
             
@@ -5242,6 +5302,12 @@ def process_video_generation(request: VideoRequest, task_id):
             voice_style=voice_style,
             voice_gender=voice_gender,
         )
+        _dbg_event("H1", "create_video_from_plan returned", {
+            "task_id": str(task_id),
+            "executor_id": executor_id,
+            "video_result_keys": sorted(list(video_result.keys())) if isinstance(video_result, dict) else None,
+            "video_url": (video_result.get("video_url") if isinstance(video_result, dict) else None),
+        })
         video_path = video_result["video_url"]
         render_report = video_result.get("render_report") if isinstance(video_result, dict) else {}
         if not isinstance(render_report, dict):
@@ -5447,7 +5513,18 @@ def process_video_generation(request: VideoRequest, task_id):
                 "attempt_number": int(lease_info.get("attempt_number") or 1),
                 "financial_guardian": guardian_summary,
             })
+            _dbg_event("H2", "before finalize_task_once(completed)", {
+                "task_id": str(task_id),
+                "executor_id": executor_id,
+                "video_url": str(video_path),
+                "progress": 100,
+            })
             finalized = finalize_task_once(task_id, status="completed", progress=100, message="Vídeo gerado com sucesso!", result=final_payload)
+            _dbg_event("H2", "after finalize_task_once(completed)", {
+                "task_id": str(task_id),
+                "executor_id": executor_id,
+                "finalized": finalized,
+            })
             if finalized.get("finalized_now"):
                 try:
                     dbn = SessionLocal()
@@ -5480,10 +5557,21 @@ def process_video_generation(request: VideoRequest, task_id):
             except Exception:
                 current_progress = 0
             update_task(task_id, status="cancelled", progress=current_progress, message="Cancelado pelo usuário.")
+            _dbg_event("H3", "task cancelled", {"task_id": str(task_id), "executor_id": executor_id, "progress": current_progress})
         except Exception:
             pass
     except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")
+        try:
+            import traceback as _tb
+            _dbg_event("H3", "process_video_generation exception", {
+                "task_id": str(task_id),
+                "executor_id": executor_id,
+                "error": str(e),
+                "traceback": _tb.format_exc()[-4000:],
+            })
+        except Exception:
+            pass
         if guardian_context is not None:
             try:
                 if guardian_db is None:
@@ -5513,6 +5601,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 pass
         if executor_id:
             release_task_execution_lease(task_id, executor_id)
+            _dbg_event("H5", "lease released", {"task_id": str(task_id), "executor_id": executor_id})
         if redis_lock:
             try:
                 redis_lock.release()

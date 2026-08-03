@@ -2783,6 +2783,9 @@ class BibleVideoFactoryService:
         settings = backfill_settings_from_legacy(db, settings=settings, user_id=user_id)
         global_settings = build_global_settings_service(db=db, user_id=user_id, settings=settings)
         payload = global_settings.get_bible_video_factory_settings()
+        if isinstance(payload, dict) and "user_id" in payload:
+            payload = dict(payload)
+            payload.pop("user_id", None)
         return SimpleNamespace(
             id=getattr(settings, "id", None),
             user_id=getattr(settings, "user_id", user_id),

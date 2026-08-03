@@ -125,11 +125,18 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         updated = next(ep for ep in result["episodes"] if ep["id"] == episode_id)
         queue_item = self.db.query(ScheduledVideo).filter(ScheduledVideo.id == updated["scheduled_video_id"]).first()
 
-        self.assertEqual(updated["status"], "scheduled")
+        self.assertEqual(updated["status"], "approved")
         self.assertIsNotNone(queue_item)
         self.assertTrue(bool(queue_item.auto_post))
         self.assertEqual(queue_item.status, "completed")
         self.assertEqual(queue_item.scheduled_for, self.db.query(SeriesEpisode).get(episode_id).publication_datetime)
+
+        with patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}), \
+             patch.object(youtube_series_service, "_enqueue_episode_generation", return_value={"task_id": "noop", "content_fingerprint": "noop"}):
+            youtube_series_service.sync_series_scheduler(self.db, now=datetime.utcnow())
+            refreshed = youtube_series_service.get_series_detail(self.db, user=self.user, series_id=detail["id"])
+        refreshed_ep = next(ep for ep in refreshed["episodes"] if ep["id"] == episode_id)
+        self.assertEqual(refreshed_ep["status"], "scheduled")
 
     def test_rejection_by_image_creates_new_version_with_script_and_audio_reuse(self):
         audio_path = self.temp_dir / "audio.mp3"

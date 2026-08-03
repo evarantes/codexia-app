@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from time import perf_counter
 from typing import Any, Dict, List, Optional
@@ -13,16 +14,16 @@ ALLOWED_EDITORIAL_INTELLIGENCE_PROVIDERS = (
 )
 
 DEFAULT_EDITORIAL_INTELLIGENCE_SETTINGS: Dict[str, Any] = {
-    "editorial_intelligence_enabled": True,
+    "editorial_intelligence_enabled": False,
     "editorial_intelligence_fail_open": True,
     "editorial_intelligence_mode": "pre_narration",
-    "editorial_intelligence_provider": "OpenAI",
-    "primary_provider": "OpenAI",
-    "fallback_provider": "OpenRouter",
-    "editorial_provider": "OpenAI",
-    "editorial_fallback_provider": "OpenRouter",
-    "provider_priority": "OpenAI,OpenRouter",
-    "approved_models": "OpenAI:gpt-4o-mini\nOpenRouter:openai/gpt-4o-mini",
+    "editorial_intelligence_provider": "Disabled",
+    "primary_provider": "OpenRouter",
+    "fallback_provider": "Local",
+    "editorial_provider": "Disabled",
+    "editorial_fallback_provider": "Local",
+    "provider_priority": "Disabled,Local",
+    "approved_models": "Local:disabled",
 }
 
 EDITORIAL_INTELLIGENCE_TEXT_FIELDS = {
@@ -330,6 +331,28 @@ class EditorialIntelligenceService:
                 },
             }
 
+        dry_run = _normalize_text(os.getenv("AI_COST_DRY_RUN")).lower() in {"1", "true", "yes", "on"}
+        if dry_run:
+            return {
+                "status": "skipped",
+                "plan_updates": {
+                    "editorial_intelligence": {
+                        **base_record,
+                        "status": "skipped",
+                        "summary": "Modo dry-run ativo; revisao editorial desabilitada para evitar custo.",
+                        "provider_requested": requested_provider,
+                        "provider_used": "Disabled",
+                        "model_requested": requested_model,
+                        "model_used": "",
+                        "failover_reason": "",
+                        "correction_count": 0,
+                        "review_time_ms": 0,
+                        "review_time_seconds": 0.0,
+                        "attempts": [],
+                    }
+                },
+            }
+
         payload = {
             "title": _normalize_text(updated_plan.get("title")),
             "scene_texts": scene_texts,
@@ -345,7 +368,6 @@ class EditorialIntelligenceService:
                 review = self.quality_service.review_narration_package(
                     payload,
                     provider_choice=provider,
-                    model_candidates=model_candidates,
                 )
                 elapsed_ms = int(round((perf_counter() - started_at) * 1000))
                 editor_report = review.get("editor_report") if isinstance(review.get("editor_report"), dict) else {}

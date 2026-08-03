@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, Boolean, UniqueConstraint, text
 from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime
@@ -141,21 +141,21 @@ class Lead(Base):
 class Settings(Base):
     __tablename__ = "settings"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     openai_api_key = Column(String, nullable=True)
     openai_image_model = Column(String, nullable=True)
-    openai_allow_text = Column(Boolean, default=False)
-    openai_allow_script = Column(Boolean, default=False)
-    openai_allow_editorial = Column(Boolean, default=False)
-    openai_allow_analysis = Column(Boolean, default=False)
-    openai_allow_images = Column(Boolean, default=True)
-    openai_allow_thumbnail = Column(Boolean, default=True)
-    openai_allow_transcription = Column(Boolean, default=False)
-    openai_allow_tts = Column(Boolean, default=False)
-    openai_allow_embeddings = Column(Boolean, default=False)
-    openai_allow_other = Column(Boolean, default=False)
-    openai_no_credit = Column(Boolean, default=False)
+    openai_allow_text = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_allow_script = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_allow_editorial = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_allow_analysis = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_allow_images = Column(Boolean, default=True, server_default=text("true"), nullable=False)
+    openai_allow_thumbnail = Column(Boolean, default=True, server_default=text("true"), nullable=False)
+    openai_allow_transcription = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_allow_tts = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_allow_embeddings = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_allow_other = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    openai_no_credit = Column(Boolean, default=False, server_default=text("false"))
     ai_cb_failure_threshold = Column(Integer, nullable=True)
     ai_cb_cooldown_seconds = Column(Integer, nullable=True)
     ai_cb_half_open_max_attempts = Column(Integer, nullable=True)
@@ -426,6 +426,23 @@ class EpisodeReview(Base):
     reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     episode = relationship("SeriesEpisode", back_populates="reviews")
+
+
+class YouTubeAutoAuditEvent(Base):
+    __tablename__ = "youtube_auto_audit_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    series_id = Column(Integer, ForeignKey("series_plans.id"), nullable=True, index=True)
+    episode_id = Column(Integer, ForeignKey("series_episodes.id"), nullable=True, index=True)
+    task_id = Column(String, nullable=True, index=True)
+    scheduled_video_id = Column(Integer, ForeignKey("scheduled_videos.id"), nullable=True, index=True)
+    status_before = Column(String, nullable=True)
+    status_after = Column(String, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    payload_json = Column(Text, nullable=True)
+    error_stack = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 class User(Base):
     __tablename__ = "users"

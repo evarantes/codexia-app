@@ -10,11 +10,17 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import EpisodeReview, ScheduledVideo, SeriesEpisode, SeriesPlan, User, VideoTask
+from app.models import EpisodeReview, ScheduledVideo, SeriesEpisode, SeriesPlan, User, VideoTask, YouTubeAutoAuditEvent
 from app.services.financial_guardian.youtube_observability import (
     youtube_financial_guardian_observability_service,
 )
-from app.services.task_manager import claim_video_task, get_task, update_task
+from app.services.task_manager import (
+    acquire_distributed_lock,
+    claim_video_task,
+    get_task,
+    release_distributed_lock,
+    update_task,
+)
 from app.services.youtube_auto_identity import (
     build_video_content_fingerprint,
     normalize_list_for_fingerprint,
@@ -62,6 +68,78 @@ REVIEW_REASONS = {
     "repetitive_content",
     "other",
 }
+
+#region debug-point youtube-finalize-stuck
+_DEBUG_ENV_PATH = os.path.join(".dbg", "youtube-finalize-stuck.env")
+
+def _dbg_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+    try:
+        import json as _json
+        import urllib.request as _urlreq
+
+        url = "http://127.0.0.1:7777/event"
+        session_id = "youtube-finalize-stuck"
+        if os.path.exists(_DEBUG_ENV_PATH):
+            try:
+                with open(_DEBUG_ENV_PATH, "r", encoding="utf-8") as f:
+                    for line in f.read().splitlines():
+                        if line.startswith("DEBUG_SERVER_URL="):
+                            url = line.split("=", 1)[1].strip() or url
+                        elif line.startswith("DEBUG_SESSION_ID="):
+                            session_id = line.split("=", 1)[1].strip() or session_id
+            except Exception:
+                pass
+
+        run_id = str(os.getenv("DEBUG_RUN_ID") or "pre").strip() or "pre"
+        payload = {
+            "sessionId": session_id,
+            "runId": run_id,
+            "hypothesisId": str(hypothesis_id or "").strip() or "NA",
+            "location": "app/services/youtube_series_service.py",
+            "msg": str(msg or ""),
+            "data": data or {},
+        }
+        req = _urlreq.Request(
+            url,
+            data=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        _urlreq.urlopen(req, timeout=0.25).read()
+    except Exception:
+        pass
+#endregion
+
+
+def _audit_event(
+    db: Session,
+    *,
+    event_type: str,
+    series_id: Optional[int] = None,
+    episode_id: Optional[int] = None,
+    task_id: Optional[str] = None,
+    scheduled_video_id: Optional[int] = None,
+    status_before: Optional[str] = None,
+    status_after: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    error_stack: Optional[str] = None,
+) -> None:
+    try:
+        row = YouTubeAutoAuditEvent(
+            event_type=str(event_type or "").strip() or "unknown",
+            series_id=int(series_id) if series_id is not None else None,
+            episode_id=int(episode_id) if episode_id is not None else None,
+            task_id=str(task_id)[:255] if task_id else None,
+            scheduled_video_id=int(scheduled_video_id) if scheduled_video_id is not None else None,
+            status_before=str(status_before)[:255] if status_before else None,
+            status_after=str(status_after)[:255] if status_after else None,
+            duration_ms=int(duration_ms) if duration_ms is not None else None,
+            payload_json=_json_dumps(payload) if payload else None,
+            error_stack=str(error_stack) if error_stack else None,
+        )
+        db.add(row)
+    except Exception:
+        pass
 CONTENT_KIND_MAP = {
     "reflection": "story",
     "devotional": "devotional",
@@ -400,9 +478,23 @@ class YouTubeSeriesService:
         start = _parse_date(start_date)
         for item in editorial_plan[:total_episodes]:
             number = _safe_int(item.get("episode_number"), 0) or (len(series.episodes) + 1)
-            day = start + timedelta(days=number - 1)
-            publication_dt = self._build_publication_datetime(day.isoformat(), publication_time, timezone_name)
-            production_dt = self._build_production_datetime(publication_dt, timezone_name, production_lead_days, production_time)
+            publication_dt = None
+            if str(item.get("publication_datetime") or "").strip():
+                try:
+                    publication_dt = datetime.fromisoformat(str(item.get("publication_datetime")).replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    publication_dt = None
+            if publication_dt is None:
+                day = start + timedelta(days=number - 1)
+                publication_dt = self._build_publication_datetime(day.isoformat(), publication_time, timezone_name)
+            production_dt = None
+            if str(item.get("production_datetime") or "").strip():
+                try:
+                    production_dt = datetime.fromisoformat(str(item.get("production_datetime")).replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    production_dt = None
+            if production_dt is None:
+                production_dt = self._build_production_datetime(publication_dt, timezone_name, production_lead_days, production_time)
             episode_status = "awaiting_production" if status == "active" else "planned"
             db.add(SeriesEpisode(
                 series_id=series.id,
@@ -836,6 +928,7 @@ class YouTubeSeriesService:
         activated = 0
         blocked = 0
         synced = 0
+        auto_approve_queue: List[Tuple[int, int]] = []
         rows = (
             db.query(SeriesPlan)
             .filter(SeriesPlan.status.in_(["active", "planned", "pending_issue"]))
@@ -854,18 +947,87 @@ class YouTubeSeriesService:
             )
             for episode in episodes:
                 status = _episode_status(episode.status)
+                if status == "approved" and episode.scheduled_video_id:
+                    before = str(episode.status)
+                    episode.status = "scheduled"
+                    synced += 1
+                    _audit_event(
+                        db,
+                        event_type="episode_status_changed",
+                        series_id=int(series.id),
+                        episode_id=int(episode.id),
+                        task_id=str(episode.task_id) if episode.task_id else None,
+                        scheduled_video_id=int(episode.scheduled_video_id),
+                        status_before=before,
+                        status_after="scheduled",
+                    )
+                    status = "scheduled"
+                if status in {"approved", "scheduled"} and episode.scheduled_video_id:
+                    try:
+                        scheduled = db.query(ScheduledVideo).filter(ScheduledVideo.id == int(episode.scheduled_video_id)).first()
+                    except Exception:
+                        scheduled = None
+                    if scheduled and getattr(scheduled, "uploaded_at", None) and status != "published":
+                        try:
+                            self.update_publication_state_from_schedule(db, scheduled_video_id=int(scheduled.id))
+                            synced += 1
+                        except Exception:
+                            pass
+                        status = _episode_status(episode.status)
                 if episode.task_id:
                     task = get_task(str(episode.task_id)) or {}
                     task_status = str(task.get("status") or "").lower()
                     if task_status in {"pending", "processing"} and status != "in_production":
                         episode.status = "in_production"
                         synced += 1
+                        _dbg_event("H4", "episode marked in_production", {
+                            "series_id": int(series.id),
+                            "episode_id": int(episode.id),
+                            "episode_number": int(episode.episode_number or 0),
+                            "task_id": str(episode.task_id),
+                            "task_status": task_status,
+                        })
                     elif task_status == "completed" and status in {"in_production", "awaiting_production", "planned", "in_correction"}:
+                        before = str(episode.status)
                         episode.status = "awaiting_review"
                         synced += 1
+                        _audit_event(
+                            db,
+                            event_type="episode_status_changed",
+                            series_id=int(series.id),
+                            episode_id=int(episode.id),
+                            task_id=str(episode.task_id) if episode.task_id else None,
+                            status_before=before,
+                            status_after="awaiting_review",
+                        )
+                        _dbg_event("H4", "episode transitioned to awaiting_review", {
+                            "series_id": int(series.id),
+                            "episode_id": int(episode.id),
+                            "episode_number": int(episode.episode_number or 0),
+                            "task_id": str(episode.task_id),
+                            "task_status": task_status,
+                        })
+                        if bool(getattr(series, "auto_approval", False)) and not episode.approved_at:
+                            auto_approve_queue.append((int(episode.id), int(user.id)))
                     elif task_status in {"failed", "cancelled"} and status in {"in_production", "awaiting_production"}:
+                        before = str(episode.status)
                         episode.status = "failed"
+                        episode.task_id = None
                         synced += 1
+                        _audit_event(
+                            db,
+                            event_type="episode_status_changed",
+                            series_id=int(series.id),
+                            episode_id=int(episode.id),
+                            status_before=before,
+                            status_after="failed",
+                        )
+                        _dbg_event("H4", "episode marked failed (task failed/cancelled)", {
+                            "series_id": int(series.id),
+                            "episode_id": int(episode.id),
+                            "episode_number": int(episode.episode_number or 0),
+                            "task_status": task_status,
+                        })
                     status = _episode_status(episode.status)
                 if status in {"awaiting_review", "in_correction", "rejected"} and current >= episode.publication_datetime and not episode.approved_at:
                     episode.status = "publication_blocked"
@@ -897,7 +1059,53 @@ class YouTubeSeriesService:
                 if in_problem and _series_status(series.status) == "active":
                     series.status = "pending_issue"
         db.commit()
+        for episode_id, user_id in auto_approve_queue:
+            self._auto_approve_episode(db, episode_id=episode_id, user_id=user_id)
         return {"queued": activated, "blocked": blocked, "synced": synced}
+
+    def _auto_approve_episode(self, db: Session, *, episode_id: int, user_id: int) -> None:
+        lock = acquire_distributed_lock(f"auto_approve_episode:{int(episode_id)}", timeout_seconds=10, ttl_seconds=120)
+        try:
+            user = db.query(User).filter(User.id == int(user_id)).first()
+            if not user:
+                return
+            episode = (
+                db.query(SeriesEpisode)
+                .join(SeriesPlan, SeriesPlan.id == SeriesEpisode.series_id)
+                .filter(SeriesEpisode.id == int(episode_id), SeriesPlan.user_id == int(user.id))
+                .first()
+            )
+            if not episode:
+                return
+            series = db.query(SeriesPlan).filter(SeriesPlan.id == int(episode.series_id)).first()
+            if not series or not bool(getattr(series, "auto_approval", False)):
+                return
+            if episode.approved_at:
+                return
+            if _episode_status(episode.status) != "awaiting_review":
+                return
+            try:
+                self.approve_episode(db, user=user, episode_id=int(episode.id))
+            except Exception as e:
+                try:
+                    import traceback as _tb
+                    _audit_event(
+                        db,
+                        event_type="approval_failed",
+                        series_id=int(series.id),
+                        episode_id=int(episode.id),
+                        task_id=str(episode.task_id) if episode.task_id else None,
+                        scheduled_video_id=int(episode.scheduled_video_id) if episode.scheduled_video_id else None,
+                        status_before="awaiting_review",
+                        status_after=str(episode.status),
+                        payload={"error": str(e)},
+                        error_stack=_tb.format_exc()[-8000:],
+                    )
+                    db.commit()
+                except Exception:
+                    pass
+        finally:
+            release_distributed_lock(lock)
 
     def _episode_task_result(self, episode: SeriesEpisode) -> Dict[str, Any]:
         task = get_task(str(episode.task_id)) if episode.task_id else None
@@ -906,6 +1114,7 @@ class YouTubeSeriesService:
         return {}
 
     def approve_episode(self, db: Session, *, user: User, episode_id: int) -> Dict[str, Any]:
+        started_at = datetime.utcnow()
         episode = (
             db.query(SeriesEpisode)
             .join(SeriesPlan, SeriesPlan.id == SeriesEpisode.series_id)
@@ -920,6 +1129,16 @@ class YouTubeSeriesService:
         result = self._episode_task_result(episode)
         if not result or not result.get("video_url"):
             raise ValueError("O episódio ainda não possui vídeo pronto para aprovação.")
+        _audit_event(
+            db,
+            event_type="approval_started",
+            series_id=int(series.id),
+            episode_id=int(episode.id),
+            task_id=str(episode.task_id) if episode.task_id else None,
+            scheduled_video_id=int(episode.scheduled_video_id) if episode.scheduled_video_id else None,
+            status_before=str(episode.status),
+            payload={"auto_approval": bool(getattr(series, "auto_approval", False)), "actor_user_id": int(user.id)},
+        )
         scheduled = None
         if episode.scheduled_video_id:
             scheduled = db.query(ScheduledVideo).filter(ScheduledVideo.id == int(episode.scheduled_video_id)).first()
@@ -949,6 +1168,15 @@ class YouTubeSeriesService:
             db.add(scheduled)
             db.flush()
             episode.scheduled_video_id = int(scheduled.id)
+            _audit_event(
+                db,
+                event_type="scheduled_created",
+                series_id=int(series.id),
+                episode_id=int(episode.id),
+                task_id=str(episode.task_id) if episode.task_id else None,
+                scheduled_video_id=int(scheduled.id),
+                payload={"auto_post": True, "scheduled_for": _dt_to_iso(episode.publication_datetime), "status": str(scheduled.status)},
+            )
         else:
             scheduled.title = str(result.get("title") or episode.planned_title).strip()
             scheduled.description = str(result.get("description") or "").strip()
@@ -957,9 +1185,18 @@ class YouTubeSeriesService:
             scheduled.status = "completed"
             scheduled.auto_post = True
             scheduled.progress = 100
+            _audit_event(
+                db,
+                event_type="scheduled_updated",
+                series_id=int(series.id),
+                episode_id=int(episode.id),
+                task_id=str(episode.task_id) if episode.task_id else None,
+                scheduled_video_id=int(scheduled.id),
+                payload={"auto_post": True, "scheduled_for": _dt_to_iso(episode.publication_datetime), "status": str(scheduled.status)},
+            )
         episode.approved_at = datetime.utcnow()
         episode.approved_by = int(user.id)
-        episode.status = "scheduled"
+        episode.status = "approved"
         episode.approved_snapshot_json = _json_dumps({
             "approved_at": _dt_to_iso(episode.approved_at),
             "task_id": episode.task_id,
@@ -980,6 +1217,17 @@ class YouTubeSeriesService:
             reviewed_at=datetime.utcnow(),
             reviewed_by=int(user.id),
         ))
+        _audit_event(
+            db,
+            event_type="approval_completed",
+            series_id=int(series.id),
+            episode_id=int(episode.id),
+            task_id=str(episode.task_id) if episode.task_id else None,
+            scheduled_video_id=int(episode.scheduled_video_id) if episode.scheduled_video_id else None,
+            status_before="awaiting_review",
+            status_after="approved",
+            duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+        )
         db.commit()
         return self.get_series_detail(db, user=user, series_id=int(series.id))
 
@@ -1122,13 +1370,18 @@ class YouTubeSeriesService:
         episode = db.query(SeriesEpisode).filter(SeriesEpisode.scheduled_video_id == int(scheduled.id)).first()
         if not episode:
             return
+        if _episode_status(episode.status) == "published":
+            return
         if getattr(scheduled, "uploaded_at", None):
+            before = str(episode.status)
             episode.published_at = scheduled.uploaded_at
             episode.youtube_video_id = scheduled.youtube_video_id
-            episode.youtube_url = scheduled.video_url
+            if scheduled.youtube_video_id:
+                episode.youtube_url = f"https://www.youtube.com/watch?v={scheduled.youtube_video_id}"
             episode.status = "published"
             series = db.query(SeriesPlan).filter(SeriesPlan.id == int(episode.series_id)).first()
             if series:
+                series.current_episode = max(int(series.current_episode or 0), int(episode.episode_number or 0))
                 memory = self._series_memory(series)
                 published_list = memory.get("published_episodes") if isinstance(memory.get("published_episodes"), list) else []
                 published_list = [item for item in published_list if int(item.get("episode_number") or 0) != int(episode.episode_number)]
@@ -1142,6 +1395,17 @@ class YouTubeSeriesService:
                 memory["next_planned_hook"] = None
                 memory["narrative_progress"] = int(episode.episode_number)
                 self._save_series_memory(series, memory)
+            _audit_event(
+                db,
+                event_type="publication_completed",
+                series_id=int(episode.series_id),
+                episode_id=int(episode.id),
+                task_id=str(episode.task_id) if episode.task_id else None,
+                scheduled_video_id=int(scheduled.id),
+                status_before=before,
+                status_after="published",
+                payload={"youtube_video_id": scheduled.youtube_video_id, "uploaded_at": _dt_to_iso(scheduled.uploaded_at)},
+            )
         db.commit()
 
 

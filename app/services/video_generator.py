@@ -40,6 +40,45 @@ class VideoGenerator:
         self._last_tts_debug: Dict[str, Any] = {}
         # self._ensure_fallback_music() removido do init para evitar delay no startup
 
+    #region debug-point youtube-finalize-stuck
+    def _dbg_event(self, hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+        try:
+            import json as _json
+            import urllib.request as _urlreq
+
+            env_path = os.path.join(".dbg", "youtube-finalize-stuck.env")
+            url = "http://127.0.0.1:7777/event"
+            session_id = "youtube-finalize-stuck"
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        for line in f.read().splitlines():
+                            if line.startswith("DEBUG_SERVER_URL="):
+                                url = line.split("=", 1)[1].strip() or url
+                            elif line.startswith("DEBUG_SESSION_ID="):
+                                session_id = line.split("=", 1)[1].strip() or session_id
+                except Exception:
+                    pass
+
+            run_id = str(os.getenv("DEBUG_RUN_ID") or "pre").strip() or "pre"
+            payload = {
+                "sessionId": session_id,
+                "runId": run_id,
+                "hypothesisId": str(hypothesis_id or "").strip() or "NA",
+                "location": "app/services/video_generator.py",
+                "msg": str(msg or ""),
+                "data": data or {},
+            }
+            req = _urlreq.Request(
+                url,
+                data=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            _urlreq.urlopen(req, timeout=0.25).read()
+        except Exception:
+            pass
+    #endregion
+
     def _summarize_tts_failure(self, tts_debug: Optional[Dict[str, Any]]) -> str:
         info = dict(tts_debug or {})
         configured = str(info.get("configured_provider") or "desconhecido").strip()
@@ -988,7 +1027,7 @@ class VideoGenerator:
         label_pattern = (
             r"(gancho|pergunta|cta|cena(?:\s+\d+)?|observa(?:cao|caoes|coes|caoes|cao|ção|ções)?|"
             r"nota|m[eé]trica|estrutura|introdu[cç][aã]o|desenvolvimento|conclus[aã]o|"
-            r"chamada|dica|objetivo|resumo)"
+            r"chamada|dica|objetivo|resumo|reflex[aã]o|mensagem|t[ií]tulo|cap[ií]tulo)"
         )
 
         kept_parts: List[str] = []
@@ -1156,7 +1195,7 @@ class VideoGenerator:
                 return title[:80]
         except Exception:
             pass
-        return "Herdeiros das Promessas"
+        return "HERDEIROS DAS PROMESSAS"
 
     def _default_opening_text(self, channel_name: str) -> str:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
@@ -1179,7 +1218,7 @@ class VideoGenerator:
         )
 
     def _default_channel_slogan(self) -> str:
-        return "ONDE A FÉ SE TORNA ATITUDE!"
+        return "ONDE A FÉ SE TORNA ATITUDE"
 
     def _resolve_endcard_channel_lines(
         self,
@@ -1189,7 +1228,7 @@ class VideoGenerator:
         original_name = re.sub(r"\s+", " ", str(channel_name or "").strip())
         safe_name = original_name
         safe_slogan = re.sub(r"\s+", " ", str(channel_slogan or "").strip())
-        if not safe_slogan and re.search(r"onde\s+a\s+f[ée]\s+se\s+torna\s+atitude", safe_name, flags=re.IGNORECASE):
+        if not safe_slogan:
             safe_slogan = self._default_channel_slogan()
         if safe_slogan:
             safe_name = re.sub(
@@ -1198,13 +1237,9 @@ class VideoGenerator:
                 safe_name,
                 flags=re.IGNORECASE,
             ).strip()
-            if "!" in original_name and safe_name and not safe_name.endswith("!"):
-                safe_name = safe_name.rstrip(" .,-:;|") + "!"
         if not safe_name:
-            safe_name = "Herdeiros das Promessas!"
-        lines = [safe_name]
-        if safe_slogan and safe_slogan.lower() != safe_name.lower():
-            lines.append(safe_slogan)
+            safe_name = "HERDEIROS DAS PROMESSAS"
+        lines = [safe_name.upper(), safe_slogan.upper()]
         return lines[:2]
 
     def _compose_segmented_narration_audio(
@@ -2715,12 +2750,16 @@ class VideoGenerator:
             return {"timeline": [], "source": "empty"}
         if audio_path and self.ai_service and hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
             try:
+                strict = str(os.getenv("CAPTION_SYNC_STRICT") or "").strip().lower() in {"1", "true", "yes", "on"}
                 info = self.ai_service.transcribe_audio_segments_detailed(audio_path, language="pt")
                 segments = info.get("segments") if isinstance(info, dict) else None
                 if isinstance(segments, list) and segments:
                     timed = self._caption_timeline_from_segments(segments, total_duration, narration=narration)
                     if timed:
                         return {"timeline": timed, "source": "real_segments_aligned_to_narration"}
+                if strict:
+                    err = info.get("error") if isinstance(info, dict) else None
+                    raise Exception(f"Transcrição indisponível para sincronização de legendas: {err or 'no_segments'}")
             except Exception:
                 pass
         return {
@@ -4769,6 +4808,7 @@ $synth.Dispose()
                     if progress_callback:
                         progress_callback(80, "Renderizando vídeo final...")
                         
+                    self._dbg_event("H1", "write_videofile start (music)", {"output_path": output_path})
                     final_video.write_videofile(
                         output_path,
                         fps=24,
@@ -4777,7 +4817,24 @@ $synth.Dispose()
                         threads=1,
                         ffmpeg_params=["-preset", "ultrafast", "-movflags", "+faststart", "-pix_fmt", "yuv420p"]
                     )
+                    try:
+                        self._dbg_event("H1", "write_videofile done (music)", {
+                            "output_path": output_path,
+                            "exists": bool(os.path.exists(output_path)),
+                            "size": int(os.path.getsize(output_path)) if os.path.exists(output_path) else 0,
+                        })
+                    except Exception:
+                        pass
+                    self._dbg_event("H1", "_ensure_playable_mp4 start (music)", {"output_path": output_path})
                     output_path = self._ensure_playable_mp4(output_path)
+                    try:
+                        self._dbg_event("H1", "_ensure_playable_mp4 done (music)", {
+                            "output_path": output_path,
+                            "exists": bool(os.path.exists(output_path)),
+                            "size": int(os.path.getsize(output_path)) if os.path.exists(output_path) else 0,
+                        })
+                    except Exception:
+                        pass
                     
                     # Cleanup
                     try:
@@ -5841,11 +5898,15 @@ $synth.Dispose()
                     print(f"Erro ao adicionar música de fundo: {e}")
 
             # Output
-            if progress_callback:
-                progress_callback(95, "Renderizando arquivo final...")
-
             filename = f"{uuid.uuid4()}.mp4"
             output_path = os.path.join(self.output_dir, filename)
+            try:
+                self._dbg_event("H1", "write_videofile start (narrated)", {"output_path": output_path})
+            except Exception:
+                pass
+            output_msg = f"Renderizando arquivo final... output={filename}"
+            if progress_callback:
+                progress_callback(95, output_msg)
             
             # Logger customizado: durante write_videofile (etapa mais longa) pinga 95→99
             # para o progress_callback atualizar o DB e evitar timeout do monitor
@@ -5854,9 +5915,10 @@ $synth.Dispose()
                 try:
                     import proglog
                     class RenderProgressLogger(proglog.ProgressBarLogger):
-                        def __init__(self, callback):
+                        def __init__(self, callback, message):
                             super().__init__()
                             self._cb = callback
+                            self._msg = str(message or "Renderizando arquivo final...")
                         def bars_callback(self, bar, attr, value, old_value=None):
                             super().bars_callback(bar, attr, value, old_value)
                             if not self._cb or bar not in self.bars:
@@ -5865,7 +5927,7 @@ $synth.Dispose()
                             if total and value is not None:
                                 pct = 95 + int(4 * (value / total))
                                 try:
-                                    self._cb(min(99, pct), "Renderizando arquivo final...")
+                                    self._cb(min(99, pct), self._msg)
                                 except Exception:
                                     pass
                                 try:
@@ -5873,7 +5935,7 @@ $synth.Dispose()
                                         pass
                                 except Exception:
                                     pass
-                    write_logger = RenderProgressLogger(progress_callback)
+                    write_logger = RenderProgressLogger(progress_callback, output_msg)
                 except Exception:
                     pass
             logger_kw = {"logger": write_logger} if write_logger else {}
@@ -5941,8 +6003,36 @@ $synth.Dispose()
                         _render_hb_stop.set()
                 except Exception:
                     pass
+                try:
+                    import traceback as _tb
+                    self._dbg_event("H1", "write_videofile exception (narrated)", {
+                        "output_path": output_path,
+                        "error": str(e),
+                        "traceback": _tb.format_exc()[-4000:],
+                        "exists": bool(os.path.exists(output_path)),
+                        "size": int(os.path.getsize(output_path)) if os.path.exists(output_path) else 0,
+                    })
+                except Exception:
+                    pass
                 raise
+            try:
+                self._dbg_event("H1", "write_videofile done (narrated)", {
+                    "output_path": output_path,
+                    "exists": bool(os.path.exists(output_path)),
+                    "size": int(os.path.getsize(output_path)) if os.path.exists(output_path) else 0,
+                })
+            except Exception:
+                pass
+            self._dbg_event("H1", "_ensure_playable_mp4 start (narrated)", {"output_path": output_path})
             output_path = self._ensure_playable_mp4(output_path)
+            try:
+                self._dbg_event("H1", "_ensure_playable_mp4 done (narrated)", {
+                    "output_path": output_path,
+                    "exists": bool(os.path.exists(output_path)),
+                    "size": int(os.path.getsize(output_path)) if os.path.exists(output_path) else 0,
+                })
+            except Exception:
+                pass
             
             
             abs_path = os.path.abspath(output_path)

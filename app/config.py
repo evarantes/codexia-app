@@ -14,6 +14,22 @@ STATIC_DIR = PROJECT_ROOT / "app" / "static"
 # Em produção: definir BASE_URL no ambiente (ex.: https://seu-dominio.com)
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
 
+def _dir_is_writable(path: str) -> bool:
+    try:
+        if os.name == "nt":
+            return False
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, f".__codexia_write_probe_{os.getpid()}")
+        with open(probe, "wb") as f:
+            f.write(b"1")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in ("1", "true", "yes", "on")
+
 def path_from_static_url(url_path: str) -> Path:
     """Converte um path de URL estática (/static/...) para path no disco."""
     if not url_path:
@@ -55,19 +71,39 @@ def absolute_path_for_video(url_path: str) -> str:
 # Diretório de saída para vídeos.
 # Em Render/sem disco persistente: usar app/static/videos (USE_STATIC_VIDEOS=1 ou sem /data).
 # Com volume /data (Coolify etc.): usar /data/media/videos.
-_use_data_volume = os.path.isdir("/data") and os.getenv("USE_STATIC_VIDEOS", "").lower() not in ("1", "true", "yes")
-VIDEO_OUTPUT_DIR = "/data/media/videos" if _use_data_volume else str(STATIC_DIR / "videos")
+_data_video_dir = os.path.join("/data", "media", "videos")
+_use_data_volume = os.path.isdir("/data") and not _env_truthy("USE_STATIC_VIDEOS") and _dir_is_writable(_data_video_dir)
+VIDEO_OUTPUT_DIR = _data_video_dir if _use_data_volume else str(STATIC_DIR / "videos")
 VIDEO_URL_PREFIX = "/media/videos" if _use_data_volume else "/static/videos"
+try:
+    os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    pass
 
 # Diretório de saída para músicas (Suno/MusicGen).
 # Com volume /data (Coolify etc.): usar /data/media/music para persistir e compartilhar entre instâncias.
-_use_data_volume_music = os.path.isdir("/data") and os.getenv("USE_STATIC_MUSIC", "").lower() not in ("1", "true", "yes")
-MUSIC_OUTPUT_DIR = "/data/media/music" if _use_data_volume_music else str(STATIC_DIR / "music")
+_data_music_dir = os.path.join("/data", "media", "music")
+_use_data_volume_music = os.path.isdir("/data") and not _env_truthy("USE_STATIC_MUSIC") and _dir_is_writable(_data_music_dir)
+MUSIC_OUTPUT_DIR = _data_music_dir if _use_data_volume_music else str(STATIC_DIR / "music")
 MUSIC_URL_PREFIX = "/media/music" if _use_data_volume_music else "/static/music"
+try:
+    os.makedirs(MUSIC_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    pass
 
-_use_data_volume_books = os.path.isdir("/data") and os.getenv("USE_STATIC_BOOKS", "").lower() not in ("1", "true", "yes")
-BOOKS_OUTPUT_DIR = "/data/media/books" if _use_data_volume_books else str(STATIC_DIR / "books")
-COVERS_OUTPUT_DIR = "/data/media/covers" if _use_data_volume_books else str(STATIC_DIR / "covers")
+_data_books_dir = os.path.join("/data", "media", "books")
+_data_covers_dir = os.path.join("/data", "media", "covers")
+_use_data_volume_books = os.path.isdir("/data") and not _env_truthy("USE_STATIC_BOOKS") and _dir_is_writable(_data_books_dir) and _dir_is_writable(_data_covers_dir)
+BOOKS_OUTPUT_DIR = _data_books_dir if _use_data_volume_books else str(STATIC_DIR / "books")
+COVERS_OUTPUT_DIR = _data_covers_dir if _use_data_volume_books else str(STATIC_DIR / "covers")
+try:
+    os.makedirs(BOOKS_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    pass
+try:
+    os.makedirs(COVERS_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    pass
 
 def absolute_path_for_music(filename_or_url: str) -> str:
     if not filename_or_url:
