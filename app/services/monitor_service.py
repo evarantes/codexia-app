@@ -479,7 +479,13 @@ class MonitorService:
                 db.commit()
         except Exception as e:
             if _is_startup_database_bootstrap_error(e):
-                logger.warning(f"Recovery de startup ignorado por indisponibilidade/conexão do PostgreSQL: {e}")
+                reason = type(e).__name__
+                if isinstance(e, UnicodeDecodeError):
+                    reason = "UnicodeDecodeError"
+                logger.warning(
+                    "Recovery de startup ignorado por indisponibilidade/conexão do PostgreSQL (%s).",
+                    reason,
+                )
             else:
                 logger.error(f"Erro ao resetar vídeos presos: {e}")
         finally:
@@ -546,7 +552,13 @@ class MonitorService:
                 
         except Exception as e:
             if _is_startup_database_bootstrap_error(e):
-                logger.warning(f"Verificação de integridade adiada por indisponibilidade/conexão do PostgreSQL: {e}")
+                reason = type(e).__name__
+                if isinstance(e, UnicodeDecodeError):
+                    reason = "UnicodeDecodeError"
+                logger.warning(
+                    "Verificação de integridade adiada por indisponibilidade/conexão do PostgreSQL (%s).",
+                    reason,
+                )
             else:
                 logger.error(f"Erro na verificação de integridade: {e}")
         finally:
