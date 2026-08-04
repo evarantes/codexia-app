@@ -3032,10 +3032,8 @@ def debug_auth(db: Session = Depends(get_db)):
     return {
         "status": "Settings found" if settings else "No settings found",
         "db_has_client_id": bool(settings and settings.youtube_client_id),
-        "db_client_id_prefix": (settings.youtube_client_id[:5] + "...") if (settings and settings.youtube_client_id) else None,
         "db_has_client_secret": bool(settings and settings.youtube_client_secret),
         "db_has_refresh_token": bool(settings and settings.youtube_refresh_token),
-        "db_refresh_token_prefix": (settings.youtube_refresh_token[:5] + "...") if (settings and settings.youtube_refresh_token) else None,
         "env_has_client_id": env_client_id,
         "env_has_client_secret": env_client_secret,
         "env_has_refresh_token": env_refresh,

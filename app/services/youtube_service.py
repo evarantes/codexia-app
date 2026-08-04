@@ -2,6 +2,7 @@ import os
 import json
 import time
 from typing import Optional
+import logging
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -25,6 +26,11 @@ _YT_CACHE = {
     "my_channel": None,
     "my_channel_expires_at": 0.0,
 }
+
+logger = logging.getLogger(__name__)
+
+def _presence(value: str) -> str:
+    return "PRESENT" if str(value or "").strip() else "EMPTY"
 
 def _yt_cache_get(key: str):
     try:
@@ -127,6 +133,11 @@ class YouTubeService:
     def _load_credentials(self):
         """Carrega credenciais do banco ou arquivo"""
         settings = None
+        logger.info(
+            "YouTube OAuth: load_credentials start token.json=%s client_secret.json=%s",
+            "PRESENT" if os.path.exists("token.json") else "ABSENT",
+            "PRESENT" if os.path.exists("client_secret.json") else "ABSENT",
+        )
 
         # 1. Tentar carregar do Banco de Dados
         try:
@@ -146,15 +157,24 @@ class YouTubeService:
                     self.credentials = Credentials.from_authorized_user_info(info, scopes=None)
                     self.auth_source = "database"
                 except Exception as e:
-                    print(f"Erro ao carregar credenciais do YouTube do banco: {e}")
+                    logger.warning("YouTube OAuth: erro ao montar credenciais do banco (%s)", type(e).__name__)
                     self.auth_error = f"Erro ao ler credenciais do banco: {e}"
         except Exception as e:
-            print(f"Erro ao acessar banco de dados para credenciais: {e}")
+            logger.warning("YouTube OAuth: erro ao acessar banco para credenciais (%s)", type(e).__name__)
             self.auth_error = f"Erro ao acessar banco para credenciais: {e}"
             settings = None
 
         db_creds = self._read_db_youtube_creds(settings)
         env_creds = self._read_env_youtube_creds()
+        logger.info(
+            "YouTube OAuth: sources db(client_id=%s client_secret=%s refresh_token=%s) env(client_id=%s client_secret=%s refresh_token=%s)",
+            _presence(db_creds.get("client_id")),
+            _presence(db_creds.get("client_secret")),
+            _presence(db_creds.get("refresh_token")),
+            _presence(env_creds.get("client_id")),
+            _presence(env_creds.get("client_secret")),
+            _presence(env_creds.get("refresh_token")),
+        )
         mixed_db_env = {
             "client_id": db_creds.get("client_id") or env_creds.get("client_id"),
             "client_secret": db_creds.get("client_secret") or env_creds.get("client_secret"),
@@ -166,16 +186,30 @@ class YouTubeService:
             "refresh_token": env_creds.get("refresh_token") or db_creds.get("refresh_token"),
         }
 
-        candidates = []
+        potential = []
         if self._has_full_creds(db_creds):
-            candidates.append(("database", db_creds))
+            potential.append(("database", db_creds))
         if self._has_full_creds(env_creds):
-            candidates.append(("environment", env_creds))
+            potential.append(("environment", env_creds))
         if self._has_full_creds(mixed_db_env):
-            candidates.append(("mixed_db_env", mixed_db_env))
+            potential.append(("mixed_db_env", mixed_db_env))
         if self._has_full_creds(mixed_env_db):
-            candidates.append(("mixed_env_db", mixed_env_db))
+            potential.append(("mixed_env_db", mixed_env_db))
 
+        candidates = []
+        seen = set()
+        for source, raw in potential:
+            key = (
+                (raw.get("client_id") or "").strip(),
+                (raw.get("client_secret") or "").strip(),
+                (raw.get("refresh_token") or "").strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append((source, raw))
+
+        logger.info("YouTube OAuth: candidates=%s", [c[0] for c in candidates])
         last_error = None
         for source, raw in candidates:
             try:
@@ -187,10 +221,23 @@ class YouTubeService:
                 self.service = service
                 self.auth_source = source
                 self.auth_error = None
+                logger.info(
+                    "YouTube OAuth: selected source=%s refresh_token=%s valid=%s expired=%s",
+                    source,
+                    _presence(getattr(creds, "refresh_token", None)),
+                    bool(getattr(creds, "valid", False)),
+                    bool(getattr(creds, "expired", False)),
+                )
                 return
             except Exception as e:
                 last_error = f"{source}: {e}"
-                print(f"Erro ao validar credenciais YouTube ({source}): {e}")
+                logger.warning(
+                    "Erro ao validar credenciais YouTube (%s): %s (%s) http_reason=%s",
+                    source,
+                    str(e).splitlines()[0][:220],
+                    type(e).__name__,
+                    _parse_http_error_reason(e),
+                )
 
         # Fallback para arquivo local (desenvolvimento)
         if os.path.exists('token.json'):
@@ -202,14 +249,21 @@ class YouTubeService:
                 self.service = build('youtube', 'v3', credentials=creds)
                 self.auth_source = "token_file"
                 self.auth_error = None
+                logger.info(
+                    "YouTube OAuth: selected source=token_file refresh_token=%s valid=%s expired=%s",
+                    _presence(getattr(creds, "refresh_token", None)),
+                    bool(getattr(creds, "valid", False)),
+                    bool(getattr(creds, "expired", False)),
+                )
                 return
             except Exception as e:
-                print(f"Erro ao carregar token.json: {e}")
+                logger.warning("Erro ao carregar token.json: %s (%s)", str(e).splitlines()[0][:220], type(e).__name__)
                 last_error = f"token_file: {e}"
 
         self.credentials = None
         self.service = None
         self.auth_error = last_error or "Credenciais do YouTube ausentes (banco/ENV/token.json)."
+        logger.warning("YouTube OAuth: no valid credentials auth_error=%s", str(self.auth_error or "").splitlines()[0][:220])
 
     def list_video_comments(self, youtube_video_id: str, max_results: int = 100):
         """Lista comentários (threads) de um vídeo. Retorna lista achatada de comentários (top-level e replies)."""
@@ -353,6 +407,15 @@ class YouTubeService:
         settings = db.query(Settings).first()
         db.close()
         client_id, client_secret = self._oauth_client_id_secret(settings)
+        logger.info(
+            "YouTube OAuth: get_auth_url db(client_id=%s client_secret=%s) env(client_id=%s client_secret=%s) client_secret.json=%s selected=%s",
+            _presence((getattr(settings, "youtube_client_id", None) or "")),
+            _presence((getattr(settings, "youtube_client_secret", None) or "")),
+            _presence((os.getenv("YOUTUBE_CLIENT_ID") or "")),
+            _presence((os.getenv("YOUTUBE_CLIENT_SECRET") or "")),
+            "PRESENT" if os.path.exists("client_secret.json") else "ABSENT",
+            "db_or_env" if (client_id and client_secret) else ("file" if os.path.exists("client_secret.json") else "missing"),
+        )
         if client_id and client_secret:
             try:
                 client_config = {
@@ -374,7 +437,7 @@ class YouTubeService:
                         with open("youtube_pkce.txt", "w") as f:
                             f.write(flow.code_verifier)
                     except Exception as e:
-                        print(f"Warning: Failed to save PKCE verifier: {e}")
+                        logger.warning("YouTube OAuth: failed to save PKCE verifier (%s)", type(e).__name__)
 
                 return auth_url
             except Exception as e:
@@ -392,7 +455,7 @@ class YouTubeService:
                 with open("youtube_pkce.txt", "w") as f:
                     f.write(flow.code_verifier)
             except Exception as e:
-                print(f"Warning: Failed to save PKCE verifier (file): {e}")
+                logger.warning("YouTube OAuth: failed to save PKCE verifier (file) (%s)", type(e).__name__)
 
         return auth_url
 
@@ -421,7 +484,7 @@ class YouTubeService:
                     }
                     flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
                 except Exception as e:
-                    print(f"Erro ao criar Flow com credenciais do banco: {e}")
+                    logger.warning("YouTube OAuth: failed to create flow from db/env (%s)", type(e).__name__)
 
             # 2. Fallback para arquivo se não conseguiu via banco
             if not flow:
@@ -446,10 +509,24 @@ class YouTubeService:
                     except:
                         pass
                 except Exception as e:
-                    print(f"Warning: Failed to load PKCE verifier: {e}")
+                    logger.warning("YouTube OAuth: failed to load PKCE verifier (%s)", type(e).__name__)
 
             flow.fetch_token(code=code)
             self.credentials = flow.credentials
+            refresh_token = (getattr(self.credentials, "refresh_token", None) or "").strip()
+            if not refresh_token:
+                logger.warning(
+                    "YouTube OAuth: exchange fetched refresh_token=EMPTY used_json_file=%s",
+                    bool(used_json_file),
+                )
+                return False, (
+                    "Autenticação não concluída: o Google não forneceu um novo refresh token. "
+                    "Revogue o acesso do Codexia em myaccount.google.com/permissions e tente novamente (prompt=consent + offline)."
+                )
+            logger.info(
+                "YouTube OAuth: exchange fetched refresh_token=PRESENT used_json_file=%s",
+                bool(used_json_file),
+            )
             
             # Se usou JSON, extrair client_id/secret para salvar no banco
             client_id_override = None
@@ -463,14 +540,50 @@ class YouTubeService:
                         client_id_override = installed.get('client_id')
                         client_secret_override = installed.get('client_secret')
                 except Exception as e:
-                    print(f"Erro ao ler client_secret.json para persistência: {e}")
+                    logger.warning("YouTube OAuth: failed to parse client_secret.json for persistence (%s)", type(e).__name__)
 
             # Salvar no banco
-            self._save_credentials_to_db(client_id_override, client_secret_override)
+            try:
+                self._save_credentials_to_db(client_id_override, client_secret_override)
+            except Exception:
+                return False, "Falha ao salvar as credenciais do YouTube no banco. Autenticação não concluída."
+
+            try:
+                db_check = SessionLocal()
+                saved = db_check.query(Settings).first()
+                db_check.close()
+                saved_refresh = (getattr(saved, "youtube_refresh_token", None) or "").strip() if saved else ""
+                if saved_refresh != refresh_token:
+                    logger.warning(
+                        "YouTube OAuth: exchange saved refresh_token mismatch db=%s expected=%s",
+                        _presence(saved_refresh),
+                        _presence(refresh_token),
+                    )
+                    return False, "Falha ao confirmar a persistência do novo refresh token. Autenticação não concluída."
+            except Exception as e:
+                logger.warning(
+                    "YouTube OAuth: exchange could not confirm persisted refresh token (%s)",
+                    type(e).__name__,
+                )
+                return False, "Falha ao confirmar a persistência do refresh token. Autenticação não concluída."
+
+            verification = YouTubeService()
+            if not getattr(verification, "service", None) or ("invalid_grant" in str(getattr(verification, "auth_error", "") or "")):
+                logger.warning(
+                    "YouTube OAuth: exchange persisted but verification failed auth_source=%s auth_error_contains_invalid_grant=%s",
+                    getattr(verification, "auth_source", None),
+                    bool("invalid_grant" in str(getattr(verification, "auth_error", "") or "")),
+                )
+                return False, (
+                    "Falha ao validar as credenciais após salvar. "
+                    "O Google ainda está rejeitando o refresh token (invalid_grant). "
+                    "Revogue o acesso do Codexia e refaça a autorização."
+                )
+            logger.info("YouTube OAuth: exchange persisted and verified auth_source=%s", getattr(verification, "auth_source", None))
             return True, "Autenticação realizada com sucesso!"
         except Exception as e:
-            print(f"Erro ao trocar código por token: {e}")
-            return False, str(e)
+            logger.warning("YouTube OAuth: exchange failed %s (%s)", str(e).splitlines()[0][:220], type(e).__name__)
+            return False, "Falha ao autenticar com o Google. Verifique o código e as credenciais e tente novamente."
 
     def _save_credentials_to_db(self, client_id=None, client_secret=None):
         """Salva as credenciais atuais no banco de dados"""
@@ -483,13 +596,16 @@ class YouTubeService:
             if not settings:
                 settings = Settings()
                 db.add(settings)
-            
-            # Garantir que temos refresh_token
-            if not self.credentials.refresh_token:
-                print("AVISO: Google não retornou refresh_token. Mantendo o anterior se existir.")
-            else:
-                settings.youtube_refresh_token = self.credentials.refresh_token.strip()
-            
+
+            refresh_token = (getattr(self.credentials, "refresh_token", None) or "").strip()
+            if not refresh_token:
+                logger.warning("YouTube OAuth: save aborted refresh_token=EMPTY (não sobrescrevendo token anterior)")
+                raise RuntimeError(
+                    "Google não forneceu um novo refresh token. A autenticação não pode ser concluída."
+                )
+
+            settings.youtube_refresh_token = refresh_token
+
             # Atualizar client_id/secret se fornecidos ou presentes nas credenciais
             current_client_id = getattr(self.credentials, 'client_id', None) or client_id
             if current_client_id:
@@ -500,9 +616,19 @@ class YouTubeService:
                 settings.youtube_client_secret = current_client_secret.strip()
 
             db.commit()
-            print("Credenciais do YouTube salvas no banco com sucesso.")
+            logger.info(
+                "YouTube OAuth: credentials saved db(client_id=%s client_secret=%s refresh_token=%s)",
+                _presence(getattr(settings, "youtube_client_id", None)),
+                _presence(getattr(settings, "youtube_client_secret", None)),
+                _presence(getattr(settings, "youtube_refresh_token", None)),
+            )
         except Exception as e:
-            print(f"Erro ao salvar credenciais no banco: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.warning("YouTube OAuth: save failed %s (%s)", str(e).splitlines()[0][:220], type(e).__name__)
+            raise
         finally:
             db.close()
 
