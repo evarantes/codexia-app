@@ -799,7 +799,7 @@ class YouTubeSeriesService:
         payload: Dict[str, Any] = {
             "topic": story_prompt,
             "duration": int(episode.duration_minutes or series.duration_minutes or 10),
-            "auto_upload": False,
+            "auto_upload": bool(getattr(series, "auto_approval", False)),
             "mode": "topic",
             "kind": CONTENT_KIND_MAP.get(series.content_type, "story"),
             "override_title": episode.planned_title,
@@ -1197,6 +1197,22 @@ class YouTubeSeriesService:
         episode.approved_at = datetime.utcnow()
         episode.approved_by = int(user.id)
         episode.status = "approved"
+        existing_youtube_id = str((result.get("youtube_video_id") or "")).strip()
+        existing_youtube_url = str((result.get("youtube_url") or "")).strip()
+        existing_upload_ok = bool(existing_youtube_id) and bool(existing_youtube_url) and bool(result.get("upload_status") == "completed")
+        if existing_upload_ok:
+            episode.youtube_video_id = existing_youtube_id
+            episode.youtube_url = existing_youtube_url
+            episode.published_at = episode.approved_at
+            episode.status = "published"
+            if scheduled is not None:
+                try:
+                    scheduled.uploaded_at = episode.published_at
+                    scheduled.status = "published"
+                    scheduled.youtube_video_id = existing_youtube_id
+                    scheduled.video_url = existing_youtube_url
+                except Exception:
+                    pass
         episode.approved_snapshot_json = _json_dumps({
             "approved_at": _dt_to_iso(episode.approved_at),
             "task_id": episode.task_id,
