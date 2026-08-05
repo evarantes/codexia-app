@@ -572,7 +572,97 @@ def _load_factory_blocker_item(db: Session, excluded_task_ids: Optional[set] = N
         return item
     return _active_production_video_blocker_item(db)
 
+def _is_valid_seed_script(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    scenes = value.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        return False
+    for scene in scenes[:3]:
+        if isinstance(scene, dict) and str(scene.get("text") or "").strip():
+            return True
+        if isinstance(scene, str) and scene.strip():
+            return True
+    return False
+
+def _file_ok(path_value: Any, *, min_bytes: int = 1000) -> bool:
+    try:
+        p = str(path_value or "").strip()
+        if not p:
+            return False
+        if not os.path.exists(p):
+            return False
+        return os.path.getsize(p) >= int(min_bytes or 1)
+    except Exception:
+        return False
+
+def _selected_images_ok(urls: List[str], *, min_bytes: int = 1000) -> bool:
+    if not urls:
+        return False
+    try:
+        from app.config import absolute_path_for_static
+    except Exception:
+        absolute_path_for_static = None
+    checked = 0
+    for url in urls:
+        if not url:
+            continue
+        checked += 1
+        if checked > 6:
+            break
+        try:
+            if absolute_path_for_static:
+                p = absolute_path_for_static(url)
+            else:
+                p = ""
+        except Exception:
+            p = ""
+        if not (p and os.path.exists(p) and os.path.getsize(p) >= int(min_bytes or 1)):
+            return False
+    return True
+
+def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    payload.setdefault("force_reuse_assets", True)
+    if "force_render_only" in payload:
+        return payload
+    db = SessionLocal()
+    try:
+        row = db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
+        if not row or not getattr(row, "result_json", None):
+            return payload
+        try:
+            result_obj = json.loads(getattr(row, "result_json", "") or "{}")
+        except Exception:
+            result_obj = {}
+        if not isinstance(result_obj, dict):
+            return payload
+        seed_script = result_obj.get("script") if isinstance(result_obj.get("script"), dict) else None
+        seed_render_report = result_obj.get("render_report") if isinstance(result_obj.get("render_report"), dict) else {}
+        audio_path = ""
+        try:
+            audio_path = str(((seed_render_report.get("audio_generation") or {}).get("output_path") or "")).strip()
+        except Exception:
+            audio_path = ""
+        selected_images: List[str] = []
+        if seed_script and isinstance(seed_script.get("selected_images"), list):
+            selected_images = [
+                str(x).strip()
+                for x in seed_script.get("selected_images")
+                if isinstance(x, str) and str(x).strip()
+            ]
+        script_ok = _is_valid_seed_script(seed_script)
+        images_ok = _selected_images_ok(selected_images)
+        audio_ok = _file_ok(audio_path)
+        if script_ok and images_ok and audio_ok:
+            payload["force_render_only"] = True
+    finally:
+        db.close()
+    return payload
+
 def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
+    payload = _maybe_enable_render_only_flags(payload, task_id)
     use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
     if use_rq_raw:
         use_rq = use_rq_raw.lower() in {"1", "true", "yes"}
@@ -1937,6 +2027,8 @@ class VideoRequest(BaseModel):
     aspect_ratio: Optional[str] = "16:9"
     idempotency_key: Optional[str] = None
     force_regenerate: bool = False
+    force_reuse_assets: bool = False
+    force_render_only: bool = False
 
 class StoryTextGenerateRequest(BaseModel):
     kind: str = "story"  # story | devotional | prayer
@@ -4585,6 +4677,7 @@ def retry_task(task_id: str):
     task = get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    status = str((task.get("status") or "")).lower()
     progress = task.get("progress")
     try:
         progress_n = int(progress) if progress is not None else 0
@@ -4846,6 +4939,7 @@ def process_video_generation(request: VideoRequest, task_id):
         update_task(task_id, progress=10, message="Estruturando roteiro com IA...")
         heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         _raise_if_cancelled()
+        update_task(task_id, result=_merged_task_result({"script_staging": True}))
         
         def _count_words(txt: str) -> int:
             try:
@@ -5061,18 +5155,94 @@ def process_video_generation(request: VideoRequest, task_id):
                 plan["background_prompt"] = background_prompt
             return plan
 
-        if request.mode == 'story' and request.story_content:
-            minutes = 10
+        script = None
+        seed_mode = bool(getattr(request, "force_render_only", False) or getattr(request, "force_reuse_assets", False))
+        if seed_mode and guardian_task_row is not None:
             try:
-                minutes = requested_minutes
+                seed_result = json.loads(getattr(guardian_task_row, "result_json", "") or "{}")
             except Exception:
+                seed_result = {}
+            if isinstance(seed_result, dict):
+                seed_script = seed_result.get("script") if isinstance(seed_result.get("script"), dict) else None
+                seed_render_report = seed_result.get("render_report") if isinstance(seed_result.get("render_report"), dict) else {}
+                seed_audio_path = ""
+                try:
+                    seed_audio_path = str(((seed_render_report.get("audio_generation") or {}).get("output_path") or "")).strip()
+                except Exception:
+                    seed_audio_path = ""
+                seed_narration_text = ""
+                try:
+                    seed_narration_text = str(((seed_render_report.get("audio_generation") or {}).get("final_text_sent_to_tts") or "")).strip()
+                except Exception:
+                    seed_narration_text = ""
+                if not seed_narration_text:
+                    try:
+                        seed_narration_text = str(((seed_render_report.get("narration_plan") or {}).get("full_text") or "")).strip()
+                    except Exception:
+                        seed_narration_text = ""
+                seed_selected_images: List[str] = []
+                if isinstance(seed_script, dict) and isinstance(seed_script.get("selected_images"), list):
+                    seed_selected_images = [
+                        str(x).strip()
+                        for x in seed_script.get("selected_images")
+                        if isinstance(x, str) and str(x).strip()
+                    ]
+
+                seed_script_ok = _is_valid_seed_script(seed_script)
+                seed_audio_ok = _file_ok(seed_audio_path)
+                seed_images_ok = _selected_images_ok(seed_selected_images)
+
+                if bool(getattr(request, "force_render_only", False)):
+                    if not (seed_script_ok and seed_images_ok and seed_audio_ok):
+                        finalize_task_once(
+                            task_id,
+                            status="failed",
+                            progress=0,
+                            message="Recuperação (render-only) bloqueada: faltam roteiro, imagens ou áudio válidos para reutilização.",
+                            result=_merged_task_result({
+                                "recovery": {
+                                    "mode": "render_only",
+                                    "seed_script_ok": bool(seed_script_ok),
+                                    "seed_images_ok": bool(seed_images_ok),
+                                    "seed_audio_ok": bool(seed_audio_ok),
+                                }
+                            }),
+                        )
+                        return
+                    script = dict(seed_script or {})
+                    script["selected_images"] = seed_selected_images
+                    script["seed_audio_path"] = seed_audio_path
+                    if seed_narration_text:
+                        script["seed_narration_text"] = seed_narration_text
+                    script["force_reuse_assets"] = True
+                    script["force_render_only"] = True
+                    update_task(task_id, progress=10, message="Recuperação: reutilizando roteiro/imagens/áudio e renderizando MP4...")
+                elif bool(getattr(request, "force_reuse_assets", False)) and seed_script_ok:
+                    script = dict(seed_script or {})
+                    reused: List[str] = ["roteiro"]
+                    if seed_images_ok:
+                        script["selected_images"] = seed_selected_images
+                        reused.append("imagens")
+                    if seed_audio_ok:
+                        script["seed_audio_path"] = seed_audio_path
+                        if seed_narration_text:
+                            script["seed_narration_text"] = seed_narration_text
+                        reused.append("áudio")
+                    script["force_reuse_assets"] = True
+                    update_task(task_id, progress=10, message=f"Recuperação: reutilizando {', '.join(reused)} e gerando apenas o que faltar...")
+
+        if script is None:
+            if request.mode == 'story' and request.story_content:
                 minutes = 10
-            minutes = max(1, min(60, minutes))
-            script = _build_story_plan_from_text(request.story_content, minutes, kind_norm)
-        else:
-            # Fallback to topic mode if no story content
-            topic = request.topic or "Motivação Genérica"
-            script = ai_service.generate_motivational_script(topic, requested_minutes)
+                try:
+                    minutes = requested_minutes
+                except Exception:
+                    minutes = 10
+                minutes = max(1, min(60, minutes))
+                script = _build_story_plan_from_text(request.story_content, minutes, kind_norm)
+            else:
+                topic = request.topic or "Motivação Genérica"
+                script = ai_service.generate_motivational_script(topic, requested_minutes)
             
         print("Roteiro gerado/estruturado.")
         _raise_if_cancelled()
@@ -5267,6 +5437,7 @@ def process_video_generation(request: VideoRequest, task_id):
             )
             update_task(task_id, result=_merged_task_result({
                 "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
+                "script": script if isinstance(script, dict) else None,
             }))
         
         # 2. Gerar Vídeo (16:9)
@@ -5312,6 +5483,10 @@ def process_video_generation(request: VideoRequest, task_id):
             render_report = {}
         sync_validation = render_report.get("sync_validation")
         audio_generation = render_report.get("audio_generation")
+        update_task(task_id, result=_merged_task_result({
+            "render_report": render_report,
+            "script": script if isinstance(script, dict) else None,
+        }))
         if guardian_db is not None and guardian_context is not None:
             scene_visuals = render_report.get("scene_visuals") if isinstance(render_report.get("scene_visuals"), list) else []
             generated_image_paths = [
@@ -5402,11 +5577,14 @@ def process_video_generation(request: VideoRequest, task_id):
                 err_msg = _publish_error_message(upload_result, action_label="publicar")
                 final_payload = _merged_task_result({
                     "video_url": video_path,
+                    "file_path": abs_video_path,
                     "title": script.get("title"),
                     "description": description,
                     "tags": script.get("tags"),
                     "kind": "story" if request.mode == "story" else "topic",
                     "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
+                    "script": script if isinstance(script, dict) else None,
+                    "render_report": render_report if isinstance(render_report, dict) else None,
                     "audio_generation": audio_generation,
                     "sync_validation": sync_validation,
                     "executor_id": executor_id,
@@ -5427,11 +5605,14 @@ def process_video_generation(request: VideoRequest, task_id):
                 return
             final_payload = _merged_task_result({
                 "video_url": video_path,
+                "file_path": abs_video_path,
                 "title": script.get("title"),
                 "description": description,
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
                 "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
+                "script": script if isinstance(script, dict) else None,
+                "render_report": render_report if isinstance(render_report, dict) else None,
                 "audio_generation": audio_generation,
                 "sync_validation": sync_validation,
                 "executor_id": executor_id,
@@ -5500,11 +5681,14 @@ def process_video_generation(request: VideoRequest, task_id):
                 guardian_db.commit()
             final_payload = _merged_task_result({
                 "video_url": video_path,
+                "file_path": abs_video_path,
                 "title": script.get("title"),
                 "description": script.get("description"),
                 "tags": script.get("tags"),
                 "kind": "story" if request.mode == "story" else "topic",
                 "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
+                "script": script if isinstance(script, dict) else None,
+                "render_report": render_report if isinstance(render_report, dict) else None,
                 "audio_generation": audio_generation,
                 "sync_validation": sync_validation,
                 "executor_id": executor_id,

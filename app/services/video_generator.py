@@ -4577,6 +4577,11 @@ $synth.Dispose()
                     selected_image_paths = [selected_primary_path]
                 elif not music_file_path:
                     use_single_bg = False
+            force_asset_reuse = False
+            if isinstance(plan, dict):
+                force_asset_reuse = bool(plan.get("force_reuse_assets") or plan.get("force_render_only"))
+            if force_asset_reuse and isinstance(selected_raw, list) and selected_raw and not selected_image_paths:
+                raise Exception("selected_images fornecidas, mas nenhuma imagem válida foi encontrada no disco para reutilização.")
 
             continuity_anchor = self._build_visual_continuity_anchor(title, scenes, plan if isinstance(plan, dict) else None)
             visual_group_plan = self._build_visual_groups(
@@ -4910,7 +4915,43 @@ $synth.Dispose()
             actual_total_audio_dur = 0.0
             planning_target_max_sec = float(planning_meta.get("planning_target_max_sec") or 0.0)
             real_audio_target_max_sec = planning_target_max_sec or (max_requested_duration * 0.97 if max_requested_duration > 0 else 0.0)
-            for narration_attempt in range(4):
+            seed_audio_used = False
+            seed_audio_path = ""
+            seed_audio_text = ""
+            if isinstance(plan, dict):
+                seed_audio_path = str(plan.get("seed_audio_path") or "").strip()
+                seed_audio_text = str(plan.get("seed_narration_text") or "").strip()
+            if seed_audio_path and os.path.exists(seed_audio_path) and os.path.getsize(seed_audio_path) > 1000:
+                seed_audio_used = True
+                main_audio_path = seed_audio_path
+                debug_ctx["audio_path"] = main_audio_path
+                debug_ctx["tts_provider_configured"] = "seed_reuse"
+                debug_ctx["tts_provider_used"] = "seed_reuse"
+                debug_ctx["tts_fallback_used"] = False
+                try:
+                    if seed_audio_text:
+                        render_report["audio_generation"]["final_text_sent_to_tts"] = seed_audio_text
+                except Exception:
+                    pass
+                main_audio_clip = AudioFileClip(main_audio_path)
+                self._assert_clip_not_none(main_audio_clip, "seed_audio_clip", {"path": main_audio_path})
+                actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
+                if actual_total_audio_dur <= 0:
+                    raise Exception("Áudio reutilizado com duração inválida.")
+                render_report["audio_generation"]["provider_used"] = "seed_reuse"
+                render_report["audio_generation"]["fallback_used"] = False
+                render_report["audio_generation"]["final_audio_duration_sec"] = round(actual_total_audio_dur, 2)
+                render_report["audio_generation"]["output_path"] = main_audio_path
+                render_report["audio_generation"]["seed_reused"] = True
+                max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))
+                min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= (min_requested_duration * (1.0 - range_tolerance)))
+                duration_range_report["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
+                duration_range_report["above_requested_range_sec"] = round(max(0.0, actual_total_audio_dur - max_requested_duration) if max_requested_duration > 0 else 0.0, 2)
+                duration_range_report["below_requested_range_sec"] = round(max(0.0, min_requested_duration - actual_total_audio_dur) if min_requested_duration > 0 else 0.0, 2)
+                duration_range_report["within_requested_range"] = bool(max_ok and min_ok)
+                duration_range_report["decision"] = "seed_audio_reuse"
+                duration_range_report["decision_reason"] = "Áudio reutilizado a partir do seed_audio_path."
+            for narration_attempt in range(0 if seed_audio_used else 4):
                 segmented_audio = self._compose_segmented_narration_audio(
                     main_text=main_story_narration_text or final_narration_text,
                     cta_text=cta_narration_text,
