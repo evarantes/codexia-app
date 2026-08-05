@@ -22,20 +22,34 @@ touch "$REPORT" "$MAIN_LOG"
 BRANCH="homolog/youtube-auto-e2e"
 REMOTE="origin"
 IMAGE="codexia:homolog-ytauto-final"
-CONTAINER="${CONTAINER:-codexia-homolog-ytauto-final}"
-PORT="${PORT:-8010}"
+CONTAINER="codexia-homolog-ytauto-final"
+CONTAINER_NETWORK="${CONTAINER_NETWORK:-coolify}"
+PORT="8010"
 BASE_URL="http://127.0.0.1:${PORT}"
-MOUNT_VOLUME_HOST="${MOUNT_VOLUME_HOST:-/root/codexia-homolog-media}"
-MOUNT_VOLUME_GUEST="${MOUNT_VOLUME_GUEST:-/data}"
+MOUNT_VOLUME_HOST="/root/codexia-homolog-media"
+MOUNT_VOLUME_GUEST="/data"
 
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@codexia.dev}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin123}"
 SECRET_KEY="${SECRET_KEY:-dev-secret-key-codexia-2025}"
 APP_ENV="${APP_ENV:-development}"
-DATABASE_URL="${DATABASE_URL:-}"
+# Nome do banco SEMPRE homolog. Nunca tocar produção.
+FORCED_DB_NAME="codexia_sprint1_validation"
+# Referência container homolog (nunca produção): somente usamos este nome
+# para extrair DATABASE_URL de referência.
+REFERENCE_CONTAINER_HOMOLOG="g8w4so4gkkgog0scsw0ogwkw-200824550318"
 
 # Optional: channel id used only for final youtube listing sanity check
 YOUTUBE_CHANNEL_ID="${YOUTUBE_CHANNEL_ID:-}"
+
+# Idempotency: key fixa para NÃO duplicar série/upload em reexecuções.
+# 32 chars + data diária => uma nova série por dia é aceitável.
+RUN_TAG="${RUN_TAG:-$(date -u +%Y%m%d)}"
+IDEMPOTENCY_KEY="e2e-homolog-ytauto-${RUN_TAG}"
+# Marcador de execução prévia (no workspace, no volume e no result_json idempotency)
+PREV_LOCK_HOST_DIR="${MOUNT_VOLUME_HOST}/e2e_state"
+PREV_LOCK_FILE="${PREV_LOCK_HOST_DIR}/run_${RUN_TAG}.state"
+mkdir -p "$PREV_LOCK_HOST_DIR" || true
 
 ok_count=0
 fail_count=0
@@ -86,6 +100,13 @@ SUMMARY_AT() {
     echo "======================================================================="
     echo " E2E Homolog YouTube Auto — Resumo"
     echo "======================================================================="
+    echo " Container         : ${CONTAINER}"
+    echo " Rede docker       : ${CONTAINER_NETWORK}"
+    echo " Porta exposta     : ${PORT}"
+    echo " Imagem            : ${IMAGE}"
+    echo " Banco (forçado)   : ${FORCED_DB_NAME}"
+    echo " Volume persistente: ${MOUNT_VOLUME_HOST}:${MOUNT_VOLUME_GUEST}"
+    echo " Idempotency Key   : ${IDEMPOTENCY_KEY}"
     echo " Início            : ${START_HUMAN}"
     echo " Fim               : ${END_HUMAN}"
     echo " Tempo total       : ${MIN}m ${SEC}s (${TOTAL_SEC} s)"
@@ -100,6 +121,7 @@ SUMMARY_AT() {
       echo "🎉 MISSÃO CUMPRIDA — pipeline YouTube Auto validado ponta-a-ponta."
     else
       echo "⚠️  Falha técnica durante execução — ver erros acima e em ${REPORT}"
+      echo "   Upload no YouTube NÃO foi realizado se falhou antes da etapa 11."
     fi
   } | tee -a "$MAIN_LOG" "$REPORT"
 }
@@ -139,9 +161,9 @@ http_put() {
 }
 
 # =============================================================================
-# 0 — Pré-requisitos do ambiente
+# 0 — Pré-requisitos do ambiente + proteção ANTI-PRODUÇÃO
 # =============================================================================
-section "0. Pré-requisitos"
+section "0. Pré-requisitos + Proteção Anti-Produção"
 require_cmd git
 require_cmd docker
 require_cmd curl
@@ -149,6 +171,103 @@ require_cmd jq
 require_cmd ffprobe
 require_cmd stat
 pass "Comandos obrigatórios presentes (git docker curl jq ffprobe stat)"
+
+# --- PROTEÇÃO 1: Jamais tocar containers de produção. -----------------------
+# Lista de substrings proibidas para nome de container. Se existir na lista
+# e for igual NOME ao REFERENCE_CONTAINER_HOMOLOG, TUDO BEM. Caso contrário,
+# aborta.
+PROD_NAME_PATTERNS=(
+  "codexia-prod"
+  "codexia-production"
+  "coolify-codexia-prod"
+  "prod"
+)
+for p in "${PROD_NAME_PATTERNS[@]}"; do
+  if [ "$p" = "$CONTAINER" ]; then
+    fail "Detectado CONTAINER=$CONTAINER com padrão de produção '$p'. ABORTADO para não tocar produção."
+  fi
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$p" && [ "$p" != "$REFERENCE_CONTAINER_HOMOLOG" ]; then
+    log "Nota: container $p existe, mas NÃO vamos tocá-lo (nome proibido)."
+  fi
+done
+pass "Proteção 1 OK: nomes de produção (prod/codexia-prod/coolify-codexia-prod) NÃO são nosso target."
+
+# --- PROTEÇÃO 2: Resolver DATABASE_URL do REFERENCE_CONTAINER_HOMOLOG. ------
+# Nunca recebemos segredo por input. Sempre lemos do container homolog.
+if [ -z "${DATABASE_URL:-}" ]; then
+  if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$REFERENCE_CONTAINER_HOMOLOG"; then
+    fail "Container referência homolog $REFERENCE_CONTAINER_HOMOLOG não foi encontrado no docker. Impossível extrair DATABASE_URL."
+  fi
+  RAW_DB=$(docker inspect "$REFERENCE_CONTAINER_HOMOLOG" --format '{{range .Config.Env}}{{.}}{{"\n"}}{{end}}' | awk -F= '/^DATABASE_URL=/{$1=""; sub(/^=/,""); print; exit}' 2>>"$MAIN_LOG" || echo "")
+  [ -n "$RAW_DB" ] || fail "Container referência $REFERENCE_CONTAINER_HOMOLOG não tem variável DATABASE_URL definida."
+  # Normaliza: troca o path final do banco para FORCED_DB_NAME="codexia_sprint1_validation"
+  # remove qualquer query, substitui último /qualquercoisa por /FORCED_DB_NAME?query
+  DB_WITHOUT_QUERY="${RAW_DB%%\?*}"
+  DB_QUERY_PART=""
+  case "$RAW_DB" in
+    *\?*) DB_QUERY_PART="?${RAW_DB#*\?}";;
+  esac
+  NORMALIZED="${DB_WITHOUT_QUERY%/*}/${FORCED_DB_NAME}${DB_QUERY_PART}"
+  export DATABASE_URL="$NORMALIZED"
+  # Confirma que o nome do banco é EXATAMENTE o de homolog (nunca outro)
+  NAME_CHECK="${DATABASE_URL%${DB_QUERY_PART}}"
+  NAME_CHECK="${NAME_CHECK##*/}"
+  if [ "$NAME_CHECK" != "$FORCED_DB_NAME" ]; then
+    fail "Nome do banco resolvido ($NAME_CHECK) != esperado ($FORCED_DB_NAME). ABORTADO para não tocar produção."
+  fi
+  pass "Proteção 2 OK: DATABASE_URL lido de $REFERENCE_CONTAINER_HOMOLOG e normalizado para banco=${FORCED_DB_NAME}."
+else
+  # Mesmo se por env veio, FORÇAMOS o nome do banco para homolog.
+  RAW_DB="$DATABASE_URL"
+  DB_WITHOUT_QUERY="${RAW_DB%%\?*}"
+  DB_QUERY_PART=""
+  case "$RAW_DB" in
+    *\?*) DB_QUERY_PART="?${RAW_DB#*\?}";;
+  esac
+  NORMALIZED="${DB_WITHOUT_QUERY%/*}/${FORCED_DB_NAME}${DB_QUERY_PART}"
+  export DATABASE_URL="$NORMALIZED"
+  NAME_CHECK="${DATABASE_URL%${DB_QUERY_PART}}"
+  NAME_CHECK="${NAME_CHECK##*/}"
+  if [ "$NAME_CHECK" != "$FORCED_DB_NAME" ]; then
+    fail "Mesmo após normalizar, nome do banco ($NAME_CHECK) != ($FORCED_DB_NAME). Abortado."
+  fi
+  pass "Proteção 2 OK: DATABASE_URL recebido por ENV, normalizado para banco=${FORCED_DB_NAME}."
+fi
+echo "FORCED_DB_NAME=$FORCED_DB_NAME" >>"$REPORT"
+echo "REFERENCE_CONTAINER=$REFERENCE_CONTAINER_HOMOLOG" >>"$REPORT"
+echo "DATABASE_URL_NAME_CHECK=$NAME_CHECK" >>"$REPORT"
+
+# --- PROTEÇÃO 3: NÃO publica mais de 1 vídeo e NÃO publica público. --------
+# Reforçado dentro do payload (visibility sempre unlisted, 1 episódio,
+# idempotency).
+echo "VISIBILITY_FORCED=unlisted" >>"$REPORT"
+echo "EPISODES_FORCED=1" >>"$REPORT"
+pass "Proteção 3 OK: visibility sempre unlisted; 1 episódio; idempotency por dia."
+
+# --- PROTEÇÃO 4: Idempotência / detectar execução anterior. -----------------
+IDEMPOTENCY_TASK_ID=""
+IDEMPOTENCY_SERIES_ID=""
+if [ -f "$PREV_LOCK_FILE" ]; then
+  PREV_SERIES=$(grep -E '^PREV_SERIES_ID=' "$PREV_LOCK_FILE" | head -n1 | cut -d= -f2- || echo "")
+  PREV_TASK=$(grep -E '^PREV_TASK_ID=' "$PREV_LOCK_FILE" | head -n1 | cut -d= -f2- || echo "")
+  PREV_VIDEO=$(grep -E '^PREV_YOUTUBE_VIDEO_ID=' "$PREV_LOCK_FILE" | head -n1 | cut -d= -f2- || echo "")
+  PREV_STATE=$(grep -E '^PREV_STATE=' "$PREV_LOCK_FILE" | head -n1 | cut -d= -f2- || echo "")
+  log "Idempotência: arquivo state existente em $PREV_LOCK_FILE"
+  log "  state=$PREV_STATE series_id=$PREV_SERIES task_id=$PREV_TASK yt_id=${PREV_VIDEO:0:8}..."
+  if [ "$PREV_STATE" = "COMPLETED" ] && [ -n "$PREV_VIDEO" ]; then
+    # Já rodou com sucesso hoje — abortamos para não duplicar upload no YT.
+    fail "Idempotência: run_${RUN_TAG}.state=COMPLETED e youtube_video_id=$PREV_VIDEO já existem. NÃO duplicar upload. Use RUN_TAG=YYYYMMDD diferente se quiser nova execução."
+  fi
+  if [ -n "$PREV_SERIES" ]; then
+    IDEMPOTENCY_SERIES_ID="$PREV_SERIES"
+  fi
+  if [ -n "$PREV_TASK" ]; then
+    IDEMPOTENCY_TASK_ID="$PREV_TASK"
+  fi
+  pass "Idempotência 4a: state file carregado (series=$IDEMPOTENCY_SERIES_ID task=$IDEMPOTENCY_TASK_ID)."
+else
+  pass "Idempotência 4b: sem state anterior — execução virgin."
+fi
 
 cd "$WORKDIR" || fail "cd $WORKDIR falhou"
 log "WORKDIR = $(pwd)"
@@ -234,12 +353,14 @@ done
 DOCKER_RUN_CMD=(
   docker run -d --name "$CONTAINER"
   --restart unless-stopped
+  --network "$CONTAINER_NETWORK"
   -p "${PORT}:8000"
   -v "${MOUNT_VOLUME_HOST}:${MOUNT_VOLUME_GUEST}"
   -e "ADMIN_EMAIL=${ADMIN_EMAIL}"
   -e "ADMIN_PASSWORD=${ADMIN_PASSWORD}"
   -e "SECRET_KEY=${SECRET_KEY}"
   -e "APP_ENV=${APP_ENV}"
+  -e "DATABASE_URL=${DATABASE_URL}"
   "${EXTRA_ENV_ARGS[@]}"
   "$IMAGE"
 )
@@ -332,34 +453,62 @@ pass "YouTube service conectado (service_connected=${SVC_CONNECTED}, refresh_tok
 # 6 — Criar série NOVA (1 episódio curto, auto_approval=True, lead_days=0)
 # =============================================================================
 section "6. Criar série + 1 episódio curto"
-STEP_AT "POST /youtube/series → create_series"
+STEP_AT "POST /youtube/series → create_series (idempotency_key=${IDEMPOTENCY_KEY})"
+
+# Primeiro: tentar recuperar task/série por idempotency (evita duplicar)
+if [ -z "$IDEMPOTENCY_TASK_ID" ]; then
+  PREV_TASK_IDEMP=$(http_json "${BASE_URL}/youtube/tasks/by-idempotency?idempotency_key=${IDEMPOTENCY_KEY}" -H "$AUTH_HEAD" 2>&1 || echo "{}")
+  IDEMPOTENCY_TASK_ID=$(echo "$PREV_TASK_IDEMP" | jq -r '.id // empty' 2>/dev/null || echo "")
+  [ -n "$IDEMPOTENCY_TASK_ID" ] && log "Recuperada task via idempotency: ${IDEMPOTENCY_TASK_ID}"
+fi
 
 TOPIC="3 lições bíblicas que mudam o seu dia — motivação e esperança"
-DUR_MIN=3
-SERIES_JSON=$(http_post "${BASE_URL}/youtube/series" \
-  -H "$AUTH_HEAD" -H "content-type: application/json" \
-  -d "$(jq -cn \
-    --arg t "$TOPIC" \
-    --argjson d "$DUR_MIN" \
-    '{
-       title: ("Série validação e2e Homolog " + (now | todateiso8601 | sub("T";" ") | sub("\\..*$";""))),
-       description: "Teste ponta-a-ponta de homologação gerar roteiro + imagens + áudio + MP4 + upload YT unlisted automaticamente.",
-       content_type: "generic_motivational",
-       target_audience: "Pessoas em busca de motivação e fé diária.",
-       unique_value_proposition: "Histórias curtas, imagens cinematográficas e narração humana.",
-       key_message: "Pequenas atitudes diárias geram grandes transformações.",
-       language: "pt-BR",
-       number_of_episodes: 1,
-       duration_minutes: $d,
-       start_date: (now | todateiso8601 | sub("T.*$";"")),
-       end_date: (now + 86400 | todateiso8601 | sub("T.*$";"")),
-       production_lead_days: 0,
-       visibility: "unlisted",
-       auto_approval: true,
-       narration_style: "warm_storyteller",
-       publishing_time: "08:00",
-       episodes: []
-     }')")
+DUR_MIN=2
+SERIES_JSON=""
+
+if [ -n "$IDEMPOTENCY_SERIES_ID" ]; then
+  DETAIL=$(http_json "${BASE_URL}/youtube/series/${IDEMPOTENCY_SERIES_ID}" -H "$AUTH_HEAD" 2>&1 || echo "{}")
+  SID_CHECK=$(echo "$DETAIL" | jq -r '.id // empty' 2>/dev/null || echo "")
+  if [ "$SID_CHECK" = "$IDEMPOTENCY_SERIES_ID" ]; then
+    SERIES_JSON="$DETAIL"
+    log "Série idempotente recuperada: id=$IDEMPOTENCY_SERIES_ID  (não criar nova)."
+  fi
+fi
+
+if [ -z "$SERIES_JSON" ]; then
+  TITULO_HOMOLOG="TESTE HOMOLOG — NÃO PUBLICAR — validação e2e YouTube Auto $(date -u '+%Y-%m-%d')"
+  SERIES_JSON=$(http_post "${BASE_URL}/youtube/series" \
+    -H "$AUTH_HEAD" -H "content-type: application/json" \
+    -d "$(jq -cn \
+      --arg t "$TOPIC" \
+      --argjson d "$DUR_MIN" \
+      --arg title "$TITULO_HOMOLOG" \
+      --arg ik "$IDEMPOTENCY_KEY" \
+      '{
+         title: $title,
+         description: (
+           "TESTE DE HOMOLOGAÇÃO INTERNA — NÃO USAR ESTE VÍDEO NO CANAL. " +
+           "Objetivo: validar pipeline YouTube Auto ponta-a-ponta. " +
+           "Gerar roteiro + imagens OpenAI + áudio TTS + MP4 em /data + upload YouTube NÃO LISTADO."
+         ),
+         content_type: "generic_motivational",
+         target_audience: "Pessoas em busca de motivação e fé diária.",
+         unique_value_proposition: "Histórias curtas, imagens cinematográficas e narração humana.",
+         key_message: "Pequenas atitudes diárias geram grandes transformações.",
+         language: "pt-BR",
+         number_of_episodes: 1,
+         duration_minutes: $d,
+         start_date: (now | todateiso8601 | sub("T.*$";"")),
+         end_date: (now + 86400 | todateiso8601 | sub("T.*$";"")),
+         production_lead_days: 0,
+         visibility: "unlisted",
+         auto_approval: true,
+         narration_style: "warm_storyteller",
+         publishing_time: "08:00",
+         idempotency_key: $ik,
+         episodes: []
+       }')")
+fi
 
 echo "CREATE_SERIES_JSON_START" >>"$REPORT"
 echo "$SERIES_JSON" | jq . >>"$REPORT" 2>/dev/null || echo "$SERIES_JSON" >>"$REPORT"
@@ -501,6 +650,18 @@ echo "LAST_EPISODE_JSON_END" >>"$REPORT"
 echo "LAST_TASK_JSON_START" >>"$REPORT"
 echo "$LAST_TASK_JSON" | jq . >>"$REPORT" 2>/dev/null || echo "$LAST_TASK_JSON" >>"$REPORT"
 echo "LAST_TASK_JSON_END" >>"$REPORT"
+
+# =============================================================================
+# 9.5 — Salvar state precoce (série + task id) — mesmo que falhe, recupera)
+# =============================================================================
+cat >"$PREV_LOCK_FILE" <<EOF
+RUN_TAG=$RUN_TAG
+PREV_SERIES_ID=$SERIES_ID
+PREV_TASK_ID=$TASK_ID
+PREV_STATE=IN_PROGRESS
+PREV_STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+log "State salvo em $PREV_LOCK_FILE (series=$SERIES_ID task=$TASK_ID)"
 
 # =============================================================================
 # 10 — Validar artefatos do result_json (script, render_report, audio, imagens, file_path, video_url)
@@ -734,6 +895,26 @@ echo "EPISODE_YOUTUBE_URL=$FINAL_EP_URL" >>"$REPORT"
 
 [ "$FINAL_EP_VID" = "$YT_VID" ] || log "Aviso: SeriesEpisode.youtube_video_id (${FINAL_EP_VID}) != result_json.youtube_video_id (${YT_VID}). Normal se o approve ainda não rodou em DB; o importante é que a task gravou e o vídeo existe."
 
+# Salvar state COMPLETED (definitivo) — bloqueia reexecução por idempotência.
+cat >"$PREV_LOCK_FILE" <<EOF
+RUN_TAG=$RUN_TAG
+PREV_SERIES_ID=$SERIES_ID
+PREV_TASK_ID=$TASK_ID
+PREV_STATE=COMPLETED
+PREV_VIDEO_URL=$VIDEO_URL
+PREV_MP4_PATH=$FILE_PATH
+PREV_MP4_BYTES=$MP4_BYTES
+PREV_DURATION_S=$VIDEO_DUR
+PREV_AUDIO_PATH=$AUDIO_PATH
+PREV_SELECTED_IMAGES_COUNT=$SELECTED_IMGS
+PREV_SCENES_COUNT=$SCENES_COUNT
+PREV_YOUTUBE_VIDEO_ID=$YT_VID
+PREV_YOUTUBE_URL=$YT_URL
+PREV_UPLOAD_STATUS=$UPLOAD_STATUS
+PREV_FINISHED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+log "State COMPLETED salvo em $PREV_LOCK_FILE (youtube_video_id=$YT_VID)."
+
 # =============================================================================
 # 12 — Custo OpenAI (estimativa via guardian_summary se existir)
 # =============================================================================
@@ -753,6 +934,55 @@ echo "RENDER_REPORT_EMBEDDED=result_json.render_report" >>"$REPORT"
 echo "AUDIO_OUTPUT_PATH=$AUDIO_PATH" >>"$REPORT"
 echo "SELECTED_IMAGES_COUNT=$SELECTED_IMGS" >>"$REPORT"
 echo "SCENES_COUNT=$SCENES_COUNT" >>"$REPORT"
+
+# =============================================================================
+# 12.1 — Atualiza state: PRÉ-UPLOAD passou.
+# (Todas pré-validações passaram: script, imagens, áudio, MP4, ffprobe, HTTP,
+#  banco correto, OAuth válido.)
+# =============================================================================
+cat >"$PREV_LOCK_FILE" <<EOF
+RUN_TAG=$RUN_TAG
+PREV_SERIES_ID=$SERIES_ID
+PREV_TASK_ID=$TASK_ID
+PREV_STATE=PRE_UPLOAD_PASSED
+PREV_VIDEO_URL=$VIDEO_URL
+PREV_MP4_PATH=$FILE_PATH
+PREV_MP4_BYTES=$MP4_BYTES
+PREV_DURATION_S=$VIDEO_DUR
+PREV_AUDIO_PATH=$AUDIO_PATH
+PREV_SELECTED_IMAGES_COUNT=$SELECTED_IMGS
+PREV_SCENES_COUNT=$SCENES_COUNT
+PREV_STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+pass "Todas pré-validações passaram. State salvo: PRE_UPLOAD_PASSED."
+
+# =============================================================================
+# 12.2 — Double-check BANCO CORRETO + OAUTH VÁLIDO antes de upload
+# =============================================================================
+section "12.2 Dupla-checagem pré-upload: banco + OAuth"
+STEP_AT "Confirmar container usa banco=$FORCED_DB_NAME e YouTube service continua conectado"
+
+DB_OK=$(docker exec "$CONTAINER" sh -c 'python3 -c "
+import os
+url = os.environ.get(\"DATABASE_URL\",\"\")
+dbname = \"\"
+if url.startswith(\"postgresql\"):
+    without = url.split(\"?\")[0]
+    dbname = without.rsplit(\"/\",1)[-1]
+print(dbname)
+"' 2>>"$MAIN_LOG" || echo "")
+if [ "$DB_OK" != "$FORCED_DB_NAME" ]; then
+  fail "Pré-upload: container com banco='$DB_OK' != '$FORCED_DB_NAME'. Upload BLOQUEADO."
+fi
+pass "Banco do container (pré-upload): ${DB_OK} — OK."
+
+YT_STATUS_2=$(http_json "${BASE_URL}/youtube/status" -H "$AUTH_HEAD")
+SVC2=$(echo "$YT_STATUS_2" | jq -r '.service_connected // false' 2>/dev/null || echo "false")
+ERR2=$(echo "$YT_STATUS_2" | jq -r '.service_auth_error // empty' 2>/dev/null || echo "")
+if [ "$SVC2" != "true" ]; then
+  fail "Pré-upload: YouTube service desconectado (auth_error=$ERR2). Upload BLOQUEADO."
+fi
+pass "YouTube service conectado (pré-upload): OK (auth_error=${ERR2:-<none>})."
 
 # =============================================================================
 # Fim
