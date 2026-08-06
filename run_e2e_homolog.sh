@@ -168,9 +168,10 @@ require_cmd git
 require_cmd docker
 require_cmd curl
 require_cmd jq
-require_cmd ffprobe
 require_cmd stat
-pass "Comandos obrigatórios presentes (git docker curl jq ffprobe stat)"
+HOST_HAS_FFPROBE=0
+if command -v ffprobe >/dev/null 2>&1; then HOST_HAS_FFPROBE=1; fi
+pass "Comandos obrigatórios presentes (git docker curl jq stat). ffprobe host=${HOST_HAS_FFPROBE} (sempre usamos ffprobe via docker exec quando container está up)"
 
 # --- PROTEÇÃO 1: Jamais tocar containers de produção. -----------------------
 # Lista de substrings proibidas para nome de container. Se existir na lista
@@ -793,9 +794,11 @@ echo "MP4_BYTES=$MP4_BYTES" >>"$REPORT"
 
 # 10.6 ffprobe válido
 FFPROBE_OUT=""
-if [ -n "${HOST_MP4:-}" ] && [ -f "${HOST_MP4:-}" ]; then
+FALLBACK_DOCKER_FFPROBE=0
+if [ -n "${HOST_MP4:-}" ] && [ -f "${HOST_MP4:-}" ] && command -v ffprobe >/dev/null 2>&1; then
   FFPROBE_OUT=$(ffprobe -v error -show_format -show_streams -print_format json "$HOST_MP4" 2>>"$MAIN_LOG" || echo "{}")
 else
+  FALLBACK_DOCKER_FFPROBE=1
   FFPROBE_OUT=$(docker exec "$CONTAINER" sh -c "ffprobe -v error -show_format -show_streams -print_format json \"$GUEST_MP4\"" 2>>"$MAIN_LOG" || echo "{}")
 fi
 echo "FFPROBE_JSON_START" >>"$REPORT"
