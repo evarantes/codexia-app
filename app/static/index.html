@@ -1221,6 +1221,18 @@
                 
                 <!-- Connection & Actions (comum) -->
                 <div class="bg-white rounded-lg shadow p-6 mb-8">
+                    <div v-if="oauthFlash.msg || oauthFlash.type" :class="`mb-6 p-4 rounded-lg border-2 flex items-start gap-3 ${oauthFlash.type === 'success' ? 'bg-green-50 border-green-300 text-green-900' : oauthFlash.type === 'fail' ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-red-50 border-red-300 text-red-900'}`">
+                        <i :class="`text-xl mt-0.5 ${oauthFlash.type === 'success' ? 'fas fa-check-circle text-green-600' : oauthFlash.type === 'fail' ? 'fas fa-exclamation-triangle text-amber-600' : 'fas fa-times-circle text-red-600'}`"></i>
+                        <div class="flex-1">
+                            <p class="font-semibold">{{ oauthFlash.type === 'success' ? 'YouTube conectado!' : oauthFlash.type === 'fail' ? 'OAuth não concluiu a conexão' : 'Erro no callback do OAuth' }}</p>
+                            <p v-if="oauthFlash.msg" class="text-sm break-words mt-1 whitespace-pre-wrap">{{ oauthFlash.msg }}</p>
+                            <p v-if="oauthFlash.err" class="text-xs mt-1 opacity-80">
+                                <span class="font-mono">err={{ oauthFlash.err }}</span>
+                                <button v-if="oauthFlash.type !== 'success'" @click="oauthFlash = {type:'',msg:'',err:''}; connectYoutube()" class="ml-3 underline hover:no-underline">Tentar conectar novamente</button>
+                            </p>
+                        </div>
+                        <button @click="oauthFlash = {type:'',msg:'',err:''}" class="text-gray-500 hover:text-gray-800" aria-label="Fechar"><i class="fas fa-times"></i></button>
+                    </div>
                     <div class="flex flex-col md:flex-row justify-between items-center gap-4">
                         <div class="flex items-center gap-4">
                             <div :class="`w-4 h-4 rounded-full ${youtubeStats.connected ? 'bg-green-500' : 'bg-red-500'}`"></div>
@@ -1244,8 +1256,9 @@
                             <button v-if="!youtubeStats.connected" @click="connectYoutube" class="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700 flex items-center gap-2">
                                 <i class="fab fa-youtube"></i> Conectar YouTube
                             </button>
-                            <button v-if="!youtubeStats.connected" @click="showAuthCodeModal = true" class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 flex items-center gap-2">
+                            <button v-if="!youtubeStats.connected" @click="showAuthCodeModal = true" class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 flex items-center gap-2" title="Fluxo descontinuado pelo Google desde 2022 (OOB removido). Use apenas se o callback automático não funcionar.">
                                 <i class="fas fa-key"></i> Inserir Código Manualmente
+                                <span class="ml-1 px-1.5 py-0.5 bg-yellow-500 text-yellow-900 text-[10px] rounded font-bold uppercase tracking-wide">Fallback</span>
                             </button>
                             <button v-else @click="analyzeChannel" :disabled="ytLoading" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
                                 <i v-if="ytLoading" class="fas fa-spinner fa-spin"></i>
@@ -4711,8 +4724,13 @@
         <!-- Auth Code Modal -->
         <div v-if="showAuthCodeModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
-                <h2 class="text-2xl font-bold mb-4">Conectar YouTube</h2>
-                <p class="mb-4 text-gray-600">Uma nova janela foi aberta. Autorize o aplicativo, copie o código exibido e cole abaixo.</p>
+                <div class="mb-4 p-3 rounded-lg border-2 border-yellow-400 bg-yellow-50 text-yellow-900">
+                    <p class="font-bold flex items-center gap-2"><i class="fas fa-exclamation-triangle"></i> [FALLBACK TEMPORÁRIO] Fluxo manual descontinuado</p>
+                    <p class="text-sm mt-1">O Google removeu o fluxo OOB (código manual). Prefira o botão <strong>Conectar YouTube</strong>, que usa callback automático em <code class="font-mono bg-yellow-200 px-1 rounded">/youtube/auth/callback</code>.</p>
+                    <p class="text-xs mt-1 opacity-90">Google Cloud Console: cadastre o redirect URI exato <code class="font-mono bg-yellow-200 px-1 rounded">http://127.0.0.1:8010/youtube/auth/callback</code>.</p>
+                </div>
+                <h2 class="text-2xl font-bold mb-4">Conectar YouTube (Fallback)</h2>
+                <p class="mb-4 text-gray-600">Só use este modal se o callback automático não estiver funcionando. Abra a URL, autorize e cole o código retornado pelo Google.</p>
                 <div class="space-y-4">
                     <input v-model="authCode" placeholder="Cole o código aqui" class="w-full border p-2 rounded">
                     <div class="flex justify-end gap-2">
@@ -5582,6 +5600,7 @@
                     // Auth
                     showAuthCodeModal: false,
                     authCode: '',
+                    oauthFlash: { type: '', msg: '', err: '' },
                     showChangePasswordModal: false,
                     mustChangePassword: false,
                     passwordForm: { current: '', new: '', confirm: '' },
@@ -6689,7 +6708,6 @@
                         try {
                             data = text ? JSON.parse(text) : {};
                         } catch (_) {
-                            // Resposta não é JSON (ex.: página de erro 502/503 do servidor ou HTML de login)
                             if (res.status === 401) {
                                 alert("Sessão expirada. Faça login novamente.");
                                 return;
@@ -6701,9 +6719,15 @@
                             return;
                         }
                         if (res.ok && data.auth_url) {
-                            // OOB flow requires opening in new tab and manual code entry
-                            window.open(data.auth_url, '_blank');
-                            this.showAuthCodeModal = true;
+                            // Fluxo moderno: abre na MESMA aba para o Google redirecionar automaticamente
+                            // de volta para /youtube/auth/callback, que salva o token e retorna para cá.
+                            this.oauthFlash = { type: '', msg: 'Redirecionando para o Google…', err: '' };
+                            try {
+                                window.location.href = data.auth_url;
+                            } catch (e) {
+                                window.open(data.auth_url, '_blank');
+                            }
+                            return;
                         } else {
                             const msg = data.detail || data.message || "Erro ao obter URL de autenticação. Configure o YouTube em Configurações (Client ID e Client Secret do Google Cloud).";
                             alert(msg);
@@ -11730,6 +11754,37 @@
                     // Logic to call AI for a specific section
                     alert("Funcionalidade de regeneração individual em desenvolvimento.");
                 }
+            },
+            mounted() {
+                try {
+                    const hashRaw = (typeof window !== 'undefined' && window.location && window.location.hash) ? window.location.hash : '';
+                    const qs = (hashRaw && hashRaw.indexOf('#') === 0) ? hashRaw.substring(1) : (hashRaw || '');
+                    let params = new URLSearchParams('');
+                    try {
+                        params = new URLSearchParams(qs || '');
+                    } catch (_) {}
+                    const oauthStatus = String(params.get('oauth') || '').trim();
+                    const oauthMsg = String(params.get('msg') || '').trim();
+                    const oauthErr = String(params.get('err') || '').trim();
+                    if (oauthStatus && (oauthStatus === 'success' || oauthStatus === 'fail' || oauthStatus === 'error')) {
+                        let flashType = oauthStatus;
+                        if (oauthStatus === 'success') flashType = 'success';
+                        this.oauthFlash = {
+                            type: flashType,
+                            msg: oauthMsg || (oauthStatus === 'success' ? 'Conexão com YouTube concluída.' : ''),
+                            err: oauthErr || ''
+                        };
+                        try {
+                            const cleanHref = (window.location.href.split('#')[0]) || window.location.href;
+                            if (window.history && typeof window.history.replaceState === 'function') {
+                                window.history.replaceState(null, document.title || '', cleanHref);
+                            } else if (typeof window.location.replace === 'function') {
+                                window.location.replace(cleanHref);
+                            }
+                        } catch (_) {}
+                    }
+                } catch (_) {}
+                this.fetchYoutubeStats();
             }
         }).mount('#app')
     </script>
