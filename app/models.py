@@ -640,3 +640,93 @@ class Job(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     video = relationship("Video", back_populates="jobs")
+
+
+class UnifiedVideoStatus:
+    """Máquina de estados central — SOMENTE UnifiedVideoPipelineService pode transitar."""
+    QUEUED = "queued"
+    PROCESSING_SCRIPT = "processing_script"
+    PROCESSING_IMAGES = "processing_images"
+    PROCESSING_AUDIO = "processing_audio"
+    RENDERING = "rendering"
+    VALIDATING = "validating"
+    AWAITING_REVIEW = "awaiting_review"
+    APPROVED = "approved"
+    UPLOADING = "uploading"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    ALL = {
+        QUEUED, PROCESSING_SCRIPT, PROCESSING_IMAGES, PROCESSING_AUDIO, RENDERING, VALIDATING,
+        AWAITING_REVIEW, APPROVED, UPLOADING, PUBLISHED, FAILED, CANCELLED,
+    }
+    ACTIVE = {QUEUED, PROCESSING_SCRIPT, PROCESSING_IMAGES, PROCESSING_AUDIO, RENDERING, VALIDATING, UPLOADING}
+    TERMINAL_OK = {AWAITING_REVIEW, APPROVED, PUBLISHED}
+
+
+class UnifiedVideo(Base):
+    __tablename__ = "unified_videos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    idempotency_key = Column(String(255), nullable=False, unique=True, index=True)
+    task_id = Column(String(64), ForeignKey("video_tasks.id"), nullable=True, index=True)
+
+    source_module = Column(String(64), nullable=False, index=True)
+    source_id = Column(String(191), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    content_type = Column(String(64), nullable=False, default="devotional", index=True)
+    topic = Column(Text, nullable=True)
+    script_text = Column(Text, nullable=True)
+    duration_minutes = Column(Integer, nullable=False, default=3)
+    aspect_ratio = Column(String(12), nullable=False, default="16:9", index=True)
+    image_count = Column(Integer, nullable=False, default=8)
+    visibility = Column(String(32), nullable=False, default="unlisted", index=True)
+    review_required = Column(Boolean, nullable=False, default=True)
+    auto_publish = Column(Boolean, nullable=False, default=False)
+    force_regenerate = Column(Boolean, nullable=False, default=False)
+    force_reuse_assets = Column(Boolean, nullable=False, default=False)
+    force_render_only = Column(Boolean, nullable=False, default=False)
+
+    text_provider = Column(String(64), nullable=True)
+    text_model = Column(String(64), nullable=True)
+    image_provider = Column(String(64), nullable=True)
+    image_model = Column(String(64), nullable=True)
+    voice_provider = Column(String(64), nullable=True)
+    voice_model = Column(String(64), nullable=True)
+
+    call_count_text = Column(Integer, nullable=False, default=0)
+    call_count_image = Column(Integer, nullable=False, default=0)
+    call_count_audio = Column(Integer, nullable=False, default=0)
+    estimated_cost = Column(Float, nullable=False, default=0.0)
+    actual_cost = Column(Float, nullable=False, default=0.0)
+
+    status = Column(String(32), nullable=False, default=UnifiedVideoStatus.QUEUED, index=True)
+    current_step = Column(String(32), nullable=True, index=True)
+    progress = Column(Integer, nullable=False, default=0)
+    last_message = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
+
+    script_json = Column(Text, nullable=True)
+    storyboard_json = Column(Text, nullable=True)
+    audio_path = Column(Text, nullable=True)
+    audio_size_bytes = Column(Integer, nullable=True)
+    audio_duration_seconds = Column(Float, nullable=True)
+    images_json = Column(Text, nullable=True)
+    video_path = Column(Text, nullable=True)
+    video_size_bytes = Column(Integer, nullable=True)
+    video_duration_seconds = Column(Float, nullable=True)
+    video_url = Column(Text, nullable=True)
+    cover_path = Column(Text, nullable=True)
+    cover_url = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+
+    youtube_video_id = Column(String(64), nullable=True, index=True)
+    youtube_url = Column(Text, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

@@ -69,6 +69,30 @@ REVIEW_REASONS = {
     "other",
 }
 
+try:
+    from app.services.unified_video_pipeline import (
+        UnifiedVideoPipelineService as _UVP,
+        unified_video_pipeline as _unified_video_pipeline_factory,
+    )
+    _UVP_OK = True
+except Exception:
+    _UVP = None  # type: ignore[assignment,misc]
+    _unified_video_pipeline_factory = None  # type: ignore[assignment,misc]
+    _UVP_OK = False
+
+
+def _get_unified_video_pipeline() -> Tuple[Any, bool]:
+    """Retorna (factory_callable, is_enabled)."""
+    if not _UVP_OK or _UVP is None or _unified_video_pipeline_factory is None:
+        return None, False
+    try:
+        obj = _unified_video_pipeline_factory()
+        if obj is None:
+            return None, False
+        return _unified_video_pipeline_factory, True
+    except Exception:
+        return None, False
+
 #region debug-point youtube-finalize-stuck
 _DEBUG_ENV_PATH = os.path.join(".dbg", "youtube-finalize-stuck.env")
 
@@ -904,8 +928,152 @@ class YouTubeSeriesService:
             "kind": "youtube_story_video",
             "title_hint": episode.planned_title,
             "content_fingerprint": identity["content_fingerprint"],
+            "series_context": {
+                "series_id": int(series.id),
+                "series_name": series.name,
+                "episode_id": int(episode.id),
+                "episode_number": int(episode.episode_number),
+                "publication_datetime": _dt_to_iso(episode.publication_datetime),
+                "idempotency_key": effective_ik,
+            },
         }
         claim_ik = f"{effective_ik}:series:{series.id}:episode:{episode.episode_number}"
+
+        # ===== UnifiedVideoPipeline (FLUXO NOVO CENTRAL) + fallback gate =====
+        uvp, use_unified = _get_unified_video_pipeline()
+
+        # Verifica se pode usar fallback antes de qualquer coisa.
+        fallback_allowed = False
+        unified_required_error_fn = None
+        try:
+            from app.config import (
+                legacy_pipeline_fallback_allowed as _legacy_fb_allowed,
+                unified_pipeline_required_error as _req_err,
+            )
+            fallback_allowed = _legacy_fb_allowed(module_name="youtube_series_enqueue")
+            unified_required_error_fn = _req_err
+        except Exception:
+            # Sem a função de config, a única exceção segura é desativar fallback.
+            fallback_allowed = False
+            unified_required_error_fn = (
+                lambda _m, _e=None: f"UnifiedVideoPipeline obrigatório e fallback desabilitado para módulo youtube_series."
+            )
+        _unified_import_err_text: Optional[str] = None
+        if not (use_unified and uvp is not None):
+            try:
+                from app.services.unified_video_pipeline import unified_video_pipeline
+                try:
+                    unified_video_pipeline()
+                except Exception as _uvp_exc:
+                    _unified_import_err_text = f"{type(_uvp_exc).__name__}: {str(_uvp_exc)[:800]}"
+            except Exception as _imp_exc:
+                _unified_import_err_text = f"{type(_imp_exc).__name__}: {str(_imp_exc)[:800]}"
+        if not (use_unified and uvp is not None) and not fallback_allowed:
+            err_msg = unified_required_error_fn("youtube_series_enqueue", _unified_import_err_text) if callable(unified_required_error_fn) else (
+                f"UnifiedVideoPipeline indisponível e fallback desabilitado para youtube_series_enqueue. Erro: {_unified_import_err_text}"
+            )
+            raise RuntimeError(err_msg)
+
+        if use_unified and uvp is not None:
+            try:
+                from app.services.unified_video_pipeline import UnifiedVideoRequest as _UReq
+            except Exception:
+                _UReq = None
+            req = None
+            if _UReq is not None:
+                try:
+                    kind = str(payload.get("kind") or payload.get("content_type") or "devotional").strip().lower()[:64] or "devotional"
+                    req = _UReq(
+                        source_module="youtube_series",
+                        source_id=f"episode:{int(episode.id)}",
+                        idempotency_key=str(claim_ik).strip()[:255],
+                        content_type=kind,
+                        topic=str(payload.get("topic") or payload.get("title") or "").strip()[:4000] or None,
+                        script_text=str(payload.get("story_content") or payload.get("script_text") or "").strip()[:120000] or None,
+                        duration_minutes=int(payload.get("duration") or payload.get("duration_minutes") or episode.duration_minutes or series.duration_minutes or 10),
+                        aspect_ratio=str(payload.get("aspect_ratio") or series.aspect_ratio or "16:9").strip()[:12] or "16:9",
+                        image_count=int(payload.get("image_count") or payload.get("custom_image_count") or 8),
+                        text_provider=str(payload.get("text_provider") or "configured").strip()[:64] or "configured",
+                        image_provider=str(payload.get("image_provider") or "configured").strip()[:64] or "configured",
+                        voice_provider=str(payload.get("voice_provider") or "configured").strip()[:64] or "configured",
+                        voice_id=(str(payload.get("voice_id") or payload.get("voice_style") or "").strip()[:128] or None),
+                        music_enabled=bool(payload.get("music_enabled") or False),
+                        visibility=str(payload.get("visibility") or series.visibility or "unlisted").strip().lower()[:32] or "unlisted",
+                        auto_publish=bool(payload.get("auto_upload") or getattr(series, "auto_approval", False) or getattr(series, "auto_publish", False)),
+                        review_required=bool(payload.get("review_required") if payload.get("review_required") is not None else (not bool(getattr(series, "auto_approval", False)))),
+                        user_id=int(user.id or 0) or None,
+                        force_regenerate=bool(force_regenerate or payload.get("force_regenerate") or False),
+                        force_reuse_assets=bool(payload.get("force_reuse_assets") or False),
+                        override_title=(str(payload.get("override_title") or episode.planned_title or "").strip()[:300] or None),
+                        override_description=(str(payload.get("override_description") or episode.planned_description or "").strip()[:5000] or None),
+                        override_tags=([str(x) for x in payload["override_tags"]] if isinstance(payload.get("override_tags"), list) else None),
+                        seeded_script=(payload.get("seeded_script") if isinstance(payload.get("seeded_script"), dict) else None),
+                        selected_images=(payload.get("selected_images") if isinstance(payload.get("selected_images"), list) else None),
+                        reuse_audio_from=(payload.get("reuse_audio_from") if isinstance(payload.get("reuse_audio_from"), dict) else None),
+                        request_hash=str(identity["request_hash"]).strip() or None,
+                        legacy_payload={k: v for k, v in payload.items() if k not in {"idempotency_key", "request_hash", "seeded_script", "selected_images", "reuse_audio_from"}},
+                    )
+                except Exception:
+                    req = None
+            if req is not None:
+                try:
+                    kick_cb = None
+                    try:
+                        from app.routers.youtube import _kick_story_video_task_queue_async as _kick  # type: ignore[attr-defined]
+                        if callable(_kick):
+                            kick_cb = _kick
+                    except Exception:
+                        kick_cb = None
+                    uvp().ensure_schema(db)
+                    res = uvp().submit_or_reuse(
+                        db,
+                        request=req,
+                        kick_queue_callback=kick_cb,
+                        legacy_initial_result=base_result,
+                        user=user,
+                    )
+                    task_id = str(res.task_id)
+                    update_task(task_id, result={
+                        **(((get_task(task_id) or {}).get("result") if isinstance((get_task(task_id) or {}).get("result"), dict) else {}) or {}),
+                        "payload": payload,
+                        "series_context": {
+                            "series_id": int(series.id),
+                            "series_name": series.name,
+                            "episode_id": int(episode.id),
+                            "episode_number": int(episode.episode_number),
+                            "publication_datetime": _dt_to_iso(episode.publication_datetime),
+                            "idempotency_key": effective_ik,
+                            "pipeline": "unified_video_pipeline",
+                            "unified_video_id": getattr(res, "unified_video_id", None),
+                        },
+                    })
+                    episode.task_id = task_id
+                    episode.content_fingerprint = identity["content_fingerprint"]
+                    tstatus = str((get_task(task_id) or {}).get("status") or "").lower()
+                    if res.reused_completed:
+                        episode.status = "awaiting_review"
+                    elif tstatus in {"pending", "processing", "queued"}:
+                        episode.status = "in_production"
+                    else:
+                        episode.status = "in_production"
+                    return {
+                        "task_id": task_id,
+                        "content_fingerprint": identity["content_fingerprint"],
+                        "idempotency_key": effective_ik,
+                        "reused_existing_task": bool(res.reused_existing),
+                        "reused_completed_task": bool(res.reused_completed),
+                        "unified_video_id": getattr(res, "unified_video_id", None),
+                        "pipeline": "unified_video_pipeline",
+                        "video_url": getattr(res, "video_url", None),
+                        "youtube_video_id": getattr(res, "youtube_video_id", None),
+                        "providers": getattr(res, "providers", None),
+                    }
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    # fallback to legacy path below
+
+        # ===== Fluxo LEGACY (fallback) =====
         claimed = claim_video_task(
             idempotency_key=claim_ik,
             request_hash=identity["request_hash"],
@@ -926,12 +1094,20 @@ class YouTubeSeriesService:
                 "episode_number": int(episode.episode_number),
                 "publication_datetime": _dt_to_iso(episode.publication_datetime),
                 "idempotency_key": effective_ik,
+                "pipeline": "legacy_video_generator",
             },
         })
         episode.task_id = task_id
         episode.content_fingerprint = identity["content_fingerprint"]
         episode.status = "in_production" if str((get_task(task_id) or {}).get("status") or "").lower() in {"pending", "processing"} else "awaiting_review"
-        return {"task_id": task_id, "content_fingerprint": identity["content_fingerprint"], "idempotency_key": effective_ik}
+        return {
+            "task_id": task_id,
+            "content_fingerprint": identity["content_fingerprint"],
+            "idempotency_key": effective_ik,
+            "pipeline": "legacy_video_generator",
+            "reused_existing_task": bool(claimed.get("reused_existing_task")),
+            "reused_completed_task": bool(claimed.get("reused_completed_task")),
+        }
 
     def sync_series_scheduler(self, db: Session, *, now: Optional[datetime] = None) -> Dict[str, Any]:
         self.ensure_schema(db)

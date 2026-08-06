@@ -1447,6 +1447,96 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
+try:
+    from app.services.unified_video_pipeline import (
+        UnifiedVideoPipelineService,
+        UnifiedVideoRequest,
+        unified_video_pipeline,
+    )
+except Exception as _unified_import_err:  # pragma: no cover - fallback gracefully deploys
+    UnifiedVideoPipelineService = None  # type: ignore[assignment,misc]
+    UnifiedVideoRequest = None  # type: ignore[assignment,misc]
+    unified_video_pipeline = None  # type: ignore[assignment,misc]
+    _UNIFIED_IMPORT_ERR: Optional[str] = str(_unified_import_err)
+else:
+    _UNIFIED_IMPORT_ERR: Optional[str] = None
+
+
+def _unified_enabled() -> bool:
+    if _UNIFIED_IMPORT_ERR:
+        return False
+    return bool(unified_video_pipeline is not None and UnifiedVideoRequest is not None)
+
+
+def _build_unified_request_from_legacy(payload: Dict[str, Any], user_id: Optional[int] = None, module: str = "story") -> Optional["UnifiedVideoRequest"]:
+    if not _unified_enabled() or UnifiedVideoRequest is None:
+        return None
+    try:
+        kind = str(payload.get("kind") or payload.get("content_type") or "").strip().lower()
+        if kind not in {"story", "devotional", "prayer", "sermon", "teaching", "short", "custom"}:
+            kind = "story" if (str(payload.get("mode") or "topic").strip().lower() == "story") else "custom"
+        source_id = str(payload.get("source_id") or f"task:{_safe_hash(payload)}").strip()[:191] or "task:legacy"
+        idempotency_key = str(payload.get("idempotency_key") or f"unified:{_safe_hash(payload)}").strip()[:255]
+        request_hash = str(payload.get("request_hash") or "").strip() or None
+        tags = payload.get("override_tags")
+        if isinstance(tags, list):
+            override_tags = [str(x) for x in tags if x is not None]
+        else:
+            override_tags = None
+        req = UnifiedVideoRequest(
+            source_module=str(module or payload.get("source_module") or "story").strip()[:64],
+            source_id=source_id,
+            idempotency_key=idempotency_key,
+            content_type=kind[:64] or "story",
+            topic=str(payload.get("topic") or payload.get("title") or "")[:4000] or None,
+            script_text=str(payload.get("story_content") or payload.get("script_text") or "")[:120000] or None,
+            duration_minutes=int(payload.get("duration") or payload.get("duration_minutes") or 5),
+            aspect_ratio=str(payload.get("aspect_ratio") or "16:9").strip()[:12],
+            image_count=int(payload.get("image_count") or (8 if str(payload.get("image_mode") or "").lower() == "multiple" else 1)),
+            text_provider=str(payload.get("text_provider") or "configured").strip()[:64] or "configured",
+            image_provider=str(payload.get("image_provider") or "configured").strip()[:64] or "configured",
+            voice_provider=str(payload.get("voice_provider") or "configured").strip()[:64] or "configured",
+            voice_id=(str(payload.get("voice_id") or payload.get("voice_style") or "").strip()[:128] or None),
+            music_enabled=bool(payload.get("music_enabled") or False),
+            visibility=str(payload.get("visibility") or "unlisted").strip().lower()[:32] or "unlisted",
+            auto_publish=bool(payload.get("auto_upload") or payload.get("auto_publish") or False),
+            review_required=bool(payload.get("review_required") if payload.get("review_required") is not None else True),
+            user_id=int(user_id or payload.get("user_id") or 0) or None,
+            force_regenerate=bool(payload.get("force_regenerate") or False),
+            force_reuse_assets=bool(payload.get("force_reuse_assets") or False),
+            force_render_only=bool(payload.get("force_render_only") or False),
+            override_title=(str(payload.get("override_title") or "").strip()[:300] or None),
+            override_description=(str(payload.get("override_description") or "").strip()[:5000] or None),
+            override_tags=override_tags,
+            seeded_script=(payload.get("seeded_script") if isinstance(payload.get("seeded_script"), dict) else None),
+            selected_images=(payload.get("selected_images") if isinstance(payload.get("selected_images"), list) else None),
+            reuse_audio_from=(payload.get("reuse_audio_from") if isinstance(payload.get("reuse_audio_from"), dict) else None),
+            request_hash=request_hash,
+            legacy_payload={k: v for k, v in payload.items() if k not in {"idempotency_key", "request_hash", "seeded_script", "selected_images", "reuse_audio_from"}},
+        )
+        return req
+    except Exception:
+        return None
+
+
+def _safe_hash(payload: Any) -> str:
+    try:
+        import hashlib as _h
+        js = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return _h.sha256(js.encode("utf-8")).hexdigest()[:32]
+    except Exception:
+        return os.urandom(8).hex()
+
+
+def _json_dump_short(data: Any, max_chars: int = 500) -> str:
+    try:
+        s = json.dumps(data, ensure_ascii=False)
+        if len(s) <= int(max_chars):
+            return s
+        return s[: int(max_chars)] + f"... (+{len(s) - int(max_chars)} chars)"
+    except Exception as exc:
+        return f"[json_error:{type(exc).__name__}]"
+
 # --- Video Factory Models & Endpoints ---
 
 class PlanRequest(BaseModel):
@@ -4337,19 +4427,102 @@ def run_auto_thanks(
     return auto_thank_comments(db, backfill=bool(backfill), limit=limit)
 
 @router.post("/generate_video")
-def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
-    """Gera um vídeo motivacional e opcionalmente faz upload"""
-    
+def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: Optional[User] = Depends(get_current_admin_user)):
+    """Gera um vídeo motivacional e opcionalmente faz upload.
+
+    Fluxo PADRÃO: UnifiedVideoPipeline (central único) obrigatório em homologação/produção.
+    - Monta UnifiedVideoRequest padronizado.
+    - submit_or_reuse (cria UnifiedVideo + VideoTask com idempotência estrita 1:1).
+    - kick async executa o executor que atualiza UnifiedVideo em cada etapa
+      e no final chama validate_before_awaiting_review central.
+
+    Fluxo FALLBACK LEGACY (NÃO recomendado):
+    - Permitido SOMENTE se:
+        (a) APP_ENV=development (padrão dev) OU
+        (b) ENABLE_LEGACY_PIPELINE_FALLBACK=true no ambiente (flag explícita).
+    - Em qualquer outro caso, retorna HTTP 500 com mensagem clara para evitar
+      duplicação ou marcação falsa de sucesso (requisito: "fallback não silencioso").
+    """
     if _cancel_all_active():
         raise HTTPException(status_code=409, detail="Encerramento geral em andamento no servidor. Aguarde ~1 minuto e tente novamente.")
 
     try:
-        payload = request.model_dump()  # type: ignore[attr-defined]
+        payload = request.model_dump()
     except Exception:
-        payload = request.dict()
+        try:
+            payload = request.model_dump(mode="python")
+        except Exception:
+            payload = request.dict()
     identity = _build_video_generation_identity(payload)
     payload["idempotency_key"] = identity["idempotency_key"]
     payload["request_hash"] = identity["request_hash"]
+    user_id = int(getattr(current_user, "id", None) or 0) or None
+
+    # ====== Fallback gate ======
+    unified_ok = bool(_unified_enabled() and unified_video_pipeline is not None and UnifiedVideoRequest is not None)
+    if not unified_ok:
+        try:
+            from app.config import legacy_pipeline_fallback_allowed, unified_pipeline_required_error
+            fallback_ok = legacy_pipeline_fallback_allowed(module_name="story_generate_video")
+        except Exception:
+            fallback_ok = False
+            unified_pipeline_required_error = (  # type: ignore[misc]
+                lambda _module, _err=None: f"UnifiedVideoPipeline indisponível e fallback desabilitado. Erro: {(_UNIFIED_IMPORT_ERR or 'unknown')[:500]}"
+            )
+        if not fallback_ok:
+            raise HTTPException(
+                status_code=500,
+                detail=unified_pipeline_required_error("story_generate_video", _UNIFIED_IMPORT_ERR),
+            )
+
+    # ====== Fluxo NOVO: UnifiedVideoPipeline ======
+    if unified_ok:
+        unified_req = _build_unified_request_from_legacy(payload, user_id=user_id, module="story")
+        if unified_req is not None:
+            try:
+                kick_cb = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+                base_result = {
+                    "payload": payload,
+                    "kind": "youtube_story_video",
+                    "title_hint": _story_video_task_title_from_payload(payload),
+                    "idempotency_key": identity["idempotency_key"],
+                    "request_hash": identity["request_hash"],
+                    "source_module": "story",
+                    "pipeline": "unified_video_pipeline",
+                }
+                res = unified_video_pipeline().submit_or_reuse(
+                    db,
+                    request=unified_req,
+                    kick_queue_callback=kick_cb,
+                    legacy_initial_result=base_result,
+                    user=current_user,
+                )
+                return {
+                    "message": res.message,
+                    "task_id": res.task_id,
+                    "queued": bool(res.queue_position > 1 or res.already_processing),
+                    "queue_position": int(res.queue_position or 0),
+                    "reused_existing_task": bool(res.reused_existing),
+                    "reused_completed_task": bool(res.reused_completed),
+                    "idempotency_key": str(res.idempotency_key),
+                    "request_hash": identity["request_hash"],
+                    "result": {
+                        "video_url": res.video_url,
+                        "youtube_video_id": res.youtube_video_id,
+                        "providers": res.providers,
+                        "unified_video_id": res.unified_video_id,
+                        "pipeline": "unified_video_pipeline",
+                    } if res.reused_completed else None,
+                    "pipeline": "unified_video_pipeline",
+                }
+            except HTTPException:
+                raise
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                raise HTTPException(status_code=500, detail=f"UnifiedVideoPipeline falhou no submit: {type(exc).__name__}: {str(exc)[:300]}")
+
+    # ====== Fluxo FALLBACK: legado (antes da refatoração) — SÓ PASSA AQUI SE fallback_ok ======
     base_result = {
         "payload": payload,
         "kind": "youtube_story_video",
@@ -4363,18 +4536,15 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         payload=payload,
         dedupe_window_seconds=_video_task_dedupe_window_seconds(),
         force_regenerate=bool(getattr(request, "force_regenerate", False)),
+        user_id=user_id,
         initial_result=base_result,
     )
     task_id = str(claimed.get("task_id"))
 
-    db = SessionLocal()
-    try:
-        queue_rows = _load_story_video_task_rows(db, limit=100)
-        queue_ids = [str(r.id) for r in queue_rows]
-        queue_position = queue_ids.index(str(task_id)) + 1 if str(task_id) in queue_ids else None
-        already_processing = any(str(r.status or "").lower() == "processing" for r in queue_rows if str(r.id) != str(task_id))
-    finally:
-        db.close()
+    queue_rows = _load_story_video_task_rows(db, limit=100)
+    queue_ids = [str(r.id) for r in queue_rows]
+    queue_position = queue_ids.index(str(task_id)) + 1 if str(task_id) in queue_ids else None
+    already_processing = any(str(r.status or "").lower() == "processing" for r in queue_rows if str(r.id) != str(task_id))
 
     if claimed.get("created_new_task"):
         _kick_story_video_task_queue_async()
@@ -4386,7 +4556,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         "message": (
             "Esta geração já está em andamento."
             if reused_existing and not reused_completed
-            else ("Resultado reaproveitado dentro da janela de idempotência." if reused_completed else "Vídeo enviado para a fila de produção.")
+            else ("Resultado reaproveitado dentro da janela de idempotência." if reused_completed else "Vídeo enviado para a fila de produção (fallback legado).")
         ),
         "task_id": task_id,
         "queued": bool(task_status in {"pending", "processing"} and (already_processing or (queue_position and queue_position > 1))),
@@ -4396,7 +4566,26 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks):
         "idempotency_key": identity["idempotency_key"],
         "request_hash": identity["request_hash"],
         "result": task_obj.get("result") if reused_completed else None,
+        "pipeline": "legacy_video_generator",
+        "fallback_used": True,
+        "fallback_reason": (
+            f"import_error:{str(_UNIFIED_IMPORT_ERR)[:200]}"
+            if _UNIFIED_IMPORT_ERR
+            else "UnifiedVideoPipelineRequest invalido"
+        ),
     }
+
+
+# Dependência segura: retorna None se o token for inválido (sem bloquear clients RQ/scheduler).
+def get_current_admin_user_safe(request: Request):
+    from app.routers.auth import get_current_admin_user as _inner_admin
+    try:
+        user = _inner_admin(request)
+        if user:
+            return user
+    except Exception:
+        return None
+    return None
 
 @router.get("/task/{task_id}")
 def get_task_status(task_id: str):
@@ -5797,7 +5986,83 @@ def process_video_generation(request: VideoRequest, task_id):
                 "video_url": str(video_path),
                 "progress": 100,
             })
-            finalized = finalize_task_once(task_id, status="completed", progress=100, message="Vídeo gerado com sucesso!", result=final_payload)
+            # --- UnifiedVideoPipeline: validação CENTRAL antes de liberar awaiting_review/completed ---
+            _pipeline_validation = None
+            _pipeline_status_target = "completed"
+            _pipeline_final_message = "Vídeo gerado com sucesso!"
+            _pipeline_final_status = "completed"
+            try:
+                if _unified_enabled() and unified_video_pipeline is not None:
+                    from app.database import SessionLocal as _SLocal
+                    _pdb = _SLocal()
+                    try:
+                        unified_video_pipeline().transition_status(
+                            _pdb,
+                            str(task_id),
+                            status="validating",
+                            step="validating",
+                            progress=96,
+                            message="Validando artefatos físicos / mp4 / áudio / imagens (UnifiedVideoPipeline)...",
+                            merge_result=final_payload,
+                        )
+                        _pipeline_validation, _uv = unified_video_pipeline().transition_to_awaiting_review_if_valid(
+                            _pdb,
+                            str(task_id),
+                            probe_local_paths=True,
+                            probe_http=False,
+                        )
+                        if _pipeline_validation and not _pipeline_validation.ok and _uv is not None:
+                            _pipeline_status_target = "failed"
+                            _pipeline_final_status = "failed"
+                            failed_check = str(_pipeline_validation.first_failed or "unknown")
+                            _pipeline_final_message = (
+                                "Validação pré-revisão falhou: "
+                                f"{failed_check} — detalhes: {_json_dump_short(_pipeline_validation.details)}. "
+                                "Corrija a etapa correspondente e gere novamente."
+                            )
+                            final_payload["unified_pipeline"] = {
+                                "validation_checks": _pipeline_validation.checks,
+                                "validation_first_failed": failed_check,
+                                "status": "failed",
+                            }
+                        elif _pipeline_validation and _pipeline_validation.ok and _uv is not None:
+                            # Se não precisa de revisão ou auto_upload=True, completed. Caso contrário: awaiting_review
+                            _target_db_status = str(getattr(_uv, "status") or "awaiting_review")
+                            if _target_db_status == "approved":
+                                _pipeline_final_status = "completed"
+                                _pipeline_status_target = "completed"
+                                _pipeline_final_message = "Vídeo gerado, aprovado automaticamente e pronto para publicação (UnifiedVideoPipeline)."
+                            elif _target_db_status == "published":
+                                _pipeline_final_status = "completed"
+                                _pipeline_status_target = "completed"
+                            else:
+                                # awaiting_review na UnifiedVideo → ainda marcamos a VideoTask como awaiting_review e finalizamos.
+                                # Mantemos "completed" na task_manager (compatibilidade UI GET /task/{id} exibe bandejas);
+                                # mas marcamos a task como "awaiting_review" também.
+                                _pipeline_final_status = "awaiting_review"
+                                _pipeline_status_target = "awaiting_review"
+                                _pipeline_final_message = (
+                                    "Vídeo gerado e validação física aprovada (UnifiedVideoPipeline): em Aguardando Revisão."
+                                )
+                            final_payload["unified_pipeline"] = {
+                                "validation_checks": _pipeline_validation.checks,
+                                "validation_ok": True,
+                                "status": _target_db_status,
+                                "unified_video_id": getattr(_uv, "id", None),
+                            }
+                        _pdb.commit()
+                    finally:
+                        try:
+                            _pdb.close()
+                        except Exception:
+                            pass
+            except Exception as _pexc:
+                import traceback
+                traceback.print_exc()
+                final_payload.setdefault("unified_pipeline", {})
+                final_payload["unified_pipeline"]["validation_error"] = f"{type(_pexc).__name__}: {str(_pexc)[:300]}"
+
+            finalized = finalize_task_once(task_id, status=_pipeline_final_status, progress=100, message=_pipeline_final_message, result=final_payload)
             _dbg_event("H2", "after finalize_task_once(completed)", {
                 "task_id": str(task_id),
                 "executor_id": executor_id,

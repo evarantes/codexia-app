@@ -4,6 +4,7 @@ Compatível com Docker/Coolify: não usa caminhos do Windows nem localhost fixo.
 """
 import os
 from pathlib import Path
+from typing import Optional
 
 # Raiz do projeto (pasta que contém app/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -121,3 +122,114 @@ def absolute_path_for_music(filename_or_url: str) -> str:
         if p and os.path.isfile(p):
             return p
     return os.path.join(MUSIC_OUTPUT_DIR, name)
+
+# Diretórios únicos do Pipeline Central (UnifiedVideoPipelineService)
+# Todos os módulos devem salvar artefatos SOMENTE nesses diretórios quando /data persistente.
+_data_audio_dir = os.path.join("/data", "media", "audio")
+_data_images_dir = os.path.join("/data", "media", "images")
+_use_data_volume_audio = os.path.isdir("/data") and not _env_truthy("USE_STATIC_AUDIO") and _dir_is_writable(_data_audio_dir)
+_use_data_volume_images = os.path.isdir("/data") and not _env_truthy("USE_STATIC_IMAGES") and _dir_is_writable(_data_images_dir)
+AUDIO_OUTPUT_DIR = _data_audio_dir if _use_data_volume_audio else str(STATIC_DIR / "audio")
+AUDIO_URL_PREFIX = "/media/audio" if _use_data_volume_audio else "/static/audio"
+IMAGES_OUTPUT_DIR = _data_images_dir if _use_data_volume_images else str(STATIC_DIR / "images")
+IMAGES_URL_PREFIX = "/media/images" if _use_data_volume_images else "/static/images"
+try:
+    os.makedirs(AUDIO_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    pass
+try:
+    os.makedirs(IMAGES_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    pass
+
+UNIFIED_MEDIA_DIR = "/data/media" if os.path.isdir("/data") else str(STATIC_DIR)
+UNIFIED_VIDEO_DIR = VIDEO_OUTPUT_DIR
+UNIFIED_AUDIO_DIR = AUDIO_OUTPUT_DIR
+UNIFIED_IMAGES_DIR = IMAGES_OUTPUT_DIR
+UNIFIED_COVERS_DIR = COVERS_OUTPUT_DIR
+UNIFIED_MUSIC_DIR = MUSIC_OUTPUT_DIR
+
+UNIFIED_VIDEO_URL_PREFIX = VIDEO_URL_PREFIX
+UNIFIED_AUDIO_URL_PREFIX = AUDIO_URL_PREFIX
+UNIFIED_IMAGES_URL_PREFIX = IMAGES_URL_PREFIX
+UNIFIED_COVERS_URL_PREFIX = "/media/covers" if _use_data_volume_books else "/static/covers"
+UNIFIED_MUSIC_URL_PREFIX = MUSIC_URL_PREFIX
+
+
+def absolute_path_for_audio(filename_or_url: str) -> str:
+    if not filename_or_url:
+        return ""
+    clean = (filename_or_url or "").strip().split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    name = os.path.basename(clean)
+    if not name:
+        name = clean
+    candidates = [
+        os.path.join(AUDIO_OUTPUT_DIR, name),
+        str(STATIC_DIR / "audio" / name),
+    ]
+    if clean.startswith("media/"):
+        candidates.insert(0, os.path.join("/data", clean))
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+    return os.path.join(AUDIO_OUTPUT_DIR, name)
+
+
+def absolute_path_for_image(filename_or_url: str) -> str:
+    if not filename_or_url:
+        return ""
+    clean = (filename_or_url or "").strip().split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    name = os.path.basename(clean)
+    if not name:
+        name = clean
+    candidates = [
+        os.path.join(IMAGES_OUTPUT_DIR, name),
+        str(STATIC_DIR / "images" / name),
+    ]
+    if clean.startswith("media/"):
+        candidates.insert(0, os.path.join("/data", clean))
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+    return os.path.join(IMAGES_OUTPUT_DIR, name)
+
+
+# ===== Flags de comportamento do UnifiedVideoPipeline =====
+# Ambiente da aplicação: development | staging | homologation | production
+APP_ENV = str(os.getenv("APP_ENV", "development")).strip().lower() or "development"
+
+# Fallback LEGACY do pipeline de vídeos.
+# POR PADRÃO (default) = DESATIVADO.
+# Se UnifiedVideoPipeline falhar ao carregar em homolog/prod com fallback=0 → ERRO EXPLÍCITO.
+# Exceção: APP_ENV=development SEMPRE permite fallback para ajudar no dev local.
+ENABLE_LEGACY_PIPELINE_FALLBACK = _env_truthy("ENABLE_LEGACY_PIPELINE_FALLBACK")
+
+
+def legacy_pipeline_fallback_allowed(*, module_name: str = "unknown") -> bool:
+    """Retorna True se o módulo pode usar o pipeline legado como fallback.
+
+    Regra:
+      - Se ENABLE_LEGACY_PIPELINE_FALLBACK=true explicitamente → permitido.
+      - Senão, só permitido SE APP_ENV == "development" (dev local).
+      - staging / homologation / production / any != development → BLOQUEADO.
+    """
+    if bool(ENABLE_LEGACY_PIPELINE_FALLBACK):
+        return True
+    if APP_ENV == "development":
+        return True
+    return False
+
+
+def unified_pipeline_required_error(module_name: str, original_error: Optional[str] = None) -> str:
+    """Mensagem de erro clara quando o UnifiedVideoPipeline é obrigatório e indisponível."""
+    base = (
+        f"[UnifiedVideoPipeline OBRIGATÓRIO] Módulo '{module_name}' tentou rodar sem UnifiedVideoPipeline carregado. "
+        "Isso é proibido em homologação/produção. "
+        "O pipeline legado foi desabilitado para evitar duplicação, marcação falsa de sucesso e inconsistência de estados. "
+        "Para ativar temporariamente o fallback (SOMENTE EM EMERGÊNCIA), sete ENABLE_LEGACY_PIPELINE_FALLBACK=true no ambiente."
+    )
+    if original_error:
+        sanitized_err = str(original_error)[:1000]
+        base += f" Erro original ao importar/carregar: {sanitized_err}"
+    return base
+
