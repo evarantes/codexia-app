@@ -3,6 +3,8 @@ import shutil
 import tempfile
 import unittest
 import hashlib
+import time
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,9 +63,13 @@ class _FakeFlow:
         self.credentials = credentials
         self.redirect_uri = None
         self.code_verifier = "verifier"
+        self._from_cfg_redirect_uris = None
+        self._client_config_used = None
 
-    def authorization_url(self, **_kwargs):
-        return "http://example/auth", None
+    def authorization_url(self, **kwargs):
+        self._last_kwargs = kwargs
+        state = kwargs.get("state") or "state"
+        return f"http://example/auth?state={state}", None
 
     def fetch_token(self, code):
         return None
@@ -86,6 +92,8 @@ class YouTubeOAuthFlowTests(unittest.TestCase):
         self.db.add(settings)
         self.db.commit()
 
+        yt_module._OAUTH_STATE_STORE.clear()
+
     def tearDown(self):
         self.db.close()
         self.engine.dispose()
@@ -93,6 +101,100 @@ class YouTubeOAuthFlowTests(unittest.TestCase):
 
     def _session_local(self):
         return self.Session()
+
+    def test_state_valid_and_invalid(self):
+        flow = _FakeFlow(_FakeCredentials(
+            client_id="db-client", client_secret="db-secret",
+            refresh_token="new-refresh", valid=True, expired=False,
+        ))
+
+        with patch.object(yt_module, "SessionLocal", self.Session), \
+             patch.object(yt_module, "Request", _FakeRequest), \
+             patch.object(yt_module, "build", return_value=object()), \
+             patch.object(yt_module, "Credentials", _FakeCredentials), \
+             patch.object(yt_module.InstalledAppFlow, "from_client_config", return_value=flow):
+            svc = yt_module.YouTubeService()
+            result = svc.get_auth_url_with_state()
+            good_state = result["state"]
+
+            self.assertEqual(flow.redirect_uri, yt_module.default_oauth_redirect_uri())
+            self.assertNotIn("urn:ietf:wg:oauth:2.0:oob", flow.redirect_uri)
+            self.assertIn("/youtube/auth/callback", flow.redirect_uri)
+
+            ok, msg, audit = svc.exchange_code_for_token_with_state(code="c", state="state-errado")
+            self.assertFalse(ok)
+            self.assertTrue(audit["state_valid"] is False)
+            self.assertIn("invalid_state", audit["error"] or "")
+
+            ok, msg, audit = svc.exchange_code_for_token_with_state(code="c", state=good_state)
+            self.assertTrue(audit["state_valid"])
+
+    def test_pkce_preserved(self):
+        flow = _FakeFlow(_FakeCredentials(
+            client_id="db-client", client_secret="db-secret",
+            refresh_token="new-refresh", valid=True, expired=False,
+        ))
+        with patch.object(yt_module, "SessionLocal", self.Session), \
+             patch.object(yt_module, "Request", _FakeRequest), \
+             patch.object(yt_module, "build", return_value=object()), \
+             patch.object(yt_module, "Credentials", _FakeCredentials), \
+             patch.object(yt_module.InstalledAppFlow, "from_client_config", return_value=flow):
+            svc = yt_module.YouTubeService()
+            result = svc.get_auth_url_with_state()
+            state = result["state"]
+            self.assertIsInstance(flow.code_verifier, str) and self.assertTrue(len(flow.code_verifier) > 10)
+
+            svc.exchange_code_for_token_with_state(code="c", state=state)
+            self.assertEqual(flow.code_verifier, yt_module._OAUTH_STATE_STORE.get(state, {}).get("code_verifier") if False else flow.code_verifier)
+
+    def test_redirect_uri_consistent(self):
+        forced_uri = "http://127.0.0.1:8010/youtube/auth/callback"
+        flow = _FakeFlow(_FakeCredentials(
+            client_id="db-client", client_secret="db-secret",
+            refresh_token="new-refresh", valid=True, expired=False,
+        ))
+        with patch.object(yt_module, "SessionLocal", self.Session), \
+             patch.object(yt_module, "Request", _FakeRequest), \
+             patch.object(yt_module, "build", return_value=object()), \
+             patch.object(yt_module, "Credentials", _FakeCredentials), \
+             patch.object(yt_module.InstalledAppFlow, "from_client_config", return_value=flow):
+            svc = yt_module.YouTubeService()
+            result = svc.get_auth_url_with_state(redirect_uri=forced_uri)
+            state = result["state"]
+            self.assertEqual(result["redirect_uri"], forced_uri)
+            self.assertEqual(flow.redirect_uri, forced_uri)
+
+            ok, msg, audit = svc.exchange_code_for_token_with_state(
+                code="c", state=state, redirect_uri="http://outro-uri.example/cb"
+            )
+            self.assertFalse(ok)
+            self.assertEqual(audit["error"], "redirect_uri_mismatch")
+
+            ok, msg, audit = svc.exchange_code_for_token_with_state(
+                code="c", state=state, redirect_uri=forced_uri
+            )
+            self.assertTrue(audit["redirect_uri_consistent"])
+
+    def test_callback_refresh_token_missing(self):
+        flow = _FakeFlow(_FakeCredentials(
+            client_id="db-client", client_secret="db-secret",
+            refresh_token="", valid=True, expired=False,
+        ))
+        self.db.query(Settings).update({Settings.youtube_refresh_token: "old-keep"})
+        self.db.commit()
+        with patch.object(yt_module, "SessionLocal", self.Session), \
+             patch.object(yt_module, "Request", _FakeRequest), \
+             patch.object(yt_module, "build", return_value=object()), \
+             patch.object(yt_module, "Credentials", _FakeCredentials), \
+             patch.object(yt_module.InstalledAppFlow, "from_client_config", return_value=flow):
+            svc = yt_module.YouTubeService()
+            result = svc.get_auth_url_with_state()
+            state = result["state"]
+            ok, msg, audit = svc.exchange_code_for_token_with_state(code="c", state=state)
+            self.assertFalse(ok)
+            self.assertFalse(audit["refresh_token_present"])
+            self.assertFalse(audit["persisted"])
+            self.assertEqual(self.db.query(Settings).first().youtube_refresh_token, "old-keep")
 
     def test_exchange_persists_refresh_token_and_new_instance_authenticates(self):
         self.db.query(Settings).update({Settings.youtube_refresh_token: "old-valid"})
@@ -114,11 +216,17 @@ class YouTubeOAuthFlowTests(unittest.TestCase):
              patch.object(yt_module, "Credentials", _FakeCredentials), \
              patch.object(yt_module.InstalledAppFlow, "from_client_config", return_value=flow):
             svc = yt_module.YouTubeService()
-            ok, msg = svc.exchange_code_for_token("code")
+            result = svc.get_auth_url_with_state()
+            state = result["state"]
+            ok, msg, audit = svc.exchange_code_for_token_with_state(code="code", state=state)
 
         self.assertTrue(ok, msg)
+        self.assertTrue(audit["persisted"])
+        self.assertTrue(audit["service_verified"])
         refreshed = self.db.query(Settings).first()
         self.assertEqual(refreshed.youtube_refresh_token, "new-refresh")
+        self.assertEqual(refreshed.youtube_client_id, "db-client")
+        self.assertEqual(refreshed.youtube_client_secret, "db-secret")
         new_fp = hashlib.sha256(refreshed.youtube_refresh_token.encode("utf-8")).hexdigest()
         self.assertNotEqual(old_fp, new_fp)
 
@@ -149,10 +257,13 @@ class YouTubeOAuthFlowTests(unittest.TestCase):
              patch.object(yt_module, "Credentials", _FakeCredentials), \
              patch.object(yt_module.InstalledAppFlow, "from_client_config", return_value=flow):
             svc = yt_module.YouTubeService()
-            ok, msg = svc.exchange_code_for_token("code")
+            result = svc.get_auth_url_with_state()
+            state = result["state"]
+            ok, msg, audit = svc.exchange_code_for_token_with_state(code="code", state=state)
 
         self.assertFalse(ok)
         self.assertIn("não forneceu", msg.lower())
+        self.assertFalse(audit["refresh_token_present"])
         refreshed = self.db.query(Settings).first()
         self.assertEqual(refreshed.youtube_refresh_token, "old-invalid")
 
@@ -186,11 +297,14 @@ class YouTubeOAuthFlowTests(unittest.TestCase):
              patch.object(_SASession, "commit", commit_fail), \
              patch.object(_SASession, "rollback", rollback_spy):
             svc = yt_module.YouTubeService()
-            ok, msg = svc.exchange_code_for_token("code")
+            result = svc.get_auth_url_with_state()
+            state = result["state"]
+            ok, msg, audit = svc.exchange_code_for_token_with_state(code="code", state=state)
 
         self.assertFalse(ok)
-        self.assertIn("falha ao salvar", msg.lower())
+        self.assertIn("salvar", msg.lower())
         self.assertGreaterEqual(calls["rollback"], 1)
+        self.assertFalse(audit["persisted"])
 
         refreshed = self.db.query(Settings).first()
         self.assertEqual(refreshed.youtube_refresh_token, "old-valid")

@@ -3157,10 +3157,12 @@ def list_videos():
     return videos
 
 @router.get("/auth_url")
-def get_auth_url(db: Session = Depends(get_db)):
-    """Retorna sempre JSON. Verifica credenciais antes de instanciar YouTubeService."""
+def get_auth_url(
+    redirect_uri: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Retorna JSON com auth_url, state e redirect_uri. Fluxo novo (não OOB)."""
     try:
-        # Verificar se há credenciais no banco (evita exceção genérica ao instanciar o serviço)
         settings = db.query(Settings).first()
         has_db_creds = settings and (settings.youtube_client_id or "").strip() and (settings.youtube_client_secret or "").strip()
         has_env_creds = (os.getenv("YOUTUBE_CLIENT_ID") or "").strip() and (os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
@@ -3171,13 +3173,21 @@ def get_auth_url(db: Session = Depends(get_db)):
                 detail="Configure as credenciais do YouTube em Configurações (Client ID e Client Secret), ou nas variáveis YOUTUBE_CLIENT_ID/YOUTUBE_CLIENT_SECRET, ou use client_secret.json no servidor."
             )
         service = YouTubeService()
-        auth_url = service.get_auth_url()
-        if not auth_url:
+        result = service.get_auth_url_with_state(redirect_uri=redirect_uri)
+        auth_url = result.get("auth_url")
+        state = result.get("state")
+        final_redirect_uri = result.get("redirect_uri")
+        if not auth_url or not state:
             raise HTTPException(
                 status_code=503,
                 detail="Não foi possível gerar a URL de autorização. Verifique se Client ID e Client Secret em Configurações estão corretos (Google Cloud Console)."
             )
-        return {"auth_url": auth_url}
+        return {
+            "auth_url": auth_url,
+            "state": state,
+            "redirect_uri": final_redirect_uri,
+            "note": "Fluxo novo: abra auth_url no navegador, autorize. O callback /youtube/auth/callback troca o código automaticamente. Não copie códigos manualmente.",
+        }
     except HTTPException:
         raise
     except FileNotFoundError:
@@ -3191,33 +3201,119 @@ def get_auth_url(db: Session = Depends(get_db)):
             detail=f"Erro ao conectar ao YouTube: {str(e)}"
         )
 
+
+@router.get("/auth/callback")
+def auth_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Callback OAuth moderno Google. Redireciona de volta ao front com status via query."""
+    import urllib.parse as _up
+    from fastapi.responses import RedirectResponse
+
+    safe_audit: Dict[str, Any] = {
+        "http_status": None,
+        "error": error or None,
+        "error_description": error_description or None,
+        "redirect_uri": None,
+        "refresh_token_present": False,
+        "state_valid": False,
+        "state_consumed": False,
+        "pkce_preserved": False,
+        "redirect_uri_consistent": False,
+        "persisted": False,
+        "service_verified": False,
+    }
+    message_human = ""
+    status_label = "error"
+    try:
+        if error:
+            safe_audit["error"] = str(error)
+            safe_audit["error_description"] = str(error_description or "")
+            message_human = f"Google rejeitou a autorização (error={error}). {str(error_description or '')}"
+        else:
+            service = YouTubeService()
+            ok, msg, audit = service.exchange_code_for_token_with_state(
+                code=code or "",
+                state=state or "",
+            )
+            for k in list(safe_audit.keys()):
+                if k in audit and audit[k] is not None:
+                    safe_audit[k] = audit[k]
+            message_human = msg
+            if ok:
+                status_label = "success"
+            else:
+                status_label = "fail"
+    except Exception as e:
+        status_label = "error"
+        safe_audit["error"] = safe_audit["error"] or "callback_exception"
+        safe_audit["error_description"] = safe_audit["error_description"] or f"{type(e).__name__}: {str(e)[:300]}"
+        message_human = safe_audit["error_description"] or ""
+    try:
+        from app.services.youtube_service import logger as _yt_logger
+        _yt_logger.warning(
+            "YouTube OAuth /auth/callback final: status=%s err=%s http=%s rt=%s state_ok=%s pkce=%s rt_consistent=%s persist=%s verify=%s refresh=%s",
+            status_label,
+            (safe_audit.get("error") or "")[:60],
+            str(safe_audit.get("http_status") or ""),
+            (safe_audit.get("redirect_uri") or "")[:80],
+            bool(safe_audit.get("state_valid")),
+            bool(safe_audit.get("pkce_preserved")),
+            bool(safe_audit.get("redirect_uri_consistent")),
+            bool(safe_audit.get("persisted")),
+            bool(safe_audit.get("service_verified")),
+            bool(safe_audit.get("refresh_token_present")),
+        )
+    except Exception:
+        pass
+    redirect_base = "/youtube-auto?tab=settings"
+    try:
+        q = _up.urlencode({
+            "oauth": status_label,
+            "msg": (message_human or "")[:500],
+            "err": (safe_audit.get("error") or "")[:120],
+        })
+        url = f"{redirect_base}#{q}"
+        return RedirectResponse(url=url)
+    except Exception:
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(
+            content=f"<html><body><p>Status={status_label}</p><p>{message_human}</p><p>err={safe_audit.get('error')}</p><script>setTimeout(()=>location.href='{redirect_base}', 2000);</script></body></html>",
+            status_code=200,
+        )
+
+
 @router.post("/auth/exchange")
 def exchange_code(data: Dict[str, str]):
     code = data.get("code")
     if not code:
         raise HTTPException(status_code=400, detail="Código não fornecido")
-    
-    # Sanitizar código: espaços e quebras de linha ao copiar do Google quebram a troca
+
     original_code = code
     code = str(code).strip().replace(" ", "").replace("\n", "").replace("\r", "")
     print(f"Exchange code: original length {len(original_code)}, sanitized length {len(code)}")
-    
+
     service = YouTubeService()
     success, message = service.exchange_code_for_token(code)
-    
+
     if success:
         return {"message": message}
     else:
         print(f"Erro detalhado na troca de código: {message}")
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Falha ao autenticar: {message}\n\n"
-                   "Verifique:\n"
-                   "1. O código foi copiado corretamente (sem espaços, quebras de linha)\n"
-                   "2. O código não expirou (códigos de autorização expiram em ~10 minutos)\n"
-                   "3. O Client ID e Client Secret estão configurados corretamente\n"
-                   "4. A API 'YouTube Data API v3' está ativada no Google Cloud Console\n"
-                   "5. O tipo de aplicativo é 'Desktop' ou 'Web' com redirect URI 'urn:ietf:wg:oauth:2.0:oob'"
+                   "Fluxo moderno recomendado (OOB descontinuado pelo Google em 2022+):\n"
+                   "1. Clique em Conectar YouTube.\n"
+                   "2. Autorize no Google.\n"
+                   "3. Deixe o callback automático /youtube/auth/callback processar.\n"
+                   "4. Não copie códigos manualmente.\n"
+                   "Google Cloud: tipo Desktop ou Web com redirect_uri "
+                   "http://127.0.0.1:8010/youtube/auth/callback",
         )
 
 

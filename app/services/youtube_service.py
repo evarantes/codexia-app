@@ -1,7 +1,11 @@
 import os
 import json
 import time
-from typing import Optional
+import uuid
+import base64
+import hashlib
+import secrets
+from typing import Optional, Tuple, Dict, Any
 import logging
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -12,13 +16,52 @@ from googleapiclient.errors import HttpError
 from app.database import SessionLocal
 from app.models import Settings
 
-# Escopos necessários
+logger = logging.getLogger(__name__)
+
 SCOPES = [
-    'https://www.googleapis.com/auth/youtube.upload',
-    'https://www.googleapis.com/auth/youtube.force-ssl',
-    'https://www.googleapis.com/auth/youtube.readonly',
-    'https://www.googleapis.com/auth/yt-analytics.readonly'
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtubepartner",
 ]
+
+_OAUTH_STATE_STORE: Dict[str, Dict[str, Any]] = {}
+
+def default_oauth_redirect_uri() -> str:
+    raw = (os.getenv("YOUTUBE_OAUTH_REDIRECT_URI") or "").strip()
+    if raw:
+        return raw
+    port = str((os.getenv("PORT") or os.getenv("APP_PORT") or "8010")).strip() or "8010"
+    return f"http://127.0.0.1:{port}/youtube/auth/callback"
+
+def _cleanup_expired_state_store() -> None:
+    now = time.time()
+    for k in list(_OAUTH_STATE_STORE.keys()):
+        entry = _OAUTH_STATE_STORE.get(k) or {}
+        if float(entry.get("created_at") or 0) + 600.0 < now:
+            try:
+                del _OAUTH_STATE_STORE[k]
+            except Exception:
+                pass
+
+def oauth_pop_state(state: str) -> Optional[Dict[str, Any]]:
+    _cleanup_expired_state_store()
+    entry = _OAUTH_STATE_STORE.pop(state, None)
+    if not entry:
+        return None
+    if float(entry.get("created_at") or 0) + 600.0 < time.time():
+        return None
+    return entry
+
+def pkce_verifier_and_challenge() -> Tuple[str, str]:
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+def _presence(value: str) -> str:
+    return "PRESENT" if str(value or "").strip() else "EMPTY"
 
 _YT_CACHE = {
     "my_channel_id": None,
@@ -26,11 +69,6 @@ _YT_CACHE = {
     "my_channel": None,
     "my_channel_expires_at": 0.0,
 }
-
-logger = logging.getLogger(__name__)
-
-def _presence(value: str) -> str:
-    return "PRESENT" if str(value or "").strip() else "EMPTY"
 
 def _yt_cache_get(key: str):
     try:
@@ -400,22 +438,14 @@ class YouTubeService:
         except HttpError as e:
             raise RuntimeError(f"Erro ao responder comentário: {e}")
 
-    def get_auth_url(self):
-        """Gera URL para o usuário autorizar (Fluxo simplificado)"""
-        # 1. Tentar credenciais do banco/ENV (Client ID + Secret) para montar client_config
+    def _build_flow_from_creds_or_file(self, redirect_uri: str) -> Tuple[Optional[InstalledAppFlow], Optional[str], Optional[str]]:
+        """Monta o Google OAuth flow com um redirect_uri EXATO (não OOB)."""
+        redirect_uri = (redirect_uri or "").strip() or default_oauth_redirect_uri()
         db = SessionLocal()
         settings = db.query(Settings).first()
         db.close()
         client_id, client_secret = self._oauth_client_id_secret(settings)
-        logger.info(
-            "YouTube OAuth: get_auth_url db(client_id=%s client_secret=%s) env(client_id=%s client_secret=%s) client_secret.json=%s selected=%s",
-            _presence((getattr(settings, "youtube_client_id", None) or "")),
-            _presence((getattr(settings, "youtube_client_secret", None) or "")),
-            _presence((os.getenv("YOUTUBE_CLIENT_ID") or "")),
-            _presence((os.getenv("YOUTUBE_CLIENT_SECRET") or "")),
-            "PRESENT" if os.path.exists("client_secret.json") else "ABSENT",
-            "db_or_env" if (client_id and client_secret) else ("file" if os.path.exists("client_secret.json") else "missing"),
-        )
+        used_json_file = False
         if client_id and client_secret:
             try:
                 client_config = {
@@ -424,166 +454,235 @@ class YouTubeService:
                         "client_secret": client_secret,
                         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                         "token_uri": "https://oauth2.googleapis.com/token",
-                        "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"]
+                        "redirect_uris": [redirect_uri],
                     }
                 }
                 flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-                flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-                auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
-                
-                # Persist code_verifier for PKCE (required by Google for OOB/Desktop)
-                if getattr(flow, "code_verifier", None):
-                    try:
-                        with open("youtube_pkce.txt", "w") as f:
-                            f.write(flow.code_verifier)
-                    except Exception as e:
-                        logger.warning("YouTube OAuth: failed to save PKCE verifier (%s)", type(e).__name__)
-
-                return auth_url
+                flow.redirect_uri = redirect_uri
+                return flow, None, None
             except Exception as e:
-                raise RuntimeError(f"Credenciais do YouTube (banco/ENV) inválidas: {e}")
-        # 2. Fallback: arquivo client_secret.json (desenvolvimento)
-        if not os.path.exists('client_secret.json'):
-            raise FileNotFoundError("client_secret.json não encontrado e credenciais do YouTube não configuradas (Configurações/ENV).")
-        flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
-        flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-        auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
-        
-        # Persist code_verifier for PKCE (fallback flow)
-        if getattr(flow, "code_verifier", None):
+                logger.warning("YouTube OAuth: failed to create flow from db/env (%s)", type(e).__name__)
+        if os.path.exists("client_secret.json"):
             try:
-                with open("youtube_pkce.txt", "w") as f:
-                    f.write(flow.code_verifier)
+                flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
+                flow.redirect_uri = redirect_uri
+                used_json_file = True
+                client_id_override = None
+                client_secret_override = None
+                try:
+                    with open("client_secret.json", "r") as f:
+                        data = json.load(f)
+                    installed = data.get("installed", data.get("web", {}))
+                    client_id_override = str(installed.get("client_id") or "").strip() or None
+                    client_secret_override = str(installed.get("client_secret") or "").strip() or None
+                except Exception:
+                    pass
+                return flow, client_id_override, client_secret_override
             except Exception as e:
-                logger.warning("YouTube OAuth: failed to save PKCE verifier (file) (%s)", type(e).__name__)
+                logger.warning("YouTube OAuth: failed to create flow from client_secret.json (%s)", type(e).__name__)
+        return None, None, None
 
-        return auth_url
+    def get_auth_url_with_state(self, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
+        """Novo fluxo moderno: retorna {auth_url, state, code_verifier, redirect_uri}.
+        Não usa mais OOB. Gera state aleatório e PKCE, e guarda em _OAUTH_STATE_STORE.
+        """
+        redirect_uri = (redirect_uri or "").strip() or default_oauth_redirect_uri()
+        flow, _, _ = self._build_flow_from_creds_or_file(redirect_uri)
+        if flow is None:
+            raise FileNotFoundError(
+                "Credenciais do YouTube não configuradas. Use Settings.youtube_client_id / youtube_client_secret "
+                "ou variáveis YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET ou arquivo client_secret.json."
+            )
+        state = uuid.uuid4().hex + secrets.token_hex(8)
+        verifier, challenge = pkce_verifier_and_challenge()
+        flow.code_verifier = verifier
+        try:
+            auth_url, _ = flow.authorization_url(
+                prompt="consent",
+                access_type="offline",
+                include_granted_scopes="true",
+                state=state,
+                code_challenge=challenge,
+                code_challenge_method="S256",
+            )
+        except TypeError:
+            auth_url, _ = flow.authorization_url(
+                prompt="consent",
+                access_type="offline",
+                include_granted_scopes="true",
+                state=state,
+            )
+        _cleanup_expired_state_store()
+        _OAUTH_STATE_STORE[state] = {
+            "created_at": time.time(),
+            "state": state,
+            "code_verifier": verifier,
+            "redirect_uri": flow.redirect_uri or redirect_uri,
+            "challenge": challenge,
+        }
+        try:
+            if os.path.exists("youtube_pkce.txt"):
+                os.remove("youtube_pkce.txt")
+        except Exception:
+            pass
+        return {
+            "auth_url": auth_url,
+            "state": state,
+            "redirect_uri": flow.redirect_uri or redirect_uri,
+        }
+
+    def get_auth_url(self):
+        """Compatibilidade antiga. Usa o novo fluxo com redirect_uri moderno (não OOB)."""
+        result = self.get_auth_url_with_state()
+        return result["auth_url"]
+
+    def exchange_code_for_token_with_state(self, code: str, state: str, redirect_uri: Optional[str] = None) -> Tuple[bool, str, Dict[str, Any]]:
+        """Novo fluxo: valida state, troca code por token, salva, valida API real.
+        Retorna (ok, mensagem, dict_safe_com_metadados_sem_segredos)."""
+        audit: Dict[str, Any] = {
+            "http_status": None,
+            "error": None,
+            "error_description": None,
+            "redirect_uri": None,
+            "refresh_token_present": False,
+            "state_valid": False,
+            "state_consumed": False,
+            "pkce_preserved": False,
+            "redirect_uri_consistent": False,
+            "persisted": False,
+            "service_verified": False,
+        }
+        code = str(code or "").strip()
+        state = str(state or "").strip()
+        if not code:
+            audit["error"] = "missing_code"
+            audit["error_description"] = "Parâmetro 'code' não fornecido pelo Google."
+            return False, (audit["error_description"] or "Código de autorização ausente."), audit
+        if not state:
+            audit["error"] = "missing_state"
+            audit["error_description"] = "Parâmetro 'state' não fornecido no callback."
+            return False, (audit["error_description"] or "State ausente."), audit
+        stored = oauth_pop_state(state)
+        if not stored:
+            audit["error"] = "invalid_state"
+            audit["error_description"] = (
+                "State OAuth inválido ou expirado. Tente conectar novamente (botão Conectar YouTube)."
+            )
+            return False, (audit["error_description"] or "State inválido/expirado."), audit
+        audit["state_valid"] = True
+        audit["state_consumed"] = True
+        stored_verifier = str(stored.get("code_verifier") or "").strip()
+        stored_redirect_uri = str(stored.get("redirect_uri") or "").strip()
+        effective_redirect_uri = (redirect_uri or "").strip() or stored_redirect_uri or default_oauth_redirect_uri()
+        audit["redirect_uri"] = effective_redirect_uri
+        if effective_redirect_uri and stored_redirect_uri and effective_redirect_uri != stored_redirect_uri:
+            audit["error"] = "redirect_uri_mismatch"
+            audit["error_description"] = (
+                f"redirect_uri inconsistente entre auth_url e callback "
+                f"(stored={stored_redirect_uri} callback={effective_redirect_uri})."
+            )
+            return False, (audit["error_description"] or "redirect_uri divergente."), audit
+        audit["redirect_uri_consistent"] = True
+        flow, cid_override, csec_override = self._build_flow_from_creds_or_file(effective_redirect_uri)
+        if flow is None:
+            audit["error"] = "credentials_missing"
+            audit["error_description"] = (
+                "Credenciais do YouTube não configuradas durante o exchange. "
+                "Verifique Settings.youtube_client_id / youtube_client_secret ou ENV."
+            )
+            return False, (audit["error_description"] or "Credenciais ausentes."), audit
+        if stored_verifier:
+            flow.code_verifier = stored_verifier
+            audit["pkce_preserved"] = True
+        http_status = None
+        google_error = None
+        google_error_desc = None
+        try:
+            flow.fetch_token(code=code)
+            http_status = 200
+        except Exception as e:
+            msg_parts = str(e).splitlines()
+            msg = msg_parts[0][:500] if msg_parts else type(e).__name__
+            try:
+                raw = getattr(e, "error_details", None) or getattr(e, "response", None)
+                if isinstance(raw, dict):
+                    google_error = str(raw.get("error") or google_error or "").strip() or None
+                    google_error_desc = str(raw.get("error_description") or "").strip() or None
+                    if google_error:
+                        pass
+                if hasattr(e, "args") and e.args:
+                    head = str(e.args[0])
+                    if "400" in head:
+                        http_status = 400
+                    elif "401" in head:
+                        http_status = 401
+            except Exception:
+                pass
+            if http_status is None:
+                http_status = 400
+            audit["http_status"] = http_status
+            audit["error"] = google_error or "fetch_token_failed"
+            audit["error_description"] = google_error_desc or msg
+            return False, (
+                f"Falha na troca do authorization code pelo token (HTTP {http_status}). "
+                f"Google error={audit['error']}. "
+                f"Detalhe: {audit['error_description']}"
+            ), audit
+        audit["http_status"] = http_status
+        self.credentials = flow.credentials
+        refresh_token = (getattr(self.credentials, "refresh_token", None) or "").strip()
+        audit["refresh_token_present"] = bool(refresh_token)
+        if not refresh_token:
+            audit["error"] = "refresh_token_missing"
+            audit["error_description"] = (
+                "Google não retornou um refresh_token novo. "
+                "Acesse myaccount.google.com/permissions, revogue o Codexia, "
+                "e clique novamente em Conectar YouTube (prompt=consent obrigatório)."
+            )
+            return False, (audit["error_description"] or "refresh_token ausente."), audit
+        try:
+            self._save_credentials_to_db(cid_override, csec_override)
+            audit["persisted"] = True
+        except Exception as e:
+            audit["error"] = "persist_failed"
+            audit["error_description"] = f"Erro ao salvar credenciais no banco: {type(e).__name__}"
+            return False, (audit["error_description"] or "Falha ao persistir no DB."), audit
+        try:
+            verification = YouTubeService()
+            if not getattr(verification, "service", None) or (
+                "invalid_grant" in str(getattr(verification, "auth_error", "") or "")
+            ):
+                audit["error"] = "verification_invalid_grant"
+                audit["error_description"] = (
+                    "Credenciais persistidas, mas a validação imediata retornou invalid_grant. "
+                    "Revogue e refaça a conexão."
+                )
+                return False, (audit["error_description"] or "invalid_grant na verificação final."), audit
+            audit["service_verified"] = True
+        except Exception as e:
+            audit["error"] = "verification_exception"
+            audit["error_description"] = f"Erro na validação final do serviço: {type(e).__name__}"
+            return False, (audit["error_description"] or "Erro na validação final."), audit
+        return True, "Conexão com o YouTube concluída com sucesso!", audit
 
     def exchange_code_for_token(self, code):
-        """Troca o código de autorização por tokens e salva no banco. Retorna (success, message)."""
-        try:
-            # 1. Tentar configurar Flow via Banco/ENV
-            db = SessionLocal()
-            settings = db.query(Settings).first()
-            db.close()
-
-            flow = None
-            used_json_file = False
-            
-            client_id, client_secret = self._oauth_client_id_secret(settings)
-            if client_id and client_secret:
-                try:
-                    client_config = {
-                        "installed": {
-                            "client_id": client_id,
-                            "client_secret": client_secret,
-                            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                            "token_uri": "https://oauth2.googleapis.com/token",
-                            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"]
-                        }
-                    }
-                    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-                except Exception as e:
-                    logger.warning("YouTube OAuth: failed to create flow from db/env (%s)", type(e).__name__)
-
-            # 2. Fallback para arquivo se não conseguiu via banco
-            if not flow:
-                if os.path.exists('client_secret.json'):
-                    flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
-                    used_json_file = True
-                else:
-                    return False, "Credenciais não encontradas (Banco ou arquivo json)"
-
-            flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-            
-            # Restore PKCE verifier if available
-            if os.path.exists("youtube_pkce.txt"):
-                try:
-                    with open("youtube_pkce.txt", "r") as f:
-                        verifier = f.read().strip()
-                        if verifier:
-                            flow.code_verifier = verifier
-                    # Cleanup
-                    try:
-                        os.remove("youtube_pkce.txt")
-                    except:
-                        pass
-                except Exception as e:
-                    logger.warning("YouTube OAuth: failed to load PKCE verifier (%s)", type(e).__name__)
-
-            flow.fetch_token(code=code)
-            self.credentials = flow.credentials
-            refresh_token = (getattr(self.credentials, "refresh_token", None) or "").strip()
-            if not refresh_token:
-                logger.warning(
-                    "YouTube OAuth: exchange fetched refresh_token=EMPTY used_json_file=%s",
-                    bool(used_json_file),
-                )
-                return False, (
-                    "Autenticação não concluída: o Google não forneceu um novo refresh token. "
-                    "Revogue o acesso do Codexia em myaccount.google.com/permissions e tente novamente (prompt=consent + offline)."
-                )
-            logger.info(
-                "YouTube OAuth: exchange fetched refresh_token=PRESENT used_json_file=%s",
-                bool(used_json_file),
+        """Fallback compat com fluxo manual antigo (manualmente colar código no Swagger).
+        Hoje — OOB foi descontinuado pelo Google, então isso quase sempre retorna erro.
+        Mantido como fallback claramente identificado. [FALLBACK TEMPORÁRIO]
+        """
+        # Nós NÃO temos state neste caminho. Tentamos usar o state store se houver
+        # apenas um state vivo (ambiente de dev/teste single-user). Caso contrário,
+        # falhamos com mensagem clara orientando a usar o fluxo novo.
+        _cleanup_expired_state_store()
+        states = list(_OAUTH_STATE_STORE.keys())
+        if len(states) != 1:
+            return False, (
+                "[FALLBACK TEMPORÁRIO — FLUXO MANUAL DESCONTINUADO PELO GOOGLE (OOB removido)]. "
+                "Use o fluxo novo: clique em Conectar YouTube, autorize no Google, e deixe o callback automático "
+                "/youtube/auth/callback processar. Não cole mais códigos manualmente."
             )
-            
-            # Se usou JSON, extrair client_id/secret para salvar no banco
-            client_id_override = None
-            client_secret_override = None
-            
-            if used_json_file:
-                try:
-                    with open('client_secret.json', 'r') as f:
-                        data = json.load(f)
-                        installed = data.get('installed', data.get('web', {}))
-                        client_id_override = installed.get('client_id')
-                        client_secret_override = installed.get('client_secret')
-                except Exception as e:
-                    logger.warning("YouTube OAuth: failed to parse client_secret.json for persistence (%s)", type(e).__name__)
-
-            # Salvar no banco
-            try:
-                self._save_credentials_to_db(client_id_override, client_secret_override)
-            except Exception:
-                return False, "Falha ao salvar as credenciais do YouTube no banco. Autenticação não concluída."
-
-            try:
-                db_check = SessionLocal()
-                saved = db_check.query(Settings).first()
-                db_check.close()
-                saved_refresh = (getattr(saved, "youtube_refresh_token", None) or "").strip() if saved else ""
-                if saved_refresh != refresh_token:
-                    logger.warning(
-                        "YouTube OAuth: exchange saved refresh_token mismatch db=%s expected=%s",
-                        _presence(saved_refresh),
-                        _presence(refresh_token),
-                    )
-                    return False, "Falha ao confirmar a persistência do novo refresh token. Autenticação não concluída."
-            except Exception as e:
-                logger.warning(
-                    "YouTube OAuth: exchange could not confirm persisted refresh token (%s)",
-                    type(e).__name__,
-                )
-                return False, "Falha ao confirmar a persistência do refresh token. Autenticação não concluída."
-
-            verification = YouTubeService()
-            if not getattr(verification, "service", None) or ("invalid_grant" in str(getattr(verification, "auth_error", "") or "")):
-                logger.warning(
-                    "YouTube OAuth: exchange persisted but verification failed auth_source=%s auth_error_contains_invalid_grant=%s",
-                    getattr(verification, "auth_source", None),
-                    bool("invalid_grant" in str(getattr(verification, "auth_error", "") or "")),
-                )
-                return False, (
-                    "Falha ao validar as credenciais após salvar. "
-                    "O Google ainda está rejeitando o refresh token (invalid_grant). "
-                    "Revogue o acesso do Codexia e refaça a autorização."
-                )
-            logger.info("YouTube OAuth: exchange persisted and verified auth_source=%s", getattr(verification, "auth_source", None))
-            return True, "Autenticação realizada com sucesso!"
-        except Exception as e:
-            logger.warning("YouTube OAuth: exchange failed %s (%s)", str(e).splitlines()[0][:220], type(e).__name__)
-            return False, "Falha ao autenticar com o Google. Verifique o código e as credenciais e tente novamente."
+        state = states[0]
+        return self.exchange_code_for_token_with_state(code=code, state=state)[:2]
 
     def _save_credentials_to_db(self, client_id=None, client_secret=None):
         """Salva as credenciais atuais no banco de dados"""
