@@ -341,7 +341,7 @@ class YouTubeSeriesService:
     ) -> datetime:
         tz = _get_tz(timezone_name)
         publication_local = publication_dt_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
-        target_day = publication_local.date() - timedelta(days=max(1, int(lead_days or 1)))
+        target_day = publication_local.date() - timedelta(days=max(0, int(lead_days or 0)))
         hour, minute = _parse_time(production_time, "06:00")
         local_dt = datetime(target_day.year, target_day.month, target_day.day, hour, minute, tzinfo=tz)
         return local_dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
@@ -427,7 +427,7 @@ class YouTubeSeriesService:
         timezone_name = str(payload.get("timezone") or "UTC").strip() or "UTC"
         publication_time = str(payload.get("publication_time") or "19:00").strip() or "19:00"
         production_time = str(payload.get("production_time") or "06:00").strip() or "06:00"
-        production_lead_days = max(1, min(3, int(payload.get("production_lead_days") or 1)))
+        production_lead_days = max(0, min(3, int(payload.get("production_lead_days") or 0)))
         status = _series_status(payload.get("status") or "draft")
         editorial_plan = payload.get("editorial_plan")
         if not isinstance(editorial_plan, list) or not editorial_plan:
@@ -470,6 +470,9 @@ class YouTubeSeriesService:
                 "last_promise": None,
                 "next_planned_hook": editorial_plan[0].get("next_episode_hook") if editorial_plan else None,
                 "narrative_progress": 0,
+                "idempotency_key": str(payload.get("idempotency_key") or "").strip() or None,
+                "series_idempotency_key": str(payload.get("idempotency_key") or "").strip() or None,
+                "requested_title": str(payload.get("title") or payload.get("name") or "").strip() or None,
             }),
         )
         db.add(series)
@@ -629,6 +632,7 @@ class YouTubeSeriesService:
         )
         progress = self._series_progress(episodes)
         next_episode = next((ep for ep in episodes if _episode_status(ep.status) not in {"published", "cancelled"}), None)
+        sm = self._series_memory(series)
         return {
             "id": int(series.id),
             "name": series.name,
@@ -642,7 +646,7 @@ class YouTubeSeriesService:
             "publication_time": series.publication_time,
             "production_time": series.production_time,
             "timezone": series.timezone,
-            "production_lead_days": int(series.production_lead_days or 1),
+            "production_lead_days": int(series.production_lead_days or 0),
             "duration_minutes": int(series.duration_minutes or 10),
             "visibility": series.visibility,
             "tone": series.tone,
@@ -652,11 +656,13 @@ class YouTubeSeriesService:
             "use_biblical_references": bool(series.use_biblical_references),
             "cta_subscribe": bool(series.cta_subscribe),
             "cta_next_episode": bool(series.cta_next_episode),
+            "auto_approval": bool(series.auto_approval),
             "total_episodes": int(series.total_episodes or len(episodes)),
             "current_episode": int(progress["current_episode"]),
             "progress_label": f"{progress['current_episode']} de {progress['total']} episódios",
+            "idempotency_key": str(sm.get("idempotency_key") or sm.get("series_idempotency_key") or "").strip() or None,
             "editorial_plan": _json_loads(series.editorial_plan_json, []),
-            "editorial_memory": self._series_memory(series),
+            "editorial_memory": sm,
             "episodes": [self._serialize_episode(db, series, ep) for ep in episodes],
             "next_episode": {
                 "episode_number": int(next_episode.episode_number),
@@ -870,6 +876,7 @@ class YouTubeSeriesService:
         correction_feedback: Optional[str] = None,
         initial_result: Optional[Dict[str, Any]] = None,
         force_regenerate: bool = False,
+        series_idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload_seed = (
             dict(initial_result.get("payload") or {})
@@ -882,8 +889,10 @@ class YouTubeSeriesService:
             else self._build_episode_payload(series, episode, correction_feedback, force_regenerate=force_regenerate)
         )
         identity = _build_identity(payload)
+        explicit_ik = str((payload.get("idempotency_key") if isinstance(payload, dict) else "") or series_idempotency_key or "").strip()
+        effective_ik = explicit_ik or identity["idempotency_key"]
         payload.update({
-            "idempotency_key": identity["idempotency_key"],
+            "idempotency_key": effective_ik,
             "request_hash": identity["request_hash"],
             "content_fingerprint": identity["content_fingerprint"],
             "internal_title": identity["internal_title"],
@@ -896,8 +905,9 @@ class YouTubeSeriesService:
             "title_hint": episode.planned_title,
             "content_fingerprint": identity["content_fingerprint"],
         }
+        claim_ik = f"{effective_ik}:series:{series.id}:episode:{episode.episode_number}"
         claimed = claim_video_task(
-            idempotency_key=f"{identity['idempotency_key']}:series:{series.id}:episode:{episode.episode_number}",
+            idempotency_key=claim_ik,
             request_hash=identity["request_hash"],
             payload=payload,
             dedupe_window_seconds=max(60, min(7 * 24 * 60 * 60, 6 * 60 * 60)),
@@ -915,12 +925,13 @@ class YouTubeSeriesService:
                 "episode_id": int(episode.id),
                 "episode_number": int(episode.episode_number),
                 "publication_datetime": _dt_to_iso(episode.publication_datetime),
+                "idempotency_key": effective_ik,
             },
         })
         episode.task_id = task_id
         episode.content_fingerprint = identity["content_fingerprint"]
         episode.status = "in_production" if str((get_task(task_id) or {}).get("status") or "").lower() in {"pending", "processing"} else "awaiting_review"
-        return {"task_id": task_id, "content_fingerprint": identity["content_fingerprint"]}
+        return {"task_id": task_id, "content_fingerprint": identity["content_fingerprint"], "idempotency_key": effective_ik}
 
     def sync_series_scheduler(self, db: Session, *, now: Optional[datetime] = None) -> Dict[str, Any]:
         self.ensure_schema(db)
@@ -1048,7 +1059,16 @@ class YouTubeSeriesService:
                 if should_queue:
                     if previous_generation_pending:
                         continue
-                    self._enqueue_episode_generation(db, user=user, series=series, episode=episode)
+                    series_ik = ""
+                    try:
+                        sm = self._series_memory(series)
+                        series_ik = str(sm.get("idempotency_key") or sm.get("series_idempotency_key") or "").strip()
+                    except Exception:
+                        series_ik = ""
+                    self._enqueue_episode_generation(
+                        db, user=user, series=series, episode=episode,
+                        series_idempotency_key=series_ik or None,
+                    )
                     activated += 1
                     episode.status = "in_production"
             published = len([ep for ep in episodes if _episode_status(ep.status) == "published"])
