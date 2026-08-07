@@ -882,14 +882,20 @@ class YouTubeSeriesService:
 
         uv_old = self._find_unified_video_by_episode(db, episode)
         version_token = f"v{int(episode.current_version or 1)}"
-        base_ik = (
-            str(series_idempotency_key).strip()
-            or (
-                f"yts:series:{int(series.id)}:episode:{int(episode.episode_number)}"
-            )
+        try:
+            _series_sid_key = str(series_idempotency_key or "").strip()
+            if _series_sid_key and len(_series_sid_key) < 4:
+                _series_sid_key = ""
+        except Exception:
+            _series_sid_key = ""
+        base_ik = _series_sid_key or (
+            f"yts:series:{int(series.id)}:episode:{int(episode.episode_number)}"
         )
         explicit_ik = str((initial_result or {}).get("idempotency_key") if isinstance(initial_result, dict) else "").strip()
-        effective_ik = explicit_ik or f"{base_ik}:{version_token}"
+        _explicit_ik_valid = bool(explicit_ik) and len(explicit_ik) >= 6
+        effective_ik = (explicit_ik if _explicit_ik_valid else None) or f"{base_ik}:{version_token}"
+        if len(str(effective_ik).strip()) < 6:
+            effective_ik = f"yts:series:{int(series.id)}:episode:{int(episode.episode_number)}:{version_token}"
         topic_text = self._episode_topic_prompt(series, episode, correction_feedback)
         identity_payload_for_hash: Dict[str, Any] = {
             "topic": topic_text,

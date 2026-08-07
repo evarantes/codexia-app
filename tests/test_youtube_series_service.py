@@ -12,23 +12,32 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/codexia_test")
+if not os.environ.get("ENABLE_SQLITE_DEV"):
+    os.environ["ENABLE_SQLITE_DEV"] = "true"
+if not os.environ.get("APP_ENV"):
+    os.environ["APP_ENV"] = "development"
+# Override DATABASE_URL explicito postgres de setup? → SQLite dev explicit.
+if os.environ.get("DATABASE_URL", "").startswith("postgresql://"):
+    del os.environ["DATABASE_URL"]
+# SQLite dev: usa SQLiteFile mesmo com APP_ENV=development.
+from app.config import get_settings as _gs
+_ = _gs()
 
 from app.database import Base  # noqa: E402
 from app.models import ScheduledVideo, SeriesEpisode, SeriesPlan, Tenant, User, UnifiedVideoStatus  # noqa: E402
 from app.services.youtube_series_service import youtube_series_service  # noqa: E402
 
 
-# ====== HELPERS — paridade de contrato História/Devocional vs Séries ======
+# ====== HELPERS â€” paridade de contrato HistÃ³ria/Devocional vs SÃ©ries ======
 
 def _story_build_request_payload():
-    """Payload equivalente ao módulo História/Devocional (Texto → Vídeo)."""
+    """Payload equivalente ao mÃ³dulo HistÃ³ria/Devocional (Texto â†’ VÃ­deo)."""
     return {
         "source_module": "story",
         "source_id": "task:abc123",
         "idempotency_key": "story:topic:xyz:v1",
         "content_type": "devotional",
-        "topic": "Como manter a fé nos dias difíceis",
+        "topic": "Como manter a fÃ© nos dias difÃ­ceis",
         "script_text": None,
         "duration_minutes": 10,
         "aspect_ratio": "16:9",
@@ -51,7 +60,7 @@ def _story_build_request_payload():
 
 
 def _series_expected_request_fields():
-    """Campos que TODO UnifiedVideoRequest de série deve ter (mesma assinatura história)."""
+    """Campos que TODO UnifiedVideoRequest de sÃ©rie deve ter (mesma assinatura histÃ³ria)."""
     return {
         "source_module",
         "source_id",
@@ -114,10 +123,10 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
 
     def _create_series(self, **overrides):
         payload = {
-            "name": "Jornada da Fé",
-            "main_theme": "Como manter a fé nos dias difíceis",
-            "objective": "Conduzir o público em sete passos de fortalecimento espiritual.",
-            "target_audience": "Adultos cristãos",
+            "name": "Jornada da FÃ©",
+            "main_theme": "Como manter a fÃ© nos dias difÃ­ceis",
+            "objective": "Conduzir o pÃºblico em sete passos de fortalecimento espiritual.",
+            "target_audience": "Adultos cristÃ£os",
             "content_type": "reflection",
             "start_date": "2026-08-01",
             "end_date": "2026-08-05",
@@ -156,16 +165,16 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
 
     def test_multiple_series_remain_independent_lines(self):
         with patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}):
-            self._create_series(name="Jornada da Fé", main_theme="Fé", start_date="2026-08-01", end_date="2026-08-03")
+            self._create_series(name="Jornada da FÃ©", main_theme="FÃ©", start_date="2026-08-01", end_date="2026-08-03")
             self._create_series(name="Superando o Medo", main_theme="Medo", start_date="2026-08-05", end_date="2026-08-09")
-            self._create_series(name="Orações da Manhã", main_theme="Oração", start_date="2026-08-01", end_date="2026-08-31")
+            self._create_series(name="OraÃ§Ãµes da ManhÃ£", main_theme="OraÃ§Ã£o", start_date="2026-08-01", end_date="2026-08-31")
             listing = youtube_series_service.list_series(self.db, user=self.user)
 
         self.assertEqual(listing["count"], 3)
         names = {item["name"] for item in listing["items"]}
-        self.assertIn("Jornada da Fé", names)
+        self.assertIn("Jornada da FÃ©", names)
         self.assertIn("Superando o Medo", names)
-        self.assertIn("Orações da Manhã", names)
+        self.assertIn("OraÃ§Ãµes da ManhÃ£", names)
 
     def test_approval_creates_publish_queue_entry_without_regeneration(self):
         detail = self._create_series(status="active")
@@ -185,9 +194,9 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         fake_uv.status = UnifiedVideoStatus.AWAITING_REVIEW
         fake_uv.video_url = "/media/videos/approved.mp4"
         fake_uv.video_path = None
-        fake_uv.script_json = json.dumps({"title": "Episódio aprovado", "description": "Descrição pronta"})
-        fake_uv.title = "Episódio aprovado"
-        fake_uv.description = "Descrição pronta"
+        fake_uv.script_json = json.dumps({"title": "EpisÃ³dio aprovado", "description": "DescriÃ§Ã£o pronta"})
+        fake_uv.title = "EpisÃ³dio aprovado"
+        fake_uv.description = "DescriÃ§Ã£o pronta"
         fake_uv.youtube_video_id = None
         fake_uv.youtube_url = None
         fake_uv.estimated_cost = 1.2
@@ -212,14 +221,14 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         with patch("app.services.youtube_series_service.get_task", return_value={
             "status": "completed",
             "result": {
-                "title": "Episódio aprovado",
-                "description": "Descrição pronta",
+                "title": "EpisÃ³dio aprovado",
+                "description": "DescriÃ§Ã£o pronta",
                 "video_url": "/media/videos/approved.mp4",
                 "cost_control": {"estimated_cost": 1.2, "actual_cost": 0.8},
             },
         }), patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}), \
-            patch.object(youtube_series_service, "_require_unified_pipeline") as mock_require, \
-            patch.object(youtube_series_service, "_find_unified_video_by_episode", return_value=fake_uv):
+            patch("app.services.youtube_series_service._require_unified_pipeline") as mock_require, \
+            patch("app.services.youtube_series_service._find_unified_video_by_episode", return_value=fake_uv):
 
             uvpsvc = MagicMock()
             uvpsvc.transition_status = fake_transition
@@ -246,7 +255,7 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         self.assertEqual(refreshed_ep["status"], "scheduled")
 
     def test_rejection_by_image_creates_new_version_with_seeds_in_unified_video_request(self):
-        """Rejeição NÃO usa pipeline legado: usa seeded_script / selected_images / reuse_audio_from no UReq."""
+        """RejeiÃ§Ã£o NÃƒO usa pipeline legado: usa seeded_script / selected_images / reuse_audio_from no UReq."""
         audio_path = self.temp_dir / "audio.mp3"
         audio_path.write_text("audio", encoding="utf-8")
         detail = self._create_series(status="active")
@@ -302,8 +311,8 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
 
         with patch("app.services.youtube_series_service.get_task", return_value={"status": "completed", "result": {}}), \
              patch("app.services.youtube_series_service.update_task", return_value=None), \
-             patch.object(youtube_series_service, "_require_unified_pipeline") as mock_require, \
-             patch.object(youtube_series_service, "_find_unified_video_by_episode", return_value=fake_uv), \
+             patch("app.services.youtube_series_service._require_unified_pipeline") as mock_require, \
+             patch("app.services.youtube_series_service._find_unified_video_by_episode", return_value=fake_uv), \
              patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}):
 
             uvpsvc = MagicMock()
@@ -316,7 +325,7 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
                 user=self.user,
                 episode_id=episode_id,
                 reasons=["image"],
-                feedback="A imagem principal não representa a narração.",
+                feedback="A imagem principal nÃ£o representa a narraÃ§Ã£o.",
             )
 
         updated = next(ep for ep in result["episodes"] if ep["id"] == episode_id)
@@ -336,20 +345,20 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         self.assertIsNotNone(req, "submit_or_reuse DEVE ser chamado pelo pipeline unificado")
         self.assertIsNone(
             captured_requests.get("legacy_initial_result"),
-            "Séries NÃO deve passar initial_result legado (seeds via campos do UReq)."
+            "SÃ©ries NÃƒO deve passar initial_result legado (seeds via campos do UReq)."
         )
 
-        # ===== VALIDAÇÃO DA PARIDADE: mesmos campos do UnifiedVideoRequest usado por História =====
+        # ===== VALIDAÃ‡ÃƒO DA PARIDADE: mesmos campos do UnifiedVideoRequest usado por HistÃ³ria =====
         req_fields = {f for f in dir(req) if not f.startswith("_") and not callable(getattr(req, f))}
         for expected in _series_expected_request_fields():
-            self.assertIn(expected, req_fields, f"Séries: campo {expected} ausente no UReq (História tem).")
+            self.assertIn(expected, req_fields, f"SÃ©ries: campo {expected} ausente no UReq (HistÃ³ria tem).")
 
-        # ===== VALIDAÇÃO DOS SEEDS: script/audio carregados, SOMENTE imagem alvo é regenerada =====
+        # ===== VALIDAÃ‡ÃƒO DOS SEEDS: script/audio carregados, SOMENTE imagem alvo Ã© regenerada =====
         self.assertIsNotNone(req.seeded_script, "seeded_script deve ser passado ao UReq (reutiliza script).")
         self.assertIsInstance(req.selected_images, list, "selected_images deve ser list com slots por cena.")
         self.assertGreaterEqual(len(req.selected_images), 1, "selected_images deve conter slots para cada cena.")
-        self.assertIsNotNone(req.reuse_audio_from, "reuse_audio_from deve carregar output_path + srt da geração anterior.")
-        self.assertTrue(req.force_regenerate, "force_regenerate=True quando imagem está em regenerated_components.")
+        self.assertIsNotNone(req.reuse_audio_from, "reuse_audio_from deve carregar output_path + srt da geraÃ§Ã£o anterior.")
+        self.assertTrue(req.force_regenerate, "force_regenerate=True quando imagem estÃ¡ em regenerated_components.")
 
     def test_scheduler_blocks_publication_when_no_approval_exists(self):
         detail = self._create_series(status="active")
@@ -395,8 +404,10 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         episodes = detail["episodes"]
 
         self.assertTrue(episodes[1]["previous_episode_hook"])
-        self.assertIn("próximo", episodes[0]["next_episode_hook"].lower())
-        self.assertIn("concl", episodes[-1]["next_episode_hook"].lower())
+        self.assertIn("proximo", episodes[0]["next_episode_hook"].lower()
+                      .replace("ó", "o").replace("õ", "o").replace("â", "a").replace("ã", "a").replace("ç", "c"))
+        self.assertIn("concl", episodes[-1]["next_episode_hook"].lower()
+                      .replace("ó", "o").replace("õ", "o").replace("â", "a").replace("ã", "a").replace("ç", "c"))
 
     def test_scheduler_is_idempotent_for_due_episode(self):
         detail = self._create_series(status="active")
@@ -425,20 +436,20 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
 # ==============================================================================
 # ==============================================================================
 # CLASSE DE TESTES QUE PROVA A PARIDADE:
-#   SÉRIES PROGRAMADAS  == EXATAMENTE ==  HISTÓRIA / DEVOCIONAL
+#   SÃ‰RIES PROGRAMADAS  == EXATAMENTE ==  HISTÃ“RIA / DEVOCIONAL
 #
-# Verificações arquiteturais:
-#   1. Séries NÃO importa/usa nenhum serviço legado de geração.
-#   2. Séries usa submit_or_reuse com EXATAMENTE os mesmos parâmetros do Story.
-#   3. Aprovação usa transition_status + publish_if_ready (mesmos do Story review).
+# VerificaÃ§Ãµes arquiteturais:
+#   1. SÃ©ries NÃƒO importa/usa nenhum serviÃ§o legado de geraÃ§Ã£o.
+#   2. SÃ©ries usa submit_or_reuse com EXATAMENTE os mesmos parÃ¢metros do Story.
+#   3. AprovaÃ§Ã£o usa transition_status + publish_if_ready (mesmos do Story review).
 #   4. publish_if_ready usa upload_callable (YouTubeService.upload_video),
-#      NÃO faz upload secundário dentro do approve_episode.
-#   5. Idempotência versionada: episode.current_version ++ → :vN no ik.
+#      NÃƒO faz upload secundÃ¡rio dentro do approve_episode.
+#   5. IdempotÃªncia versionada: episode.current_version ++ â†’ :vN no ik.
 # ==============================================================================
 # ==============================================================================
 
 class SeriesPipelineParityTests(unittest.TestCase):
-    """PROVA: módulo Séries percorre EXATAMENTE o mesmo fluxo do módulo História/Devocional."""
+    """PROVA: mÃ³dulo SÃ©ries percorre EXATAMENTE o mesmo fluxo do mÃ³dulo HistÃ³ria/Devocional."""
 
     def setUp(self):
         self.temp_dir = Path(tempfile.mkdtemp(prefix="yt-series-parity-"))
@@ -471,10 +482,10 @@ class SeriesPipelineParityTests(unittest.TestCase):
 
     def _create_active_series_with_episode(self):
         payload = {
-            "name": "Serie Paridade História vs Séries",
+            "name": "Serie Paridade Historia vs Series",
             "main_theme": "Como confiar no Senhor em tempos de crise",
             "objective": "Teste de paridade de pipeline.",
-            "target_audience": "Adultos cristãos",
+            "target_audience": "Adultos cristaos",
             "content_type": "reflection",
             "start_date": "2026-08-10",
             "end_date": "2026-08-10",
@@ -495,19 +506,26 @@ class SeriesPipelineParityTests(unittest.TestCase):
         }
         with patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}):
             detail = youtube_series_service.create_series(self.db, user=self.user, payload=payload)
-        series = self.db.query(SeriesPlan).filter(SeriesPlan.id == detail["id"]).first()
-        episode = self.db.query(SeriesEpisode).filter(SeriesEpisode.series_id == series.id).first()
+        # Garante IDs numéricos preenchidos antes do retorno
+        self.db.flush()
+        series = self.db.query(SeriesPlan).filter(SeriesPlan.id == int(detail["id"])).first()
+        self.assertIsNotNone(series, "SeriesPlan não persistido.")
+        episode = self.db.query(SeriesEpisode).filter(SeriesEpisode.series_id == int(series.id)).first()
+        self.assertIsNotNone(episode, "SeriesEpisode não persistido.")
+        self.assertIsNotNone(getattr(series, "id", None), "series.id NÃO pode ser None (quebra idempotency_key).")
+        self.assertIsNotNone(getattr(episode, "episode_number", None),
+                             "episode.episode_number NÃO pode ser None.")
         return series, episode, detail
 
     # ------------------------------------------------------------------
-    # 1. ARQUITETURA: SEM DUPLICIDADE — NÃO EXPORTA SERVIÇOS LEGADOS
+    # 1. ARQUITETURA: SEM DUPLICIDADE â€” NÃƒO EXPORTA SERVIÃ‡OS LEGADOS
     # ------------------------------------------------------------------
     def test_series_service_module_does_not_import_legacy_pipeline_symbols(self):
-        """youtube_series_service NÃO pode importar claim_video_task / AIContentGenerator / VoiceoverService / VideoFactory."""
+        """youtube_series_service NÃƒO pode importar claim_video_task / AIContentGenerator / VoiceoverService / VideoFactory."""
         import inspect
         source = inspect.getsource(youtube_series_service)
         forbidden_top_level = [
-            "claim_video_task",  # NÃO tem 2º pipeline
+            "claim_video_task",  # NÃƒO tem 2Âº pipeline
             "AIContentGenerator",
             "VoiceoverService",
             "VideoFactory",
@@ -519,22 +537,22 @@ class SeriesPipelineParityTests(unittest.TestCase):
             from_line = f"from app"
             self.assertNotIn(
                 import_line, source,
-                f"youtube_series_service.py NÃO DEVE importar '{symbol}' (seria pipeline duplicado). "
-                "Apenas app/services/unified_video_pipeline.py deve instanciar serviços de geração."
+                f"youtube_series_service.py NÃƒO DEVE importar '{symbol}' (seria pipeline duplicado). "
+                "Apenas app/services/unified_video_pipeline.py deve instanciar serviÃ§os de geraÃ§Ã£o."
             )
-        # Também garante que, no bloco de imports de task_manager, claim_video_task não esteja
+        # TambÃ©m garante que, no bloco de imports de task_manager, claim_video_task nÃ£o esteja
         import app.services.youtube_series_service as ytss_mod
         self.assertFalse(
             getattr(ytss_mod, "claim_video_task", None) is not None and callable(getattr(ytss_mod, "claim_video_task", None)),
-            "claim_video_task NÃO deve estar disponível em youtube_series_service (removido do bloco de imports)."
+            "claim_video_task NÃƒO deve estar disponÃ­vel em youtube_series_service (removido do bloco de imports)."
         )
 
     def test_series_service_requires_unified_pipeline_before_any_generation(self):
-        """_require_unified_pipeline existe e levanta RuntimeError se UVP não carregar."""
+        """_require_unified_pipeline existe e levanta RuntimeError se UVP nÃ£o carregar."""
         import app.services.youtube_series_service as ytss_mod
         self.assertTrue(
             callable(getattr(ytss_mod, "_require_unified_pipeline", None)),
-            "_require_unified_pipeline deve ser a função de guarda (não _get_unified_video_pipeline com fallback)."
+            "_require_unified_pipeline deve ser a funÃ§Ã£o de guarda (nÃ£o _get_unified_video_pipeline com fallback)."
         )
         # Simula UVP ausente e confirma RuntimeError
         saved_ok, saved_uvp, saved_factory, saved_ureq = (
@@ -556,10 +574,10 @@ class SeriesPipelineParityTests(unittest.TestCase):
             )
 
     # ------------------------------------------------------------------
-    # 2. PARIDADE submit_or_reuse: Mesmos parâmetros que História
+    # 2. PARIDADE submit_or_reuse: Mesmos parÃ¢metros que HistÃ³ria
     # ------------------------------------------------------------------
     def test_series_submit_or_reuse_called_with_same_signature_as_story_module(self):
-        """Séries chama submit_or_reuse(db, request=UnifiedVideoRequest, kick_queue_callback, legacy_initial_result, user)."""
+        """SÃ©ries chama submit_or_reuse(db, request=UnifiedVideoRequest, kick_queue_callback, legacy_initial_result, user)."""
         series, episode, detail = self._create_active_series_with_episode()
 
         captured: Dict[str, Any] = {}
@@ -590,7 +608,7 @@ class SeriesPipelineParityTests(unittest.TestCase):
             return fake_result
 
         with patch("app.services.youtube_series_service.update_task", return_value=None), \
-             patch.object(youtube_series_service, "_require_unified_pipeline") as mock_req:
+             patch("app.services.youtube_series_service._require_unified_pipeline") as mock_req:
             uvpsvc = MagicMock()
             uvpsvc.submit_or_reuse = fake_submit
             uvpsvc.ensure_schema = MagicMock()
@@ -603,34 +621,34 @@ class SeriesPipelineParityTests(unittest.TestCase):
                 episode=episode,
             )
 
-        # ======== Exatamente os mesmos 5 parâmetros que o módulo story ========
+        # ======== Exatamente os mesmos 5 parÃ¢metros que o mÃ³dulo story ========
         story_expected_kwargs = {"db", "request", "kick_queue_callback", "legacy_initial_result", "user"}
-        # O primeiro arg posicional é db (self.db via positional), os restantes são kwargs
-        self.assertEqual(captured["args_count"], 1, "submit_or_reuse deve receber 'db' como 1º arg posicional.")
+        # O primeiro arg posicional Ã© db (self.db via positional), os restantes sÃ£o kwargs
+        self.assertEqual(captured["args_count"], 1, "submit_or_reuse deve receber 'db' como 1Âº arg posicional.")
         # db = args[0], restante via kwargs
         self.assertTrue(
             story_expected_kwargs.issubset(captured["kwargs_keys"] | {"db"}),
-            f"Séries deve chamar submit_or_reuse com mesma assinatura que story: {story_expected_kwargs}. "
+            f"SÃ©ries deve chamar submit_or_reuse com mesma assinatura que story: {story_expected_kwargs}. "
             f"Obtido: {captured['kwargs_keys']}"
         )
 
         self.assertEqual(captured["source_module"], "youtube_series",
-                         "source_module=youtube_series (diferencia registros no unified_videos sem duplicar lógica).")
+                         "source_module=youtube_series (diferencia registros no unified_videos sem duplicar lÃ³gica).")
         self.assertEqual(captured["source_id_prefix"], "episode",
-                         "source_id='episode:{id}' — padrão único para encontrar UnifiedVideo pelo episódio.")
+                         "source_id='episode:{id}' â€” padrÃ£o Ãºnico para encontrar UnifiedVideo pelo episÃ³dio.")
         self.assertEqual(captured["kick_callback_type"], "callable",
-                         "kick_queue_callback deve ser callable (ou None), como no módulo story.")
-        self.assertTrue(captured["user_passed"], "O usuário autenticado deve ser repassado ao submit_or_reuse (igual story).")
+                         "kick_queue_callback deve ser callable (ou None), como no mÃ³dulo story.")
+        self.assertTrue(captured["user_passed"], "O usuÃ¡rio autenticado deve ser repassado ao submit_or_reuse (igual story).")
         self.assertTrue(captured["has_legacy_initial_result"],
                         "legacy_initial_result deve ser passado explicitamente (igual story, mesmo quando None).")
-        # Em Séries: legacy_initial_result é sempre None (seeds via UReq)
+        # Em SÃ©ries: legacy_initial_result Ã© sempre None (seeds via UReq)
         self.assertIsNone(
             captured.get("legacy_initial_result_value"), None,  # compatibilidade
-            "Séries NÃO deve carregar 'base_result' em legacy_initial_result. Seeds são campos do UnifiedVideoRequest."
+            "SÃ©ries NÃƒO deve carregar 'base_result' em legacy_initial_result. Seeds sÃ£o campos do UnifiedVideoRequest."
         )
 
     def test_series_idempotency_key_versioned_by_current_version(self):
-        """episode.current_version → ':vN' no idempotency_key (reprocessamento de nova versão gera nova task, não reutiliza errado)."""
+        """episode.current_version â†’ ':vN' no idempotency_key (reprocessamento de nova versÃ£o gera nova task, nÃ£o reutiliza errado)."""
         series, episode, detail = self._create_active_series_with_episode()
         captured_key: Dict[str, Any] = {}
 
@@ -652,7 +670,7 @@ class SeriesPipelineParityTests(unittest.TestCase):
             return fake_result
 
         with patch("app.services.youtube_series_service.update_task", return_value=None), \
-             patch.object(youtube_series_service, "_require_unified_pipeline") as mock_req:
+             patch("app.services.youtube_series_service._require_unified_pipeline") as mock_req:
             uvpsvc = MagicMock()
             uvpsvc.submit_or_reuse = fake_submit
             uvpsvc.ensure_schema = MagicMock()
@@ -662,15 +680,15 @@ class SeriesPipelineParityTests(unittest.TestCase):
             youtube_series_service._enqueue_episode_generation(self.db, user=self.user, series=series, episode=episode)
 
         self.assertIn(":v3", captured_key["ikey"],
-                      f"idempotency_key deve terminar com :v{int(episode.current_version or 1)} (3 nesta simulação). "
+                      f"idempotency_key deve terminar com :v{int(episode.current_version or 1)} (3 nesta simulaÃ§Ã£o). "
                       f"Obtido: {captured_key['ikey']}")
 
     # ------------------------------------------------------------------
-    # 3. Aprovação: transition_status → APPROVED + publish_if_ready ÚNICO
+    # 3. AprovaÃ§Ã£o: transition_status â†’ APPROVED + publish_if_ready ÃšNICO
     # ------------------------------------------------------------------
     def test_approve_episode_uses_unified_pipeline_exclusive_methods_no_secondary_upload(self):
-        """approve_episode chama: transition_status → APPROVED + publish_if_ready(upload_callable).
-        NÃO pode existir um YouTubeService.upload_video FORA do upload_callable (upload secundário)."""
+        """approve_episode chama: transition_status â†’ APPROVED + publish_if_ready(upload_callable).
+        NÃƒO pode existir um YouTubeService.upload_video FORA do upload_callable (upload secundÃ¡rio)."""
         series, episode, detail = self._create_active_series_with_episode()
         episode.task_id = "task-parity-approve"
         episode.status = "awaiting_review"
@@ -686,8 +704,8 @@ class SeriesPipelineParityTests(unittest.TestCase):
         fake_uv.status = UnifiedVideoStatus.AWAITING_REVIEW
         fake_uv.video_url = "/media/parity.mp4"
         fake_uv.video_path = str(self.temp_dir / "parity.mp4")
-        fake_uv.title = "Episódio Paridade"
-        fake_uv.description = "Descrição paridade"
+        fake_uv.title = "EpisÃ³dio Paridade"
+        fake_uv.description = "DescriÃ§Ã£o paridade"
         fake_uv.youtube_video_id = None
         fake_uv.youtube_url = None
         fake_uv.script_json = json.dumps({"title": fake_uv.title, "description": fake_uv.description})
@@ -740,8 +758,8 @@ class SeriesPipelineParityTests(unittest.TestCase):
         with patch("app.services.youtube_series_service.get_task", return_value={"status": "completed", "result": {
             "title": fake_uv.title, "description": fake_uv.description,
             "video_url": fake_uv.video_url,
-        }}), patch.object(youtube_series_service, "_require_unified_pipeline") as mock_req, \
-             patch.object(youtube_series_service, "_find_unified_video_by_episode", return_value=fake_uv), \
+        }}), patch("app.services.youtube_series_service._require_unified_pipeline") as mock_req, \
+             patch("app.services.youtube_series_service._find_unified_video_by_episode", return_value=fake_uv), \
              patch("app.services.youtube_service.YouTubeService", side_effect=lambda: _FakeYouTubeService()):
             uvpsvc = MagicMock()
             uvpsvc.transition_status = fake_transition
@@ -752,23 +770,23 @@ class SeriesPipelineParityTests(unittest.TestCase):
 
         self.assertIsNotNone(captured_calls["transition"], "transition_status DEVE ser chamado no approve.")
         self.assertEqual(captured_calls["transition"]["status"], UnifiedVideoStatus.APPROVED,
-                         f"transition_status DEVE levar para APPROVED — status: {UnifiedVideoStatus.APPROVED}.")
+                         f"transition_status DEVE levar para APPROVED â€” status: {UnifiedVideoStatus.APPROVED}.")
         self.assertIsNotNone(captured_calls["publish"], "publish_if_ready DEVE ser chamado no approve.")
         self.assertTrue(captured_calls["publish"]["upload_callable_callable"],
                         "publish_if_ready DEVE receber upload_callable callable.")
 
-        # upload_callable chama YouTubeService.upload_video → contagem deve ser 1
+        # upload_callable chama YouTubeService.upload_video â†’ contagem deve ser 1
         # Se o approve_episode chamasse YouTubeService.upload_video FORA do callable (upload duplicado),
         # a contagem seria 2 ou mais.
         self.assertEqual(captured_calls["yt_upload_calls"], 1,
                          "DEVE haver EXATAMENTE 1 YouTubeService.upload_video POR approve_episode, "
-                         "DENTRO do publish_if_ready via upload_callable. Nenhum upload secundário fora do UVP.")
+                         "DENTRO do publish_if_ready via upload_callable. Nenhum upload secundÃ¡rio fora do UVP.")
 
     # ------------------------------------------------------------------
     # 4. Request fields: 1:1 com UnifiedVideoRequest (igual Story)
     # ------------------------------------------------------------------
     def test_series_unified_video_request_has_every_story_field(self):
-        """Séries UReq ⊇ Story UReq. Todo campo que História pode passar, Séries também pode."""
+        """SÃ©ries UReq âŠ‡ Story UReq. Todo campo que HistÃ³ria pode passar, SÃ©ries tambÃ©m pode."""
         series, episode, detail = self._create_active_series_with_episode()
 
         captured_req: Dict[str, Any] = {}
@@ -790,7 +808,7 @@ class SeriesPipelineParityTests(unittest.TestCase):
             return fake_result
 
         with patch("app.services.youtube_series_service.update_task", return_value=None), \
-             patch.object(youtube_series_service, "_require_unified_pipeline") as mock_req:
+             patch("app.services.youtube_series_service._require_unified_pipeline") as mock_req:
             uvpsvc = MagicMock()
             uvpsvc.submit_or_reuse = fake_submit
             uvpsvc.ensure_schema = MagicMock()
@@ -804,8 +822,8 @@ class SeriesPipelineParityTests(unittest.TestCase):
             if not hasattr(req, key):
                 missing.append(key)
         self.assertEqual(missing, [],
-                         f"Séries deve expor TODOS os campos que o payload de História espera. "
-                         f"Campos ausentes no UnifiedVideoRequest de série: {missing}")
+                         f"SÃ©ries deve expor TODOS os campos que o payload de HistÃ³ria espera. "
+                         f"Campos ausentes no UnifiedVideoRequest de sÃ©rie: {missing}")
 
 
 if __name__ == "__main__":
