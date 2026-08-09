@@ -806,6 +806,10 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
         except Exception:
             pass
         _sync_task_aux_state(db, task_id, status=(status or row.status), result_json=row.result_json)
+        try:
+            row.updated_at = datetime.utcnow()
+        except Exception:
+            pass
         db.commit()
         current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
         video_tasks[task_id] = current

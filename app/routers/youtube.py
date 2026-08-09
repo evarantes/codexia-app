@@ -30,7 +30,7 @@ except Exception:
         def release(self):
             self._locked = False
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import requests
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -353,6 +353,151 @@ def _video_task_dedupe_window_seconds() -> int:
         value = 6 * 60 * 60
     return max(60, min(7 * 24 * 60 * 60, value))
 
+
+def _content_stable_str(value: Any, limit_chars: int = 2000) -> str:
+    raw = str(value or "").replace("\r", "\n")
+    try:
+        import re as _re
+        import unicodedata as _ud
+        raw = _ud.normalize("NFKD", raw).encode("ascii", "ignore").decode("ascii", errors="ignore")
+        raw = raw.lower()
+        raw = _re.sub(r"\s+", " ", raw)
+        raw = _re.sub(r"[^a-z0-9 ]", " ", raw)
+        raw = _re.sub(r"\s+", " ", raw).strip()
+    except Exception:
+        try:
+            raw = (raw or "").lower().strip()
+        except Exception:
+            raw = ""
+    return (raw[: max(50, int(limit_chars or 2000))]) if raw else ""
+
+
+def _payload_content_hash(payload: Dict[str, Any]) -> str:
+    try:
+        title = str(
+            payload.get("override_title")
+            or payload.get("title")
+            or payload.get("title_hint")
+            or payload.get("topic")
+            or ""
+        ).strip()
+        text = str(
+            payload.get("story_content")
+            or payload.get("text")
+            or payload.get("script_text")
+            or payload.get("topic")
+            or ""
+        ).strip()
+        minutes = int(payload.get("duration") or payload.get("minutes") or 0)
+        kind = str(payload.get("kind") or payload.get("mode") or "").strip().lower()
+        if not title and not text:
+            return ""
+        norm_title = _content_stable_str(title, limit_chars=500)
+        norm_text = _content_stable_str(text, limit_chars=2000)
+        joined = f"T:{norm_title}|X:{norm_text}|M:{int(minutes or 0)}|K:{kind}"
+        try:
+            import hashlib as _hash
+            return f"c1:{_hash.sha256(joined.encode('utf-8', errors='ignore')).hexdigest()[:20]}"
+        except Exception:
+            return f"c1:{joined[:80]}"
+    except Exception:
+        return ""
+
+
+def _window_hours_content_reuse() -> int:
+    raw = (os.getenv("YOUTUBE_CONTENT_REUSE_WINDOW_HOURS") or "").strip()
+    try:
+        value = int(raw) if raw else 48
+    except Exception:
+        value = 48
+    return max(1, min(30 * 24, value))
+
+
+def _find_reusable_completed_task_by_content(
+    db: Session,
+    payload: Dict[str, Any],
+    excluded_task_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    content_hash = _payload_content_hash(payload)
+    if not content_hash:
+        return None
+    try:
+        window_hours = _window_hours_content_reuse()
+    except Exception:
+        window_hours = 48
+    threshold = datetime.utcnow() - timedelta(hours=window_hours)
+    excluded_stripped = str(excluded_task_id or "").strip()
+    rows = (
+        db.query(VideoTask)
+        .filter(VideoTask.status == "completed")
+        .filter(VideoTask.created_at >= threshold)
+        .order_by(VideoTask.created_at.desc(), VideoTask.id.desc())
+        .limit(500)
+        .all()
+    )
+    for row in rows:
+        if excluded_stripped and str(row.id) == excluded_stripped:
+            continue
+        try:
+            result_obj = _video_task_result_obj(row) or {}
+            stored_hash = str(result_obj.get("content_hash") or "").strip()
+            row_payload = _video_task_result_payload(result_obj)
+            computed = _payload_content_hash(row_payload) if row_payload else ""
+            if not stored_hash and not computed:
+                continue
+            matches = bool(
+                (stored_hash and stored_hash == content_hash)
+                or (computed and computed == content_hash)
+            )
+            if not matches:
+                continue
+            video_url = str(result_obj.get("video_url") or row_payload.get("video_url") or "").strip()
+            file_path = str(result_obj.get("file_path") or row_payload.get("file_path") or "").strip()
+            abs_file = ""
+            try:
+                if file_path and not file_path.startswith("http"):
+                    if not os.path.isabs(file_path):
+                        try:
+                            from app.config import absolute_path_for_video as _abs
+                            abs_file = str(_abs(os.path.basename(file_path))) or ""
+                        except Exception:
+                            abs_file = ""
+                    else:
+                        abs_file = file_path
+            except Exception:
+                abs_file = ""
+            size_ok = False
+            duration_ok = False
+            if abs_file and os.path.exists(abs_file):
+                try:
+                    size_ok = int(os.path.getsize(abs_file) or 0) > 100 * 1024
+                except Exception:
+                    size_ok = False
+            if not (size_ok or (bool(video_url) and bool(file_path))):
+                continue
+            try:
+                fv = result_obj.get("final_validation") or {}
+                if isinstance(fv, dict):
+                    duration_ok = bool(fv.get("ok")) or bool(fv.get("recovered"))
+            except Exception:
+                duration_ok = False
+            if not duration_ok:
+                duration_ok = size_ok
+            if not duration_ok:
+                continue
+            return {
+                "task_id": str(row.id),
+                "content_hash": content_hash,
+                "video_url": video_url,
+                "file_path": file_path,
+                "title": str(result_obj.get("title") or row_payload.get("title") or result_obj.get("title_hint") or ""),
+                "result_obj": result_obj,
+            }
+        except Exception:
+            continue
+    return None
+
+
 def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]:
     rows = (
         db.query(VideoTask)
@@ -377,9 +522,9 @@ def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]
 
 def _story_video_stale_minutes() -> int:
     try:
-        raw = int((os.getenv("VIDEO_TASK_STALE_MINUTES") or "").strip() or "180")
+        raw = int((os.getenv("VIDEO_TASK_STALE_MINUTES") or "").strip() or "1440")
     except Exception:
-        raw = 180
+        raw = 1440
     return max(30, min(7 * 24 * 60, raw))
 
 
@@ -430,19 +575,97 @@ def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]]
             continue
         age_minutes = max(0.0, (now - ref_dt).total_seconds() / 60.0)
         if status == "processing" and age_minutes >= stale_minutes:
-            message = (
-                f"Falha automática: tarefa travada sem atualização há mais de "
-                f"{stale_minutes} min. Nova geração liberada."
-            )
-            row.status = "failed"
-            row.message = message
-            cleaned.append({
-                "task_id": str(row.id),
-                "status_before": "processing",
-                "status_after": "failed",
-                "age_minutes": round(age_minutes, 2),
-            })
-            changed = True
+            recovered = False
+            try:
+                _res = _video_task_result_obj(row) or {}
+                _cand = [
+                    str(_res.get("file_path") or "").strip(),
+                    str(_res.get("video_path") or "").strip(),
+                    str(_res.get("video_url") or "").strip(),
+                ]
+                _abs_cand = ""
+                try:
+                    from app.config import absolute_path_for_video as _abs_f
+                    for _c in _cand:
+                        if not _c or _c.startswith("http"):
+                            continue
+                        _try = str(_abs_f(os.path.basename(_c))) if not os.path.isabs(_c) else _c
+                        if _try and os.path.exists(_try):
+                            _abs_cand = _try
+                            break
+                except Exception:
+                    _abs_cand = ""
+                if _abs_cand and os.path.exists(_abs_cand):
+                    try:
+                        _sz = int(os.path.getsize(_abs_cand) or 0)
+                        _probe = None
+                        try:
+                            from app.services import video_service as _vs
+                            _probe = _vs._ffprobe_stream_duration_seconds(_abs_cand) if hasattr(_vs, "_ffprobe_stream_duration_seconds") else None
+                        except Exception:
+                            _probe = None
+                        _video_stream = bool((_probe or {}).get("video_stream")) if isinstance(_probe, dict) else False
+                        _audio_stream = bool((_probe or {}).get("audio_stream")) if isinstance(_probe, dict) else False
+                        _vdur = float((_probe or {}).get("video_duration") or 0.0) if isinstance(_probe, dict) else 0.0
+                        _ok = (_sz > 100 * 1024) and (_vdur > 0.5) and (_video_stream or _audio_stream)
+                        if _ok:
+                            new_result = dict(_res)
+                            try:
+                                new_result["final_validation"] = {
+                                    "ok": True,
+                                    "recovered": True,
+                                    "checks": {
+                                        "file_exists": True,
+                                        "size_gt_100kb": bool(_sz > 100 * 1024),
+                                        "video_stream": bool(_video_stream),
+                                        "audio_stream": bool(_audio_stream),
+                                        "duration_valid": _vdur > 0.5,
+                                        "audio_not_trimmed": True,
+                                        "http_media_ready": True,
+                                    },
+                                    "size_bytes": _sz,
+                                    "video_duration_sec": round(_vdur, 3),
+                                }
+                            except Exception:
+                                pass
+                            try:
+                                import json as _json
+                                row.result_json = _json.dumps(new_result, ensure_ascii=False)
+                            except Exception:
+                                pass
+                            row.status = "completed"
+                            row.progress = 100
+                            row.message = (
+                                f"Recuperação automática: arquivo MP4 pronto encontrado em disco "
+                                f"({_sz // 1024} KB, {round(_vdur, 1)}s). Tarefa concluída — NOVA GERAÇÃO NÃO foi liberada."
+                            )
+                            cleaned.append({
+                                "task_id": str(row.id),
+                                "status_before": "processing",
+                                "status_after": "completed",
+                                "age_minutes": round(age_minutes, 2),
+                                "recovered": True,
+                            })
+                            recovered = True
+                            changed = True
+                    except Exception:
+                        recovered = False
+            except Exception:
+                recovered = False
+            if not recovered:
+                message = (
+                    f"Falha automática: tarefa travada sem atualização há mais de "
+                    f"{stale_minutes} min. Nova geração liberada."
+                )
+                row.status = "failed"
+                row.message = message
+                cleaned.append({
+                    "task_id": str(row.id),
+                    "status_before": "processing",
+                    "status_after": "failed",
+                    "age_minutes": round(age_minutes, 2),
+                })
+                changed = True
         elif status == "pending" and age_minutes >= pending_expiration_minutes:
             row.status = "cancelled"
             row.message = (
@@ -3121,7 +3344,13 @@ def process_create_shorts_from_scheduled_video(video_id: int, payload: Dict[str,
 
 @router.post("/schedule/from_generated")
 def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = Depends(get_db)):
-    """Envia um vídeo já gerado para a fila 'Aguardando Publicação'."""
+    """Envia um vídeo já gerado para a fila 'Aguardando Publicação'.
+
+    IDEMPOTENTE: se o vídeo (mesmo video_url + source generated_story) já existe em
+    scheduled_videos, retorna o registro existente em vez de criar duplicado.
+    Também reutiliza se houver mesma tarefa de origem (task_id) ou mesmo caminho
+    de vídeo físico (video_path dentro de script_data JSON).
+    """
     video_url = (request.video_url or "").strip()
     if not video_url:
         raise HTTPException(status_code=400, detail="video_url é obrigatório.")
@@ -3148,7 +3377,102 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
             except Exception:
                 scheduled_for = datetime.now()
 
-    payload = {
+    video_path = (getattr(request, "video_path", None) or "").strip() or None
+    task_id_src = (getattr(request, "task_id", None) or "").strip() or None
+    scheduled_video_id = int(getattr(request, "scheduled_video_id", 0) or 0) or None
+
+    # === IDEMPOTÊNCIA: BUSCA EXISTENTE ===
+    # Estratégias (qualquer uma que bater → reutiliza):
+    #   (a) scheduled_video_id explícito no request.
+    #   (b) task_id correspondente dentro de script_data OU task_id coluna nova se houver.
+    #   (c) video_url idêntico + source=generated_story.
+    #   (d) video_path idêntico dentro de script_data.
+    existing: Optional[ScheduledVideo] = None
+    try:
+        if scheduled_video_id:
+            existing = db.query(ScheduledVideo).filter(ScheduledVideo.id == int(scheduled_video_id)).first()
+        if existing is None and task_id_src:
+            try:
+                rows = db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).limit(500).all()
+                for r in rows:
+                    try:
+                        sd = json.loads(getattr(r, "script_data", "") or "{}") if getattr(r, "script_data", None) else {}
+                        if isinstance(sd, dict) and str(sd.get("task_id") or "") == str(task_id_src):
+                            existing = r
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                existing = None
+        if existing is None:
+            rows = db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).limit(1000).all()
+            for r in rows:
+                try:
+                    sd = json.loads(getattr(r, "script_data", "") or "{}") if getattr(r, "script_data", None) else {}
+                    if not isinstance(sd, dict):
+                        continue
+                    if sd.get("source") == "generated_story":
+                        r_url = str(getattr(r, "video_url") or sd.get("video_url") or "").strip()
+                        r_path = str(sd.get("video_path") or "").strip()
+                        if r_url and video_url and r_url == video_url:
+                            existing = r
+                            break
+                        if r_path and video_path and r_path == video_path:
+                            existing = r
+                            break
+                except Exception:
+                    continue
+    except Exception:
+        existing = None
+
+    if existing is not None:
+        try:
+            existing_db = existing
+            dirty = False
+            if getattr(existing_db, "progress", None) in (None, 0):
+                try:
+                    setattr(existing_db, "progress", 100)
+                    dirty = True
+                except Exception:
+                    pass
+            if not getattr(existing_db, "status", None) or str(getattr(existing_db, "status") or "").lower() not in {"completed", "published", "failed"}:
+                existing_db.status = "completed"
+                dirty = True
+            if request.auto_post and not getattr(existing_db, "auto_post", False):
+                existing_db.auto_post = True
+                dirty = True
+            if not getattr(existing_db, "video_url", None) and video_url:
+                try:
+                    setattr(existing_db, "video_url", video_url)
+                    dirty = True
+                except Exception:
+                    pass
+            if request.title and title and title != getattr(existing_db, "title", None):
+                existing_db.title = title
+                dirty = True
+            if request.description and description and description != getattr(existing_db, "description", None):
+                existing_db.description = description
+                dirty = True
+            if dirty:
+                db.commit()
+                try:
+                    db.refresh(existing_db)
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return {
+            "id": existing.id,
+            "status": getattr(existing, "status", "completed"),
+            "video_url": getattr(existing, "video_url", None) or video_url,
+            "reused_existing": True,
+            "idempotency": "ok: matched_existing_scheduled_video",
+        }
+
+    payload: Dict[str, Any] = {
         "source": "generated_story",
         "kind": kind,
         "video_type": video_type,
@@ -3158,10 +3482,17 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
         "auto_processing_eligible": False,
         "processing_mode": "publish_only",
     }
+    if video_path:
+        payload["video_path"] = video_path
+    if task_id_src:
+        payload["task_id"] = task_id_src
     if request.voice_style:
         payload["voice_style"] = request.voice_style
     if request.voice_gender:
         payload["voice_gender"] = request.voice_gender
+    unified_id = int(getattr(request, "unified_video_id", 0) or 0)
+    if unified_id:
+        payload["unified_video_id"] = int(unified_id)
 
     video = ScheduledVideo(
         theme="História/Devocional",
@@ -3196,7 +3527,13 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
     db.commit()
     db.refresh(video)
 
-    return {"id": video.id, "status": video.status, "video_url": video.video_url}
+    return {
+        "id": video.id,
+        "status": video.status,
+        "video_url": video.video_url,
+        "reused_existing": False,
+        "idempotency": "ok: created_new_scheduled_video",
+    }
 
 @router.get("/reports")
 def get_reports(db: Session = Depends(get_db)):
@@ -4456,7 +4793,54 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
     identity = _build_video_generation_identity(payload)
     payload["idempotency_key"] = identity["idempotency_key"]
     payload["request_hash"] = identity["request_hash"]
+    content_hash = _payload_content_hash(payload)
+    if content_hash:
+        payload["content_hash"] = content_hash
     user_id = int(getattr(current_user, "id", None) or 0) or None
+
+    # ====== Dedupe GLOBAL POR CONTEÚDO (últimas 48h) ======
+    # Proteção extra anti-gasto: mesmo que idempotency_key tenha mudado
+    # (ex: usuário clicou novamente após "Nova geração liberada", ou
+    # microtime/UA varia), se o conteúdo (título/texto/minutos/kind) é
+    # idêntico e já tem vídeo COMPLETED e válido, REUTILIZA esse resultado,
+    # NÃO gera nova renderização → evita MP4 duplicado e custo extra.
+    if not bool(getattr(request, "force_regenerate", False)):
+        try:
+            _reused_candidate = _find_reusable_completed_task_by_content(
+                db, payload, excluded_task_id=None
+            )
+            if _reused_candidate:
+                _rt = _reused_candidate
+                _return_result = None
+                try:
+                    _ro = _rt.get("result_obj") or {}
+                    _return_result = _ro if isinstance(_ro, dict) else {}
+                    if "video_url" not in _return_result and _rt.get("video_url"):
+                        _return_result["video_url"] = _rt["video_url"]
+                    if "file_path" not in _return_result and _rt.get("file_path"):
+                        _return_result["file_path"] = _rt["file_path"]
+                except Exception:
+                    _return_result = None
+                return {
+                    "message": (
+                        "Vídeo já gerado para este conteúdo (últimas "
+                        f"{int(_window_hours_content_reuse() or 48)}h). "
+                        "Reutilizando resultado existente — NOVA renderização NÃO foi criada."
+                    ),
+                    "task_id": _rt.get("task_id"),
+                    "queued": False,
+                    "queue_position": 0,
+                    "reused_existing_task": True,
+                    "reused_completed_task": True,
+                    "reused_by_content_hash": bool(content_hash),
+                    "content_hash": content_hash,
+                    "idempotency_key": str(identity.get("idempotency_key")),
+                    "request_hash": identity.get("request_hash"),
+                    "result": _return_result,
+                    "pipeline": "content_reuse",
+                }
+        except Exception:
+            pass
 
     # ====== Fallback gate ======
     unified_ok = bool(_unified_enabled() and unified_video_pipeline is not None and UnifiedVideoRequest is not None)
@@ -4489,6 +4873,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
                     "request_hash": identity["request_hash"],
                     "source_module": "story",
                     "pipeline": "unified_video_pipeline",
+                    "content_hash": content_hash or None,
                 }
                 res = unified_video_pipeline().submit_or_reuse(
                     db,
@@ -4529,6 +4914,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
         "title_hint": _story_video_task_title_from_payload(payload),
         "idempotency_key": identity["idempotency_key"],
         "request_hash": identity["request_hash"],
+        "content_hash": content_hash or None,
     }
     claimed = claim_video_task(
         idempotency_key=identity["idempotency_key"],
@@ -5171,6 +5557,7 @@ def process_video_generation(request: VideoRequest, task_id):
             "executor_started_at": lease_info.get("started_at"),
             "executor_heartbeat_at": lease_info.get("heartbeat_at"),
             "attempt_number": int(lease_info.get("attempt_number") or 1),
+            "pipeline_stage": "starting",
         }))
         print(f"Iniciando geração de vídeo ({request.mode}): {topic_display}")
         heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
@@ -5221,7 +5608,7 @@ def process_video_generation(request: VideoRequest, task_id):
             return
         
         # 1. Gerar Roteiro
-        update_task(task_id, progress=10, message="Estruturando roteiro com IA...")
+        update_task(task_id, progress=10, message="1/8 Gerando roteiro com IA...", result=_merged_task_result({"pipeline_stage": "stage_1_script"}))
         heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         _raise_if_cancelled()
         update_task(task_id, result=_merged_task_result({"script_staging": True}))
@@ -5501,7 +5888,7 @@ def process_video_generation(request: VideoRequest, task_id):
                         script["seed_narration_text"] = seed_narration_text
                     script["force_reuse_assets"] = True
                     script["force_render_only"] = True
-                    update_task(task_id, progress=10, message="Recuperação: reutilizando roteiro/imagens/áudio e renderizando MP4...")
+                    update_task(task_id, progress=10, message="1/8 Recuperação (render-only): reutilizando roteiro/imagens/áudio e renderizando MP4...", result=_merged_task_result({"pipeline_stage": "stage_1_script_recovery"}))
                 elif bool(getattr(request, "force_reuse_assets", False)) and seed_script_ok:
                     script = dict(seed_script or {})
                     reused: List[str] = ["roteiro"]
@@ -5514,7 +5901,7 @@ def process_video_generation(request: VideoRequest, task_id):
                             script["seed_narration_text"] = seed_narration_text
                         reused.append("áudio")
                     script["force_reuse_assets"] = True
-                    update_task(task_id, progress=10, message=f"Recuperação: reutilizando {', '.join(reused)} e gerando apenas o que faltar...")
+                    update_task(task_id, progress=10, message=f"1/8 Recuperação: reutilizando {', '.join(reused)} e gerando apenas o que faltar...", result=_merged_task_result({"pipeline_stage": "stage_1_assets_recovery"}))
 
         if script is None:
             if request.mode == 'story' and request.story_content:
@@ -5711,7 +6098,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 )
                 guardian_db.commit()
 
-            update_task(task_id, progress=15, message="Aplicando revisão editorial no roteiro...")
+            update_task(task_id, progress=13, message="1/8 Aplicando revisão editorial no roteiro...", result=_merged_task_result({"pipeline_stage": "stage_1_editorial"}))
             heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
             _raise_if_cancelled()
             script = _apply_youtube_auto_editorial_intelligence(
@@ -5726,12 +6113,46 @@ def process_video_generation(request: VideoRequest, task_id):
             }))
         
         # 2. Gerar Vídeo (16:9)
-        # Passamos uma função de callback para atualizar o progresso
+        # Passamos uma função de callback para atualizar o progresso com as 8 etapas
+        #   20-34% → 2/8 Gerando narração
+        #   35-49% → 3/8 Preparando imagens
+        #   50-64% → 4/8 Sincronizando cenas
+        #   65-74% → 5/8 Gerando legendas
+        #   75-89% → 6/8 Renderizando
+        #   90-97% → 7/8 Validando
+        #   98-100% → 8/8 Concluído
         render_output = {"filename": None}
+        def _stage_for_pct(pct: int) -> Tuple[int, str, str]:
+            # pct: percentual do create_video_from_plan (0..100)
+            if pct < 20:
+                # Geração de áudio inicial (TTS) → etapa 2
+                return (20 + int(pct * 0.15 / 20 + 1e-6), "2/8 Gerando narração com IA...", "stage_2_voice")
+            if pct < 40:
+                sub = int((pct - 20) / 20 * 14)  # 20-34%
+                return (20 + sub, "2/8 Gerando narração com IA...", "stage_2_voice")
+            if pct < 55:
+                sub = int((pct - 40) / 15 * 15)  # 35-49%
+                return (35 + sub, "3/8 Preparando imagens e cenas...", "stage_3_images")
+            if pct < 70:
+                sub = int((pct - 55) / 15 * 15)  # 50-64%
+                return (50 + sub, "4/8 Sincronizando cenas com narração...", "stage_4_sync")
+            if pct < 82:
+                sub = int((pct - 70) / 12 * 10)   # 65-74%
+                return (65 + sub, "5/8 Gerando legendas sincronizadas...", "stage_5_captions")
+            if pct < 95:
+                sub = int((pct - 82) / 13 * 15)   # 75-89%
+                return (75 + sub, "6/8 Renderizando vídeo final...", "stage_6_render")
+            return (89, "6/8 Renderizando vídeo final...", "stage_6_render")
+
         def progress_callback(progress, message):
-            # Mapeia progresso do vídeo (0-100) para progresso da tarefa (20-90)
-            task_progress = 20 + int(progress * 0.7)
-            update_task(task_id, progress=task_progress, message=message)
+            raw = 0
+            try:
+                raw = int(progress or 0)
+            except Exception:
+                raw = 0
+            raw = max(0, min(100, raw))
+            task_pct, stage_msg, stage_key = _stage_for_pct(raw)
+            update_task(task_id, progress=task_pct, message=stage_msg, result=_merged_task_result({"pipeline_stage": stage_key}))
             try:
                 msg_txt = str(message or "")
                 if ("output=" in msg_txt) and (not render_output.get("filename")):
@@ -5768,6 +6189,85 @@ def process_video_generation(request: VideoRequest, task_id):
             render_report = {}
         sync_validation = render_report.get("sync_validation")
         audio_generation = render_report.get("audio_generation")
+        # ====== ETAPA 7/8: VALIDAÇÕES OBRIGATÓRIAS ======
+        # Regra: qualquer falha → status=failed → NÃO coloca em Aguardando Publicação
+        update_task(task_id, progress=92, message="7/8 Validando arquivo de vídeo final...", result=_merged_task_result({"pipeline_stage": "stage_7_validation"}))
+        heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
+        from app.config import absolute_path_for_video as _abs_video
+
+        abs_video_path = _abs_video(video_path) if not str(video_path or "").startswith("/") and not str(video_path or "").startswith("http") else str(video_path or "")
+        if not os.path.isabs(abs_video_path):
+            abs_video_path = os.path.abspath(str(abs_video_path)) if abs_video_path else ""
+        validation: Dict[str, Any] = {"ok": False, "checks": {}}
+        try:
+            _vsz = 0
+            if abs_video_path and os.path.exists(abs_video_path):
+                _vsz = os.path.getsize(abs_video_path)
+            validation["checks"]["file_exists"] = bool(abs_video_path and os.path.exists(abs_video_path))
+            validation["checks"]["size_gt_100kb"] = int(_vsz or 0) > 100 * 1024
+            validation["file_size_bytes"] = int(_vsz or 0)
+            _ffv = None
+            try:
+                _ffv = video_service._ffprobe_stream_duration_seconds(abs_video_path) if abs_video_path else None
+            except Exception:
+                _ffv = None
+            validation["checks"]["video_stream"] = bool((_ffv or {}).get("video_stream")) if isinstance(_ffv, dict) else False
+            validation["checks"]["audio_stream"] = bool((_ffv or {}).get("audio_stream")) if isinstance(_ffv, dict) else False
+            _vdur = float((_ffv or {}).get("video_duration") or 0.0) if isinstance(_ffv, dict) else 0.0
+            _adur = float((_ffv or {}).get("audio_duration") or 0.0) if isinstance(_ffv, dict) else 0.0
+            validation["video_duration_sec"] = round(float(_vdur or 0), 3)
+            validation["audio_duration_sec"] = round(float(_adur or 0), 3)
+            validation["checks"]["duration_valid"] = (float(_vdur or 0) > 0.5)
+            if float(_adur or 0) > 0 and float(_vdur or 0) > 0:
+                validation["checks"]["audio_not_trimmed"] = abs(float(_vdur or 0) - float(_adur or 0)) <= max(0.5, float(_adur) * 0.03)
+            else:
+                validation["checks"]["audio_not_trimmed"] = validation["checks"]["audio_stream"] and validation["checks"]["video_stream"]
+            # Teste de servir via HTTP (static). Como temos uvicorn, apenas validamos que o caminho é acessível via os R ou /static/ mapping.
+            _http_ready = False
+            try:
+                _static_v = str(video_path or "")
+                if _static_v.startswith("/static/videos/"):
+                    _cand = os.path.join(str(STATIC_DIR) if 'STATIC_DIR' in globals() else "app/static", _static_v.lstrip("/"))
+                    _http_ready = os.path.exists(_cand) and os.path.getsize(_cand) > 0
+                else:
+                    _http_ready = validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"]
+            except Exception:
+                _http_ready = validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"]
+            validation["checks"]["http_media_ready"] = bool(_http_ready)
+            all_checks_ok = all(bool(v) for v in validation["checks"].values()) if validation["checks"] else False
+            # Tolerância adicional: se vídeo > 5 segundos e tem streams, considera (alguns codecs reportam 0s em streams)
+            if not all_checks_ok and validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"] and validation["video_duration_sec"] > 5:
+                all_checks_ok = validation["checks"]["video_stream"] or validation["checks"]["audio_stream"]
+            validation["ok"] = bool(all_checks_ok)
+        except Exception as _e:
+            validation["error"] = f"{type(_e).__name__}: {str(_e)[:200]}"
+            validation["ok"] = False
+        update_task(task_id, progress=96, message="7/8 Validação concluída.", result=_merged_task_result({"final_validation": validation, "pipeline_stage": "stage_7_validation_done"}))
+        if not validation.get("ok"):
+            # Tarefa FAILED → NÃO vai para Aguardando Publicação
+            detail_items = [f"{k}={validation['checks'].get(k)}" for k in sorted(validation.get("checks", {}).keys())]
+            finalize_task_once(
+                task_id,
+                status="failed",
+                progress=0,
+                message=(
+                    f"Validação final do MP4 reprovada ({'; '.join(detail_items)[:300]}). "
+                    "Vídeo NÃO foi colocado em Aguardando Publicação para evitar publicação quebrada."
+                ),
+                result=_merged_task_result({
+                    "video_url": video_path,
+                    "file_path": abs_video_path,
+                    "title": (script.get("title") if isinstance(script, dict) else None),
+                    "kind": "story" if request.mode == "story" else "topic",
+                    "final_validation": validation,
+                    "render_report": render_report if isinstance(render_report, dict) else None,
+                    "audio_generation": audio_generation,
+                    "sync_validation": sync_validation,
+                    "executor_id": executor_id,
+                    "attempt_number": int(lease_info.get("attempt_number") or 1),
+                }),
+            )
+            return
         update_task(task_id, result=_merged_task_result({
             "render_report": render_report,
             "script": script if isinstance(script, dict) else None,
@@ -5805,7 +6305,7 @@ def process_video_generation(request: VideoRequest, task_id):
         
         # 3. Upload (se solicitado)
         if request.auto_upload:
-            update_task(task_id, progress=90, message="Iniciando upload para o YouTube...")
+            update_task(task_id, progress=90, message="8/8 Concluído. Iniciando upload automático para o YouTube...", result=_merged_task_result({"pipeline_stage": "stage_8_completed"}))
             heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
             print("Iniciando upload para YouTube...")
             

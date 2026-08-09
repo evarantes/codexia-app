@@ -4935,7 +4935,9 @@ $synth.Dispose()
                     pass
                 main_audio_clip = AudioFileClip(main_audio_path)
                 self._assert_clip_not_none(main_audio_clip, "seed_audio_clip", {"path": main_audio_path})
-                actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
+                actual_total_audio_dur = float(self._ffprobe_duration_seconds(main_audio_path) or 0.0)
+                if actual_total_audio_dur <= 0:
+                    actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
                 if actual_total_audio_dur <= 0:
                     raise Exception("Áudio reutilizado com duração inválida.")
                 render_report["audio_generation"]["provider_used"] = "seed_reuse"
@@ -4991,7 +4993,9 @@ $synth.Dispose()
                         pass
                 main_audio_clip = AudioFileClip(main_audio_path)
                 self._assert_clip_not_none(main_audio_clip, "main_narration_audio_clip", {"path": main_audio_path})
-                actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
+                actual_total_audio_dur = float(self._ffprobe_duration_seconds(main_audio_path) or 0.0)
+                if actual_total_audio_dur <= 0:
+                    actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
                 if actual_total_audio_dur <= 0:
                     raise Exception("Audio final gerado com duracao invalida.")
                 render_report["audio_generation"]["provider_used"] = (
@@ -5119,7 +5123,7 @@ $synth.Dispose()
             closing_has_narration = bool(str(planning_meta.get("closing_text") or "").strip())
             pause_before_cta_sec = float(planning_meta.get("pause_duration_sec") or pause_before_cta_sec or 1.25)
             initial_opening_silence_sec = float(planning_meta.get("intro_opening_hold_sec") or initial_opening_silence_sec or DEFAULT_OPENING_SILENCE_SEC)
-            end_screen_target_duration_sec = float(planning_meta.get("end_screen_target_duration_sec") or 15.0)
+            end_screen_target_duration_sec = float(planning_meta.get("end_screen_target_duration_sec") or 5.0)
             opening_est = float(planning_meta.get("opening_duration_est_sec") or 0.0)
             closing_est = float(planning_meta.get("closing_duration_est_sec") or 0.0)
             reflection_est = float(planning_meta.get("reflection_duration_est_sec") or 0.0)
@@ -5127,11 +5131,11 @@ $synth.Dispose()
             scale_ratio = (actual_total_audio_dur / estimated_total_duration) if estimated_total_duration > 0 else 1.0
             opening_voice_duration = round(max(0.0, opening_est * scale_ratio), 2)
             title_clip_duration = round(max(initial_opening_silence_sec, initial_opening_silence_sec + opening_voice_duration), 2) if opening_est > 0 else round(max(3.4, initial_opening_silence_sec), 2)
-            cta_clip_duration = min(15.0, max(8.0, round(closing_est * scale_ratio, 2))) if closing_has_narration else 0.0
-            end_clip_duration = min(18.0, max(12.0, round(end_screen_target_duration_sec, 2)))
+            cta_clip_duration = min(6.0, max(3.0, round(closing_est * scale_ratio, 2))) if closing_has_narration else 0.0
+            end_clip_duration = min(6.0, max(3.0, round(end_screen_target_duration_sec, 2)))
             voice_closing_duration = cta_clip_duration if closing_has_narration else 0.0
-            silent_cinematic_tail_sec = end_clip_duration
-            target_video_duration = max(actual_total_audio_dur, actual_total_audio_dur + silent_cinematic_tail_sec)
+            silent_cinematic_tail_sec = min(0.5, max(0.2, 0.35))
+            target_video_duration = actual_total_audio_dur + silent_cinematic_tail_sec
             if (title_clip_duration + voice_closing_duration) >= actual_total_audio_dur:
                 title_clip_duration = max(initial_opening_silence_sec, min(title_clip_duration, actual_total_audio_dur * 0.28))
                 voice_closing_duration = max(0.0, min(voice_closing_duration, actual_total_audio_dur * 0.24))
@@ -5999,15 +6003,44 @@ $synth.Dispose()
 
                 def _render_heartbeat():
                     _last_size = -1
+                    _start_ts = None
+                    _tick = 0
                     while not _render_hb_stop.wait(15):
                         try:
                             _exists = os.path.exists(output_path)
                             _size = os.path.getsize(output_path) if _exists else 0
+                            if _start_ts is None:
+                                try: import time as _time; _start_ts = _time.time()
+                                except Exception: _start_ts = 0
                             try:
-                                if progress_callback:
-                                    progress_callback(96 if _size > 0 else 95, "Renderizando arquivo final...")
+                                import time as _time2
+                                _elapsed_sec = int(max(0, (_time2.time() - (_start_ts or _time2.time()))))
                             except Exception:
-                                pass
+                                _elapsed_sec = 0
+                            _h = _elapsed_sec // 3600
+                            _m = (_elapsed_sec % 3600) // 60
+                            _s = _elapsed_sec % 60
+                            if _h > 0:
+                                _elapsed_str = f"{_h:d}h{_m:02d}m{_s:02d}s"
+                            elif _m > 0:
+                                _elapsed_str = f"{_m:d}m{_s:02d}s"
+                            else:
+                                _elapsed_str = f"{_s:d}s"
+                            _mb = round(_size / (1024 * 1024), 1) if _size else 0
+                            if progress_callback:
+                                _base_pct = 95 if _size <= 0 else 96
+                                _tick += 1
+                                _swing = (_tick % 30)
+                                if _size > 0 and _elapsed_sec > 60:
+                                    _base_pct = 97 if (_swing < 15) else 98
+                                elif _size > 0 and _elapsed_sec > 20:
+                                    _base_pct = 96 if (_swing < 15) else 97
+                                _msg = (f"6/8 Renderizando arquivo final... "
+                                        f"({_elapsed_str} decorridos; arquivo: ~{_mb} MB)")
+                                try:
+                                    progress_callback(_base_pct, _msg)
+                                except Exception:
+                                    pass
                             _last_size = _size
                         except Exception as _hb_err:
                             pass
@@ -6147,6 +6180,113 @@ $synth.Dispose()
                 )
             render_report["video_url"] = f"{VIDEO_URL_PREFIX}/{filename}"
             render_report["file_path"] = output_path
+            # ====== sync_validation: áudio ↔ vídeo (item 2) ======
+            obtained_duration_final_sec = float(render_report["duration_plan"].get("obtained_duration_sec") or 0.0)
+            delta_av = abs(obtained_duration_final_sec - actual_total_audio_dur)
+            tolerance_target = 0.5
+            tolerance_ok = (actual_total_audio_dur <= 0) or (delta_av <= max(tolerance_target, actual_total_audio_dur * 0.03))
+            # scenes_ok: nenhuma cena visual foi criada com duração 0 ou abaixo do mínimo
+            scenes_ok = True
+            try:
+                scene_durations = [
+                    float(item.get("final_visual_duration_sec") or 0.0)
+                    for item in (render_report.get("scene_visuals") or [])
+                ]
+                if scene_durations:
+                    scenes_ok = all(d > 0.1 for d in scene_durations)
+            except Exception:
+                scenes_ok = True
+            # captions_ok: última legenda NÃO ultrapassa a duração do áudio
+            captions_ok = True
+            last_caption_end = 0.0
+            try:
+                for cap in (full_caption_timeline or []):
+                    try:
+                        e = float(cap.get("end") or 0.0)
+                        last_caption_end = max(last_caption_end, e)
+                    except Exception:
+                        pass
+                if last_caption_end > 0 and actual_total_audio_dur > 0:
+                    captions_ok = last_caption_end <= (actual_total_audio_dur + 0.25)
+            except Exception:
+                captions_ok = True
+            # cta_ok: end_screen duração está entre 3 e 6 segundos
+            cta_ok = (3.0 <= float(end_clip_duration or 0.0) <= 6.0) if closing_has_narration else True
+            sync_validation = {
+                "audio_duration_sec": round(float(actual_total_audio_dur or 0.0), 3),
+                "video_duration_sec": round(float(obtained_duration_final_sec or 0.0), 3),
+                "delta_sec": round(float(delta_av), 3),
+                "tolerance_target_sec": tolerance_target,
+                "tolerance_ok": bool(tolerance_ok),
+                "scenes_ok": bool(scenes_ok),
+                "captions_ok": bool(captions_ok),
+                "cta_ok": bool(cta_ok),
+                "last_caption_end_sec": round(float(last_caption_end), 3) if last_caption_end else 0.0,
+            }
+            render_report["sync_validation"] = sync_validation
+            # ====== Legenda SRT exportada (item 3) ======
+            srt_path = ""
+            try:
+                _srt_name = (os.path.splitext(filename)[0]) + ".srt"
+                srt_path = os.path.join(OUTPUT_DIR, _srt_name) if os.path.isabs(OUTPUT_DIR or "") else os.path.abspath(os.path.join(str(OUTPUT_DIR or "videos"), _srt_name))
+                srt_lines: List[str] = []
+                def _fmt_srt_ts(t: float) -> str:
+                    h = int(t // 3600)
+                    m = int((t % 3600) // 60)
+                    s = t - (h * 3600 + m * 60)
+                    secs = int(s)
+                    ms = int(round((s - secs) * 1000, 0))
+                    if ms == 1000:
+                        secs += 1
+                        ms = 0
+                    return f"{h:02d}:{m:02d}:{secs:02d},{ms:03d}"
+                subtitle_index = 1
+                for cap in (full_caption_timeline or []):
+                    text = str(cap.get("caption") or "").strip()
+                    if not text:
+                        continue
+                    try:
+                        srt_start = float(cap.get("start") or 0.0)
+                        srt_end = float(cap.get("end") or 0.0)
+                    except Exception:
+                        continue
+                    if srt_end <= srt_start:
+                        srt_end = srt_start + 0.2
+                    # Garante 2 linhas no máximo (separa por frases se necessário)
+                    words = text.split()
+                    if len(words) > 14:
+                        mid = len(words) // 2
+                        first = " ".join(words[:mid])
+                        second = " ".join(words[mid:])
+                        display_text = f"{first}\n{second}"
+                    else:
+                        display_text = text
+                    srt_lines.append(str(subtitle_index))
+                    srt_lines.append(f"{_fmt_srt_ts(max(0.0, srt_start))} --> {_fmt_srt_ts(srt_end)}")
+                    srt_lines.append(display_text)
+                    srt_lines.append("")
+                    subtitle_index += 1
+                if srt_lines:
+                    with open(srt_path, "w", encoding="utf-8", errors="replace") as fsrt:
+                        fsrt.write("\n".join(srt_lines))
+                    if not os.path.exists(srt_path):
+                        srt_path = ""
+                else:
+                    srt_path = ""
+            except Exception as _srt_err:
+                srt_path = ""
+                render_report["srt_error"] = f"{type(_srt_err).__name__}: {str(_srt_err)[:200]}"
+            if srt_path and os.path.exists(srt_path):
+                _srt_url = f"{VIDEO_URL_PREFIX}/{os.path.basename(srt_path)}"
+                render_report["srt"] = {
+                    "path": srt_path,
+                    "url": _srt_url,
+                    "entries": int(subtitle_index - 1),
+                    "source": str(caption_timeline_source or "unknown"),
+                    "pt_br": True,
+                }
+            else:
+                render_report["srt"] = {"path": "", "url": "", "entries": 0, "source": str(caption_timeline_source or "unknown"), "error": "not_exported"}
 
             return {
                 "video_url": f"{VIDEO_URL_PREFIX}/{filename}",
@@ -6154,6 +6294,8 @@ $synth.Dispose()
                 "music_credit": used_music_credit,
                 "used_images": used_image_urls,
                 "render_report": render_report,
+                "sync_validation": sync_validation,
+                "srt_path": srt_path if (srt_path and os.path.exists(srt_path)) else "",
             }
             
         except Exception as e:
