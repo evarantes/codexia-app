@@ -198,25 +198,13 @@ def absolute_path_for_image(filename_or_url: str) -> str:
 # Ambiente da aplicação: development | staging | homologation | production
 APP_ENV = str(os.getenv("APP_ENV", "development")).strip().lower() or "development"
 
-# Fallback LEGACY do pipeline de vídeos.
-# POR PADRÃO (default) = DESATIVADO.
-# Se UnifiedVideoPipeline falhar ao carregar em homolog/prod com fallback=0 → ERRO EXPLÍCITO.
-# Exceção: APP_ENV=development SEMPRE permite fallback para ajudar no dev local.
+# Compatibilidade de leitura para ambientes antigos. A flag não autoriza mais
+# execução: o pipeline do História/Devocional é o único pipeline do sistema.
 ENABLE_LEGACY_PIPELINE_FALLBACK = _env_truthy("ENABLE_LEGACY_PIPELINE_FALLBACK")
 
 
 def legacy_pipeline_fallback_allowed(*, module_name: str = "unknown") -> bool:
-    """Retorna True se o módulo pode usar o pipeline legado como fallback.
-
-    Regra:
-      - Se ENABLE_LEGACY_PIPELINE_FALLBACK=true explicitamente → permitido.
-      - Senão, só permitido SE APP_ENV == "development" (dev local).
-      - staging / homologation / production / any != development → BLOQUEADO.
-    """
-    if bool(ENABLE_LEGACY_PIPELINE_FALLBACK):
-        return True
-    if APP_ENV == "development":
-        return True
+    """Fallback legado desativado em todos os ambientes, inclusive dev."""
     return False
 
 
@@ -224,12 +212,11 @@ def unified_pipeline_required_error(module_name: str, original_error: Optional[s
     """Mensagem de erro clara quando o UnifiedVideoPipeline é obrigatório e indisponível."""
     base = (
         f"[UnifiedVideoPipeline OBRIGATÓRIO] Módulo '{module_name}' tentou rodar sem UnifiedVideoPipeline carregado. "
-        "Isso é proibido em homologação/produção. "
+        "Isso é proibido em todos os ambientes. "
         "O pipeline legado foi desabilitado para evitar duplicação, marcação falsa de sucesso e inconsistência de estados. "
-        "Para ativar temporariamente o fallback (SOMENTE EM EMERGÊNCIA), sete ENABLE_LEGACY_PIPELINE_FALLBACK=true no ambiente."
+        "Restaure o serviço central antes de aceitar novas gerações."
     )
     if original_error:
         sanitized_err = str(original_error)[:1000]
         base += f" Erro original ao importar/carregar: {sanitized_err}"
     return base
-

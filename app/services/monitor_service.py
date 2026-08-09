@@ -1,5 +1,5 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.services.video_processing import process_scheduled_video
+from app.services.video_processing import process_scheduled_video, sync_scheduled_video_from_task
 from app.database import SessionLocal
 from app.models import ChannelReport, ScheduledVideo, CommunityComment, SystemNotification, ChannelInsight, VideoTask
 import datetime
@@ -710,6 +710,17 @@ class MonitorService:
                         f"source={processing_policy.get('source')} reason={processing_policy.get('reason')}"
                     )
                     return
+
+                # O item agendado apenas espelha a VideoTask do pipeline
+                # História/Devocional. Não existe segundo renderizador aqui.
+                if str(getattr(processing, "task_id", None) or "").strip():
+                    synced = sync_scheduled_video_from_task(db, processing)
+                    if synced and str(processing.status or "").lower() != "processing":
+                        logger.info(
+                            f"Vídeo agendado {processing.id} sincronizado com a tarefa "
+                            f"{processing.task_id}: status={processing.status}."
+                        )
+                        return
 
                 # Check for timeout (stuck video)
                 # If updated_at is missing (legacy), assume it's stuck if we are here (simplification)

@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import case, func
 from app.models import ContentPlan, Video, Scene, Job, Asset
 from app.services.ai_generator import AIContentGenerator
-from app.services.video_generator import VideoGenerator
 from app.services.storage import StorageService
 from app.config import VIDEO_OUTPUT_DIR
 from app.redis_client import queue
@@ -21,8 +20,119 @@ class VideoFactory:
     def __init__(self, db: Session):
         self.db = db
         self.ai = AIContentGenerator()
-        self.video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
         self.storage = StorageService()
+
+    def sync_canonical_videos(self) -> int:
+        """Espelha VideoTask/UnifiedVideo na fila de produção antiga."""
+        from app.services.task_manager import get_task
+
+        changed = 0
+        rows = (
+            self.db.query(Video)
+            .filter(Video.pipeline == "unified_video_pipeline", Video.task_id.isnot(None))
+            .all()
+        )
+        for video in rows:
+            task = get_task(str(video.task_id)) or {}
+            status = str(task.get("status") or "").strip().lower()
+            result = task.get("result") if isinstance(task.get("result"), dict) else {}
+            before = str(video.status or "")
+            if status in {"completed", "awaiting_review", "approved"}:
+                video.status = "READY"
+                video.youtube_video_id = video.youtube_video_id
+            elif status == "published":
+                video.status = "PUBLISHED"
+                video.youtube_video_id = result.get("youtube_video_id") or video.youtube_video_id
+            elif status in {"failed", "cancelled"}:
+                video.status = "ERROR" if status == "failed" else "CANCELLED"
+            elif status in {"pending", "queued", "processing"}:
+                video.status = "PROCESSING"
+            if str(video.status or "") != before:
+                changed += 1
+        if changed:
+            self.db.commit()
+        return changed
+
+    def _submit_video_to_canonical_pipeline(self, video: Video, job: Job):
+        from app.services.unified_video_pipeline import build_unified_video_request, unified_video_pipeline
+
+        plan = video.plan
+        scene_rows = (
+            self.db.query(Scene)
+            .filter(Scene.video_id == int(video.id))
+            .order_by(Scene.idx.asc())
+            .all()
+        )
+        scenes = [
+            {
+                "text": str(scene.narration_text or "").strip(),
+                "image_prompt": str(scene.visual_prompt or scene.keywords or "").strip(),
+            }
+            for scene in scene_rows
+            if str(scene.narration_text or "").strip()
+        ]
+        selected_images = [
+            str(asset.storage_key).strip()
+            for asset in self.db.query(Asset).filter(Asset.video_id == int(video.id), Asset.kind == "IMAGE").all()
+            if str(asset.storage_key or "").strip()
+        ]
+        seeded_script = {
+            "title": video.title,
+            "description": video.description or "",
+            "scenes": scenes,
+        } if scenes else None
+        payload = {
+            "source_id": f"production-video:{int(video.id)}",
+            "idempotency_key": f"production-video:{int(video.id)}",
+            "topic": str((plan.theme if plan else None) or video.title or "Vídeo"),
+            "story_content": "\n\n".join(scene["text"] for scene in scenes),
+            "mode": "story" if scenes else "topic",
+            "kind": "short" if str(video.type or "").upper() == "SHORT" else "custom",
+            "duration": max(1, int(((video.duration_sec or 0) / 60) or (plan.duration_min if plan else 5) or 5)),
+            "aspect_ratio": "9:16" if str(video.type or "").upper() == "SHORT" else "16:9",
+            "seeded_script": seeded_script,
+            "selected_images": selected_images or None,
+            "music_file_path": getattr(plan, "music_file", None) if plan else None,
+            "voice_style": getattr(plan, "voice_style", None) if plan else None,
+            "voice_gender": getattr(plan, "voice_gender", None) if plan else None,
+            "override_title": video.title,
+            "override_description": video.description,
+            "review_required": True,
+            "user_id": getattr(plan, "user_id", None) if plan else None,
+            "production_video_id": int(video.id),
+        }
+        request = build_unified_video_request(
+            payload,
+            source_module="video_factory",
+            source_id=f"production-video:{int(video.id)}",
+            user_id=getattr(plan, "user_id", None) if plan else None,
+        )
+        try:
+            from app.routers.youtube import _kick_story_video_task_queue_async
+
+            kick = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+        except Exception:
+            kick = None
+        result = unified_video_pipeline().submit_or_reuse(
+            self.db,
+            request=request,
+            kick_queue_callback=kick,
+            legacy_initial_result={
+                "source_module": "video_factory",
+                "production_video_id": int(video.id),
+                "pipeline": "unified_video_pipeline",
+                "payload": payload,
+            },
+        )
+        video.task_id = str(result.task_id or "") or None
+        video.unified_video_id = result.unified_video_id
+        video.pipeline = "unified_video_pipeline"
+        video.status = "READY" if result.reused_completed else "PROCESSING"
+        job.status = "completed"
+        job.progress = 100
+        job.logs = (job.logs or "") + f"Delegado ao UnifiedVideoPipeline task={result.task_id}.\n"
+        self.db.commit()
+        return result
 
     def create_plan(self, plan_data: dict, user_id: int):
         """Cria o plano de conteúdo e os vídeos agendados."""
@@ -211,6 +321,7 @@ class VideoFactory:
 
     def process_next_job(self):
         """Pega o próximo job pendente e executa. Um vídeo por vez."""
+        self.sync_canonical_videos()
         # Não iniciar se já existe job em processamento (defesa extra além do lock)
         if self.db.query(Job).filter(Job.status == "processing").first():
             return False
@@ -294,6 +405,9 @@ class VideoFactory:
             video = self.db.query(Video).get(job.video_id)
             if not video:
                 raise Exception("Vídeo não encontrado")
+
+            self._submit_video_to_canonical_pipeline(video, job)
+            return
 
             if job.step == "script":
                 video.status = "SCRIPT"
