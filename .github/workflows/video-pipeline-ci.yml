@@ -1,0 +1,100 @@
+name: Video pipeline CI
+
+on:
+  pull_request:
+    branches:
+      - homolog/youtube-auto-e2e
+    paths:
+      - ".github/workflows/video-pipeline-ci.yml"
+      - "alembic/**"
+      - "app/**"
+      - "scripts/**"
+      - "tests/**"
+      - "requirements.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: video-pipeline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: PostgreSQL, pipeline and smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: codexia_ci
+          POSTGRES_USER: codexia_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U codexia_ci -d codexia_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      APP_ENV: homologation
+      DATABASE_URL: postgresql://codexia_ci@127.0.0.1:5432/codexia_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FFmpeg and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply canonical Alembic migration on PostgreSQL
+        run: |
+          alembic upgrade head
+          alembic current | grep --fixed-strings "b1c2d3e4f5a6"
+          python scripts/check_schema_consistency.py
+
+      - name: Start application against migrated PostgreSQL
+        env:
+          PREFLIGHT_STARTUP_TIMEOUT_SEC: "35"
+        run: python scripts/preflight_validate.py
+
+      - name: Run complete test suite
+        env:
+          APP_ENV: development
+          ENABLE_SQLITE_DEV: "true"
+          DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-ci.sqlite3
+        run: python -m unittest discover -s tests
+
+      - name: Run real FFmpeg smoke without paid providers
+        env:
+          APP_ENV: development
+          ENABLE_SQLITE_DEV: "true"
+          DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-smoke.sqlite3
+        run: python tests/smoke_e2e_stability.py
