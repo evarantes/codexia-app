@@ -18,10 +18,24 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app"
+BASELINE_MIGRATION = ROOT / "alembic" / "versions" / "000000000001_canonical_schema_baseline.py"
+FIRST_LEGACY_MIGRATION = ROOT / "alembic" / "versions" / "1145add67fa0_add_music_file_to_content_plan.py"
 MERGE_MIGRATION = ROOT / "alembic" / "versions" / "b1c2d3e4f5a6_merge_story_pipeline_schema_heads.py"
 
 
 class CanonicalVideoArchitectureTests(unittest.TestCase):
+    def test_alembic_has_explicit_non_destructive_baseline(self):
+        baseline_spec = importlib.util.spec_from_file_location("canonical_baseline", BASELINE_MIGRATION)
+        baseline = importlib.util.module_from_spec(baseline_spec)
+        baseline_spec.loader.exec_module(baseline)  # type: ignore[union-attr]
+        first_spec = importlib.util.spec_from_file_location("first_legacy_migration", FIRST_LEGACY_MIGRATION)
+        first = importlib.util.module_from_spec(first_spec)
+        first_spec.loader.exec_module(first)  # type: ignore[union-attr]
+
+        self.assertEqual(baseline.revision, "000000000001")
+        self.assertIsNone(baseline.down_revision)
+        self.assertEqual(first.down_revision, baseline.revision)
+
     def test_alembic_has_one_merge_head_based_on_story_pipeline(self):
         spec = importlib.util.spec_from_file_location("canonical_merge", MERGE_MIGRATION)
         self.assertIsNotNone(spec)

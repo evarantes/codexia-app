@@ -35,5 +35,6 @@ RUN mkdir -p app/static/videos app/static/covers app/static/icons app/static/tem
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Run the worker script
-CMD ["python", "app/worker.py"]
+# A mesma linhagem Alembic é obrigatória para API e worker. O runner usa
+# advisory lock no PostgreSQL para serializar startups simultâneos.
+CMD ["sh", "-c", "python scripts/apply_migrations.py && python app/worker.py"]

@@ -76,7 +76,7 @@ jobs:
 
       - name: Apply canonical Alembic migration on PostgreSQL
         run: |
-          alembic upgrade head
+          python scripts/apply_migrations.py
           alembic current | grep --fixed-strings "b1c2d3e4f5a6"
           python scripts/check_schema_consistency.py
 

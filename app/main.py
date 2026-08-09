@@ -163,11 +163,15 @@ if os.path.exists(_STATIC_SERVE):
 else:
     print(f"STARTUP DEBUG: {_STATIC_SERVE} does not exist!")
 
-# Create tables (não derrubar o processo se o banco estiver inacessível no startup, ex.: Render)
-try:
-    Base.metadata.create_all(bind=engine)
-except Exception as e:
-    print(f"AVISO: create_all falhou no startup: {e}. O app sobe mesmo assim; migrações rodam no lifespan.")
+# Em homologação/produção, scripts/apply_migrations.py é a única autoridade de
+# schema. create_all + reparos manuais permanecem somente para desenvolvimento
+# local explícito, onde SQLite é permitido.
+_RUNTIME_SCHEMA_REPAIR_ALLOWED = APP_ENV in {"development", "dev", "local"}
+if _RUNTIME_SCHEMA_REPAIR_ALLOWED:
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print(f"AVISO: create_all local falhou no startup: {e}.")
 
 def run_migrations(engine):
     try:
@@ -698,10 +702,11 @@ async def lifespan(app: FastAPI):
     print(f"Iniciando aplicação... APP_ENV={APP_ENV} | Banco: {DATABASE_DISPLAY}")
     
     try:
-        try:
-            run_migrations(engine)
-        except Exception as e:
-            print(f"Migration warning (app continua): {e}")
+        if _RUNTIME_SCHEMA_REPAIR_ALLOWED:
+            try:
+                run_migrations(engine)
+            except Exception as e:
+                print(f"Migration local warning (app continua): {e}")
 
         try:
             db = SessionLocal()
@@ -757,7 +762,7 @@ async def lifespan(app: FastAPI):
         
         print("Codexia API startup concluído. Rotas: / (frontend), /api/status, /health, /static")
         # Aviso de segurança em produção
-        if os.getenv("SECRET_KEY", "").strip() in ("", "sua_secret_key_super_secreta_codexia_2025"):
+        if not os.getenv("SECRET_KEY", "").strip():
             print("AVISO: Defina SECRET_KEY no ambiente para produção (tokens JWT).")
     except Exception as e:
         print(f"Startup error (app sobe mesmo assim): {e}")
@@ -1304,5 +1309,3 @@ def check_db_status():
             }
     except Exception as e:
         return {"status": "error", "detail": str(e)}
-
-
