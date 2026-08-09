@@ -21,6 +21,7 @@ mas a semântica de rollback/close é a mesma.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import tempfile
 import threading
@@ -30,7 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -39,9 +40,9 @@ from sqlalchemy.orm import Session, sessionmaker
 os.environ.setdefault("APP_ENV", "development")
 os.environ.setdefault("ENABLE_SQLITE_DEV", "true")
 os.environ.setdefault("ADMIN_EMAIL", "stability@codexia.dev")
-os.environ.setdefault("ADMIN_PASSWORD", "admin123")
+os.environ.setdefault("ADMIN_PASSWORD", f"test-{secrets.token_urlsafe(12)}")
 os.environ.setdefault("ADMIN_NAME", "Stability Tester")
-os.environ.setdefault("SECRET_KEY", "stability-secret-key-codexia-2025")
+os.environ.setdefault("SECRET_KEY", secrets.token_urlsafe(32))
 
 from app.database import Base, SessionLocal, engine as shared_engine, get_db  # noqa: E402
 from app.models import Tenant, User  # noqa: E402
@@ -73,7 +74,7 @@ class PoolAuditTracker:
             from sqlalchemy.orm import Session as OrmSessionClass
 
             @event.listens_for(OrmSessionClass, "after_rollback")
-            def _after_rollback(session, previous_flush):  # type: ignore[no-untyped-def]
+            def _after_rollback(session, *args):  # type: ignore[no-untyped-def]
                 with self.lock:
                     self.rollback_count += 1
         except Exception:
@@ -105,7 +106,7 @@ class StabilityTests(unittest.TestCase):
                 tenant_id=tenant.id,
                 email="stability@codexia.dev",
                 name="Stability",
-                hashed_password="$2b$12$P/LmH7hL1w8yVdWqzU8H9uJQp5yZq5pXpX3yBqH7cH6bE2vE0v1w",  # placeholder
+                hashed_password="test-hash-not-used-for-authentication",
                 is_active=True,
                 is_admin=True,
                 role="admin",
@@ -181,7 +182,7 @@ class StabilityTests(unittest.TestCase):
             try:
                 try:
                     # Tenta selecionar coluna que não existe → erro SQL.
-                    sess.execute("SELECT coluna_que_nao_existe_xyz FROM settings LIMIT 1")
+                    sess.execute(text("SELECT coluna_que_nao_existe_xyz FROM settings LIMIT 1"))
                     sess.commit()
                 except Exception:
                     # ROLA BACK OBRIGATORIAMENTE ANTES DO CLOSE.
@@ -211,7 +212,7 @@ class StabilityTests(unittest.TestCase):
             sess_ok = self.TestingSessionLocal()
             try:
                 try:
-                    sess_ok.execute("SELECT 1").fetchall()
+                    sess_ok.execute(text("SELECT 1")).fetchall()
                 except Exception:
                     try:
                         sess_ok.rollback()
@@ -226,7 +227,7 @@ class StabilityTests(unittest.TestCase):
                     sess_ok.rollback()
                 except Exception:
                     pass
-                sess_ok.execute("SELECT COUNT(*) FROM tenants").fetchall()
+                sess_ok.execute(text("SELECT COUNT(*) FROM tenants")).fetchall()
                 transacao_nao_abortada = True
                 break
             except Exception as _e:

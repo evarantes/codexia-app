@@ -43,12 +43,14 @@ from app.config import (
 from app.database import SessionLocal
 from app.models import UnifiedVideo, UnifiedVideoStatus, User
 from app.services.task_manager import (
+    acquire_distributed_lock,
     acquire_task_execution_lease,
     claim_video_task,
     finalize_task_once,
     get_task,
     get_task_by_idempotency_key,
     heartbeat_task_execution_lease,
+    release_distributed_lock,
     release_task_execution_lease,
     update_task,
 )
@@ -535,6 +537,33 @@ class UnifiedVideoPipelineService:
     # Entrada 1: submit ou reaproveita (idempotência).
     # ------------------------------------------------------------------
     def submit_or_reuse(
+        self,
+        db,
+        *,
+        request: UnifiedVideoRequest,
+        kick_queue_callback: Optional[Callable[[], None]] = None,
+        legacy_initial_result: Optional[Dict[str, Any]] = None,
+        user: Optional[User] = None,
+    ) -> UnifiedPipelineResult:
+        """Serializa claim e UnifiedVideo para impedir corrida entre cliques."""
+        key = str(request.idempotency_key or "").strip()
+        lock_info = acquire_distributed_lock(
+            f"unified-submit:{key}",
+            timeout_seconds=20,
+            ttl_seconds=45,
+        )
+        try:
+            return self._submit_or_reuse_locked(
+                db,
+                request=request,
+                kick_queue_callback=kick_queue_callback,
+                legacy_initial_result=legacy_initial_result,
+                user=user,
+            )
+        finally:
+            release_distributed_lock(lock_info)
+
+    def _submit_or_reuse_locked(
         self,
         db,
         *,
