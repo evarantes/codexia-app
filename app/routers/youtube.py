@@ -601,13 +601,28 @@ def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]]
                         _probe = None
                         try:
                             from app.services import video_service as _vs
-                            _probe = _vs._ffprobe_stream_duration_seconds(_abs_cand) if hasattr(_vs, "_ffprobe_stream_duration_seconds") else None
+                            if hasattr(_vs, "_ffprobe_stream_duration_seconds"):
+                                _probe = _vs._ffprobe_stream_duration_seconds(_abs_cand)
                         except Exception:
                             _probe = None
-                        _video_stream = bool((_probe or {}).get("video_stream")) if isinstance(_probe, dict) else False
-                        _audio_stream = bool((_probe or {}).get("audio_stream")) if isinstance(_probe, dict) else False
-                        _vdur = float((_probe or {}).get("video_duration") or 0.0) if isinstance(_probe, dict) else 0.0
-                        _ok = (_sz > 100 * 1024) and (_vdur > 0.5) and (_video_stream or _audio_stream)
+                        _sz_big = int(_sz or 0) >= 2 * 1024 * 1024  # >= 2 MB
+                        _probe_is_dict = isinstance(_probe, dict) and bool(_probe)
+                        _fallback_no_probe = (not _probe_is_dict) and _sz_big
+                        _video_stream = bool((_probe or {}).get("video_stream")) if _probe_is_dict else bool(_fallback_no_probe)
+                        _audio_stream = bool((_probe or {}).get("audio_stream")) if _probe_is_dict else bool(_fallback_no_probe)
+                        _vdur = float((_probe or {}).get("video_duration") or 0.0) if _probe_is_dict else 0.0
+                        if _fallback_no_probe and _vdur <= 0.5:
+                            try:
+                                import math as _math
+                                _est = float(max(30.0, min(3600.0, round(_math.log(int(_sz or 1) / (1024.0 * 1024.0) + 1.0, 10.0) * 90.0, 1))))
+                                _vdur = _est
+                            except Exception:
+                                _vdur = 90.0
+                        _ok = (
+                            (_sz > 100 * 1024)
+                            and (_vdur > 0.5)
+                            and (_video_stream or _audio_stream)
+                        )
                         if _ok:
                             new_result = dict(_res)
                             try:
