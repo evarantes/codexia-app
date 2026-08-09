@@ -17,7 +17,6 @@ from app.database import SessionLocal
 from app.models import ScheduledVideo
 from app.modules.humor_factory.models import HumorChannel, HumorProject
 from app.services.ai_generator import AIContentGenerator
-from app.services.video_generator import VideoGenerator
 from app.services.youtube_service import YouTubeService
 
 
@@ -38,6 +37,75 @@ class HumorFactoryService:
             self._append_log(project, message)
         project.updated_at = datetime.now()
         db.commit()
+
+    def _submit_project_to_canonical_pipeline(
+        self,
+        db,
+        project: HumorProject,
+        *,
+        scenes: List[Dict[str, Any]],
+        source_kind: str,
+    ):
+        from app.services.unified_video_pipeline import build_unified_video_request, unified_video_pipeline
+
+        title = self._build_title(project)
+        plan = {
+            "title": title,
+            "description": f"Projeto Fábrica de Humor - {source_kind}.",
+            "scenes": scenes,
+            "kind": "custom",
+        }
+        payload = {
+            "source_id": f"humor-project:{int(project.id)}",
+            "idempotency_key": f"humor-project:{int(project.id)}",
+            "topic": title,
+            "story_content": "\n\n".join(
+                str(scene.get("text") or "").strip()
+                for scene in scenes
+                if str(scene.get("text") or "").strip()
+            ),
+            "mode": "story",
+            "kind": "custom",
+            "duration": max(1, min(60, int(project.target_minutes or 10))),
+            "aspect_ratio": "9:16" if source_kind == "whatsapp_chat" else "16:9",
+            "seeded_script": plan,
+            "override_title": title,
+            "review_required": True,
+            "humor_project_id": int(project.id),
+            "humor_source_kind": source_kind,
+        }
+        request = build_unified_video_request(
+            payload,
+            source_module="humor_factory",
+            source_id=f"humor-project:{int(project.id)}",
+        )
+        try:
+            from app.routers.youtube import _kick_story_video_task_queue_async
+
+            kick = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+        except Exception:
+            kick = None
+        result = unified_video_pipeline().submit_or_reuse(
+            db,
+            request=request,
+            kick_queue_callback=kick,
+            legacy_initial_result={
+                "source_module": "humor_factory",
+                "humor_project_id": int(project.id),
+                "pipeline": "unified_video_pipeline",
+                "payload": payload,
+            },
+        )
+        project.task_id = str(result.task_id or "") or None
+        project.unified_video_id = result.unified_video_id
+        project.pipeline = "unified_video_pipeline"
+        project.status = "review" if result.reused_completed else "generating"
+        project.progress = 100 if result.reused_completed else max(12, int(project.progress or 0))
+        project.status_message = result.message[:240]
+        if result.video_url:
+            project.video_path = result.video_url
+        db.commit()
+        return result
 
     def _parse_manual_jokes(self, raw: Optional[str]) -> List[str]:
         lines = [ln.strip(" -\t\r\n") for ln in str(raw or "").splitlines()]
@@ -310,6 +378,28 @@ Retorne APENAS um JSON no formato:
             project.status = "generating"
             self._set_progress(db, project, 30, "Roteiro preparado. Iniciando geração de áudios...")
 
+            dialogo = script_data.get("dialogo") if isinstance(script_data, dict) else None
+            if not isinstance(dialogo, list) or not dialogo:
+                raise RuntimeError("Roteiro sem diálogo.")
+            scenes = [
+                {
+                    "text": f"{str(item.get('autor') or 'Pessoa').strip()}: {str(item.get('texto') or '').strip()}",
+                    "image_prompt": "conversa de aplicativo de mensagens em tela de celular, visual limpo",
+                }
+                for item in dialogo
+                if isinstance(item, dict) and str(item.get("texto") or "").strip()
+            ]
+            self._submit_project_to_canonical_pipeline(
+                db,
+                project,
+                scenes=scenes,
+                source_kind="whatsapp_chat",
+            )
+            return
+
+            # Renderizador direto abaixo mantido apenas como referência
+            # temporária para tarefas antigas; não é alcançado.
+
             try:
                 from moviepy.editor import AudioFileClip, ImageClip, concatenate_videoclips
             except Exception:
@@ -577,7 +667,7 @@ Retorne APENAS JSON válido:
         return out
 
     def _resolve_avatar_path(
-        self, channel: Optional[HumorChannel], video_gen: VideoGenerator, override_path: str = ""
+        self, channel: Optional[HumorChannel], video_gen: Any, override_path: str = ""
     ) -> Tuple[Optional[str], str]:
         ov = (override_path or "").strip()
         if ov:
@@ -778,6 +868,24 @@ Retorne APENAS JSON válido:
             jokes = [x for x in jokes if x]
             project.jokes_json = json.dumps(jokes, ensure_ascii=False)
             self._set_progress(db, project, 12, f"{len(jokes)} blocos de stand-up preparados (temas: {themes_label}).")
+
+            scenes = [
+                {
+                    "text": joke,
+                    "image_prompt": f"palco de comédia limpo, tema {themes_label}, enquadramento cinematográfico",
+                }
+                for joke in jokes
+            ]
+            self._submit_project_to_canonical_pipeline(
+                db,
+                project,
+                scenes=scenes,
+                source_kind="standup",
+            )
+            return
+
+            # Renderizador direto abaixo mantido apenas como referência
+            # temporária para tarefas antigas; não é alcançado.
 
             video_gen = VideoGenerator(output_dir=VIDEO_OUTPUT_DIR, ai_service=self.ai)
             avatar_path, avatar_source = self._resolve_avatar_path(

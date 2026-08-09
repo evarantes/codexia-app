@@ -4,6 +4,9 @@ import tempfile
 import unittest
 import time
 import json
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -196,6 +199,15 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         self.Session = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
         Base.metadata.create_all(self.engine)
 
+        # O pipeline, as tarefas e os locks devem usar o mesmo banco. Outros
+        # módulos da suíte também substituem SessionLocal em seus testes; fazer
+        # o vínculo explicitamente aqui evita depender da ordem de descoberta.
+        import app.services.task_manager as _isolated_tm
+        self._original_task_session_local = _isolated_tm.SessionLocal
+        _isolated_tm.SessionLocal = self.Session
+        _isolated_tm._task_schema_ready = False
+        _isolated_tm._ensure_task_support_tables()
+
         # ----- task_manager: garantir tabelas de apoio (video_tasks, video_task_dedupe, leases, locks) no engine GLOBAL do app.
         # Como claim_video_task usa SessionLocal() global internamente; precisamos garantir que
         # a SessionLocal crie/veja as tabelas.
@@ -212,9 +224,6 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
                 insp_main.has_table(tn) for tn in ("video_tasks", _tm._TASK_DEDUPE_TABLE, _tm._TASK_LEASE_TABLE, _tm._TASK_LOCK_TABLE)
             )
             if not has_all_ok:
-                with _eng.begin() as _conn:
-                    _now = _eng.dialect.now()
-                    pass
                 # Criar via SQLite create_all no engine global.
                 _sess = _SL()
                 try:
@@ -354,6 +363,12 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+        try:
+            import app.services.task_manager as _tm
+            _tm.SessionLocal = self._original_task_session_local
+            _tm._task_schema_ready = False
+        except Exception:
+            pass
         self.engine.dispose()
         try:
             from app import config as _cfg
@@ -416,6 +431,40 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         rows = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == ik).all()
         self.assertEqual(len(rows), 1, f"dois submits mesmo ik gerou {len(rows)} linhas")
         self.assertTrue(r2.reused_existing or r2.reused_completed or not r2.created_new)
+
+    def test_02b_simultaneous_clicks_create_one_task_one_row_and_one_kick(self):
+        """Prova a idempotência sob concorrência, não apenas sequencialmente."""
+        pipe = self._pipeline()
+        # A chave deve ser igual entre as threads deste teste, mas exclusiva
+        # entre execuções para que um banco temporário já usado não transforme
+        # a primeira chamada desta rodada em um reaproveitamento legítimo.
+        ik = f"test:simultaneous-clicks:{uuid.uuid4().hex}"
+        kick_count = 0
+        kick_guard = threading.Lock()
+
+        def kick_once():
+            nonlocal kick_count
+            with kick_guard:
+                kick_count += 1
+
+        def submit_once(_index: int):
+            db = self.Session()
+            try:
+                req = self._minimal_request(ik=ik, module="story", sid="story:concurrent")
+                return pipe.submit_or_reuse(db, request=req, kick_queue_callback=kick_once)
+            finally:
+                db.close()
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            results = list(executor.map(submit_once, range(6)))
+
+        task_ids = {str(result.task_id) for result in results}
+        self.assertEqual(len(task_ids), 1, task_ids)
+        self.assertEqual(kick_count, 1, "Somente a primeira solicitação pode iniciar o worker.")
+        self.db.expire_all()
+        rows = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == ik).all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(sum(1 for result in results if result.created_new), 1)
 
     # ------------------------------------------------------------------ #
     # 3. Retry sem force_regenerate NÃO cria novo MP4 se já existe        #

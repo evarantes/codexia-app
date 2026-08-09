@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -42,12 +43,14 @@ from app.config import (
 from app.database import SessionLocal
 from app.models import UnifiedVideo, UnifiedVideoStatus, User
 from app.services.task_manager import (
+    acquire_distributed_lock,
     acquire_task_execution_lease,
     claim_video_task,
     finalize_task_once,
     get_task,
     get_task_by_idempotency_key,
     heartbeat_task_execution_lease,
+    release_distributed_lock,
     release_task_execution_lease,
     update_task,
 )
@@ -186,6 +189,97 @@ class UnifiedPipelineResult(BaseModel):
     providers: Dict[str, Any] = {}
 
 
+def build_unified_video_request(
+    payload: Dict[str, Any],
+    *,
+    source_module: str,
+    source_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+) -> UnifiedVideoRequest:
+    """Converte entradas de qualquer módulo para o contrato canônico.
+
+    A conversão fica no serviço central para impedir que routers, schedulers e
+    fábricas mantenham interpretações diferentes do payload do
+    História/Devocional. O ``legacy_payload`` existe somente para preservar
+    opções de renderização do adaptador; identidade, fila, estado e validação
+    continuam sob responsabilidade do ``UnifiedVideoPipelineService``.
+    """
+    raw = dict(payload or {})
+    module = str(source_module or raw.get("source_module") or "system").strip().lower()
+    module = re.sub(r"[^a-z0-9_.:-]+", "_", module).strip("_.:-")[:64] or "system"
+
+    digest_payload = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+    digest = hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()
+    normalized_source_id = str(source_id or raw.get("source_id") or f"request:{digest[:24]}").strip()[:191]
+    if not normalized_source_id:
+        normalized_source_id = f"request:{digest[:24]}"
+    idempotency_key = str(raw.get("idempotency_key") or "").strip()[:255]
+    if len(idempotency_key) < 8:
+        idempotency_key = f"uvp:{module}:{normalized_source_id}:{digest[:16]}"[:255]
+
+    kind = str(raw.get("kind") or raw.get("content_type") or "").strip().lower()
+    allowed_kinds = {"story", "devotional", "prayer", "sermon", "teaching", "short", "custom"}
+    if kind not in allowed_kinds:
+        mode = str(raw.get("mode") or "topic").strip().lower()
+        kind = "story" if mode == "story" else ("short" if str(raw.get("video_type") or "").lower() == "short" else "custom")
+
+    try:
+        duration = int(raw.get("duration") or raw.get("duration_minutes") or 5)
+    except Exception:
+        duration = 5
+    duration = max(1, min(180, duration))
+    try:
+        image_count = int(raw.get("image_count") or (8 if str(raw.get("image_mode") or "").lower() == "multiple" else 1))
+    except Exception:
+        image_count = 8
+    image_count = max(1, min(64, image_count))
+
+    tags = raw.get("override_tags")
+    override_tags = [str(item) for item in tags if item is not None] if isinstance(tags, list) else None
+    selected = raw.get("selected_images")
+    selected_images = [str(item).strip() for item in selected if str(item).strip()] if isinstance(selected, list) else None
+
+    resolved_user_id: Optional[int]
+    try:
+        resolved_user_id = int(user_id or raw.get("user_id") or 0) or None
+    except Exception:
+        resolved_user_id = None
+
+    return UnifiedVideoRequest(
+        source_module=module,
+        source_id=normalized_source_id,
+        idempotency_key=idempotency_key,
+        content_type=kind,
+        topic=str(raw.get("topic") or raw.get("title") or raw.get("theme") or "")[:4000] or None,
+        script_text=str(raw.get("story_content") or raw.get("script_text") or "")[:120000] or None,
+        duration_minutes=duration,
+        aspect_ratio=str(raw.get("aspect_ratio") or "16:9").strip()[:12],
+        image_count=image_count,
+        text_provider=str(raw.get("text_provider") or "configured").strip()[:64] or "configured",
+        image_provider=str(raw.get("image_provider") or "configured").strip()[:64] or "configured",
+        voice_provider=str(raw.get("voice_provider") or "configured").strip()[:64] or "configured",
+        voice_id=(str(raw.get("voice_id") or raw.get("voice_style") or "").strip()[:128] or None),
+        music_enabled=bool(raw.get("music_enabled") or raw.get("music_file_path")),
+        visibility=str(raw.get("visibility") or "unlisted").strip().lower()[:32] or "unlisted",
+        auto_publish=bool(raw.get("auto_upload") or raw.get("auto_publish") or False),
+        review_required=bool(raw.get("review_required") if raw.get("review_required") is not None else True),
+        user_id=resolved_user_id,
+        force_regenerate=bool(raw.get("force_regenerate") or False),
+        force_reuse_assets=bool(raw.get("force_reuse_assets") or False),
+        force_render_only=bool(raw.get("force_render_only") or False),
+        override_title=(str(raw.get("override_title") or "").strip()[:300] or None),
+        override_description=(str(raw.get("override_description") or "").strip()[:5000] or None),
+        override_tags=override_tags,
+        seeded_script=(raw.get("seeded_script") if isinstance(raw.get("seeded_script"), dict) else None),
+        selected_images=selected_images,
+        reuse_audio_from=(raw.get("reuse_audio_from") if isinstance(raw.get("reuse_audio_from"), dict) else None),
+        request_hash=(str(raw.get("request_hash") or "").strip() or None),
+        legacy_payload={
+            key: value
+            for key, value in raw.items()
+            if key not in {"idempotency_key", "request_hash", "seeded_script", "selected_images", "reuse_audio_from"}
+        },
+    )
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -443,6 +537,33 @@ class UnifiedVideoPipelineService:
     # Entrada 1: submit ou reaproveita (idempotência).
     # ------------------------------------------------------------------
     def submit_or_reuse(
+        self,
+        db,
+        *,
+        request: UnifiedVideoRequest,
+        kick_queue_callback: Optional[Callable[[], None]] = None,
+        legacy_initial_result: Optional[Dict[str, Any]] = None,
+        user: Optional[User] = None,
+    ) -> UnifiedPipelineResult:
+        """Serializa claim e UnifiedVideo para impedir corrida entre cliques."""
+        key = str(request.idempotency_key or "").strip()
+        lock_info = acquire_distributed_lock(
+            f"unified-submit:{key}",
+            timeout_seconds=20,
+            ttl_seconds=45,
+        )
+        try:
+            return self._submit_or_reuse_locked(
+                db,
+                request=request,
+                kick_queue_callback=kick_queue_callback,
+                legacy_initial_result=legacy_initial_result,
+                user=user,
+            )
+        finally:
+            release_distributed_lock(lock_info)
+
+    def _submit_or_reuse_locked(
         self,
         db,
         *,
@@ -1196,6 +1317,7 @@ def _jsonable_payload_for_legacy(req: UnifiedVideoRequest) -> Dict[str, Any]:
 
 __all__ = [
     "UnifiedVideoRequest",
+    "build_unified_video_request",
     "UnifiedValidationResult",
     "UnifiedPipelineResult",
     "UnifiedVideoPipelineService",

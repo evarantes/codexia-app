@@ -19,10 +19,6 @@ if not os.environ.get("APP_ENV"):
 # Override DATABASE_URL explicito postgres de setup? → SQLite dev explicit.
 if os.environ.get("DATABASE_URL", "").startswith("postgresql://"):
     del os.environ["DATABASE_URL"]
-# SQLite dev: usa SQLiteFile mesmo com APP_ENV=development.
-from app.config import get_settings as _gs
-_ = _gs()
-
 from app.database import Base  # noqa: E402
 from app.models import ScheduledVideo, SeriesEpisode, SeriesPlan, Tenant, User, UnifiedVideoStatus  # noqa: E402
 from app.services.youtube_series_service import youtube_series_service  # noqa: E402
@@ -214,7 +210,7 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
             "skipped_reason": "auto_publish=False",
         }
 
-        def fake_transition(db, ik_or_tid, *, status, step=None, progress=None, message=None, merge_result=None):
+        def fake_transition(db, idempotency_key_or_task_id, *, status, step=None, progress=None, message=None, merge_result=None):
             fake_uv.status = status
             return fake_uv
 
@@ -228,7 +224,7 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
             },
         }), patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}), \
             patch("app.services.youtube_series_service._require_unified_pipeline") as mock_require, \
-            patch("app.services.youtube_series_service._find_unified_video_by_episode", return_value=fake_uv):
+            patch.object(youtube_series_service, "_find_unified_video_by_episode", return_value=fake_uv):
 
             uvpsvc = MagicMock()
             uvpsvc.transition_status = fake_transition
@@ -258,6 +254,10 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         """RejeiÃ§Ã£o NÃƒO usa pipeline legado: usa seeded_script / selected_images / reuse_audio_from no UReq."""
         audio_path = self.temp_dir / "audio.mp3"
         audio_path.write_text("audio", encoding="utf-8")
+        image_1 = self.temp_dir / "img-1.png"
+        image_2 = self.temp_dir / "img-2.png"
+        image_1.write_bytes(b"image-1")
+        image_2.write_bytes(b"image-2")
         detail = self._create_series(status="active")
         episode_id = detail["episodes"][0]["id"]
         episode = self.db.query(SeriesEpisode).filter(SeriesEpisode.id == episode_id).first()
@@ -267,10 +267,10 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
 
         uv_result_dict = {
             "script": {
-                "selected_images": ["/media/img-1.png", "/media/img-2.png"],
+                "selected_images": [str(image_1), str(image_2)],
                 "scenes": [{"text": "Cena 1"}, {"text": "Cena 2"}],
             },
-            "images": ["/media/img-1.png", "/media/img-2.png"],
+            "images": [str(image_1), str(image_2)],
             "audio_generation": {"output_path": str(audio_path)},
             "official_audio_transcription": {"srt_path": "/media/sub.srt"},
         }
@@ -312,7 +312,7 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         with patch("app.services.youtube_series_service.get_task", return_value={"status": "completed", "result": {}}), \
              patch("app.services.youtube_series_service.update_task", return_value=None), \
              patch("app.services.youtube_series_service._require_unified_pipeline") as mock_require, \
-             patch("app.services.youtube_series_service._find_unified_video_by_episode", return_value=fake_uv), \
+             patch.object(youtube_series_service, "_find_unified_video_by_episode", return_value=fake_uv), \
              patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}):
 
             uvpsvc = MagicMock()
@@ -522,8 +522,10 @@ class SeriesPipelineParityTests(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_series_service_module_does_not_import_legacy_pipeline_symbols(self):
         """youtube_series_service NÃƒO pode importar claim_video_task / AIContentGenerator / VoiceoverService / VideoFactory."""
+        import importlib
         import inspect
-        source = inspect.getsource(youtube_series_service)
+        ytss_mod = importlib.import_module("app.services.youtube_series_service")
+        source = inspect.getsource(ytss_mod)
         forbidden_top_level = [
             "claim_video_task",  # NÃƒO tem 2Âº pipeline
             "AIContentGenerator",
@@ -541,7 +543,6 @@ class SeriesPipelineParityTests(unittest.TestCase):
                 "Apenas app/services/unified_video_pipeline.py deve instanciar serviÃ§os de geraÃ§Ã£o."
             )
         # TambÃ©m garante que, no bloco de imports de task_manager, claim_video_task nÃ£o esteja
-        import app.services.youtube_series_service as ytss_mod
         self.assertFalse(
             getattr(ytss_mod, "claim_video_task", None) is not None and callable(getattr(ytss_mod, "claim_video_task", None)),
             "claim_video_task NÃƒO deve estar disponÃ­vel em youtube_series_service (removido do bloco de imports)."
@@ -592,7 +593,8 @@ class SeriesPipelineParityTests(unittest.TestCase):
                 "callable" if callable(kwargs.get("kick_queue_callback")) or kwargs.get("kick_queue_callback") is None else "invalid"
             )
             captured["user_passed"] = kwargs.get("user") is not None
-            captured["has_legacy_initial_result"] = "legacy_initial_result" in kwargs["kwargs_keys"]
+            captured["has_legacy_initial_result"] = "legacy_initial_result" in captured["kwargs_keys"]
+            captured["legacy_initial_result_value"] = kwargs.get("legacy_initial_result")
             fake_result = MagicMock()
             fake_result.task_id = "task-parity-001"
             fake_result.message = "queued"
@@ -643,7 +645,7 @@ class SeriesPipelineParityTests(unittest.TestCase):
                         "legacy_initial_result deve ser passado explicitamente (igual story, mesmo quando None).")
         # Em SÃ©ries: legacy_initial_result Ã© sempre None (seeds via UReq)
         self.assertIsNone(
-            captured.get("legacy_initial_result_value"), None,  # compatibilidade
+            captured.get("legacy_initial_result_value"),
             "SÃ©ries NÃƒO deve carregar 'base_result' em legacy_initial_result. Seeds sÃ£o campos do UnifiedVideoRequest."
         )
 
@@ -690,6 +692,7 @@ class SeriesPipelineParityTests(unittest.TestCase):
         """approve_episode chama: transition_status â†’ APPROVED + publish_if_ready(upload_callable).
         NÃƒO pode existir um YouTubeService.upload_video FORA do upload_callable (upload secundÃ¡rio)."""
         series, episode, detail = self._create_active_series_with_episode()
+        series.auto_approval = True
         episode.task_id = "task-parity-approve"
         episode.status = "awaiting_review"
         episode.current_version = 1
@@ -718,9 +721,9 @@ class SeriesPipelineParityTests(unittest.TestCase):
 
         captured_calls: Dict[str, Any] = {"transition": None, "publish": None, "yt_upload_calls": 0}
 
-        def fake_transition(db, ik_or_tid, *, status, step=None, progress=None, message=None, merge_result=None):
+        def fake_transition(db, idempotency_key_or_task_id, *, status, step=None, progress=None, message=None, merge_result=None):
             captured_calls["transition"] = {
-                "id": ik_or_tid,
+                "id": idempotency_key_or_task_id,
                 "status": status,
                 "progress": progress,
                 "has_merge_result": merge_result is not None,
@@ -728,9 +731,9 @@ class SeriesPipelineParityTests(unittest.TestCase):
             fake_uv.status = status
             return fake_uv
 
-        def fake_publish(db, ik_or_tid, *, upload_callable, upload_metadata=None, visibility_override=None):
+        def fake_publish(db, idempotency_key_or_task_id, *, upload_callable, upload_metadata=None, visibility_override=None):
             captured_calls["publish"] = {
-                "id": ik_or_tid,
+                "id": idempotency_key_or_task_id,
                 "upload_callable_callable": callable(upload_callable),
                 "has_upload_metadata": upload_metadata is not None,
                 "has_visibility_override": visibility_override is not None,
@@ -742,7 +745,6 @@ class SeriesPipelineParityTests(unittest.TestCase):
                 "title": "X", "description": "Y", "tags": ["parity"], "visibility": "unlisted"
             })
             captured_calls["last_upload_callable_result"] = upload_res
-            captured_calls["yt_upload_calls"] += 1
             return {"uploaded": True, "youtube_video_id": "upload-via-callable",
                     "youtube_url": "https://www.youtube.com/watch?v=upload-via-callable"}
 
@@ -759,7 +761,7 @@ class SeriesPipelineParityTests(unittest.TestCase):
             "title": fake_uv.title, "description": fake_uv.description,
             "video_url": fake_uv.video_url,
         }}), patch("app.services.youtube_series_service._require_unified_pipeline") as mock_req, \
-             patch("app.services.youtube_series_service._find_unified_video_by_episode", return_value=fake_uv), \
+             patch.object(youtube_series_service, "_find_unified_video_by_episode", return_value=fake_uv), \
              patch("app.services.youtube_service.YouTubeService", side_effect=lambda: _FakeYouTubeService()):
             uvpsvc = MagicMock()
             uvpsvc.transition_status = fake_transition

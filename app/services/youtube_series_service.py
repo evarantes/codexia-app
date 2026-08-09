@@ -1359,7 +1359,7 @@ class YouTubeSeriesService:
             try:
                 uvpsvc.transition_status(
                     db,
-                    task_id_or_ik=str(uv.task_id or uv.idempotency_key or ""),
+                    idempotency_key_or_task_id=str(uv.task_id or uv.idempotency_key or ""),
                     status=UnifiedVideoStatus.APPROVED,
                     progress=99,
                     message=f"Aprovado via série/episode#{int(episode.id)}.",
@@ -1460,8 +1460,8 @@ class YouTubeSeriesService:
             affected_components=_json_dumps([]),
             reused_components=_json_dumps(["script", "images", "audio", "video"]),
             regenerated_components=_json_dumps([]),
-            estimated_cost=_safe_float(((result.get("cost_control") or {}).get("estimated_cost")), 0.0),
-            actual_cost=_safe_float(((result.get("cost_control") or {}).get("actual_cost")), 0.0),
+            estimated_cost=_safe_float(providers_cost.get("estimated_cost"), 0.0),
+            actual_cost=_safe_float(providers_cost.get("actual_cost"), 0.0),
             reviewed_at=datetime.utcnow(),
             reviewed_by=int(user.id),
         ))

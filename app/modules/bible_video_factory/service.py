@@ -33,7 +33,6 @@ from app.services.global_settings_service import (
     get_or_create_latest_settings,
 )
 from app.services.task_manager import create_task, get_task, update_task
-from app.services.video_generator import VideoGenerator
 from app.services.youtube_service import YouTubeService
 
 logger = logging.getLogger(__name__)
@@ -3171,6 +3170,29 @@ class BibleVideoFactoryService:
 
     def serialize_job(self, row: BibleVideoJob) -> Dict[str, Any]:
         progress_task = get_task(row.task_id) if row.task_id else None
+        task_status = str((progress_task or {}).get("status") or "").strip().lower()
+        task_result = (progress_task or {}).get("result") if isinstance((progress_task or {}).get("result"), dict) else {}
+        effective_status = row.status
+        effective_progress = int(row.progress or 0)
+        effective_message = row.status_message
+        effective_video_url = row.output_video_url
+        if task_status in {"pending", "queued", "processing"}:
+            effective_status = "processing"
+            effective_progress = int((progress_task or {}).get("progress") or effective_progress)
+            effective_message = (progress_task or {}).get("message") or effective_message
+        elif task_status in {"completed", "awaiting_review", "approved"}:
+            effective_status = "ready"
+            effective_progress = 100
+            effective_message = (progress_task or {}).get("message") or "Vídeo pronto para aprovação."
+            effective_video_url = (
+                task_result.get("video_url")
+                or task_result.get("video_path")
+                or task_result.get("file_path")
+                or effective_video_url
+            )
+        elif task_status in {"failed", "cancelled"}:
+            effective_status = task_status
+            effective_message = (progress_task or {}).get("message") or effective_message
         return {
             "id": row.id,
             "user_id": row.user_id,
@@ -3183,10 +3205,10 @@ class BibleVideoFactoryService:
             "platform": row.platform,
             "aspect_ratio": row.aspect_ratio,
             "kanban_stage": row.kanban_stage,
-            "status": row.status,
+            "status": effective_status,
             "approval_status": row.approval_status,
-            "progress": int(row.progress or 0),
-            "status_message": row.status_message,
+            "progress": effective_progress,
+            "status_message": effective_message,
             "task_id": row.task_id,
             "scheduled_for": row.scheduled_for.isoformat() if row.scheduled_for else None,
             "tags": self._json_loads(row.tags_json, []),
@@ -3196,7 +3218,7 @@ class BibleVideoFactoryService:
             "publish_platforms": self._json_loads(row.publish_platforms_json, []),
             "plan": self._json_loads(row.plan_json, {}),
             "result": self._json_loads(row.result_json, {}),
-            "output_video_url": row.output_video_url,
+            "output_video_url": effective_video_url,
             "output_thumbnail_url": row.output_thumbnail_url,
             "published_video_id": row.published_video_id,
             "estimated_cost": float(row.estimated_cost or 0),
@@ -5620,8 +5642,7 @@ class BibleVideoFactoryService:
             job = db.query(BibleVideoJob).filter(BibleVideoJob.id == job_id).first()
             if not job:
                 return
-            task_id = job.task_id or create_task(user_id=job.user_id)
-            job.task_id = task_id
+            task_id = str(job.task_id or "").strip() or None
             job.status = "processing"
             job.progress = 1
             job.kanban_stage = "script_approved"
@@ -5635,7 +5656,8 @@ class BibleVideoFactoryService:
                 if stage:
                     job.kanban_stage = stage
                 db.commit()
-                update_task(task_id, status="processing", progress=job.progress, message=msg)
+                if task_id:
+                    update_task(task_id, status="processing", progress=job.progress, message=msg)
 
             plan = self.build_plan_for_job(db, job)
             config = self.get_or_create_config(db, job.user_id)
@@ -5643,6 +5665,75 @@ class BibleVideoFactoryService:
             progress(12, "Storyboard montado e pronto para aprovacao.", "storyboard_generated")
             progress(20, "Gerando imagens-chave das cenas...", "images_generated")
             progress(32, "Gerando voz e trilha...", "voice_generated")
+
+            from app.services.unified_video_pipeline import build_unified_video_request, unified_video_pipeline
+
+            selected_images = plan.get("selected_images") if isinstance(plan.get("selected_images"), list) else None
+            canonical_payload = {
+                "source_id": f"bible-job:{int(job.id)}",
+                "idempotency_key": f"bible-video-job:{int(job.id)}",
+                "topic": job.title,
+                "story_content": "\n\n".join(
+                    str(scene.get("text") or "").strip()
+                    for scene in (plan.get("scenes") or [])
+                    if isinstance(scene, dict) and str(scene.get("text") or "").strip()
+                ),
+                "mode": "story",
+                "kind": "short" if str(job.job_type or "").lower() == "short" else "devotional",
+                "duration": int(plan.get("target_duration_min") or plan.get("duration_minutes") or 5),
+                "aspect_ratio": job.aspect_ratio or "16:9",
+                "seeded_script": plan,
+                "selected_images": selected_images,
+                "override_title": job.title,
+                "override_description": job.description_text,
+                "override_tags": self._json_loads(job.tags_json, []),
+                "review_required": True,
+                "user_id": job.user_id,
+                "bible_video_job_id": int(job.id),
+            }
+            canonical_request = build_unified_video_request(
+                canonical_payload,
+                source_module="bible_video_factory",
+                source_id=f"bible-job:{int(job.id)}",
+                user_id=job.user_id,
+            )
+            try:
+                from app.routers.youtube import _kick_story_video_task_queue_async
+
+                kick = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+            except Exception:
+                kick = None
+            pipeline_result = unified_video_pipeline().submit_or_reuse(
+                db,
+                request=canonical_request,
+                kick_queue_callback=kick,
+                legacy_initial_result={
+                    "source_module": "bible_video_factory",
+                    "bible_video_job_id": int(job.id),
+                    "pipeline": "unified_video_pipeline",
+                    "payload": canonical_payload,
+                },
+            )
+            task_id = str(pipeline_result.task_id or "").strip()
+            job.task_id = task_id or None
+            job.status = "ready" if pipeline_result.reused_completed else "processing"
+            job.progress = 100 if pipeline_result.reused_completed else 32
+            job.kanban_stage = "awaiting_approval" if pipeline_result.reused_completed else "video_editing"
+            job.status_message = pipeline_result.message
+            if pipeline_result.video_url:
+                job.output_video_url = pipeline_result.video_url
+            job.result_json = self._json_dumps(
+                {
+                    "pipeline": "unified_video_pipeline",
+                    "unified_video_id": pipeline_result.unified_video_id,
+                    "task_id": pipeline_result.task_id,
+                }
+            )
+            db.commit()
+            return
+
+            # O renderizador direto abaixo fica inacessível; será removido
+            # depois que instalações antigas concluírem tarefas já iniciadas.
 
             video_service = VideoGenerator(ai_service=AIContentGenerator())
             result = video_service.create_video_from_plan(

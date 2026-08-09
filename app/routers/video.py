@@ -1,188 +1,168 @@
-from fastapi import APIRouter, HTTPException, Depends
+"""Entradas genéricas de vídeo delegadas ao pipeline História/Devocional."""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
 from sqlalchemy.orm import Session
+
 from app.database import get_db
-from app.models import Book, Post
-from app.services.ai_generator import AIContentGenerator
-import uuid
+from app.models import Book
+from app.services.unified_video_pipeline import (
+    build_unified_video_request,
+    unified_video_pipeline,
+)
+
 
 router = APIRouter(prefix="/video", tags=["Video"])
+
 
 class VideoRequest(BaseModel):
     title: str
     script: List[str]
 
+
 class AutoVideoRequest(BaseModel):
     book_id: int
     style: str = "drama"
 
+
 class CreateVideoRequest(BaseModel):
-    mode: str = "manual" # manual, topic, story
+    mode: str = "manual"
     title: str
-    content: str # Script lines (manual), Topic (topic), or Story Prompt (story)
+    content: str
     duration: int = 1
     voice_style: Optional[str] = "human"
     voice_gender: Optional[str] = "female"
     storyboard_quantity: int = 15
     storyboard_images: Optional[List[str]] = None
 
-@router.post("/create")
-def create_video(request: CreateVideoRequest):
-    # Lazy import para reduzir memória no startup (moviepy/PIL/numpy)
-    from app.services.video_generator import VideoGenerator
-    from app.services.image_storyboard_service import generate_storyboard_images
-    try:
-        ai_service = AIContentGenerator()
-        video_gen = VideoGenerator(ai_service=ai_service)
-        
-        script_plan = {}
-        
-        if request.mode == "manual":
-            script_plan = {
-                "title": request.title,
-                "scenes": [{"text": line} for line in request.content.split('\n') if line.strip()]
-            }
-            aspect_ratio = "16:9"
-        elif request.mode == "topic":
-            script_plan = ai_service.generate_motivational_script(request.content, request.duration)
-            script_plan["title"] = request.title
-            aspect_ratio = "16:9"
-        elif request.mode == "story":
-            script_plan = ai_service.generate_video_script(request.title, request.content, "story")
-            aspect_ratio = "16:9"
-        elif request.mode == "short":
-            # YouTube Short por prompt: um único prompt → roteiro curto → vídeo vertical 9:16
-            script_plan = ai_service.generate_short_script_from_prompt(request.content)
-            script_plan["title"] = request.title or script_plan.get("title", "Short")
-            aspect_ratio = "9:16"
-        else:
-            script_plan = ai_service.generate_video_script(request.title, request.content, "drama")
-            aspect_ratio = "16:9"
 
-        storyboard = None
-        provided = request.storyboard_images if isinstance(request.storyboard_images, list) else None
-        provided_urls = [str(u or "").strip() for u in (provided or []) if isinstance(u, str) and str(u or "").strip()]
-        if provided_urls:
-            script_plan["selected_images"] = provided_urls
-        else:
-            full_text = "\n".join(
-                [
-                    (script_plan.get("title") or request.title or "").strip(),
-                    "\n".join([str((s or {}).get("text") or "").strip() for s in (script_plan.get("scenes") or []) if isinstance(s, dict)]),
-                ]
-            ).strip()
-            storyboard = generate_storyboard_images(full_text, quantity=request.storyboard_quantity)
-            storyboard_urls = [str(it.get("url") or "").strip() for it in (storyboard.get("images") or []) if isinstance(it, dict)]
-            storyboard_urls = [u for u in storyboard_urls if u]
-            if storyboard_urls:
-                script_plan["selected_images"] = storyboard_urls
-            
-        # Generate Video (9:16 para Short, 16:9 para os demais)
-        result = video_gen.create_video_from_plan(
-            script_plan,
-            aspect_ratio=aspect_ratio,
-            voice_style=request.voice_style,
-            voice_gender=request.voice_gender
-        )
-        
-        return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit"), "storyboard": storyboard}
-        
-    except Exception as e:
-        print(f"Erro ao criar vídeo ({request.mode}): {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+def _pipeline_response(result) -> Dict[str, Any]:
+    return {
+        "message": result.message,
+        "task_id": result.task_id,
+        "unified_video_id": result.unified_video_id,
+        "status": result.status,
+        "queued": bool(result.queue_position > 1 or result.already_processing),
+        "queue_position": int(result.queue_position or 0),
+        "reused_existing_task": bool(result.reused_existing),
+        "reused_completed_task": bool(result.reused_completed),
+        "video_url": result.video_url,
+        "pipeline": "unified_video_pipeline",
+    }
+
+
+def _submit(db: Session, payload: Dict[str, Any], *, source_id: Optional[str] = None) -> Dict[str, Any]:
+    request = build_unified_video_request(
+        payload,
+        source_module="video_router",
+        source_id=source_id,
+        user_id=None,
+    )
+    try:
+        from app.routers.youtube import _kick_story_video_task_queue_async
+
+        kick = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+    except Exception:
+        kick = None
+    result = unified_video_pipeline().submit_or_reuse(
+        db,
+        request=request,
+        kick_queue_callback=kick,
+        legacy_initial_result={
+            "source_module": "video_router",
+            "pipeline": "unified_video_pipeline",
+            "payload": payload,
+        },
+        user=None,
+    )
+    return _pipeline_response(result)
+
+
+@router.post("/create")
+def create_video(request: CreateVideoRequest, db: Session = Depends(get_db)):
+    mode = str(request.mode or "manual").strip().lower()
+    if mode not in {"manual", "topic", "story", "short"}:
+        mode = "topic"
+    selected_images = [
+        str(value).strip()
+        for value in (request.storyboard_images or [])
+        if str(value or "").strip()
+    ]
+    script_lines = [line.strip() for line in str(request.content or "").splitlines() if line.strip()]
+    seeded_script = None
+    if mode == "manual":
+        seeded_script = {
+            "title": request.title,
+            "scenes": [{"text": line} for line in script_lines],
+        }
+        if selected_images:
+            seeded_script["selected_images"] = selected_images
+    payload = {
+        "topic": request.title or request.content,
+        "story_content": request.content if mode in {"manual", "story"} else None,
+        "mode": "story" if mode in {"manual", "story"} else "topic",
+        "kind": "short" if mode == "short" else ("story" if mode == "story" else "custom"),
+        "duration": request.duration,
+        "aspect_ratio": "9:16" if mode == "short" else "16:9",
+        "voice_style": request.voice_style,
+        "voice_gender": request.voice_gender,
+        "image_count": request.storyboard_quantity,
+        "selected_images": selected_images or None,
+        "seeded_script": seeded_script,
+        "override_title": request.title,
+        "review_required": True,
+    }
+    try:
+        return _submit(db, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Falha no pipeline canônico: {type(exc).__name__}: {str(exc)[:300]}")
+
 
 @router.post("/generate")
-def generate_video(request: VideoRequest):
-    from app.services.video_generator import VideoGenerator
-    from app.services.image_storyboard_service import generate_storyboard_images
-    try:
-        filename = f"{uuid.uuid4()}.mp4"
-        # Tenta inicializar IA para melhores imagens/audio
-        try:
-            ai_service = AIContentGenerator()
-        except Exception as e:
-            print(f"Aviso: Não foi possível iniciar AI Service: {e}")
-            ai_service = None
-            
-        local_video_gen = VideoGenerator(ai_service=ai_service)
-        
-        # Se tiver IA, podemos tentar enriquecer o script ou usar create_video_from_plan
-        # Mas para manter compatibilidade com "simple video", passamos apenas o script
-        # O VideoGenerator internamente pode usar o ai_service se implementado em generate_simple_video
-        # Mas generate_simple_video (legacy) talvez não use. 
-        # Vamos verificar se podemos usar create_video_from_plan que é mais robusto.
-        
-        # Converte script simples para plano de cenas
-        script_plan = {
+def generate_video(request: VideoRequest, db: Session = Depends(get_db)):
+    script = [str(line).strip() for line in request.script if str(line or "").strip()]
+    if not script:
+        raise HTTPException(status_code=422, detail="script deve conter ao menos uma linha.")
+    payload = {
+        "topic": request.title,
+        "story_content": "\n\n".join(script),
+        "mode": "story",
+        "kind": "custom",
+        "duration": max(1, min(180, len(" ".join(script).split()) // 130 or 1)),
+        "aspect_ratio": "16:9",
+        "seeded_script": {
             "title": request.title,
-            "scenes": [{"text": line} for line in request.script if line.strip()]
-        }
+            "scenes": [{"text": line} for line in script],
+        },
+        "review_required": True,
+    }
+    try:
+        return _submit(db, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Falha no pipeline canônico: {type(exc).__name__}: {str(exc)[:300]}")
 
-        full_text = "\n".join(
-            [
-                (script_plan.get("title") or request.title or "").strip(),
-                "\n".join([str((s or {}).get("text") or "").strip() for s in (script_plan.get("scenes") or []) if isinstance(s, dict)]),
-            ]
-        ).strip()
-        storyboard = generate_storyboard_images(full_text, quantity=15)
-        storyboard_urls = [str(it.get("url") or "").strip() for it in (storyboard.get("images") or []) if isinstance(it, dict)]
-        storyboard_urls = [u for u in storyboard_urls if u]
-        if storyboard_urls:
-            script_plan["selected_images"] = storyboard_urls
-        
-        # Usa o pipeline moderno (create_video_from_plan) em vez do legado
-        result = local_video_gen.create_video_from_plan(
-            script_plan,
-            aspect_ratio="16:9",
-            voice_style="human", # Default melhor
-            voice_gender="female"
-        )
-        
-        return {"video_url": result["video_url"]}
-    except Exception as e:
-        print(f"Erro ao gerar vídeo: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/generate-auto")
 def generate_auto_video(request: AutoVideoRequest, db: Session = Depends(get_db)):
-    from app.services.video_generator import VideoGenerator
-    from app.services.image_storyboard_service import generate_storyboard_images
+    book = db.query(Book).filter(Book.id == request.book_id).first()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    payload = {
+        "topic": book.title,
+        "story_content": book.synopsis,
+        "mode": "story",
+        "kind": "story",
+        "duration": 5,
+        "aspect_ratio": "16:9",
+        "override_title": book.title,
+        "legacy_book_style": request.style,
+        "cover_image_url": book.cover_image_url,
+        "review_required": True,
+    }
     try:
-        book = db.query(Book).filter(Book.id == request.book_id).first()
-        if not book:
-            raise HTTPException(status_code=404, detail="Book not found")
-        
-        ai_service = AIContentGenerator()
-        script_plan = ai_service.generate_video_script(book.title, book.synopsis, request.style)
-        video_gen = VideoGenerator(ai_service=ai_service)
-
-        full_text = "\n".join(
-            [
-                (script_plan.get("title") or book.title or "").strip(),
-                "\n".join([str((s or {}).get("text") or "").strip() for s in (script_plan.get("scenes") or []) if isinstance(s, dict)]),
-            ]
-        ).strip()
-        storyboard = generate_storyboard_images(full_text, quantity=15)
-        storyboard_urls = [str(it.get("url") or "").strip() for it in (storyboard.get("images") or []) if isinstance(it, dict)]
-        storyboard_urls = [u for u in storyboard_urls if u]
-        if storyboard_urls:
-            script_plan["selected_images"] = storyboard_urls
-        
-        # Resolve caminho da capa se existir
-        cover_path = None
-        if book.cover_image_url:
-            # Se for url relativa, converte para caminho absoluto
-            if book.cover_image_url.startswith("/static"):
-                cover_path = f"app{book.cover_image_url}"
-            else:
-                # Se for URL externa, precisaria baixar. Por enquanto assume local se começar com /static
-                # TODO: Implementar download de capa externa se necessário
-                pass
-
-        result = video_gen.create_video_from_plan(script_plan, cover_image_path=cover_path)
-        
-        return {"video_url": result["video_url"], "script": script_plan, "music_credit": result.get("music_credit")}
-    except Exception as e:
-        print(f"Erro ao gerar vídeo automático: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return _submit(db, payload, source_id=f"book:{int(book.id)}:{request.style}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Falha no pipeline canônico: {type(exc).__name__}: {str(exc)[:300]}")

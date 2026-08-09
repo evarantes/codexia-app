@@ -50,6 +50,7 @@ from app.services.financial_guardian import youtube_auto_financial_adapter
 from app.services.financial_guardian.youtube_observability import youtube_financial_guardian_observability_service
 from app.services.financial_guardian_service import financial_guardian_service
 from app.services.global_settings_service import get_latest_settings, serialize_official_factory_settings
+from app.services.media_probe import media_durations_match, probe_media_file
 from app.services.task_manager import (
     create_task,
     update_task,
@@ -466,24 +467,10 @@ def _find_reusable_completed_task_by_content(
                         abs_file = file_path
             except Exception:
                 abs_file = ""
-            size_ok = False
-            duration_ok = False
-            if abs_file and os.path.exists(abs_file):
-                try:
-                    size_ok = int(os.path.getsize(abs_file) or 0) > 100 * 1024
-                except Exception:
-                    size_ok = False
-            if not (size_ok or (bool(video_url) and bool(file_path))):
+            if not (abs_file and os.path.isfile(abs_file)):
                 continue
-            try:
-                fv = result_obj.get("final_validation") or {}
-                if isinstance(fv, dict):
-                    duration_ok = bool(fv.get("ok")) or bool(fv.get("recovered"))
-            except Exception:
-                duration_ok = False
-            if not duration_ok:
-                duration_ok = size_ok
-            if not duration_ok:
+            media_probe = probe_media_file(abs_file)
+            if not media_probe.get("ok") or not media_durations_match(media_probe):
                 continue
             return {
                 "task_id": str(row.id),
@@ -597,32 +584,13 @@ def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]]
                     _abs_cand = ""
                 if _abs_cand and os.path.exists(_abs_cand):
                     try:
-                        _sz = int(os.path.getsize(_abs_cand) or 0)
-                        _probe = None
-                        try:
-                            from app.services import video_service as _vs
-                            if hasattr(_vs, "_ffprobe_stream_duration_seconds"):
-                                _probe = _vs._ffprobe_stream_duration_seconds(_abs_cand)
-                        except Exception:
-                            _probe = None
-                        _sz_big = int(_sz or 0) >= 2 * 1024 * 1024  # >= 2 MB
-                        _probe_is_dict = isinstance(_probe, dict) and bool(_probe)
-                        _fallback_no_probe = (not _probe_is_dict) and _sz_big
-                        _video_stream = bool((_probe or {}).get("video_stream")) if _probe_is_dict else bool(_fallback_no_probe)
-                        _audio_stream = bool((_probe or {}).get("audio_stream")) if _probe_is_dict else bool(_fallback_no_probe)
-                        _vdur = float((_probe or {}).get("video_duration") or 0.0) if _probe_is_dict else 0.0
-                        if _fallback_no_probe and _vdur <= 0.5:
-                            try:
-                                import math as _math
-                                _est = float(max(30.0, min(3600.0, round(_math.log(int(_sz or 1) / (1024.0 * 1024.0) + 1.0, 10.0) * 90.0, 1))))
-                                _vdur = _est
-                            except Exception:
-                                _vdur = 90.0
-                        _ok = (
-                            (_sz > 100 * 1024)
-                            and (_vdur > 0.5)
-                            and (_video_stream or _audio_stream)
-                        )
+                        _probe = probe_media_file(_abs_cand)
+                        _sz = int(_probe.get("file_size_bytes") or 0)
+                        _video_stream = bool(_probe.get("video_stream"))
+                        _audio_stream = bool(_probe.get("audio_stream"))
+                        _vdur = float(_probe.get("video_duration") or 0.0)
+                        _adur = float(_probe.get("audio_duration") or 0.0)
+                        _ok = bool(_probe.get("ok")) and media_durations_match(_probe)
                         if _ok:
                             new_result = dict(_res)
                             try:
@@ -635,11 +603,13 @@ def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]]
                                         "video_stream": bool(_video_stream),
                                         "audio_stream": bool(_audio_stream),
                                         "duration_valid": _vdur > 0.5,
-                                        "audio_not_trimmed": True,
+                                        "audio_not_trimmed": media_durations_match(_probe),
                                         "http_media_ready": True,
                                     },
                                     "size_bytes": _sz,
                                     "video_duration_sec": round(_vdur, 3),
+                                    "audio_duration_sec": round(_adur, 3),
+                                    "probe_available": bool(_probe.get("probe_available")),
                                 }
                             except Exception:
                                 pass
@@ -1689,11 +1659,13 @@ try:
     from app.services.unified_video_pipeline import (
         UnifiedVideoPipelineService,
         UnifiedVideoRequest,
+        build_unified_video_request,
         unified_video_pipeline,
     )
 except Exception as _unified_import_err:  # pragma: no cover - fallback gracefully deploys
     UnifiedVideoPipelineService = None  # type: ignore[assignment,misc]
     UnifiedVideoRequest = None  # type: ignore[assignment,misc]
+    build_unified_video_request = None  # type: ignore[assignment]
     unified_video_pipeline = None  # type: ignore[assignment,misc]
     _UNIFIED_IMPORT_ERR: Optional[str] = str(_unified_import_err)
 else:
@@ -1703,56 +1675,23 @@ else:
 def _unified_enabled() -> bool:
     if _UNIFIED_IMPORT_ERR:
         return False
-    return bool(unified_video_pipeline is not None and UnifiedVideoRequest is not None)
+    return bool(
+        unified_video_pipeline is not None
+        and UnifiedVideoRequest is not None
+        and build_unified_video_request is not None
+    )
 
 
 def _build_unified_request_from_legacy(payload: Dict[str, Any], user_id: Optional[int] = None, module: str = "story") -> Optional["UnifiedVideoRequest"]:
-    if not _unified_enabled() or UnifiedVideoRequest is None:
+    """Compatibilidade local; a normalização canônica vive no serviço central."""
+    if not _unified_enabled() or build_unified_video_request is None:
         return None
     try:
-        kind = str(payload.get("kind") or payload.get("content_type") or "").strip().lower()
-        if kind not in {"story", "devotional", "prayer", "sermon", "teaching", "short", "custom"}:
-            kind = "story" if (str(payload.get("mode") or "topic").strip().lower() == "story") else "custom"
-        source_id = str(payload.get("source_id") or f"task:{_safe_hash(payload)}").strip()[:191] or "task:legacy"
-        idempotency_key = str(payload.get("idempotency_key") or f"unified:{_safe_hash(payload)}").strip()[:255]
-        request_hash = str(payload.get("request_hash") or "").strip() or None
-        tags = payload.get("override_tags")
-        if isinstance(tags, list):
-            override_tags = [str(x) for x in tags if x is not None]
-        else:
-            override_tags = None
-        req = UnifiedVideoRequest(
-            source_module=str(module or payload.get("source_module") or "story").strip()[:64],
-            source_id=source_id,
-            idempotency_key=idempotency_key,
-            content_type=kind[:64] or "story",
-            topic=str(payload.get("topic") or payload.get("title") or "")[:4000] or None,
-            script_text=str(payload.get("story_content") or payload.get("script_text") or "")[:120000] or None,
-            duration_minutes=int(payload.get("duration") or payload.get("duration_minutes") or 5),
-            aspect_ratio=str(payload.get("aspect_ratio") or "16:9").strip()[:12],
-            image_count=int(payload.get("image_count") or (8 if str(payload.get("image_mode") or "").lower() == "multiple" else 1)),
-            text_provider=str(payload.get("text_provider") or "configured").strip()[:64] or "configured",
-            image_provider=str(payload.get("image_provider") or "configured").strip()[:64] or "configured",
-            voice_provider=str(payload.get("voice_provider") or "configured").strip()[:64] or "configured",
-            voice_id=(str(payload.get("voice_id") or payload.get("voice_style") or "").strip()[:128] or None),
-            music_enabled=bool(payload.get("music_enabled") or False),
-            visibility=str(payload.get("visibility") or "unlisted").strip().lower()[:32] or "unlisted",
-            auto_publish=bool(payload.get("auto_upload") or payload.get("auto_publish") or False),
-            review_required=bool(payload.get("review_required") if payload.get("review_required") is not None else True),
-            user_id=int(user_id or payload.get("user_id") or 0) or None,
-            force_regenerate=bool(payload.get("force_regenerate") or False),
-            force_reuse_assets=bool(payload.get("force_reuse_assets") or False),
-            force_render_only=bool(payload.get("force_render_only") or False),
-            override_title=(str(payload.get("override_title") or "").strip()[:300] or None),
-            override_description=(str(payload.get("override_description") or "").strip()[:5000] or None),
-            override_tags=override_tags,
-            seeded_script=(payload.get("seeded_script") if isinstance(payload.get("seeded_script"), dict) else None),
-            selected_images=(payload.get("selected_images") if isinstance(payload.get("selected_images"), list) else None),
-            reuse_audio_from=(payload.get("reuse_audio_from") if isinstance(payload.get("reuse_audio_from"), dict) else None),
-            request_hash=request_hash,
-            legacy_payload={k: v for k, v in payload.items() if k not in {"idempotency_key", "request_hash", "seeded_script", "selected_images", "reuse_audio_from"}},
+        return build_unified_video_request(
+            payload,
+            source_module=str(module or payload.get("source_module") or "story"),
+            user_id=user_id,
         )
-        return req
     except Exception:
         return None
 
@@ -1852,6 +1791,7 @@ def _reset_stuck_jobs(db: Session, timeout_minutes: int = 10):
 @router.get("/auto/queue")
 def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
     """Retorna a fila de produção (vídeos e jobs). Dispara processamento se houver jobs pendentes."""
+    VideoFactory(db).sync_canonical_videos()
     _reset_stuck_jobs(db)
     pending = db.query(Job).filter(Job.status == "pending").first()
     processing = db.query(Job).filter(Job.status == "processing").first()
@@ -1936,7 +1876,10 @@ def get_production_queue(background_tasks: BackgroundTasks, status: Optional[str
             "current_step": current_step,
             "status_message": status_message,
             "logs": active_job.logs if active_job else "",
-            "youtube_id": v.youtube_video_id
+            "youtube_id": v.youtube_video_id,
+            "task_id": getattr(v, "task_id", None),
+            "unified_video_id": getattr(v, "unified_video_id", None),
+            "pipeline": getattr(v, "pipeline", None),
         })
     
     return result
@@ -2345,6 +2288,9 @@ class VideoRequest(BaseModel):
     story_content: Optional[str] = None
     custom_image_paths: Optional[List[str]] = None
     selected_images: Optional[List[str]] = None
+    seeded_script: Optional[Dict[str, Any]] = None
+    reuse_audio_from: Optional[Dict[str, Any]] = None
+    music_file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
     override_title: Optional[str] = None
     override_description: Optional[str] = None
@@ -2701,9 +2647,6 @@ def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callbac
             else ["Gancho de fé (início)", "Aplicação prática", "Mensagem final e CTA"]
         )
 
-        from app.services.video_generator import VideoGenerator
-        video_service = VideoGenerator(ai_service=ai_service)
-
         shorts = []
         for idx in range(count):
             angle = angles[idx % len(angles)]
@@ -2751,29 +2694,59 @@ def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callbac
             if selected_images:
                 plan["selected_images"] = selected_images
 
-            def _video_progress(p, m, short_idx=idx, total=count):
-                base = 10 + int((short_idx / max(1, total)) * 80)
-                span = int((1 / max(1, total)) * 80)
-                mapped = min(95, base + int((p or 0) / 100 * max(1, span)))
-                _progress(mapped, f"Short {short_idx+1}/{total}: {m}")
+            child_db = SessionLocal()
+            try:
+                source_hash = _safe_hash({"story": story_content, "index": idx, "kind": kind, "plan": plan})
+                child_payload = {
+                    "source_id": f"story-short:{source_hash}:{idx}",
+                    "idempotency_key": f"story-short:{source_hash}:{idx}",
+                    "topic": plan.get("title") or f"Short {idx+1}",
+                    "story_content": "\n\n".join(
+                        str(scene.get("text") or "").strip()
+                        for scene in (plan.get("scenes") or [])
+                        if isinstance(scene, dict) and str(scene.get("text") or "").strip()
+                    ),
+                    "mode": "story",
+                    "kind": "short",
+                    "duration": 1,
+                    "aspect_ratio": "9:16",
+                    "seeded_script": plan,
+                    "selected_images": selected_images or None,
+                    "voice_style": voice_style,
+                    "voice_gender": voice_gender,
+                    "override_title": plan.get("title"),
+                    "override_description": plan.get("description"),
+                    "review_required": True,
+                }
+                child_request = build_unified_video_request(
+                    child_payload,
+                    source_module="story_shorts",
+                    source_id=f"story-short:{source_hash}:{idx}",
+                )
+                child_result = unified_video_pipeline().submit_or_reuse(
+                    child_db,
+                    request=child_request,
+                    kick_queue_callback=_kick_story_video_task_queue_async,
+                    legacy_initial_result={
+                        "source_module": "story_shorts",
+                        "pipeline": "unified_video_pipeline",
+                        "payload": child_payload,
+                    },
+                )
+                shorts.append({
+                    "title": plan.get("title") or f"Short {idx+1}",
+                    "description": plan.get("description") or "",
+                    "video_url": child_result.video_url,
+                    "task_id": child_result.task_id,
+                    "unified_video_id": child_result.unified_video_id,
+                    "kind": kind,
+                    "video_type": "short",
+                    "pipeline": "unified_video_pipeline",
+                })
+            finally:
+                child_db.close()
 
-            result = video_service.create_video_from_plan(
-                plan,
-                aspect_ratio="9:16",
-                progress_callback=_video_progress,
-                voice_style=voice_style,
-                voice_gender=voice_gender,
-            )
-            video_url = result.get("video_url") if isinstance(result, dict) else None
-            shorts.append({
-                "title": plan.get("title") or f"Short {idx+1}",
-                "description": plan.get("description") or "",
-                "video_url": video_url,
-                "kind": kind,
-                "video_type": "short",
-            })
-
-        _progress(100, "Shorts prontos.")
+        _progress(100, "Shorts enviados ao pipeline único.")
         return {"count": len(shorts), "shorts": shorts, "kind": kind}
     finally:
         if redis_lock:
@@ -2789,6 +2762,10 @@ def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callbac
 
 class QueueGeneratedVideoRequest(BaseModel):
     video_url: str
+    video_path: Optional[str] = None
+    task_id: Optional[str] = None
+    scheduled_video_id: Optional[int] = None
+    unified_video_id: Optional[int] = None
     title: Optional[str] = None
     description: Optional[str] = None
     kind: Optional[str] = None
@@ -3395,6 +3372,40 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
     video_path = (getattr(request, "video_path", None) or "").strip() or None
     task_id_src = (getattr(request, "task_id", None) or "").strip() or None
     scheduled_video_id = int(getattr(request, "scheduled_video_id", 0) or 0) or None
+
+    # Generated local media must pass the same fail-closed probe used by the
+    # renderer and recovery watchdog. A large file is not evidence of a valid
+    # MP4, and ffprobe unavailability must never enqueue unverified media.
+    local_media_candidate = video_path
+    if not local_media_candidate and video_url and not video_url.startswith(("http://", "https://")):
+        local_media_candidate = video_url
+    if local_media_candidate:
+        try:
+            if os.path.isabs(local_media_candidate) and os.path.isfile(local_media_candidate):
+                absolute_media_candidate = local_media_candidate
+            else:
+                from app.config import absolute_path_for_video as _absolute_path_for_generated_video
+
+                absolute_media_candidate = _absolute_path_for_generated_video(os.path.basename(local_media_candidate))
+        except Exception:
+            absolute_media_candidate = ""
+        media_probe = probe_media_file(absolute_media_candidate)
+        if not media_probe.get("ok") or not media_durations_match(media_probe):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "generated_video_validation_failed",
+                    "message": "O vídeo gerado não passou na validação real de áudio, vídeo e duração.",
+                    "probe_error": media_probe.get("error"),
+                    "checks": {
+                        "file_exists": bool(media_probe.get("file_exists")),
+                        "ffprobe_available": bool(media_probe.get("probe_available")),
+                        "video_stream": bool(media_probe.get("video_stream")),
+                        "audio_stream": bool(media_probe.get("audio_stream")),
+                        "duration_match": media_durations_match(media_probe),
+                    },
+                },
+            )
 
     # === IDEMPOTÊNCIA: BUSCA EXISTENTE ===
     # Estratégias (qualquer uma que bater → reutiliza):
@@ -4782,18 +4793,14 @@ def run_auto_thanks(
 def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: Optional[User] = Depends(get_current_admin_user)):
     """Gera um vídeo motivacional e opcionalmente faz upload.
 
-    Fluxo PADRÃO: UnifiedVideoPipeline (central único) obrigatório em homologação/produção.
+    Fluxo ÚNICO: UnifiedVideoPipeline do História/Devocional.
     - Monta UnifiedVideoRequest padronizado.
     - submit_or_reuse (cria UnifiedVideo + VideoTask com idempotência estrita 1:1).
     - kick async executa o executor que atualiza UnifiedVideo em cada etapa
       e no final chama validate_before_awaiting_review central.
 
-    Fluxo FALLBACK LEGACY (NÃO recomendado):
-    - Permitido SOMENTE se:
-        (a) APP_ENV=development (padrão dev) OU
-        (b) ENABLE_LEGACY_PIPELINE_FALLBACK=true no ambiente (flag explícita).
-    - Em qualquer outro caso, retorna HTTP 500 com mensagem clara para evitar
-      duplicação ou marcação falsa de sucesso (requisito: "fallback não silencioso").
+    Não existe fallback para ``VideoGenerator``/``VideoFactory`` fora desse
+    pipeline. Se o serviço central não carregar, a requisição falha fechada.
     """
     if _cancel_all_active():
         raise HTTPException(status_code=409, detail="Encerramento geral em andamento no servidor. Aguarde ~1 minuto e tente novamente.")
@@ -4857,124 +4864,66 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
         except Exception:
             pass
 
-    # ====== Fallback gate ======
+    # ====== Pipeline canônico obrigatório ======
     unified_ok = bool(_unified_enabled() and unified_video_pipeline is not None and UnifiedVideoRequest is not None)
     if not unified_ok:
         try:
-            from app.config import legacy_pipeline_fallback_allowed, unified_pipeline_required_error
-            fallback_ok = legacy_pipeline_fallback_allowed(module_name="story_generate_video")
+            from app.config import unified_pipeline_required_error
         except Exception:
-            fallback_ok = False
             unified_pipeline_required_error = (  # type: ignore[misc]
-                lambda _module, _err=None: f"UnifiedVideoPipeline indisponível e fallback desabilitado. Erro: {(_UNIFIED_IMPORT_ERR or 'unknown')[:500]}"
+                lambda _module, _err=None: f"UnifiedVideoPipeline indisponível. Erro: {(_UNIFIED_IMPORT_ERR or 'unknown')[:500]}"
             )
-        if not fallback_ok:
-            raise HTTPException(
-                status_code=500,
-                detail=unified_pipeline_required_error("story_generate_video", _UNIFIED_IMPORT_ERR),
-            )
+        raise HTTPException(
+            status_code=503,
+            detail=unified_pipeline_required_error("story_generate_video", _UNIFIED_IMPORT_ERR),
+        )
 
-    # ====== Fluxo NOVO: UnifiedVideoPipeline ======
-    if unified_ok:
-        unified_req = _build_unified_request_from_legacy(payload, user_id=user_id, module="story")
-        if unified_req is not None:
-            try:
-                kick_cb = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
-                base_result = {
-                    "payload": payload,
-                    "kind": "youtube_story_video",
-                    "title_hint": _story_video_task_title_from_payload(payload),
-                    "idempotency_key": identity["idempotency_key"],
-                    "request_hash": identity["request_hash"],
-                    "source_module": "story",
-                    "pipeline": "unified_video_pipeline",
-                    "content_hash": content_hash or None,
-                }
-                res = unified_video_pipeline().submit_or_reuse(
-                    db,
-                    request=unified_req,
-                    kick_queue_callback=kick_cb,
-                    legacy_initial_result=base_result,
-                    user=current_user,
-                )
-                return {
-                    "message": res.message,
-                    "task_id": res.task_id,
-                    "queued": bool(res.queue_position > 1 or res.already_processing),
-                    "queue_position": int(res.queue_position or 0),
-                    "reused_existing_task": bool(res.reused_existing),
-                    "reused_completed_task": bool(res.reused_completed),
-                    "idempotency_key": str(res.idempotency_key),
-                    "request_hash": identity["request_hash"],
-                    "result": {
-                        "video_url": res.video_url,
-                        "youtube_video_id": res.youtube_video_id,
-                        "providers": res.providers,
-                        "unified_video_id": res.unified_video_id,
-                        "pipeline": "unified_video_pipeline",
-                    } if res.reused_completed else None,
-                    "pipeline": "unified_video_pipeline",
-                }
-            except HTTPException:
-                raise
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                raise HTTPException(status_code=500, detail=f"UnifiedVideoPipeline falhou no submit: {type(exc).__name__}: {str(exc)[:300]}")
-
-    # ====== Fluxo FALLBACK: legado (antes da refatoração) — SÓ PASSA AQUI SE fallback_ok ======
-    base_result = {
-        "payload": payload,
-        "kind": "youtube_story_video",
-        "title_hint": _story_video_task_title_from_payload(payload),
-        "idempotency_key": identity["idempotency_key"],
-        "request_hash": identity["request_hash"],
-        "content_hash": content_hash or None,
-    }
-    claimed = claim_video_task(
-        idempotency_key=identity["idempotency_key"],
-        request_hash=identity["request_hash"],
-        payload=payload,
-        dedupe_window_seconds=_video_task_dedupe_window_seconds(),
-        force_regenerate=bool(getattr(request, "force_regenerate", False)),
-        user_id=user_id,
-        initial_result=base_result,
-    )
-    task_id = str(claimed.get("task_id"))
-
-    queue_rows = _load_story_video_task_rows(db, limit=100)
-    queue_ids = [str(r.id) for r in queue_rows]
-    queue_position = queue_ids.index(str(task_id)) + 1 if str(task_id) in queue_ids else None
-    already_processing = any(str(r.status or "").lower() == "processing" for r in queue_rows if str(r.id) != str(task_id))
-
-    if claimed.get("created_new_task"):
-        _kick_story_video_task_queue_async()
-    task_obj = claimed.get("task") if isinstance(claimed.get("task"), dict) else {}
-    task_status = str((task_obj.get("status") or "")).lower()
-    reused_existing = bool(claimed.get("reused_existing_task"))
-    reused_completed = bool(claimed.get("reused_completed_task"))
-    return {
-        "message": (
-            "Esta geração já está em andamento."
-            if reused_existing and not reused_completed
-            else ("Resultado reaproveitado dentro da janela de idempotência." if reused_completed else "Vídeo enviado para a fila de produção (fallback legado).")
-        ),
-        "task_id": task_id,
-        "queued": bool(task_status in {"pending", "processing"} and (already_processing or (queue_position and queue_position > 1))),
-        "queue_position": queue_position or (1 if task_status in {"pending", "processing"} else 0),
-        "reused_existing_task": reused_existing,
-        "reused_completed_task": reused_completed,
-        "idempotency_key": identity["idempotency_key"],
-        "request_hash": identity["request_hash"],
-        "result": task_obj.get("result") if reused_completed else None,
-        "pipeline": "legacy_video_generator",
-        "fallback_used": True,
-        "fallback_reason": (
-            f"import_error:{str(_UNIFIED_IMPORT_ERR)[:200]}"
-            if _UNIFIED_IMPORT_ERR
-            else "UnifiedVideoPipelineRequest invalido"
-        ),
-    }
+    unified_req = _build_unified_request_from_legacy(payload, user_id=user_id, module="story")
+    if unified_req is None:
+        raise HTTPException(status_code=422, detail="Payload inválido para o UnifiedVideoPipeline canônico.")
+    try:
+        kick_cb = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+        base_result = {
+            "payload": payload,
+            "kind": "youtube_story_video",
+            "title_hint": _story_video_task_title_from_payload(payload),
+            "idempotency_key": identity["idempotency_key"],
+            "request_hash": identity["request_hash"],
+            "source_module": "story",
+            "pipeline": "unified_video_pipeline",
+            "content_hash": content_hash or None,
+        }
+        res = unified_video_pipeline().submit_or_reuse(
+            db,
+            request=unified_req,
+            kick_queue_callback=kick_cb,
+            legacy_initial_result=base_result,
+            user=current_user,
+        )
+        return {
+            "message": res.message,
+            "task_id": res.task_id,
+            "queued": bool(res.queue_position > 1 or res.already_processing),
+            "queue_position": int(res.queue_position or 0),
+            "reused_existing_task": bool(res.reused_existing),
+            "reused_completed_task": bool(res.reused_completed),
+            "idempotency_key": str(res.idempotency_key),
+            "request_hash": identity["request_hash"],
+            "result": {
+                "video_url": res.video_url,
+                "youtube_video_id": res.youtube_video_id,
+                "providers": res.providers,
+                "unified_video_id": res.unified_video_id,
+                "pipeline": "unified_video_pipeline",
+            } if res.reused_completed else None,
+            "pipeline": "unified_video_pipeline",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"UnifiedVideoPipeline falhou no submit: {type(exc).__name__}: {str(exc)[:300]}")
 
 
 # Dependência segura: retorna None se o token for inválido (sem bloquear clients RQ/scheduler).
@@ -5842,7 +5791,7 @@ def process_video_generation(request: VideoRequest, task_id):
                 plan["background_prompt"] = background_prompt
             return plan
 
-        script = None
+        script = dict(request.seeded_script) if isinstance(request.seeded_script, dict) else None
         seed_mode = bool(getattr(request, "force_render_only", False) or getattr(request, "force_reuse_assets", False))
         if seed_mode and guardian_task_row is not None:
             try:
@@ -6187,10 +6136,11 @@ def process_video_generation(request: VideoRequest, task_id):
             
         video_result = video_service.create_video_from_plan(
             script,
-            aspect_ratio="16:9",
+            aspect_ratio=str(request.aspect_ratio or "16:9"),
             progress_callback=progress_callback,
             voice_style=voice_style,
             voice_gender=voice_gender,
+            music_file_path=(str(request.music_file_path).strip() if request.music_file_path else None),
         )
         _dbg_event("H1", "create_video_from_plan returned", {
             "task_id": str(task_id),
@@ -6221,22 +6171,18 @@ def process_video_generation(request: VideoRequest, task_id):
             validation["checks"]["file_exists"] = bool(abs_video_path and os.path.exists(abs_video_path))
             validation["checks"]["size_gt_100kb"] = int(_vsz or 0) > 100 * 1024
             validation["file_size_bytes"] = int(_vsz or 0)
-            _ffv = None
-            try:
-                _ffv = video_service._ffprobe_stream_duration_seconds(abs_video_path) if abs_video_path else None
-            except Exception:
-                _ffv = None
-            validation["checks"]["video_stream"] = bool((_ffv or {}).get("video_stream")) if isinstance(_ffv, dict) else False
-            validation["checks"]["audio_stream"] = bool((_ffv or {}).get("audio_stream")) if isinstance(_ffv, dict) else False
-            _vdur = float((_ffv or {}).get("video_duration") or 0.0) if isinstance(_ffv, dict) else 0.0
-            _adur = float((_ffv or {}).get("audio_duration") or 0.0) if isinstance(_ffv, dict) else 0.0
+            _ffv = probe_media_file(abs_video_path) if abs_video_path else {}
+            validation["checks"]["ffprobe_available"] = bool((_ffv or {}).get("probe_available"))
+            validation["checks"]["video_stream"] = bool((_ffv or {}).get("video_stream"))
+            validation["checks"]["audio_stream"] = bool((_ffv or {}).get("audio_stream"))
+            _vdur = float((_ffv or {}).get("video_duration") or 0.0)
+            _adur = float((_ffv or {}).get("audio_duration") or 0.0)
             validation["video_duration_sec"] = round(float(_vdur or 0), 3)
             validation["audio_duration_sec"] = round(float(_adur or 0), 3)
             validation["checks"]["duration_valid"] = (float(_vdur or 0) > 0.5)
-            if float(_adur or 0) > 0 and float(_vdur or 0) > 0:
-                validation["checks"]["audio_not_trimmed"] = abs(float(_vdur or 0) - float(_adur or 0)) <= max(0.5, float(_adur) * 0.03)
-            else:
-                validation["checks"]["audio_not_trimmed"] = validation["checks"]["audio_stream"] and validation["checks"]["video_stream"]
+            validation["checks"]["audio_not_trimmed"] = media_durations_match(_ffv or {})
+            if (_ffv or {}).get("error"):
+                validation["probe_error"] = str((_ffv or {}).get("error"))[:240]
             # Teste de servir via HTTP (static). Como temos uvicorn, apenas validamos que o caminho é acessível via os R ou /static/ mapping.
             _http_ready = False
             try:
@@ -6250,9 +6196,6 @@ def process_video_generation(request: VideoRequest, task_id):
                 _http_ready = validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"]
             validation["checks"]["http_media_ready"] = bool(_http_ready)
             all_checks_ok = all(bool(v) for v in validation["checks"].values()) if validation["checks"] else False
-            # Tolerância adicional: se vídeo > 5 segundos e tem streams, considera (alguns codecs reportam 0s em streams)
-            if not all_checks_ok and validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"] and validation["video_duration_sec"] > 5:
-                all_checks_ok = validation["checks"]["video_stream"] or validation["checks"]["audio_stream"]
             validation["ok"] = bool(all_checks_ok)
         except Exception as _e:
             validation["error"] = f"{type(_e).__name__}: {str(_e)[:200]}"

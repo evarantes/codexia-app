@@ -318,6 +318,12 @@ class ScheduledVideo(Base):
     # Store the generated script/plan so we can execute it later
     script_data = Column(Text) # JSON string
     video_url = Column(String, nullable=True) # Caminho do vídeo gerado
+    # Toda geração agendada é rastreada pelo pipeline canônico.
+    task_id = Column(String(64), ForeignKey("video_tasks.id"), nullable=True, index=True)
+    unified_video_id = Column(Integer, ForeignKey("unified_videos.id"), nullable=True, index=True)
+    video_path = Column(Text, nullable=True)
+    thumbnail_path = Column(Text, nullable=True)
+    thumbnail_url = Column(Text, nullable=True)
     
     # New fields for progress and scheduling
     progress = Column(Integer, default=0)
@@ -327,7 +333,14 @@ class ScheduledVideo(Base):
     voice_gender = Column(String, default="female")
     music_file_path = Column(String, nullable=True) # Caminho do arquivo de música para videoclipes
     youtube_video_id = Column(String, nullable=True)
+    youtube_url = Column(String(512), nullable=True)
+    youtube_upload_status = Column(String(32), default="pending", nullable=True)
+    youtube_error_message = Column(Text, nullable=True)
+    youtube_refresh_token_at = Column(DateTime, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
+    retry_count = Column(Integer, default=0, nullable=False)
+    last_error = Column(Text, nullable=True)
+    pipeline = Column(String(64), nullable=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
@@ -591,6 +604,9 @@ class Video(Base):
     scheduled_at = Column(DateTime, nullable=True)
     published_at = Column(DateTime, nullable=True)
     youtube_video_id = Column(String, nullable=True)
+    task_id = Column(String(64), ForeignKey("video_tasks.id"), nullable=True, index=True)
+    unified_video_id = Column(Integer, ForeignKey("unified_videos.id"), nullable=True, index=True)
+    pipeline = Column(String(64), nullable=True)
     parent_video_id = Column(Integer, ForeignKey("videos.id"), nullable=True) # For shorts derived from long
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -721,6 +737,8 @@ class UnifiedVideo(Base):
     cover_path = Column(Text, nullable=True)
     cover_url = Column(Text, nullable=True)
     result_json = Column(Text, nullable=True)
+    review_feedback_json = Column(Text, nullable=True)
+    render_logs_json = Column(Text, nullable=True)
 
     youtube_video_id = Column(String(64), nullable=True, index=True)
     youtube_url = Column(Text, nullable=True)
@@ -729,4 +747,3 @@ class UnifiedVideo(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-

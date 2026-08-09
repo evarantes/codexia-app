@@ -260,9 +260,74 @@ def _tg_handle_help(cfg: Dict[str, Any], chat_id: str) -> None:
         "Você também pode mandar um áudio com o comando.",
     ]))
 
+
+def _submit_canonical_chat_video(*, channel: str, recipient_id: str, theme: str, minutes: int, voice_style: str, voice_gender: str):
+    """Entrega comandos de mensageria ao pipeline História/Devocional."""
+    from app.database import SessionLocal
+    from app.services.unified_video_pipeline import build_unified_video_request, unified_video_pipeline
+
+    payload = {
+        "topic": theme,
+        "duration": minutes,
+        "mode": "topic",
+        "kind": "custom",
+        "aspect_ratio": "16:9",
+        "voice_style": voice_style,
+        "voice_gender": voice_gender,
+        "review_required": True,
+        "channel": channel,
+        "recipient_id": recipient_id,
+    }
+    db = SessionLocal()
+    try:
+        request = build_unified_video_request(
+            payload,
+            source_module=f"{channel}_webhook",
+            source_id=f"{channel}:{recipient_id}:{theme}:{minutes}",
+        )
+        try:
+            from app.routers.youtube import _kick_story_video_task_queue_async
+
+            kick = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+        except Exception:
+            kick = None
+        return unified_video_pipeline().submit_or_reuse(
+            db,
+            request=request,
+            kick_queue_callback=kick,
+            legacy_initial_result={
+                "source_module": f"{channel}_webhook",
+                "pipeline": "unified_video_pipeline",
+                "payload": payload,
+            },
+        )
+    finally:
+        db.close()
+
+
+def _refresh_chat_video_from_task(last: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve o artefato validado quando o usuário pede publicação."""
+    if str(last.get("video_url") or "").strip():
+        return last
+    task_id = str(last.get("task_id") or "").strip()
+    if not task_id:
+        return last
+    from app.services.task_manager import get_task
+
+    task = get_task(task_id) or {}
+    result = task.get("result") if isinstance(task.get("result"), dict) else {}
+    video_url = str(
+        result.get("video_url")
+        or result.get("video_path")
+        or result.get("file_path")
+        or ""
+    ).strip()
+    if video_url:
+        last["video_url"] = video_url
+        last["abs_url"] = _safe_abs_url(video_url)
+    return last
+
 def _tg_handle_generate_video(cfg: Dict[str, Any], chat_id: str, cmd: Dict[str, Any]) -> None:
-    from app.services.ai_generator import AIContentGenerator
-    from app.services.video_generator import VideoGenerator
     theme = (cmd.get("theme") or "").strip() or "motivacional"
     minutes = cmd.get("minutes")
     try:
@@ -272,21 +337,25 @@ def _tg_handle_generate_video(cfg: Dict[str, Any], chat_id: str, cmd: Dict[str, 
     voice_style = (cmd.get("voice_style") or "").strip() or "human"
     voice_gender = (cmd.get("voice_gender") or "").strip() or "female"
 
-    ai = AIContentGenerator()
-    video_gen = VideoGenerator(ai_service=ai)
-    script_plan = ai.generate_motivational_script(theme, minutes_val)
-    if isinstance(script_plan, dict):
-        script_plan["title"] = script_plan.get("title") or f"{theme.title()} ({minutes_val} min)"
-    result = video_gen.create_video_from_plan(
-        script_plan,
-        aspect_ratio="16:9",
+    result = _submit_canonical_chat_video(
+        channel="telegram",
+        recipient_id=str(chat_id),
+        theme=theme,
+        minutes=minutes_val,
         voice_style=voice_style,
         voice_gender=voice_gender,
     )
-    video_url = (result or {}).get("video_url") or ""
-    abs_url = _safe_abs_url(video_url)
-    _TG_LAST_VIDEO_BY_CHAT[str(chat_id)] = {"video_url": video_url, "abs_url": abs_url}
-    _tg_send_text(cfg, chat_id, f"Vídeo pronto para avaliação:\n{abs_url}\n\nPara publicar: \"publicar último vídeo\"")
+    _TG_LAST_VIDEO_BY_CHAT[str(chat_id)] = {
+        "video_url": result.video_url or "",
+        "abs_url": _safe_abs_url(result.video_url or "") if result.video_url else "",
+        "task_id": result.task_id,
+    }
+    _tg_send_text(
+        cfg,
+        chat_id,
+        f"Vídeo enviado ao pipeline único. Tarefa: {result.task_id}. "
+        "Quando a validação terminar, ele ficará disponível para avaliação.",
+    )
 
 def _tg_handle_publish(cfg: Dict[str, Any], chat_id: str, cmd: Dict[str, Any]) -> None:
     from app.services.youtube_service import YouTubeService
@@ -304,7 +373,7 @@ def _tg_handle_publish(cfg: Dict[str, Any], chat_id: str, cmd: Dict[str, Any]) -
         video_url = f"{VIDEO_URL_PREFIX}/{filename}"
         abs_url = _safe_abs_url(video_url)
     else:
-        last = _TG_LAST_VIDEO_BY_CHAT.get(str(chat_id)) or {}
+        last = _refresh_chat_video_from_task(_TG_LAST_VIDEO_BY_CHAT.get(str(chat_id)) or {})
         video_url = last.get("video_url") or ""
         abs_url = last.get("abs_url") or ""
 
@@ -449,8 +518,6 @@ def _normalize_command_text(text: str) -> str:
     return (m.group(1) if m else raw).strip()
 
 def _handle_generate_video(cfg: Dict[str, Any], from_number: str, cmd: Dict[str, Any]) -> None:
-    from app.services.ai_generator import AIContentGenerator
-    from app.services.video_generator import VideoGenerator
     theme = (cmd.get("theme") or "").strip() or "motivacional"
     minutes = cmd.get("minutes")
     try:
@@ -460,21 +527,25 @@ def _handle_generate_video(cfg: Dict[str, Any], from_number: str, cmd: Dict[str,
     voice_style = (cmd.get("voice_style") or "").strip() or "human"
     voice_gender = (cmd.get("voice_gender") or "").strip() or "female"
 
-    ai = AIContentGenerator()
-    video_gen = VideoGenerator(ai_service=ai)
-    script_plan = ai.generate_motivational_script(theme, minutes_val)
-    if isinstance(script_plan, dict):
-        script_plan["title"] = script_plan.get("title") or f"{theme.title()} ({minutes_val} min)"
-    result = video_gen.create_video_from_plan(
-        script_plan,
-        aspect_ratio="16:9",
+    result = _submit_canonical_chat_video(
+        channel="whatsapp",
+        recipient_id=str(from_number),
+        theme=theme,
+        minutes=minutes_val,
         voice_style=voice_style,
         voice_gender=voice_gender,
     )
-    video_url = (result or {}).get("video_url") or ""
-    abs_url = _safe_abs_url(video_url)
-    _WA_LAST_VIDEO_BY_NUMBER[from_number] = {"video_url": video_url, "abs_url": abs_url}
-    _wa_send_text(cfg, from_number, f"Vídeo pronto para avaliação:\n{abs_url}\n\nPara publicar: \"codexia, publicar último vídeo\"")
+    _WA_LAST_VIDEO_BY_NUMBER[from_number] = {
+        "video_url": result.video_url or "",
+        "abs_url": _safe_abs_url(result.video_url or "") if result.video_url else "",
+        "task_id": result.task_id,
+    }
+    _wa_send_text(
+        cfg,
+        from_number,
+        f"Vídeo enviado ao pipeline único. Tarefa: {result.task_id}. "
+        "Quando a validação terminar, ele ficará disponível para avaliação.",
+    )
 
 def _handle_publish(cfg: Dict[str, Any], from_number: str, cmd: Dict[str, Any]) -> None:
     from app.services.youtube_service import YouTubeService
@@ -492,7 +563,7 @@ def _handle_publish(cfg: Dict[str, Any], from_number: str, cmd: Dict[str, Any]) 
         video_url = f"{VIDEO_URL_PREFIX}/{filename}"
         abs_url = _safe_abs_url(video_url)
     else:
-        last = _WA_LAST_VIDEO_BY_NUMBER.get(from_number) or {}
+        last = _refresh_chat_video_from_task(_WA_LAST_VIDEO_BY_NUMBER.get(from_number) or {})
         video_url = last.get("video_url") or ""
         abs_url = last.get("abs_url") or ""
 

@@ -54,6 +54,17 @@ def oauth_pop_state(state: str) -> Optional[Dict[str, Any]]:
         return None
     return entry
 
+
+def oauth_peek_state(state: str) -> Optional[Dict[str, Any]]:
+    """Consulta um state válido sem consumi-lo antes de validar o redirect URI."""
+    _cleanup_expired_state_store()
+    entry = _OAUTH_STATE_STORE.get(str(state or "").strip())
+    if not entry:
+        return None
+    if float(entry.get("created_at") or 0) + 600.0 < time.time():
+        return None
+    return dict(entry)
+
 def pkce_verifier_and_challenge() -> Tuple[str, str]:
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -562,7 +573,7 @@ class YouTubeService:
             audit["error"] = "missing_state"
             audit["error_description"] = "Parâmetro 'state' não fornecido no callback."
             return False, (audit["error_description"] or "State ausente."), audit
-        stored = oauth_pop_state(state)
+        stored = oauth_peek_state(state)
         if not stored:
             audit["error"] = "invalid_state"
             audit["error_description"] = (
@@ -570,7 +581,6 @@ class YouTubeService:
             )
             return False, (audit["error_description"] or "State inválido/expirado."), audit
         audit["state_valid"] = True
-        audit["state_consumed"] = True
         stored_verifier = str(stored.get("code_verifier") or "").strip()
         stored_redirect_uri = str(stored.get("redirect_uri") or "").strip()
         effective_redirect_uri = (redirect_uri or "").strip() or stored_redirect_uri or default_oauth_redirect_uri()
@@ -583,6 +593,15 @@ class YouTubeService:
             )
             return False, (audit["error_description"] or "redirect_uri divergente."), audit
         audit["redirect_uri_consistent"] = True
+        # Consome somente depois de state + redirect URI passarem. Assim, um
+        # callback malformado não invalida a tentativa correta ainda em curso.
+        stored = oauth_pop_state(state)
+        if not stored:
+            audit["state_valid"] = False
+            audit["error"] = "invalid_state"
+            audit["error_description"] = "State OAuth já consumido ou expirado. Conecte novamente."
+            return False, audit["error_description"], audit
+        audit["state_consumed"] = True
         flow, cid_override, csec_override = self._build_flow_from_creds_or_file(effective_redirect_uri)
         if flow is None:
             audit["error"] = "credentials_missing"
@@ -635,7 +654,7 @@ class YouTubeService:
         if not refresh_token:
             audit["error"] = "refresh_token_missing"
             audit["error_description"] = (
-                "Google não retornou um refresh_token novo. "
+                "Google não forneceu um refresh_token novo. "
                 "Acesse myaccount.google.com/permissions, revogue o Codexia, "
                 "e clique novamente em Conectar YouTube (prompt=consent obrigatório)."
             )
