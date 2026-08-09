@@ -50,6 +50,7 @@ from app.services.financial_guardian import youtube_auto_financial_adapter
 from app.services.financial_guardian.youtube_observability import youtube_financial_guardian_observability_service
 from app.services.financial_guardian_service import financial_guardian_service
 from app.services.global_settings_service import get_latest_settings, serialize_official_factory_settings
+from app.services.media_probe import media_durations_match, probe_media_file
 from app.services.task_manager import (
     create_task,
     update_task,
@@ -466,24 +467,10 @@ def _find_reusable_completed_task_by_content(
                         abs_file = file_path
             except Exception:
                 abs_file = ""
-            size_ok = False
-            duration_ok = False
-            if abs_file and os.path.exists(abs_file):
-                try:
-                    size_ok = int(os.path.getsize(abs_file) or 0) > 100 * 1024
-                except Exception:
-                    size_ok = False
-            if not (size_ok or (bool(video_url) and bool(file_path))):
+            if not (abs_file and os.path.isfile(abs_file)):
                 continue
-            try:
-                fv = result_obj.get("final_validation") or {}
-                if isinstance(fv, dict):
-                    duration_ok = bool(fv.get("ok")) or bool(fv.get("recovered"))
-            except Exception:
-                duration_ok = False
-            if not duration_ok:
-                duration_ok = size_ok
-            if not duration_ok:
+            media_probe = probe_media_file(abs_file)
+            if not media_probe.get("ok") or not media_durations_match(media_probe):
                 continue
             return {
                 "task_id": str(row.id),
@@ -597,32 +584,13 @@ def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]]
                     _abs_cand = ""
                 if _abs_cand and os.path.exists(_abs_cand):
                     try:
-                        _sz = int(os.path.getsize(_abs_cand) or 0)
-                        _probe = None
-                        try:
-                            from app.services import video_service as _vs
-                            if hasattr(_vs, "_ffprobe_stream_duration_seconds"):
-                                _probe = _vs._ffprobe_stream_duration_seconds(_abs_cand)
-                        except Exception:
-                            _probe = None
-                        _sz_big = int(_sz or 0) >= 2 * 1024 * 1024  # >= 2 MB
-                        _probe_is_dict = isinstance(_probe, dict) and bool(_probe)
-                        _fallback_no_probe = (not _probe_is_dict) and _sz_big
-                        _video_stream = bool((_probe or {}).get("video_stream")) if _probe_is_dict else bool(_fallback_no_probe)
-                        _audio_stream = bool((_probe or {}).get("audio_stream")) if _probe_is_dict else bool(_fallback_no_probe)
-                        _vdur = float((_probe or {}).get("video_duration") or 0.0) if _probe_is_dict else 0.0
-                        if _fallback_no_probe and _vdur <= 0.5:
-                            try:
-                                import math as _math
-                                _est = float(max(30.0, min(3600.0, round(_math.log(int(_sz or 1) / (1024.0 * 1024.0) + 1.0, 10.0) * 90.0, 1))))
-                                _vdur = _est
-                            except Exception:
-                                _vdur = 90.0
-                        _ok = (
-                            (_sz > 100 * 1024)
-                            and (_vdur > 0.5)
-                            and (_video_stream or _audio_stream)
-                        )
+                        _probe = probe_media_file(_abs_cand)
+                        _sz = int(_probe.get("file_size_bytes") or 0)
+                        _video_stream = bool(_probe.get("video_stream"))
+                        _audio_stream = bool(_probe.get("audio_stream"))
+                        _vdur = float(_probe.get("video_duration") or 0.0)
+                        _adur = float(_probe.get("audio_duration") or 0.0)
+                        _ok = bool(_probe.get("ok")) and media_durations_match(_probe)
                         if _ok:
                             new_result = dict(_res)
                             try:
@@ -635,11 +603,13 @@ def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]]
                                         "video_stream": bool(_video_stream),
                                         "audio_stream": bool(_audio_stream),
                                         "duration_valid": _vdur > 0.5,
-                                        "audio_not_trimmed": True,
+                                        "audio_not_trimmed": media_durations_match(_probe),
                                         "http_media_ready": True,
                                     },
                                     "size_bytes": _sz,
                                     "video_duration_sec": round(_vdur, 3),
+                                    "audio_duration_sec": round(_adur, 3),
+                                    "probe_available": bool(_probe.get("probe_available")),
                                 }
                             except Exception:
                                 pass
@@ -2789,6 +2759,10 @@ def _generate_story_shorts_payload(request: StoryShortsRequest, progress_callbac
 
 class QueueGeneratedVideoRequest(BaseModel):
     video_url: str
+    video_path: Optional[str] = None
+    task_id: Optional[str] = None
+    scheduled_video_id: Optional[int] = None
+    unified_video_id: Optional[int] = None
     title: Optional[str] = None
     description: Optional[str] = None
     kind: Optional[str] = None
@@ -3395,6 +3369,40 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
     video_path = (getattr(request, "video_path", None) or "").strip() or None
     task_id_src = (getattr(request, "task_id", None) or "").strip() or None
     scheduled_video_id = int(getattr(request, "scheduled_video_id", 0) or 0) or None
+
+    # Generated local media must pass the same fail-closed probe used by the
+    # renderer and recovery watchdog. A large file is not evidence of a valid
+    # MP4, and ffprobe unavailability must never enqueue unverified media.
+    local_media_candidate = video_path
+    if not local_media_candidate and video_url and not video_url.startswith(("http://", "https://")):
+        local_media_candidate = video_url
+    if local_media_candidate:
+        try:
+            if os.path.isabs(local_media_candidate) and os.path.isfile(local_media_candidate):
+                absolute_media_candidate = local_media_candidate
+            else:
+                from app.config import absolute_path_for_video as _absolute_path_for_generated_video
+
+                absolute_media_candidate = _absolute_path_for_generated_video(os.path.basename(local_media_candidate))
+        except Exception:
+            absolute_media_candidate = ""
+        media_probe = probe_media_file(absolute_media_candidate)
+        if not media_probe.get("ok") or not media_durations_match(media_probe):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "generated_video_validation_failed",
+                    "message": "O vídeo gerado não passou na validação real de áudio, vídeo e duração.",
+                    "probe_error": media_probe.get("error"),
+                    "checks": {
+                        "file_exists": bool(media_probe.get("file_exists")),
+                        "ffprobe_available": bool(media_probe.get("probe_available")),
+                        "video_stream": bool(media_probe.get("video_stream")),
+                        "audio_stream": bool(media_probe.get("audio_stream")),
+                        "duration_match": media_durations_match(media_probe),
+                    },
+                },
+            )
 
     # === IDEMPOTÊNCIA: BUSCA EXISTENTE ===
     # Estratégias (qualquer uma que bater → reutiliza):
@@ -6221,22 +6229,18 @@ def process_video_generation(request: VideoRequest, task_id):
             validation["checks"]["file_exists"] = bool(abs_video_path and os.path.exists(abs_video_path))
             validation["checks"]["size_gt_100kb"] = int(_vsz or 0) > 100 * 1024
             validation["file_size_bytes"] = int(_vsz or 0)
-            _ffv = None
-            try:
-                _ffv = video_service._ffprobe_stream_duration_seconds(abs_video_path) if abs_video_path else None
-            except Exception:
-                _ffv = None
-            validation["checks"]["video_stream"] = bool((_ffv or {}).get("video_stream")) if isinstance(_ffv, dict) else False
-            validation["checks"]["audio_stream"] = bool((_ffv or {}).get("audio_stream")) if isinstance(_ffv, dict) else False
-            _vdur = float((_ffv or {}).get("video_duration") or 0.0) if isinstance(_ffv, dict) else 0.0
-            _adur = float((_ffv or {}).get("audio_duration") or 0.0) if isinstance(_ffv, dict) else 0.0
+            _ffv = probe_media_file(abs_video_path) if abs_video_path else {}
+            validation["checks"]["ffprobe_available"] = bool((_ffv or {}).get("probe_available"))
+            validation["checks"]["video_stream"] = bool((_ffv or {}).get("video_stream"))
+            validation["checks"]["audio_stream"] = bool((_ffv or {}).get("audio_stream"))
+            _vdur = float((_ffv or {}).get("video_duration") or 0.0)
+            _adur = float((_ffv or {}).get("audio_duration") or 0.0)
             validation["video_duration_sec"] = round(float(_vdur or 0), 3)
             validation["audio_duration_sec"] = round(float(_adur or 0), 3)
             validation["checks"]["duration_valid"] = (float(_vdur or 0) > 0.5)
-            if float(_adur or 0) > 0 and float(_vdur or 0) > 0:
-                validation["checks"]["audio_not_trimmed"] = abs(float(_vdur or 0) - float(_adur or 0)) <= max(0.5, float(_adur) * 0.03)
-            else:
-                validation["checks"]["audio_not_trimmed"] = validation["checks"]["audio_stream"] and validation["checks"]["video_stream"]
+            validation["checks"]["audio_not_trimmed"] = media_durations_match(_ffv or {})
+            if (_ffv or {}).get("error"):
+                validation["probe_error"] = str((_ffv or {}).get("error"))[:240]
             # Teste de servir via HTTP (static). Como temos uvicorn, apenas validamos que o caminho é acessível via os R ou /static/ mapping.
             _http_ready = False
             try:
@@ -6250,9 +6254,6 @@ def process_video_generation(request: VideoRequest, task_id):
                 _http_ready = validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"]
             validation["checks"]["http_media_ready"] = bool(_http_ready)
             all_checks_ok = all(bool(v) for v in validation["checks"].values()) if validation["checks"] else False
-            # Tolerância adicional: se vídeo > 5 segundos e tem streams, considera (alguns codecs reportam 0s em streams)
-            if not all_checks_ok and validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"] and validation["video_duration_sec"] > 5:
-                all_checks_ok = validation["checks"]["video_stream"] or validation["checks"]["audio_stream"]
             validation["ok"] = bool(all_checks_ok)
         except Exception as _e:
             validation["error"] = f"{type(_e).__name__}: {str(_e)[:200]}"
