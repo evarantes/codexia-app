@@ -1206,6 +1206,48 @@ def _resolve_video_file_path(raw_path: Optional[str]) -> str:
             return path
     return ""
 
+
+def _resolve_rendered_video_file_path(video_result: Any) -> str:
+    """Resolve o MP4 recém-renderizado sem confundir URL pública com path do disco.
+
+    ``VideoGeneratorService`` devolve ambos ``file_path`` (arquivo real) e
+    ``video_url`` (URL servida pelo FastAPI). Em produção, uma URL como
+    ``/media/videos/x.mp4`` não é o arquivo ``/media/videos/x.mp4``: o arquivo
+    fica em ``/data/media/videos/x.mp4``. A validação final deve, portanto,
+    priorizar o path informado pelo renderizador e usar a URL apenas como
+    fallback compatível com resultados antigos.
+    """
+    result = video_result if isinstance(video_result, dict) else {}
+    render_report = result.get("render_report")
+    if not isinstance(render_report, dict):
+        render_report = {}
+
+    candidates = [
+        result.get("file_path"),
+        render_report.get("file_path"),
+        result.get("video_url"),
+        render_report.get("video_url"),
+    ]
+    for candidate in candidates:
+        resolved = _resolve_video_file_path(candidate)
+        if resolved:
+            return resolved
+
+    # Mantém um path útil no diagnóstico quando o renderizador informou um
+    # arquivo que realmente não existe, sem transformar URL em raiz do SO.
+    reported_file = str(result.get("file_path") or render_report.get("file_path") or "").strip()
+    if reported_file and not reported_file.startswith(("http://", "https://")):
+        return reported_file if os.path.isabs(reported_file) else os.path.abspath(reported_file)
+
+    video_url = str(result.get("video_url") or render_report.get("video_url") or "").strip()
+    if video_url and not video_url.startswith(("http://", "https://")):
+        try:
+            from app.config import absolute_path_for_video
+            return absolute_path_for_video(video_url)
+        except Exception:
+            return ""
+    return ""
+
 def _normalize_video_url_for_client(raw_url: Optional[str]) -> Optional[str]:
     """Normaliza URLs legadas/paths absolutos para URL pública reproduzível no browser."""
     if not raw_url:
@@ -6274,11 +6316,7 @@ def process_video_generation(request: VideoRequest, task_id):
         # Regra: qualquer falha → status=failed → NÃO coloca em Aguardando Publicação
         update_task(task_id, progress=92, message="7/8 Validando arquivo de vídeo final...", result=_merged_task_result({"pipeline_stage": "stage_7_validation"}))
         heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
-        from app.config import absolute_path_for_video as _abs_video
-
-        abs_video_path = _abs_video(video_path) if not str(video_path or "").startswith("/") and not str(video_path or "").startswith("http") else str(video_path or "")
-        if not os.path.isabs(abs_video_path):
-            abs_video_path = os.path.abspath(str(abs_video_path)) if abs_video_path else ""
+        abs_video_path = _resolve_rendered_video_file_path(video_result)
         validation: Dict[str, Any] = {"ok": False, "checks": {}}
         try:
             _vsz = 0
@@ -6299,17 +6337,10 @@ def process_video_generation(request: VideoRequest, task_id):
             validation["checks"]["audio_not_trimmed"] = media_durations_match(_ffv or {})
             if (_ffv or {}).get("error"):
                 validation["probe_error"] = str((_ffv or {}).get("error"))[:240]
-            # Teste de servir via HTTP (static). Como temos uvicorn, apenas validamos que o caminho é acessível via os R ou /static/ mapping.
-            _http_ready = False
-            try:
-                _static_v = str(video_path or "")
-                if _static_v.startswith("/static/videos/"):
-                    _cand = os.path.join(str(STATIC_DIR) if 'STATIC_DIR' in globals() else "app/static", _static_v.lstrip("/"))
-                    _http_ready = os.path.exists(_cand) and os.path.getsize(_cand) > 0
-                else:
-                    _http_ready = validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"]
-            except Exception:
-                _http_ready = validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"]
+            # VIDEO_URL_PREFIX e VIDEO_OUTPUT_DIR são definidos em conjunto no
+            # config; se o arquivo final resolvido existe e passou pelo tamanho
+            # mínimo, a rota /static ou /media correspondente está pronta.
+            _http_ready = validation["checks"]["file_exists"] and validation["checks"]["size_gt_100kb"]
             validation["checks"]["http_media_ready"] = bool(_http_ready)
             all_checks_ok = all(bool(v) for v in validation["checks"].values()) if validation["checks"] else False
             validation["ok"] = bool(all_checks_ok)
