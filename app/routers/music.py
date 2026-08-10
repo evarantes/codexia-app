@@ -1155,7 +1155,7 @@ def watch_saved_music(item_id: int):
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Biblioteca • Codexia</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.tailwindcss.com" defer></script>
 </head>
 <body class="bg-gray-50">
   <div class="max-w-4xl mx-auto p-4">

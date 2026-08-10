@@ -1,11 +1,9 @@
-const CACHE_NAME = 'codexia-v5';
+const CACHE_NAME = 'codexia-v6';
 const urlsToCache = [
   '/',
   '/static/index.html',
   '/static/login.html',
-  'https://cdn.tailwindcss.com',
-  'https://unpkg.com/vue@3/dist/vue.global.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css'
+  '/static/vendor/vue.global.prod.js'
 ];
 
 self.addEventListener('install', event => {

@@ -7,9 +7,12 @@
     <link rel="manifest" href="/static/manifest.json">
     <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
     <title>Codexia - Fábrica de Conteúdo</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Recursos visuais externos nunca devem bloquear a inicializacao do painel. -->
+    <script src="https://cdn.tailwindcss.com" defer></script>
+    <!-- Vue e critico: servir localmente evita a tela de carregamento presa por indisponibilidade do CDN. -->
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"></noscript>
     <style>
         [v-cloak] { display: none !important; }
         #loading-overlay {
