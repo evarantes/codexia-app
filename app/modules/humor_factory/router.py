@@ -99,6 +99,38 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         jokes = _parse_json_list(p.jokes_json)
         
     themes = [x.strip() for x in str(p.theme or "").split("|") if x.strip()]
+    effective_status = p.status
+    effective_progress = int(p.progress or 0)
+    effective_message = p.status_message
+    effective_video_path = p.video_path
+    task = None
+    if str(getattr(p, "task_id", None) or "").strip():
+        try:
+            from app.services.task_manager import get_task
+
+            task = get_task(str(p.task_id)) or None
+        except Exception:
+            task = None
+    if isinstance(task, dict):
+        task_status = str(task.get("status") or "").strip().lower()
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        if task_status in {"pending", "queued", "processing"}:
+            effective_status = "generating"
+            effective_progress = int(task.get("progress") or effective_progress)
+            effective_message = task.get("message") or effective_message
+        elif task_status in {"completed", "awaiting_review", "approved"}:
+            effective_status = "review"
+            effective_progress = 100
+            effective_message = task.get("message") or "Vídeo pronto para revisão."
+            effective_video_path = (
+                result.get("video_url")
+                or result.get("video_path")
+                or result.get("file_path")
+                or effective_video_path
+            )
+        elif task_status in {"failed", "cancelled"}:
+            effective_status = task_status
+            effective_message = task.get("message") or effective_message
     return {
         "id": p.id,
         "channel_id": p.channel_id,
@@ -118,12 +150,15 @@ def _project_to_dict(p: HumorProject) -> Dict[str, Any]:
         "jokes_count": len(jokes),
         "target_minutes": p.target_minutes,
         "auto_publish_after_review": bool(p.auto_publish_after_review),
-        "status": p.status,
-        "progress": int(p.progress or 0),
-        "status_message": p.status_message,
+        "status": effective_status,
+        "progress": effective_progress,
+        "status_message": effective_message,
         "logs": p.logs or "",
         "review_notes": p.review_notes,
-        "video_path": p.video_path,
+        "video_path": effective_video_path,
+        "task_id": getattr(p, "task_id", None),
+        "unified_video_id": getattr(p, "unified_video_id", None),
+        "pipeline": getattr(p, "pipeline", None),
         "scheduled_video_id": p.scheduled_video_id,
         "youtube_video_id": p.youtube_video_id,
         "created_at": p.created_at.isoformat() if p.created_at else None,

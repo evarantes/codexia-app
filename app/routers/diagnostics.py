@@ -19,6 +19,18 @@ def fix_videos_integrity(db: Session = Depends(get_db)):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@router.get("/youtube-series-sync")
+def youtube_series_sync_status():
+    from app.services.monitor_service import monitor_service
+    try:
+        return {
+            "last_series_sync_at": getattr(monitor_service, "last_series_sync_at", None),
+            "last_series_sync_summary": getattr(monitor_service, "last_series_sync_summary", None),
+            "last_series_sync_error": getattr(monitor_service, "last_series_sync_error", None),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)[:300])
+
 @router.get("/run")
 def run_diagnostics(db: Session = Depends(get_db)):
     report = {

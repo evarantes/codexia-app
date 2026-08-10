@@ -1,7 +1,7 @@
 """add_music_file_to_content_plan
 
 Revision ID: 1145add67fa0
-Revises: 
+Revises: 000000000001
 Create Date: 2026-02-26 18:57:08.074648
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '1145add67fa0'
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = '000000000001'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

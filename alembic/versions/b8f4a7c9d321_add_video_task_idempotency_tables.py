@@ -39,6 +39,66 @@ def _has_column(table_name: str, column_name: str) -> bool:
 
 
 def upgrade() -> None:
+    dialect = str(getattr(op.get_bind().dialect, "name", "") or "").lower()
+    if dialect == "sqlite":
+        # SQLite existe apenas no desenvolvimento local. Mantemos o mesmo
+        # contrato de colunas com tipos/defaults portáveis e deixamos a
+        # reconciliação ALTER COLUMN abaixo exclusivamente para PostgreSQL.
+        op.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {TASK_DEDUPE_TABLE} (
+                idempotency_key VARCHAR(255) PRIMARY KEY,
+                request_hash TEXT NOT NULL,
+                task_id VARCHAR(64) NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                request_payload_json TEXT NULL,
+                result_json TEXT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NULL,
+                completed_at DATETIME NULL
+            )
+            """
+        )
+        op.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {TASK_LEASE_TABLE} (
+                task_id VARCHAR(64) PRIMARY KEY,
+                executor_id VARCHAR(255) NOT NULL,
+                attempt_number INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                heartbeat_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                lease_expires_at DATETIME NULL
+            )
+            """
+        )
+        op.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {TASK_LOCK_TABLE} (
+                lock_key VARCHAR(255) PRIMARY KEY,
+                owner_id VARCHAR(255) NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_DEDUPE_TABLE}_task_id ON {TASK_DEDUPE_TABLE} (task_id)")
+        op.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS uq_{TASK_DEDUPE_TABLE}_task_id_not_null ON {TASK_DEDUPE_TABLE} (task_id) WHERE task_id IS NOT NULL")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_DEDUPE_TABLE}_status ON {TASK_DEDUPE_TABLE} (status)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_DEDUPE_TABLE}_request_hash ON {TASK_DEDUPE_TABLE} (request_hash)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_DEDUPE_TABLE}_updated_at ON {TASK_DEDUPE_TABLE} (updated_at)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_DEDUPE_TABLE}_expires_at ON {TASK_DEDUPE_TABLE} (expires_at)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_LEASE_TABLE}_executor_id ON {TASK_LEASE_TABLE} (executor_id)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_LEASE_TABLE}_updated_at ON {TASK_LEASE_TABLE} (updated_at)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_LEASE_TABLE}_expires_at ON {TASK_LEASE_TABLE} (expires_at)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_LOCK_TABLE}_updated_at ON {TASK_LOCK_TABLE} (updated_at)")
+        op.execute(f"CREATE INDEX IF NOT EXISTS idx_{TASK_LOCK_TABLE}_expires_at ON {TASK_LOCK_TABLE} (expires_at)")
+        return
+
     op.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TASK_DEDUPE_TABLE} (

@@ -1979,11 +1979,100 @@ def publish_music_short_youtube(short_id: int, request: PublishSavedClipRequest,
     return {"status": "published", "youtube_video_id": youtube_id, "youtube_url": youtube_url, "upload_result": upload_result}
 
 
+def _submit_music_clip_to_canonical_pipeline(request: GenerateClipRequest, user: User, db: Session) -> Dict[str, Any]:
+    from app.services.unified_video_pipeline import build_unified_video_request, unified_video_pipeline
+
+    music_filename = request.music_filename
+    if not music_filename and os.path.exists(MUSIC_OUTPUT_DIR):
+        songs = [
+            filename
+            for filename in os.listdir(MUSIC_OUTPUT_DIR)
+            if (filename.startswith("song_") or filename.startswith("import_"))
+            and filename.lower().endswith((".wav", ".mp3", ".m4a", ".aac", ".ogg"))
+        ]
+        songs.sort(key=lambda filename: os.path.getmtime(os.path.join(MUSIC_OUTPUT_DIR, filename)), reverse=True)
+        music_filename = songs[0] if songs else None
+    if not music_filename:
+        raise HTTPException(status_code=400, detail="Gere a música primeiro ou informe music_filename.")
+    music_path = absolute_path_for_music(music_filename)
+    if not music_path or not os.path.exists(music_path):
+        raise HTTPException(status_code=404, detail="Arquivo de música não encontrado.")
+
+    aspect_ratio = str(request.aspect_ratio or "9:16").strip()
+    if aspect_ratio not in {"9:16", "16:9"}:
+        aspect_ratio = "9:16"
+    lyrics_text = str(request.lyrics or "").strip()
+    safe_title = _sanitize_title(request.title)
+    payload = {
+        "source_id": f"music:{int(user.id)}:{os.path.basename(music_path)}:{safe_title}",
+        "idempotency_key": f"music-clip:{int(user.id)}:{os.path.basename(music_path)}:{safe_title}"[:255],
+        "topic": safe_title,
+        "story_content": lyrics_text,
+        "mode": "story" if lyrics_text else "topic",
+        "kind": "custom",
+        "duration": 3,
+        "aspect_ratio": aspect_ratio,
+        "image_count": max(1, min(64, int(request.images_count or 15))),
+        "music_file_path": music_path,
+        "music_enabled": True,
+        "auto_upload": bool(request.auto_upload_youtube),
+        "review_required": not bool(request.auto_upload_youtube),
+        "user_id": int(user.id),
+        "music_clip_options": {
+            "author_text": request.author_text,
+            "watermark_enabled": request.watermark_enabled,
+            "sync_mode": request.sync_mode,
+            "captions_enabled": request.captions_enabled,
+            "visual_style": request.visual_style,
+            "spiritual_intensity": request.spiritual_intensity,
+            "prompt_language": request.prompt_language,
+            "mode": request.mode,
+            "model": request.model,
+        },
+    }
+    canonical_request = build_unified_video_request(
+        payload,
+        source_module="music_clip",
+        source_id=str(payload["source_id"]),
+        user_id=int(user.id),
+    )
+    try:
+        from app.routers.youtube import _kick_story_video_task_queue_async
+
+        kick = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
+    except Exception:
+        kick = None
+    result = unified_video_pipeline().submit_or_reuse(
+        db,
+        request=canonical_request,
+        kick_queue_callback=kick,
+        legacy_initial_result={
+            "source_module": "music_clip",
+            "pipeline": "unified_video_pipeline",
+            "payload": payload,
+        },
+        user=user,
+    )
+    return {
+        "message": result.message,
+        "task_id": result.task_id,
+        "unified_video_id": result.unified_video_id,
+        "status": result.status,
+        "video_url": result.video_url,
+        "queued": not bool(result.reused_completed),
+        "pipeline": "unified_video_pipeline",
+    }
+
+
 @router.post("/clip")
-def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_current_user)):
+def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Gera clipe (vídeo) da música: cenas baseadas na letra + áudio da música gerada.
     """
+    return _submit_music_clip_to_canonical_pipeline(request, user, db)
+
+    # Código abaixo preservado temporariamente apenas como referência de
+    # compatibilidade; não é mais alcançável pelo endpoint.
     music_filename = request.music_filename
     if not music_filename:
         music_dir = MUSIC_OUTPUT_DIR
@@ -2006,7 +2095,6 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
     if not os.path.exists(music_path):
         raise HTTPException(status_code=404, detail="Arquivo de música não encontrado. Gere a música novamente.")
     try:
-        from app.services.video_generator import VideoGenerator
         ai = AIContentGenerator()
         video_gen = VideoGenerator(ai_service=ai)
         author = (request.author_text.strip() if request.author_text and request.author_text.strip() else "E.MA")
@@ -2048,7 +2136,11 @@ def generate_music_clip(request: GenerateClipRequest, user: User = Depends(get_c
 
 
 @router.post("/clip/task")
-def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(get_current_user)):
+def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _submit_music_clip_to_canonical_pipeline(request, user, db)
+
+    # Código abaixo preservado temporariamente apenas como referência de
+    # compatibilidade; não é mais alcançável pelo endpoint.
     music_filename = request.music_filename
     if not music_filename:
         music_dir = MUSIC_OUTPUT_DIR
@@ -2094,7 +2186,6 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
 
     def _run():
         try:
-            from app.services.video_generator import VideoGenerator
             from app.services.image_storyboard_service import generate_storyboard_images
             ai = AIContentGenerator()
             video_gen = VideoGenerator(ai_service=ai)

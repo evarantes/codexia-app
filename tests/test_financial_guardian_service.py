@@ -1,8 +1,19 @@
 import os
+import tempfile
+from pathlib import Path
 import unittest
 
 
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/codexia_test")
+os.environ.setdefault("APP_ENV", "development")
+os.environ.setdefault("ENABLE_SQLITE_DEV", "1")
+_tmp_dir = Path(tempfile.mkdtemp(prefix="codexia-fg-tests-"))
+_db_path = (_tmp_dir / "financial_guardian.sqlite").resolve()
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{_db_path}")
+
+from app.database import Base, engine  # noqa: E402
+from app.models import Settings  # noqa: E402
+
+Base.metadata.create_all(engine)
 
 from app.services.ai_generator import AIContentGenerator  # noqa: E402
 from app.services.financial_guardian_service import (  # noqa: E402

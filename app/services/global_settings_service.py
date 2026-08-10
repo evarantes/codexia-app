@@ -138,31 +138,63 @@ OFFICIAL_FACTORY_SETTINGS_FIELDS = tuple(OFFICIAL_FACTORY_SETTINGS_DEFAULTS.keys
 
 
 def get_latest_settings(db: Optional[Session] = None) -> Optional[Settings]:
-    if db is not None:
-        try:
-            return db.query(Settings).order_by(Settings.id.desc()).first()
-        except Exception:
-            return None
-    local_db = SessionLocal()
+    """Lê settings SEM deixar transação abortada na Session.
+    - Se db vier de fora (request dependency): NÃO fecha; mas roda rollback em erro.
+    - Se abrirmos SessionLocal aqui: fecha no finally.
+    Evita InFailedSqlTransaction no próximo SELECT (coluna ausente, etc.)."""
+    own_session = db is None
+    local_db: Session = db if db is not None else SessionLocal()
     try:
         return local_db.query(Settings).order_by(Settings.id.desc()).first()
     except SQLAlchemyError:
+        try:
+            if local_db.is_active:
+                local_db.rollback()
+        except Exception:
+            pass
         return None
     except Exception:
+        try:
+            if local_db.is_active:
+                local_db.rollback()
+        except Exception:
+            pass
         return None
     finally:
-        local_db.close()
+        if own_session:
+            try:
+                local_db.close()
+            except Exception:
+                pass
 
 
 def get_or_create_latest_settings(db: Session) -> Settings:
-    settings = get_latest_settings(db)
-    if settings is not None:
-        return settings
-    settings = Settings()
-    db.add(settings)
-    db.commit()
-    db.refresh(settings)
-    return settings
+    """Get-or-create transacional para Settings:
+    - rollback em erro (não deixa Session abortada);
+    - NÃO sobrescreve valores nulos em campos recém-adicionados;
+    - não loga secrets."""
+    try:
+        try:
+            settings = get_latest_settings(db)
+            if settings is not None:
+                return settings
+            settings = Settings()
+            db.add(settings)
+            db.commit()
+            db.refresh(settings)
+            return settings
+        except SQLAlchemyError:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
 
 
 def get_latest_legacy_bible_video_config(
@@ -171,26 +203,33 @@ def get_latest_legacy_bible_video_config(
 ) -> Optional["BibleVideoConfig"]:
     from app.modules.bible_video_factory.models import BibleVideoConfig
 
-    if db is not None:
-        try:
-            query = db.query(BibleVideoConfig)
-            if user_id is not None:
-                query = query.filter(BibleVideoConfig.user_id == user_id)
-            return query.order_by(BibleVideoConfig.id.desc()).first()
-        except Exception:
-            return None
-    local_db = SessionLocal()
+    own_session = db is None
+    local_db: Session = db if db is not None else SessionLocal()
     try:
         query = local_db.query(BibleVideoConfig)
         if user_id is not None:
             query = query.filter(BibleVideoConfig.user_id == user_id)
         return query.order_by(BibleVideoConfig.id.desc()).first()
     except SQLAlchemyError:
+        try:
+            if local_db.is_active:
+                local_db.rollback()
+        except Exception:
+            pass
         return None
     except Exception:
+        try:
+            if local_db.is_active:
+                local_db.rollback()
+        except Exception:
+            pass
         return None
     finally:
-        local_db.close()
+        if own_session:
+            try:
+                local_db.close()
+            except Exception:
+                pass
 
 
 def _clean_factory_text(value: Any) -> Optional[str]:

@@ -47,6 +47,9 @@ class HumorProject(Base):
     review_notes = Column(Text, nullable=True)
 
     video_path = Column(String, nullable=True)
+    task_id = Column(String(64), nullable=True, index=True)
+    unified_video_id = Column(Integer, nullable=True, index=True)
+    pipeline = Column(String(64), nullable=True)
     scheduled_video_id = Column(Integer, nullable=True, index=True)
     youtube_video_id = Column(String, nullable=True)
 

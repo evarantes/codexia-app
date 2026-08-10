@@ -1,5 +1,7 @@
 import os
 import shutil
+from typing import Any, Dict
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -91,16 +93,46 @@ else:
 # SQLite requires specific args, PostgreSQL does not
 connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args=connect_args
-)
+_is_postgres = SQLALCHEMY_DATABASE_URL.startswith("postgresql://")
+
+engine_kwargs: Dict[str, Any] = {}
+if _is_postgres:
+    # Conservador: elimina vazamento primeiro (pool_pre_ping + recycle + timeout),
+    # evitando QueuePool limit sem aumentar cegamente limites.
+    # Aumentar pool_size/overflow apenas se, com rollback+close adequados, ainda houver gargalo.
+    engine_kwargs = {
+        "pool_pre_ping": True,
+        "pool_recycle": 600,          # reconecta conexões após 10 min
+        "pool_timeout": 30,           # espera no máximo 30s por conexão
+        "pool_size": 5,               # conexões em repouso (padrão)
+        "max_overflow": 15,           # pico permitido acima do pool (15, era 10)
+    }
+
+create_engine_args: Dict[str, Any] = {"connect_args": connect_args}
+create_engine_args.update(engine_kwargs)
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **create_engine_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+
 def get_db():
+    """Dependency padrão do FastAPI: abre sessão, sempre fecha no finally.
+    Em caso de exceção, rola back a transação para não contaminar a conexão no pool."""
     db = SessionLocal()
     try:
-        yield db
+        try:
+            yield db
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
+

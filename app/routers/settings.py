@@ -48,13 +48,32 @@ def _default_factory_settings_payload() -> Dict[str, Any]:
 
 
 def _get_or_create_settings_row(db: Session, user_id: Optional[int] = None) -> Settings:
-    settings = get_or_create_latest_settings(db)
-    if user_id is not None and not getattr(settings, "user_id", None):
-        settings.user_id = user_id
+    if user_id is not None:
+        settings = (
+            db.query(Settings)
+            .filter(Settings.user_id == user_id)
+            .order_by(Settings.id.desc())
+            .first()
+        )
+        if settings is not None:
+            return settings
+
+        settings = get_or_create_latest_settings(db)
+        existing_user_id = getattr(settings, "user_id", None)
+        if not existing_user_id:
+            settings.user_id = user_id
+            db.add(settings)
+            db.commit()
+            db.refresh(settings)
+            return settings
+
+        settings = Settings(user_id=user_id)
         db.add(settings)
         db.commit()
         db.refresh(settings)
-    return settings
+        return settings
+
+    return get_or_create_latest_settings(db)
 
 
 def _serialize_settings_payload(settings: Settings, db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:

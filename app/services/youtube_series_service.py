@@ -10,11 +10,16 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import EpisodeReview, ScheduledVideo, SeriesEpisode, SeriesPlan, User, VideoTask
+from app.models import EpisodeReview, ScheduledVideo, SeriesEpisode, SeriesPlan, UnifiedVideo, UnifiedVideoStatus, User, VideoTask, YouTubeAutoAuditEvent
 from app.services.financial_guardian.youtube_observability import (
     youtube_financial_guardian_observability_service,
 )
-from app.services.task_manager import claim_video_task, get_task, update_task
+from app.services.task_manager import (
+    acquire_distributed_lock,
+    get_task,
+    release_distributed_lock,
+    update_task,
+)
 from app.services.youtube_auto_identity import (
     build_video_content_fingerprint,
     normalize_list_for_fingerprint,
@@ -62,6 +67,109 @@ REVIEW_REASONS = {
     "repetitive_content",
     "other",
 }
+
+try:
+    from app.services.unified_video_pipeline import (
+        UnifiedVideoPipelineService as _UVP,
+        UnifiedVideoRequest as _UReq,
+        unified_video_pipeline as _unified_video_pipeline_factory,
+    )
+    _UVP_OK = True
+except Exception:
+    _UVP = None  # type: ignore[assignment,misc]
+    _UReq = None  # type: ignore[assignment,misc]
+    _unified_video_pipeline_factory = None  # type: ignore[assignment,misc]
+    _UVP_OK = False
+
+
+def _require_unified_pipeline(caller: str) -> Any:
+    """Garante que UnifiedVideoPipeline está disponível. Fora de dev levanta RuntimeError."""
+    if not _UVP_OK or _UVP is None or _unified_video_pipeline_factory is None or _UReq is None:
+        try:
+            from app.config import unified_pipeline_required_error as _req_err
+            msg = _req_err(caller, None)
+        except Exception:
+            msg = (
+                f"[{caller}] UnifiedVideoPipeline é OBRIGATÓRIO em Séries Programadas. "
+                "Não há fallback legado. Verifique se app/services/unified_video_pipeline.py está importável."
+            )
+        raise RuntimeError(msg)
+    uvpf = _unified_video_pipeline_factory()
+    if uvpf is None:
+        raise RuntimeError(f"[{caller}] UnifiedVideoPipeline factory retornou None.")
+    return uvpf
+
+#region debug-point youtube-finalize-stuck
+_DEBUG_ENV_PATH = os.path.join(".dbg", "youtube-finalize-stuck.env")
+
+def _dbg_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = None):
+    try:
+        import json as _json
+        import urllib.request as _urlreq
+
+        url = "http://127.0.0.1:7777/event"
+        session_id = "youtube-finalize-stuck"
+        if os.path.exists(_DEBUG_ENV_PATH):
+            try:
+                with open(_DEBUG_ENV_PATH, "r", encoding="utf-8") as f:
+                    for line in f.read().splitlines():
+                        if line.startswith("DEBUG_SERVER_URL="):
+                            url = line.split("=", 1)[1].strip() or url
+                        elif line.startswith("DEBUG_SESSION_ID="):
+                            session_id = line.split("=", 1)[1].strip() or session_id
+            except Exception:
+                pass
+
+        run_id = str(os.getenv("DEBUG_RUN_ID") or "pre").strip() or "pre"
+        payload = {
+            "sessionId": session_id,
+            "runId": run_id,
+            "hypothesisId": str(hypothesis_id or "").strip() or "NA",
+            "location": "app/services/youtube_series_service.py",
+            "msg": str(msg or ""),
+            "data": data or {},
+        }
+        req = _urlreq.Request(
+            url,
+            data=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        _urlreq.urlopen(req, timeout=0.25).read()
+    except Exception:
+        pass
+#endregion
+
+
+def _audit_event(
+    db: Session,
+    *,
+    event_type: str,
+    series_id: Optional[int] = None,
+    episode_id: Optional[int] = None,
+    task_id: Optional[str] = None,
+    scheduled_video_id: Optional[int] = None,
+    status_before: Optional[str] = None,
+    status_after: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    error_stack: Optional[str] = None,
+) -> None:
+    try:
+        row = YouTubeAutoAuditEvent(
+            event_type=str(event_type or "").strip() or "unknown",
+            series_id=int(series_id) if series_id is not None else None,
+            episode_id=int(episode_id) if episode_id is not None else None,
+            task_id=str(task_id)[:255] if task_id else None,
+            scheduled_video_id=int(scheduled_video_id) if scheduled_video_id is not None else None,
+            status_before=str(status_before)[:255] if status_before else None,
+            status_after=str(status_after)[:255] if status_after else None,
+            duration_ms=int(duration_ms) if duration_ms is not None else None,
+            payload_json=_json_dumps(payload) if payload else None,
+            error_stack=str(error_stack) if error_stack else None,
+        )
+        db.add(row)
+    except Exception:
+        pass
 CONTENT_KIND_MAP = {
     "reflection": "story",
     "devotional": "devotional",
@@ -263,7 +371,7 @@ class YouTubeSeriesService:
     ) -> datetime:
         tz = _get_tz(timezone_name)
         publication_local = publication_dt_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
-        target_day = publication_local.date() - timedelta(days=max(1, int(lead_days or 1)))
+        target_day = publication_local.date() - timedelta(days=max(0, int(lead_days or 0)))
         hour, minute = _parse_time(production_time, "06:00")
         local_dt = datetime(target_day.year, target_day.month, target_day.day, hour, minute, tzinfo=tz)
         return local_dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
@@ -349,7 +457,7 @@ class YouTubeSeriesService:
         timezone_name = str(payload.get("timezone") or "UTC").strip() or "UTC"
         publication_time = str(payload.get("publication_time") or "19:00").strip() or "19:00"
         production_time = str(payload.get("production_time") or "06:00").strip() or "06:00"
-        production_lead_days = max(1, min(3, int(payload.get("production_lead_days") or 1)))
+        production_lead_days = max(0, min(3, int(payload.get("production_lead_days") or 0)))
         status = _series_status(payload.get("status") or "draft")
         editorial_plan = payload.get("editorial_plan")
         if not isinstance(editorial_plan, list) or not editorial_plan:
@@ -392,6 +500,9 @@ class YouTubeSeriesService:
                 "last_promise": None,
                 "next_planned_hook": editorial_plan[0].get("next_episode_hook") if editorial_plan else None,
                 "narrative_progress": 0,
+                "idempotency_key": str(payload.get("idempotency_key") or "").strip() or None,
+                "series_idempotency_key": str(payload.get("idempotency_key") or "").strip() or None,
+                "requested_title": str(payload.get("title") or payload.get("name") or "").strip() or None,
             }),
         )
         db.add(series)
@@ -400,9 +511,23 @@ class YouTubeSeriesService:
         start = _parse_date(start_date)
         for item in editorial_plan[:total_episodes]:
             number = _safe_int(item.get("episode_number"), 0) or (len(series.episodes) + 1)
-            day = start + timedelta(days=number - 1)
-            publication_dt = self._build_publication_datetime(day.isoformat(), publication_time, timezone_name)
-            production_dt = self._build_production_datetime(publication_dt, timezone_name, production_lead_days, production_time)
+            publication_dt = None
+            if str(item.get("publication_datetime") or "").strip():
+                try:
+                    publication_dt = datetime.fromisoformat(str(item.get("publication_datetime")).replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    publication_dt = None
+            if publication_dt is None:
+                day = start + timedelta(days=number - 1)
+                publication_dt = self._build_publication_datetime(day.isoformat(), publication_time, timezone_name)
+            production_dt = None
+            if str(item.get("production_datetime") or "").strip():
+                try:
+                    production_dt = datetime.fromisoformat(str(item.get("production_datetime")).replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    production_dt = None
+            if production_dt is None:
+                production_dt = self._build_production_datetime(publication_dt, timezone_name, production_lead_days, production_time)
             episode_status = "awaiting_production" if status == "active" else "planned"
             db.add(SeriesEpisode(
                 series_id=series.id,
@@ -425,7 +550,7 @@ class YouTubeSeriesService:
     def _episode_planned_cost(self, series: SeriesPlan, episode: SeriesEpisode) -> Dict[str, Any]:
         estimate = youtube_financial_guardian_observability_service.estimate_preproduction(
             user=User(id=series.user_id),  # type: ignore[arg-type]
-            payload=self._build_episode_payload(series, episode, correction_feedback=None),
+            payload={"topic": self._episode_topic_prompt(series, episode, correction_feedback=None)},
         )
         return estimate if isinstance(estimate, dict) else {}
 
@@ -537,6 +662,7 @@ class YouTubeSeriesService:
         )
         progress = self._series_progress(episodes)
         next_episode = next((ep for ep in episodes if _episode_status(ep.status) not in {"published", "cancelled"}), None)
+        sm = self._series_memory(series)
         return {
             "id": int(series.id),
             "name": series.name,
@@ -550,7 +676,7 @@ class YouTubeSeriesService:
             "publication_time": series.publication_time,
             "production_time": series.production_time,
             "timezone": series.timezone,
-            "production_lead_days": int(series.production_lead_days or 1),
+            "production_lead_days": int(series.production_lead_days or 0),
             "duration_minutes": int(series.duration_minutes or 10),
             "visibility": series.visibility,
             "tone": series.tone,
@@ -560,11 +686,13 @@ class YouTubeSeriesService:
             "use_biblical_references": bool(series.use_biblical_references),
             "cta_subscribe": bool(series.cta_subscribe),
             "cta_next_episode": bool(series.cta_next_episode),
+            "auto_approval": bool(series.auto_approval),
             "total_episodes": int(series.total_episodes or len(episodes)),
             "current_episode": int(progress["current_episode"]),
             "progress_label": f"{progress['current_episode']} de {progress['total']} episódios",
+            "idempotency_key": str(sm.get("idempotency_key") or sm.get("series_idempotency_key") or "").strip() or None,
             "editorial_plan": _json_loads(series.editorial_plan_json, []),
-            "editorial_memory": self._series_memory(series),
+            "editorial_memory": sm,
             "episodes": [self._serialize_episode(db, series, ep) for ep in episodes],
             "next_episode": {
                 "episode_number": int(next_episode.episode_number),
@@ -678,20 +806,16 @@ class YouTubeSeriesService:
         db.commit()
         return self.get_series_detail(db, user=user, series_id=series.id)
 
-    def _build_episode_payload(
+    def _episode_topic_prompt(
         self,
         series: SeriesPlan,
         episode: SeriesEpisode,
         correction_feedback: Optional[str],
-        *,
-        selected_images: Optional[List[str]] = None,
-        reuse_audio_from: Optional[Dict[str, Any]] = None,
-        force_regenerate: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> str:
         memory = self._series_memory(series)
         previous_promise = str(memory.get("last_promise") or episode.previous_episode_hook or "").strip()
         next_hook = str(episode.next_episode_hook or "").strip()
-        story_prompt = (
+        script = (
             f"Série: {series.name}. Tema central: {series.main_theme}. "
             f"Episódio {episode.episode_number}/{series.total_episodes}: {episode.planned_title}. "
             f"Resumo do episódio: {episode.summary or ''}. "
@@ -704,69 +828,33 @@ class YouTubeSeriesService:
             f"{'Finalize com convite para o próximo episódio. ' if series.cta_next_episode and episode.episode_number < int(series.total_episodes or 0) else 'Conclua a série sem prometer continuação inexistente. '}"
             f"{'Correção editorial obrigatória: ' + correction_feedback if correction_feedback else ''}"
         ).strip()
-        payload: Dict[str, Any] = {
-            "topic": story_prompt,
-            "duration": int(episode.duration_minutes or series.duration_minutes or 10),
-            "auto_upload": False,
-            "mode": "topic",
-            "kind": CONTENT_KIND_MAP.get(series.content_type, "story"),
-            "override_title": episode.planned_title,
-            "voice_style": series.narration_style or "human",
-            "voice_gender": "female",
-            "image_mode": "multiple",
-            "aspect_ratio": "16:9",
-            "force_regenerate": bool(force_regenerate),
-        }
-        if selected_images:
-            payload["selected_images"] = [str(item).strip() for item in selected_images if str(item).strip()]
-        if reuse_audio_from:
-            audio_generation = reuse_audio_from.get("audio_generation") if isinstance(reuse_audio_from.get("audio_generation"), dict) else {}
-            official = reuse_audio_from.get("official_audio_transcription") if isinstance(reuse_audio_from.get("official_audio_transcription"), dict) else {}
-            reuse_path = _existing_artifact_path(audio_generation.get("output_path"))
-            if reuse_path:
-                payload["reuse_existing_audio"] = True
-                payload["reuse_existing_audio_path"] = reuse_path
-                payload["cached_audio_generation"] = audio_generation
-                payload["cached_official_audio_transcription"] = official
-        return payload
+        return script
 
-    def _initial_result_for_correction(
-        self,
-        old_result: Dict[str, Any],
-        payload: Dict[str, Any],
-        *,
-        carry_script: bool,
-        carry_audio: bool,
-        keep_video: bool,
-    ) -> Dict[str, Any]:
-        seeded_payload = payload if isinstance(payload, dict) else {}
-        result: Dict[str, Any] = {
-            "payload": seeded_payload,
-            "kind": "youtube_story_video",
-            "title_hint": str(seeded_payload.get("override_title") or seeded_payload.get("topic") or "Vídeo").strip()[:120],
-        }
-        if carry_script and isinstance(old_result.get("script"), dict):
-            script_copy = dict(old_result.get("script") or {})
-            result["script"] = script_copy
-            seeded_payload["seeded_script"] = dict(script_copy)
-        if carry_audio:
-            render = old_result.get("render_report") if isinstance(old_result.get("render_report"), dict) else {}
-            audio_generation = render.get("audio_generation") if isinstance(render.get("audio_generation"), dict) else {}
-            official_audio_transcription = render.get("official_audio_transcription") if isinstance(render.get("official_audio_transcription"), dict) else {}
-            seeded_render_report = {
-                "audio_generation": audio_generation,
-                "official_audio_transcription": official_audio_transcription,
-            }
-            result["render_report"] = dict(seeded_render_report)
-            seeded_payload["seeded_render_report"] = dict(seeded_render_report)
-            if isinstance(old_result.get("audio_generation"), dict):
-                result["audio_generation"] = dict(old_result.get("audio_generation") or {})
-        if keep_video:
-            if old_result.get("video_url"):
-                result["video_url"] = old_result.get("video_url")
-            if old_result.get("file_path"):
-                result["file_path"] = old_result.get("file_path")
-        return result
+    def _episode_planned_cost(self, series: SeriesPlan, episode: SeriesEpisode) -> Dict[str, Any]:
+        estimate = youtube_financial_guardian_observability_service.estimate_preproduction(
+            user=User(id=series.user_id),  # type: ignore[arg-type]
+            payload={"topic": self._episode_topic_prompt(series, episode, correction_feedback=None)},
+        )
+        return estimate if isinstance(estimate, dict) else {}
+
+    def _find_unified_video_by_episode(self, db: Session, episode: SeriesEpisode) -> Optional[UnifiedVideo]:
+        rows = (
+            db.query(UnifiedVideo)
+            .filter(
+                UnifiedVideo.source_module == "youtube_series",
+                UnifiedVideo.source_id == f"episode:{int(episode.id)}",
+            )
+            .order_by(UnifiedVideo.id.desc())
+            .limit(1)
+            .all()
+        )
+        if rows:
+            return rows[0]
+        if getattr(episode, "task_id", None):
+            uv = db.query(UnifiedVideo).filter(UnifiedVideo.task_id == str(episode.task_id)).first()
+            if uv is not None:
+                return uv
+        return None
 
     def _enqueue_episode_generation(
         self,
@@ -778,57 +866,158 @@ class YouTubeSeriesService:
         correction_feedback: Optional[str] = None,
         initial_result: Optional[Dict[str, Any]] = None,
         force_regenerate: bool = False,
+        series_idempotency_key: Optional[str] = None,
+        selected_images: Optional[List[str]] = None,
+        reuse_audio_from: Optional[Dict[str, Any]] = None,
+        seeded_script: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        payload_seed = (
-            dict(initial_result.get("payload") or {})
-            if isinstance(initial_result, dict) and isinstance(initial_result.get("payload"), dict)
-            else {}
+        """SÉRIES: MONTAR UnifiedVideoRequest + CHAMAR UnifiedVideoPipeline SOMENTE.
+
+        - NÃO gera roteiro, imagens, áudio ou renderização.
+        - NÃO faz claim_video_task legado.
+        - NÃO usa initial_result legado; os únicos seeds aceitos são os campos do
+          UnifiedVideoRequest (seeded_script, selected_images, reuse_audio_from, force_regenerate).
+        """
+        uvpsvc = _require_unified_pipeline("_enqueue_episode_generation")
+
+        uv_old = self._find_unified_video_by_episode(db, episode)
+        version_token = f"v{int(episode.current_version or 1)}"
+        try:
+            _series_sid_key = str(series_idempotency_key or "").strip()
+            if _series_sid_key and len(_series_sid_key) < 4:
+                _series_sid_key = ""
+        except Exception:
+            _series_sid_key = ""
+        base_ik = _series_sid_key or (
+            f"yts:series:{int(series.id)}:episode:{int(episode.episode_number)}"
         )
-        payload = (
-            payload_seed
-            if payload_seed
-            else self._build_episode_payload(series, episode, correction_feedback, force_regenerate=force_regenerate)
-        )
-        identity = _build_identity(payload)
-        payload.update({
-            "idempotency_key": identity["idempotency_key"],
-            "request_hash": identity["request_hash"],
-            "content_fingerprint": identity["content_fingerprint"],
-            "internal_title": identity["internal_title"],
-            "youtube_title": identity["youtube_title"],
-            "narrated_title": identity["narrated_title"],
-        })
-        base_result = initial_result if isinstance(initial_result, dict) else {
-            "payload": payload,
-            "kind": "youtube_story_video",
-            "title_hint": episode.planned_title,
-            "content_fingerprint": identity["content_fingerprint"],
+        explicit_ik = str((initial_result or {}).get("idempotency_key") if isinstance(initial_result, dict) else "").strip()
+        _explicit_ik_valid = bool(explicit_ik) and len(explicit_ik) >= 6
+        effective_ik = (explicit_ik if _explicit_ik_valid else None) or f"{base_ik}:{version_token}"
+        if len(str(effective_ik).strip()) < 6:
+            effective_ik = f"yts:series:{int(series.id)}:episode:{int(episode.episode_number)}:{version_token}"
+        topic_text = self._episode_topic_prompt(series, episode, correction_feedback)
+        identity_payload_for_hash: Dict[str, Any] = {
+            "topic": topic_text,
+            "correction": str(correction_feedback or "").strip(),
+            "override_title": str(episode.planned_title or "").strip(),
+            "override_description": str(getattr(episode, "planned_description", "") or "").strip()[:5000],
+            "aspect_ratio": str(getattr(series, "aspect_ratio", "") or "16:9"),
+            "duration_minutes": int(episode.duration_minutes or series.duration_minutes or 10),
+            "content_type": CONTENT_KIND_MAP.get(str(series.content_type or "").strip().lower(), "devotional"),
+            "voice_style": str(series.narration_style or "human").strip()[:128],
+            "auto_publish": bool(getattr(series, "auto_approval", False)),
+            "version": version_token,
         }
-        claimed = claim_video_task(
-            idempotency_key=f"{identity['idempotency_key']}:series:{series.id}:episode:{episode.episode_number}",
-            request_hash=identity["request_hash"],
-            payload=payload,
-            dedupe_window_seconds=max(60, min(7 * 24 * 60 * 60, 6 * 60 * 60)),
+        identity = _build_identity(identity_payload_for_hash)
+        content_fp = identity["content_fingerprint"]
+
+        if _UReq is None:
+            raise RuntimeError("[_enqueue_episode_generation] UnifiedVideoRequest não carregado.")
+        kind = CONTENT_KIND_MAP.get(str(series.content_type or "").strip().lower(), "devotional")
+        req = _UReq(
+            source_module="youtube_series",
+            source_id=f"episode:{int(episode.id)}",
+            idempotency_key=str(effective_ik).strip()[:255],
+            content_type=kind,
+            topic=str(topic_text).strip()[:4000] or None,
+            script_text=None,
+            duration_minutes=int(episode.duration_minutes or series.duration_minutes or 10),
+            aspect_ratio=str(getattr(series, "aspect_ratio", "") or "16:9").strip()[:12] or "16:9",
+            image_count=8,
+            text_provider="configured",
+            image_provider="configured",
+            voice_provider="configured",
+            voice_id=(str(series.narration_style or "human").strip()[:128] or None),
+            music_enabled=False,
+            visibility=str(getattr(series, "visibility", "") or "unlisted").strip().lower()[:32] or "unlisted",
+            auto_publish=bool(getattr(series, "auto_approval", False) or getattr(series, "auto_publish", False)),
+            review_required=bool(not getattr(series, "auto_approval", False)),
+            user_id=int(user.id or 0) or None,
             force_regenerate=bool(force_regenerate),
-            user_id=int(user.id),
-            initial_result=base_result,
+            force_reuse_assets=False,
+            override_title=(str(episode.planned_title or "").strip()[:300] or None),
+            override_description=(str(getattr(episode, "planned_description", "") or "").strip()[:5000] or None),
+            override_tags=None,
+            seeded_script=(seeded_script if isinstance(seeded_script, dict) else None),
+            selected_images=([str(x).strip() for x in selected_images if str(x).strip()] if isinstance(selected_images, list) else None),
+            reuse_audio_from=(reuse_audio_from if isinstance(reuse_audio_from, dict) else None),
+            request_hash=str(identity["request_hash"]).strip() or None,
+            legacy_payload={
+                "series_context": {
+                    "series_id": int(series.id),
+                    "series_name": series.name,
+                    "episode_id": int(episode.id),
+                    "episode_number": int(episode.episode_number),
+                    "publication_datetime": _dt_to_iso(episode.publication_datetime),
+                },
+                "correction_feedback": str(correction_feedback or "").strip()[:5000] or None,
+            },
         )
-        task_id = str(claimed.get("task_id"))
+
+        kick_cb = None
+        try:
+            from app.routers.youtube import _kick_story_video_task_queue_async as _kick  # type: ignore[attr-defined]
+            if callable(_kick):
+                kick_cb = _kick
+        except Exception:
+            kick_cb = None
+
+        uvpsvc.ensure_schema(db)
+        res = uvpsvc.submit_or_reuse(
+            db,
+            request=req,
+            kick_queue_callback=kick_cb,
+            legacy_initial_result=None,
+            user=user,
+        )
+        task_id = str(res.task_id)
         update_task(task_id, result={
-            **((claimed.get("task") or {}).get("result") if isinstance((claimed.get("task") or {}).get("result"), dict) else {}),
-            "payload": payload,
+            **(((get_task(task_id) or {}).get("result") if isinstance((get_task(task_id) or {}).get("result"), dict) else {}) or {}),
             "series_context": {
                 "series_id": int(series.id),
                 "series_name": series.name,
                 "episode_id": int(episode.id),
                 "episode_number": int(episode.episode_number),
                 "publication_datetime": _dt_to_iso(episode.publication_datetime),
+                "idempotency_key": effective_ik,
+                "pipeline": "unified_video_pipeline",
+                "unified_video_id": getattr(res, "unified_video_id", None),
+                "version": version_token,
             },
+            "content_fingerprint": content_fp,
         })
         episode.task_id = task_id
-        episode.content_fingerprint = identity["content_fingerprint"]
-        episode.status = "in_production" if str((get_task(task_id) or {}).get("status") or "").lower() in {"pending", "processing"} else "awaiting_review"
-        return {"task_id": task_id, "content_fingerprint": identity["content_fingerprint"]}
+        episode.content_fingerprint = content_fp
+        if getattr(res, "unified_video_id", None):
+            try:
+                uv_after = db.query(UnifiedVideo).filter(UnifiedVideo.id == int(res.unified_video_id)).first()
+                if uv_after is not None and getattr(uv_after, "episode_id", None) in (None, 0):
+                    try:
+                        uv_after.episode_id = int(episode.id)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        tstatus = str((get_task(task_id) or {}).get("status") or "").lower()
+        if res.reused_completed:
+            episode.status = "awaiting_review"
+        elif tstatus in {"pending", "processing", "queued"}:
+            episode.status = "in_production"
+        else:
+            episode.status = "in_production"
+        return {
+            "task_id": task_id,
+            "content_fingerprint": content_fp,
+            "idempotency_key": effective_ik,
+            "reused_existing_task": bool(res.reused_existing),
+            "reused_completed_task": bool(res.reused_completed),
+            "unified_video_id": getattr(res, "unified_video_id", None),
+            "pipeline": "unified_video_pipeline",
+            "video_url": getattr(res, "video_url", None),
+            "youtube_video_id": getattr(res, "youtube_video_id", None),
+            "providers": getattr(res, "providers", None),
+        }
 
     def sync_series_scheduler(self, db: Session, *, now: Optional[datetime] = None) -> Dict[str, Any]:
         self.ensure_schema(db)
@@ -836,6 +1025,7 @@ class YouTubeSeriesService:
         activated = 0
         blocked = 0
         synced = 0
+        auto_approve_queue: List[Tuple[int, int]] = []
         rows = (
             db.query(SeriesPlan)
             .filter(SeriesPlan.status.in_(["active", "planned", "pending_issue"]))
@@ -854,18 +1044,87 @@ class YouTubeSeriesService:
             )
             for episode in episodes:
                 status = _episode_status(episode.status)
+                if status == "approved" and episode.scheduled_video_id:
+                    before = str(episode.status)
+                    episode.status = "scheduled"
+                    synced += 1
+                    _audit_event(
+                        db,
+                        event_type="episode_status_changed",
+                        series_id=int(series.id),
+                        episode_id=int(episode.id),
+                        task_id=str(episode.task_id) if episode.task_id else None,
+                        scheduled_video_id=int(episode.scheduled_video_id),
+                        status_before=before,
+                        status_after="scheduled",
+                    )
+                    status = "scheduled"
+                if status in {"approved", "scheduled"} and episode.scheduled_video_id:
+                    try:
+                        scheduled = db.query(ScheduledVideo).filter(ScheduledVideo.id == int(episode.scheduled_video_id)).first()
+                    except Exception:
+                        scheduled = None
+                    if scheduled and getattr(scheduled, "uploaded_at", None) and status != "published":
+                        try:
+                            self.update_publication_state_from_schedule(db, scheduled_video_id=int(scheduled.id))
+                            synced += 1
+                        except Exception:
+                            pass
+                        status = _episode_status(episode.status)
                 if episode.task_id:
                     task = get_task(str(episode.task_id)) or {}
                     task_status = str(task.get("status") or "").lower()
                     if task_status in {"pending", "processing"} and status != "in_production":
                         episode.status = "in_production"
                         synced += 1
+                        _dbg_event("H4", "episode marked in_production", {
+                            "series_id": int(series.id),
+                            "episode_id": int(episode.id),
+                            "episode_number": int(episode.episode_number or 0),
+                            "task_id": str(episode.task_id),
+                            "task_status": task_status,
+                        })
                     elif task_status == "completed" and status in {"in_production", "awaiting_production", "planned", "in_correction"}:
+                        before = str(episode.status)
                         episode.status = "awaiting_review"
                         synced += 1
+                        _audit_event(
+                            db,
+                            event_type="episode_status_changed",
+                            series_id=int(series.id),
+                            episode_id=int(episode.id),
+                            task_id=str(episode.task_id) if episode.task_id else None,
+                            status_before=before,
+                            status_after="awaiting_review",
+                        )
+                        _dbg_event("H4", "episode transitioned to awaiting_review", {
+                            "series_id": int(series.id),
+                            "episode_id": int(episode.id),
+                            "episode_number": int(episode.episode_number or 0),
+                            "task_id": str(episode.task_id),
+                            "task_status": task_status,
+                        })
+                        if bool(getattr(series, "auto_approval", False)) and not episode.approved_at:
+                            auto_approve_queue.append((int(episode.id), int(user.id)))
                     elif task_status in {"failed", "cancelled"} and status in {"in_production", "awaiting_production"}:
+                        before = str(episode.status)
                         episode.status = "failed"
+                        episode.task_id = None
                         synced += 1
+                        _audit_event(
+                            db,
+                            event_type="episode_status_changed",
+                            series_id=int(series.id),
+                            episode_id=int(episode.id),
+                            status_before=before,
+                            status_after="failed",
+                        )
+                        _dbg_event("H4", "episode marked failed (task failed/cancelled)", {
+                            "series_id": int(series.id),
+                            "episode_id": int(episode.id),
+                            "episode_number": int(episode.episode_number or 0),
+                            "task_status": task_status,
+                        })
                     status = _episode_status(episode.status)
                 if status in {"awaiting_review", "in_correction", "rejected"} and current >= episode.publication_datetime and not episode.approved_at:
                     episode.status = "publication_blocked"
@@ -886,7 +1145,16 @@ class YouTubeSeriesService:
                 if should_queue:
                     if previous_generation_pending:
                         continue
-                    self._enqueue_episode_generation(db, user=user, series=series, episode=episode)
+                    series_ik = ""
+                    try:
+                        sm = self._series_memory(series)
+                        series_ik = str(sm.get("idempotency_key") or sm.get("series_idempotency_key") or "").strip()
+                    except Exception:
+                        series_ik = ""
+                    self._enqueue_episode_generation(
+                        db, user=user, series=series, episode=episode,
+                        series_idempotency_key=series_ik or None,
+                    )
                     activated += 1
                     episode.status = "in_production"
             published = len([ep for ep in episodes if _episode_status(ep.status) == "published"])
@@ -897,7 +1165,53 @@ class YouTubeSeriesService:
                 if in_problem and _series_status(series.status) == "active":
                     series.status = "pending_issue"
         db.commit()
+        for episode_id, user_id in auto_approve_queue:
+            self._auto_approve_episode(db, episode_id=episode_id, user_id=user_id)
         return {"queued": activated, "blocked": blocked, "synced": synced}
+
+    def _auto_approve_episode(self, db: Session, *, episode_id: int, user_id: int) -> None:
+        lock = acquire_distributed_lock(f"auto_approve_episode:{int(episode_id)}", timeout_seconds=10, ttl_seconds=120)
+        try:
+            user = db.query(User).filter(User.id == int(user_id)).first()
+            if not user:
+                return
+            episode = (
+                db.query(SeriesEpisode)
+                .join(SeriesPlan, SeriesPlan.id == SeriesEpisode.series_id)
+                .filter(SeriesEpisode.id == int(episode_id), SeriesPlan.user_id == int(user.id))
+                .first()
+            )
+            if not episode:
+                return
+            series = db.query(SeriesPlan).filter(SeriesPlan.id == int(episode.series_id)).first()
+            if not series or not bool(getattr(series, "auto_approval", False)):
+                return
+            if episode.approved_at:
+                return
+            if _episode_status(episode.status) != "awaiting_review":
+                return
+            try:
+                self.approve_episode(db, user=user, episode_id=int(episode.id))
+            except Exception as e:
+                try:
+                    import traceback as _tb
+                    _audit_event(
+                        db,
+                        event_type="approval_failed",
+                        series_id=int(series.id),
+                        episode_id=int(episode.id),
+                        task_id=str(episode.task_id) if episode.task_id else None,
+                        scheduled_video_id=int(episode.scheduled_video_id) if episode.scheduled_video_id else None,
+                        status_before="awaiting_review",
+                        status_after=str(episode.status),
+                        payload={"error": str(e)},
+                        error_stack=_tb.format_exc()[-8000:],
+                    )
+                    db.commit()
+                except Exception:
+                    pass
+        finally:
+            release_distributed_lock(lock)
 
     def _episode_task_result(self, episode: SeriesEpisode) -> Dict[str, Any]:
         task = get_task(str(episode.task_id)) if episode.task_id else None
@@ -906,6 +1220,7 @@ class YouTubeSeriesService:
         return {}
 
     def approve_episode(self, db: Session, *, user: User, episode_id: int) -> Dict[str, Any]:
+        started_at = datetime.utcnow()
         episode = (
             db.query(SeriesEpisode)
             .join(SeriesPlan, SeriesPlan.id == SeriesEpisode.series_id)
@@ -917,9 +1232,60 @@ class YouTubeSeriesService:
         series = db.query(SeriesPlan).filter(SeriesPlan.id == int(episode.series_id)).first()
         if not series:
             raise ValueError("Série não encontrada.")
-        result = self._episode_task_result(episode)
-        if not result or not result.get("video_url"):
+
+        # ===== UnifiedVideoPipeline: consulta estado real + aprovação + (opcional) upload único =====
+        uvpsvc = _require_unified_pipeline("approve_episode")
+        uv = self._find_unified_video_by_episode(db, episode)
+        video_url: Optional[str] = None
+        youtube_video_id: Optional[str] = None
+        youtube_url: Optional[str] = None
+        providers_cost: Dict[str, Any] = {}
+        title: str = str(episode.planned_title).strip()
+        description: str = str(getattr(episode, "planned_description", "") or "").strip()
+        if uv is not None:
+            if getattr(uv, "status", None) not in {
+                UnifiedVideoStatus.AWAITING_REVIEW,
+                UnifiedVideoStatus.APPROVED,
+                UnifiedVideoStatus.UPLOADING,
+                UnifiedVideoStatus.PUBLISHED,
+            }:
+                raise ValueError(
+                    f"Episódio não está pronto para aprovação. Status atual do UnifiedVideo: {getattr(uv, 'status', 'unknown')}."
+                )
+            video_url = getattr(uv, "video_url", None) or video_url
+            youtube_video_id = getattr(uv, "youtube_video_id", None) or youtube_video_id
+            youtube_url = getattr(uv, "youtube_url", None) or youtube_url
+            title = str(getattr(uv, "title", None) or title).strip() or title
+            description = str(getattr(uv, "description", None) or description).strip() or description
+            providers_cost = {
+                "estimated_cost": _safe_float(getattr(uv, "estimated_cost", 0.0), 0.0),
+                "actual_cost": _safe_float(getattr(uv, "actual_cost", 0.0), 0.0),
+                "call_count_text": _safe_int(getattr(uv, "call_count_text", 0), 0),
+                "call_count_image": _safe_int(getattr(uv, "call_count_image", 0), 0),
+                "call_count_audio": _safe_int(getattr(uv, "call_count_audio", 0), 0),
+            }
+        if not video_url:
+            legacy = self._episode_task_result(episode)
+            if isinstance(legacy, dict) and legacy.get("video_url"):
+                video_url = str(legacy.get("video_url") or "").strip() or None
+            if isinstance(legacy, dict) and legacy.get("youtube_video_id") and not youtube_video_id:
+                youtube_video_id = str(legacy.get("youtube_video_id") or "").strip() or None
+                youtube_url = str((legacy.get("youtube_url") or f"https://www.youtube.com/watch?v={youtube_video_id}") or "").strip() or None
+                title = str(legacy.get("title") or title).strip() or title
+                description = str(legacy.get("description") or description).strip() or description
+        if not video_url:
             raise ValueError("O episódio ainda não possui vídeo pronto para aprovação.")
+
+        _audit_event(
+            db,
+            event_type="approval_started",
+            series_id=int(series.id),
+            episode_id=int(episode.id),
+            task_id=str(episode.task_id) if episode.task_id else None,
+            scheduled_video_id=int(episode.scheduled_video_id) if episode.scheduled_video_id else None,
+            status_before=str(episode.status),
+            payload={"auto_approval": bool(getattr(series, "auto_approval", False)), "actor_user_id": int(user.id)},
+        )
         scheduled = None
         if episode.scheduled_video_id:
             scheduled = db.query(ScheduledVideo).filter(ScheduledVideo.id == int(episode.scheduled_video_id)).first()
@@ -927,8 +1293,8 @@ class YouTubeSeriesService:
             scheduled = ScheduledVideo(
                 user_id=int(user.id),
                 theme=series.main_theme,
-                title=str(result.get("title") or episode.planned_title).strip(),
-                description=str(result.get("description") or "").strip(),
+                title=title,
+                description=description,
                 scheduled_for=episode.publication_datetime,
                 status="completed",
                 video_type="video",
@@ -939,33 +1305,152 @@ class YouTubeSeriesService:
                     "episode_number": int(episode.episode_number),
                     "approved": True,
                     "auto_processing_eligible": False,
+                    "pipeline": "unified_video_pipeline",
                 }),
-                video_url=result.get("video_url"),
+                video_url=video_url,
                 progress=100,
                 auto_post=True,
                 voice_style=series.narration_style or "human",
                 voice_gender="female",
+                youtube_video_id=(youtube_video_id or None),
+                uploaded_at=(datetime.utcnow() if (youtube_video_id and youtube_url) else None),
             )
+            if scheduled.uploaded_at is not None:
+                scheduled.status = "published"
             db.add(scheduled)
             db.flush()
             episode.scheduled_video_id = int(scheduled.id)
+            _audit_event(
+                db,
+                event_type="scheduled_created",
+                series_id=int(series.id),
+                episode_id=int(episode.id),
+                task_id=str(episode.task_id) if episode.task_id else None,
+                scheduled_video_id=int(scheduled.id),
+                payload={"auto_post": True, "scheduled_for": _dt_to_iso(episode.publication_datetime), "status": str(scheduled.status)},
+            )
         else:
-            scheduled.title = str(result.get("title") or episode.planned_title).strip()
-            scheduled.description = str(result.get("description") or "").strip()
+            scheduled.title = title
+            scheduled.description = description
             scheduled.scheduled_for = episode.publication_datetime
-            scheduled.video_url = result.get("video_url")
-            scheduled.status = "completed"
+            scheduled.video_url = video_url
+            scheduled.status = "published" if (youtube_video_id and youtube_url) else "completed"
             scheduled.auto_post = True
             scheduled.progress = 100
+            if youtube_video_id:
+                scheduled.youtube_video_id = youtube_video_id
+                if not scheduled.uploaded_at:
+                    scheduled.uploaded_at = datetime.utcnow()
+            _audit_event(
+                db,
+                event_type="scheduled_updated",
+                series_id=int(series.id),
+                episode_id=int(episode.id),
+                task_id=str(episode.task_id) if episode.task_id else None,
+                scheduled_video_id=int(scheduled.id),
+                payload={"auto_post": True, "scheduled_for": _dt_to_iso(episode.publication_datetime), "status": str(scheduled.status)},
+            )
         episode.approved_at = datetime.utcnow()
         episode.approved_by = int(user.id)
-        episode.status = "scheduled"
+        episode.status = "approved"
+
+        # ===== UnifiedVideoPipeline: transição APPROVED =====
+        if uv is not None:
+            try:
+                uvpsvc.transition_status(
+                    db,
+                    idempotency_key_or_task_id=str(uv.task_id or uv.idempotency_key or ""),
+                    status=UnifiedVideoStatus.APPROVED,
+                    progress=99,
+                    message=f"Aprovado via série/episode#{int(episode.id)}.",
+                    merge_result={
+                        "episode_id": int(episode.id),
+                        "series_id": int(series.id),
+                        "scheduled_video_id": int(episode.scheduled_video_id or 0) or None,
+                    },
+                )
+            except Exception:
+                # transição opcional: não bloqueia aprovação do episódio
+                pass
+
+        # ===== UnifiedVideoPipeline: upload ÚNICO YouTube (publish_if_ready) =====
+        auto_publish = bool(getattr(series, "auto_approval", False) or getattr(series, "auto_publish", False))
+        already_on_youtube = bool(youtube_video_id and youtube_url)
+        if auto_publish and not already_on_youtube:
+            try:
+                from app.routers.youtube import (
+                    _build_youtube_watch_url as _watch_url,
+                    _extract_uploaded_youtube_id as _extract_id,
+                )
+                from app.services.youtube_service import YouTubeService
+
+                def _series_upload_callable(video_path: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+                    yt = YouTubeService()
+                    meta = dict(metadata or {})
+                    title = str(
+                        meta.get("title") or meta.get("override_title") or title or episode.planned_title or "Vídeo Codexia"
+                    ).strip()[:100] or "Vídeo Codexia"
+                    description = str(meta.get("description") or meta.get("override_description") or description or "").strip()[:5000]
+                    tags = meta.get("tags") if isinstance(meta.get("tags"), list) else []
+                    raw = yt.upload_video(
+                        str(video_path),
+                        title=title,
+                        description=description,
+                        tags=([str(x).strip() for x in tags if str(x).strip()] or []),
+                    )
+                    if isinstance(raw, dict):
+                        yid = _extract_id(raw) or str(raw.get("id") or raw.get("videoId") or raw.get("youtube_video_id") or "").strip()
+                        return {
+                            **dict(raw),
+                            "youtube_video_id": (yid or None),
+                            "youtube_url": (_watch_url(yid) if yid else None),
+                        }
+                    return {"youtube_video_id": None, "youtube_url": None, "raw": str(raw or "")[:5000]}
+
+                pub = uvpsvc.publish_if_ready(
+                    db,
+                    idempotency_key_or_task_id=str(
+                        getattr(uv, "task_id", None) or getattr(uv, "idempotency_key", None) or str(episode.task_id or "")
+                    ),
+                    upload_callable=_series_upload_callable,
+                    upload_metadata={
+                        "title": title,
+                        "description": description,
+                        "tags": None,
+                        "episode_id": int(episode.id),
+                        "series_id": int(series.id),
+                    },
+                    visibility_override=str(getattr(series, "visibility", "") or "unlisted").strip().lower() or "unlisted",
+                )
+                if isinstance(pub, dict) and bool(pub.get("ok")):
+                    youtube_video_id = str(pub.get("youtube_video_id") or "").strip() or youtube_video_id
+                    youtube_url = str(pub.get("youtube_url") or "").strip() or youtube_url
+            except Exception:
+                # Não publica agora; deixa como approved + scheduled.
+                already_on_youtube = already_on_youtube
+        if youtube_video_id and youtube_url:
+            episode.youtube_video_id = youtube_video_id
+            episode.youtube_url = youtube_url
+            episode.published_at = episode.approved_at
+            episode.status = "published"
+            if scheduled is not None:
+                try:
+                    scheduled.uploaded_at = episode.published_at
+                    scheduled.status = "published"
+                    scheduled.youtube_video_id = youtube_video_id
+                    scheduled.video_url = youtube_url
+                except Exception:
+                    pass
         episode.approved_snapshot_json = _json_dumps({
             "approved_at": _dt_to_iso(episode.approved_at),
             "task_id": episode.task_id,
-            "video_url": result.get("video_url"),
-            "title": result.get("title") or episode.planned_title,
-            "description": result.get("description"),
+            "unified_video_id": (getattr(uv, "id", None) if uv is not None else None),
+            "video_url": video_url,
+            "title": title,
+            "description": description,
+            "youtube_video_id": youtube_video_id,
+            "youtube_url": youtube_url,
+            "providers_cost": providers_cost,
         })
         db.add(EpisodeReview(
             episode_id=int(episode.id),
@@ -975,11 +1460,22 @@ class YouTubeSeriesService:
             affected_components=_json_dumps([]),
             reused_components=_json_dumps(["script", "images", "audio", "video"]),
             regenerated_components=_json_dumps([]),
-            estimated_cost=_safe_float(((result.get("cost_control") or {}).get("estimated_cost")), 0.0),
-            actual_cost=_safe_float(((result.get("cost_control") or {}).get("actual_cost")), 0.0),
+            estimated_cost=_safe_float(providers_cost.get("estimated_cost"), 0.0),
+            actual_cost=_safe_float(providers_cost.get("actual_cost"), 0.0),
             reviewed_at=datetime.utcnow(),
             reviewed_by=int(user.id),
         ))
+        _audit_event(
+            db,
+            event_type="approval_completed",
+            series_id=int(series.id),
+            episode_id=int(episode.id),
+            task_id=str(episode.task_id) if episode.task_id else None,
+            scheduled_video_id=int(episode.scheduled_video_id) if episode.scheduled_video_id else None,
+            status_before="awaiting_review",
+            status_after="approved",
+            duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+        )
         db.commit()
         return self.get_series_detail(db, user=user, series_id=int(series.id))
 
@@ -1051,37 +1547,79 @@ class YouTubeSeriesService:
         if not series:
             raise ValueError("Série não encontrada.")
         correction_plan = self.build_correction_plan(episode, reasons, feedback)
-        result = self._episode_task_result(episode)
-        initial_result: Dict[str, Any]
-        if "script" in correction_plan["regenerated_components"]:
-            payload = self._build_episode_payload(series, episode, str(feedback).strip(), force_regenerate=True)
-            initial_result = self._initial_result_for_correction(result, payload, carry_script=False, carry_audio=False, keep_video=False)
+        regenerated = list(correction_plan.get("regenerated_components") or [])
+
+        # ===== UnifiedVideoPipeline: seeds exclusivamente por campos do UnifiedVideoRequest =====
+        uv = self._find_unified_video_by_episode(db, episode)
+        uv_result: Dict[str, Any] = {}
+        if uv is not None:
+            uv_result = _json_loads(getattr(uv, "result_json", None), {}) or {}
+
+        task_result = self._episode_task_result(episode) or {}
+        legacy_render = task_result.get("render_report") if isinstance(task_result.get("render_report"), dict) else {}
+        legacy_script = task_result.get("script") if isinstance(task_result.get("script"), dict) else {}
+
+        # ---- determine_seed_assets: NÃO gera NADA, só escolhe o que reaproveitar ----
+        seeded_script: Optional[Dict[str, Any]] = None
+        if "script" not in regenerated:
+            # Reaproveita o roteiro anterior.
+            candidate = None
+            if isinstance(uv_result.get("script"), dict):
+                candidate = dict(uv_result.get("script") or {})
+            elif isinstance(legacy_script, dict):
+                candidate = dict(legacy_script or {})
+            if candidate:
+                seeded_script = candidate
+
+        selected_images: Optional[List[str]] = None
+        if "image" not in regenerated:
+            slots: List[str] = []
+            if isinstance(uv_result.get("images"), list) and uv_result.get("images"):
+                slots = [_existing_artifact_path(x) for x in (uv_result.get("images") or []) if x]
+            elif isinstance(legacy_render, dict):
+                slots = _extract_scene_image_slots(legacy_render)
+            if not slots and isinstance(legacy_script.get("selected_images"), list):
+                slots = [str(x).strip() for x in (legacy_script.get("selected_images") or []) if str(x).strip()]
+            if slots:
+                selected_images = list(slots)
         else:
-            old_script = result.get("script") if isinstance(result.get("script"), dict) else {}
-            render = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
-            selected_images = _extract_scene_image_slots(render)
-            if not selected_images:
-                selected_images = list(old_script.get("selected_images") or [])
-            if "image" in correction_plan["regenerated_components"]:
-                selected_images = list(selected_images)
+            # Se alguma cena específica for re-gerar imagem, apaga o slot correspondente.
+            existing: List[str] = []
+            if isinstance(uv_result.get("images"), list) and uv_result.get("images"):
+                existing = [_existing_artifact_path(x) for x in (uv_result.get("images") or []) if x]
+            elif isinstance(legacy_render, dict):
+                existing = _extract_scene_image_slots(legacy_render)
+            if not existing and isinstance(legacy_script.get("selected_images"), list):
+                existing = [str(x).strip() for x in (legacy_script.get("selected_images") or []) if str(x).strip()]
+            if existing:
                 for scene_number in correction_plan.get("target_scene_numbers") or []:
                     idx = int(scene_number) - 1
-                    if 0 <= idx < len(selected_images):
-                        selected_images[idx] = ""
-            payload = self._build_episode_payload(
-                series,
-                episode,
-                str(feedback).strip(),
-                reuse_audio_from={
-                    "audio_generation": render.get("audio_generation") if isinstance(render.get("audio_generation"), dict) else {},
-                    "official_audio_transcription": render.get("official_audio_transcription") if isinstance(render.get("official_audio_transcription"), dict) else {},
-                },
-            )
-            payload["seeded_selected_images"] = list(selected_images)
-            payload["selected_images"] = list(selected_images)
-            initial_result = self._initial_result_for_correction(result, payload, carry_script=True, carry_audio=True, keep_video=False)
-            if isinstance(initial_result.get("script"), dict):
-                initial_result["script"]["selected_images"] = selected_images
+                    if 0 <= idx < len(existing):
+                        existing[idx] = ""
+                selected_images = list(existing)
+
+        reuse_audio_from: Optional[Dict[str, Any]] = None
+        if "audio" not in regenerated and "script" not in regenerated:
+            audio_generation: Dict[str, Any] = {}
+            official_audio: Dict[str, Any] = {}
+            if isinstance(uv_result.get("audio_generation"), dict):
+                audio_generation = dict(uv_result.get("audio_generation") or {})
+            elif isinstance(legacy_render.get("audio_generation"), dict):
+                audio_generation = dict(legacy_render.get("audio_generation") or {})
+            if isinstance(uv_result.get("official_audio_transcription"), dict):
+                official_audio = dict(uv_result.get("official_audio_transcription") or {})
+            elif isinstance(legacy_render.get("official_audio_transcription"), dict):
+                official_audio = dict(legacy_render.get("official_audio_transcription") or {})
+            if audio_generation or official_audio:
+                reuse_audio_from = {
+                    "audio_generation": audio_generation,
+                    "official_audio_transcription": official_audio,
+                }
+
+        force_regenerate = bool(
+            "script" in regenerated or "image" in regenerated or "subtitle" in regenerated or "sync" in regenerated
+            or "render" in regenerated
+        )
 
         episode.current_version = int(episode.current_version or 1) + 1
         episode.status = "in_correction"
@@ -1109,8 +1647,11 @@ class YouTubeSeriesService:
             series=series,
             episode=episode,
             correction_feedback=correction_plan["feedback"],
-            initial_result=initial_result,
-            force_regenerate="script" in correction_plan["regenerated_components"],
+            initial_result=None,
+            force_regenerate=force_regenerate,
+            selected_images=selected_images,
+            reuse_audio_from=reuse_audio_from,
+            seeded_script=seeded_script,
         )
         db.commit()
         return self.get_series_detail(db, user=user, series_id=int(series.id))
@@ -1122,13 +1663,18 @@ class YouTubeSeriesService:
         episode = db.query(SeriesEpisode).filter(SeriesEpisode.scheduled_video_id == int(scheduled.id)).first()
         if not episode:
             return
+        if _episode_status(episode.status) == "published":
+            return
         if getattr(scheduled, "uploaded_at", None):
+            before = str(episode.status)
             episode.published_at = scheduled.uploaded_at
             episode.youtube_video_id = scheduled.youtube_video_id
-            episode.youtube_url = scheduled.video_url
+            if scheduled.youtube_video_id:
+                episode.youtube_url = f"https://www.youtube.com/watch?v={scheduled.youtube_video_id}"
             episode.status = "published"
             series = db.query(SeriesPlan).filter(SeriesPlan.id == int(episode.series_id)).first()
             if series:
+                series.current_episode = max(int(series.current_episode or 0), int(episode.episode_number or 0))
                 memory = self._series_memory(series)
                 published_list = memory.get("published_episodes") if isinstance(memory.get("published_episodes"), list) else []
                 published_list = [item for item in published_list if int(item.get("episode_number") or 0) != int(episode.episode_number)]
@@ -1142,6 +1688,17 @@ class YouTubeSeriesService:
                 memory["next_planned_hook"] = None
                 memory["narrative_progress"] = int(episode.episode_number)
                 self._save_series_memory(series, memory)
+            _audit_event(
+                db,
+                event_type="publication_completed",
+                series_id=int(episode.series_id),
+                episode_id=int(episode.id),
+                task_id=str(episode.task_id) if episode.task_id else None,
+                scheduled_video_id=int(scheduled.id),
+                status_before=before,
+                status_after="published",
+                payload={"youtube_video_id": scheduled.youtube_video_id, "uploaded_at": _dt_to_iso(scheduled.uploaded_at)},
+            )
         db.commit()
 
 
