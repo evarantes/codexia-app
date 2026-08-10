@@ -845,14 +845,30 @@ class UnifiedVideoPipelineService:
         abs_audio = absolute_path_for_audio(audio_candidate) if probe_local_paths else audio_candidate
         abs_video = absolute_path_for_video(video_candidate) if probe_local_paths else video_candidate
 
-        # 1. roteiro válido
-        script_ok = isinstance(script_obj, dict) and bool(
-            str(script_obj.get("title") or script_obj.get("text") or script_obj.get("narration") or "").strip()
+        # 1. roteiro válido (fallback para topic / script_text / payload.topic / payload.title / result.title_hint / result.title
+        #                   evita reprovar MP4 perfeito só por script_obj ter título vazio)
+        _task_payload = (
+            task_result.get("payload") if isinstance(task_result.get("payload"), dict) else {}
         )
+        _script_title_raw = str((script_obj or {}).get("title") or "").strip()
+        _fallbacks_joined = " ".join([
+            str((script_obj or {}).get("text") or "").strip(),
+            str((script_obj or {}).get("narration") or "").strip(),
+            str(getattr(uv, "topic", "") or "").strip(),
+            str(getattr(uv, "script_text", "") or "").strip(),
+            str(_task_payload.get("topic") or "").strip(),
+            str(_task_payload.get("title") or "").strip(),
+            str(_task_payload.get("override_title") or "").strip(),
+            str(task_result.get("title_hint") or "").strip(),
+            str(task_result.get("title") or "").strip(),
+            str(task.get("title") or "").strip(),
+        ]).strip()
+        _any_scenes_in_script = bool(isinstance(script_obj, dict) and isinstance(script_obj.get("scenes"), list) and len(script_obj["scenes"]) >= 1)
+        script_ok = isinstance(script_obj, dict) and (bool(_script_title_raw) or bool(_fallbacks_joined) or _any_scenes_in_script)
         checks["script_valid"] = bool(script_ok)
         details["script"] = {
             "has_script_obj": isinstance(script_obj, dict),
-            "title": str((script_obj or {}).get("title") or "")[:120],
+            "title": str(_script_title_raw or _fallbacks_joined[:120] or "")[:120],
         }
 
         # 2. cenas válidas

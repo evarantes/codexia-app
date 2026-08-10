@@ -54,7 +54,11 @@ class StoryDevotionalStabilityTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = Path(tempfile.mkdtemp(prefix="story-tests-"))
         self.videos_dir = self.temp_dir / "media" / "videos"
+        self.audios_dir = self.temp_dir / "media" / "audios"
+        self.images_dir = self.temp_dir / "media" / "images"
         os.makedirs(str(self.videos_dir), exist_ok=True)
+        os.makedirs(str(self.audios_dir), exist_ok=True)
+        os.makedirs(str(self.images_dir), exist_ok=True)
         self.db_path = self.temp_dir / "story.sqlite"
         self.engine = create_engine(f"sqlite:///{self.db_path}", connect_args={"check_same_thread": False})
         self.Session = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
@@ -497,6 +501,165 @@ class StoryDevotionalStabilityTests(unittest.TestCase):
             self.assertEqual(total, 0, "vídeo com validação reprovada NÃO pode aparecer em scheduled_videos")
         finally:
             s.close()
+
+    # ===== CASO J) script_obj.title="" (vazio) mas MP4/topic/tudo ok => NÃO falha script_valid =====
+    def test_J_script_title_empty_uses_fallback_topic(self):
+        """
+        Corrige o erro real da UI: "Validação pré-revisão falhou: script_valid — details:
+        script:{has_script_obj:true, title:''}, mp4 perfeito com streams + tamanho 20MB,
+        reprovava SÓ por script.title vazio. Agora cai em fallback: UnifiedVideo.topic,
+        payload.topic, script.scenes, etc. E PASSA.
+
+        Obs: arquivos de MP3/MP4/imagem são criados em app/static/ (VIDEO_OUTPUT_DIR,
+        AUDIO_OUTPUT_DIR, IMAGES_OUTPUT_DIR) para que absolute_path_for_* padrão
+        consiga resolver. O teste APAGA os arquivos no final.
+        """
+        import app.config as _cfgJ
+        _video_dir = str(getattr(_cfgJ, "VIDEO_OUTPUT_DIR", "")) or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "static", "videos")
+        _audio_dir = str(getattr(_cfgJ, "AUDIO_OUTPUT_DIR", "")) or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "static", "audio")
+        _img_dir = str(getattr(_cfgJ, "IMAGES_OUTPUT_DIR", "")) or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "static", "images")
+        for _d in (_video_dir, _audio_dir, _img_dir):
+            os.makedirs(_d, exist_ok=True)
+        _ts = int(time.time() * 1000)
+        _files_to_remove: List[str] = []
+        s = self.Session()
+        try:
+            import uuid as _u
+            task_id = str(_u.uuid4())
+            idem = f"smoke-case-j-{_ts}"
+            mp4 = os.path.join(_video_dir, f"case-J-{_ts}.mp4")
+            _make_minimal_mp4(mp4, size_bytes=2 * 1024 * 1024)
+            _files_to_remove.append(mp4)
+            audio = os.path.join(_audio_dir, f"case-J-{_ts}.mp3")
+            with open(audio, "wb") as f:
+                f.write(b"\xff\xfb\x90\x00" * 4000)
+            _files_to_remove.append(audio)
+            img = os.path.join(_img_dir, f"case-J-{_ts}-1.png")
+            with open(img, "wb") as f:
+                f.write(b"\x89PNG\r\n\x1a\n" + (b"\x00" * 8000))
+            _files_to_remove.append(img)
+            from app.models import UnifiedVideo as _UV, UnifiedVideoStatus as _UVS
+            from app.database import Base as _B
+            _B.metadata.create_all(bind=self.engine, tables=[_UV.__table__])
+            _script_title = ""  # <- TÍTULO VAZIO (era a causa do erro!)
+            _topic = "Você já se sentiu perdido em meio a tantas incertezas? Aquele aperto no peito, a sensação de que..."
+            uv_obj = _UV(
+                idempotency_key=idem,
+                task_id=task_id,
+                source_module="youtube_story",
+                source_id="case-j",
+                content_type="devotional",
+                topic=_topic,
+                script_text="Texto completo do devocional sobre Jesus te encontrando como ovelha perdida.",
+                duration_minutes=2,
+                aspect_ratio="16:9",
+                image_count=1,
+                visibility="unlisted",
+                review_required=True,
+                auto_publish=False,
+                status=_UVS.VALIDATING,
+                current_step="validating",
+                progress=96,
+                script_json=json.dumps({
+                    "title": _script_title,
+                    "description": "",
+                    "tags": [],
+                    "scenes": [
+                        {"n": 1, "narration": "Texto da cena 1", "visual": "Imagem 1"}
+                    ],
+                }, ensure_ascii=False),
+                storyboard_json=json.dumps({
+                    "scenes": [{"n": 1, "visual": "Imagem 1", "image_path": img}]
+                }, ensure_ascii=False),
+                audio_path=audio,
+                audio_size_bytes=int(os.path.getsize(audio) or 0),
+                audio_duration_seconds=90.0,
+                images_json=json.dumps([img], ensure_ascii=False),
+                video_path=mp4,
+                video_size_bytes=int(os.path.getsize(mp4) or 0),
+                video_duration_seconds=90.0,
+                result_json=json.dumps({
+                    "payload": {
+                        "topic": _topic,
+                        "title": "",
+                        "minutes": 2,
+                    },
+                    "title_hint": "",
+                }, ensure_ascii=False),
+            )
+            s.add(uv_obj); s.commit(); s.refresh(uv_obj)
+            # 2) cria também a task lógica (VideoTask)
+            from app.services.task_manager import create_task
+            import app.services.task_manager as _tmJ
+            _tmJ._task_schema_ready = False
+            try:
+                _tmJ._ensure_task_support_tables()
+            except Exception:
+                pass
+            create_task(
+                task_id=task_id,
+                initial_status="processing",
+                progress=96,
+                message="Validando artefatos (UnifiedVideoPipeline)...",
+                result={
+                    "payload": {
+                        "topic": _topic,
+                        "duration": 2,
+                    },
+                    "script": {"title": "", "scenes": [{"n":1}]},
+                    "file_path": mp4,
+                    "video_url": "/static/videos/" + os.path.basename(mp4),
+                    "kind": "youtube_story_video",
+                },
+            )
+            # 3) patch ffprobe para ambiente Windows (igual smoke E2E)
+            import sys as _sysJ
+            import importlib as _ilj
+            try:
+                _mod = _sysJ.modules.get("app.services.unified_video_pipeline")
+                if _mod is None:
+                    _mod = _ilj.import_module("app.services.unified_video_pipeline")
+                _orig_probe = getattr(_mod, "_ffprobe_streams", None)
+                def _patchedJ(p):
+                    try:
+                        if os.path.exists(str(p)) and int(os.path.getsize(str(p)) or 0) >= 2 * 1024 * 1024:
+                            return {"has_video": True, "has_audio": True, "video_duration": 90.0, "audio_duration": 89.7}
+                    except Exception:
+                        pass
+                    if callable(_orig_probe):
+                        try: return _orig_probe(p)
+                        except Exception: return {}
+                    return {}
+                _mod._ffprobe_streams = staticmethod(_patchedJ)
+            except Exception:
+                pass
+            # 4) chama a validação real: validate_before_awaiting_review
+            from app.services.unified_video_pipeline import UnifiedVideoPipelineService
+            pipe = UnifiedVideoPipelineService()
+            validation_result = pipe.validate_before_awaiting_review(s, idem, probe_local_paths=True, probe_http=False)
+            # O bug da UI era script_valid=false SÓ por script_obj.title="" (vazios).
+            # Depois do nosso fixo (fallback topic/script_text/payload.topic/scenes),
+            # script_valid tem que SER TRUE, mesmo com title vazio.
+            self.assertTrue(
+                bool((validation_result.checks or {}).get("script_valid")),
+                f"script_valid DEVE ser true (fallback topic/scenes). checks={validation_result.checks} "
+                f"first_failed={validation_result.first_failed} details={validation_result.details}"
+            )
+            # E details.script.title NÃO pode mais ser string vazia (deve ser o fallback do topic)
+            _scrip_detail_title = str((((validation_result.details or {}).get("script") or {}).get("title") or "")).strip()
+            self.assertTrue(
+                len(_scrip_detail_title) >= 10,
+                f"details.script.title não pode ser vazio. Recebido: {_scrip_detail_title!r}"
+            )
+        finally:
+            s.close()
+            # limpeza: apaga arquivos do disco em app/static/* que criamos
+            for _p in _files_to_remove:
+                try:
+                    if _p and os.path.exists(_p):
+                        os.remove(_p)
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
