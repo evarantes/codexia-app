@@ -2041,7 +2041,7 @@
                                 <i v-if="ytStoryAssistLoading" class="fas fa-spinner fa-spin"></i>
                                 <span v-else><i class="fas fa-stethoscope"></i> Diagnosticar</span>
                             </button>
-                            <button @click="retryStoryTask" :disabled="ytStoryRetryLoading || !ytStoryTaskId || !ytStoryTask || String(ytStoryTask.status || '').toLowerCase() !== 'failed'" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
+                            <button @click="retryLatestRecoverableStoryTask" :disabled="ytStoryRetryLoading || !ytStoryTask || String(ytStoryTask.status || '').toLowerCase() !== 'failed'" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
                                 <i :class="ytStoryRetryLoading ? 'fas fa-spinner fa-spin' : 'fas fa-rotate-right'"></i>
                                 <span>Reiniciar tarefa</span>
                             </button>
@@ -6378,6 +6378,26 @@
                     try { localStorage.setItem('ytStoryTaskId', taskId); } catch (e) {}
                     await this.retryStoryTask();
                 },
+                async retryLatestRecoverableStoryTask() {
+                    if (this.ytStoryRetryLoading) return;
+                    const status = String((this.ytStoryTask && this.ytStoryTask.status) || '').toLowerCase();
+                    const currentTaskId = String(this.ytStoryTaskId || '').trim();
+                    if (status === 'failed' && currentTaskId) {
+                        await this.retryStoryTask();
+                        return;
+                    }
+                    await this.fetchActiveVideoTasks();
+                    const recoverable = (this.ytActiveVideoTasks || []).find((it) => it && it.recoverable && it.task_id) || null;
+                    if (recoverable) {
+                        await this.retryStoryTaskFromQueue(recoverable);
+                        return;
+                    }
+                    this.ytStoryTask = {
+                        status: 'failed',
+                        progress: Number((this.ytStoryTask && this.ytStoryTask.progress) || 0),
+                        message: 'Não foi possível localizar a tarefa recuperável. Toque em Atualizar fila e tente novamente.'
+                    };
+                },
                 async cancelQueuedVideoTask(item) {
                     const it = item || {};
                     const taskId = String(it.task_id || '').trim();
@@ -8563,7 +8583,13 @@
                         await this.pollStoryTask(taskId);
                     } catch (e) {
                         this.ytStoryVideoLoading = false;
-                        alert("Erro ao reiniciar: " + (e.message || e));
+                        const retryError = "Erro ao reiniciar: " + (e.message || e);
+                        this.ytStoryTask = {
+                            status: 'failed',
+                            progress: Number((this.ytStoryTask && this.ytStoryTask.progress) || 0),
+                            message: retryError
+                        };
+                        alert(retryError);
                     } finally {
                         this.ytStoryRetryLoading = false;
                     }
