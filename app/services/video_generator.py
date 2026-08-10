@@ -2172,6 +2172,7 @@ class VideoGenerator:
         first_scene_text = str(first_scene.get("_tts_text") or first_scene.get("text") or "").strip()
         opening_prompt = self._compose_opening_cover_prompt(title, scenes, continuity_anchor, plan=plan)
         opening_generation_error = None
+        opening_generation_exception = None
 
         if opening_prompt:
             try:
@@ -2203,6 +2204,7 @@ class VideoGenerator:
                     }
             except Exception as exc:
                 opening_generation_error = str(exc)
+                opening_generation_exception = exc
 
         selected_path = str(selected_primary_path or "").strip()
         if selected_path and os.path.exists(selected_path):
@@ -2225,6 +2227,11 @@ class VideoGenerator:
                 "generation_error": opening_generation_error,
                 "fallback_reason": "thematic_generation_failed_using_video_background_pool" if opening_generation_error else None,
             }
+
+        if opening_generation_exception is not None:
+            # Sem imagem já existente para reaproveitar, não faça uma segunda
+            # chamada paga para a primeira cena após a capa ter falhado.
+            raise opening_generation_exception
 
         return {
             "path": None,
@@ -3837,85 +3844,29 @@ $synth.Dispose()
         if not self.ai_service:
             raise Exception("AI Service não inicializado para geração de imagem.")
 
+        # Uma solicitação paga por cena. O retry é sempre explícito e reutiliza
+        # a mesma tarefa; não deixamos chamadas em threads continuarem depois de
+        # timeout, pois isso poderia gerar uma imagem cobrada e disparar outra.
+        _ = max_rounds  # compatibilidade com chamadas antigas; retries automáticos foram removidos.
         try:
-            import concurrent.futures
-            try:
-                timeout_raw = (os.getenv("IMAGE_GEN_TIMEOUT_SECONDS") or "").strip()
-                timeout_s = int(timeout_raw) if timeout_raw else 240
-            except Exception:
-                timeout_s = 240
-            timeout_s = max(30, min(900, timeout_s))
-            try:
-                rounds = int(max_rounds or 1)
-            except Exception:
-                rounds = 1
-            rounds = max(1, min(4, rounds))
-
-            last_err = None
-            url = None
-            prompt_attempts = []
-            prompt_attempts.append(final_prompt)
-            if len(final_prompt) > 1600:
-                prompt_attempts.append(final_prompt[:1600])
-            if len(final_prompt) > 900:
-                prompt_attempts.append(final_prompt[:900])
-            if not prompt_attempts:
-                prompt_attempts = [final_prompt]
-
-            def _gen(p: str):
-                return self.ai_service.generate_image(
-                    p,
-                    aspect_ratio=aspect_ratio,
-                    providers=["openai_direct"],
-                    status_callback=notify,
-                )
-
-            attempt_no = 0
-            for p in prompt_attempts:
-                for _ in range(rounds):
-                    attempt_no += 1
-                    try:
-                        notify(f"Gerando imagem com OpenAI (tentativa {attempt_no})...")
-                    except Exception:
-                        pass
-                    try:
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                            fut = ex.submit(_gen, p)
-                            url = fut.result(timeout=timeout_s)
-                        if url:
-                            break
-                        last_err = "empty_result"
-                    except concurrent.futures.TimeoutError:
-                        last_err = "timeout"
-                        try:
-                            notify("OpenAI demorou demais para responder. Tentando novamente...")
-                        except Exception:
-                            pass
-                        continue
-                    except Exception as e:
-                        last_err = str(e)
-                        continue
-                if url:
-                    break
-
-            if url:
-                path = self._resolve_input_image_path(url)
-                if not path or not os.path.exists(path) or os.path.getsize(path) < 1000:
-                    raise Exception("A imagem retornada pela OpenAI está ausente, inválida ou corrompida.")
+            notify("Gerando imagem com OpenAI (uma chamada protegida contra duplicação)...")
+            url = self.ai_service.generate_image(
+                final_prompt,
+                aspect_ratio=aspect_ratio,
+                providers=["openai_direct"],
+                status_callback=notify,
+            )
+            path = self._resolve_input_image_path(url) if url else None
+            if path and os.path.exists(path) and os.path.getsize(path) >= 1000:
                 return path
-
-            if allow_non_ai_fallback or last_err in {"timeout", "empty_result"} or last_err:
-                try:
-                    notify("Falha ao gerar imagem com IA. Usando fallback local para não travar a produção...")
-                except Exception:
-                    pass
+            raise Exception("A OpenAI não retornou uma imagem utilizável.")
+        except Exception:
+            if allow_non_ai_fallback:
+                notify("A imagem por IA falhou. Usando fundo local autorizado para concluir sem nova cobrança...")
                 bg = self._generate_local_background(text_fallback=text_fallback, aspect_ratio=aspect_ratio)
                 if bg and os.path.exists(bg) and os.path.getsize(bg) > 1000:
                     return bg
-
-            raise Exception(f"Falha na geração da imagem por IA: {last_err or 'unknown_error'}")
-        except Exception as e:
-            raise Exception(f"Falha na geração da imagem por IA: {str(e)}") from e
+            raise
 
     def _set_clip_duration(self, clip, duration):
         """Compatível com MoviePy 1.x (set_duration) e 2.x (with_duration)."""
@@ -5524,18 +5475,15 @@ $synth.Dispose()
                             bg_image_path = cached
                             visual_source = "cached_group_image"
                         else:
-                            try:
-                                bg_image_path = self._ensure_image_for_scene(
-                                    group_prompt or image_prompt,
-                                    text_fallback=clean_text,
-                                    aspect_ratio=aspect_ratio,
-                                    status_callback=_scene_status,
-                                    max_rounds=image_max_rounds,
-                                    allow_non_ai_fallback=allow_non_ai_fallback
-                                )
-                                visual_source = "generated_group"
-                            except Exception:
-                                bg_image_path = None
+                            bg_image_path = self._ensure_image_for_scene(
+                                group_prompt or image_prompt,
+                                text_fallback=clean_text,
+                                aspect_ratio=aspect_ratio,
+                                status_callback=_scene_status,
+                                max_rounds=image_max_rounds,
+                                allow_non_ai_fallback=allow_non_ai_fallback
+                            )
+                            visual_source = "generated_group"
                             if bg_image_path:
                                 generated_group_paths[visual_group_id] = bg_image_path
                                 generated_group_sources[visual_group_id] = visual_source
@@ -5546,7 +5494,7 @@ $synth.Dispose()
                             _scene_status("Reutilizando imagem valida com variacao de movimento para manter o video completo...")
 
                 if not bg_image_path:
-                    raise Exception(f"Falha ao gerar imagem da cena {i+1} com OpenAI.")
+                    raise Exception(f"A imagem da cena {i+1} não foi gerada nem pôde ser reaproveitada.")
                 try:
                     if prompt_key and not (use_single_bg and video_bg_path):
                         image_cache[prompt_key] = bg_image_path
