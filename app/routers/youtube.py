@@ -60,6 +60,8 @@ from app.services.task_manager import (
     request_cancel_task,
     reset_task_for_retry,
     claim_video_task,
+    acquire_distributed_lock,
+    release_distributed_lock,
     acquire_task_execution_lease,
     heartbeat_task_execution_lease,
     get_task_execution_lease,
@@ -507,6 +509,33 @@ def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]
     return filtered
 
 
+def _load_latest_recoverable_story_video_task(db: Session) -> Optional[VideoTask]:
+    """Retorna somente a falha recente mais nova que ainda possui payload de retry."""
+    try:
+        raw_days = int((os.getenv("VIDEO_TASK_RECOVERY_DAYS") or "").strip() or "7")
+    except Exception:
+        raw_days = 7
+    cutoff = datetime.utcnow() - timedelta(days=max(1, min(30, raw_days)))
+    rows = (
+        db.query(VideoTask)
+        .filter(VideoTask.status == "failed")
+        .order_by(VideoTask.updated_at.desc().nullslast(), VideoTask.created_at.desc().nullslast())
+        .limit(100)
+        .all()
+    )
+    for row in rows:
+        ref_dt = _task_row_reference_dt(row)
+        if ref_dt and ref_dt < cutoff:
+            continue
+        result_obj = _video_task_result_obj(row)
+        if not _is_story_video_generation_task(result_obj):
+            continue
+        if not _video_task_result_payload(result_obj):
+            continue
+        return row
+    return None
+
+
 def _story_video_stale_minutes() -> int:
     try:
         raw = int((os.getenv("VIDEO_TASK_STALE_MINUTES") or "").strip() or "1440")
@@ -833,7 +862,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
     if not isinstance(payload, dict):
         return payload
     payload.setdefault("force_reuse_assets", True)
-    if "force_render_only" in payload:
+    if bool(payload.get("force_render_only")):
         return payload
     db = SessionLocal()
     try:
@@ -869,6 +898,21 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         db.close()
     return payload
 
+
+def _dispatch_task_result(task_id: str, payload: Dict[str, Any], executor: str, **extra: Any) -> Dict[str, Any]:
+    """Registra o executor sem apagar roteiro, imagens, áudio ou relatórios anteriores."""
+    current = get_task(task_id) or {}
+    current_result = current.get("result") if isinstance(current, dict) else None
+    merged = dict(current_result) if isinstance(current_result, dict) else {}
+    merged.update({
+        "payload": dict(payload or {}),
+        "executor": str(executor or "thread"),
+        "kind": "youtube_story_video",
+    })
+    if extra:
+        merged.update(extra)
+    return merged
+
 def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     payload = _maybe_enable_render_only_flags(payload, task_id)
     use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
@@ -886,7 +930,7 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
         try:
             if use_rq:
                 rq_queue.enqueue(process_video_generation_payload, payload, task_id, job_timeout=_rq_video_timeout_seconds())
-                update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result={"payload": payload, "executor": "rq", "kind": "youtube_story_video"})
+                update_task(task_id, status="processing", progress=1, message="Enfileirado para processamento em segundo plano...", result=_dispatch_task_result(task_id, payload, "rq"))
                 def _watchdog_fallback(tid: str, pay: Dict[str, Any]):
                     try:
                         raw = (os.getenv("VIDEO_TASK_QUEUE_STALE_SECONDS") or "").strip()
@@ -958,7 +1002,7 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
             ctx = multiprocessing.get_context(method)
             p = ctx.Process(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
             p.start()
-            update_task(task_id, status="processing", progress=1, message="Iniciando geração em processo separado...", result={"payload": payload, "executor": "process", "pid": p.pid, "kind": "youtube_story_video"})
+            update_task(task_id, status="processing", progress=1, message="Iniciando geração em processo separado...", result=_dispatch_task_result(task_id, payload, "process", pid=p.pid))
             def _watch(proc: multiprocessing.Process, tid: str):
                 try:
                     proc.join()
@@ -977,7 +1021,7 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     msg = force_local_reason or "Iniciando geração local..."
     if executor == "process" and conn is None:
         msg = "Redis indisponível para acompanhar progresso em processo separado. Iniciando geração local..."
-    update_task(task_id, status="processing", progress=1, message=msg, result={"payload": payload, "executor": "thread", "kind": "youtube_story_video"})
+    update_task(task_id, status="processing", progress=1, message=msg, result=_dispatch_task_result(task_id, payload, "thread"))
     t = threading.Thread(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
     t.start()
 
@@ -5134,6 +5178,19 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
                 items.append(blocker)
         for row in rows:
             items.append(_story_video_task_item_from_row(row, len(items) + 1))
+        if not rows:
+            recoverable = _load_latest_recoverable_story_video_task(db)
+            if recoverable is not None:
+                recovery_item = _story_video_task_item_from_row(recoverable, len(items) + 1)
+                recovery_item.update({
+                    "is_current": False,
+                    "source_label": "Recuperação da mesma tarefa",
+                    "queue_label": "Falhou — pronta para reiniciar",
+                    "can_open": True,
+                    "can_cancel": False,
+                    "recoverable": True,
+                })
+                items.append(recovery_item)
         items = items[: max(1, min(200, int(limit or 20)))]
         for idx, item in enumerate(items, start=1):
             item["position"] = idx
@@ -5308,47 +5365,106 @@ def mark_youtube_notification_read(notification_id: int, _admin=Depends(get_curr
         db.close()
 
 @router.post("/task/{task_id}/retry")
-def retry_task(task_id: str):
-    task = get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
-    status = str((task.get("status") or "")).lower()
-    progress = task.get("progress")
+def retry_task(task_id: str, _admin=Depends(get_current_admin_user)):
+    lock_info = None
     try:
-        progress_n = int(progress) if progress is not None else 0
-    except Exception:
-        progress_n = 0
-    updated_at_s = (task.get("updated_at") or task.get("created_at") or "").strip()
-    task_dt = _task_payload_timestamp(updated_at_s)
-    stale_minutes = _story_video_stale_minutes()
-    is_stale_processing = bool(
-        status == "processing"
-        and task_dt
-        and (datetime.utcnow() - task_dt > timedelta(minutes=stale_minutes))
-    )
-    if status == "completed":
-        raise HTTPException(status_code=400, detail="Tarefa já concluída.")
-    if is_stale_processing:
-        stale_message = (
-            f"Falha automática para retry seguro: tarefa travada sem atualização há mais de "
-            f"{stale_minutes} min."
+        lock_info = acquire_distributed_lock(
+            f"story-retry:{task_id}",
+            timeout_seconds=5,
+            ttl_seconds=30,
         )
-        update_task(task_id, status="failed", progress=progress_n, message=stale_message)
-        status = "failed"
-    if status == "processing" and progress_n >= 5:
-        raise HTTPException(status_code=409, detail="Tarefa já está em processamento.")
-    result = task.get("result") if isinstance(task.get("result"), dict) else {}
-    payload = (result or {}).get("payload") if isinstance(result, dict) else None
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Não há payload salvo para reiniciar esta tarefa.")
-    try:
-        req = VideoRequest(**payload)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Payload inválido para reiniciar a tarefa.")
-    reset_task_for_retry(task_id, progress=1, message="Reiniciando geração local...")
-    t = threading.Thread(target=process_video_generation, args=(req, task_id), daemon=True)
-    t.start()
-    return {"message": "Reiniciado", "task_id": task_id}
+        task = get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+        status = str((task.get("status") or "")).lower()
+        progress = task.get("progress")
+        try:
+            progress_n = int(progress) if progress is not None else 0
+        except Exception:
+            progress_n = 0
+        updated_at_s = (task.get("updated_at") or task.get("created_at") or "").strip()
+        task_dt = _task_payload_timestamp(updated_at_s)
+        stale_minutes = _story_video_stale_minutes()
+        is_stale_processing = bool(
+            status == "processing"
+            and task_dt
+            and (datetime.utcnow() - task_dt > timedelta(minutes=stale_minutes))
+        )
+        if status == "completed":
+            raise HTTPException(status_code=400, detail="Tarefa já concluída.")
+        if is_stale_processing:
+            stale_message = (
+                f"Falha automática para retry seguro: tarefa travada sem atualização há mais de "
+                f"{stale_minutes} min."
+            )
+            update_task(task_id, status="failed", progress=progress_n, message=stale_message)
+            status = "failed"
+        elif status in {"pending", "processing"}:
+            return {
+                "message": "A mesma tarefa já está na fila ou em processamento.",
+                "task_id": task_id,
+                "already_restarted": True,
+                "reused_task": True,
+            }
+
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        saved_payload = (result or {}).get("payload") if isinstance(result, dict) else None
+        if not isinstance(saved_payload, dict):
+            raise HTTPException(status_code=400, detail="Não há payload salvo para reiniciar esta tarefa.")
+        payload = dict(saved_payload)
+        payload["force_reuse_assets"] = True
+        payload.pop("force_render_only", None)
+        payload = _maybe_enable_render_only_flags(payload, task_id)
+        try:
+            VideoRequest(**payload)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Payload inválido para reiniciar a tarefa.")
+
+        reset = reset_task_for_retry(
+            task_id,
+            progress=1,
+            message="Recuperando a mesma tarefa pelo pipeline unificado...",
+        )
+        if not reset:
+            raise HTTPException(status_code=500, detail="Não foi possível preparar a tarefa para recuperação.")
+
+        pipeline_db = SessionLocal()
+        try:
+            uv = unified_video_pipeline().transition_status(
+                pipeline_db,
+                task_id,
+                status="processing",
+                step="recovery",
+                progress=1,
+                message="Recuperando a mesma tarefa e reutilizando os ativos disponíveis.",
+                merge_result={
+                    "recovery": {
+                        "same_task": True,
+                        "force_reuse_assets": True,
+                        "force_render_only": bool(payload.get("force_render_only")),
+                    }
+                },
+            )
+            if uv is not None:
+                uv.force_reuse_assets = True
+                uv.force_render_only = bool(payload.get("force_render_only"))
+                pipeline_db.commit()
+        finally:
+            pipeline_db.close()
+
+        _dispatch_video_generation_task(payload, task_id)
+        return {
+            "message": "Mesma tarefa reiniciada com reaproveitamento de ativos.",
+            "task_id": task_id,
+            "reused_task": True,
+            "reuse_assets": True,
+            "render_only": bool(payload.get("force_render_only")),
+            "pipeline": "unified_video_pipeline",
+        }
+    except TimeoutError:
+        raise HTTPException(status_code=409, detail="A recuperação desta tarefa já está sendo iniciada.")
+    finally:
+        release_distributed_lock(lock_info)
 
 @router.get("/diagnostics/video_generation")
 def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _admin=Depends(get_current_admin_user)):
