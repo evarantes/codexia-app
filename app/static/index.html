@@ -6356,20 +6356,20 @@
                         return fallback;
                     }
                 },
-                async fetchActiveVideoTasks({ silent } = {}) {
+                async fetchActiveVideoTasks({ silent, autoOpen = true } = {}) {
                     try {
                         const now = Date.now();
                         const last = Number(this.ytActiveVideoTasksLastLoadAt || 0);
                         if (silent && (now - last) < 15000) return;
                         this.ytActiveVideoTasksLastLoadAt = now;
                         if (!silent) this.ytActiveVideoTasksLoading = true;
-                        const res = await this.authFetch('/youtube/tasks/queue?limit=20');
+                        const res = await this.authFetch(`/youtube/tasks/queue?limit=20&_=${Date.now()}`);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) return;
                         const items = (data && data.items && Array.isArray(data.items)) ? data.items : [];
                         this.ytActiveVideoTasks = items;
                         this.ytQueueFactoryBusy = Boolean(data && data.factory_busy);
-                        if (!this.ytStoryTaskId && items.length) {
+                        if (autoOpen !== false && !this.ytStoryTaskId && items.length) {
                             const pick = items.find(t => t && t.can_open && t.task_id && Boolean(t.is_current))
                                 || items.find(t => t && t.can_open && t.task_id)
                                 || null;
@@ -7340,6 +7340,8 @@
                     }
                 },
                 async changeSeriesStatus(seriesId, status) {
+                    const normalizedStatus = String(status || '').trim().toLowerCase();
+                    if (normalizedStatus === 'cancelled' && !confirm('Arquivar esta série? As tarefas em andamento serão canceladas e os episódios ainda não publicados não serão gerados.')) return;
                     try {
                         const res = await this.authFetch(`/youtube/series/${seriesId}/status`, {
                             method: 'PUT',
@@ -7348,9 +7350,13 @@
                         });
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) throw new Error(data.detail || 'Falha ao atualizar status.');
-                        this.selectedSeries = data;
+                        this.selectedSeries = normalizedStatus === 'cancelled' ? null : data;
                         await this.fetchSeriesList({ keepSelected: false });
                         await this.fetchSeriesReviewQueue();
+                        if (normalizedStatus === 'cancelled') {
+                            await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
+                            alert('Série arquivada e tarefas pendentes encerradas.');
+                        }
                     } catch (e) {
                         alert('Erro ao atualizar série: ' + (e.message || e));
                     }
@@ -8630,19 +8636,20 @@
                 },
                 async cancelStoryTask() {
                     if (!this.ytStoryTaskId) return;
+                    const taskId = String(this.ytStoryTaskId);
                     try {
-                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(this.ytStoryTaskId)}/cancel`, { method: 'POST' });
+                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
                             throw new Error(data.detail || data.message || "Falha ao cancelar.");
                         }
                         this.ytStoryAssistReport = null;
                         this.ytStoryVideoLoading = false;
-                        this.ytStoryTask = { status: 'cancelled', progress: (this.ytStoryTask && this.ytStoryTask.progress) ? this.ytStoryTask.progress : 0, message: 'Cancelado.' };
-                        this.releaseVideoGenerationLockByTask(this.ytStoryTaskId);
+                        this.ytStoryTask = null;
+                        this.releaseVideoGenerationLockByTask(taskId);
                         this.ytStoryTaskId = null;
                         try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
-                        await this.fetchActiveVideoTasks({ silent: true });
+                        await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
                     } catch (e) {
                         alert("Erro ao cancelar: " + (e.message || e));
                     }
@@ -8667,7 +8674,7 @@
                             this.ytStoryVideoLoading = false;
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                         }
-                        await this.fetchActiveVideoTasks({ silent: false });
+                        await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
                         alert('Tarefa antiga descartada. Agora você pode iniciar uma geração nova.');
                     } catch (e) {
                         alert('Erro ao descartar tarefa: ' + (e.message || e));
@@ -8676,6 +8683,7 @@
                     }
                 },
                 async cancelAllVideoProduction() {
+                    if (!confirm('Encerrar todas as produções do servidor, descartar falhas antigas e pausar séries ativas?')) return;
                     try {
                         const res = await this.authFetch(`/youtube/tasks/cancel_all`, { method: 'POST' });
                         const data = await res.json().catch(() => ({}));
@@ -8684,12 +8692,19 @@
                         }
                         this.ytStoryAssistReport = null;
                         this.ytStoryVideoLoading = false;
-                        this.ytStoryTask = { status: 'cancelled', progress: 0, message: 'Solicitação enviada para encerrar produção no servidor.' };
+                        this.ytStoryTask = null;
                         this.releaseVideoGenerationLockByTask(this.ytStoryTaskId);
                         this.ytStoryTaskId = null;
                         this.ytActiveVideoTasks = [];
                         try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
-                        alert("Solicitação enviada. Aguarde alguns segundos e tente gerar novamente.");
+                        await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
+                        await this.fetchSeriesList({ keepSelected: false });
+                        if (this.selectedSeries && ['active', 'pending_issue'].includes(String(this.selectedSeries.status || '').toLowerCase())) {
+                            this.selectedSeries = null;
+                        }
+                        const cancelledTasks = Number(data.cancelled_tasks || 0);
+                        const pausedSeries = Number(data.paused_series || 0);
+                        alert(`Produção encerrada. ${cancelledTasks} tarefa(s) removida(s) da fila e ${pausedSeries} série(s) pausada(s).`);
                     } catch (e) {
                         alert("Erro ao encerrar no servidor: " + (e.message || e));
                     }
@@ -8729,6 +8744,7 @@
                 },
                 async pollStoryTask(taskId) {
                     try {
+                        if (String(this.ytStoryTaskId || '') !== String(taskId || '')) return;
                         try {
                             if (document && document.hidden) {
                                 setTimeout(() => this.pollStoryTask(taskId), 7000);
@@ -8745,6 +8761,7 @@
                         } catch (e) {}
                         const res = await this.authFetch(`/youtube/task/${taskId}`);
                         const data = await res.json().catch(() => ({}));
+                        if (String(this.ytStoryTaskId || '') !== String(taskId || '')) return;
                         if (data && data.idempotency_key) {
                             this.trackVideoGenerationTaskKey(taskId, data.idempotency_key);
                         }

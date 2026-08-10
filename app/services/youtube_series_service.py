@@ -18,6 +18,7 @@ from app.services.task_manager import (
     acquire_distributed_lock,
     get_task,
     release_distributed_lock,
+    request_cancel_task,
     update_task,
 )
 from app.services.youtube_auto_identity import (
@@ -762,13 +763,85 @@ class YouTubeSeriesService:
         series = db.query(SeriesPlan).filter(SeriesPlan.id == int(series_id), SeriesPlan.user_id == int(user.id)).first()
         if not series:
             raise ValueError("Série não encontrada.")
-        series.status = _series_status(status)
-        if _series_status(status) == "active":
-            for episode in db.query(SeriesEpisode).filter(SeriesEpisode.series_id == int(series.id)).all():
-                if _episode_status(episode.status) == "planned":
-                    episode.status = "awaiting_production"
+        target_status = _series_status(status)
+        episodes = db.query(SeriesEpisode).filter(SeriesEpisode.series_id == int(series.id)).all()
+        cancelled_task_ids: List[str] = []
+
+        if target_status == "cancelled":
+            # Arquivar é terminal: interrompe tarefas ainda vinculadas e impede
+            # que o scheduler volte a produzir ou publicar qualquer episódio.
+            for episode in episodes:
+                episode_status = _episode_status(episode.status)
+                if episode_status == "published":
+                    continue
+                task_id = str(episode.task_id or "").strip()
+                if task_id:
+                    request_cancel_task(
+                        task_id,
+                        message="Cancelado pelo usuário ao arquivar a série.",
+                    )
+                    cancelled_task_ids.append(task_id)
+                episode.status = "cancelled"
+                if episode.scheduled_video_id:
+                    scheduled = db.query(ScheduledVideo).filter(
+                        ScheduledVideo.id == int(episode.scheduled_video_id)
+                    ).first()
+                    if scheduled and str(scheduled.status or "").strip().lower() not in {"published", "completed"}:
+                        scheduled.status = "failed"
+                        scheduled.progress = 0
+                        scheduled.description = (
+                            ((scheduled.description or "") + "\n\n[CANCELADO]: Série arquivada pelo usuário.")
+                            .strip()[:5000]
+                        )
+            series.status = "cancelled"
+            series.archived_at = datetime.utcnow()
+        else:
+            series.status = target_status
+            if target_status == "active":
+                series.archived_at = None
+                for episode in episodes:
+                    if _episode_status(episode.status) == "planned":
+                        episode.status = "awaiting_production"
         db.commit()
-        return self.get_series_detail(db, user=user, series_id=series.id)
+        detail = self.get_series_detail(db, user=user, series_id=series.id)
+        if target_status == "cancelled":
+            detail["archived"] = True
+            detail["cancelled_task_ids"] = sorted(set(cancelled_task_ids))
+        return detail
+
+    def pause_for_server_shutdown(self, db: Session, *, cancelled_task_ids: List[str]) -> Dict[str, int]:
+        """Pausa séries ativas e encerra episódios ligados às tarefas paradas."""
+        task_ids = {
+            str(task_id).strip()
+            for task_id in (cancelled_task_ids or [])
+            if str(task_id).strip()
+        }
+        series_rows = (
+            db.query(SeriesPlan)
+            .filter(
+                SeriesPlan.archived_at.is_(None),
+                SeriesPlan.status.in_(["active", "pending_issue"]),
+            )
+            .all()
+        )
+        paused_series = 0
+        cancelled_episodes = 0
+        for series in series_rows:
+            series.status = "paused"
+            paused_series += 1
+            episodes = db.query(SeriesEpisode).filter(SeriesEpisode.series_id == int(series.id)).all()
+            for episode in episodes:
+                episode_status = _episode_status(episode.status)
+                linked_task_id = str(episode.task_id or "").strip()
+                if episode_status == "in_production" or (linked_task_id and linked_task_id in task_ids):
+                    if episode_status not in {"published", "cancelled"}:
+                        episode.status = "cancelled"
+                        cancelled_episodes += 1
+        db.commit()
+        return {
+            "paused_series": paused_series,
+            "cancelled_series_episodes": cancelled_episodes,
+        }
 
     def update_episode_plan(
         self,

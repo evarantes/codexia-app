@@ -76,7 +76,7 @@ from app.modules.bible_video_factory.editorial_intelligence import (
     EditorialIntelligenceService,
     normalize_editorial_intelligence_settings,
 )
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User, SeriesEpisode, SeriesPlan
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
 from app.routers.auth import get_current_admin_user, SECRET_KEY as _AUTH_SECRET_KEY, ALGORITHM as _AUTH_ALGORITHM
@@ -5357,19 +5357,45 @@ def discard_failed_task(task_id: str, _admin=Depends(get_current_admin_user)):
     if not discarded:
         raise HTTPException(status_code=500, detail="Não foi possível descartar a tarefa falhada.")
 
-    # Mantém a máquina de estados canônica sincronizada com a VideoTask.
+    # Mantém a máquina de estados canônica e eventual episódio de série
+    # sincronizados. Falha auxiliar não pode transformar um descarte já
+    # concluído em HTTP 500 e deixar a interface presa.
+    sync_warnings: List[str] = []
+    linked_episodes = 0
     pipeline_db = SessionLocal()
     try:
-        if _unified_enabled() and unified_video_pipeline is not None:
-            unified_video_pipeline().transition_status(
-                pipeline_db,
-                task_id,
-                status="cancelled",
-                step="discarded",
-                progress=int(task.get("progress") or 0),
-                message="Tarefa antiga descartada; uma nova geração está liberada.",
-                merge_result={"discarded": True, "discarded_task_id": task_id},
-            )
+        try:
+            if _unified_enabled() and unified_video_pipeline is not None:
+                unified_video_pipeline().transition_status(
+                    pipeline_db,
+                    task_id,
+                    status="cancelled",
+                    step="discarded",
+                    progress=int(task.get("progress") or 0),
+                    message="Tarefa antiga descartada; uma nova geração está liberada.",
+                    merge_result={"discarded": True, "discarded_task_id": task_id},
+                )
+        except Exception as exc:
+            pipeline_db.rollback()
+            sync_warnings.append(f"pipeline:{type(exc).__name__}")
+
+        try:
+            episodes = pipeline_db.query(SeriesEpisode).filter(SeriesEpisode.task_id == str(task_id)).all()
+            series_ids = set()
+            for episode in episodes:
+                if str(episode.status or "").strip().lower() != "published":
+                    episode.status = "cancelled"
+                    linked_episodes += 1
+                series_ids.add(int(episode.series_id))
+            if series_ids:
+                series_rows = pipeline_db.query(SeriesPlan).filter(SeriesPlan.id.in_(series_ids)).all()
+                for series in series_rows:
+                    if str(series.status or "").strip().lower() in {"active", "pending_issue"}:
+                        series.status = "paused"
+                pipeline_db.commit()
+        except Exception as exc:
+            pipeline_db.rollback()
+            sync_warnings.append(f"series:{type(exc).__name__}")
     finally:
         pipeline_db.close()
 
@@ -5379,6 +5405,8 @@ def discard_failed_task(task_id: str, _admin=Depends(get_current_admin_user)):
         "task_id": task_id,
         "status": "cancelled",
         "discarded": True,
+        "linked_episodes_cancelled": linked_episodes,
+        "sync_warnings": sync_warnings,
     }
 
 @router.post("/tasks/cancel_all")
@@ -5399,12 +5427,17 @@ def cancel_all_tasks(_admin=Depends(get_current_admin_user)):
     except Exception:
         pass
 
+    task_ids_to_cancel: List[str] = []
     db = SessionLocal()
     try:
-        rows = db.query(VideoTask).filter(VideoTask.status.in_(["pending", "processing"])).all()
+        rows = db.query(VideoTask).filter(VideoTask.status.in_(["pending", "processing", "failed"])).all()
         for r in rows:
-            r.status = "cancelled"
-            r.message = "Cancelado pelo usuário (encerrar produção do servidor)."
+            status = str(r.status or "").strip().lower()
+            result_obj = _video_task_result_obj(r)
+            if status in {"pending", "processing"} or (
+                status == "failed" and _is_story_video_generation_task(result_obj)
+            ):
+                task_ids_to_cancel.append(str(r.id))
         sv = db.query(ScheduledVideo).filter(ScheduledVideo.status.in_(["queued", "processing"])).all()
         for v in sv:
             v.status = "failed"
@@ -5416,7 +5449,36 @@ def cancel_all_tasks(_admin=Depends(get_current_admin_user)):
     finally:
         db.close()
 
-    return {"status": "ok", "message": "Solicitação enviada. Aguarde ~1 minuto para o servidor encerrar as tarefas em andamento e liberar a produção."}
+    cancelled_task_ids: List[str] = []
+    for task_id in sorted(set(task_ids_to_cancel)):
+        cancelled = request_cancel_task(
+            task_id,
+            message="Cancelado pelo usuário (encerrar produção do servidor).",
+        )
+        if cancelled:
+            cancelled_task_ids.append(task_id)
+
+    series_stats = {"paused_series": 0, "cancelled_series_episodes": 0}
+    series_db = SessionLocal()
+    try:
+        from app.services.youtube_series_service import youtube_series_service
+
+        series_stats = youtube_series_service.pause_for_server_shutdown(
+            series_db,
+            cancelled_task_ids=cancelled_task_ids,
+        )
+    except Exception:
+        series_db.rollback()
+    finally:
+        series_db.close()
+
+    _kick_story_video_task_queue_async()
+    return {
+        "status": "ok",
+        "message": "Produção encerrada, falhas antigas descartadas e séries ativas pausadas.",
+        "cancelled_tasks": len(cancelled_task_ids),
+        **series_stats,
+    }
 
 @router.get("/notifications")
 def list_youtube_notifications(limit: int = 20, status: Optional[str] = None, _admin=Depends(get_current_admin_user)):
