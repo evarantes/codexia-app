@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.routers.youtube import (
     _dispatch_task_result,
@@ -70,6 +70,40 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertIn('"pipeline": "unified_video_pipeline"', source)
         self.assertNotIn("threading.Thread(target=process_video_generation", source)
 
+    def test_retry_endpoint_dispatches_same_failed_task(self):
+        task = {
+            "status": "failed",
+            "progress": 78,
+            "updated_at": datetime.utcnow().isoformat(),
+            "result": {
+                "payload": {
+                    "mode": "story",
+                    "kind": "devotional",
+                    "duration": 3,
+                    "story_content": "Texto para recuperar",
+                }
+            },
+        }
+        fake_db = Mock()
+        fake_pipeline = Mock()
+        fake_pipeline.transition_status.return_value = None
+        with (
+            patch("app.routers.youtube.acquire_distributed_lock", return_value={"backend": "test"}),
+            patch("app.routers.youtube.release_distributed_lock"),
+            patch("app.routers.youtube.get_task", return_value=task),
+            patch("app.routers.youtube._maybe_enable_render_only_flags", side_effect=lambda payload, _task_id: payload),
+            patch("app.routers.youtube.reset_task_for_retry", return_value={"status": "processing"}),
+            patch("app.routers.youtube.SessionLocal", return_value=fake_db),
+            patch("app.routers.youtube.unified_video_pipeline", return_value=fake_pipeline),
+            patch("app.routers.youtube._dispatch_video_generation_task") as dispatch,
+        ):
+            result = retry_task("task-1", _admin=SimpleNamespace(id=1))
+        self.assertEqual(result["task_id"], "task-1")
+        self.assertTrue(result["reused_task"])
+        dispatched_payload = dispatch.call_args.args[0]
+        self.assertTrue(dispatched_payload["force_reuse_assets"])
+        dispatch.assert_called_once_with(dispatched_payload, "task-1")
+
     def test_frontend_keeps_failed_task_link_and_blocks_duplicate_generate(self):
         html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
         poll_story = html.split("async pollStoryTask(taskId)", 1)[1].split("async generateStoryShorts", 1)[0]
@@ -81,6 +115,9 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertIn("Esta solicitação pode ser recuperada", html)
         self.assertIn("Reiniciar agora", html)
         self.assertIn("async retryStoryTaskFromQueue(item)", html)
+        self.assertIn("async retryLatestRecoverableStoryTask()", html)
+        self.assertNotIn("ytStoryRetryLoading || !ytStoryTaskId || !ytStoryTask", html)
+        self.assertIn("message: retryError", html)
 
 
 if __name__ == "__main__":
