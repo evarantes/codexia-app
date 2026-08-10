@@ -371,6 +371,36 @@ class StoryDevotionalStabilityTests(unittest.TestCase):
         self.assertTrue(v["checks"]["video_stream"], "item 5: stream de vídeo obrigatório")
         self.assertTrue(v["checks"]["audio_stream"], "item 5: stream de áudio obrigatório")
 
+    def test_E2_final_validation_prefers_renderer_file_path_over_public_url(self):
+        """Regressão: /media e /static são URLs, não caminhos físicos do SO."""
+        from app.routers.youtube import _resolve_rendered_video_file_path
+
+        mp4_path = os.path.join(str(self.videos_dir), "case-E2-rendered.mp4")
+        _make_minimal_mp4(mp4_path, size_bytes=2 * 1024 * 1024)
+
+        for public_url in (
+            "/media/videos/case-E2-rendered.mp4",
+            "/static/videos/case-E2-rendered.mp4",
+        ):
+            resolved = _resolve_rendered_video_file_path({
+                "video_url": public_url,
+                "file_path": mp4_path,
+            })
+            self.assertEqual(os.path.abspath(resolved), os.path.abspath(mp4_path))
+            self.assertTrue(os.path.isfile(resolved))
+
+    def test_E3_final_validation_falls_back_to_render_report_file_path(self):
+        from app.routers.youtube import _resolve_rendered_video_file_path
+
+        mp4_path = os.path.join(str(self.videos_dir), "case-E3-render-report.mp4")
+        _make_minimal_mp4(mp4_path, size_bytes=2 * 1024 * 1024)
+        resolved = _resolve_rendered_video_file_path({
+            "video_url": "/media/videos/case-E3-render-report.mp4",
+            "render_report": {"file_path": mp4_path},
+        })
+        self.assertEqual(os.path.abspath(resolved), os.path.abspath(mp4_path))
+        self.assertTrue(os.path.isfile(resolved))
+
     # ===== CASO F) Duração MP4 acompanha áudio (tolerância <= 0.5s, proporcional com teto baixo) =====
     def test_F_duration_matches_audio_tolerance(self):
         def duration_delta_ok(video_dur: float, audio_dur: float, tolerance=0.5, max_proportional_tolerance=3.0) -> bool:
