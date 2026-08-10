@@ -12,6 +12,7 @@ import math
 from typing import Optional, Callable, List, Dict, Any
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
+from app.services.media_probe import duration_sync_tolerance_seconds
 from app.services.safe_text_layout import SafeTextLayout
 
 CAPTION_SAFE_AREA_X_RATIO = 0.06
@@ -3981,6 +3982,61 @@ $synth.Dispose()
             return clip.subclipped(start_t, end_t)
         raise AttributeError("Objeto de clip sem subclip/subclipped")
 
+    def _synchronize_video_clip_duration(self, clip, target_duration: float):
+        """Fit a MoviePy clip to the final audio timeline without black frames.
+
+        Trims excess video or freezes the last valid frame when the visual
+        timeline is short.  The final explicit duration assignment avoids
+        MoviePy/container rounding from failing the pre-render validation.
+        """
+
+        self._assert_clip_not_none(clip, "duration_sync_input")
+        target = float(target_duration or 0.0)
+        current = float(getattr(clip, "duration", 0.0) or 0.0)
+        if target <= 0 or current <= 0:
+            raise Exception(
+                f"Duracao invalida no ajuste final: video={current:.3f}s alvo={target:.3f}s."
+            )
+
+        original_audio = getattr(clip, "audio", None)
+        action = "already_aligned"
+        adjusted = clip
+        delta_before = current - target
+
+        if current > target + 0.001:
+            adjusted = self._subclip(clip, 0, target)
+            action = "trim_video"
+        elif current < target - 0.001:
+            extra = target - current
+            hold = self._freeze_last_frame_clip(clip, extra)
+            if hold is None:
+                raise Exception(
+                    f"Nao foi possivel prolongar o ultimo frame por {extra:.3f}s."
+                )
+            try:
+                from moviepy.editor import concatenate_videoclips
+            except ImportError:
+                from moviepy import concatenate_videoclips
+            adjusted = concatenate_videoclips([clip, hold], method="compose")
+            action = "freeze_last_frame"
+
+        if original_audio is not None:
+            adjusted = self._set_clip_audio(adjusted, original_audio)
+        adjusted = self._set_clip_duration(adjusted, target)
+        obtained = float(getattr(adjusted, "duration", 0.0) or 0.0)
+        if abs(obtained - target) > 0.02:
+            raise Exception(
+                f"Ajuste final nao convergiu: video={obtained:.3f}s alvo={target:.3f}s."
+            )
+        return adjusted, {
+            "action": action,
+            "duration_before_sec": round(current, 3),
+            "target_duration_sec": round(target, 3),
+            "duration_after_sec": round(obtained, 3),
+            "delta_before_sec": round(delta_before, 3),
+            "delta_after_sec": round(obtained - target, 3),
+        }
+
     def _apply_ken_burns(self, clip, size, zoom_factor=1.15):
         """
         Aplica efeito suave de zoom (Ken Burns) em um ImageClip.
@@ -5763,40 +5819,16 @@ $synth.Dispose()
                 except Exception:
                     final_dur = final_dur
 
-            try:
-                if getattr(final_clip, "audio", None) is not None:
-                    ad = float(getattr(final_clip.audio, "duration", 0) or 0)
-                    if ad > 0:
-                        expected_video_duration = float(target_video_duration or ad)
-                        if silent_cinematic_tail_sec > 0:
-                            if final_dur > expected_video_duration + 0.2:
-                                final_clip = self._subclip(final_clip, 0, expected_video_duration)
-                            elif final_dur < expected_video_duration - 0.2:
-                                extra = expected_video_duration - final_dur
-                                hold = self._freeze_last_frame_clip(final_clip, extra)
-                                if hold is not None:
-                                    combined = concatenate_videoclips([final_clip, hold], method="compose")
-                                    final_clip = self._set_clip_audio(combined, final_clip.audio)
-                                else:
-                                    final_clip = self._set_clip_duration(final_clip, expected_video_duration)
-                        elif final_dur > ad + 0.2:
-                            final_clip = self._subclip(final_clip, 0, ad)
-                        elif final_dur < ad - 0.2:
-                            extra = ad - final_dur
-                            hold = self._freeze_last_frame_clip(final_clip, extra)
-                            if hold is not None:
-                                combined = concatenate_videoclips([final_clip, hold], method="compose")
-                                final_clip = self._set_clip_audio(combined, final_clip.audio)
-                            else:
-                                final_clip = self._set_clip_duration(final_clip, ad)
-                        else:
-                            final_clip = self._set_clip_duration(final_clip, ad)
-                        try:
-                            final_dur = float(getattr(final_clip, "duration", 0) or 0)
-                        except Exception:
-                            final_dur = final_dur
-            except Exception:
-                pass
+            if getattr(final_clip, "audio", None) is not None:
+                ad = float(getattr(final_clip.audio, "duration", 0) or 0)
+                if ad > 0:
+                    expected_video_duration = float(target_video_duration or ad)
+                    final_clip, duration_sync_repair = self._synchronize_video_clip_duration(
+                        final_clip,
+                        expected_video_duration,
+                    )
+                    render_report["duration_sync_repair"] = duration_sync_repair
+                    final_dur = float(getattr(final_clip, "duration", 0) or 0)
 
             render_report["final_video_duration_sec"] = round(float(final_dur or 0.0), 2)
 
@@ -5814,6 +5846,7 @@ $synth.Dispose()
                 video_sync_target = float(target_video_duration or actual_total_audio_dur)
                 audio_video_diff = abs(final_dur - video_sync_target)
                 audio_caption_diff = abs(caption_duration - actual_total_audio_dur)
+                video_sync_tolerance = duration_sync_tolerance_seconds(video_sync_target)
                 sync_validation = {
                     "planned_text_duration_sec": round(float(estimated_total_duration or 0.0), 2),
                     "audio_duration_sec": round(float(actual_total_audio_dur or 0.0), 2),
@@ -5823,7 +5856,8 @@ $synth.Dispose()
                     "audio_caption_diff_sec": round(audio_caption_diff, 2),
                     "audio_video_diff_sec": round(audio_video_diff, 2),
                     "captions_synced_with_audio": bool(audio_caption_diff <= 0.25),
-                    "video_synced_with_audio": bool(audio_video_diff <= 0.25),
+                    "video_sync_tolerance_sec": round(video_sync_tolerance, 3),
+                    "video_synced_with_audio": bool(audio_video_diff <= video_sync_tolerance),
                     "video_extends_past_narration_for_cinematic_closing": bool(silent_cinematic_tail_sec > 0),
                     "cinematic_closing_tail_sec": round(float(silent_cinematic_tail_sec or 0.0), 2),
                     "has_automatic_opening": bool((planning_meta.get("opening_text") or "").strip()),
@@ -6183,8 +6217,8 @@ $synth.Dispose()
             # ====== sync_validation: áudio ↔ vídeo (item 2) ======
             obtained_duration_final_sec = float(render_report["duration_plan"].get("obtained_duration_sec") or 0.0)
             delta_av = abs(obtained_duration_final_sec - actual_total_audio_dur)
-            tolerance_target = 0.5
-            tolerance_ok = (actual_total_audio_dur <= 0) or (delta_av <= max(tolerance_target, actual_total_audio_dur * 0.03))
+            tolerance_target = duration_sync_tolerance_seconds(actual_total_audio_dur)
+            tolerance_ok = (actual_total_audio_dur <= 0) or (delta_av <= tolerance_target)
             # scenes_ok: nenhuma cena visual foi criada com duração 0 ou abaixo do mínimo
             scenes_ok = True
             try:
