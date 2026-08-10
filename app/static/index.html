@@ -2021,7 +2021,7 @@
                             <input type="checkbox" v-model="ytStoryAutoUpload" class="w-4 h-4 text-indigo-600">
                             <span class="font-bold">Publicar automaticamente no YouTube</span>
                         </label>
-                        <button @click="generateStoryVideo" :disabled="ytStoryVideoLoading || !ytStoryContent" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 flex justify-center items-center gap-2 disabled:opacity-50">
+                        <button @click="generateStoryVideo" :disabled="ytStoryVideoLoading || !ytStoryContent || (!!ytStoryTaskId && ytStoryTask && String(ytStoryTask.status || '').toLowerCase() === 'failed')" class="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700 flex justify-center items-center gap-2 disabled:opacity-50">
                             <i v-if="ytStoryVideoLoading" class="fas fa-spinner fa-spin"></i>
                             <span v-else><i class="fas fa-film"></i> Gerar vídeo narrado</span>
                         </button>
@@ -2041,8 +2041,8 @@
                                 <i v-if="ytStoryAssistLoading" class="fas fa-spinner fa-spin"></i>
                                 <span v-else><i class="fas fa-stethoscope"></i> Diagnosticar</span>
                             </button>
-                            <button @click="retryStoryTask" :disabled="!ytStoryTaskId" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
-                                <i class="fas fa-rotate-right"></i>
+                            <button @click="retryStoryTask" :disabled="ytStoryRetryLoading || !ytStoryTaskId || !ytStoryTask || String(ytStoryTask.status || '').toLowerCase() !== 'failed'" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
+                                <i :class="ytStoryRetryLoading ? 'fas fa-spinner fa-spin' : 'fas fa-rotate-right'"></i>
                                 <span>Reiniciar tarefa</span>
                             </button>
                             <button @click="cancelStoryTask" :disabled="!ytStoryTaskId || (ytStoryTask && !['processing','pending'].includes(String(ytStoryTask.status||'').toLowerCase()))" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
@@ -2106,7 +2106,7 @@
                                         <div v-if="item.message" class="text-xs text-gray-600 mt-1 truncate" :title="item.message">{{ item.message }}</div>
                                     </div>
                                     <div class="flex items-center gap-2 shrink-0">
-                                        <span :class="item.is_current ? 'bg-blue-100 text-blue-800' : 'bg-yellow-100 text-yellow-800'" class="px-2 py-1 rounded text-xs font-bold">
+                                        <span :class="item.recoverable ? 'bg-red-100 text-red-800' : (item.is_current ? 'bg-blue-100 text-blue-800' : 'bg-yellow-100 text-yellow-800')" class="px-2 py-1 rounded text-xs font-bold">
                                             {{ item.status }}
                                         </span>
                                         <button v-if="item.can_open" @click="openStoryTaskFromQueue(item)" class="px-2 py-1 rounded border bg-white hover:bg-gray-100 text-xs">Abrir</button>
@@ -5064,6 +5064,7 @@
                     ytQueueFactoryBusy: false,
                     ytStoryTaskPollFails: {},
                     ytStoryAssistLoading: false,
+                    ytStoryRetryLoading: false,
                     ytStoryAssistReport: null,
                     ytStoryVideoUrl: null,
                     ytStoryVideoHealth: null,
@@ -8460,6 +8461,10 @@
                         alert('Esta geração já está em andamento.');
                         return;
                     }
+                    if (this.ytStoryTaskId && this.ytStoryTask && String(this.ytStoryTask.status || '').toLowerCase() === 'failed') {
+                        alert('Esta solicitação pode ser recuperada. Use “Reiniciar tarefa” para reaproveitar roteiro, imagens e áudio sem criar outro vídeo.');
+                        return;
+                    }
                     this.ytStoryVideoLoading = true;
                     this.ytStoryTask = null;
                     this.ytStoryTaskId = null;
@@ -8521,19 +8526,26 @@
                     }
                 },
                 async retryStoryTask() {
-                    if (!this.ytStoryTaskId) return;
+                    if (!this.ytStoryTaskId || this.ytStoryRetryLoading) return;
+                    const taskId = String(this.ytStoryTaskId);
+                    this.ytStoryRetryLoading = true;
+                    this.ytStoryVideoLoading = true;
+                    try { localStorage.setItem('ytStoryTaskId', taskId); } catch (e) {}
                     try {
-                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(this.ytStoryTaskId)}/retry`, { method: 'POST' });
+                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/retry`, { method: 'POST' });
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
                             throw new Error(data.detail || data.message || "Falha ao reiniciar.");
                         }
                         this.ytStoryAssistReport = null;
                         this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
-                        this.ytStoryTaskPollFails[String(this.ytStoryTaskId)] = 0;
-                        await this.pollStoryTask(this.ytStoryTaskId);
+                        this.ytStoryTaskPollFails[taskId] = 0;
+                        await this.pollStoryTask(taskId);
                     } catch (e) {
+                        this.ytStoryVideoLoading = false;
                         alert("Erro ao reiniciar: " + (e.message || e));
+                    } finally {
+                        this.ytStoryRetryLoading = false;
                     }
                 },
                 async cancelStoryTask() {
@@ -8673,10 +8685,9 @@
                         if (status === 'failed') {
                             this.ytStoryVideoLoading = false;
                             try { alert(data.message || "Falha ao gerar vídeo."); } catch (e) {}
-                            try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                            try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
                             this.releaseVideoGenerationLockByTask(taskId);
-                            this.ytStoryTaskId = null;
-                            this.fetchActiveVideoTasks({ silent: true });
+                            this.ytStoryTaskId = String(taskId);
                             return;
                         }
                         if (status === 'cancelled') {
