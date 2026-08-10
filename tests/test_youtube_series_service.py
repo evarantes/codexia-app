@@ -432,6 +432,43 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
 
         self.assertEqual(call_counter["count"], 1)
 
+    def test_failed_provider_task_is_preserved_and_not_requeued(self):
+        detail = self._create_series(status="active", end_date="2026-08-01")
+        series_id = detail["id"]
+        episode = self.db.query(SeriesEpisode).filter(SeriesEpisode.series_id == series_id).first()
+        episode.status = "in_production"
+        episode.task_id = "task-openai-no-credit"
+        episode.production_datetime = datetime.utcnow() - timedelta(minutes=5)
+        self.db.commit()
+
+        provider_error = {
+            "provider": "openai",
+            "code": "OPENAI_NO_CREDIT",
+            "message": "OpenAI sem saldo/quota para gerar imagens.",
+            "retryable": False,
+            "action_required": "Adicionar créditos na OpenAI.",
+            "model": "gpt-image-1-mini",
+        }
+        failed_task = {
+            "status": "failed",
+            "message": provider_error["message"],
+            "result": {"provider_error": provider_error},
+        }
+
+        with patch("app.services.youtube_series_service.get_task", return_value=failed_task), \
+             patch.object(youtube_series_service, "_enqueue_episode_generation") as enqueue, \
+             patch.object(youtube_series_service, "_episode_planned_cost", return_value={"estimated_cost": 1.0}):
+            youtube_series_service.sync_series_scheduler(self.db, now=datetime.utcnow())
+            result = youtube_series_service.get_series_detail(self.db, user=self.user, series_id=series_id)
+
+        self.db.refresh(episode)
+        serialized = result["episodes"][0]
+        self.assertEqual(episode.status, "failed")
+        self.assertEqual(episode.task_id, "task-openai-no-credit")
+        self.assertEqual(serialized["task_error"], provider_error["message"])
+        self.assertEqual(serialized["provider_error"]["code"], "OPENAI_NO_CREDIT")
+        enqueue.assert_not_called()
+
 
 # ==============================================================================
 # ==============================================================================
