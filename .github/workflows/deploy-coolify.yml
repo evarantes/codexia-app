@@ -1,0 +1,84 @@
+name: Deploy automático Coolify
+
+on:
+  push:
+    branches:
+      - main
+      - homolog/youtube-auto-e2e
+      - homolog/**
+  workflow_dispatch:
+    inputs:
+      coolify_resource_uuid:
+        description: "UUID opcional do recurso Coolify (sobrescreve webhook default)"
+        required: false
+
+concurrency:
+  group: deploy-coolify-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    name: Disparar deploy no Coolify (webhook)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Verificar variáveis obrigatórias
+        shell: bash
+        run: |
+          WEBHOOK_URL="${{ secrets.COOLIFY_DEPLOY_WEBHOOK_URL }}"
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "❌ ERRO: secret COOLIFY_DEPLOY_WEBHOOK_URL não está configurada no repositório GitHub."
+            echo "   Passo a passo para configurar (2 min):"
+            echo "   1) Coolify → Seu recurso Codexia → General → ative [Auto Deploy]"
+            echo "   2) Coolify → Advanced (ou Configuração Avançada) → copie [Webhook URL] + [Secret]"
+            echo "   3) GitHub → evarantes/codexia-app → Settings → Secrets and variables → Actions:"
+            echo "      • New repository secret: COOLIFY_DEPLOY_WEBHOOK_URL = (url do webhook)"
+            echo "      • New repository secret: COOLIFY_DEPLOY_WEBHOOK_SECRET = (secret do webhook, opcional se Coolify não pedir)"
+            echo "   4) Re-rodar este workflow (Run workflow) OU fazer um novo git push."
+            exit 1
+          fi
+          echo "✅ COOLIFY_DEPLOY_WEBHOOK_URL configurada (${#WEBHOOK_URL} chars)."
+
+      - name: Calcular assinatura HMAC (se secret configurado)
+        id: signature
+        shell: bash
+        env:
+          COOLIFY_SECRET: "${{ secrets.COOLIFY_DEPLOY_WEBHOOK_SECRET }}"
+        run: |
+          EMPTY_SHA256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          SIG=""
+          if [ -n "$COOLIFY_SECRET" ] && [ "$COOLIFY_SECRET" != "" ]; then
+            SIG=$(printf '%s' "" | openssl dgst -sha256 -hmac "$COOLIFY_SECRET" -r | awk '{print $1}')
+          fi
+          echo "x-coolify-signature=${SIG}" >> "$GITHUB_OUTPUT"
+          echo "sha256-empty=${EMPTY_SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Disparar webhook Coolify
+        shell: bash
+        env:
+          WEBHOOK_URL: "${{ secrets.COOLIFY_DEPLOY_WEBHOOK_URL }}"
+          X_SIG: "${{ steps.signature.outputs.x-coolify-signature }}"
+          GITHUB_BRANCH: "${{ github.ref_name }}"
+          GITHUB_COMMIT: "${{ github.sha }}"
+        run: |
+          echo "▶ Disparando deploy Coolify para o branch: $GITHUB_BRANCH (commit ${GITHUB_COMMIT:0:8})"
+          HEADERS=(-H "Content-Type: application/json" -H "User-Agent: codexia-github-action/deploy-coolify")
+          if [ -n "$X_SIG" ] && [ "$X_SIG" != "" ]; then
+            HEADERS+=(-H "X-Coolify-Signature: sha256=$X_SIG")
+          fi
+          HTTP_CODE=$(curl -sS -o /tmp/coolify_resp.txt -w "%{http_code}" "${HEADERS[@]}" \
+            --max-time 45 \
+            -X POST \
+            "$WEBHOOK_URL")
+          cat /tmp/coolify_resp.txt || true
+          echo ""
+          echo "HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "202" ] || [ "$HTTP_CODE" = "204" ]; then
+            echo "✅ Webhook aceito pelo Coolify. Deploy iniciado!"
+            echo ""
+            echo "👉 Acompanhe no painel Coolify → Resources → Codexia → Deployments"
+          else
+            echo "⚠ Coolify retornou HTTP $HTTP_CODE (verificar se webhook URL / secret estão corretos)."
+            echo "  (Muitas vezes o próprio Coolify retorna HTTP 3xx/4xx mas ainda assim dispara o deploy."
+            echo "   Se deployment novo aparecer na lista em 30s, está tudo OK.)"
+          fi
