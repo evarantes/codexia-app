@@ -29,6 +29,27 @@ def _maximum_stream_duration(streams: Iterable[Dict[str, Any]], codec_type: str)
     return duration
 
 
+def duration_sync_tolerance_seconds(
+    reference_duration: float,
+    minimum_tolerance: float = 0.5,
+    proportional_tolerance: float = 0.01,
+    maximum_tolerance: float = 3.0,
+) -> float:
+    """Return the single A/V sync tolerance used by planning and validation.
+
+    Container and frame rounding make a fixed 250 ms threshold too strict for
+    longer videos.  One percent keeps the tolerance proportional while the
+    three-second ceiling prevents a materially late closing from being
+    accepted.
+    """
+
+    duration = _positive_float(reference_duration)
+    minimum = max(0.0, float(minimum_tolerance or 0.0))
+    maximum = max(minimum, float(maximum_tolerance or minimum))
+    proportional = duration * max(0.0, float(proportional_tolerance or 0.0))
+    return min(maximum, max(minimum, proportional))
+
+
 def probe_media_file(path: str, timeout_seconds: int = 20) -> Dict[str, Any]:
     """Return verified stream and duration metadata for a local media file.
 
@@ -149,5 +170,8 @@ def media_durations_match(probe: Dict[str, Any], minimum_tolerance: float = 0.5)
     audio_duration = _positive_float(probe.get("audio_duration"))
     if video_duration <= 0 or audio_duration <= 0:
         return False
-    tolerance = max(float(minimum_tolerance), audio_duration * 0.03)
+    tolerance = duration_sync_tolerance_seconds(
+        audio_duration,
+        minimum_tolerance=minimum_tolerance,
+    )
     return abs(video_duration - audio_duration) <= tolerance
