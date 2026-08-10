@@ -2110,6 +2110,10 @@
                                             {{ item.status }}
                                         </span>
                                         <button v-if="item.can_open" @click="openStoryTaskFromQueue(item)" class="px-2 py-1 rounded border bg-white hover:bg-gray-100 text-xs">Abrir</button>
+                                        <button v-if="item.recoverable" @click="retryStoryTaskFromQueue(item)" :disabled="ytStoryRetryLoading" class="px-2 py-1 rounded border bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 text-xs flex items-center gap-1">
+                                            <i :class="ytStoryRetryLoading ? 'fas fa-spinner fa-spin' : 'fas fa-rotate-right'"></i>
+                                            <span>Reiniciar agora</span>
+                                        </button>
                                         <button v-if="item.can_cancel" @click="cancelQueuedVideoTask(item)" class="px-2 py-1 rounded border bg-red-50 hover:bg-red-100 text-red-700 text-xs">Cancelar</button>
                                     </div>
                                 </div>
@@ -6358,6 +6362,22 @@
                     try { localStorage.setItem('ytStoryTaskId', taskId); } catch (e) {}
                     this.pollStoryTask(taskId);
                 },
+                async retryStoryTaskFromQueue(item) {
+                    if (this.ytStoryRetryLoading) return;
+                    const it = item || {};
+                    const taskId = String(it.task_id || '').trim();
+                    if (!taskId || !it.recoverable) return;
+                    this.ytStoryTaskId = taskId;
+                    this.ytStoryTask = {
+                        status: String(it.status || 'failed'),
+                        progress: Number(it.progress || 0),
+                        message: String(it.message || 'Tarefa pronta para recuperação.')
+                    };
+                    this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
+                    this.ytStoryTaskPollFails[taskId] = 0;
+                    try { localStorage.setItem('ytStoryTaskId', taskId); } catch (e) {}
+                    await this.retryStoryTask();
+                },
                 async cancelQueuedVideoTask(item) {
                     const it = item || {};
                     const taskId = String(it.task_id || '').trim();
@@ -8684,7 +8704,6 @@
                         }
                         if (status === 'failed') {
                             this.ytStoryVideoLoading = false;
-                            try { alert(data.message || "Falha ao gerar vídeo."); } catch (e) {}
                             try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
                             this.releaseVideoGenerationLockByTask(taskId);
                             this.ytStoryTaskId = String(taskId);
