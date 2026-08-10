@@ -1,4 +1,5 @@
 import unittest
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -81,6 +82,17 @@ class StaticBootResilienceTests(unittest.TestCase):
         parser = _VueElseAdjacencyParser()
         parser.feed((STATIC / "index.html").read_text(encoding="utf-8"))
         self.assertEqual([], parser.errors)
+
+    def test_dashboard_has_one_mounted_hook_that_hides_loader(self):
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        mounted_hooks = re.findall(r"^\s{12}(?:async\s+)?mounted\(\)\s*\{", html, re.MULTILINE)
+        created_hooks = re.findall(r"^\s{12}(?:async\s+)?created\(\)\s*\{", html, re.MULTILINE)
+        self.assertEqual(1, len(mounted_hooks))
+        self.assertEqual(1, len(created_hooks))
+        mounted_source = html.split("            async mounted() {", 1)[1].split("            methods: {", 1)[0]
+        self.assertIn("loader.style.display = 'none'", mounted_source)
+        self.assertIn("window.clearTimeout(window.__codexiaBootTimer)", mounted_source)
+        self.assertIn("A inicialização demorou mais do que o esperado.", html)
 
 
 if __name__ == "__main__":
