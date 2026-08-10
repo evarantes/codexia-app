@@ -5325,6 +5325,61 @@ def cancel_task(task_id: str):
     _kick_story_video_task_queue_async()
     return {"message": "Cancelado", "task_id": task_id, "status": "cancelled"}
 
+
+@router.post("/task/{task_id}/discard")
+def discard_failed_task(task_id: str, _admin=Depends(get_current_admin_user)):
+    """Descarta somente uma tarefa falhada e libera uma geração realmente nova.
+
+    Diferentemente de ``cancel_all``, esta ação não interfere em outras filas.
+    O registro permanece no histórico para auditoria de custo, mas deixa de ser
+    recuperável e a chave de deduplicação expira pelo fluxo de cancelamento.
+    """
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+
+    status = str((task.get("status") or "")).strip().lower()
+    if status == "cancelled":
+        return {
+            "message": "Tarefa já estava descartada.",
+            "task_id": task_id,
+            "status": "cancelled",
+            "discarded": True,
+        }
+    if status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Somente tarefas com falha podem ser descartadas. Use Cancelar para tarefas em andamento.",
+        )
+
+    discarded = request_cancel_task(task_id, message="Tarefa falhada descartada pelo usuário.")
+    if not discarded:
+        raise HTTPException(status_code=500, detail="Não foi possível descartar a tarefa falhada.")
+
+    # Mantém a máquina de estados canônica sincronizada com a VideoTask.
+    pipeline_db = SessionLocal()
+    try:
+        if _unified_enabled() and unified_video_pipeline is not None:
+            unified_video_pipeline().transition_status(
+                pipeline_db,
+                task_id,
+                status="cancelled",
+                step="discarded",
+                progress=int(task.get("progress") or 0),
+                message="Tarefa antiga descartada; uma nova geração está liberada.",
+                merge_result={"discarded": True, "discarded_task_id": task_id},
+            )
+    finally:
+        pipeline_db.close()
+
+    _kick_story_video_task_queue_async()
+    return {
+        "message": "Tarefa descartada. Uma nova geração está liberada.",
+        "task_id": task_id,
+        "status": "cancelled",
+        "discarded": True,
+    }
+
 @router.post("/tasks/cancel_all")
 def cancel_all_tasks(_admin=Depends(get_current_admin_user)):
     if conn:
