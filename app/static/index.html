@@ -2060,6 +2060,10 @@
                                 <i class="fas fa-ban"></i>
                                 <span>Cancelar</span>
                             </button>
+                            <button v-if="ytStoryTask && String(ytStoryTask.status || '').toLowerCase() === 'failed'" @click="discardStoryTask()" :disabled="ytStoryDiscardLoading || !ytStoryTaskId" class="px-3 py-2 rounded border bg-amber-50 hover:bg-amber-100 text-amber-800 disabled:opacity-50 text-sm flex items-center gap-2">
+                                <i :class="ytStoryDiscardLoading ? 'fas fa-spinner fa-spin' : 'fas fa-trash-alt'"></i>
+                                <span>Descartar tarefa</span>
+                            </button>
                             <button @click="cancelAllVideoProduction" class="px-3 py-2 rounded border bg-red-50 hover:bg-red-100 text-sm flex items-center gap-2">
                                 <i class="fas fa-power-off"></i>
                                 <span>Encerrar no servidor</span>
@@ -2124,6 +2128,10 @@
                                         <button v-if="item.recoverable" @click="retryStoryTaskFromQueue(item)" :disabled="ytStoryRetryLoading" class="px-2 py-1 rounded border bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 text-xs flex items-center gap-1">
                                             <i :class="ytStoryRetryLoading ? 'fas fa-spinner fa-spin' : 'fas fa-rotate-right'"></i>
                                             <span>Reiniciar agora</span>
+                                        </button>
+                                        <button v-if="item.recoverable && item.task_id" @click="discardStoryTask(item.task_id)" :disabled="ytStoryDiscardLoading" class="px-2 py-1 rounded border bg-amber-50 hover:bg-amber-100 text-amber-800 disabled:opacity-50 text-xs flex items-center gap-1">
+                                            <i :class="ytStoryDiscardLoading ? 'fas fa-spinner fa-spin' : 'fas fa-trash-alt'"></i>
+                                            <span>Descartar</span>
                                         </button>
                                         <button v-if="item.can_cancel" @click="cancelQueuedVideoTask(item)" class="px-2 py-1 rounded border bg-red-50 hover:bg-red-100 text-red-700 text-xs">Cancelar</button>
                                     </div>
@@ -5080,6 +5088,7 @@
                     ytStoryTaskPollFails: {},
                     ytStoryAssistLoading: false,
                     ytStoryRetryLoading: false,
+                    ytStoryDiscardLoading: false,
                     ytStoryAssistReport: null,
                     ytStoryVideoUrl: null,
                     ytStoryVideoHealth: null,
@@ -8626,6 +8635,34 @@
                         await this.fetchActiveVideoTasks({ silent: true });
                     } catch (e) {
                         alert("Erro ao cancelar: " + (e.message || e));
+                    }
+                },
+                async discardStoryTask(taskIdOverride = null) {
+                    if (this.ytStoryDiscardLoading) return;
+                    const taskId = String(taskIdOverride || this.ytStoryTaskId || '').trim();
+                    if (!taskId) return;
+                    if (!confirm('Descartar esta tarefa falhada e liberar uma geração nova? O histórico de auditoria será preservado.')) return;
+                    this.ytStoryDiscardLoading = true;
+                    try {
+                        const res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/discard`, { method: 'POST' });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || 'Falha ao descartar tarefa.');
+                        }
+                        this.releaseVideoGenerationLockByTask(taskId);
+                        if (String(this.ytStoryTaskId || '') === taskId) {
+                            this.ytStoryTaskId = null;
+                            this.ytStoryTask = null;
+                            this.ytStoryAssistReport = null;
+                            this.ytStoryVideoLoading = false;
+                            try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
+                        }
+                        await this.fetchActiveVideoTasks({ silent: false });
+                        alert('Tarefa antiga descartada. Agora você pode iniciar uma geração nova.');
+                    } catch (e) {
+                        alert('Erro ao descartar tarefa: ' + (e.message || e));
+                    } finally {
+                        this.ytStoryDiscardLoading = false;
                     }
                 },
                 async cancelAllVideoProduction() {
