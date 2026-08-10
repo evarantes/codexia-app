@@ -77,7 +77,10 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertIn("localStorage.setItem('ytStoryTaskId'", failed_branch)
         self.assertIn("this.ytStoryTaskId = String(taskId)", failed_branch)
         self.assertNotIn("localStorage.removeItem('ytStoryTaskId')", failed_branch)
+        self.assertNotIn("alert(data.message", failed_branch)
         self.assertIn("Esta solicitação pode ser recuperada", html)
+        self.assertIn("Reiniciar agora", html)
+        self.assertIn("async retryStoryTaskFromQueue(item)", html)
 
 
 if __name__ == "__main__":
