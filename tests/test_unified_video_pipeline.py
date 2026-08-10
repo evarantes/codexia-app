@@ -466,6 +466,36 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(sum(1 for result in results if result.created_new), 1)
 
+    def test_02c_discarded_failure_allows_new_task_and_reopens_canonical_row(self):
+        from app.services.task_manager import request_cancel_task
+
+        pipe = self._pipeline()
+        ik = f"test:discard-then-new:{uuid.uuid4().hex}"
+        req = self._minimal_request(ik=ik, module="story", sid="story:discard-old")
+        first = pipe.submit_or_reuse(self.db, request=req)
+        pipe.transition_status(
+            self.db,
+            str(first.task_id),
+            status=UnifiedVideoStatus.FAILED,
+            progress=20,
+            message="Falha antiga",
+        )
+        discarded = request_cancel_task(str(first.task_id), message="Descartada no teste")
+        self.assertIsNotNone(discarded)
+
+        second = pipe.submit_or_reuse(
+            self.db,
+            request=self._minimal_request(ik=ik, module="story", sid="story:discard-old"),
+        )
+        self.assertNotEqual(first.task_id, second.task_id)
+        self.assertTrue(second.created_new)
+        self.db.expire_all()
+        uv = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == ik).one()
+        self.assertEqual(uv.task_id, second.task_id)
+        self.assertEqual(uv.status, UnifiedVideoStatus.QUEUED)
+        self.assertEqual(uv.progress, 0)
+        self.assertIsNone(uv.last_error)
+
     # ------------------------------------------------------------------ #
     # 3. Retry sem force_regenerate NÃO cria novo MP4 se já existe        #
     # ------------------------------------------------------------------ #
