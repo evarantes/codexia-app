@@ -1583,6 +1583,8 @@
                                     <td class="p-3 text-gray-600">{{ episode.production_datetime }}</td>
                                     <td class="p-3">
                                         <span class="px-2 py-1 rounded text-xs font-bold uppercase" :class="getStatusClass(episode.status)">{{ episode.status }}</span>
+                                        <div v-if="episode.task_error" class="mt-2 max-w-xs text-xs text-red-700">{{ episode.task_error }}</div>
+                                        <div v-if="episode.provider_error && episode.provider_error.action_required" class="mt-1 max-w-xs text-xs text-red-800"><strong>Resolver:</strong> {{ episode.provider_error.action_required }}</div>
                                     </td>
                                     <td class="p-3 flex flex-wrap gap-2">
                                         <button @click="saveSeriesEpisode(episode)" class="text-blue-600 hover:text-blue-800">Salvar</button>
@@ -2047,6 +2049,13 @@
                             <div class="bg-indigo-600 h-2.5 rounded-full" :style="{ width: (ytStoryTask.progress || 0) + '%' }"></div>
                         </div>
                         <div v-if="ytStoryTask.message" class="text-sm text-gray-700 mt-2">{{ ytStoryTask.message }}</div>
+                        <div v-if="ytStoryTask.result && ytStoryTask.result.provider_error" class="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+                            <div class="font-bold">{{ (ytStoryTask.result.provider_error.provider || 'IA').toUpperCase() }} — {{ ytStoryTask.result.provider_error.code }}</div>
+                            <div class="mt-1">{{ ytStoryTask.result.provider_error.message }}</div>
+                            <div v-if="ytStoryTask.result.provider_error.action_required" class="mt-1"><strong>Como resolver:</strong> {{ ytStoryTask.result.provider_error.action_required }}</div>
+                            <div v-if="ytStoryTask.result.provider_error.model" class="mt-1 text-xs">Modelo: {{ ytStoryTask.result.provider_error.model }} • Repetição automática: bloqueada</div>
+                            <a v-if="ytStoryTask.result.provider_error.billing_url" :href="ytStoryTask.result.provider_error.billing_url" target="_blank" rel="noopener noreferrer" class="inline-block mt-2 text-blue-700 underline font-semibold">Abrir faturamento da OpenAI</a>
+                        </div>
                         <div class="mt-3 flex flex-wrap gap-2">
                             <button @click="diagnoseStoryTask" :disabled="ytStoryAssistLoading || !ytStoryTaskId" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
                                 <i v-if="ytStoryAssistLoading" class="fas fa-spinner fa-spin"></i>
@@ -4162,7 +4171,8 @@
                             </div>
                             <div class="mt-3">
                                 <label class="block font-bold mb-2 text-sm">Modelo de imagem (OpenAI)</label>
-                                <input v-model="settings.openai_image_model" class="w-full border p-2 rounded bg-white" placeholder="gpt-image-1">
+                                <input v-model="settings.openai_image_model" class="w-full border p-2 rounded bg-white" placeholder="gpt-image-1-mini">
+                                <p class="text-xs text-gray-600 mt-1">Padrão econômico: gpt-image-1-mini com qualidade low. Uma chamada por imagem, sem repetição automática paga.</p>
                             </div>
                         </div>
 
@@ -5469,7 +5479,7 @@
                     // Settings
                     settings: {
                         openai_api_key: '',
-                        openai_image_model: 'gpt-image-1',
+                        openai_image_model: 'gpt-image-1-mini',
                         openai_allow_text: false,
                         openai_allow_script: false,
                         openai_allow_editorial: false,
