@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from app.routers.youtube import (
     _dispatch_task_result,
     _load_latest_recoverable_story_video_task,
+    cancel_all_tasks,
     discard_failed_task,
     retry_task,
 )
@@ -38,6 +39,26 @@ class _FakeDb:
 
     def query(self, *_args, **_kwargs):
         return _FakeQuery(self.rows)
+
+
+class _CancelAllDb:
+    def __init__(self, tasks, scheduled=None):
+        self.tasks = tasks
+        self.scheduled = scheduled or []
+
+    def query(self, model):
+        if getattr(model, "__name__", "") == "VideoTask":
+            return _FakeQuery(self.tasks)
+        return _FakeQuery(self.scheduled)
+
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None
+
+    def close(self):
+        return None
 
 
 class FailedStoryRetryRecoveryTests(unittest.TestCase):
@@ -146,12 +167,58 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
                 discard_failed_task("task-live", _admin=SimpleNamespace(id=1))
         self.assertEqual(ctx.exception.status_code, 409)
 
+    def test_global_stop_cancels_processing_and_failed_story_tasks_through_task_manager(self):
+        processing = SimpleNamespace(
+            id="task-processing",
+            status="processing",
+            result_json=json.dumps({"kind": "youtube_story_video", "payload": {"mode": "story"}}),
+        )
+        failed = SimpleNamespace(
+            id="task-failed",
+            status="failed",
+            result_json=json.dumps({"kind": "youtube_story_video", "payload": {"mode": "story"}}),
+        )
+        task_db = _CancelAllDb([processing, failed])
+        series_db = _CancelAllDb([])
+        fake_series_service = Mock()
+        fake_series_service.pause_for_server_shutdown.return_value = {
+            "paused_series": 1,
+            "cancelled_series_episodes": 1,
+        }
+
+        with (
+            patch("app.routers.youtube.conn", None),
+            patch("app.routers.youtube.SessionLocal", side_effect=[task_db, series_db]),
+            patch("app.routers.youtube.request_cancel_task", return_value={"status": "cancelled"}) as cancel,
+            patch("app.services.youtube_series_service.youtube_series_service", fake_series_service),
+            patch("app.routers.youtube._kick_story_video_task_queue_async"),
+        ):
+            result = cancel_all_tasks(_admin=SimpleNamespace(id=1))
+
+        self.assertEqual(result["cancelled_tasks"], 2)
+        self.assertEqual(result["paused_series"], 1)
+        self.assertEqual(
+            {call_item.args[0] for call_item in cancel.call_args_list},
+            {"task-processing", "task-failed"},
+        )
+        fake_series_service.pause_for_server_shutdown.assert_called_once_with(
+            series_db,
+            cancelled_task_ids=["task-failed", "task-processing"],
+        )
+
     def test_frontend_exposes_individual_discard_without_global_cancel(self):
         html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn("Descartar tarefa", html)
         self.assertIn("async discardStoryTask(taskIdOverride = null)", html)
         self.assertIn("/discard`, { method: 'POST' }", html)
         self.assertIn("this.ytStoryTaskId = null", html)
+        self.assertIn("autoOpen = true", html)
+        self.assertIn("autoOpen: false", html)
+        poll_story = html.split("async pollStoryTask(taskId)", 1)[1].split("async generateStoryShorts", 1)[0]
+        self.assertGreaterEqual(
+            poll_story.count("String(this.ytStoryTaskId || '') !== String(taskId || '')"),
+            2,
+        )
 
 
 if __name__ == "__main__":

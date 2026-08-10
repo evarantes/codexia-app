@@ -172,6 +172,58 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         self.assertIn("Superando o Medo", names)
         self.assertIn("OraÃ§Ãµes da ManhÃ£", names)
 
+    def test_archiving_series_cancels_unpublished_episodes_and_removes_it_from_list(self):
+        detail = self._create_series(status="active", end_date="2026-08-01")
+        series_id = detail["id"]
+        episode = self.db.query(SeriesEpisode).filter(SeriesEpisode.series_id == series_id).first()
+        episode.status = "failed"
+        episode.task_id = "task-series-failed"
+        self.db.commit()
+
+        with patch(
+            "app.services.youtube_series_service.request_cancel_task",
+            return_value={"status": "cancelled"},
+        ) as cancel_task:
+            archived = youtube_series_service.update_series_status(
+                self.db,
+                user=self.user,
+                series_id=series_id,
+                status="cancelled",
+            )
+
+        self.db.refresh(episode)
+        series = self.db.query(SeriesPlan).filter(SeriesPlan.id == series_id).first()
+        listing = youtube_series_service.list_series(self.db, user=self.user)
+        self.assertTrue(archived["archived"])
+        self.assertEqual(archived["status"], "cancelled")
+        self.assertEqual(episode.status, "cancelled")
+        self.assertIsNotNone(series.archived_at)
+        self.assertEqual(listing["count"], 0)
+        cancel_task.assert_called_once_with(
+            "task-series-failed",
+            message="Cancelado pelo usuário ao arquivar a série.",
+        )
+
+    def test_server_shutdown_pauses_active_series_and_cancels_linked_episode(self):
+        detail = self._create_series(status="active", end_date="2026-08-01")
+        series_id = detail["id"]
+        episode = self.db.query(SeriesEpisode).filter(SeriesEpisode.series_id == series_id).first()
+        episode.status = "failed"
+        episode.task_id = "task-server-stop"
+        self.db.commit()
+
+        result = youtube_series_service.pause_for_server_shutdown(
+            self.db,
+            cancelled_task_ids=["task-server-stop"],
+        )
+
+        self.db.refresh(episode)
+        series = self.db.query(SeriesPlan).filter(SeriesPlan.id == series_id).first()
+        self.assertEqual(series.status, "paused")
+        self.assertEqual(episode.status, "cancelled")
+        self.assertEqual(result["paused_series"], 1)
+        self.assertEqual(result["cancelled_series_episodes"], 1)
+
     def test_approval_creates_publish_queue_entry_without_regeneration(self):
         detail = self._create_series(status="active")
         episode_id = detail["episodes"][0]["id"]
