@@ -612,6 +612,8 @@ class YouTubeSeriesService:
             },
             "approval_snapshot": approved_snapshot,
             "task_status": str((task or {}).get("status") or "").lower() if task else None,
+            "task_error": str((task or {}).get("message") or "").strip() or None,
+            "provider_error": task_result.get("provider_error") if isinstance(task_result.get("provider_error"), dict) else None,
             "video_preview": {
                 "title": task_result.get("title") or episode.planned_title,
                 "description": task_result.get("description"),
@@ -1109,15 +1111,21 @@ class YouTubeSeriesService:
                     elif task_status in {"failed", "cancelled"} and status in {"in_production", "awaiting_production"}:
                         before = str(episode.status)
                         episode.status = "failed"
-                        episode.task_id = None
                         synced += 1
+                        task_result = task.get("result") if isinstance(task.get("result"), dict) else {}
                         _audit_event(
                             db,
                             event_type="episode_status_changed",
                             series_id=int(series.id),
                             episode_id=int(episode.id),
+                            task_id=str(episode.task_id) if episode.task_id else None,
                             status_before=before,
                             status_after="failed",
+                            payload={
+                                "task_status": task_status,
+                                "message": str(task.get("message") or "")[:500],
+                                "provider_error": task_result.get("provider_error") if isinstance(task_result, dict) else None,
+                            },
                         )
                         _dbg_event("H4", "episode marked failed (task failed/cancelled)", {
                             "series_id": int(series.id),
@@ -1133,7 +1141,7 @@ class YouTubeSeriesService:
                     status = "publication_blocked"
                 should_queue = (
                     _series_status(series.status) == "active"
-                    and status in {"planned", "awaiting_production", "in_correction", "failed"}
+                    and status in {"planned", "awaiting_production", "in_correction"}
                     and current >= episode.production_datetime
                     and not episode.task_id
                 )

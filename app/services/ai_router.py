@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import json
 import os
 import threading
@@ -87,15 +88,156 @@ def _is_openrouter_model_explicit(value: Optional[str]) -> bool:
 
 
 class AIOperationBlocked(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        provider: Optional[str] = None,
+        retryable: bool = False,
+        action_required: Optional[str] = None,
+        model: Optional[str] = None,
+        billing_url: Optional[str] = None,
+    ):
         self.code = str(code or "blocked")
+        self.provider = str(provider or "").strip().lower() or None
+        self.retryable = bool(retryable)
+        self.action_required = str(action_required or "").strip() or None
+        self.model = str(model or "").strip() or None
+        self.billing_url = str(billing_url or "").strip() or None
         super().__init__(str(message or code or "blocked"))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "code": self.code,
+            "message": str(self),
+            "retryable": self.retryable,
+            "action_required": self.action_required,
+            "model": self.model,
+            "billing_url": self.billing_url,
+        }
 
 
 class AIOperationInProgress(Exception):
     def __init__(self, operation_id: str):
         self.operation_id = str(operation_id or "")
         super().__init__(f"AI operation in progress: {self.operation_id}")
+
+
+def classify_openai_image_error(error: Exception, *, model: Optional[str] = None) -> AIOperationBlocked:
+    """Converte respostas da Images API em erros seguros e acionáveis.
+
+    A classificação fica no roteador central para que vídeo manual, Séries e
+    qualquer outro consumidor parem de repetir chamadas fatais pagas.
+    """
+    fragments = []
+    try:
+        fragments.append(str(error or ""))
+    except Exception:
+        pass
+    for attr in ("code", "type", "message", "body", "response"):
+        try:
+            value = getattr(error, attr, None)
+            if value is not None:
+                if isinstance(value, (dict, list, tuple)):
+                    fragments.append(json.dumps(value, ensure_ascii=False, default=str))
+                else:
+                    fragments.append(str(value))
+        except Exception:
+            pass
+    status_code = None
+    for source in (error, getattr(error, "response", None)):
+        try:
+            candidate = getattr(source, "status_code", None)
+            if candidate is not None:
+                status_code = int(candidate)
+                break
+        except Exception:
+            pass
+    raw = " | ".join(part.strip() for part in fragments if str(part or "").strip())
+    low = raw.lower()
+    model_id = _normalize_model_id(model) or "gpt-image-1-mini"
+    billing_url = "https://platform.openai.com/settings/organization/billing/overview"
+
+    no_credit_markers = (
+        "insufficient_quota", "billing_hard_limit_reached", "billing_not_active",
+        "payment_required", "quota exceeded", "out of credits", "credit balance",
+        "sem saldo", "not enough credits", "current quota", "billing details",
+        "usage limit", "hard limit",
+    )
+    if status_code == 402 or any(marker in low for marker in no_credit_markers):
+        return AIOperationBlocked(
+            "OPENAI_NO_CREDIT",
+            "OpenAI sem saldo/quota para gerar imagens. Adicione créditos na OpenAI e depois desmarque “OpenAI sem saldo” em Configurações.",
+            provider="openai",
+            retryable=False,
+            action_required="Adicionar créditos na OpenAI e liberar o indicador de saldo nas Configurações.",
+            model=model_id,
+            billing_url=billing_url,
+        )
+    if status_code == 401 or any(marker in low for marker in ("invalid_api_key", "incorrect api key", "unauthorized", "authentication")):
+        return AIOperationBlocked(
+            "OPENAI_AUTH_ERROR",
+            "A chave da OpenAI é inválida ou foi revogada. Atualize a OpenAI API Key em Configurações.",
+            provider="openai",
+            retryable=False,
+            action_required="Atualizar a OpenAI API Key.",
+            model=model_id,
+        )
+    if any(marker in low for marker in ("organization must be verified", "verify your organization", "organization verification")):
+        return AIOperationBlocked(
+            "OPENAI_ORG_VERIFICATION_REQUIRED",
+            "A OpenAI exige verificação da organização para usar este modelo de imagem. Conclua a verificação da organização ou selecione outro modelo disponível.",
+            provider="openai",
+            retryable=False,
+            action_required="Verificar a organização na OpenAI ou selecionar outro modelo de imagem.",
+            model=model_id,
+        )
+    if any(marker in low for marker in ("model_not_found", "does not exist", "unsupported model", "not have access to model")):
+        return AIOperationBlocked(
+            "OPENAI_MODEL_UNAVAILABLE",
+            f"O modelo de imagem {model_id} não está disponível para esta conta. Selecione um modelo liberado em Configurações.",
+            provider="openai",
+            retryable=False,
+            action_required="Selecionar um modelo de imagem disponível para a conta.",
+            model=model_id,
+        )
+    if any(marker in low for marker in ("content_policy", "content policy", "safety system", "moderation")):
+        return AIOperationBlocked(
+            "OPENAI_CONTENT_POLICY",
+            "A OpenAI recusou a descrição desta imagem pela política de conteúdo. Ajuste a descrição da cena; nenhuma repetição automática será feita.",
+            provider="openai",
+            retryable=False,
+            action_required="Ajustar a descrição visual da cena.",
+            model=model_id,
+        )
+    if status_code == 429 or any(marker in low for marker in ("rate_limit", "rate limit", "too many requests")):
+        return AIOperationBlocked(
+            "OPENAI_RATE_LIMIT",
+            "A OpenAI atingiu o limite temporário de requisições. Aguarde alguns minutos e reinicie a mesma tarefa.",
+            provider="openai",
+            retryable=True,
+            action_required="Aguardar e reiniciar a mesma tarefa, sem criar uma nova solicitação.",
+            model=model_id,
+        )
+    if status_code is not None and status_code >= 500 or any(marker in low for marker in ("timeout", "timed out", "connection error", "service unavailable")):
+        return AIOperationBlocked(
+            "OPENAI_TEMPORARY_ERROR",
+            "A OpenAI está temporariamente indisponível. Reinicie a mesma tarefa mais tarde; os ativos já prontos serão reaproveitados.",
+            provider="openai",
+            retryable=True,
+            action_required="Aguardar e reiniciar a mesma tarefa.",
+            model=model_id,
+        )
+    return AIOperationBlocked(
+        "OPENAI_IMAGE_ERROR",
+        "A OpenAI recusou a geração da imagem. Consulte o diagnóstico da tarefa antes de tentar novamente.",
+        provider="openai",
+        retryable=False,
+        action_required="Verificar OpenAI, modelo e faturamento em Configurações.",
+        model=model_id,
+    )
 
 
 class AIRouter:
@@ -227,7 +369,7 @@ class AIRouter:
         gemini_analysis = _normalize_model_id(getattr(settings, "gemini_analysis_model", None)) or "gemini-2.0-flash"
         openrouter_model = _normalize_model_id(getattr(settings, "openrouter_model", None)) or "google/gemini-2.5-flash-lite"
         groq_transcription = _normalize_model_id(getattr(settings, "groq_transcription_model", None)) or "whisper-large-v3"
-        openai_image_model = _normalize_model_id(getattr(settings, "openai_image_model", None)) or "gpt-image-1"
+        openai_image_model = _normalize_model_id(getattr(settings, "openai_image_model", None)) or "gpt-image-1-mini"
 
         defaults: Dict[str, AIPolicy] = {
             AICapability.SCRIPT_GENERATION: AIPolicy(
@@ -286,7 +428,7 @@ class AIRouter:
                 fallback_provider=None,
                 fallback_model=None,
                 cache_enabled=False,
-                estimated_cost=0.0,
+                estimated_cost=0.005,
                 max_cost=None,
                 is_active=True,
             ),
@@ -298,7 +440,7 @@ class AIRouter:
                 fallback_provider=None,
                 fallback_model=None,
                 cache_enabled=False,
-                estimated_cost=0.0,
+                estimated_cost=0.005,
                 max_cost=None,
                 is_active=True,
             ),
@@ -624,6 +766,55 @@ class AIRouter:
                 """
             ), {"provider": prov, "failures": failures})
 
+    def _cb_open_immediately(
+        self,
+        db: Session,
+        *,
+        settings: Settings,
+        user_id: Optional[int],
+        task_id: Optional[str],
+        video_id: Optional[str],
+        provider: str,
+        reason_code: str,
+        error_message: str,
+    ) -> None:
+        prov = str(provider or "").strip().lower()
+        row = self._cb_row_for_update(db, provider=prov)
+        if not row:
+            return
+        config = self._cb_config(settings)
+        failures = max(int(row.get("consecutive_failures") or 0) + 1, int(config["threshold"]))
+        db.execute(text(
+            """
+            UPDATE ai_provider_circuit_breakers
+            SET state = 'open',
+                consecutive_failures = :failures,
+                opened_at = COALESCE(opened_at, NOW()),
+                last_failure_at = NOW(),
+                cooldown_until = NOW() + (:cooldown_seconds || ' seconds')::interval,
+                half_open_remaining = 0,
+                updated_at = NOW()
+            WHERE provider = :provider
+            """
+        ), {
+            "provider": prov,
+            "failures": failures,
+            "cooldown_seconds": int(config["cooldown_seconds"]),
+        })
+        self._record_cb_event(
+            db,
+            user_id=user_id,
+            task_id=task_id,
+            video_id=video_id,
+            provider=prov,
+            event_type="AI_PROVIDER_CIRCUIT_OPENED",
+            details={
+                "reason_code": str(reason_code or "PROVIDER_FATAL_ERROR"),
+                "error": str(error_message or "")[:240],
+                "immediate": True,
+            },
+        )
+
     def _should_simulate_failure(self, provider: str) -> bool:
         raw = str(os.getenv("AI_ROUTER_SIMULATE_FAILURE_PROVIDERS") or "").strip()
         if not raw:
@@ -905,14 +1096,37 @@ class AIRouter:
         raise Exception("OpenAI: resposta vazia.")
 
     def _call_openai_image(self, *, api_key: str, model: str, prompt: str) -> bytes:
-        client = openai.OpenAI(api_key=str(api_key or "").strip())
-        res = client.images.generate(model=model, prompt=prompt, size="1024x1024")
+        try:
+            timeout_seconds = float(os.getenv("IMAGE_GEN_TIMEOUT_SECONDS") or 240)
+        except Exception:
+            timeout_seconds = 240.0
+        timeout_seconds = max(30.0, min(900.0, timeout_seconds))
+        client = openai.OpenAI(api_key=str(api_key or "").strip(), timeout=timeout_seconds, max_retries=0)
+        kwargs: Dict[str, Any] = {"model": model, "prompt": prompt, "size": "1024x1024"}
+        if str(model or "").strip().lower().startswith("gpt-image-"):
+            quality = str(os.getenv("OPENAI_IMAGE_QUALITY") or "low").strip().lower()
+            kwargs["quality"] = quality if quality in {"low", "medium", "high", "auto"} else "low"
+        res = client.images.generate(**kwargs)
         item0 = res.data[0] if res and getattr(res, "data", None) else None
         image_base64 = getattr(item0, "b64_json", None) if item0 is not None else None
         image_base64 = (image_base64 or "").strip() if isinstance(image_base64, str) else ""
-        if not image_base64:
-            raise Exception("OpenAI não retornou b64_json.")
-        return base64.b64decode(image_base64)
+        image_bytes = b""
+        if image_base64:
+            image_bytes = base64.b64decode(image_base64)
+        else:
+            image_url = getattr(item0, "url", None) if item0 is not None else None
+            if isinstance(image_url, str) and image_url.strip():
+                response = requests.get(image_url.strip(), timeout=120)
+                response.raise_for_status()
+                image_bytes = bytes(response.content or b"")
+        if len(image_bytes) < 1000:
+            raise Exception("OpenAI não retornou uma imagem válida.")
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as generated:
+                generated.verify()
+        except Exception as exc:
+            raise Exception("OpenAI retornou uma imagem corrompida.") from exc
+        return image_bytes
 
     def _call_groq_transcription(self, *, api_key: str, model: str, audio_path: str, language: Optional[str]) -> Dict[str, Any]:
         url = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -1225,6 +1439,97 @@ class AIRouter:
             except Exception:
                 pass
 
+    def ensure_image_provider_ready(
+        self,
+        *,
+        user_id: Optional[int],
+        task_id: Optional[str] = None,
+        video_id: Optional[str] = None,
+        capability: str = AICapability.IMAGE_GENERATION,
+    ) -> Dict[str, Any]:
+        """Pré-validação local e sem consumo da configuração de imagens."""
+        db = SessionLocal()
+        try:
+            settings = self._get_settings(db, user_id=user_id)
+            policy = self._load_policy(db, user_id=user_id, capability=capability, settings=settings)
+            provider = str(policy.primary_provider or "").strip().lower()
+            model_id = _normalize_model_id(policy.primary_model) or "gpt-image-1-mini"
+            if not policy.is_active:
+                raise AIOperationBlocked(
+                    "POLICY_INACTIVE",
+                    "A geração de imagens está desativada nas políticas de IA.",
+                    provider=provider or "openai",
+                    action_required="Ativar a geração de imagens em Configurações.",
+                    model=model_id,
+                )
+            if provider != "openai":
+                raise AIOperationBlocked(
+                    "IMAGE_PROVIDER_NOT_CONFIGURED",
+                    "O provedor de imagens não está configurado como OpenAI.",
+                    provider=provider or None,
+                    action_required="Configurar a OpenAI como provedora de imagens.",
+                    model=model_id,
+                )
+            if not self._openai_capability_allowed(settings, capability):
+                raise AIOperationBlocked(
+                    "OPENAI_CAPABILITY_BLOCKED",
+                    "A geração de imagens pela OpenAI está desativada em Configurações.",
+                    provider="openai",
+                    action_required="Ativar Imagens na política da OpenAI.",
+                    model=model_id,
+                )
+            if bool(getattr(settings, "openai_no_credit", False)):
+                raise AIOperationBlocked(
+                    "OPENAI_NO_CREDIT",
+                    "OpenAI marcada como sem saldo. Adicione créditos e depois desmarque “OpenAI sem saldo” em Configurações.",
+                    provider="openai",
+                    action_required="Adicionar créditos na OpenAI e liberar o indicador de saldo nas Configurações.",
+                    model=model_id,
+                    billing_url="https://platform.openai.com/settings/organization/billing/overview",
+                )
+            api_key = str(getattr(settings, "openai_api_key", "") or os.getenv("OPENAI_API_KEY") or "").strip()
+            if not api_key:
+                raise AIOperationBlocked(
+                    "OPENAI_KEY_MISSING",
+                    "A OpenAI API Key não está configurada. Adicione a chave em Configurações antes de gerar o vídeo.",
+                    provider="openai",
+                    action_required="Adicionar a OpenAI API Key.",
+                    model=model_id,
+                )
+            circuit = self._cb_get_row(db, provider="openai")
+            circuit_state = str(circuit.get("state") or "closed").lower()
+            cooldown_until = circuit.get("cooldown_until")
+            cooldown_active = True
+            if cooldown_until is not None:
+                try:
+                    cooldown_active = cooldown_until > _utcnow()
+                except Exception:
+                    cooldown_active = True
+            if circuit_state == "open" and cooldown_active:
+                raise AIOperationBlocked(
+                    "OPENAI_CIRCUIT_OPEN",
+                    "A OpenAI está temporariamente bloqueada após falhas recentes. Corrija o diagnóstico anterior ou aguarde antes de reiniciar a mesma tarefa.",
+                    provider="openai",
+                    retryable=True,
+                    action_required="Corrigir a causa informada na última tarefa ou aguardar o desbloqueio automático.",
+                    model=model_id,
+                )
+            return {
+                "ready": True,
+                "provider": "openai",
+                "model": model_id,
+                "quality": str(os.getenv("OPENAI_IMAGE_QUALITY") or "low").strip().lower() or "low",
+                "cost_check": "local_no_charge",
+                "circuit_probe": bool(circuit_state == "open" and not cooldown_active),
+                "task_id": task_id,
+                "video_id": video_id,
+            }
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
     def generate_image(
         self,
         *,
@@ -1240,22 +1545,38 @@ class AIRouter:
             settings = self._get_settings(db, user_id=user_id)
             policy = self._load_policy(db, user_id=user_id, capability=capability, settings=settings)
             if str(policy.primary_provider or "").strip().lower() != "openai":
-                raise AIOperationBlocked("IMAGE_PROVIDER_NOT_CONFIGURED", "Provider de imagem nao configurado.")
+                raise AIOperationBlocked("IMAGE_PROVIDER_NOT_CONFIGURED", "Provider de imagem não configurado.", provider="openai")
             if not self._openai_capability_allowed(settings, capability):
                 self._record_blocked(db, user_id=user_id, task_id=task_id, video_id=video_id, capability=capability, source="generate_image")
                 db.commit()
-                raise AIOperationBlocked("OPENAI_CAPABILITY_BLOCKED", "OpenAI bloqueada para esta capability.")
+                raise AIOperationBlocked("OPENAI_CAPABILITY_BLOCKED", "OpenAI bloqueada para esta capability.", provider="openai")
             if bool(getattr(settings, "openai_no_credit", False)):
-                raise AIOperationBlocked("OPENAI_NO_CREDIT", "OpenAI configurada, mas sem saldo (NO_CREDIT).")
+                raise AIOperationBlocked(
+                    "OPENAI_NO_CREDIT",
+                    "OpenAI sem saldo/quota para gerar imagens. Adicione créditos e depois desmarque “OpenAI sem saldo” em Configurações.",
+                    provider="openai",
+                    action_required="Adicionar créditos na OpenAI e liberar o indicador de saldo nas Configurações.",
+                    billing_url="https://platform.openai.com/settings/organization/billing/overview",
+                )
 
             raw_prompt = str(prompt or "").strip()
             if not raw_prompt:
                 raise Exception("Prompt vazio.")
 
             input_hash = _sha256_text(json.dumps({"prompt": raw_prompt}, ensure_ascii=False, sort_keys=True))
-            model_id = _normalize_model_id(policy.primary_model) or "gpt-image-1"
+            model_id = _normalize_model_id(policy.primary_model) or "gpt-image-1-mini"
             cache_key = self._cache_key(provider="openai", model=model_id, capability=capability, input_hash=input_hash)
             operation_id = self._operation_id(scope_type="youtube_task" if task_id else "global", scope_id=task_id, cache_key=cache_key)
+
+            api_key = str(getattr(settings, "openai_api_key", "") or os.getenv("OPENAI_API_KEY") or "").strip()
+            if not api_key:
+                raise AIOperationBlocked(
+                    "OPENAI_KEY_MISSING",
+                    "A OpenAI API Key não está configurada. Adicione a chave em Configurações antes de gerar o vídeo.",
+                    provider="openai",
+                    action_required="Adicionar a OpenAI API Key.",
+                    model=model_id,
+                )
 
             if not self._cb_allow_provider(
                 db,
@@ -1265,7 +1586,14 @@ class AIRouter:
                 video_id=video_id,
                 provider="openai",
             ):
-                raise AIOperationBlocked("CIRCUIT_OPEN", "Circuit breaker aberto para provider: openai")
+                raise AIOperationBlocked(
+                    "OPENAI_CIRCUIT_OPEN",
+                    "A OpenAI está temporariamente bloqueada após falhas recentes. Corrija o diagnóstico anterior ou aguarde antes de reiniciar a mesma tarefa.",
+                    provider="openai",
+                    retryable=True,
+                    action_required="Corrigir a causa anterior ou aguardar o desbloqueio automático.",
+                    model=model_id,
+                )
 
             if self._should_simulate_failure("openai"):
                 self._fail_operation(db, operation_id=operation_id, error={"error": "simulated_failure"}, latency_ms=0)
@@ -1348,10 +1676,6 @@ class AIRouter:
                 db.commit()
                 return str(out_path)
 
-            api_key = str(getattr(settings, "openai_api_key", "") or os.getenv("OPENAI_API_KEY") or "").strip()
-            if not api_key:
-                raise Exception("OpenAI API Key ausente.")
-
             base_dir = Path(output_dir)
             base_dir.mkdir(parents=True, exist_ok=True)
             filename = f"img_{operation_id[:12]}_{int(time.time())}.png"
@@ -1394,18 +1718,37 @@ class AIRouter:
                 return str(out_path)
             except Exception as e:
                 latency_ms = int((time.time() - started) * 1000)
-                self._fail_operation(db, operation_id=operation_id, error={"error": str(e)[:300]}, latency_ms=latency_ms)
-                self._cb_on_failure(
-                    db,
-                    settings=settings,
-                    user_id=user_id,
-                    task_id=task_id,
-                    video_id=video_id,
-                    provider="openai",
-                    error_message=str(e),
-                )
+                failure = e if isinstance(e, AIOperationBlocked) else classify_openai_image_error(e, model=model_id)
+                failure_payload = failure.to_dict() if isinstance(failure, AIOperationBlocked) else {"error": str(failure)}
+                self._fail_operation(db, operation_id=operation_id, error=failure_payload, latency_ms=latency_ms)
+                if isinstance(failure, AIOperationBlocked) and failure.code == "OPENAI_NO_CREDIT":
+                    settings.openai_no_credit = True
+                if isinstance(failure, AIOperationBlocked) and failure.code in {
+                    "OPENAI_NO_CREDIT", "OPENAI_AUTH_ERROR", "OPENAI_MODEL_UNAVAILABLE",
+                    "OPENAI_ORG_VERIFICATION_REQUIRED", "OPENAI_IMAGE_ERROR"
+                }:
+                    self._cb_open_immediately(
+                        db,
+                        settings=settings,
+                        user_id=user_id,
+                        task_id=task_id,
+                        video_id=video_id,
+                        provider="openai",
+                        reason_code=failure.code,
+                        error_message=str(failure),
+                    )
+                elif not isinstance(failure, AIOperationBlocked) or failure.code != "OPENAI_CONTENT_POLICY":
+                    self._cb_on_failure(
+                        db,
+                        settings=settings,
+                        user_id=user_id,
+                        task_id=task_id,
+                        video_id=video_id,
+                        provider="openai",
+                        error_message=str(failure),
+                    )
                 db.commit()
-                raise
+                raise failure
         finally:
             try:
                 db.close()

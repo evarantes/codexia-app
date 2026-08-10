@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Settings, User
@@ -504,7 +504,7 @@ def get_provider_status(db: Session = Depends(get_db), current_user: User = Depe
                 blocked_by_policy=openai_blocked_all,
                 no_credit=openai_no_credit,
             ),
-            "model": str(getattr(settings, "openai_image_model", "") or "gpt-image-1"),
+            "model": str(getattr(settings, "openai_image_model", "") or "gpt-image-1-mini"),
             "capabilities": {
                 "TEXT_GENERATION": bool(getattr(settings, "openai_allow_text", False)),
                 "SCRIPT_GENERATION": bool(getattr(settings, "openai_allow_script", False)),
@@ -991,6 +991,26 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
 
     if isinstance(settings_update.bible_video_factory, dict):
         apply_official_factory_settings(settings, settings_update.bible_video_factory)
+
+    if settings_update.openai_no_credit is False:
+        # Após recarregar créditos, a liberação manual deve valer imediatamente,
+        # sem obrigar o usuário a aguardar o cooldown do circuit breaker.
+        try:
+            if "ai_provider_circuit_breakers" in inspect(db.get_bind()).get_table_names():
+                with db.begin_nested():
+                    db.execute(text(
+                        """
+                        UPDATE ai_provider_circuit_breakers
+                        SET state = 'closed', consecutive_failures = 0,
+                            cooldown_until = NULL, half_open_remaining = 0,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE provider = 'openai'
+                        """
+                    ))
+        except Exception:
+            # A tabela é criada pela linhagem Alembic canônica. Em bancos de
+            # desenvolvimento incompletos, salvar as demais configurações segue.
+            pass
     
     db.commit()
     db.refresh(settings)

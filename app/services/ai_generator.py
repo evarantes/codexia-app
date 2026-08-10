@@ -73,6 +73,9 @@ _PAID_AI_DISABLE_FLAG = Path(__file__).resolve().parents[2] / "artifacts" / "fin
 class AIContentGenerator:
     def __init__(self):
         self.ai_router = AIRouter()
+        self.ai_user_id: Optional[int] = None
+        self.ai_task_id: Optional[str] = None
+        self.ai_video_id: Optional[str] = None
         self.api_key = None
         self.gemini_key = None
         self.deepseek_key = None
@@ -92,6 +95,18 @@ class AIContentGenerator:
         self.default_language = "pt-BR"
         self.provider = "openai"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN")
+
+    def set_operation_context(
+        self,
+        *,
+        user_id: Optional[int] = None,
+        task_id: Optional[str] = None,
+        video_id: Optional[str] = None,
+    ) -> None:
+        """Vincula custos e falhas de IA à tarefa canônica em execução."""
+        self.ai_user_id = int(user_id) if user_id is not None else None
+        self.ai_task_id = str(task_id) if task_id else None
+        self.ai_video_id = str(video_id) if video_id else None
 
     def _load_config(self):
         # Tenta carregar do banco primeiro, depois do .env
@@ -3721,9 +3736,9 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         notify("Gerando imagem (router)...")
         try:
             image_path = self.ai_router.generate_image(
-                user_id=None,
-                task_id=None,
-                video_id=None,
+                user_id=self.ai_user_id,
+                task_id=self.ai_task_id,
+                video_id=self.ai_video_id,
                 capability=AICapability.IMAGE_GENERATION,
                 prompt=full_prompt,
                 output_dir=str(base_dir),
@@ -3731,7 +3746,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             fname = Path(str(image_path)).name
             return f"/generated_assets/openai_images/{fname}"
         except (AIOperationBlocked, AIOperationInProgress) as e:
-            raise Exception(str(e))
+            raise
         except Exception as e:
             raise Exception(_extract_openai_error_message(e))
 
