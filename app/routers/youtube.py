@@ -45,6 +45,7 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
+from app.services.ai_router import AICapability, AIOperationBlocked
 from app.services.cinematic_quality_service import CinematicQualityService
 from app.services.financial_guardian import youtube_auto_financial_adapter
 from app.services.financial_guardian.youtube_observability import youtube_financial_guardian_observability_service
@@ -5749,6 +5750,7 @@ def process_video_generation(request: VideoRequest, task_id):
         guardian_db = SessionLocal()
         guardian_task_row = guardian_db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
         guardian_user_id = getattr(guardian_task_row, "user_id", None) if guardian_task_row else None
+        ai_service.set_operation_context(user_id=guardian_user_id, task_id=str(task_id))
         guardian_context = youtube_auto_financial_adapter.build_context(
             task_id=str(task_id),
             payload=guardian_payload,
@@ -5783,6 +5785,18 @@ def process_video_generation(request: VideoRequest, task_id):
                 result=final_payload,
             )
             return
+
+        # Checagem local, sem chamada paga: falha antes de roteiro/TTS quando a
+        # chave, política, saldo conhecido ou circuit breaker impedem imagens.
+        image_provider_preflight = ai_service.ai_router.ensure_image_provider_ready(
+            user_id=guardian_user_id,
+            task_id=str(task_id),
+            capability=AICapability.IMAGE_GENERATION,
+        )
+        update_task(task_id, result=_merged_task_result({
+            "image_provider_preflight": image_provider_preflight,
+            "pipeline_stage": "provider_preflight_ok",
+        }))
         
         # 1. Gerar Roteiro
         update_task(task_id, progress=10, message="1/8 Gerando roteiro com IA...", result=_merged_task_result({"pipeline_stage": "stage_1_script"}))
@@ -6795,7 +6809,22 @@ def process_video_generation(request: VideoRequest, task_id):
                     guardian_db.rollback()
                 except Exception:
                     pass
-        update_task(task_id, status="failed", message=f"Erro: {str(e)}")
+        provider_error = e.to_dict() if isinstance(e, AIOperationBlocked) else None
+        failure_result: Dict[str, Any] = {"pipeline_stage": "provider_error" if provider_error else "failed"}
+        if provider_error:
+            failure_result["provider_error"] = provider_error
+        current_task = get_task(task_id) or {}
+        try:
+            current_progress = int(current_task.get("progress") or 0)
+        except Exception:
+            current_progress = 0
+        update_task(
+            task_id,
+            status="failed",
+            progress=current_progress,
+            message=str(e),
+            result=_merged_task_result(failure_result),
+        )
     finally:
         if guardian_db is not None:
             try:
