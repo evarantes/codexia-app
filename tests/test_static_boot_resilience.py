@@ -1,4 +1,5 @@
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -12,6 +13,43 @@ VUE_PAGES = (
     STATIC / "pages" / "bible-video-factory" / "index.html",
     STATIC / "pages" / "humor-factory" / "index.html",
 )
+
+
+class _VueElseAdjacencyParser(HTMLParser):
+    _VOID_ELEMENTS = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.stack = []
+        self.errors = []
+
+    def handle_starttag(self, tag, attrs):
+        attr_names = {name for name, _value in attrs}
+        siblings = self.stack[-1]["children"] if self.stack else []
+        if "v-else" in attr_names or "v-else-if" in attr_names:
+            previous_attrs = siblings[-1]["attrs"] if siblings else set()
+            if "v-if" not in previous_attrs and "v-else-if" not in previous_attrs:
+                self.errors.append(f"<{tag}> com v-else sem v-if adjacente")
+
+        node = {"tag": tag, "attrs": attr_names, "children": []}
+        if self.stack:
+            self.stack[-1]["children"].append(node)
+        if tag not in self._VOID_ELEMENTS:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if self.stack and self.stack[-1]["tag"] == tag:
+            self.stack.pop()
+
+    def handle_endtag(self, tag):
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index]["tag"] == tag:
+                del self.stack[index:]
+                return
 
 
 class StaticBootResilienceTests(unittest.TestCase):
@@ -38,6 +76,11 @@ class StaticBootResilienceTests(unittest.TestCase):
         self.assertIn("const CACHE_NAME = 'codexia-v6';", service_worker)
         self.assertIn("'/static/vendor/vue.global.prod.js'", service_worker)
         self.assertNotIn('unpkg.com/vue', service_worker)
+
+    def test_vue_else_directives_have_an_adjacent_condition(self):
+        parser = _VueElseAdjacencyParser()
+        parser.feed((STATIC / "index.html").read_text(encoding="utf-8"))
+        self.assertEqual([], parser.errors)
 
 
 if __name__ == "__main__":
