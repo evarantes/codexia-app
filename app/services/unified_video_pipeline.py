@@ -648,6 +648,18 @@ class UnifiedVideoPipelineService:
             uv.voice_provider = str(request.voice_provider)[:64] or uv.voice_provider
             if request.voice_id:
                 uv.voice_model = request.voice_id
+            # Uma task nova após descarte/falha deve reabrir a linha canônica.
+            # Preservamos artefatos e custos para auditoria, mas não carregamos
+            # o estado terminal da tentativa antiga para a nova execução.
+            if created_new and str(uv.status or "").strip().lower() in {
+                UnifiedVideoStatus.FAILED,
+                UnifiedVideoStatus.CANCELLED,
+            }:
+                uv.status = UnifiedVideoStatus.QUEUED
+                uv.current_step = None
+                uv.progress = 0
+                uv.last_message = "Nova geração criada após descarte da tentativa anterior."
+                uv.last_error = None
         try:
             db.flush()
         except Exception:
