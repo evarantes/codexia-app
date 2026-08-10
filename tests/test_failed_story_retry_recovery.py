@@ -9,8 +9,10 @@ from unittest.mock import Mock, patch
 from app.routers.youtube import (
     _dispatch_task_result,
     _load_latest_recoverable_story_video_task,
+    discard_failed_task,
     retry_task,
 )
+from fastapi import HTTPException
 
 
 class _FakeQuery:
@@ -118,6 +120,38 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertIn("async retryLatestRecoverableStoryTask()", html)
         self.assertNotIn("ytStoryRetryLoading || !ytStoryTaskId || !ytStoryTask", html)
         self.assertIn("message: retryError", html)
+
+    def test_discard_failed_task_cancels_only_selected_task(self):
+        task = {"status": "failed", "progress": 20, "result": {"payload": {"mode": "story"}}}
+        fake_db = Mock()
+        fake_pipeline = Mock()
+        fake_pipeline.transition_status.return_value = None
+        with (
+            patch("app.routers.youtube.get_task", return_value=task),
+            patch("app.routers.youtube.request_cancel_task", return_value={"status": "cancelled"}) as cancel_one,
+            patch("app.routers.youtube.SessionLocal", return_value=fake_db),
+            patch("app.routers.youtube._unified_enabled", return_value=True),
+            patch("app.routers.youtube.unified_video_pipeline", return_value=fake_pipeline),
+            patch("app.routers.youtube._kick_story_video_task_queue_async"),
+        ):
+            result = discard_failed_task("task-old", _admin=SimpleNamespace(id=1))
+        self.assertTrue(result["discarded"])
+        self.assertEqual(result["status"], "cancelled")
+        cancel_one.assert_called_once_with("task-old", message="Tarefa falhada descartada pelo usuário.")
+        fake_pipeline.transition_status.assert_called_once()
+
+    def test_discard_rejects_task_that_is_still_processing(self):
+        with patch("app.routers.youtube.get_task", return_value={"status": "processing", "progress": 20}):
+            with self.assertRaises(HTTPException) as ctx:
+                discard_failed_task("task-live", _admin=SimpleNamespace(id=1))
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_frontend_exposes_individual_discard_without_global_cancel(self):
+        html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Descartar tarefa", html)
+        self.assertIn("async discardStoryTask(taskIdOverride = null)", html)
+        self.assertIn("/discard`, { method: 'POST' }", html)
+        self.assertIn("this.ytStoryTaskId = null", html)
 
 
 if __name__ == "__main__":
