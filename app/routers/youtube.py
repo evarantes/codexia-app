@@ -124,6 +124,12 @@ def _dbg_event(hypothesis_id: str, msg: str, data: Optional[Dict[str, Any]] = No
 #endregion
 _CANCEL_ALL_KEY = "codexia:video_cancel_all"
 _CANCEL_ALL_TTL_SECONDS = 90
+_CANCEL_ALL_RELEASE_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
 _SCHEDULED_VIDEO_ACTIVE_STATUSES = (
     "pending",
     "queued",
@@ -145,6 +151,42 @@ def _cancel_all_active() -> bool:
         return bool(v)
     except Exception:
         return False
+
+
+def _activate_cancel_all_barrier() -> Optional[str]:
+    """Bloqueia novos trabalhos somente enquanto o encerramento está em curso.
+
+    O TTL continua sendo uma proteção para queda abrupta do processo, mas o
+    token precisa ser removido assim que a rota terminar. Sem isso, uma série
+    criada depois do encerramento herda o sinal global e é cancelada sem ação
+    do usuário.
+    """
+    if not conn:
+        return None
+    token = uuid.uuid4().hex
+    try:
+        acquired = conn.set(
+            _CANCEL_ALL_KEY,
+            token,
+            ex=_CANCEL_ALL_TTL_SECONDS,
+            nx=True,
+        )
+        return token if acquired else None
+    except Exception:
+        return None
+
+
+def _release_cancel_all_barrier(token: Optional[str]) -> None:
+    if not conn or not token:
+        return
+    try:
+        # Compare-and-delete atômico: um encerramento antigo nunca remove a
+        # barreira pertencente a uma requisição mais nova.
+        conn.eval(_CANCEL_ALL_RELEASE_SCRIPT, 1, _CANCEL_ALL_KEY, str(token))
+    except Exception:
+        # Falha segura: o TTL limpa a chave. É preferível bloquear por alguns
+        # segundos a apagar, por engano, a barreira de outro encerramento.
+        pass
 
 def _rq_video_timeout_seconds() -> int:
     raw = (os.getenv("RQ_VIDEO_TIMEOUT") or os.getenv("RQ_DEFAULT_TIMEOUT") or "").strip()
@@ -5411,11 +5453,20 @@ def discard_failed_task(task_id: str, _admin=Depends(get_current_admin_user)):
 
 @router.post("/tasks/cancel_all")
 def cancel_all_tasks(_admin=Depends(get_current_admin_user)):
+    barrier_token = _activate_cancel_all_barrier()
+    if conn is not None and barrier_token is None and _cancel_all_active():
+        raise HTTPException(
+            status_code=409,
+            detail="O encerramento geral já está em andamento. Aguarde a conclusão.",
+        )
+    try:
+        return _cancel_all_tasks_snapshot()
+    finally:
+        _release_cancel_all_barrier(barrier_token)
+
+
+def _cancel_all_tasks_snapshot():
     if conn:
-        try:
-            conn.set(_CANCEL_ALL_KEY, "1", ex=_CANCEL_ALL_TTL_SECONDS)
-        except Exception:
-            pass
         try:
             conn.delete(FACTORY_LOCK_KEY)
         except Exception:

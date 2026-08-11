@@ -1100,6 +1100,17 @@ class YouTubeSeriesService:
         activated = 0
         blocked = 0
         synced = 0
+        shutdown_blocked = 0
+        shutdown_in_progress = False
+        try:
+            # Import tardio evita ciclo de importação. O scheduler continua
+            # sincronizando estados existentes, mas não cria trabalho novo
+            # enquanto o encerramento global está tirando o snapshot da fila.
+            from app.routers.youtube import _cancel_all_active
+
+            shutdown_in_progress = bool(_cancel_all_active())
+        except Exception:
+            shutdown_in_progress = False
         auto_approve_queue: List[Tuple[int, int]] = []
         rows = (
             db.query(SeriesPlan)
@@ -1224,6 +1235,9 @@ class YouTubeSeriesService:
                     for prev in previous_episodes
                 )
                 if should_queue:
+                    if shutdown_in_progress:
+                        shutdown_blocked += 1
+                        continue
                     if previous_generation_pending:
                         continue
                     series_ik = ""
@@ -1248,7 +1262,13 @@ class YouTubeSeriesService:
         db.commit()
         for episode_id, user_id in auto_approve_queue:
             self._auto_approve_episode(db, episode_id=episode_id, user_id=user_id)
-        return {"queued": activated, "blocked": blocked, "synced": synced}
+        return {
+            "queued": activated,
+            "blocked": blocked,
+            "synced": synced,
+            "shutdown_in_progress": shutdown_in_progress,
+            "shutdown_blocked": shutdown_blocked,
+        }
 
     def _auto_approve_episode(self, db: Session, *, episode_id: int, user_id: int) -> None:
         lock = acquire_distributed_lock(f"auto_approve_episode:{int(episode_id)}", timeout_seconds=10, ttl_seconds=120)
