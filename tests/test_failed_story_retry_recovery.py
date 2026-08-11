@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import app.routers.youtube as youtube_router
 from app.routers.youtube import (
+    _apply_youtube_auto_editorial_intelligence,
     _dispatch_task_result,
     _load_latest_recoverable_story_video_task,
     cancel_all_tasks,
@@ -86,6 +87,47 @@ class _FakeRedis:
 
 
 class FailedStoryRetryRecoveryTests(unittest.TestCase):
+    def test_disabled_editorial_review_preserves_complete_plan(self):
+        original_plan = {
+            "title": "A fé que vence o medo",
+            "description": "Descrição original",
+            "scenes": [
+                {
+                    "text": "Narração da primeira cena.",
+                    "image_prompt": "Biblical cinematic scene",
+                }
+            ],
+        }
+        editorial_only = {
+            "editorial_intelligence": {
+                "status": "disabled",
+                "summary": "Editor desabilitado por configuração.",
+            }
+        }
+        helper = Mock()
+        helper.review_plan.return_value = {
+            "status": "disabled",
+            "plan_updates": editorial_only,
+        }
+
+        with (
+            patch("app.routers.youtube.get_latest_settings", return_value=SimpleNamespace()),
+            patch("app.routers.youtube.serialize_official_factory_settings", return_value={}),
+            patch("app.routers.youtube.EditorialIntelligenceService", return_value=helper),
+        ):
+            merged = _apply_youtube_auto_editorial_intelligence(
+                None,
+                original_plan,
+                ai_service=Mock(),
+                task_id="task-editorial-disabled",
+            )
+
+        self.assertEqual(merged["title"], original_plan["title"])
+        self.assertEqual(merged["description"], original_plan["description"])
+        self.assertEqual(merged["scenes"], original_plan["scenes"])
+        self.assertEqual(merged["editorial_intelligence"]["status"], "disabled")
+        self.assertNotIn("editorial_intelligence", original_plan)
+
     def test_latest_failed_story_with_payload_is_recoverable(self):
         payload = {"mode": "story", "story_content": "Texto", "duration": 3}
         row = SimpleNamespace(

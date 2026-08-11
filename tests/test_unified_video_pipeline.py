@@ -744,6 +744,40 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         self.assertAlmostEqual(float(uv.estimated_cost or 0.0), 0.42, delta=1e-6)
         self.assertAlmostEqual(float(uv.actual_cost or 0.0), 0.38, delta=1e-6)
 
+    def test_11_audio_output_path_is_persisted_for_physical_validation(self):
+        pipe = self._pipeline()
+        ik = "test:audio-output-path:v1"
+        req = self._minimal_request(ik=ik, module="story", sid="audio:1")
+        pipe.submit_or_reuse(self.db, request=req)
+        audio_path = str(self.audio_dir / "audio-output-path.wav")
+        _make_wav_audio(audio_path, size_bytes=96 * 1024)
+
+        pipe.transition_status(
+            self.db,
+            ik,
+            status="processing_audio",
+            progress=60,
+            merge_result={
+                "render_report": {
+                    "audio_generation": {
+                        "output_path": audio_path,
+                        "final_audio_duration_sec": 42.5,
+                        "provider_used": "elevenlabs",
+                        "voice_id_used": "voice-test",
+                    }
+                }
+            },
+        )
+
+        uv = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == ik).one()
+        self.assertEqual(uv.audio_path, audio_path)
+        self.assertAlmostEqual(float(uv.audio_duration_seconds or 0.0), 42.5, delta=1e-6)
+        self.assertEqual(uv.voice_provider, "elevenlabs")
+        self.assertEqual(uv.voice_model, "voice-test")
+        self.assertEqual(pipe._task_audio_path({
+            "render_report": {"audio_generation": {"output_path": audio_path}}
+        }), audio_path)
+
 
 if __name__ == "__main__":
     unittest.main()
