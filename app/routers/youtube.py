@@ -1137,7 +1137,16 @@ def _apply_youtube_auto_editorial_intelligence(
         task_id=str(task_id or "").strip() or None,
     )
     updates = result.get("plan_updates") if isinstance(result, dict) and isinstance(result.get("plan_updates"), dict) else {}
-    return updates or plan
+    if not updates:
+        return plan
+
+    # ``review_plan`` retorna o plano completo quando a revisão é aplicada,
+    # porém os fluxos disabled/skipped/dry-run retornam somente o bloco de
+    # auditoria ``editorial_intelligence``. Substituir o plano inteiro por
+    # esse bloco apaga título, descrição e cenas antes da renderização.
+    merged_plan = dict(plan)
+    merged_plan.update(updates)
+    return merged_plan
 
 def _require_user_from_query_token(token: Optional[str], db: Session) -> User:
     if not token:

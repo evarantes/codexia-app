@@ -1133,23 +1133,37 @@ class UnifiedVideoPipelineService:
         # script
         if isinstance(result.get("script"), dict):
             uv.script_json = _json_dumps(result["script"])
-        if result.get("render_report"):
-            rr = result["render_report"]
-            if isinstance(rr, dict):
-                scenes = rr.get("scene_visuals")
-                if isinstance(scenes, list):
-                    uv.storyboard_json = _json_dumps({"scenes": scenes})
-                audio_gen = rr.get("audio_generation") if isinstance(rr.get("audio_generation"), dict) else None
-                if isinstance(audio_gen, dict):
-                    if audio_gen.get("final_audio_path") and not uv.audio_path:
-                        uv.audio_path = audio_gen["final_audio_path"]
-                    if audio_gen.get("duration_seconds") and not uv.audio_duration_seconds:
-                        uv.audio_duration_seconds = _safe_float(audio_gen["duration_seconds"])
-                    if audio_gen.get("provider"):
-                        uv.voice_provider = str(audio_gen["provider"])[:64]
-                    if audio_gen.get("model") or audio_gen.get("voice_id"):
-                        uv.voice_model = str(audio_gen.get("model") or audio_gen.get("voice_id") or "")[:128]
-                    uv.call_count_audio = int(audio_gen.get("call_count") or uv.call_count_audio or 0)
+        rr = result.get("render_report") if isinstance(result.get("render_report"), dict) else None
+        if isinstance(rr, dict):
+            scenes = rr.get("scene_visuals")
+            if isinstance(scenes, list):
+                uv.storyboard_json = _json_dumps({"scenes": scenes})
+
+        audio_gen = rr.get("audio_generation") if isinstance(rr, dict) and isinstance(rr.get("audio_generation"), dict) else None
+        if not isinstance(audio_gen, dict) and isinstance(result.get("audio_generation"), dict):
+            audio_gen = result.get("audio_generation")
+        if isinstance(audio_gen, dict):
+            audio_path = (
+                audio_gen.get("final_audio_path")
+                or audio_gen.get("output_path")
+                or audio_gen.get("audio_path")
+            )
+            if audio_path and not uv.audio_path:
+                uv.audio_path = str(audio_path)
+            audio_duration = (
+                audio_gen.get("duration_seconds")
+                or audio_gen.get("final_audio_duration_sec")
+                or audio_gen.get("audio_duration_sec")
+            )
+            if audio_duration and not uv.audio_duration_seconds:
+                uv.audio_duration_seconds = _safe_float(audio_duration)
+            provider = audio_gen.get("provider") or audio_gen.get("provider_used") or audio_gen.get("configured_provider")
+            if provider:
+                uv.voice_provider = str(provider)[:64]
+            model = audio_gen.get("model") or audio_gen.get("voice_id") or audio_gen.get("voice_id_used")
+            if model:
+                uv.voice_model = str(model)[:128]
+            uv.call_count_audio = int(audio_gen.get("call_count") or uv.call_count_audio or 0)
         # selected_images / custom_image_paths / images
         imgs = (
             result.get("selected_images")
@@ -1265,8 +1279,17 @@ class UnifiedVideoPipelineService:
         if not isinstance(task_result, dict):
             return None
         rr = task_result.get("render_report") if isinstance(task_result.get("render_report"), dict) else None
-        if isinstance(rr, dict) and isinstance(rr.get("audio_generation"), dict):
-            return rr["audio_generation"].get("final_audio_path") or rr["audio_generation"].get("audio_path")
+        audio_gen = rr.get("audio_generation") if isinstance(rr, dict) and isinstance(rr.get("audio_generation"), dict) else None
+        if not isinstance(audio_gen, dict) and isinstance(task_result.get("audio_generation"), dict):
+            audio_gen = task_result.get("audio_generation")
+        if isinstance(audio_gen, dict):
+            audio_path = (
+                audio_gen.get("final_audio_path")
+                or audio_gen.get("output_path")
+                or audio_gen.get("audio_path")
+            )
+            if audio_path:
+                return str(audio_path)
         return task_result.get("audio_path") or task_result.get("audio_url")
 
     def _task_video_path(self, task_result: Dict[str, Any]) -> Optional[str]:
