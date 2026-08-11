@@ -224,6 +224,32 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         self.assertEqual(result["paused_series"], 1)
         self.assertEqual(result["cancelled_series_episodes"], 1)
 
+    def test_scheduler_does_not_queue_new_episode_during_global_stop(self):
+        detail = self._create_series(status="active", end_date="2026-08-01")
+        episode = self.db.query(SeriesEpisode).filter(
+            SeriesEpisode.series_id == detail["id"]
+        ).first()
+        episode.production_datetime = datetime.utcnow() - timedelta(minutes=5)
+        episode.status = "awaiting_production"
+        self.db.commit()
+
+        with (
+            patch("app.routers.youtube._cancel_all_active", return_value=True),
+            patch.object(youtube_series_service, "_enqueue_episode_generation") as enqueue,
+        ):
+            summary = youtube_series_service.sync_series_scheduler(
+                self.db,
+                now=datetime.utcnow(),
+            )
+
+        self.db.refresh(episode)
+        self.assertTrue(summary["shutdown_in_progress"])
+        self.assertEqual(summary["shutdown_blocked"], 1)
+        self.assertEqual(summary["queued"], 0)
+        self.assertEqual(episode.status, "awaiting_production")
+        self.assertIsNone(episode.task_id)
+        enqueue.assert_not_called()
+
     def test_approval_creates_publish_queue_entry_without_regeneration(self):
         detail = self._create_series(status="active")
         episode_id = detail["episodes"][0]["id"]

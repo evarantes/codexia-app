@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import app.routers.youtube as youtube_router
 from app.routers.youtube import (
     _dispatch_task_result,
     _load_latest_recoverable_story_video_task,
@@ -59,6 +60,29 @@ class _CancelAllDb:
 
     def close(self):
         return None
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.values = {}
+
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def delete(self, key):
+        return int(self.values.pop(key, None) is not None)
+
+    def eval(self, _script, _numkeys, key, token):
+        current = self.values.get(key)
+        if str(current or "") != str(token or ""):
+            return 0
+        return self.delete(key)
 
 
 class FailedStoryRetryRecoveryTests(unittest.TestCase):
@@ -205,6 +229,62 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
             series_db,
             cancelled_task_ids=["task-failed", "task-processing"],
         )
+
+    def test_global_stop_releases_redis_barrier_before_next_request(self):
+        redis = _FakeRedis()
+        task_db = _CancelAllDb([])
+        series_db = _CancelAllDb([])
+        fake_series_service = Mock()
+        fake_series_service.pause_for_server_shutdown.return_value = {
+            "paused_series": 0,
+            "cancelled_series_episodes": 0,
+        }
+
+        with (
+            patch("app.routers.youtube.conn", redis),
+            patch("app.routers.youtube.SessionLocal", side_effect=[task_db, series_db]),
+            patch("app.services.youtube_series_service.youtube_series_service", fake_series_service),
+            patch("app.routers.youtube._kick_story_video_task_queue_async"),
+        ):
+            result = cancel_all_tasks(_admin=SimpleNamespace(id=1))
+            self.assertFalse(youtube_router._cancel_all_active())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn(youtube_router._CANCEL_ALL_KEY, redis.values)
+
+    def test_global_stop_releases_redis_barrier_even_when_snapshot_fails(self):
+        redis = _FakeRedis()
+        with (
+            patch("app.routers.youtube.conn", redis),
+            patch("app.routers.youtube._cancel_all_tasks_snapshot", side_effect=RuntimeError("db unavailable")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "db unavailable"):
+                cancel_all_tasks(_admin=SimpleNamespace(id=1))
+            self.assertFalse(youtube_router._cancel_all_active())
+
+        self.assertNotIn(youtube_router._CANCEL_ALL_KEY, redis.values)
+
+    def test_parallel_global_stop_cannot_replace_or_release_owner_barrier(self):
+        redis = _FakeRedis()
+        redis.values[youtube_router._CANCEL_ALL_KEY] = "owner-token"
+        with (
+            patch("app.routers.youtube.conn", redis),
+            patch("app.routers.youtube._cancel_all_tasks_snapshot") as snapshot,
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                cancel_all_tasks(_admin=SimpleNamespace(id=1))
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        snapshot.assert_not_called()
+        self.assertEqual(redis.values[youtube_router._CANCEL_ALL_KEY], "owner-token")
+
+    def test_old_owner_cannot_release_a_newer_global_stop_barrier(self):
+        redis = _FakeRedis()
+        redis.values[youtube_router._CANCEL_ALL_KEY] = "new-owner-token"
+        with patch("app.routers.youtube.conn", redis):
+            youtube_router._release_cancel_all_barrier("old-owner-token")
+
+        self.assertEqual(redis.values[youtube_router._CANCEL_ALL_KEY], "new-owner-token")
 
     def test_frontend_exposes_individual_discard_without_global_cancel(self):
         html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
