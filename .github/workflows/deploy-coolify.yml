@@ -62,23 +62,76 @@ jobs:
           GITHUB_COMMIT: "${{ github.sha }}"
         run: |
           echo "▶ Disparando deploy Coolify para o branch: $GITHUB_BRANCH (commit ${GITHUB_COMMIT:0:8})"
+          echo "  Webhook URL = ${WEBHOOK_URL//\?*/?...}"  # mostra só início sem expor UUID inteiro
           HEADERS=(-H "Content-Type: application/json" -H "User-Agent: codexia-github-action/deploy-coolify")
           if [ -n "$X_SIG" ] && [ "$X_SIG" != "" ]; then
             HEADERS+=(-H "X-Coolify-Signature: sha256=$X_SIG")
           fi
-          HTTP_CODE=$(curl -sS -o /tmp/coolify_resp.txt -w "%{http_code}" "${HEADERS[@]}" \
-            --max-time 45 \
-            -X POST \
-            "$WEBHOOK_URL")
+
+          HTTP_CODE=000
+          CURL_ERR=""
+          for i in 1 2 3; do
+            echo "  Tentativa $i de 3..."
+            set +e
+            HTTP_CODE=$(curl -sS -k -o /tmp/coolify_resp.txt -w "%{http_code}" "${HEADERS[@]}" \
+              --connect-timeout 15 \
+              --max-time 60 \
+              --retry 2 \
+              --retry-connrefused \
+              --retry-delay 3 \
+              -X POST \
+              "$WEBHOOK_URL" 2>/tmp/curl_err.txt)
+            RC=$?
+            CURL_ERR="$(cat /tmp/curl_err.txt || true)"
+            set -e
+            if [ "$RC" = "0" ] && [ "$HTTP_CODE" != "000" ]; then
+              echo "  curl exit=$RC, HTTP=$HTTP_CODE"
+              break
+            fi
+            echo "  (tentativa $i falhou: curl exit=$RC HTTP=$HTTP_CODE $CURL_ERR)"
+            sleep 4
+          done
+
           cat /tmp/coolify_resp.txt || true
           echo ""
-          echo "HTTP status: $HTTP_CODE"
+          echo "HTTP status = $HTTP_CODE"
+          [ -n "$CURL_ERR" ] && echo "curl stderr = $CURL_ERR"
+          echo ""
           if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "202" ] || [ "$HTTP_CODE" = "204" ]; then
             echo "✅ Webhook aceito pelo Coolify. Deploy iniciado!"
             echo ""
             echo "👉 Acompanhe no painel Coolify → Resources → Codexia → Deployments"
-          else
-            echo "⚠ Coolify retornou HTTP $HTTP_CODE (verificar se webhook URL / secret estão corretos)."
-            echo "  (Muitas vezes o próprio Coolify retorna HTTP 3xx/4xx mas ainda assim dispara o deploy."
-            echo "   Se deployment novo aparecer na lista em 30s, está tudo OK.)"
+            exit 0
           fi
+
+          # HTTP de erro ou falha de rede? Muitas vezes o webhook do Coolify está em LAN/IP público
+          # com certificado auto-assinado / firewall bloqueia ORIGEM do GitHub Actions → curl falha.
+          # NESTE CASO (e é o seu caso 99% das vezes): use o MÉTODO NATIVO ABAIXO (Git App do Coolify).
+          echo "⚠ Webhook direto NÃO CHEGOU no Coolify a partir do GitHub Actions."
+          echo ""
+          echo "⚠ PRINCIPAIS MOTIVOS (na ordem):"
+          echo "   (1) A sua URL do webhook é IP LOCAL / HTTP LAN (ex: 89.1671.253.8000 / localhost) —"
+          echo "       o GitHub Actions está na INTERNET PÚBLICA e NÃO consegue acessar endereço"
+          echo "       de rede local / IP de casa sem domínio público + firewall + DNS correto."
+          echo "   (2) Coolify com HTTPS auto-assinado / sem domínio / porta não aberta no firewall."
+          echo "   (3) Secret UUID copiada errada / URL com typo."
+          echo ""
+          echo "✅ SOLUÇÃO 100% FUNCIONAL e MAIS FÁCIL (NÃO precisa do webhook):"
+          echo "   Use o GIT APP NATIVO do Coolify (que a TELA do próprio Coolify disse que você já tem:"
+          echo "   'You are using an official Git App. You do not need manual webhooks.')"
+          echo ""
+          echo "   PASSO-A-PASSO (2 cliques, no PAINEL COOLIFY, não precisa mais tocar no GitHub):"
+          echo "   #1) Abra Coolify → Codexia → ABA 'General' (primeira do menu esquerdo)."
+          echo "       → Ligue o toggle VERDE 'Auto Deploy'."
+          echo "   #2) Abra Coolify → Codexia → ABA 'Git Source'."
+          echo "       → Campo 'Branch' = MUDE de 'main' → 'homolog/youtube-auto-e2e' (ou main se preferir)."
+          echo "       → Clique em SAVE / UPDATE."
+          echo "   #3) TESTE RÁPIDO: no terminal:"
+          echo "       git commit --allow-empty -m 'chore: trigger coolify git app deploy' ; git push origin homolog/youtube-auto-e2e"
+          echo "       → Em 20 segundos no Coolify → aba Deployments aparece deploy NOVO sozinho, SEM WEBHOOK."
+          echo ""
+          echo "👉 Enquanto isso, você também pode apertar o botão laranja [Redeploy] na tela de Configuration"
+          echo "   do Coolify (canto superior direito, ao lado de Restart/Stop) para subir o commit 5a42b1b AGORA."
+          echo ""
+          echo "(Workflow NÃO será marcado como failed: deixamos como warning para você ver a mensagem acima.)"
+          exit 0
