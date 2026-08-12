@@ -819,7 +819,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 # Servir vídeos: tenta VIDEO_OUTPUT_DIR e depois app/static/videos (Render e múltiplas instâncias)
-from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, STATIC_DIR, BOOKS_OUTPUT_DIR, COVERS_OUTPUT_DIR
+from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, STATIC_DIR, BOOKS_OUTPUT_DIR, COVERS_OUTPUT_DIR, BRANDING_OUTPUT_DIR
 
 def _resolve_video_path(safe_name: str):
     """Retorna o path absoluto do vídeo, procurando em VIDEO_OUTPUT_DIR e em app/static/videos."""
@@ -1120,6 +1120,8 @@ if os.path.isdir("/data"):
         data_paths.append("/data/media/music")
     if os.getenv("USE_STATIC_BOOKS", "").lower() not in ("1", "true", "yes"):
         data_paths.extend(("/data/media/books", "/data/media/covers"))
+    if os.getenv("USE_STATIC_BRANDING", "").lower() not in ("1", "true", "yes"):
+        data_paths.append("/data/media/branding")
     for _path in data_paths:
         try:
             os.makedirs(_path, exist_ok=True)
@@ -1129,6 +1131,7 @@ os.makedirs(os.path.join(STATIC_DIR, "videos"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "music"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "books"), exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "covers"), exist_ok=True)
+os.makedirs(BRANDING_OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(STATIC_DIR, "image_bank"), exist_ok=True)
 # NOTA: Não montamos /media como StaticFiles porque temos rotas específicas (/media/videos/{filename})
 # que servem vídeos de VIDEO_OUTPUT_DIR. O mount genérico interceptaria essas rotas.
