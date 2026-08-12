@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from app.models import ScheduledVideo, User, VideoTask
+from app.models import ScheduledVideo, Settings, User, VideoTask
 from app.services.financial_guardian.adapters import youtube_auto_financial_adapter
 from app.services.financial_guardian_service import financial_guardian_service
 
@@ -218,6 +218,15 @@ def _normalized_event_type(raw: Any, details: Optional[Dict[str, Any]] = None) -
 
 def _scenario_task_id(user_id: int, scenario_code: str) -> str:
     return f"fgsim-yt-{int(user_id)}-{str(scenario_code or '').strip().lower()}"
+
+
+def _matches_data_scope(is_simulated: bool, data_scope: str) -> bool:
+    scope = str(data_scope or "actual").strip().lower()
+    if scope == "all":
+        return True
+    if scope == "simulated":
+        return bool(is_simulated)
+    return not bool(is_simulated)
 
 
 class YouTubeFinancialGuardianObservabilityService:
@@ -530,6 +539,82 @@ class YouTubeFinancialGuardianObservabilityService:
             return True
         simulation = result.get("simulation") if isinstance(result.get("simulation"), dict) else {}
         return bool(simulation.get("scenario_code"))
+
+    def _task_is_simulated(self, row: VideoTask) -> bool:
+        result = _json_loads(getattr(row, "result_json", None), {})
+        simulation = result.get("simulation") if isinstance(result, dict) and isinstance(result.get("simulation"), dict) else {}
+        return bool(simulation.get("scenario_code") or str(getattr(row, "id", "") or "").startswith("fgsim-yt-"))
+
+    def _audit_row_is_simulated(self, row: Dict[str, Any]) -> bool:
+        details = _json_loads(row.get("details_json"), {})
+        context_json = _json_loads(row.get("context_json"), {})
+        metadata = context_json.get("metadata") if isinstance(context_json.get("metadata"), dict) else {}
+        return bool(
+            details.get("scenario_code")
+            or metadata.get("scenario_code")
+            or str(row.get("context_id") or "").startswith("fgsim-yt-")
+        )
+
+    def _ledger_row_is_simulated(self, row: Dict[str, Any]) -> bool:
+        metadata = _json_loads(row.get("metadata_json"), {})
+        return bool(isinstance(metadata, dict) and metadata.get("scenario_code"))
+
+    def _budget_snapshot(
+        self,
+        db: Session,
+        *,
+        daily_spent: float,
+        monthly_spent: float,
+    ) -> Dict[str, Any]:
+        limits = {
+            "per_video": _safe_float(os.getenv("YOUTUBE_AUTO_PER_VIDEO_SPEND_LIMIT"), 0.0),
+            "daily": _safe_float(os.getenv("YOUTUBE_AUTO_DAILY_SPEND_LIMIT"), 0.0),
+            "monthly": _safe_float(os.getenv("YOUTUBE_AUTO_MONTHLY_SPEND_LIMIT"), 0.0),
+        }
+        if not any(value > 0 for value in limits.values()):
+            try:
+                row = db.query(Settings).order_by(Settings.id.desc()).first()
+            except Exception:
+                row = None
+            if row is not None:
+                limits = {
+                    "per_video": _safe_float(getattr(row, "per_video_spend_limit", 0.0), 0.0),
+                    "daily": _safe_float(getattr(row, "daily_spend_limit", 0.0), 0.0),
+                    "monthly": _safe_float(getattr(row, "monthly_spend_limit", 0.0), 0.0),
+                }
+
+        daily_limit = max(0.0, limits["daily"])
+        monthly_limit = max(0.0, limits["monthly"])
+        daily_percent = round((daily_spent / daily_limit) * 100, 2) if daily_limit > 0 else None
+        monthly_percent = round((monthly_spent / monthly_limit) * 100, 2) if monthly_limit > 0 else None
+        active_percentages = [value for value in (daily_percent, monthly_percent) if value is not None]
+        highest_percent = max(active_percentages) if active_percentages else None
+        if highest_percent is None:
+            status = "not_configured"
+            message = "Os limites diário e mensal ainda não foram configurados."
+        elif highest_percent >= 100:
+            status = "blocked"
+            message = "O limite configurado foi atingido. Novas chamadas pagas devem permanecer bloqueadas."
+        elif highest_percent >= 80:
+            status = "attention"
+            message = "O consumo chegou a 80% ou mais do limite configurado."
+        else:
+            status = "within_budget"
+            message = "O consumo real está dentro dos limites configurados."
+        return {
+            "currency": "BRL",
+            "status": status,
+            "message": message,
+            "per_video_limit": round(max(0.0, limits["per_video"]), 4),
+            "daily_limit": round(daily_limit, 4),
+            "monthly_limit": round(monthly_limit, 4),
+            "daily_spent": round(max(0.0, daily_spent), 4),
+            "monthly_spent": round(max(0.0, monthly_spent), 4),
+            "daily_remaining": round(max(0.0, daily_limit - daily_spent), 4) if daily_limit > 0 else None,
+            "monthly_remaining": round(max(0.0, monthly_limit - monthly_spent), 4) if monthly_limit > 0 else None,
+            "daily_percent": daily_percent,
+            "monthly_percent": monthly_percent,
+        }
 
     def _task_result(self, row: VideoTask) -> Dict[str, Any]:
         result = _json_loads(getattr(row, "result_json", None), {})
@@ -890,10 +975,31 @@ class YouTubeFinancialGuardianObservabilityService:
             "recent_items": recent_items[:max(1, int(limit or 12))],
         }
 
-    def _summarize_window(self, db: Session, *, user: User, start: datetime, end: datetime, label: str) -> Dict[str, Any]:
-        audit_rows = self._fetch_audit_rows(db, user=user, start=start, end=end)
-        task_rows = self._fetch_youtube_tasks(db, user=user, start=start, end=end)
-        ledger_rows = self._fetch_ledger_rows(db, user=user, start=start, end=end)
+    def _summarize_window(
+        self,
+        db: Session,
+        *,
+        user: User,
+        start: datetime,
+        end: datetime,
+        label: str,
+        data_scope: str = "actual",
+    ) -> Dict[str, Any]:
+        audit_rows = [
+            row
+            for row in self._fetch_audit_rows(db, user=user, start=start, end=end)
+            if _matches_data_scope(self._audit_row_is_simulated(row), data_scope)
+        ]
+        task_rows = [
+            row
+            for row in self._fetch_youtube_tasks(db, user=user, start=start, end=end)
+            if _matches_data_scope(self._task_is_simulated(row), data_scope)
+        ]
+        ledger_rows = [
+            row
+            for row in self._fetch_ledger_rows(db, user=user, start=start, end=end)
+            if _matches_data_scope(self._ledger_row_is_simulated(row), data_scope)
+        ]
 
         contexts: Dict[str, Dict[str, Any]] = {}
         provider_buckets: Dict[str, Dict[str, Any]] = {}
@@ -1076,6 +1182,7 @@ class YouTubeFinancialGuardianObservabilityService:
         if model_buckets:
             most_expensive_model = max(model_buckets.values(), key=lambda item: item["total_cost"])["model"]
         return {
+            "data_scope": str(data_scope or "actual"),
             "label": label,
             "start": start.isoformat(),
             "end": end.isoformat(),
@@ -1149,7 +1256,11 @@ class YouTubeFinancialGuardianObservabilityService:
     def _build_health(self, summary: Dict[str, Any]) -> Dict[str, Any]:
         reasons: List[str] = []
         success_rate = _safe_float(summary.get("success_rate"), 0.0)
-        if success_rate < 60:
+        jobs_total = _safe_int(summary.get("jobs_total"), 0)
+        if jobs_total <= 0:
+            status = "Sem dados"
+            reason = "Nenhuma produção real foi encontrada no período selecionado."
+        elif success_rate < 60:
             reasons.append("Taxa de sucesso abaixo de 60%.")
         elif success_rate < 85:
             reasons.append("Taxa de sucesso abaixo da faixa ideal.")
@@ -1159,7 +1270,9 @@ class YouTubeFinancialGuardianObservabilityService:
             reasons.append("Houve recoveries interrompidos por baixo ganho.")
         if _safe_int(summary.get("loops_detected"), 0) > 0:
             reasons.append("Foram detectados loops de recuperação.")
-        if not reasons:
+        if jobs_total <= 0:
+            pass
+        elif not reasons:
             status = "Saudável"
             reason = "Taxa de sucesso alta, sem bloqueios críticos e sem loops relevantes."
         elif success_rate < 60 or _safe_int(summary.get("loops_detected"), 0) > 0:
@@ -1260,15 +1373,20 @@ class YouTubeFinancialGuardianObservabilityService:
     def build_overview(self, db: Session, *, user: User, period: str) -> Dict[str, Any]:
         current_start, current_end, period_key = _period_bounds(period)
         previous_start, previous_end, _ = _previous_period_bounds(period_key)
-        current = self._summarize_window(db, user=user, start=current_start, end=current_end, label=_PERIOD_LABELS.get(period_key, "Período"))
-        previous = self._summarize_window(db, user=user, start=previous_start, end=previous_end, label="Período anterior")
+        current = self._summarize_window(db, user=user, start=current_start, end=current_end, label=_PERIOD_LABELS.get(period_key, "Período"), data_scope="actual")
+        previous = self._summarize_window(db, user=user, start=previous_start, end=previous_end, label="Período anterior", data_scope="actual")
+        simulated = self._summarize_window(db, user=user, start=current_start, end=current_end, label="Simulações do período", data_scope="simulated")
         today_start, today_end, _ = _period_bounds("today")
         month_start, month_end, _ = _period_bounds("current_month")
-        today_summary = self._summarize_window(db, user=user, start=today_start, end=today_end, label="Hoje")
-        month_summary = self._summarize_window(db, user=user, start=month_start, end=month_end, label="Mês atual")
+        today_summary = self._summarize_window(db, user=user, start=today_start, end=today_end, label="Hoje", data_scope="actual")
+        month_summary = self._summarize_window(db, user=user, start=month_start, end=month_end, label="Mês atual", data_scope="actual")
         current["daily_cost_accumulated"] = today_summary["actual_cost_total"]
         current["monthly_cost_accumulated"] = month_summary["actual_cost_total"]
-        ledger_entries = self.list_ledger_entries(db, user=user)
+        ledger_entries = [
+            item
+            for item in self.list_ledger_entries(db, user=user)
+            if not bool((item.get("metadata") or {}).get("scenario_code"))
+        ]
         total_invested = month_summary["investment_total"]
         month_revenue = month_summary["revenue_total"]
         remaining_to_break_even = round(max(0.0, total_invested - month_revenue), 4)
@@ -1284,6 +1402,23 @@ class YouTubeFinancialGuardianObservabilityService:
             "health": self._build_health(current),
             "comparison": self._build_comparison(current, previous),
             "progress_indicator": self._build_progress(current, previous),
+            "budget": self._budget_snapshot(
+                db,
+                daily_spent=today_summary["actual_cost_total"],
+                monthly_spent=month_summary["actual_cost_total"],
+            ),
+            "simulation_summary": {
+                "separated_from_actual": True,
+                "jobs_total": simulated["jobs_total"],
+                "estimated_cost_total": simulated["estimated_cost_total"],
+                "actual_cost_total": simulated["actual_cost_total"],
+                "ledger_entries_total": len([
+                    item
+                    for item in self.list_ledger_entries(db, user=user)
+                    if bool((item.get("metadata") or {}).get("scenario_code"))
+                ]),
+                "note": "Dados simulados são mantidos apenas para diagnóstico e não entram nos totais reais.",
+            },
             "ledger_summary": {
                 "entries_count": len(ledger_entries),
                 "total_invested": round(total_invested, 4),

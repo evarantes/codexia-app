@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/codexia_test")
 
 from app.database import Base  # noqa: E402
-from app.models import ScheduledVideo, Tenant, User, VideoTask  # noqa: E402
+from app.models import ScheduledVideo, Settings, Tenant, User, VideoTask  # noqa: E402
 import app.services.financial_guardian_service as fg_module  # noqa: E402
 from app.services.financial_guardian.youtube_observability import (  # noqa: E402
     youtube_financial_guardian_observability_service,
@@ -73,12 +73,15 @@ class YouTubeGuardianObservabilityTests(unittest.TestCase):
 
         overview = service.build_overview(self.db, user=self.user, period="current_month")
         self.assertEqual(overview["source_type"], "youtube_auto")
-        self.assertGreaterEqual(overview["dashboard"]["jobs_total"], 3)
-        self.assertGreaterEqual(overview["dashboard"]["jobs_completed"], 2)
-        self.assertGreaterEqual(overview["dashboard"]["jobs_blocked"], 1)
-        self.assertGreaterEqual(overview["dashboard"]["calls_count"], 1)
-        self.assertGreaterEqual(overview["ledger_summary"]["entries_count"], 4)
-        self.assertIn(overview["health"]["status"], {"Saudável", "Atenção", "Crítico"})
+        self.assertEqual(overview["dashboard"]["data_scope"], "actual")
+        self.assertEqual(overview["dashboard"]["jobs_total"], 0)
+        self.assertEqual(overview["dashboard"]["actual_cost_total"], 0.0)
+        self.assertEqual(overview["ledger_summary"]["entries_count"], 0)
+        self.assertTrue(overview["simulation_summary"]["separated_from_actual"])
+        self.assertGreaterEqual(overview["simulation_summary"]["jobs_total"], 3)
+        self.assertGreaterEqual(overview["simulation_summary"]["ledger_entries_total"], 4)
+        self.assertGreater(overview["simulation_summary"]["actual_cost_total"], 0.0)
+        self.assertEqual(overview["health"]["status"], "Sem dados")
         self.assertIn(
             overview["progress_indicator"]["label"],
             {"Progresso comprovado", "Progresso parcial", "Sem progresso mensurável", "Regressão"},
@@ -88,6 +91,56 @@ class YouTubeGuardianObservabilityTests(unittest.TestCase):
         service.simulate_scenario(self.db, user=self.user, scenario_code="A")
         after_count = len(service.build_timeline(self.db, user=self.user, task_id=scenario_a["task_id"])["events"])
         self.assertEqual(before_count, after_count)
+
+    def test_real_costs_budget_and_manual_revenue_remain_outside_simulations(self):
+        service = youtube_financial_guardian_observability_service
+        self.db.add(Settings(
+            user_id=self.user.id,
+            per_video_spend_limit=1.0,
+            daily_spend_limit=2.0,
+            monthly_spend_limit=20.0,
+        ))
+        self.db.add(VideoTask(
+            id="yt-real-cost-1",
+            user_id=self.user.id,
+            status="completed",
+            progress=100,
+            message="Vídeo real concluído",
+            result_json=fg_module._json_dumps({
+                "kind": "youtube_story_video",
+                "payload": {"topic": "Vídeo real"},
+                "financial_guardian": {
+                    "source_type": "youtube_auto",
+                    "estimated_cost": 0.75,
+                    "actual_cost": 0.5,
+                },
+            }),
+        ))
+        self.db.commit()
+        service.simulate_scenario(self.db, user=self.user, scenario_code="G")
+        service.save_ledger_entry(
+            self.db,
+            user=self.user,
+            payload={
+                "entry_kind": "revenue",
+                "category": "YouTube",
+                "currency": "BRL",
+                "amount": 3.0,
+                "description": "Receita real informada manualmente",
+            },
+        )
+
+        overview = service.build_overview(self.db, user=self.user, period="current_month")
+
+        self.assertEqual(overview["dashboard"]["jobs_total"], 1)
+        self.assertEqual(overview["dashboard"]["actual_cost_total"], 0.5)
+        self.assertEqual(overview["dashboard"]["revenue_total"], 3.0)
+        self.assertEqual(overview["ledger_summary"]["entries_count"], 1)
+        self.assertEqual(overview["budget"]["status"], "within_budget")
+        self.assertEqual(overview["budget"]["daily_spent"], 0.5)
+        self.assertEqual(overview["budget"]["daily_remaining"], 1.5)
+        self.assertEqual(overview["simulation_summary"]["jobs_total"], 1)
+        self.assertGreaterEqual(overview["simulation_summary"]["ledger_entries_total"], 4)
 
     def test_preestimate_and_manual_ledger_entry_are_available(self):
         service = youtube_financial_guardian_observability_service
