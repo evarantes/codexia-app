@@ -159,7 +159,18 @@ UNIFIED_MUSIC_URL_PREFIX = MUSIC_URL_PREFIX
 def absolute_path_for_audio(filename_or_url: str) -> str:
     if not filename_or_url:
         return ""
-    clean = (filename_or_url or "").strip().split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    raw_path = (filename_or_url or "").strip().split("?", 1)[0].split("#", 1)[0]
+    # O renderizador legado salva o MP3 ao lado do MP4 e devolve esse caminho
+    # físico em ``render_report.audio_generation.output_path``. Se o arquivo já
+    # existe, preservá-lo; remontar apenas pelo basename faria a validação
+    # procurar o mesmo MP3 em AUDIO_OUTPUT_DIR e acusar um falso ausente.
+    if raw_path and not raw_path.lower().startswith(("http://", "https://")):
+        try:
+            if os.path.isfile(raw_path):
+                return raw_path
+        except Exception:
+            pass
+    clean = raw_path.lstrip("/")
     name = os.path.basename(clean)
     if not name:
         name = clean
