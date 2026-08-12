@@ -95,6 +95,7 @@ class AIContentGenerator:
         self.default_language = "pt-BR"
         self.provider = "openai"
         self.hf_token = os.getenv("HUGGINGFACE_TOKEN")
+        self._last_image_prompt_debug: Dict[str, Any] = {}
 
     def set_operation_context(
         self,
@@ -1783,7 +1784,7 @@ REGRAS IMPORTANTES:
         return "Cinematic photo-realistic, 8K, divine chiaroscuro, god rays, golden glow, celestial white highlights, deep blue atmosphere, warm fire tones, vibrant natural colors, epic perspective, deeply emotional expressions, high detail, high-definition, divine light, golden illumination, heavenly atmosphere, reverent scene, cinematic lighting, epic composition, inspiring, uplifting, photorealistic art, holy presence, single coherent scene, realistic anatomy, natural human faces, modest biblical wardrobe, live-action look"
 
     def _visual_global_negative(self) -> str:
-        return "(terror, horror, scary, disturbing, gore, blood, zombie, dark spirits, creepy, unsettling, death, monstrosity, distorted faces, menacing, evil appearance, nightmares, intense fear, non-divine context, unholy, abstract chaos, surreal nightmare, fused faces, extra limbs, deformed anatomy, melted skin, corpse-like face, skull imagery)"
+        return "(terror, horror, scary, disturbing, gore, blood, zombie, dark spirits, creepy, unsettling, death, monstrosity, distorted faces, menacing, evil appearance, nightmares, intense fear, non-divine context, unholy, abstract chaos, surreal nightmare, fused faces, extra limbs, deformed anatomy, melted skin, corpse-like face, skull imagery, gender-swapped Jesus, female Jesus, inconsistent character identity, moustache or beard copied onto a female character, mixed facial identity traits)"
 
     def _normalize_for_rules(self, text: str) -> str:
         import unicodedata
@@ -1791,6 +1792,27 @@ REGRAS IMPORTANTES:
         t = unicodedata.normalize("NFKD", t)
         t = "".join(ch for ch in t if not unicodedata.combining(ch))
         return t
+
+    def _visual_character_identity_guard(self, text: str) -> Dict[str, Any]:
+        """Build deterministic identity rules before any paid image request."""
+        norm = self._normalize_for_rules(text or "")
+        has_jesus = bool(
+            re.search(r"(?<!\w)(?:jesus(?:\s+christ)?|cristo|christ)(?!\w)", norm)
+        )
+        rules = [
+            "Character identity lock: keep each person's face, age, presentation, hair, wardrobe, and facial-hair pattern internally coherent and distinct from every other character",
+            "Do not accidentally copy a moustache or beard from a male character onto a female character, and do not merge facial traits between people",
+        ]
+        if has_jesus:
+            rules.insert(
+                0,
+                "Identity lock for Jesus Christ: whenever Jesus is explicitly present, portray the same adult Middle Eastern Jewish man from first-century Judea, with clearly masculine presentation, shoulder-length dark brown hair, a natural full beard, a simple cream tunic, and a brown mantle; never gender-swap Jesus or portray Jesus as a woman",
+            )
+        return {
+            "has_jesus": has_jesus,
+            "rules": rules,
+            "prompt": ". ".join(rules) + ".",
+        }
 
     def _infer_scene_emotions(self, text: str) -> List[str]:
         norm = self._normalize_for_rules(text or "")
@@ -1825,11 +1847,19 @@ REGRAS IMPORTANTES:
         )
         norm = self._normalize_for_rules(combined)
         scene_norm = self._normalize_for_rules(scene_text or "")
+        explicitly_mentions_jesus = bool(
+            re.search(r"(?<!\w)(?:jesus(?:\s+christ)?|cristo|christ)(?!\w)", norm)
+        )
+        generic_characters = (
+            ["Jesus", "biblical people relevant to the narration"]
+            if explicitly_mentions_jesus
+            else ["biblical people relevant to the exact narration"]
+        )
         director: Dict[str, Any] = {
             "story_id": "generic_biblical_story",
             "main_story": (story_title or "Biblical story").strip() or "Biblical story",
-            "main_characters": ["Jesus", "biblical people relevant to the narration"],
-            "allowed_characters": ["Jesus", "supporting biblical people relevant to the exact scene"],
+            "main_characters": list(generic_characters),
+            "allowed_characters": list(generic_characters),
             "forbidden_characters": ["Roman soldiers outside the narrated context"],
             "location": "ancient biblical setting matching the narration",
             "biblical_period": "1st century biblical world when relevant",
@@ -2584,6 +2614,10 @@ REGRAS IMPORTANTES:
             "calvario", "calvary", "golgota", "golgotha",
         ])
         is_christ_passion = has_jesus_reference and has_passion_reference
+
+        identity_guard = self._visual_character_identity_guard(positive_visual_context)
+        if "character identity lock:" not in self._normalize_for_rules(t):
+            t = f"{identity_guard['prompt']} {t}".strip()
 
         banned_words = [
             "monster", "monstrosity", "demon", "demonic", "devil", "satanic",
@@ -3702,6 +3736,13 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             "No text, no letters, no numbers, no captions, no subtitles, no signage, no watermarks, no logos. "
             f"Negative prompt: {neg}."
         ).strip()
+        identity_guard = self._visual_character_identity_guard(raw_prompt)
+        self._last_image_prompt_debug = {
+            "jesus_identity_lock_applied": bool(identity_guard.get("has_jesus")),
+            "character_identity_lock_applied": True,
+            "female_facial_hair_transfer_blocked": True,
+            "final_prompt_length": len(full_prompt),
+        }
 
         base_dir = Path("generated_assets/openai_images")
         base_dir.mkdir(parents=True, exist_ok=True)

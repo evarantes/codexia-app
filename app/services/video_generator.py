@@ -39,6 +39,7 @@ class VideoGenerator:
             "happy": "Music: Carefree by Kevin MacLeod\nFree download: https://filmmusic.io/song/3476-carefree\nLicense (CC BY 4.0): https://filmmusic.io/standard-license"
         }
         self._last_tts_debug: Dict[str, Any] = {}
+        self._last_image_prompt_debug: Dict[str, Any] = {}
         # self._ensure_fallback_music() removido do init para evitar delay no startup
 
     #region debug-point youtube-finalize-stuck
@@ -1877,7 +1878,7 @@ class VideoGenerator:
             prev = {str(item).lower() for item in (previous_profile.get(key) or []) if str(item).strip()}
             curr = {str(item).lower() for item in (current_profile.get(key) or []) if str(item).strip()}
             return {
-                "changed": bool(prev and curr and prev != curr),
+                "changed": bool((prev or curr) and prev != curr),
                 "introduced": sorted(curr - prev) if not prev else [],
                 "dropped": sorted(prev - curr) if not curr else [],
                 "added": sorted(curr - prev),
@@ -2098,6 +2099,39 @@ class VideoGenerator:
         if len(prompt) > 360:
             prompt = prompt[:360].rsplit(" ", 1)[0].strip(" ,.;:-")
         return prompt
+
+    def _selected_image_for_visual_group(
+        self,
+        selected_image_paths: List[str],
+        visual_group_id: int,
+    ) -> Optional[str]:
+        """Map prepared images to contiguous narrative groups, never round-robin scenes."""
+        paths = [str(path).strip() for path in (selected_image_paths or []) if str(path).strip()]
+        if not paths:
+            return None
+        try:
+            group_index = max(0, int(visual_group_id or 0))
+        except Exception:
+            group_index = 0
+        return paths[min(group_index, len(paths) - 1)]
+
+    def _resolve_scene_visual_duration(
+        self,
+        scene_timeline_entry: Dict[str, Any],
+        minimum_duration: float,
+    ) -> Dict[str, Any]:
+        entry = scene_timeline_entry if isinstance(scene_timeline_entry, dict) else {}
+        span = max(
+            0.0,
+            float(entry.get("scene_end") or 0.0) - float(entry.get("scene_start") or 0.0),
+        )
+        audio_anchored = bool(entry.get("caption_blocks"))
+        duration = span if audio_anchored and span > 0 else max(float(minimum_duration or 0.0), span)
+        return {
+            "duration": duration,
+            "timeline_span": span,
+            "audio_anchored": audio_anchored,
+        }
 
     def _compose_opening_cover_prompt(
         self,
@@ -3009,32 +3043,36 @@ class VideoGenerator:
             planned_audio_duration = float(planned_scene_durations[idx]) if idx < len(planned_scene_durations) else float(scene.get("_estimated_narration_sec") or 0.0)
 
             if sync_items:
-                audio_start = min(float(item.get("global_start") or 0.0) for item in sync_items)
-                audio_end = max(float(item.get("global_end") or 0.0) for item in sync_items)
+                raw_audio_start = min(float(item.get("global_start") or 0.0) for item in sync_items)
+                raw_audio_end = max(float(item.get("global_end") or 0.0) for item in sync_items)
+                scene_start = previous_scene_end
+                audio_start = max(scene_start, raw_audio_start)
+                audio_end = max(audio_start, raw_audio_end)
+                caption_start = audio_start
+                caption_end = audio_end
+                scene_end = audio_end
+                shift_sec = 0.0
             else:
                 audio_start = previous_scene_end + DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC
                 audio_end = audio_start + max(0.0, planned_audio_duration)
-
-            minimum_audio_start = previous_scene_end + DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC
-            shift_sec = 0.0
-            audio_start = max(previous_scene_end, float(audio_start or 0.0))
-            if audio_start < minimum_audio_start:
-                shift_sec = minimum_audio_start - audio_start
-                audio_start += shift_sec
-                audio_end += shift_sec
-            audio_end = max(audio_start, float(audio_end or 0.0))
-            scene_start = max(previous_scene_end, audio_start - (DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC))
-            caption_start = max(scene_start + DEFAULT_SCENE_IMAGE_LEAD_SEC, audio_start - DEFAULT_SCENE_CAPTION_LEAD_SEC)
-            caption_end = max(caption_start, audio_end)
-            scene_end = max(audio_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC, caption_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC)
+                minimum_audio_start = previous_scene_end + DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC
+                shift_sec = 0.0
+                audio_start = max(previous_scene_end, float(audio_start or 0.0))
+                if audio_start < minimum_audio_start:
+                    shift_sec = minimum_audio_start - audio_start
+                    audio_start += shift_sec
+                    audio_end += shift_sec
+                audio_end = max(audio_start, float(audio_end or 0.0))
+                scene_start = max(previous_scene_end, audio_start - (DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC))
+                caption_start = max(scene_start + DEFAULT_SCENE_IMAGE_LEAD_SEC, audio_start - DEFAULT_SCENE_CAPTION_LEAD_SEC)
+                caption_end = max(caption_start, audio_end)
+                scene_end = max(audio_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC, caption_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC)
 
             caption_blocks: List[Dict[str, Any]] = []
             if sync_items:
                 for block_index, item in enumerate(sync_items):
-                    block_start = float(item.get("global_start") or audio_start) + shift_sec
-                    block_end = max(block_start, float(item.get("global_end") or audio_end) + shift_sec)
-                    if block_index == 0:
-                        block_start = caption_start
+                    block_start = max(scene_start, float(item.get("global_start") or audio_start))
+                    block_end = max(block_start, float(item.get("global_end") or audio_end))
                     caption_blocks.append({
                         "block_index": int(item.get("block_index") or block_index),
                         "caption": str(item.get("caption") or clean_text).strip(),
@@ -3069,6 +3107,7 @@ class VideoGenerator:
                 "transition": transition_name,
                 "timeline_source": timeline_source,
                 "uses_real_audio_timing": bool(sync_items and timeline_source != "text_fallback"),
+                "synthetic_timeline_shift_sec": round(shift_sec, 3),
                 "caption_blocks": caption_blocks,
             }
             official_timeline.append(entry)
@@ -3829,18 +3868,37 @@ $synth.Dispose()
             raise Exception("Sem prompt de imagem válido para esta cena.")
         norm_bp = (base_prompt or "").strip().lower()
         strict_worship = any(k in norm_bp for k in ["christian", "worship", "gospel", "louvor", "jesus", "cristo", "cruz", "calvario", "golgota"])
+        combined_identity_text = f"{base_prompt} {text_fallback or ''}".strip()
+        has_jesus = bool(
+            re.search(
+                r"(?<!\w)(?:jesus(?:\s+christ)?|cristo|christ)(?!\w)",
+                self._fold_text_for_matching(combined_identity_text),
+            )
+        )
         parts = [
             f"{base_prompt}. ",
             "Biblical cinematic realism, elegant composition, natural light, family-friendly, visually coherent with the narration. ",
         ]
         if strict_worship:
             parts.append("Respectful gospel atmosphere. ")
+        if has_jesus:
+            parts.append(
+                "Identity lock for Jesus Christ: whenever Jesus is explicitly present, portray the same adult Middle Eastern Jewish man from first-century Judea, with clearly masculine presentation, shoulder-length dark brown hair, a natural full beard, a simple cream tunic, and a brown mantle; never gender-swap Jesus or portray Jesus as a woman. "
+            )
         parts += [
+            "Character identity lock: keep each person's face, age, presentation, hair, wardrobe, and facial-hair pattern internally coherent and distinct from every other character. ",
+            "Do not accidentally copy a moustache or beard from a male character onto a female character, and do not merge facial traits between people. ",
             "Prefer medium or wide shot, realistic humans, natural anatomy, subtle emotion, professional color palette. ",
             "Avoid extreme facial close-up. No text, watermark or logo. ",
-            "Negative prompt: horror, gore, occult, demons, skulls, cemetery, dystopian, sci-fi, robots, distorted anatomy, extra limbs, uncanny faces.",
+            "Negative prompt: horror, gore, occult, demons, skulls, cemetery, dystopian, sci-fi, robots, distorted anatomy, extra limbs, uncanny faces, gender-swapped Jesus, female Jesus, inconsistent character identity, moustache or beard copied onto a female character, mixed facial identity traits.",
         ]
         final_prompt = "".join(parts)
+        self._last_image_prompt_debug = {
+            "jesus_identity_lock_applied": has_jesus,
+            "character_identity_lock_applied": True,
+            "female_facial_hair_transfer_blocked": True,
+            "final_prompt_length": len(final_prompt),
+        }
         if not self.ai_service:
             raise Exception("AI Service não inicializado para geração de imagem.")
 
@@ -5449,8 +5507,16 @@ $synth.Dispose()
                 visual_group_id = scene_to_group.get(i, i)
                 visual_group = group_lookup.get(visual_group_id, {})
                 scene_decision = scene_decision_lookup.get(i, {})
+                selected_image_index = None
                 if selected_image_paths:
-                    bg_image_path = selected_image_paths[i % len(selected_image_paths)]
+                    bg_image_path = self._selected_image_for_visual_group(
+                        selected_image_paths,
+                        visual_group_id,
+                    )
+                    try:
+                        selected_image_index = selected_image_paths.index(bg_image_path)
+                    except Exception:
+                        selected_image_index = None
                     visual_source = "selected_image"
                 elif use_single_bg and video_bg_paths:
                     try:
@@ -5521,10 +5587,13 @@ $synth.Dispose()
                 scene_timeline_entry = story_timeline_entries[i] if i < len(story_timeline_entries) else {}
                 planned_scene_duration = max(0.0, float(scene_timeline_entry.get("audio_end") or 0.0) - float(scene_timeline_entry.get("audio_start") or 0.0))
                 required_caption_duration = max(0.0, float(scene_timeline_entry.get("caption_end") or 0.0) - float(scene_timeline_entry.get("caption_start") or 0.0))
-                scene_dur = max(
+                scene_duration_info = self._resolve_scene_visual_duration(
+                    scene_timeline_entry,
                     min_scene_visual_duration,
-                    max(0.0, float(scene_timeline_entry.get("scene_end") or 0.0) - float(scene_timeline_entry.get("scene_start") or 0.0)),
                 )
+                timeline_scene_duration = float(scene_duration_info["timeline_span"])
+                timeline_is_audio_anchored = bool(scene_duration_info["audio_anchored"])
+                scene_dur = float(scene_duration_info["duration"])
                 bg_clip = self._set_clip_duration(bg_clip, scene_dur)
                 reuse_count = int(scene_reuse_counts.get(bg_image_path, 0))
                 scene_reuse_counts[bg_image_path] = reuse_count + 1
@@ -5549,6 +5618,7 @@ $synth.Dispose()
                     "image_group_id": visual_group_id + 1,
                     "reused": bool(reused_from_pool or scene_reuse_counts.get(bg_image_path, 0) > 1),
                     "source": visual_source,
+                    "selected_image_index": selected_image_index,
                     "decision": scene_decision.get("decision"),
                     "justification": scene_decision.get("justification"),
                     "image_path": bg_image_path,
@@ -5566,8 +5636,9 @@ $synth.Dispose()
                     "caption_end_sec": scene_timeline_entry.get("caption_end"),
                     "audio_duration_sec": round(planned_scene_duration, 2),
                     "required_caption_duration_sec": round(required_caption_duration, 2),
-                    "scene_audio_margin_sec": round(DEFAULT_SCENE_AUDIO_MARGIN_SEC, 2),
-                    "planned_visual_duration_sec": round(planned_scene_duration, 2),
+                    "scene_audio_margin_sec": 0.0 if timeline_is_audio_anchored else round(DEFAULT_SCENE_AUDIO_MARGIN_SEC, 2),
+                    "timeline_is_audio_anchored": timeline_is_audio_anchored,
+                    "planned_visual_duration_sec": round(timeline_scene_duration, 2),
                     "final_visual_duration_sec": round(scene_dur, 2),
                 })
                 if i < len(story_timeline_entries):
