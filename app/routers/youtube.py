@@ -956,8 +956,157 @@ def _dispatch_task_result(task_id: str, payload: Dict[str, Any], executor: str, 
         merged.update(extra)
     return merged
 
+
+def _is_youtube_series_payload(payload: Dict[str, Any], task_id: Optional[str] = None) -> bool:
+    raw = payload if isinstance(payload, dict) else {}
+    if str(raw.get("source_module") or "").strip().lower() == "youtube_series":
+        return True
+    if isinstance(raw.get("series_context"), dict):
+        return True
+    if not task_id:
+        return False
+    try:
+        task = get_task(str(task_id)) or {}
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        nested_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        return bool(
+            isinstance(result.get("series_context"), dict)
+            or isinstance(nested_payload.get("series_context"), dict)
+            or str(nested_payload.get("source_module") or "").strip().lower() == "youtube_series"
+        )
+    except Exception:
+        return False
+
+
+def _series_resource_preflight(
+    payload: Dict[str, Any],
+    task_id: str,
+    *,
+    persist_block: bool = True,
+) -> Optional[Dict[str, Any]]:
+    if not _is_youtube_series_payload(payload, task_id):
+        return None
+    raw = payload if isinstance(payload, dict) else {}
+    try:
+        duration_minutes = max(1, int(raw.get("duration") or raw.get("duration_minutes") or 10))
+    except Exception:
+        duration_minutes = 10
+    from app.services.video_resource_guard import (
+        evaluate_series_video_resources,
+        resource_guard_message,
+    )
+
+    report = evaluate_series_video_resources(duration_minutes)
+    report = {
+        **report,
+        "message": resource_guard_message(report),
+        "checked_at": datetime.utcnow().isoformat(),
+    }
+    if persist_block and not bool(report.get("allowed")):
+        update_task(
+            task_id,
+            status="failed",
+            progress=0,
+            message=str(report.get("message") or "Produção bloqueada pela proteção de recursos."),
+            result=_dispatch_task_result(
+                task_id,
+                raw,
+                "resource_guard",
+                resource_guard=report,
+                retryable=True,
+            ),
+        )
+    return report
+
+
+def _prefer_renderer_as_oom_victim(payload: Dict[str, Any], task_id: str) -> None:
+    """Prioriza encerrar o renderizador, nunca a API, se o kernel ficar sem RAM."""
+    if not _is_youtube_series_payload(payload, task_id):
+        return
+    try:
+        with open("/proc/self/oom_score_adj", "w", encoding="utf-8") as handle:
+            handle.write("500")
+    except Exception:
+        pass
+
+
+def _start_isolated_video_generation(
+    payload: Dict[str, Any],
+    task_id: str,
+    *,
+    start_message: str = "Iniciando geração em processo isolado...",
+) -> bool:
+    try:
+        configured_method = str(os.getenv("VIDEO_GENERATION_PROCESS_START_METHOD") or "spawn").strip().lower()
+        method = configured_method if configured_method in {"spawn", "forkserver", "fork"} else "spawn"
+        if sys.platform == "win32":
+            method = "spawn"
+        ctx = multiprocessing.get_context(method)
+        proc = ctx.Process(
+            target=process_video_generation_payload,
+            args=(payload, task_id),
+            daemon=True,
+        )
+        proc.start()
+        update_task(
+            task_id,
+            status="processing",
+            progress=1,
+            message=start_message,
+            result=_dispatch_task_result(task_id, payload, "process", pid=proc.pid),
+        )
+
+        def _watch(child: multiprocessing.Process, tid: str):
+            try:
+                child.join()
+                if child.exitcode and child.exitcode != 0:
+                    task = get_task(tid) or {}
+                    status = str(task.get("status") or "").lower()
+                    if status not in {"completed", "failed", "cancelled"}:
+                        suffix = (
+                            " O renderizador foi encerrado pelo sistema antes de concluir."
+                            if int(child.exitcode or 0) < 0
+                            else " O processo isolado terminou com erro."
+                        )
+                        update_task(
+                            tid,
+                            status="failed",
+                            progress=0,
+                            message=(
+                                "A produção não foi concluída, mas a API permaneceu protegida."
+                                f"{suffix} Código de saída: {child.exitcode}."
+                            ),
+                        )
+            except Exception:
+                pass
+
+        threading.Thread(target=_watch, args=(proc, task_id), daemon=True).start()
+        return True
+    except Exception as exc:
+        if _is_youtube_series_payload(payload, task_id):
+            update_task(
+                task_id,
+                status="failed",
+                progress=0,
+                message=(
+                    "Não foi possível iniciar o renderizador isolado; a execução dentro da API foi bloqueada "
+                    f"por segurança. Detalhe: {str(exc)[:200]}"
+                ),
+                result=_dispatch_task_result(
+                    task_id,
+                    payload,
+                    "process_start_failed",
+                    retryable=True,
+                ),
+            )
+        return False
+
 def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     payload = _maybe_enable_render_only_flags(payload, task_id)
+    is_series = _is_youtube_series_payload(payload, task_id)
+    resource_report = _series_resource_preflight(payload, task_id)
+    if resource_report is not None and not bool(resource_report.get("allowed")):
+        return
     use_rq_raw = (os.getenv("USE_RQ_FOR_VIDEO_GENERATION") or "").strip()
     if use_rq_raw:
         use_rq = use_rq_raw.lower() in {"1", "true", "yes"}
@@ -1005,11 +1154,28 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
                                 return
                         except Exception:
                             pass
+                        if _is_youtube_series_payload(pay, tid):
+                            try:
+                                update_task(
+                                    tid,
+                                    status="failed",
+                                    progress=0,
+                                    message=(
+                                        "Worker da fila indisponível. A recuperação dentro do processo web foi "
+                                        "bloqueada para proteger o servidor; reinicie a tarefa após normalizar o worker."
+                                    ),
+                                    result=_dispatch_task_result(
+                                        tid,
+                                        pay,
+                                        "rq_stale",
+                                        retryable=True,
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                            return
                         try:
                             update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Recuperando a mesma tarefa com exclusividade...")
-                        except Exception:
-                            pass
-                        try:
                             th = threading.Thread(target=process_video_generation_payload, args=(pay, tid), daemon=True)
                             th.start()
                         except Exception:
@@ -1038,28 +1204,15 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     if executor not in {"auto", "thread", "process"}:
         executor = "thread"
 
-    use_process = (executor == "process") and (conn is not None)
+    if is_series:
+        executor = "process"
+
+    use_process = executor == "process" and (conn is not None or is_series)
     if use_process:
-        try:
-            method = "spawn" if sys.platform == "win32" else "fork"
-            ctx = multiprocessing.get_context(method)
-            p = ctx.Process(target=process_video_generation_payload, args=(payload, task_id), daemon=True)
-            p.start()
-            update_task(task_id, status="processing", progress=1, message="Iniciando geração em processo separado...", result=_dispatch_task_result(task_id, payload, "process", pid=p.pid))
-            def _watch(proc: multiprocessing.Process, tid: str):
-                try:
-                    proc.join()
-                    if proc.exitcode and proc.exitcode != 0:
-                        t = get_task(tid) or {}
-                        status = str((t.get("status") or "")).lower()
-                        if status not in {"completed", "failed", "cancelled"}:
-                            update_task(tid, status="failed", progress=0, message="Falha ao iniciar/rodar o processo de geração. Verifique os logs do container.")
-                except Exception:
-                    pass
-            threading.Thread(target=_watch, args=(p, task_id), daemon=True).start()
+        if _start_isolated_video_generation(payload, task_id):
             return
-        except Exception:
-            pass
+        if is_series:
+            return
 
     msg = force_local_reason or "Iniciando geração local..."
     if executor == "process" and conn is None:
@@ -5984,6 +6137,10 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
     return report
 
 def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
+    resource_report = _series_resource_preflight(payload, task_id)
+    if resource_report is not None and not bool(resource_report.get("allowed")):
+        return
+    _prefer_renderer_as_oom_victim(payload, task_id)
     try:
         req = VideoRequest(**(payload or {}))
     except Exception:

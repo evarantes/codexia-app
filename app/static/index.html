@@ -1584,6 +1584,9 @@
                                     <td class="p-3">
                                         <span class="px-2 py-1 rounded text-xs font-bold uppercase" :class="getStatusClass(episode.status)">{{ episode.status }}</span>
                                         <div v-if="episode.task_error" class="mt-2 max-w-xs text-xs text-red-700">{{ episode.task_error }}</div>
+                                        <div v-if="episode.resource_guard && episode.resource_guard.allowed === false" class="mt-2 max-w-xs rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+                                            <strong>Proteção do servidor:</strong> {{ episode.resource_guard.message }}
+                                        </div>
                                         <div v-if="episode.provider_error && episode.provider_error.action_required" class="mt-1 max-w-xs text-xs text-red-800"><strong>Resolver:</strong> {{ episode.provider_error.action_required }}</div>
                                     </td>
                                     <td class="p-3 flex flex-wrap gap-2">
@@ -7509,7 +7512,11 @@
                         if (this.selectedSeries && this.selectedSeries.id) {
                             await this.openSeriesDetail(this.selectedSeries.id, { silent: true });
                         }
-                        alert(`Séries sincronizadas. Produções enfileiradas: ${data.queued || 0}.`);
+                        const resourceBlocked = Number(data.resource_blocked || 0);
+                        const resourceInfo = resourceBlocked
+                            ? ` Proteção do servidor bloqueou ${resourceBlocked} produção(ões); abra a série para ver os recursos necessários.`
+                            : '';
+                        alert(`Séries sincronizadas. Produções enfileiradas: ${data.queued || 0}.${resourceInfo}`);
                     } catch (e) {
                         alert('Erro ao sincronizar séries: ' + (e.message || e));
                     }

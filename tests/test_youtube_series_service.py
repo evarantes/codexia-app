@@ -250,6 +250,44 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         self.assertIsNone(episode.task_id)
         enqueue.assert_not_called()
 
+    def test_scheduler_preserves_episode_when_server_resources_are_unsafe(self):
+        detail = self._create_series(status="active", end_date="2026-08-01")
+        series_id = detail["id"]
+        episode = self.db.query(SeriesEpisode).filter(
+            SeriesEpisode.series_id == series_id
+        ).first()
+        episode.production_datetime = datetime.utcnow() - timedelta(minutes=5)
+        episode.status = "awaiting_production"
+        self.db.commit()
+
+        blocked_report = {
+            "enabled": True,
+            "allowed": False,
+            "reasons": ["RAM total insuficiente."],
+            "snapshot": {"total_memory_mb": 3814.0},
+            "requirements": {"min_total_memory_mb": 6144.0},
+        }
+        with patch(
+            "app.services.youtube_series_service.evaluate_series_video_resources",
+            return_value=blocked_report,
+        ), patch.object(youtube_series_service, "_enqueue_episode_generation") as enqueue:
+            summary = youtube_series_service.sync_series_scheduler(
+                self.db,
+                now=datetime.utcnow(),
+            )
+
+        self.db.refresh(episode)
+        series = self.db.query(SeriesPlan).filter(SeriesPlan.id == series_id).first()
+        metadata = json.loads(episode.metadata_json or "{}")
+        self.assertEqual(summary["resource_blocked"], 1)
+        self.assertEqual(summary["queued"], 0)
+        self.assertEqual(series.status, "pending_issue")
+        self.assertEqual(episode.status, "awaiting_production")
+        self.assertIsNone(episode.task_id)
+        self.assertFalse(metadata["resource_guard"]["allowed"])
+        self.assertIn("permanece preservada", metadata["resource_guard"]["message"])
+        enqueue.assert_not_called()
+
     def test_approval_creates_publish_queue_entry_without_regeneration(self):
         detail = self._create_series(status="active")
         episode_id = detail["episodes"][0]["id"]
