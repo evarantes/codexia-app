@@ -778,6 +778,40 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
             "render_report": {"audio_generation": {"output_path": audio_path}}
         }), audio_path)
 
+    def test_12_existing_audio_path_outside_audio_dir_passes_physical_validation(self):
+        pipe = self._pipeline()
+        ik = "test:audio-next-to-video:v1"
+        req = self._minimal_request(ik=ik, module="story", sid="audio:video-dir", image_count=1)
+        pipe.submit_or_reuse(self.db, request=req)
+
+        # VideoGenerator usa seu output_dir tanto para o MP4 quanto para o MP3.
+        # O pipeline não pode trocar esse caminho real por AUDIO_OUTPUT_DIR.
+        audio_path = str(self.videos_dir / "narration-next-to-video.wav")
+        _make_wav_audio(audio_path, size_bytes=96 * 1024)
+        image_path = str(self.images_dir / "audio-validation.png")
+        _make_image(image_path)
+        video_path = str(self.videos_dir / "audio-validation.mp4")
+        _make_minimal_mp4(video_path)
+
+        uv = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == ik).one()
+        uv.script_json = json.dumps({"title": "Áudio fora da pasta canônica", "text": "Teste"})
+        uv.storyboard_json = json.dumps({"scenes": [{"text": "Cena"}]})
+        uv.images_json = json.dumps({"paths": [image_path]})
+        uv.audio_path = audio_path
+        uv.video_path = video_path
+        self.db.commit()
+
+        validation = pipe.validate_before_awaiting_review(
+            self.db,
+            ik,
+            probe_local_paths=True,
+            probe_http=False,
+        )
+
+        self.assertTrue(validation.checks["audio_exists_and_non_empty"], validation.details)
+        self.assertEqual(validation.details["audio"]["path"], audio_path)
+        self.assertEqual(validation.details["audio"]["abs_path"], audio_path)
+
 
 if __name__ == "__main__":
     unittest.main()
