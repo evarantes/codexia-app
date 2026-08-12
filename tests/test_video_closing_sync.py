@@ -63,6 +63,61 @@ class VideoClosingSyncTests(unittest.TestCase):
                     synced.close()
                 clip.close()
 
+    def test_subclip_clamps_marginal_child_audio_rounding_difference(self):
+        try:
+            from moviepy import AudioClip, ColorClip
+        except ImportError:
+            from moviepy.editor import AudioClip, ColorClip
+
+        with tempfile.TemporaryDirectory() as tmp:
+            generator = VideoGenerator(output_dir=tmp)
+            audio = AudioClip(lambda t: 0, duration=140.94, fps=8000)
+            clip = ColorClip(
+                size=(16, 16),
+                color=(20, 30, 40),
+                duration=141.0,
+            )
+            clip = generator._set_clip_audio(clip, audio)
+            trimmed = None
+            try:
+                # O MoviePy mostra ambos como 140.94, mas rejeita a diferença
+                # interna acima de 1e-8 quando propaga o corte ao áudio.
+                trimmed = generator._subclip(clip, 0, 140.940001)
+                self.assertAlmostEqual(float(trimmed.duration), 140.94, places=6)
+                self.assertEqual(
+                    generator._last_subclip_clamp_debug["limiting_component"],
+                    "audio",
+                )
+                self.assertAlmostEqual(
+                    generator._last_subclip_clamp_debug["overshoot_sec"],
+                    0.000001,
+                    places=9,
+                )
+            finally:
+                if trimmed is not None:
+                    trimmed.close()
+                clip.close()
+                audio.close()
+
+    def test_subclip_does_not_hide_a_real_duration_mismatch(self):
+        try:
+            from moviepy import AudioClip, ColorClip
+        except ImportError:
+            from moviepy.editor import AudioClip, ColorClip
+
+        with tempfile.TemporaryDirectory() as tmp:
+            generator = VideoGenerator(output_dir=tmp)
+            audio = AudioClip(lambda t: 0, duration=10.0, fps=8000)
+            clip = ColorClip(size=(16, 16), color=(20, 30, 40), duration=12.0)
+            clip = generator._set_clip_audio(clip, audio)
+            try:
+                with self.assertRaises(ValueError):
+                    generator._subclip(clip, 0, 11.0)
+                self.assertIsNone(generator._last_subclip_clamp_debug)
+            finally:
+                clip.close()
+                audio.close()
+
 
 if __name__ == "__main__":
     unittest.main()
