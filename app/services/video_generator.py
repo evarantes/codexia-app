@@ -3984,7 +3984,49 @@ $synth.Dispose()
         return base
 
     def _subclip(self, clip, start_t, end_t):
-        """Compatível com MoviePy 1.x (subclip) e 2.x (subclipped)."""
+        """Compatível com MoviePy 1.x/2.x e seus limites de ponto flutuante.
+
+        O MoviePy aplica o mesmo ``end_t`` ao vídeo, áudio e máscara. Depois de
+        concatenações, esses objetos podem terminar com diferenças inferiores
+        a um frame e o MoviePy rejeita o corte mesmo exibindo durações iguais
+        com duas casas decimais. Limitamos somente diferenças marginais; uma
+        divergência real continua sendo levantada pela própria biblioteca.
+        """
+        self._last_subclip_clamp_debug = None
+        try:
+            requested_value = float(end_t) if end_t is not None else None
+        except (TypeError, ValueError):
+            requested_value = None
+
+        if requested_value is not None:
+            component_durations = []
+            for name, component in (
+                ("clip", clip),
+                ("audio", getattr(clip, "audio", None)),
+                ("mask", getattr(clip, "mask", None)),
+            ):
+                try:
+                    duration = float(getattr(component, "duration", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    duration = 0.0
+                if duration > 0:
+                    component_durations.append((name, duration))
+
+            if component_durations:
+                limiting_component, available_end = min(
+                    component_durations,
+                    key=lambda item: item[1],
+                )
+                overshoot = requested_value - available_end
+                if 0.0 < overshoot <= 0.02:
+                    end_t = available_end
+                    self._last_subclip_clamp_debug = {
+                        "requested_end_sec": requested_value,
+                        "clamped_end_sec": available_end,
+                        "overshoot_sec": overshoot,
+                        "limiting_component": limiting_component,
+                    }
+
         if hasattr(clip, "subclip"):
             return clip.subclip(start_t, end_t)
         if hasattr(clip, "subclipped"):
