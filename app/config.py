@@ -94,15 +94,23 @@ except Exception:
 
 _data_books_dir = os.path.join("/data", "media", "books")
 _data_covers_dir = os.path.join("/data", "media", "covers")
+_data_branding_dir = os.path.join("/data", "media", "branding")
 _use_data_volume_books = os.path.isdir("/data") and not _env_truthy("USE_STATIC_BOOKS") and _dir_is_writable(_data_books_dir) and _dir_is_writable(_data_covers_dir)
+_use_data_volume_branding = os.path.isdir("/data") and not _env_truthy("USE_STATIC_BRANDING") and _dir_is_writable(_data_branding_dir)
 BOOKS_OUTPUT_DIR = _data_books_dir if _use_data_volume_books else str(STATIC_DIR / "books")
 COVERS_OUTPUT_DIR = _data_covers_dir if _use_data_volume_books else str(STATIC_DIR / "covers")
+BRANDING_OUTPUT_DIR = _data_branding_dir if _use_data_volume_branding else str(STATIC_DIR / "branding")
+BRANDING_URL_PREFIX = "/media/branding" if _use_data_volume_branding else "/static/branding"
 try:
     os.makedirs(BOOKS_OUTPUT_DIR, exist_ok=True)
 except Exception:
     pass
 try:
     os.makedirs(COVERS_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    pass
+try:
+    os.makedirs(BRANDING_OUTPUT_DIR, exist_ok=True)
 except Exception:
     pass
 
@@ -148,6 +156,7 @@ UNIFIED_AUDIO_DIR = AUDIO_OUTPUT_DIR
 UNIFIED_IMAGES_DIR = IMAGES_OUTPUT_DIR
 UNIFIED_COVERS_DIR = COVERS_OUTPUT_DIR
 UNIFIED_MUSIC_DIR = MUSIC_OUTPUT_DIR
+UNIFIED_BRANDING_DIR = BRANDING_OUTPUT_DIR
 
 UNIFIED_VIDEO_URL_PREFIX = VIDEO_URL_PREFIX
 UNIFIED_AUDIO_URL_PREFIX = AUDIO_URL_PREFIX

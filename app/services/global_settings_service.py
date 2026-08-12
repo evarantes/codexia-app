@@ -463,6 +463,50 @@ class GlobalSettingsService:
         env_raw = _normalize_text(os.getenv(env_name)) if env_name else ""
         return {"value": env_raw or None, "source": "env" if env_raw else None}
 
+    def resolve_official_channel_logo(self) -> Dict[str, Any]:
+        """Resolve a identidade visual oficial sem fazer chamadas externas.
+
+        O arquivo local persistido tem prioridade. Uma URL configurada funciona
+        apenas como contingencia quando o arquivo nao existe no container atual.
+        """
+        settings_obj = self.get_settings()
+        configured_path = _normalize_text(
+            getattr(settings_obj, "official_channel_logo_path", None) if settings_obj else None
+        )
+        configured_url = _normalize_text(
+            getattr(settings_obj, "official_channel_logo_url", None) if settings_obj else None
+        )
+        env_path = _normalize_text(os.getenv("OFFICIAL_CHANNEL_LOGO_PATH"))
+        env_url = _normalize_text(os.getenv("OFFICIAL_CHANNEL_LOGO_URL"))
+
+        path_value = configured_path or env_path
+        resolved_path = ""
+        if path_value:
+            resolved_path = os.path.abspath(os.path.expanduser(path_value))
+        path_exists = bool(resolved_path and os.path.isfile(resolved_path))
+
+        selected_value: Optional[str] = None
+        selected_source: Optional[str] = None
+        if path_exists:
+            selected_value = resolved_path
+            selected_source = "settings_path" if configured_path else "env_path"
+        elif configured_url:
+            selected_value = configured_url
+            selected_source = "settings_url"
+        elif env_url:
+            selected_value = env_url
+            selected_source = "env_url"
+
+        return {
+            "configured": bool(configured_path or configured_url or env_path or env_url),
+            "configured_path": configured_path or None,
+            "configured_url": configured_url or None,
+            "resolved_path": resolved_path or None,
+            "path_exists": path_exists,
+            "selected_value": selected_value,
+            "selected_source": selected_source,
+        }
+
     def get_ai_provider_settings(self) -> Dict[str, Any]:
         settings_obj = self.get_settings()
         return {

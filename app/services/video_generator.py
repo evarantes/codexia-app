@@ -561,7 +561,7 @@ class VideoGenerator:
             "lines": list(cta_layout.get("lines") or []),
         }
 
-        subtitle = "Uma mensagem de fé para continuar com você."
+        subtitle = str(branding.get("endcard_cta_text") or "INSCREVA-SE E CONTINUE CONOSCO").strip()
         subtitle_area = _area_from_pixels(
             safe_margin_x,
             h - safe_margin_y - int(h * 0.10),
@@ -591,6 +591,7 @@ class VideoGenerator:
             "line_count": int(subtitle_layout.get("line_count") or 0),
             "lines": list(subtitle_layout.get("lines") or []),
         }
+        report_payload["contextual_closing"] = dict(branding.get("contextual_closing") or {})
 
         if isinstance(layout_report, dict):
             layout_report.clear()
@@ -1248,6 +1249,136 @@ class VideoGenerator:
             "cura o coração e responde a quem persevera em fé."
         )
 
+    def _wrap_endcard_message(self, value: Any, *, max_chars: int = 46, max_lines: int = 2) -> List[str]:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if not text:
+            return []
+        words = text.split()
+        lines: List[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and len(candidate) > max_chars:
+                lines.append(current)
+                current = word
+                if len(lines) >= max_lines:
+                    break
+            else:
+                current = candidate
+        if len(lines) < max_lines and current:
+            lines.append(current)
+        consumed_words = sum(len(line.split()) for line in lines)
+        if consumed_words < len(words) and lines:
+            lines[-1] = lines[-1].rstrip(" ,;:-—.!?") + "…"
+        return lines[:max_lines]
+
+    def _contextual_reflection_from_plan(self, plan: Dict[str, Any]) -> str:
+        scenes = plan.get("scenes") if isinstance(plan.get("scenes"), list) else []
+        context_parts = [str(plan.get("title") or ""), str(plan.get("theme") or "")]
+        context_parts.extend(
+            str((scene or {}).get("text") or (scene or {}).get("narration") or "")
+            for scene in scenes[:4]
+            if isinstance(scene, dict)
+        )
+        normalized = unicodedata.normalize("NFKD", " ".join(context_parts)).encode("ascii", "ignore").decode("ascii").lower()
+        rules = [
+            (("solidao", "sozinho", "vazio"), "Mesmo quando a solidão pesa, Deus permanece perto e renova a esperança de quem abre o coração."),
+            (("medo", "ansiedade", "preocupacao"), "A fé não ignora o medo; ela nos lembra que Deus caminha conosco em cada novo passo."),
+            (("perdao", "culpa", "recomeco"), "O perdão abre espaço para um novo começo e nos convida a caminhar com graça e verdade."),
+            (("proposito", "chamado", "escolheu"), "Seu propósito amadurece quando a fé se transforma em atitude, serviço e perseverança."),
+            (("desafio", "incerteza", "tempestade", "prova"), "Mesmo diante do desafio, Deus continua presente e fortalece quem escolhe avançar pela fé."),
+            (("amor", "cura", "coracao"), "O amor de Deus alcança o coração, restaura a esperança e nos ensina a cuidar uns dos outros."),
+            (("gratidao", "agradecer", "bencao"), "A gratidão muda o olhar e nos ajuda a reconhecer a presença de Deus também nas pequenas coisas."),
+        ]
+        for keywords, message in rules:
+            if any(keyword in normalized for keyword in keywords):
+                return message
+        return "Leve esta mensagem com você: Deus permanece presente e fortalece quem escolhe caminhar pela fé."
+
+    def _resolve_contextual_closing(self, plan: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        plan = plan if isinstance(plan, dict) else {}
+        branding = plan.get("branding") if isinstance(plan.get("branding"), dict) else {}
+
+        explicit_message = branding.get("final_message") or plan.get("final_message")
+        if explicit_message:
+            if isinstance(explicit_message, str):
+                lines = [line.strip() for line in re.split(r"[\r\n]+", explicit_message) if line.strip()]
+            elif isinstance(explicit_message, (list, tuple)):
+                lines = [str(line).strip() for line in explicit_message if str(line or "").strip()]
+            else:
+                lines = []
+            if lines:
+                return {
+                    "kind": "custom",
+                    "source": "explicit_final_message",
+                    "text": " ".join(lines),
+                    "reference": None,
+                    "lines": lines[:3],
+                }
+
+        sources: List[Dict[str, Any]] = [branding, plan]
+        scenes = plan.get("scenes") if isinstance(plan.get("scenes"), list) else []
+        sources.extend(scene for scene in scenes if isinstance(scene, dict))
+        verse_text = ""
+        verse_reference = ""
+        for source in sources:
+            structured = source.get("scripture") if isinstance(source.get("scripture"), dict) else {}
+            structured_verse = source.get("bible_verse") if isinstance(source.get("bible_verse"), dict) else {}
+            for candidate in (structured, structured_verse):
+                if not verse_text:
+                    verse_text = str(candidate.get("text") or candidate.get("verse") or "").strip()
+                if not verse_reference:
+                    verse_reference = str(candidate.get("reference") or candidate.get("ref") or "").strip()
+            if not verse_text:
+                for key in ("closing_verse", "meditation_verse", "verse_text", "scripture_text", "bible_verse"):
+                    value = source.get(key)
+                    if value and not isinstance(value, dict):
+                        verse_text = str(value).strip()
+                        break
+            if not verse_reference:
+                for key in ("verse_reference", "bible_reference", "biblical_reference", "scripture_reference"):
+                    value = str(source.get(key) or "").strip()
+                    if value:
+                        verse_reference = value
+                        break
+            if verse_text or verse_reference:
+                break
+
+        if verse_text or verse_reference:
+            compact_verse = self._compact_cinematic_phrase(verse_text, max_words=18)
+            label = f"MEDITE EM {verse_reference}" if verse_reference else "VERSÍCULO PARA MEDITAÇÃO"
+            lines = [label.upper(), *self._wrap_endcard_message(compact_verse, max_chars=48, max_lines=2)]
+            return {
+                "kind": "verse",
+                "source": "explicit_scripture",
+                "text": compact_verse,
+                "reference": verse_reference or None,
+                "lines": lines[:3],
+            }
+
+        reflection = ""
+        reflection_source = "rule_based_context"
+        for source in (branding, plan):
+            for key in ("closing_reflection", "final_reflection", "reflection_text", "meditation_text"):
+                value = str(source.get(key) or "").strip()
+                if value:
+                    reflection = value
+                    reflection_source = f"explicit_{key}"
+                    break
+            if reflection:
+                break
+        reflection = self._compact_cinematic_phrase(
+            reflection or self._contextual_reflection_from_plan(plan),
+            max_words=22,
+        )
+        return {
+            "kind": "reflection",
+            "source": reflection_source,
+            "text": reflection,
+            "reference": None,
+            "lines": ["PARA REFLETIR", *self._wrap_endcard_message(reflection, max_chars=48, max_lines=2)][:3],
+        }
+
     def _default_closing_text(self, channel_name: str) -> str:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
         return (
@@ -1417,21 +1548,15 @@ class VideoGenerator:
         )
         channel_title_lines = self._resolve_endcard_channel_lines(channel_name, channel_slogan=channel_slogan)
 
-        final_message = branding.get("final_message") or plan.get("final_message") or [
-            "INSCREVA-SE E CONTINUE CONOSCO",
-            "NOVAS MENSAGENS PARA FORTALECER A SUA FÉ",
-        ]
-        if isinstance(final_message, str):
-            final_message = [line.strip() for line in re.split(r"[\r\n]+", final_message) if line.strip()]
-        elif isinstance(final_message, (list, tuple)):
-            final_message = [str(line).strip() for line in final_message if str(line or "").strip()]
-        else:
-            final_message = []
+        contextual_closing = self._resolve_contextual_closing(plan)
+        final_message = list(contextual_closing.get("lines") or [])[:3]
         if not final_message:
-            final_message = [
-                "INSCREVA-SE E CONTINUE CONOSCO",
-                "NOVAS MENSAGENS PARA FORTALECER A SUA FÉ",
-            ]
+            final_message = ["PARA REFLETIR", "LEVE ESTA MENSAGEM COM VOCÊ."]
+        endcard_cta_text = _pick(
+            branding.get("endcard_cta_text"),
+            plan.get("endcard_cta_text"),
+            "INSCREVA-SE E CONTINUE CONOSCO",
+        )
 
         primary_color = _pick(branding.get("primary_color"), plan.get("primary_color"), "#F6E7B0")
         secondary_color = _pick(branding.get("secondary_color"), plan.get("secondary_color"), "#FFFFFF")
@@ -1453,6 +1578,8 @@ class VideoGenerator:
             "entry_animation": _pick(branding.get("entry_animation"), plan.get("entry_animation"), "fade"),
             "exit_animation": _pick(branding.get("exit_animation"), plan.get("exit_animation"), "fade_out"),
             "final_message_lines": final_message[:3],
+            "contextual_closing": contextual_closing,
+            "endcard_cta_text": endcard_cta_text,
             "logo_source": logo_info.get("selected_source"),
             "future_ready": {
                 "logo": bool(logo_candidate),
@@ -5920,6 +6047,8 @@ $synth.Dispose()
             render_report["visual_plan"]["closing_logo_present"] = bool(branding_profile.get("logo_path"))
             render_report["visual_plan"]["closing_caption_suppressed"] = True
             render_report["visual_plan"]["closing_message_lines"] = list(branding_profile.get("final_message_lines") or [])
+            render_report["visual_plan"]["contextual_closing"] = dict(branding_profile.get("contextual_closing") or {})
+            render_report["visual_plan"]["endcard_cta_text"] = branding_profile.get("endcard_cta_text")
             render_report["visual_plan"]["cinematic_closing_enabled"] = True
             render_report["visual_plan"]["closing_mode"] = "end_screen_after_cta" if closing_has_narration else "silent_endcard"
             render_report["visual_plan"]["closing_ken_burns"] = "slow_zoom"

@@ -4410,17 +4410,33 @@
                     </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <h3 class="text-lg font-bold text-gray-800 mb-2">Logo Oficial do Canal</h3>
-                        <p class="text-sm text-gray-600 mb-4">O YouTube Auto usará primeiro a logo oficial cadastrada aqui. Se ela não existir ou falhar, usará automaticamente a thumbnail do canal conectado no YouTube.</p>
+                        <p class="text-sm text-gray-600 mb-4">Escolha a logo no seu computador. Ela será salva no servidor e usada automaticamente nos próximos vídeos do canal HERDEIROS DAS PROMESSAS.</p>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label class="block font-bold mb-2">Caminho local da logo</label>
-                                <input v-model="settings.official_channel_logo_path" class="w-full border p-2 rounded bg-white" placeholder="Ex: app/static/branding/herdeiros-logo.png">
-                                <p class="text-xs text-gray-500 mt-1">Prefira PNG transparente.</p>
+                                <label class="block font-bold mb-2">Arquivo da logo</label>
+                                <div class="rounded-lg border bg-slate-900 min-h-36 flex items-center justify-center p-4 mb-3 overflow-hidden">
+                                    <img v-if="officialChannelLogoPreviewUrl" :src="officialChannelLogoPreviewUrl" alt="Pré-visualização da logo oficial" class="max-h-28 max-w-full object-contain">
+                                    <span v-else class="text-sm text-slate-300 text-center">Nenhuma logo local selecionada</span>
+                                </div>
+                                <input ref="officialChannelLogoFile" type="file" accept="image/png,image/jpeg,image/webp" class="hidden" @change="uploadOfficialChannelLogo">
+                                <div class="flex flex-wrap gap-2">
+                                    <button type="button" @click="chooseOfficialChannelLogo" :disabled="officialChannelLogoUploading" class="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60">
+                                        <i :class="officialChannelLogoUploading ? 'fas fa-spinner fa-spin' : 'fas fa-folder-open'" class="mr-2"></i>{{ officialChannelLogoUploading ? 'Enviando...' : 'Buscar logo no computador' }}
+                                    </button>
+                                    <button v-if="settings.official_channel_logo_path" type="button" @click="removeOfficialChannelLogo" :disabled="officialChannelLogoUploading" class="px-3 py-2 rounded border border-red-200 bg-white text-red-700 hover:bg-red-50 disabled:opacity-60">
+                                        <i class="fas fa-trash mr-1"></i>Remover
+                                    </button>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-2">PNG, JPG ou WebP, até 8 MB. PNG transparente é recomendado.</p>
+                                <p v-if="officialChannelLogoMessage" class="text-sm mt-2" :class="officialChannelLogoMessageType === 'error' ? 'text-red-700' : 'text-emerald-700'">{{ officialChannelLogoMessage }}</p>
                             </div>
                             <div>
-                                <label class="block font-bold mb-2">URL da logo</label>
-                                <input v-model="settings.official_channel_logo_url" class="w-full border p-2 rounded bg-white" placeholder="https://.../logo-oficial.png">
-                                <p class="text-xs text-gray-500 mt-1">Usada se o caminho local não estiver disponível.</p>
+                                <label class="block font-bold mb-2">URL alternativa da logo</label>
+                                <input v-model="settings.official_channel_logo_url" @change="loadOfficialChannelLogoPreview" class="w-full border p-2 rounded bg-white" placeholder="https://.../logo-oficial.png">
+                                <p class="text-xs text-gray-500 mt-1">Opcional. Só será usada se o arquivo enviado não estiver disponível.</p>
+                                <div v-if="settings.official_channel_logo_path" class="mt-3 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                                    <i class="fas fa-check-circle mr-1"></i>Logo local ativa e vinculada ao renderizador.
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -5477,6 +5493,11 @@
                     sales: [],
 
                     // Settings
+                    officialChannelLogoUploading: false,
+                    officialChannelLogoMessage: '',
+                    officialChannelLogoMessageType: 'success',
+                    officialChannelLogoPreviewUrl: '',
+                    officialChannelLogoPreviewObjectUrl: '',
                     settings: {
                         openai_api_key: '',
                         openai_image_model: 'gpt-image-1-mini',
@@ -7160,6 +7181,98 @@
                         alert("Erro ao salvar livro: " + msg);
                     }
                 },
+                chooseOfficialChannelLogo() {
+                    const input = this.$refs.officialChannelLogoFile;
+                    if (input) input.click();
+                },
+                releaseOfficialChannelLogoPreview() {
+                    if (this.officialChannelLogoPreviewObjectUrl) {
+                        try { URL.revokeObjectURL(this.officialChannelLogoPreviewObjectUrl); } catch (e) {}
+                    }
+                    this.officialChannelLogoPreviewObjectUrl = '';
+                    this.officialChannelLogoPreviewUrl = '';
+                },
+                async loadOfficialChannelLogoPreview() {
+                    this.releaseOfficialChannelLogoPreview();
+                    if (this.settings.official_channel_logo_path) {
+                        try {
+                            const response = await this.authFetch(`/settings/channel-logo/file?_=${Date.now()}`, {
+                                headers: { 'Cache-Control': 'no-cache' }
+                            });
+                            if (response.ok) {
+                                const blob = await response.blob();
+                                const objectUrl = URL.createObjectURL(blob);
+                                this.officialChannelLogoPreviewObjectUrl = objectUrl;
+                                this.officialChannelLogoPreviewUrl = objectUrl;
+                                return;
+                            }
+                        } catch (e) {
+                            console.warn('Falha ao carregar a logo local:', e);
+                        }
+                    }
+                    const fallbackUrl = String(this.settings.official_channel_logo_url || '').trim();
+                    if (fallbackUrl) this.officialChannelLogoPreviewUrl = fallbackUrl;
+                },
+                async uploadOfficialChannelLogo(event) {
+                    const input = event && event.target ? event.target : this.$refs.officialChannelLogoFile;
+                    const file = input && input.files ? input.files[0] : null;
+                    if (!file) return;
+                    const allowedTypes = ['image/png', 'image/jpeg', 'image/webp'];
+                    if (!allowedTypes.includes(String(file.type || '').toLowerCase())) {
+                        this.officialChannelLogoMessageType = 'error';
+                        this.officialChannelLogoMessage = 'Selecione uma imagem PNG, JPG ou WebP.';
+                        if (input) input.value = '';
+                        return;
+                    }
+                    if (Number(file.size || 0) > 8 * 1024 * 1024) {
+                        this.officialChannelLogoMessageType = 'error';
+                        this.officialChannelLogoMessage = 'A logo deve ter no máximo 8 MB.';
+                        if (input) input.value = '';
+                        return;
+                    }
+
+                    this.officialChannelLogoUploading = true;
+                    this.officialChannelLogoMessage = '';
+                    try {
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        const response = await this.authFetch('/settings/channel-logo', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || data.message || 'Falha ao enviar a logo.');
+                        this.settings.official_channel_logo_path = data.official_channel_logo_path || '';
+                        this.officialChannelLogoMessageType = 'success';
+                        this.officialChannelLogoMessage = data.message || 'Logo oficial salva com sucesso.';
+                        await this.loadOfficialChannelLogoPreview();
+                    } catch (e) {
+                        this.officialChannelLogoMessageType = 'error';
+                        this.officialChannelLogoMessage = e && e.message ? e.message : 'Falha ao enviar a logo.';
+                    } finally {
+                        this.officialChannelLogoUploading = false;
+                        if (input) input.value = '';
+                    }
+                },
+                async removeOfficialChannelLogo() {
+                    if (!confirm('Remover a logo local? A URL alternativa continuará disponível.')) return;
+                    this.officialChannelLogoUploading = true;
+                    this.officialChannelLogoMessage = '';
+                    try {
+                        const response = await this.authFetch('/settings/channel-logo', { method: 'DELETE' });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || data.message || 'Falha ao remover a logo.');
+                        this.settings.official_channel_logo_path = '';
+                        this.officialChannelLogoMessageType = 'success';
+                        this.officialChannelLogoMessage = data.message || 'Logo local removida.';
+                        await this.loadOfficialChannelLogoPreview();
+                    } catch (e) {
+                        this.officialChannelLogoMessageType = 'error';
+                        this.officialChannelLogoMessage = e && e.message ? e.message : 'Falha ao remover a logo.';
+                    } finally {
+                        this.officialChannelLogoUploading = false;
+                    }
+                },
                 async fetchSettings() {
                     try {
                         const res = await this.authFetch('/settings/');
@@ -7172,6 +7285,7 @@
                                 ...((data && data.bible_video_factory) || {})
                             }
                         };
+                        await this.loadOfficialChannelLogoPreview();
                         await this.fetchAiCredits();
                     } catch (e) { console.error(e); }
                 },
@@ -9634,6 +9748,7 @@
                                 } catch (e) {}
                             }
                             try { await this.fetchAiCredits(); } catch (e) {}
+                            try { await this.loadOfficialChannelLogoPreview(); } catch (e) {}
                             this.saveMessage = "Configurações salvas com sucesso!";
                             setTimeout(() => this.saveMessage = '', 3000);
                             return true;

@@ -1,6 +1,8 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.services.ai_generator import AIContentGenerator
 from app.services.video_generator import VideoGenerator
@@ -17,6 +19,32 @@ class _CapturingImageService:
 
 
 class VideoVisualIdentityAndSyncTests(unittest.TestCase):
+    def test_uploaded_settings_logo_reaches_renderer_branding_profile(self):
+        with tempfile.TemporaryDirectory(prefix="renderer-logo-") as tmp:
+            logo_path = os.path.join(tmp, "official-channel-logo.png")
+            from PIL import Image
+
+            logo = Image.new("RGBA", (320, 160), (30, 40, 90, 255))
+            logo.save(logo_path, format="PNG")
+            logo.close()
+            resolver = SimpleNamespace(
+                resolve_official_channel_logo=lambda: {
+                    "selected_value": logo_path,
+                    "selected_source": "settings_path",
+                }
+            )
+            with patch(
+                "app.services.global_settings_service.build_global_settings_service",
+                return_value=resolver,
+            ):
+                branding = VideoGenerator(output_dir=tmp)._resolve_channel_branding(
+                    {"channel_name": "HERDEIROS DAS PROMESSAS"}
+                )
+
+            self.assertEqual(branding["logo_path"], logo_path)
+            self.assertEqual(branding["logo_source"], "settings_path")
+            self.assertTrue(branding["future_ready"]["logo"])
+
     def test_paid_scene_prompt_locks_jesus_identity_and_facial_hair_continuity(self):
         with tempfile.TemporaryDirectory(prefix="visual-identity-") as tmp:
             image_path = os.path.join(tmp, "scene.png")
@@ -180,6 +208,87 @@ class VideoVisualIdentityAndSyncTests(unittest.TestCase):
         self.assertNotIn("comente", closing)
         self.assertNotIn("compartilhe", closing)
         self.assertNotIn("ative o sininho", closing)
+
+    def test_endcard_uses_explicit_bible_reference_without_inventing_a_verse(self):
+        generator = VideoGenerator()
+        closing = generator._resolve_contextual_closing(
+            {
+                "title": "Esperança durante a tempestade",
+                "verse_reference": "Salmos 46:1",
+            }
+        )
+
+        self.assertEqual(closing["kind"], "verse")
+        self.assertEqual(closing["reference"], "Salmos 46:1")
+        self.assertEqual(closing["text"], "")
+        self.assertEqual(closing["lines"], ["MEDITE EM SALMOS 46:1"])
+
+    def test_endcard_prefers_explicit_verse_text_and_keeps_reference_visible(self):
+        generator = VideoGenerator()
+        closing = generator._resolve_contextual_closing(
+            {
+                "bible_verse": {
+                    "text": "Uma mensagem bíblica curta já fornecida pelo roteiro.",
+                    "reference": "Referência 1:2",
+                }
+            }
+        )
+
+        self.assertEqual(closing["kind"], "verse")
+        self.assertEqual(closing["source"], "explicit_scripture")
+        self.assertEqual(closing["lines"][0], "MEDITE EM REFERÊNCIA 1:2")
+        self.assertIn("mensagem bíblica", " ".join(closing["lines"]).lower())
+        self.assertLessEqual(len(closing["lines"]), 3)
+
+    def test_endcard_builds_cost_free_contextual_reflection_when_verse_is_absent(self):
+        generator = VideoGenerator()
+        closing = generator._resolve_contextual_closing(
+            {
+                "title": "Quando o desafio aparece",
+                "scenes": [{"text": "A incerteza chegou, mas a fé permaneceu."}],
+            }
+        )
+
+        self.assertEqual(closing["kind"], "reflection")
+        self.assertEqual(closing["source"], "rule_based_context")
+        self.assertEqual(closing["lines"][0], "PARA REFLETIR")
+        self.assertIn("desafio", closing["text"].lower())
+        self.assertLessEqual(len(closing["lines"]), 3)
+
+    def test_contextual_endcard_renders_inside_safe_area_with_channel_cta(self):
+        generator = VideoGenerator()
+        closing = generator._resolve_contextual_closing(
+            {
+                "title": "Deus permanece durante o desafio",
+                "channel_name": "HERDEIROS DAS PROMESSAS",
+            }
+        )
+        branding = {
+            "channel_name": "HERDEIROS DAS PROMESSAS",
+            "channel_title_lines": ["HERDEIROS DAS PROMESSAS", "ONDE A FÉ SE TORNA ATITUDE"],
+            "final_message_lines": closing["lines"],
+            "contextual_closing": closing,
+            "endcard_cta_text": "INSCREVA-SE E CONTINUE CONOSCO",
+            "primary_color": "#F6E7B0",
+            "secondary_color": "#FFFFFF",
+        }
+        layout_report = {}
+
+        frame = generator._build_cinematic_endcard_frame(
+            branding,
+            background_path=None,
+            size=(1280, 720),
+            layout_report=layout_report,
+        )
+
+        self.assertEqual(frame.shape, (720, 1280, 3))
+        self.assertTrue(layout_report["text_fits"])
+        self.assertFalse(layout_report["overflow_detected"])
+        self.assertEqual(
+            layout_report["sections"]["closing_phrase"]["lines"],
+            ["INSCREVA-SE E CONTINUE CONOSCO"],
+        )
+        self.assertEqual(layout_report["contextual_closing"]["kind"], "reflection")
 
     def test_long_static_scene_is_split_into_cost_free_visual_beats(self):
         generator = VideoGenerator()

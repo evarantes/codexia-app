@@ -1,11 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Settings, User
 from app.routers.auth import get_current_user
+from app.config import BRANDING_OUTPUT_DIR
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
+from io import BytesIO
+from PIL import Image, ImageOps, UnidentifiedImageError
 import requests
 import base64
 import os
@@ -23,6 +27,12 @@ from app.services.global_settings_service import (
 )
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
+
+OFFICIAL_LOGO_MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+OFFICIAL_LOGO_MAX_PIXELS = 24_000_000
+OFFICIAL_LOGO_MAX_SIDE = 6000
+OFFICIAL_LOGO_RENDER_MAX_SIDE = 2400
+OFFICIAL_LOGO_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 
 def _mask_configured(value: Optional[str]) -> bool:
@@ -74,6 +84,57 @@ def _get_or_create_settings_row(db: Session, user_id: Optional[int] = None) -> S
         return settings
 
     return get_or_create_latest_settings(db)
+
+
+def _official_logo_path_for_user(user_id: int) -> str:
+    safe_user_id = max(0, int(user_id or 0))
+    return os.path.abspath(os.path.join(BRANDING_OUTPUT_DIR, f"official-channel-logo-{safe_user_id}.png"))
+
+
+def _path_is_in_branding_dir(path: str) -> bool:
+    try:
+        return os.path.commonpath(
+            [os.path.abspath(path), os.path.abspath(BRANDING_OUTPUT_DIR)]
+        ) == os.path.abspath(BRANDING_OUTPUT_DIR)
+    except Exception:
+        return False
+
+
+def _normalize_official_logo(content: bytes) -> tuple[Image.Image, Dict[str, int]]:
+    if not content:
+        raise HTTPException(status_code=400, detail="Selecione um arquivo de imagem.")
+    if len(content) > OFFICIAL_LOGO_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="A logo deve ter no máximo 8 MB.")
+
+    try:
+        with Image.open(BytesIO(content)) as source:
+            source.verify()
+        with Image.open(BytesIO(content)) as source:
+            source.load()
+            image = ImageOps.exif_transpose(source)
+            width, height = image.size
+            if width < 64 or height < 64:
+                raise HTTPException(status_code=400, detail="A logo deve ter pelo menos 64 x 64 pixels.")
+            if width > OFFICIAL_LOGO_MAX_SIDE or height > OFFICIAL_LOGO_MAX_SIDE or width * height > OFFICIAL_LOGO_MAX_PIXELS:
+                raise HTTPException(status_code=400, detail="A resolução da logo é muito grande. Use no máximo 6000 px por lado.")
+
+            has_alpha = image.mode in {"RGBA", "LA"} or "transparency" in image.info
+            normalized = image.convert("RGBA" if has_alpha else "RGB")
+            if max(normalized.size) > OFFICIAL_LOGO_RENDER_MAX_SIDE:
+                normalized.thumbnail(
+                    (OFFICIAL_LOGO_RENDER_MAX_SIDE, OFFICIAL_LOGO_RENDER_MAX_SIDE),
+                    Image.Resampling.LANCZOS,
+                )
+            return normalized.copy(), {
+                "original_width": int(width),
+                "original_height": int(height),
+                "width": int(normalized.width),
+                "height": int(normalized.height),
+            }
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
+        raise HTTPException(status_code=400, detail="O arquivo enviado não é uma imagem PNG, JPG ou WebP válida.")
 
 
 def _serialize_settings_payload(settings: Settings, db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:
@@ -385,6 +446,101 @@ class CapabilityPolicyPayload(BaseModel):
 def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     settings = _get_or_create_settings_row(db, user_id=current_user.id)
     return _serialize_settings_payload(settings, db, user_id=current_user.id)
+
+
+@router.get("/channel-logo/file")
+def get_official_channel_logo_file(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    settings = _get_or_create_settings_row(db, user_id=current_user.id)
+    logo_path = os.path.abspath(str(getattr(settings, "official_channel_logo_path", None) or "").strip())
+    if not logo_path or not _path_is_in_branding_dir(logo_path) or not os.path.isfile(logo_path):
+        raise HTTPException(status_code=404, detail="Nenhuma logo local foi cadastrada.")
+    return FileResponse(
+        logo_path,
+        media_type="image/png",
+        filename="logo-oficial-do-canal.png",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@router.post("/channel-logo")
+async def upload_official_channel_logo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    content_type = str(file.content_type or "").lower().strip()
+    if content_type not in OFFICIAL_LOGO_ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail="Envie a logo em PNG, JPG ou WebP.")
+
+    content = await file.read(OFFICIAL_LOGO_MAX_UPLOAD_BYTES + 1)
+    image, dimensions = _normalize_official_logo(content)
+    os.makedirs(BRANDING_OUTPUT_DIR, exist_ok=True)
+    destination = _official_logo_path_for_user(current_user.id)
+    temporary_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=BRANDING_OUTPUT_DIR,
+            prefix=".official-logo-",
+            suffix=".png",
+            delete=False,
+        ) as temporary:
+            temporary_path = temporary.name
+        image.save(temporary_path, format="PNG", optimize=True)
+        os.replace(temporary_path, destination)
+    except Exception as exc:
+        if temporary_path and os.path.exists(temporary_path):
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail=f"Não foi possível salvar a logo: {exc}")
+    finally:
+        try:
+            image.close()
+        except Exception:
+            pass
+
+    settings = _get_or_create_settings_row(db, user_id=current_user.id)
+    settings.official_channel_logo_path = destination
+    db.add(settings)
+    db.commit()
+    db.refresh(settings)
+    return {
+        "success": True,
+        "message": "Logo oficial salva e pronta para os próximos vídeos.",
+        "official_channel_logo_path": destination,
+        "preview_url": "/settings/channel-logo/file",
+        **dimensions,
+    }
+
+
+@router.delete("/channel-logo")
+def delete_official_channel_logo(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    settings = _get_or_create_settings_row(db, user_id=current_user.id)
+    previous_path = os.path.abspath(str(getattr(settings, "official_channel_logo_path", None) or "").strip())
+    settings.official_channel_logo_path = None
+    db.add(settings)
+    db.commit()
+    db.refresh(settings)
+
+    removed = False
+    if previous_path and _path_is_in_branding_dir(previous_path) and os.path.isfile(previous_path):
+        try:
+            os.unlink(previous_path)
+            removed = True
+        except OSError:
+            removed = False
+    return {
+        "success": True,
+        "removed": removed,
+        "message": "Logo local removida. A URL de contingência continuará disponível se estiver preenchida.",
+    }
 
 
 @router.get("/ai-credits")
