@@ -2157,7 +2157,7 @@
                         <div v-if="ytStoryVideoHealth" class="mt-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
                             {{ ytStoryVideoHealth }}
                         </div>
-                        <div v-if="ytStoryTask && String(ytStoryTask.status || '').toLowerCase() === 'completed' && !ytStoryAutoUpload" class="mt-4 flex flex-col md:flex-row gap-3">
+                        <div v-if="ytStoryTask && ['completed', 'awaiting_review', 'approved'].includes(String(ytStoryTask.status || '').toLowerCase()) && !ytStoryAutoUpload" class="mt-4 flex flex-col md:flex-row gap-3">
                             <button @click="openStoryVideoPlayer" :disabled="!ytStoryTaskId" class="bg-gray-800 text-white px-4 py-2 rounded hover:bg-black flex justify-center items-center gap-2 disabled:opacity-50">
                                 <span><i class="fas fa-play"></i> Assistir no sistema</span>
                             </button>
@@ -8780,7 +8780,8 @@
                         }
                         this.ytStoryTask = data;
                         const status = String((data.status || '')).toLowerCase();
-                        if (status === 'completed') {
+                        const readyStatuses = ['completed', 'awaiting_review', 'approved'];
+                        if (readyStatuses.includes(status)) {
                             const videoUrl = data.result && (data.result.video_url || data.result.videoUrl);
                             if (videoUrl) {
                                 this.ytStoryVideoUrl = this.normalizePlayableVideoUrl(videoUrl);
@@ -9004,6 +9005,9 @@
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     video_url: this.ytStoryVideoUrl,
+                                    video_path: r.file_path || r.video_path || null,
+                                    task_id: this.ytStoryTaskId || null,
+                                    unified_video_id: (r.unified_pipeline && r.unified_pipeline.unified_video_id) ? r.unified_pipeline.unified_video_id : null,
                                     title: title || null,
                                     description: description || null,
                                     kind: kind || 'story',
@@ -9202,7 +9206,7 @@
                 },
                 isReadyStatus(status) {
                     const s = this.normalizedStatus(status);
-                    return s === 'ready' || s === 'completed' || s.includes('ready') || s.includes('completed');
+                    return s === 'ready' || s === 'completed' || s === 'awaiting_review' || s === 'approved' || s.includes('ready') || s.includes('completed');
                 },
                 isPublishedStatus(status) {
                     const s = this.normalizedStatus(status);

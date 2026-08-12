@@ -76,7 +76,7 @@ from app.modules.bible_video_factory.editorial_intelligence import (
     EditorialIntelligenceService,
     normalize_editorial_intelligence_settings,
 )
-from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User, SeriesEpisode, SeriesPlan
+from app.models import ScheduledVideo, ChannelReport, Settings, ContentPlan, Video, Job, Asset, Scene, CommunityComment, CommunityPost, StoryDraft, SystemNotification, ChannelInsight, VideoTask, User, SeriesEpisode, SeriesPlan, UnifiedVideo, UnifiedVideoStatus
 from app.modules.ai_factory.models import AIImage
 from app.redis_client import conn, queue as rq_queue
 from app.routers.auth import get_current_admin_user, SECRET_KEY as _AUTH_SECRET_KEY, ALGORITHM as _AUTH_ALGORITHM
@@ -1779,6 +1779,189 @@ def _sync_ready_production_to_scheduled(db: Session, limit: int = 200):
     mirror_index = _build_scheduled_mirror_index(db)
     for video in candidates:
         _upsert_scheduled_from_production(db, video, mirror_index=mirror_index)
+    db.commit()
+
+
+def _load_json_object(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(str(raw or "{}"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _build_scheduled_unified_mirror_index(db: Session) -> Dict[str, ScheduledVideo]:
+    """Indexa espelhos do pipeline canônico sem depender apenas do JSON legado."""
+    from sqlalchemy import or_
+
+    rows = (
+        db.query(ScheduledVideo)
+        .filter(
+            or_(
+                ScheduledVideo.unified_video_id.isnot(None),
+                ScheduledVideo.task_id.isnot(None),
+                ScheduledVideo.script_data.contains("unified_video_id"),
+                ScheduledVideo.script_data.contains("task_id"),
+            )
+        )
+        .order_by(ScheduledVideo.id.desc())
+        .limit(5000)
+        .all()
+    )
+    index: Dict[str, ScheduledVideo] = {}
+    for row in rows:
+        payload = _load_json_object(getattr(row, "script_data", None))
+        unified_id = getattr(row, "unified_video_id", None) or payload.get("unified_video_id")
+        task_id = getattr(row, "task_id", None) or payload.get("task_id")
+        video_url = _normalize_video_url_for_client(
+            getattr(row, "video_url", None) or payload.get("video_url")
+        )
+        if unified_id:
+            index.setdefault(f"unified:{unified_id}", row)
+        if task_id:
+            index.setdefault(f"task:{task_id}", row)
+        if video_url:
+            index.setdefault(f"url:{video_url}", row)
+    return index
+
+
+def _upsert_scheduled_from_unified(
+    db: Session,
+    unified: UnifiedVideo,
+    mirror_index: Optional[Dict[str, ScheduledVideo]] = None,
+) -> Optional[ScheduledVideo]:
+    """Espelha um UnifiedVideo pronto na lista de publicação, de forma idempotente."""
+    normalized_status = str(getattr(unified, "status", "") or "").strip().lower()
+    ready_statuses = {
+        UnifiedVideoStatus.AWAITING_REVIEW,
+        UnifiedVideoStatus.APPROVED,
+        UnifiedVideoStatus.PUBLISHED,
+    }
+    if normalized_status not in ready_statuses:
+        return None
+
+    script = _load_json_object(getattr(unified, "script_json", None))
+    result = _load_json_object(getattr(unified, "result_json", None))
+    raw_video_url = (
+        getattr(unified, "video_url", None)
+        or result.get("video_url")
+        or _build_public_video_url_from_path(getattr(unified, "video_path", None))
+    )
+    public_video_url = _normalize_video_url_for_client(raw_video_url)
+
+    index = mirror_index if mirror_index is not None else _build_scheduled_unified_mirror_index(db)
+    mirror = index.get(f"unified:{unified.id}")
+    if mirror is None and getattr(unified, "task_id", None):
+        mirror = index.get(f"task:{unified.task_id}")
+    if mirror is None and public_video_url:
+        mirror = index.get(f"url:{public_video_url}")
+
+    title = str(
+        result.get("title")
+        or script.get("title")
+        or getattr(unified, "topic", None)
+        or f"Vídeo {unified.id}"
+    ).strip()
+    description = str(result.get("description") or script.get("description") or "").strip()
+    content_type = str(
+        result.get("kind")
+        or getattr(unified, "content_type", None)
+        or "devotional"
+    ).strip().lower()
+    video_type = str(result.get("video_type") or "video").strip().lower()
+    if video_type not in {"video", "short"}:
+        video_type = "video"
+
+    previous_payload = _load_json_object(getattr(mirror, "script_data", None)) if mirror else {}
+    previous_payload.update(
+        {
+            "source": "unified_video_pipeline",
+            "unified_video_id": int(unified.id),
+            "task_id": str(unified.task_id or ""),
+            "kind": content_type,
+            "video_type": video_type,
+            "video_url": public_video_url,
+            "video_path": getattr(unified, "video_path", None),
+            "auto_processing_eligible": False,
+            "processing_mode": "publish_only",
+        }
+    )
+
+    target_status = "published" if normalized_status == UnifiedVideoStatus.PUBLISHED else "completed"
+    if mirror is None:
+        mirror = ScheduledVideo(
+            user_id=getattr(unified, "user_id", None),
+            theme="História/Devocional",
+            title=title,
+            description=description,
+            scheduled_for=getattr(unified, "created_at", None) or datetime.now(),
+            status=target_status,
+            video_type=video_type,
+            script_data=json.dumps(previous_payload, ensure_ascii=False),
+            video_url=public_video_url,
+            task_id=getattr(unified, "task_id", None),
+            unified_video_id=int(unified.id),
+            video_path=getattr(unified, "video_path", None),
+            progress=100,
+            auto_post=False,
+            pipeline="unified_video_pipeline",
+            youtube_video_id=getattr(unified, "youtube_video_id", None),
+            youtube_url=getattr(unified, "youtube_url", None),
+            uploaded_at=getattr(unified, "published_at", None),
+        )
+        db.add(mirror)
+    else:
+        mirror.user_id = getattr(unified, "user_id", None) or mirror.user_id
+        mirror.title = title or mirror.title
+        mirror.description = description or mirror.description or ""
+        if str(getattr(mirror, "status", "") or "").strip().lower() != "published":
+            mirror.status = target_status
+        mirror.video_type = video_type
+        mirror.progress = 100
+        mirror.task_id = getattr(unified, "task_id", None) or mirror.task_id
+        mirror.unified_video_id = int(unified.id)
+        mirror.video_path = getattr(unified, "video_path", None) or mirror.video_path
+        mirror.pipeline = "unified_video_pipeline"
+        if public_video_url:
+            mirror.video_url = public_video_url
+        if getattr(unified, "youtube_video_id", None):
+            mirror.youtube_video_id = unified.youtube_video_id
+        if getattr(unified, "youtube_url", None):
+            mirror.youtube_url = unified.youtube_url
+        if getattr(unified, "published_at", None):
+            mirror.uploaded_at = unified.published_at
+        mirror.script_data = json.dumps(previous_payload, ensure_ascii=False)
+
+    index[f"unified:{unified.id}"] = mirror
+    if getattr(unified, "task_id", None):
+        index[f"task:{unified.task_id}"] = mirror
+    if public_video_url:
+        index[f"url:{public_video_url}"] = mirror
+    return mirror
+
+
+def _sync_ready_unified_to_scheduled(db: Session, limit: int = 500) -> None:
+    """Faz backfill dos UnifiedVideo prontos, inclusive após navegador fechado/deploy."""
+    candidates = (
+        db.query(UnifiedVideo)
+        .filter(
+            UnifiedVideo.status.in_(
+                [
+                    UnifiedVideoStatus.AWAITING_REVIEW,
+                    UnifiedVideoStatus.APPROVED,
+                    UnifiedVideoStatus.PUBLISHED,
+                ]
+            )
+        )
+        .order_by(UnifiedVideo.created_at.desc(), UnifiedVideo.id.desc())
+        .limit(limit)
+        .all()
+    )
+    mirror_index = _build_scheduled_unified_mirror_index(db)
+    for unified in candidates:
+        _upsert_scheduled_from_unified(db, unified, mirror_index=mirror_index)
     db.commit()
 
 def _delete_scheduled_mirror(db: Session, production_video_id: int):
@@ -3510,6 +3693,7 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
     video_path = (getattr(request, "video_path", None) or "").strip() or None
     task_id_src = (getattr(request, "task_id", None) or "").strip() or None
     scheduled_video_id = int(getattr(request, "scheduled_video_id", 0) or 0) or None
+    unified_id = int(getattr(request, "unified_video_id", 0) or 0) or None
 
     # Generated local media must pass the same fail-closed probe used by the
     # renderer and recovery watchdog. A large file is not evidence of a valid
@@ -3555,6 +3739,20 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
     try:
         if scheduled_video_id:
             existing = db.query(ScheduledVideo).filter(ScheduledVideo.id == int(scheduled_video_id)).first()
+        if existing is None and unified_id:
+            existing = (
+                db.query(ScheduledVideo)
+                .filter(ScheduledVideo.unified_video_id == int(unified_id))
+                .order_by(ScheduledVideo.id.desc())
+                .first()
+            )
+        if existing is None and task_id_src:
+            existing = (
+                db.query(ScheduledVideo)
+                .filter(ScheduledVideo.task_id == str(task_id_src))
+                .order_by(ScheduledVideo.id.desc())
+                .first()
+            )
         if existing is None and task_id_src:
             try:
                 rows = db.query(ScheduledVideo).order_by(ScheduledVideo.id.desc()).limit(500).all()
@@ -3611,6 +3809,18 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
                     dirty = True
                 except Exception:
                     pass
+            if task_id_src and getattr(existing_db, "task_id", None) != task_id_src:
+                existing_db.task_id = task_id_src
+                dirty = True
+            if unified_id and getattr(existing_db, "unified_video_id", None) != unified_id:
+                existing_db.unified_video_id = unified_id
+                dirty = True
+            if video_path and getattr(existing_db, "video_path", None) != video_path:
+                existing_db.video_path = video_path
+                dirty = True
+            if unified_id and getattr(existing_db, "pipeline", None) != "unified_video_pipeline":
+                existing_db.pipeline = "unified_video_pipeline"
+                dirty = True
             if request.title and title and title != getattr(existing_db, "title", None):
                 existing_db.title = title
                 dirty = True
@@ -3654,7 +3864,6 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
         payload["voice_style"] = request.voice_style
     if request.voice_gender:
         payload["voice_gender"] = request.voice_gender
-    unified_id = int(getattr(request, "unified_video_id", 0) or 0)
     if unified_id:
         payload["unified_video_id"] = int(unified_id)
 
@@ -3667,6 +3876,10 @@ def schedule_from_generated(request: QueueGeneratedVideoRequest, db: Session = D
         script_data=json.dumps(payload),
         status="completed",
         auto_post=bool(request.auto_post),
+        task_id=task_id_src,
+        unified_video_id=unified_id,
+        video_path=video_path,
+        pipeline=("unified_video_pipeline" if unified_id else None),
     )
     try:
         setattr(video, "progress", 100)
@@ -4521,6 +4734,7 @@ def get_schedule(
     """Lista vídeos agendados; inclui description e error_msg para exibir erro na UI (Ver Erro)."""
     from sqlalchemy import func, or_
 
+    _sync_ready_unified_to_scheduled(db)
     _sync_ready_production_to_scheduled(db)
 
     base_q = db.query(ScheduledVideo)
@@ -4588,6 +4802,10 @@ def get_schedule(
             "uploaded_at": v.uploaded_at.isoformat() if getattr(v, "uploaded_at", None) else None,
             "voice_style": getattr(v, "voice_style", "human"),
             "voice_gender": getattr(v, "voice_gender", "female"),
+            "task_id": getattr(v, "task_id", None),
+            "unified_video_id": getattr(v, "unified_video_id", None),
+            "video_path": getattr(v, "video_path", None),
+            "pipeline": getattr(v, "pipeline", None),
         })
 
     off = int(offset or 0)
