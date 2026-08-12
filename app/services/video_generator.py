@@ -20,9 +20,11 @@ CAPTION_SAFE_AREA_TOP_RATIO = 0.08
 CAPTION_SAFE_AREA_BOTTOM_RATIO = 0.08
 DEFAULT_SCENE_TRANSITION_SEC = 0.30
 DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.40
-DEFAULT_OPENING_SILENCE_SEC = 3.50
+DEFAULT_OPENING_SILENCE_SEC = 0.45
 DEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30
 DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20
+DEFAULT_CINEMATIC_END_SCREEN_SEC = 4.0
+DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC = 7.0
 
 class VideoGenerator:
     def __init__(self, output_dir=None, ai_service=None):
@@ -1199,9 +1201,43 @@ class VideoGenerator:
             pass
         return "HERDEIROS DAS PROMESSAS"
 
-    def _default_opening_text(self, channel_name: str) -> str:
-        safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
-        return f"No canal {safe_channel}, prepare o seu coração para uma história bíblica que pode transformar o seu dia."
+    def _compact_cinematic_phrase(self, value: Any, *, max_words: int = 14) -> str:
+        text = self._normalize_tts_text(str(value or "").strip())
+        if not text:
+            return ""
+        sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+        words = sentence.split()
+        if len(words) <= max_words:
+            return sentence
+        compact = " ".join(words[: max(1, int(max_words))]).rstrip(" ,;:-—")
+        return compact + ("?" if sentence.endswith("?") else ".")
+
+    def _default_opening_text(
+        self,
+        channel_name: str,
+        *,
+        plan: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        plan = plan if isinstance(plan, dict) else {}
+        explicit_hook = next(
+            (
+                str(plan.get(key) or "").strip()
+                for key in ("opening_text", "opening_hook", "hook_text", "hook")
+                if str(plan.get(key) or "").strip()
+            ),
+            "",
+        )
+        if explicit_hook:
+            return self._compact_cinematic_phrase(explicit_hook, max_words=14)
+
+        title = re.sub(r"^\s*(?:estudo|epis[oó]dio)\s+\d+\s*[—–:\-]\s*", "", str(plan.get("title") or "").strip(), flags=re.IGNORECASE)
+        title_hook = self._compact_cinematic_phrase(title, max_words=10)
+        if title_hook:
+            return self._compact_cinematic_phrase(
+                f"{title_hook.rstrip('.!?')} — uma mensagem de fé para hoje.",
+                max_words=14,
+            )
+        return "Prepare o coração: há uma mensagem de fé para o seu dia."
 
     def _default_reflection_text(self, plan: Optional[Dict[str, Any]] = None, scenes: Optional[List[Dict[str, Any]]] = None) -> str:
         plan = plan if isinstance(plan, dict) else {}
@@ -1215,8 +1251,8 @@ class VideoGenerator:
     def _default_closing_text(self, channel_name: str) -> str:
         safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
         return (
-            f"Se esta mensagem falou com você, curta este vídeo, comente o que Deus ministrou ao seu coração, "
-            f"compartilhe com quem precisa desta palavra, inscreva-se no canal {safe_channel} e ative o sininho para não perder as próximas mensagens."
+            f"Continue conosco. Inscreva-se no canal {safe_channel} "
+            "e acompanhe as próximas mensagens de fé."
         )
 
     def _default_channel_slogan(self) -> str:
@@ -1382,9 +1418,8 @@ class VideoGenerator:
         channel_title_lines = self._resolve_endcard_channel_lines(channel_name, channel_slogan=channel_slogan)
 
         final_message = branding.get("final_message") or plan.get("final_message") or [
-            "Curta, comente e compartilhe",
-            "Inscreva-se no canal",
-            "Ative o sininho",
+            "INSCREVA-SE E CONTINUE CONOSCO",
+            "NOVAS MENSAGENS PARA FORTALECER A SUA FÉ",
         ]
         if isinstance(final_message, str):
             final_message = [line.strip() for line in re.split(r"[\r\n]+", final_message) if line.strip()]
@@ -1393,7 +1428,10 @@ class VideoGenerator:
         else:
             final_message = []
         if not final_message:
-            final_message = ["Curta, comente e compartilhe", "Inscreva-se no canal", "Ative o sininho"]
+            final_message = [
+                "INSCREVA-SE E CONTINUE CONOSCO",
+                "NOVAS MENSAGENS PARA FORTALECER A SUA FÉ",
+            ]
 
         primary_color = _pick(branding.get("primary_color"), plan.get("primary_color"), "#F6E7B0")
         secondary_color = _pick(branding.get("secondary_color"), plan.get("secondary_color"), "#FFFFFF")
@@ -1556,12 +1594,12 @@ class VideoGenerator:
         plan = plan if isinstance(plan, dict) else {}
         kind = str(plan.get("kind") or "story").strip().lower() or "story"
         channel_name = self._resolve_channel_name(plan)
-        opening_text = self._default_opening_text(channel_name)
+        opening_text = self._default_opening_text(channel_name, plan=plan)
         reflection_text = self._normalize_tts_text(str(plan.get("reflection_text") or "").strip()) or self._default_reflection_text(plan, scenes)
         closing_text = self._default_closing_text(channel_name)
         intro_opening_hold_sec = DEFAULT_OPENING_SILENCE_SEC
-        pause_duration_sec = 1.25
-        end_screen_target_duration_sec = 15.0
+        pause_duration_sec = 0.55
+        end_screen_target_duration_sec = DEFAULT_CINEMATIC_END_SCREEN_SEC
         cleaned_scene_texts = [self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "") for scene in scenes]
         story_text = " ".join(text for text in cleaned_scene_texts if text).strip()
         body_text = " ".join(part for part in [story_text, reflection_text] if part).strip()
@@ -4146,6 +4184,38 @@ $synth.Dispose()
             "total_scenes": int(total_scenes),
         }
 
+    def _plan_cinematic_visual_beats(
+        self,
+        duration_sec: float,
+        *,
+        max_hold_sec: float = DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC,
+    ) -> List[Dict[str, Any]]:
+        """Divide uma cena longa em cortes digitais sem gerar novas imagens.
+
+        Os cortes usam a mesma imagem com enquadramentos e movimentos diferentes.
+        Assim, a timeline oficial de áudio permanece intacta e não há nova chamada
+        a provedores pagos apenas para melhorar o ritmo visual.
+        """
+
+        duration = max(0.0, float(duration_sec or 0.0))
+        if duration <= 0:
+            return []
+        max_hold = max(3.0, float(max_hold_sec or DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC))
+        beat_count = max(1, int(math.ceil(duration / max_hold)))
+        beat_duration = duration / beat_count
+        beats: List[Dict[str, Any]] = []
+        cursor = 0.0
+        for beat_index in range(beat_count):
+            end = duration if beat_index == beat_count - 1 else min(duration, cursor + beat_duration)
+            beats.append({
+                "index": beat_index,
+                "start": round(cursor, 6),
+                "end": round(end, 6),
+                "duration": round(max(0.0, end - cursor), 6),
+            })
+            cursor = end
+        return beats
+
     def _motion_plan_override_from_scene(self, scene: Dict[str, Any], default_plan: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         if not isinstance(scene, dict):
             return default_plan
@@ -5241,7 +5311,7 @@ $synth.Dispose()
             cta_clip_duration = min(6.0, max(3.0, round(closing_est * scale_ratio, 2))) if closing_has_narration else 0.0
             end_clip_duration = min(6.0, max(3.0, round(end_screen_target_duration_sec, 2)))
             voice_closing_duration = cta_clip_duration if closing_has_narration else 0.0
-            silent_cinematic_tail_sec = min(0.5, max(0.2, 0.35))
+            silent_cinematic_tail_sec = end_clip_duration
             target_video_duration = actual_total_audio_dur + silent_cinematic_tail_sec
             if (title_clip_duration + voice_closing_duration) >= actual_total_audio_dur:
                 title_clip_duration = max(initial_opening_silence_sec, min(title_clip_duration, actual_total_audio_dur * 0.28))
@@ -5624,8 +5694,6 @@ $synth.Dispose()
                 else:
                     bg_frame = self.create_text_image("", size=video_size, bg_color=bg_color, bg_image_path=bg_image_path)
 
-                bg_clip = ImageClip(bg_frame)
-                self._assert_clip_not_none(bg_clip, "scene_bg_clip", {"scene_index": i})
                 scene_timeline_entry = story_timeline_entries[i] if i < len(story_timeline_entries) else {}
                 planned_scene_duration = max(0.0, float(scene_timeline_entry.get("audio_end") or 0.0) - float(scene_timeline_entry.get("audio_start") or 0.0))
                 required_caption_duration = max(0.0, float(scene_timeline_entry.get("caption_end") or 0.0) - float(scene_timeline_entry.get("caption_start") or 0.0))
@@ -5636,25 +5704,103 @@ $synth.Dispose()
                 timeline_scene_duration = float(scene_duration_info["timeline_span"])
                 timeline_is_audio_anchored = bool(scene_duration_info["audio_anchored"])
                 scene_dur = float(scene_duration_info["duration"])
-                bg_clip = self._set_clip_duration(bg_clip, scene_dur)
                 reuse_count = int(scene_reuse_counts.get(bg_image_path, 0))
                 scene_reuse_counts[bg_image_path] = reuse_count + 1
-                motion_plan = self._motion_plan_for_scene(
-                    i,
-                    total_scenes,
-                    reuse_count=reuse_count,
-                    reused_visual=bool(reused_from_pool or scene_reuse_counts.get(bg_image_path, 0) > 1),
-                )
-                motion_plan = self._motion_plan_override_from_scene(scene if isinstance(scene, dict) else {}, motion_plan)
-                bg_clip = self._apply_motion_effect(bg_clip, video_size, motion_plan)
-                render_report["effects_applied"].append({
-                    "scene_number": i + 1,
-                    "image_group_id": visual_group_id + 1,
-                    "effect": motion_plan.get("name"),
-                    "zoom_factor": motion_plan.get("zoom_factor"),
-                    "requested_by_scene": bool(motion_plan.get("requested_by_scene")),
-                    "transition": "crossfade" if total_scenes > 1 else "none",
-                })
+                if i < len(story_timeline_entries):
+                    story_timeline_entries[i]["image"] = bg_image_path
+
+                scene_caption_timeline = list(scene_timeline_entry.get("caption_blocks") or [])
+                expanded_scene_timeline = []
+                for item in scene_caption_timeline:
+                    expanded_scene_timeline.extend(
+                        self._expand_caption_item_for_overlay(
+                            item,
+                            size=video_size,
+                            max_lines=2,
+                            reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
+                        )
+                    )
+                visual_beats = self._plan_cinematic_visual_beats(scene_dur)
+                if not visual_beats:
+                    visual_beats = [{"index": 0.0, "start": 0.0, "end": scene_dur, "duration": scene_dur}]
+                beat_effect_names: List[str] = []
+                for beat_number, beat in enumerate(visual_beats):
+                    beat_start = float(beat.get("start") or 0.0)
+                    beat_end = float(beat.get("end") or scene_dur)
+                    beat_duration = max(0.1, float(beat.get("duration") or (beat_end - beat_start)))
+                    beat_bg_clip = ImageClip(bg_frame)
+                    self._assert_clip_not_none(
+                        beat_bg_clip,
+                        "scene_bg_clip",
+                        {"scene_index": i, "visual_beat": beat_number + 1},
+                    )
+                    beat_bg_clip = self._set_clip_duration(beat_bg_clip, beat_duration)
+                    motion_plan = self._motion_plan_for_scene(
+                        (i * 8) + beat_number,
+                        max(total_scenes, total_scenes * 2),
+                        reuse_count=reuse_count + beat_number,
+                        reused_visual=bool(
+                            reused_from_pool
+                            or scene_reuse_counts.get(bg_image_path, 0) > 1
+                            or beat_number > 0
+                        ),
+                    )
+                    if beat_number == 0:
+                        motion_plan = self._motion_plan_override_from_scene(
+                            scene if isinstance(scene, dict) else {},
+                            motion_plan,
+                        )
+                    beat_bg_clip = self._apply_motion_effect(beat_bg_clip, video_size, motion_plan)
+                    beat_effect_names.append(str(motion_plan.get("name") or "slow_zoom"))
+                    render_report["effects_applied"].append({
+                        "scene_number": i + 1,
+                        "visual_beat": beat_number + 1,
+                        "visual_beat_count": len(visual_beats),
+                        "image_group_id": visual_group_id + 1,
+                        "effect": motion_plan.get("name"),
+                        "zoom_factor": motion_plan.get("zoom_factor"),
+                        "requested_by_scene": bool(motion_plan.get("requested_by_scene")),
+                        "transition": "soft_cut" if beat_number > 0 or total_scenes > 1 else "none",
+                    })
+
+                    beat_overlays = []
+                    for item in expanded_scene_timeline:
+                        caption = str(item.get("caption") or "").strip()
+                        start = float(item.get("start") or 0.0)
+                        end = float(item.get("end") or 0.0)
+                        overlap_start = max(start, beat_start)
+                        overlap_end = min(end, beat_end)
+                        if not caption or overlap_end <= overlap_start:
+                            continue
+                        overlay_arr = self.create_text_overlay(
+                            caption,
+                            size=video_size,
+                            text_color=(255, 255, 255),
+                            reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
+                        )
+                        overlay_clip = self._clip_from_rgba(overlay_arr, overlap_end - overlap_start)
+                        overlay_clip = self._set_clip_start(overlay_clip, overlap_start - beat_start)
+                        beat_overlays.append(overlay_clip)
+
+                    for overlay_clip in beat_overlays:
+                        self._assert_clip_not_none(
+                            overlay_clip,
+                            "scene_overlay_clip",
+                            {"scene_index": i, "visual_beat": beat_number + 1},
+                        )
+                    clip_scene = CompositeVideoClip([beat_bg_clip] + beat_overlays, size=video_size)
+                    self._assert_clip_not_none(
+                        clip_scene,
+                        "scene_composite_clip",
+                        {"scene_index": i, "visual_beat": beat_number + 1},
+                    )
+                    clip_scene = self._apply_scene_transition_style(
+                        clip_scene,
+                        transition_sec=DEFAULT_SCENE_TRANSITION_SEC,
+                    )
+                    clips.append(clip_scene)
+                    last_story_scene_clip = clip_scene
+
                 render_report["scene_visuals"].append({
                     "scene_number": i + 1,
                     "image_group_id": visual_group_id + 1,
@@ -5682,45 +5828,10 @@ $synth.Dispose()
                     "timeline_is_audio_anchored": timeline_is_audio_anchored,
                     "planned_visual_duration_sec": round(timeline_scene_duration, 2),
                     "final_visual_duration_sec": round(scene_dur, 2),
+                    "visual_beat_count": len(visual_beats),
+                    "max_visual_hold_sec": round(max(float(beat.get("duration") or 0.0) for beat in visual_beats), 2),
+                    "visual_beat_effects": beat_effect_names,
                 })
-                if i < len(story_timeline_entries):
-                    story_timeline_entries[i]["image"] = bg_image_path
-
-                scene_caption_timeline = list(scene_timeline_entry.get("caption_blocks") or [])
-                overlay_clips = []
-                expanded_scene_timeline = []
-                for item in scene_caption_timeline:
-                    expanded_scene_timeline.extend(
-                        self._expand_caption_item_for_overlay(
-                            item,
-                            size=video_size,
-                            max_lines=2,
-                            reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
-                        )
-                    )
-                for item in expanded_scene_timeline:
-                    caption = str(item.get("caption") or "").strip()
-                    start = float(item.get("start") or 0.0)
-                    end = float(item.get("end") or 0.0)
-                    if not caption or end <= start:
-                        continue
-                    overlay_arr = self.create_text_overlay(
-                        caption,
-                        size=video_size,
-                        text_color=(255, 255, 255),
-                        reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
-                    )
-                    overlay_clip = self._clip_from_rgba(overlay_arr, end - start)
-                    overlay_clip = self._set_clip_start(overlay_clip, start)
-                    overlay_clips.append(overlay_clip)
-
-                for overlay_clip in overlay_clips:
-                    self._assert_clip_not_none(overlay_clip, "scene_overlay_clip", {"scene_index": i})
-                clip_scene = CompositeVideoClip([bg_clip] + overlay_clips, size=video_size)
-                self._assert_clip_not_none(clip_scene, "scene_composite_clip", {"scene_index": i})
-                clip_scene = self._apply_scene_transition_style(clip_scene, transition_sec=DEFAULT_SCENE_TRANSITION_SEC)
-                clips.append(clip_scene)
-                last_story_scene_clip = clip_scene
                 last_story_scene_image_path = bg_image_path
 
                 if bg_image_path and "temp_" in bg_image_path and bg_image_path not in cached_temp_paths:
@@ -5763,10 +5874,11 @@ $synth.Dispose()
                 if kind in {"closing", "endcard"}:
                     item["image"] = end_bg_path or ""
             if closing_has_narration:
-                img_cta = self._build_cinematic_endcard_frame(
-                    branding_profile,
-                    background_path=end_bg_path,
+                img_cta = self.create_text_image(
+                    "",
                     size=video_size,
+                    bg_color=(18, 18, 18),
+                    bg_image_path=end_bg_path,
                 )
                 clip_cta = ImageClip(img_cta)
                 self._assert_clip_not_none(clip_cta, "cta_slide")
@@ -5783,7 +5895,7 @@ $synth.Dispose()
                 )
                 clips.append(clip_cta)
                 render_report["cta_rendered"] = True
-                render_report["visual_plan"]["cta_visual_mode"] = "dedicated_endcard_cta"
+                render_report["visual_plan"]["cta_visual_mode"] = "cinematic_background_bridge"
 
             img_end = self._build_cinematic_endcard_frame(
                 branding_profile,
@@ -5923,6 +6035,9 @@ $synth.Dispose()
                     "cinematic_closing_tail_sec": round(float(silent_cinematic_tail_sec or 0.0), 2),
                     "has_automatic_opening": bool((planning_meta.get("opening_text") or "").strip()),
                     "has_automatic_closing": bool((planning_meta.get("closing_text") or "").strip()) or bool(silent_cinematic_tail_sec > 0),
+                    "opening_hook_starts_sec": round(float(initial_opening_silence_sec or 0.0), 2),
+                    "opening_hook_starts_within_0_8_sec": bool(float(initial_opening_silence_sec or 0.0) <= 0.8),
+                    "endcard_duration_sec": round(float(end_clip_duration or 0.0), 2),
                     "timeline_source": caption_timeline_source,
                     "uses_official_scene_timeline": True,
                     "official_scene_timeline_count": len(official_scene_timeline),
@@ -5943,6 +6058,8 @@ $synth.Dispose()
                     raise Exception("Falha de validacao: abertura automatica ausente.")
                 if not sync_validation["has_automatic_closing"]:
                     raise Exception("Falha de validacao: encerramento automatico ausente.")
+                if not sync_validation["opening_hook_starts_within_0_8_sec"]:
+                    raise Exception("Falha de validacao: abertura demorou mais de 0,8s para iniciar.")
 
             try:
                 final_clip.get_frame(0.0)
@@ -6277,11 +6394,13 @@ $synth.Dispose()
             render_report["file_path"] = output_path
             # ====== sync_validation: áudio ↔ vídeo (item 2) ======
             obtained_duration_final_sec = float(render_report["duration_plan"].get("obtained_duration_sec") or 0.0)
-            delta_av = abs(obtained_duration_final_sec - actual_total_audio_dur)
-            tolerance_target = duration_sync_tolerance_seconds(actual_total_audio_dur)
-            tolerance_ok = (actual_total_audio_dur <= 0) or (delta_av <= tolerance_target)
+            final_audio_track_duration_sec = float(target_video_duration or actual_total_audio_dur)
+            delta_av = abs(obtained_duration_final_sec - final_audio_track_duration_sec)
+            tolerance_target = duration_sync_tolerance_seconds(final_audio_track_duration_sec)
+            tolerance_ok = (final_audio_track_duration_sec <= 0) or (delta_av <= tolerance_target)
             # scenes_ok: nenhuma cena visual foi criada com duração 0 ou abaixo do mínimo
             scenes_ok = True
+            visual_pacing_ok = True
             try:
                 scene_durations = [
                     float(item.get("final_visual_duration_sec") or 0.0)
@@ -6289,8 +6408,18 @@ $synth.Dispose()
                 ]
                 if scene_durations:
                     scenes_ok = all(d > 0.1 for d in scene_durations)
+                max_visual_holds = [
+                    float(item.get("max_visual_hold_sec") or item.get("final_visual_duration_sec") or 0.0)
+                    for item in (render_report.get("scene_visuals") or [])
+                ]
+                if max_visual_holds:
+                    visual_pacing_ok = all(
+                        hold <= (DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC + 0.05)
+                        for hold in max_visual_holds
+                    )
             except Exception:
                 scenes_ok = True
+                visual_pacing_ok = True
             # captions_ok: última legenda NÃO ultrapassa a duração do áudio
             captions_ok = True
             last_caption_end = 0.0
@@ -6308,12 +6437,16 @@ $synth.Dispose()
             # cta_ok: end_screen duração está entre 3 e 6 segundos
             cta_ok = (3.0 <= float(end_clip_duration or 0.0) <= 6.0) if closing_has_narration else True
             sync_validation = {
-                "audio_duration_sec": round(float(actual_total_audio_dur or 0.0), 3),
+                "audio_duration_sec": round(float(final_audio_track_duration_sec or 0.0), 3),
+                "narration_duration_sec": round(float(actual_total_audio_dur or 0.0), 3),
+                "silent_endcard_duration_sec": round(float(silent_cinematic_tail_sec or 0.0), 3),
                 "video_duration_sec": round(float(obtained_duration_final_sec or 0.0), 3),
                 "delta_sec": round(float(delta_av), 3),
                 "tolerance_target_sec": tolerance_target,
                 "tolerance_ok": bool(tolerance_ok),
                 "scenes_ok": bool(scenes_ok),
+                "visual_pacing_ok": bool(visual_pacing_ok),
+                "max_visual_hold_target_sec": DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC,
                 "captions_ok": bool(captions_ok),
                 "cta_ok": bool(cta_ok),
                 "last_caption_end_sec": round(float(last_caption_end), 3) if last_caption_end else 0.0,

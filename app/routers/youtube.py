@@ -5496,11 +5496,12 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
                 recovery_item = _story_video_task_item_from_row(recoverable, len(items) + 1)
                 recovery_item.update({
                     "is_current": False,
-                    "source_label": "Recuperação da mesma tarefa",
-                    "queue_label": "Falhou — pronta para reiniciar",
+                    "source_label": "Histórico recuperável — não é uma nova produção",
+                    "queue_label": "Falha antiga — abra ou reinicie somente se desejar",
                     "can_open": True,
                     "can_cancel": False,
                     "recoverable": True,
+                    "auto_open": False,
                 })
                 items.append(recovery_item)
         items = items[: max(1, min(200, int(limit or 20)))]

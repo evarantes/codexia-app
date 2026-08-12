@@ -146,6 +146,51 @@ class VideoVisualIdentityAndSyncTests(unittest.TestCase):
         self.assertEqual(closing["scene_start"], 20.0)
         self.assertEqual(closing["audio_start"], 21.0)
 
+    def test_cinematic_opening_is_short_immediate_and_keeps_current_channel_brand(self):
+        generator = VideoGenerator()
+        plan = {
+            "title": "Estudo 1 — Quando o desafio aparece",
+            "channel_name": "HERDEIROS DAS PROMESSAS",
+        }
+        narration = generator.prepare_final_narration_text(
+            plan,
+            [{"text": "A fé permanece firme quando surgem desafios."}],
+        )
+
+        self.assertEqual(narration["channel_name"], "HERDEIROS DAS PROMESSAS")
+        self.assertLessEqual(narration["intro_opening_hold_sec"], 0.8)
+        self.assertLessEqual(len(narration["opening_text"].split()), 14)
+        self.assertIn("quando o desafio aparece", narration["opening_text"].lower())
+        self.assertEqual(narration["end_screen_target_duration_sec"], 4.0)
+
+    def test_cinematic_closing_uses_one_clear_cta_instead_of_four_commands(self):
+        generator = VideoGenerator()
+        narration = generator.prepare_final_narration_text(
+            {
+                "title": "Uma mensagem de esperança",
+                "channel_name": "HERDEIROS DAS PROMESSAS",
+            },
+            [{"text": "A esperança renasce a cada manhã."}],
+        )
+        closing = narration["closing_text"].lower()
+
+        self.assertIn("herdeiros das promessas", closing)
+        self.assertIn("inscreva-se", closing)
+        self.assertNotIn("curta este vídeo", closing)
+        self.assertNotIn("comente", closing)
+        self.assertNotIn("compartilhe", closing)
+        self.assertNotIn("ative o sininho", closing)
+
+    def test_long_static_scene_is_split_into_cost_free_visual_beats(self):
+        generator = VideoGenerator()
+        beats = generator._plan_cinematic_visual_beats(22.625)
+
+        self.assertEqual(len(beats), 4)
+        self.assertAlmostEqual(sum(item["duration"] for item in beats), 22.625, places=5)
+        self.assertTrue(all(item["duration"] <= 7.0 for item in beats))
+        self.assertEqual(beats[0]["start"], 0.0)
+        self.assertEqual(beats[-1]["end"], 22.625)
+
 
 if __name__ == "__main__":
     unittest.main()
