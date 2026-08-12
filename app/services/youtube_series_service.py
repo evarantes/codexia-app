@@ -1170,7 +1170,7 @@ class YouTubeSeriesService:
                             "task_id": str(episode.task_id),
                             "task_status": task_status,
                         })
-                    elif task_status == "completed" and status in {"in_production", "awaiting_production", "planned", "in_correction"}:
+                    elif task_status in {"completed", "awaiting_review", "approved"} and status in {"in_production", "awaiting_production", "planned", "in_correction"}:
                         before = str(episode.status)
                         episode.status = "awaiting_review"
                         synced += 1

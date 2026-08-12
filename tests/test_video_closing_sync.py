@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import inspect
 
 from app.services.media_probe import (
     duration_sync_tolerance_seconds,
@@ -117,6 +118,13 @@ class VideoClosingSyncTests(unittest.TestCase):
             finally:
                 clip.close()
                 audio.close()
+
+    def test_cinematic_endcard_extends_audio_track_with_matching_silence(self):
+        source = inspect.getsource(VideoGenerator.create_video_from_plan)
+        self.assertIn("silent_cinematic_tail_sec = end_clip_duration", source)
+        self.assertIn("final_audio_track_duration_sec = float(target_video_duration", source)
+        self.assertIn('"silent_endcard_duration_sec"', source)
+        self.assertIn('"cta_visual_mode"] = "cinematic_background_bridge"', source)
 
 
 if __name__ == "__main__":

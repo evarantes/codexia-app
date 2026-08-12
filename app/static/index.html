@@ -5942,10 +5942,10 @@
                 try {
                     const saved = localStorage.getItem('ytStoryTaskId');
                     if (saved) {
-                        this.ytStoryTaskId = saved;
-                        this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
-                        this.ytStoryTaskPollFails[String(saved)] = 0;
-                        this.pollStoryTask(saved);
+                        // A fila oficial restaura apenas tarefas realmente ativas.
+                        // IDs falhados antigos permanecem no histórico recuperável,
+                        // mas não devem reaparecer no cartão principal após atualizar.
+                        localStorage.removeItem('ytStoryTaskId');
                     }
                 } catch (e) {}
                 try {
@@ -6371,7 +6371,7 @@
                         this.ytQueueFactoryBusy = Boolean(data && data.factory_busy);
                         if (autoOpen !== false && !this.ytStoryTaskId && items.length) {
                             const pick = items.find(t => t && t.can_open && t.task_id && Boolean(t.is_current))
-                                || items.find(t => t && t.can_open && t.task_id)
+                                || items.find(t => t && t.can_open && t.task_id && !t.recoverable && ['pending', 'processing'].includes(String(t.status || '').toLowerCase()))
                                 || null;
                             if (pick && pick.task_id) {
                                 this.ytStoryTaskId = String(pick.task_id);
@@ -6393,7 +6393,10 @@
                     this.ytStoryTaskId = taskId;
                     this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
                     this.ytStoryTaskPollFails[taskId] = 0;
-                    try { localStorage.setItem('ytStoryTaskId', taskId); } catch (e) {}
+                    try {
+                        if (it.recoverable) localStorage.removeItem('ytStoryTaskId');
+                        else localStorage.setItem('ytStoryTaskId', taskId);
+                    } catch (e) {}
                     this.pollStoryTask(taskId);
                 },
                 async retryStoryTaskFromQueue(item) {
@@ -8810,7 +8813,7 @@
                         }
                         if (status === 'failed') {
                             this.ytStoryVideoLoading = false;
-                            try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
+                            try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                             this.releaseVideoGenerationLockByTask(taskId);
                             this.ytStoryTaskId = String(taskId);
                             return;

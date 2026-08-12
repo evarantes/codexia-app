@@ -477,6 +477,29 @@ class YouTubeSeriesServiceTests(unittest.TestCase):
         self.assertEqual(updated["status"], "publication_blocked")
         self.assertEqual(result["status"], "pending_issue")
 
+    def test_scheduler_maps_canonical_awaiting_review_task_to_series_review_status(self):
+        detail = self._create_series(status="active")
+        episode_id = detail["episodes"][0]["id"]
+        episode = self.db.query(SeriesEpisode).filter(SeriesEpisode.id == episode_id).first()
+        episode.status = "in_production"
+        episode.task_id = "task-awaiting-review"
+        episode.publication_datetime = datetime.utcnow() + timedelta(days=1)
+        self.db.commit()
+
+        with patch(
+            "app.services.youtube_series_service.get_task",
+            return_value={"status": "awaiting_review", "result": {"video_url": "/media/videos/ready.mp4"}},
+        ), patch.object(
+            youtube_series_service,
+            "_episode_planned_cost",
+            return_value={"estimated_cost": 1.0},
+        ):
+            summary = youtube_series_service.sync_series_scheduler(self.db, now=datetime.utcnow())
+
+        self.db.refresh(episode)
+        self.assertGreaterEqual(summary["synced"], 1)
+        self.assertEqual(episode.status, "awaiting_review")
+
     def test_editorial_plan_preserves_continuity_and_last_episode_closure(self):
         detail = self._create_series(end_date="2026-08-03")
         episodes = detail["episodes"]

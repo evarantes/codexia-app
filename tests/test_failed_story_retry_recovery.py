@@ -193,13 +193,15 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertTrue(dispatched_payload["force_reuse_assets"])
         dispatch.assert_called_once_with(dispatched_payload, "task-1")
 
-    def test_frontend_keeps_failed_task_link_and_blocks_duplicate_generate(self):
+    def test_frontend_keeps_failed_task_in_session_without_auto_opening_it_after_refresh(self):
         html = (Path(__file__).parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
         poll_story = html.split("async pollStoryTask(taskId)", 1)[1].split("async generateStoryShorts", 1)[0]
         failed_branch = poll_story.split("if (status === 'failed') {", 1)[1].split("if (status === 'cancelled')", 1)[0]
-        self.assertIn("localStorage.setItem('ytStoryTaskId'", failed_branch)
         self.assertIn("this.ytStoryTaskId = String(taskId)", failed_branch)
-        self.assertNotIn("localStorage.removeItem('ytStoryTaskId')", failed_branch)
+        self.assertIn("localStorage.removeItem('ytStoryTaskId')", failed_branch)
+        queue_loader = html.split("async fetchActiveVideoTasks", 1)[1].split("openStoryTaskFromQueue(item)", 1)[0]
+        self.assertIn("!t.recoverable", queue_loader)
+        self.assertNotIn("|| items.find(t => t && t.can_open && t.task_id)\n", queue_loader)
         self.assertNotIn("alert(data.message", failed_branch)
         self.assertIn("Esta solicitação pode ser recuperada", html)
         self.assertIn("Reiniciar agora", html)
@@ -207,6 +209,12 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertIn("async retryLatestRecoverableStoryTask()", html)
         self.assertNotIn("ytStoryRetryLoading || !ytStoryTaskId || !ytStoryTask", html)
         self.assertIn("message: retryError", html)
+
+    def test_recoverable_queue_item_is_explicitly_marked_as_old_and_never_auto_opened(self):
+        source = inspect.getsource(youtube_router.list_story_video_task_queue)
+        self.assertIn('"Histórico recuperável — não é uma nova produção"', source)
+        self.assertIn('"Falha antiga — abra ou reinicie somente se desejar"', source)
+        self.assertIn('"auto_open": False', source)
 
     def test_discard_failed_task_cancels_only_selected_task(self):
         task = {"status": "failed", "progress": 20, "result": {"payload": {"mode": "story"}}}
