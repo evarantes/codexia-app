@@ -6090,7 +6090,14 @@ def process_video_generation(request: VideoRequest, task_id):
         guardian_db = SessionLocal()
         guardian_task_row = guardian_db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
         guardian_user_id = getattr(guardian_task_row, "user_id", None) if guardian_task_row else None
-        ai_service.set_operation_context(user_id=guardian_user_id, task_id=str(task_id))
+        current_task = get_task(task_id) or {}
+        current_result = current_task.get("result") if isinstance(current_task.get("result"), dict) else {}
+        source_module = "youtube_series" if isinstance(current_result.get("series_context"), dict) else None
+        ai_service.set_operation_context(
+            user_id=guardian_user_id,
+            task_id=str(task_id),
+            source_module=source_module,
+        )
         guardian_context = youtube_auto_financial_adapter.build_context(
             task_id=str(task_id),
             payload=guardian_payload,

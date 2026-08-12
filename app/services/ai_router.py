@@ -1539,6 +1539,7 @@ class AIRouter:
         capability: str,
         prompt: str,
         output_dir: str,
+        reclaim_missing_completed_file: bool = False,
     ) -> str:
         db = SessionLocal()
         try:
@@ -1622,22 +1623,42 @@ class AIRouter:
                 estimated_cost=policy.estimated_cost,
             )
             if reused and isinstance(reused.get("path"), str) and reused["path"].strip():
-                self._record_ai_usage(
-                    db,
-                    user_id=user_id,
-                    task_id=task_id,
-                    video_id=video_id,
-                    capability=capability,
-                    provider="openai",
-                    model=model_id,
-                    estimated_cost=policy.estimated_cost,
-                    actual_cost=0.0,
-                    latency_ms=0,
-                    cache_hit=True,
-                    operation_id=operation_id,
+                stale_completed_file = bool(
+                    reclaim_missing_completed_file
+                    and not self._completed_image_result_is_usable(reused)
                 )
-                db.commit()
-                return reused["path"]
+                if stale_completed_file:
+                    # O resultado pertence a um contêiner anterior. A retomada
+                    # explícita da série pode reclamar a mesma operação, sob o
+                    # mesmo advisory lock, sem criar chamadas concorrentes.
+                    db.execute(text(
+                        """
+                        UPDATE ai_operation_runs
+                        SET status = 'running',
+                            result_json = NULL,
+                            error_json = NULL,
+                            updated_at = NOW(),
+                            completed_at = NULL
+                        WHERE operation_id = :operation_id
+                        """
+                    ), {"operation_id": operation_id})
+                else:
+                    self._record_ai_usage(
+                        db,
+                        user_id=user_id,
+                        task_id=task_id,
+                        video_id=video_id,
+                        capability=capability,
+                        provider="openai",
+                        model=model_id,
+                        estimated_cost=policy.estimated_cost,
+                        actual_cost=0.0,
+                        latency_ms=0,
+                        cache_hit=True,
+                        operation_id=operation_id,
+                    )
+                    db.commit()
+                    return reused["path"]
 
             if self._dry_run_enabled():
                 base_dir = Path(output_dir)
@@ -1754,6 +1775,19 @@ class AIRouter:
                 db.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _completed_image_result_is_usable(result: Optional[Dict[str, Any]]) -> bool:
+        """Aceita cache de imagem somente quando o arquivo físico ainda existe."""
+        if not isinstance(result, dict):
+            return False
+        path = str(result.get("path") or "").strip()
+        if not path:
+            return False
+        try:
+            return os.path.isfile(path) and os.path.getsize(path) >= 1000
+        except Exception:
+            return False
 
     def transcribe_audio(
         self,
