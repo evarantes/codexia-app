@@ -21,6 +21,10 @@ from app.services.task_manager import (
     request_cancel_task,
     update_task,
 )
+from app.services.video_resource_guard import (
+    evaluate_series_video_resources,
+    resource_guard_message,
+)
 from app.services.youtube_auto_identity import (
     build_video_content_fingerprint,
     normalize_list_for_fingerprint,
@@ -566,6 +570,9 @@ class YouTubeSeriesService:
         )
         latest_review = review_rows[0] if review_rows else None
         approved_snapshot = _json_loads(episode.approved_snapshot_json, {})
+        episode_metadata = _json_loads(episode.metadata_json, {})
+        if not isinstance(episode_metadata, dict):
+            episode_metadata = {}
         cost_control = task_result.get("cost_control") if isinstance(task_result.get("cost_control"), dict) else {}
         estimated_cost = _safe_float(cost_control.get("estimated_cost"), 0.0)
         actual_cost = _safe_float(cost_control.get("actual_cost"), 0.0)
@@ -615,6 +622,9 @@ class YouTubeSeriesService:
             "task_status": str((task or {}).get("status") or "").lower() if task else None,
             "task_error": str((task or {}).get("message") or "").strip() or None,
             "provider_error": task_result.get("provider_error") if isinstance(task_result.get("provider_error"), dict) else None,
+            "resource_guard": episode_metadata.get("resource_guard")
+            if isinstance(episode_metadata.get("resource_guard"), dict)
+            else None,
             "video_preview": {
                 "title": task_result.get("title") or episode.planned_title,
                 "description": task_result.get("description"),
@@ -1101,6 +1111,7 @@ class YouTubeSeriesService:
         blocked = 0
         synced = 0
         shutdown_blocked = 0
+        resource_blocked = 0
         shutdown_in_progress = False
         try:
             # Import tardio evita ciclo de importação. O scheduler continua
@@ -1240,6 +1251,31 @@ class YouTubeSeriesService:
                         continue
                     if previous_generation_pending:
                         continue
+                    duration_minutes = int(episode.duration_minutes or series.duration_minutes or 10)
+                    resource_report = evaluate_series_video_resources(duration_minutes)
+                    resource_entry = {
+                        **resource_report,
+                        "message": resource_guard_message(resource_report),
+                        "checked_at": datetime.utcnow().isoformat(),
+                    }
+                    episode_metadata = _json_loads(episode.metadata_json, {})
+                    if not isinstance(episode_metadata, dict):
+                        episode_metadata = {}
+                    episode_metadata["resource_guard"] = resource_entry
+                    episode.metadata_json = _json_dumps(episode_metadata)
+                    if not bool(resource_report.get("allowed")):
+                        resource_blocked += 1
+                        series.status = "pending_issue"
+                        _audit_event(
+                            db,
+                            event_type="series_resource_guard_blocked",
+                            series_id=int(series.id),
+                            episode_id=int(episode.id),
+                            status_before=status,
+                            status_after=status,
+                            payload={**resource_entry, "series_status_after": "pending_issue"},
+                        )
+                        continue
                     series_ik = ""
                     try:
                         sm = self._series_memory(series)
@@ -1268,6 +1304,7 @@ class YouTubeSeriesService:
             "synced": synced,
             "shutdown_in_progress": shutdown_in_progress,
             "shutdown_blocked": shutdown_blocked,
+            "resource_blocked": resource_blocked,
         }
 
     def _auto_approve_episode(self, db: Session, *, episode_id: int, user_id: int) -> None:
