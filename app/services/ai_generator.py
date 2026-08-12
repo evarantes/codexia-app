@@ -8,6 +8,7 @@ import requests
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
+from app.config import IMAGES_OUTPUT_DIR
 from app.database import SessionLocal
 from app.models import Settings
 from app.services.ai_router import AIRouter, AICapability, AIOperationBlocked, AIOperationInProgress
@@ -76,6 +77,7 @@ class AIContentGenerator:
         self.ai_user_id: Optional[int] = None
         self.ai_task_id: Optional[str] = None
         self.ai_video_id: Optional[str] = None
+        self.ai_source_module: Optional[str] = None
         self.api_key = None
         self.gemini_key = None
         self.deepseek_key = None
@@ -103,11 +105,13 @@ class AIContentGenerator:
         user_id: Optional[int] = None,
         task_id: Optional[str] = None,
         video_id: Optional[str] = None,
+        source_module: Optional[str] = None,
     ) -> None:
         """Vincula custos e falhas de IA à tarefa canônica em execução."""
         self.ai_user_id = int(user_id) if user_id is not None else None
         self.ai_task_id = str(task_id) if task_id else None
         self.ai_video_id = str(video_id) if video_id else None
+        self.ai_source_module = str(source_module or "").strip().lower() or None
 
     def _load_config(self):
         # Tenta carregar do banco primeiro, depois do .env
@@ -3744,7 +3748,10 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             "final_prompt_length": len(full_prompt),
         }
 
-        base_dir = Path("generated_assets/openai_images")
+        is_youtube_series = self.ai_source_module == "youtube_series"
+        # Séries são retomadas depois de deploys. Seus arquivos precisam ficar
+        # no volume persistente; os demais consumidores mantêm o contrato atual.
+        base_dir = Path(IMAGES_OUTPUT_DIR) if is_youtube_series else Path("generated_assets/openai_images")
         base_dir.mkdir(parents=True, exist_ok=True)
 
         def _extract_openai_error_message(err: Exception) -> str:
@@ -3783,7 +3790,10 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 capability=AICapability.IMAGE_GENERATION,
                 prompt=full_prompt,
                 output_dir=str(base_dir),
+                reclaim_missing_completed_file=is_youtube_series,
             )
+            if is_youtube_series:
+                return str(image_path)
             fname = Path(str(image_path)).name
             return f"/generated_assets/openai_images/{fname}"
         except (AIOperationBlocked, AIOperationInProgress) as e:
