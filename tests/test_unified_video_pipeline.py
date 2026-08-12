@@ -401,6 +401,55 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
             auto_publish=False,
         )
 
+    def _prepare_visual_plan_validation_case(
+        self,
+        *,
+        module: str,
+        key: str,
+        requested_images: int,
+        planned_images: int,
+        actual_images: int,
+        scene_count: int,
+    ) -> Tuple[Any, UnifiedVideo]:
+        pipe = self._pipeline()
+        request = self._minimal_request(
+            ik=key,
+            module=module,
+            sid=f"episode:{key}" if module == "youtube_series" else f"story:{key}",
+            image_count=requested_images,
+        )
+        pipe.submit_or_reuse(self.db, request=request)
+        image_paths: List[str] = []
+        for index in range(actual_images):
+            path = str(self.images_dir / f"{key}-{index}.png")
+            _make_image(path)
+            image_paths.append(path)
+        scene_visuals = [
+            {
+                "scene_number": index + 1,
+                "image_path": image_paths[index % max(1, len(image_paths))] if image_paths else None,
+                "text": f"Cena {index + 1}",
+            }
+            for index in range(scene_count)
+        ]
+        pipe.transition_status(
+            self.db,
+            key,
+            status="validating",
+            merge_result={
+                "script": {"title": "Contrato visual", "text": "Teste de validação."},
+                "render_report": {
+                    "scene_visuals": scene_visuals,
+                    "visual_plan": {
+                        "requested_image_count": planned_images,
+                        "group_count": planned_images,
+                    },
+                },
+            },
+        )
+        uv = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == key).one()
+        return pipe, uv
+
     # ------------------------------------------------------------------ #
     # 1. Um clique gera exatamente 1 tarefa                                #
     # ------------------------------------------------------------------ #
@@ -811,6 +860,83 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         self.assertTrue(validation.checks["audio_exists_and_non_empty"], validation.details)
         self.assertEqual(validation.details["audio"]["path"], audio_path)
         self.assertEqual(validation.details["audio"]["abs_path"], audio_path)
+
+    def test_13_series_validates_against_rendered_visual_group_plan(self):
+        pipe, uv = self._prepare_visual_plan_validation_case(
+            module="youtube_series",
+            key="test:series:visual-plan:seven-of-eight",
+            requested_images=8,
+            planned_images=7,
+            actual_images=7,
+            scene_count=8,
+        )
+
+        validation = pipe.validate_before_awaiting_review(
+            self.db,
+            uv.idempotency_key,
+            probe_local_paths=True,
+            probe_http=False,
+        )
+
+        self.assertTrue(validation.checks["storyboard_valid"], validation.details)
+        self.assertTrue(validation.checks["image_count_minimum"], validation.details)
+        self.assertEqual(validation.details["storyboard"]["scene_count"], 8)
+        self.assertEqual(validation.details["images"]["requested_min"], 8)
+        self.assertEqual(validation.details["images"]["render_planned_min"], 7)
+        self.assertEqual(validation.details["images"]["expected_min"], 7)
+        self.assertEqual(validation.details["images"]["actual_found"], 7)
+        self.assertEqual(
+            validation.details["images"]["validation_policy"],
+            "youtube_series_render_visual_plan",
+        )
+
+    def test_14_series_still_fails_when_a_planned_visual_is_missing(self):
+        pipe, uv = self._prepare_visual_plan_validation_case(
+            module="youtube_series",
+            key="test:series:visual-plan:missing-one",
+            requested_images=8,
+            planned_images=7,
+            actual_images=6,
+            scene_count=8,
+        )
+
+        validation = pipe.validate_before_awaiting_review(
+            self.db,
+            uv.idempotency_key,
+            probe_local_paths=True,
+            probe_http=False,
+        )
+
+        self.assertFalse(validation.checks["image_count_minimum"], validation.details)
+        self.assertEqual(validation.details["images"]["expected_min"], 7)
+        self.assertEqual(validation.details["images"]["actual_found"], 6)
+
+    def test_15_story_keeps_original_image_minimum_unchanged(self):
+        pipe, uv = self._prepare_visual_plan_validation_case(
+            module="story",
+            key="test:story:visual-plan:unchanged",
+            requested_images=8,
+            planned_images=7,
+            actual_images=7,
+            scene_count=8,
+        )
+
+        validation = pipe.validate_before_awaiting_review(
+            self.db,
+            uv.idempotency_key,
+            probe_local_paths=True,
+            probe_http=False,
+        )
+
+        self.assertFalse(validation.checks["image_count_minimum"], validation.details)
+        self.assertEqual(validation.details["images"]["requested_min"], 8)
+        self.assertIsNone(validation.details["images"]["render_planned_min"])
+        self.assertEqual(validation.details["images"]["expected_min"], 8)
+        self.assertEqual(validation.details["images"]["actual_found"], 7)
+        self.assertEqual(
+            validation.details["images"]["validation_policy"],
+            "requested_image_count",
+        )
 
 
 if __name__ == "__main__":

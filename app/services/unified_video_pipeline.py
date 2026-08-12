@@ -876,11 +876,48 @@ class UnifiedVideoPipelineService:
         details["storyboard"] = {"scene_count": len(scenes) if isinstance(scenes, list) else 0}
 
         # 3. quantidade mínima de imagens
-        min_images = max(1, min(int(uv.image_count or 1), 256))
+        #
+        # Séries usam o mesmo renderizador do História/Devocional, mas o
+        # renderizador pode agrupar cenas consecutivas que compartilham o
+        # mesmo contexto visual. Nesse fluxo, ``uv.image_count`` continua
+        # registrando o alvo solicitado pela série, enquanto o relatório de
+        # render contém a quantidade física realmente planejada. Somente para
+        # ``youtube_series`` validamos contra esse plano; se o relatório não
+        # existir, mantemos o mínimo solicitado original. Os demais módulos,
+        # especialmente História/Devocional, não mudam de comportamento.
+        requested_min_images = max(1, min(int(uv.image_count or 1), 256))
+        min_images = requested_min_images
+        render_planned_min_images: Optional[int] = None
+        image_count_policy = "requested_image_count"
+        if str(getattr(uv, "source_module", "") or "").strip().lower() == "youtube_series":
+            persisted_result = _json_loads(getattr(uv, "result_json", None))
+            persisted_result = persisted_result if isinstance(persisted_result, dict) else {}
+            render_report = (
+                task_result.get("render_report")
+                if isinstance(task_result.get("render_report"), dict)
+                else persisted_result.get("render_report")
+            )
+            visual_plan = (
+                render_report.get("visual_plan")
+                if isinstance(render_report, dict) and isinstance(render_report.get("visual_plan"), dict)
+                else {}
+            )
+            planned_count = _safe_int(
+                visual_plan.get("requested_image_count")
+                or visual_plan.get("group_count"),
+                0,
+            )
+            if planned_count > 0:
+                render_planned_min_images = max(1, min(planned_count, 256))
+                min_images = min(requested_min_images, render_planned_min_images)
+                image_count_policy = "youtube_series_render_visual_plan"
         actual_images = sum(1 for p in images_paths if self._file_exists_or_url(p, probe_local_paths))
         checks["image_count_minimum"] = bool(actual_images >= min_images)
         details["images"] = {
             "expected_min": min_images,
+            "requested_min": requested_min_images,
+            "render_planned_min": render_planned_min_images,
+            "validation_policy": image_count_policy,
             "actual_found": actual_images,
             "paths": images_paths[: min(24, len(images_paths))],
         }
