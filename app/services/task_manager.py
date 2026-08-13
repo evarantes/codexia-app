@@ -554,8 +554,79 @@ def is_task_cancel_requested(task_id: str) -> bool:
     c = _control_get(task_id)
     return bool(c.get("cancel") is True)
 
+def is_task_pause_requested(task_id: str) -> bool:
+    c = _control_get(task_id)
+    return bool(c.get("pause") is True)
+
+def request_pause_task(
+    task_id: str,
+    message: str = "Pausa solicitada; finalizando a etapa atual com segurança.",
+    *,
+    immediate: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Solicita pausa cooperativa sem apagar payload ou ativos já produzidos.
+
+    Uma tarefa que ainda não começou pode ser pausada imediatamente. Quando há
+    executor ativo, ``pause_requested`` mantém a vaga ocupada até o próximo
+    checkpoint confirmar a parada e liberar o lock da fábrica.
+    """
+    _control_set(task_id, {"pause": True})
+    db = SessionLocal()
+    try:
+        _ensure_task_support_tables()
+        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if not row:
+            return None
+        status = str(row.status or "").strip().lower()
+        if status in {"completed", "awaiting_review", "approved", "published", "failed", "cancelled"}:
+            return _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+        row.status = "paused" if immediate or status == "pending" else "pause_requested"
+        row.message = (
+            "Produção pausada antes de iniciar; ativos e dados preservados."
+            if row.status == "paused"
+            else message
+        )
+        _sync_task_aux_state(db, task_id, status=row.status, result_json=row.result_json)
+        db.commit()
+        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+        video_tasks[task_id] = current
+        _redis_set(task_id, current)
+        return current
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+def mark_task_paused(
+    task_id: str,
+    message: str = "Produção pausada com segurança; ativos e progresso preservados.",
+) -> Optional[Dict[str, Any]]:
+    _control_set(task_id, {"pause": True})
+    db = SessionLocal()
+    try:
+        _ensure_task_support_tables()
+        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if not row:
+            return None
+        if str(row.status or "").strip().lower() == "cancelled":
+            return _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+        row.status = "paused"
+        row.message = message
+        _sync_task_aux_state(db, task_id, status="paused", result_json=row.result_json)
+        db.commit()
+        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+        video_tasks[task_id] = current
+        _redis_set(task_id, current)
+        return current
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
 def request_cancel_task(task_id: str, message: str = "Cancelado pelo usuário.") -> Optional[Dict[str, Any]]:
-    _control_set(task_id, {"cancel": True})
+    _control_set(task_id, {"cancel": True, "pause": False})
     db = SessionLocal()
     try:
         _ensure_task_support_tables()
@@ -578,7 +649,7 @@ def request_cancel_task(task_id: str, message: str = "Cancelado pelo usuário.")
 
 
 def reset_task_for_retry(task_id: str, progress: int = 1, message: str = "Reiniciando tarefa...") -> Optional[Dict[str, Any]]:
-    _control_set(task_id, {"cancel": False, "deleted": False})
+    _control_set(task_id, {"cancel": False, "pause": False, "deleted": False})
     db = SessionLocal()
     try:
         _ensure_task_support_tables()
@@ -776,8 +847,15 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
             db.commit()
             db.refresh(row)
 
-        if str((row.status or "")).lower() in {"cancelled"} and (not status or str(status).lower() != "cancelled"):
+        row_status = str((row.status or "")).lower()
+        requested_status = str(status or "").lower()
+        if row_status == "cancelled" and requested_status != "cancelled":
             return
+        if row_status == "pause_requested" and requested_status not in {"paused", "cancelled"}:
+            current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+            video_tasks[task_id] = current
+            _redis_set(task_id, current)
+            return current
         if status:
             row.status = status
         if progress is not None:
