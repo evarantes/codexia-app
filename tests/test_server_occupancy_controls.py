@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 os.environ.setdefault("ENABLE_SQLITE_DEV", "true")
@@ -80,6 +80,135 @@ class ServerOccupancyApiTests(unittest.TestCase):
         self.assertTrue(item["can_resume"])
         self.assertEqual(item["queue_label"], "Pausada")
 
+    def test_pending_task_can_be_paused_before_it_spends_resources(self):
+        now = datetime.utcnow()
+        row = SimpleNamespace(
+            id="task-waiting",
+            status="pending",
+            progress=0,
+            message="Aguardando vez na fila.",
+            result_json=json.dumps({
+                "kind": "youtube_story_video",
+                "payload": {"mode": "story", "topic": "Próximo vídeo"},
+            }),
+            created_at=now,
+            updated_at=now,
+        )
+
+        with patch.object(youtube, "_runtime_view_for_task", return_value={"state": "queued"}):
+            item = youtube._story_video_task_item_from_row(row, 2)
+
+        self.assertFalse(item["is_current"])
+        self.assertTrue(item["can_pause"])
+        self.assertTrue(item["can_cancel"])
+        self.assertEqual(item["queue_label"], "Na fila")
+
+    def test_primary_queue_item_exposes_waiting_pause_cancel_and_resume_states(self):
+        now = datetime.utcnow()
+        pending_job = SimpleNamespace(
+            id=91,
+            video_id=14,
+            status="pending",
+            progress=0,
+            step="script",
+            logs="",
+            created_at=now,
+            updated_at=now,
+        )
+        video = SimpleNamespace(
+            id=14,
+            title="Vídeo da série",
+            status="QUEUED",
+            duration_sec=600,
+            created_at=now,
+        )
+        query = MagicMock()
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.limit.return_value = query
+        query.all.return_value = [pending_job]
+        db = MagicMock()
+        db.query.return_value = query
+
+        waiting = youtube._production_video_queue_item(db, video, 1)
+        self.assertEqual(waiting["status"], "pending")
+        self.assertTrue(waiting["can_pause"])
+        self.assertTrue(waiting["can_cancel"])
+        self.assertFalse(waiting["can_resume"])
+
+        video.status = "PAUSED"
+        pending_job.status = "paused"
+        paused = youtube._production_video_queue_item(db, video, 1)
+        self.assertEqual(paused["status"], "paused")
+        self.assertFalse(paused["can_pause"])
+        self.assertTrue(paused["can_resume"])
+
+    def test_resume_paused_task_requeues_without_direct_dispatch(self):
+        pipeline = MagicMock()
+        now_iso = datetime.utcnow().isoformat()
+        with (
+            patch.object(youtube, "acquire_distributed_lock", return_value={}),
+            patch.object(youtube, "release_distributed_lock"),
+            patch.object(youtube, "get_task", return_value={
+                "status": "paused",
+                "progress": 48,
+                "result": {"payload": {"mode": "story", "topic": "Retomar"}},
+                "updated_at": now_iso,
+            }),
+            patch.object(youtube, "_maybe_enable_render_only_flags", side_effect=lambda payload, _task_id: payload),
+            patch.object(youtube, "merge_task_result") as merge_result,
+            patch.object(
+                youtube,
+                "enqueue_paused_task_for_resume",
+                return_value={"status": "pending", "progress": 48},
+            ) as enqueue_resume,
+            patch.object(youtube, "unified_video_pipeline", return_value=pipeline),
+            patch.object(youtube, "_kick_story_video_task_queue_async") as kick,
+            patch.object(youtube, "_dispatch_video_generation_task") as dispatch,
+        ):
+            result = youtube.retry_task("task-paused", _admin=SimpleNamespace(id=1))
+
+        self.assertTrue(now_iso)
+        self.assertEqual(result["status"], "pending")
+        self.assertTrue(result["queued"])
+        merge_result.assert_called_once()
+        enqueue_resume.assert_called_once()
+        kick.assert_called_once()
+        dispatch.assert_not_called()
+
+    def test_paused_item_does_not_block_handoff_to_next_queue(self):
+        paused_row = SimpleNamespace(id="paused-only", status="paused")
+        db = MagicMock()
+        with (
+            patch.object(youtube, "SessionLocal", return_value=db),
+            patch.object(youtube, "_load_story_video_task_rows", return_value=[paused_row]),
+            patch.object(youtube, "_cleanup_story_video_task_queue", return_value={"changed": False}),
+            patch.object(youtube, "_is_video_factory_busy", return_value=False),
+            patch.object(youtube, "_kick_primary_production_queue_async") as kick_primary,
+            patch.object(youtube, "_dispatch_video_generation_task") as dispatch,
+        ):
+            result = youtube._kick_story_video_task_queue()
+
+        self.assertIsNone(result)
+        kick_primary.assert_called_once()
+        dispatch.assert_not_called()
+        db.close.assert_called_once()
+
+    def test_busy_factory_never_starts_second_executor(self):
+        pending_row = SimpleNamespace(id="pending-next", status="pending")
+        db = MagicMock()
+        with (
+            patch.object(youtube, "SessionLocal", return_value=db),
+            patch.object(youtube, "_load_story_video_task_rows", return_value=[pending_row]),
+            patch.object(youtube, "_cleanup_story_video_task_queue", return_value={"changed": False}),
+            patch.object(youtube, "_is_video_factory_busy", return_value=True),
+            patch.object(youtube, "_dispatch_video_generation_task") as dispatch,
+        ):
+            result = youtube._kick_story_video_task_queue()
+
+        self.assertIsNone(result)
+        dispatch.assert_not_called()
+
     def test_live_executor_receives_cooperative_pause_request(self):
         with (
             patch.object(youtube, "get_task", return_value={"status": "processing", "progress": 48}),
@@ -122,6 +251,8 @@ class ServerOccupancyApiTests(unittest.TestCase):
         self.assertIn('"occupiers"', source)
         self.assertIn('"paused_count"', source)
         self.assertIn('"queued_count"', source)
+        self.assertIn("_load_production_video_queue_items", source)
+        self.assertIn('"next_task"', source)
 
 
 class ServerOccupancyUiTests(unittest.TestCase):
@@ -141,6 +272,9 @@ class ServerOccupancyUiTests(unittest.TestCase):
         self.assertIn("Object.keys(ytStoryTask.runtime.resources).length", self.html)
         self.assertIn("if (status === 'paused')", self.html)
         self.assertIn("Retomar tarefa", self.html)
+        self.assertIn("Fila de produção do servidor", self.html)
+        self.assertIn("Pausar na fila", self.html)
+        self.assertIn("ytQueueCounts.paused", self.html)
 
     def test_pause_uses_existing_queue_endpoints_only(self):
         pause_method = self.html.split("async pauseQueuedVideoTask(item)", 1)[1].split(

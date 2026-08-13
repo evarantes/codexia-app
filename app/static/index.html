@@ -2175,8 +2175,13 @@
                     <div class="mt-4 bg-white border rounded p-4">
                         <div class="flex items-center justify-between gap-3 mb-3">
                             <div>
-                                <div class="font-bold text-gray-800">Fila desta geração</div>
-                                <div class="text-xs text-gray-500">Um vídeo por vez no servidor. Novos pedidos entram em fila com posição.</div>
+                                <div class="font-bold text-gray-800">Fila de produção do servidor</div>
+                                <div class="text-xs text-gray-500">Todos os vídeos manuais, de séries e da fila principal. Pausar mantém o trabalho aqui até você mandar retomar.</div>
+                                <div class="flex flex-wrap gap-2 mt-2 text-xs">
+                                    <span class="px-2 py-1 rounded bg-blue-50 text-blue-800">Em execução: {{ ytQueueCounts.running }}</span>
+                                    <span class="px-2 py-1 rounded bg-yellow-50 text-yellow-800">Aguardando: {{ ytQueueCounts.waiting }}</span>
+                                    <span class="px-2 py-1 rounded bg-gray-100 text-gray-700">Pausados: {{ ytQueueCounts.paused }}</span>
+                                </div>
                             </div>
                             <button @click="fetchActiveVideoTasks()" :disabled="ytActiveVideoTasksLoading" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm">
                                 <i v-if="ytActiveVideoTasksLoading" class="fas fa-spinner fa-spin"></i>
@@ -2192,7 +2197,7 @@
                                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                                     <div class="min-w-0">
                                         <div class="font-semibold text-gray-800 truncate">
-                                            #{{ item.position }} - {{ item.title || 'Vídeo narrado' }}
+                                            #{{ item.queue_position || item.position }} - {{ item.title || 'Vídeo narrado' }}
                                         </div>
                                         <div class="text-xs text-gray-600 mt-1">
                                             <span class="font-semibold">{{ item.queue_label || (item.is_current ? 'Em execução' : 'Na fila') }}</span>
@@ -2214,7 +2219,7 @@
                                         <div v-if="item.message" class="text-xs text-gray-600 mt-1 truncate" :title="item.message">{{ item.message }}</div>
                                     </div>
                                     <div class="flex items-center gap-2 shrink-0">
-                                        <span :class="item.recoverable ? 'bg-red-100 text-red-800' : (item.is_current ? 'bg-blue-100 text-blue-800' : 'bg-yellow-100 text-yellow-800')" class="px-2 py-1 rounded text-xs font-bold">
+                                        <span :class="item.recoverable ? 'bg-red-100 text-red-800' : (item.is_current ? 'bg-blue-100 text-blue-800' : (String(item.status || '').toLowerCase() === 'paused' ? 'bg-gray-200 text-gray-800' : 'bg-yellow-100 text-yellow-800'))" class="px-2 py-1 rounded text-xs font-bold">
                                             {{ item.status }}
                                         </span>
                                         <button v-if="item.can_open" @click="openStoryTaskFromQueue(item)" class="px-2 py-1 rounded border bg-white hover:bg-gray-100 text-xs">Abrir</button>
@@ -2226,7 +2231,7 @@
                                             <i :class="ytStoryDiscardLoading ? 'fas fa-spinner fa-spin' : 'fas fa-trash-alt'"></i>
                                             <span>Descartar</span>
                                         </button>
-                                        <button v-if="item.can_pause" @click="pauseQueuedVideoTask(item)" :disabled="ytQueueActionId === queueTaskActionKey(item)" class="px-2 py-1 rounded border bg-amber-50 hover:bg-amber-100 text-amber-800 disabled:opacity-50 text-xs"><i class="fas fa-pause mr-1"></i>Pausar</button>
+                                        <button v-if="item.can_pause" @click="pauseQueuedVideoTask(item)" :disabled="ytQueueActionId === queueTaskActionKey(item)" class="px-2 py-1 rounded border bg-amber-50 hover:bg-amber-100 text-amber-800 disabled:opacity-50 text-xs"><i class="fas fa-pause mr-1"></i>{{ String(item.status || '').toLowerCase() === 'pending' ? 'Pausar na fila' : 'Pausar' }}</button>
                                         <button v-if="item.can_resume" @click="resumeQueuedVideoTask(item)" :disabled="ytQueueActionId === queueTaskActionKey(item)" class="px-2 py-1 rounded border bg-green-50 hover:bg-green-100 text-green-800 disabled:opacity-50 text-xs"><i class="fas fa-play mr-1"></i>Retomar</button>
                                         <button v-if="item.can_cancel" @click="cancelQueuedVideoTask(item)" :disabled="ytQueueActionId === queueTaskActionKey(item)" class="px-2 py-1 rounded border bg-red-50 hover:bg-red-100 disabled:opacity-50 text-red-700 text-xs">Cancelar</button>
                                     </div>
@@ -5122,6 +5127,7 @@
                     ytActiveVideoTasksLoading: false,
                     ytActiveVideoTasksLastLoadAt: 0,
                     ytActiveVideoTasks: [],
+                    ytQueueCounts: { total: 0, running: 0, waiting: 0, paused: 0 },
                     ytServerOccupiers: [],
                     ytQueueFactoryBusy: false,
                     ytQueueActionId: null,
@@ -6400,11 +6406,17 @@
                         if (silent && (now - last) < 15000) return;
                         this.ytActiveVideoTasksLastLoadAt = now;
                         if (!silent) this.ytActiveVideoTasksLoading = true;
-                        const res = await this.authFetch(`/youtube/tasks/queue?limit=20&_=${Date.now()}`);
+                        const res = await this.authFetch(`/youtube/tasks/queue?limit=100&_=${Date.now()}`);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) return;
                         const items = (data && data.items && Array.isArray(data.items)) ? data.items : [];
                         this.ytActiveVideoTasks = items;
+                        this.ytQueueCounts = {
+                            total: Number((data && data.count) || items.length || 0),
+                            running: Number((data && data.processing_count) || 0),
+                            waiting: Number((data && data.queued_count) || 0),
+                            paused: Number((data && data.paused_count) || 0)
+                        };
                         this.ytServerOccupiers = (data && Array.isArray(data.occupiers))
                             ? data.occupiers
                             : items.filter((item) => item && (Boolean(item.is_current) || String(item.queue_label || '').toLowerCase() === 'ocupando o servidor'));
@@ -6485,7 +6497,9 @@
                     const pauseKind = String(it.pause_kind || 'task').trim().toLowerCase();
                     const productionVideoId = Number(it.production_video_id || 0);
                     const title = String(it.title || 'produção em andamento').trim();
-                    if (!confirm(`Pausar "${title}" após a etapa atual?\n\nOs arquivos já gerados serão preservados. A próxima tarefa começará quando o servidor confirmar a pausa.`)) return;
+                    const isWaiting = String(it.status || '').trim().toLowerCase() === 'pending';
+                    const pauseWhen = isWaiting ? 'antes de iniciar' : 'após a etapa atual';
+                    if (!confirm(`Pausar "${title}" ${pauseWhen}?\n\nOs arquivos já gerados serão preservados. O próximo trabalho livre poderá avançar.`)) return;
                     const actionKey = this.queueTaskActionKey(it);
                     this.ytQueueActionId = actionKey;
                     try {
@@ -6548,6 +6562,7 @@
                         }
                         await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
                         try { this.fetchProductionQueue(); } catch (e) {}
+                        alert(data.message || 'Produção retomada e recolocada na fila.');
                     } catch (e) {
                         alert(e.message || String(e));
                     } finally {
