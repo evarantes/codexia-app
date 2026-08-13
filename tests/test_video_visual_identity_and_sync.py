@@ -300,6 +300,32 @@ class VideoVisualIdentityAndSyncTests(unittest.TestCase):
         self.assertEqual(beats[0]["start"], 0.0)
         self.assertEqual(beats[-1]["end"], 22.625)
 
+    def test_long_video_uses_bounded_visual_compositions_to_reduce_peak_memory(self):
+        generator = VideoGenerator()
+
+        short_hold = generator._memory_safe_visual_hold_seconds(4 * 60)
+        long_hold = generator._memory_safe_visual_hold_seconds(10 * 60)
+        long_beats = generator._plan_cinematic_visual_beats(10 * 60, max_hold_sec=long_hold)
+
+        self.assertEqual(short_hold, 7.0)
+        self.assertGreater(long_hold, short_hold)
+        self.assertLessEqual(len(long_beats), 36)
+        self.assertAlmostEqual(sum(item["duration"] for item in long_beats), 600.0, places=3)
+
+    def test_caption_overlay_is_cropped_before_moviepy_keeps_it_in_memory(self):
+        generator = VideoGenerator()
+        overlay = generator.create_text_overlay(
+            "Uma mensagem curta para acompanhar a narração.",
+            size=(1280, 720),
+        )
+
+        clip = generator._clip_from_rgba(overlay, 2.0, crop_transparent=True)
+
+        self.assertLess(clip.size[0] * clip.size[1], 1280 * 720 * 0.35)
+        self.assertLess(clip.img.nbytes, overlay.nbytes * 0.35)
+        if hasattr(clip, "close"):
+            clip.close()
+
 
 if __name__ == "__main__":
     unittest.main()

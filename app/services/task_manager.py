@@ -839,6 +839,43 @@ def update_task(task_id, status=None, progress=None, message=None, result=None):
     video_tasks[task_id] = current
     _redis_set(task_id, current)
 
+
+def merge_task_result(task_id: str, result_patch: Dict[str, Any]):
+    """Mescla telemetria/metadados sem substituir o resultado produzido em paralelo."""
+    patch_obj = dict(result_patch or {})
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(VideoTask)
+            .filter(VideoTask.id == str(task_id))
+            .with_for_update()
+            .first()
+        )
+        if not row:
+            return update_task(str(task_id), result=patch_obj)
+        current_result: Dict[str, Any] = {}
+        if row.result_json:
+            try:
+                parsed = json.loads(row.result_json)
+                if isinstance(parsed, dict):
+                    current_result = parsed
+            except Exception:
+                current_result = {}
+        current_result.update(patch_obj)
+        row.result_json = json.dumps(current_result, ensure_ascii=False)
+        row.updated_at = datetime.utcnow()
+        _sync_task_aux_state(db, str(task_id), status=row.status, result_json=row.result_json)
+        db.commit()
+        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, str(task_id)))
+        video_tasks[str(task_id)] = current
+        _redis_set(str(task_id), current)
+        return current
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
 def get_task(task_id):
     if is_task_deleted(task_id):
         return None

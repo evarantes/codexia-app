@@ -2052,6 +2052,30 @@
                             <div class="bg-indigo-600 h-2.5 rounded-full" :style="{ width: (ytStoryTask.progress || 0) + '%' }"></div>
                         </div>
                         <div v-if="ytStoryTask.message" class="text-sm text-gray-700 mt-2">{{ ytStoryTask.message }}</div>
+                        <div v-if="ytStoryTask.runtime && ['pending','processing'].includes(String(ytStoryTask.status || '').toLowerCase())"
+                             class="mt-3 rounded border p-3 text-sm"
+                             :class="ytStoryTask.runtime.state === 'resource_pressure' || ytStoryTask.runtime.state === 'possibly_interrupted'
+                                ? 'border-red-200 bg-red-50 text-red-900'
+                                : (ytStoryTask.runtime.state === 'resource_warning' || ytStoryTask.runtime.state === 'delayed'
+                                    ? 'border-amber-200 bg-amber-50 text-amber-900'
+                                    : 'border-emerald-200 bg-emerald-50 text-emerald-900')">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <div class="font-bold"><i class="fas fa-heartbeat mr-1"></i>{{ ytStoryTask.runtime.label }}</div>
+                                <div v-if="ytStoryTask.runtime.last_signal_seconds !== null && ytStoryTask.runtime.last_signal_seconds !== undefined" class="text-xs">
+                                    Último sinal: {{ ytStoryTask.runtime.last_signal_seconds }} s
+                                </div>
+                            </div>
+                            <div class="mt-1">{{ ytStoryTask.runtime.detail }}</div>
+                            <div v-if="ytStoryTask.runtime.resources" class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                                <div><strong>RAM livre:</strong> {{ Math.round(Number(ytStoryTask.runtime.resources.available_memory_mb || 0)) }} MB</div>
+                                <div><strong>Swap:</strong> {{ Number(ytStoryTask.runtime.resources.swap_used_percent || 0).toFixed(1) }}%</div>
+                                <div><strong>Disco livre:</strong> {{ Number(ytStoryTask.runtime.resources.disk_free_gb || 0).toFixed(1) }} GB</div>
+                                <div><strong>Processo:</strong> {{ Math.round(Number(ytStoryTask.runtime.resources.process_rss_mb || 0)) }} MB</div>
+                            </div>
+                            <div v-if="ytStoryTask.runtime.resource_reasons && ytStoryTask.runtime.resource_reasons.length" class="mt-2 text-xs">
+                                <div v-for="(reason, idx) in ytStoryTask.runtime.resource_reasons" :key="'runtime-reason-'+idx">• {{ reason }}</div>
+                            </div>
+                        </div>
                         <div v-if="ytStoryTask.result && ytStoryTask.result.provider_error" class="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-900">
                             <div class="font-bold">{{ (ytStoryTask.result.provider_error.provider || 'IA').toUpperCase() }} — {{ ytStoryTask.result.provider_error.code }}</div>
                             <div class="mt-1">{{ ytStoryTask.result.provider_error.message }}</div>
@@ -8773,7 +8797,7 @@
                     this.ytStoryAssistLoading = true;
                     this.ytStoryAssistReport = null;
                     try {
-                        const url = `/youtube/diagnostics/video_generation?task_id=${encodeURIComponent(this.ytStoryTaskId)}&ai=1`;
+                        const url = `/youtube/diagnostics/video_generation?task_id=${encodeURIComponent(this.ytStoryTaskId)}&ai=0`;
                         const res = await this.authFetch(url);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
