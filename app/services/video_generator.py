@@ -4119,11 +4119,26 @@ $synth.Dispose()
                 extra = ""
             raise Exception(f"Clip None detectado: {label}{extra}")
 
-    def _clip_from_rgba(self, rgba_arr, duration):
+    def _clip_from_rgba(self, rgba_arr, duration, *, crop_transparent: bool = False):
         try:
             from moviepy.editor import ImageClip
         except Exception:
             from moviepy import ImageClip
+        position = None
+        if crop_transparent:
+            try:
+                alpha_source = rgba_arr[:, :, 3]
+                ys, xs = alpha_source.nonzero()
+                if len(xs) and len(ys):
+                    padding = 4
+                    x0 = max(0, int(xs.min()) - padding)
+                    x1 = min(int(rgba_arr.shape[1]), int(xs.max()) + padding + 1)
+                    y0 = max(0, int(ys.min()) - padding)
+                    y1 = min(int(rgba_arr.shape[0]), int(ys.max()) + padding + 1)
+                    rgba_arr = rgba_arr[y0:y1, x0:x1]
+                    position = (x0, y0)
+            except Exception:
+                position = None
         rgb = rgba_arr[:, :, :3]
         alpha = (rgba_arr[:, :, 3].astype("float32") / 255.0)
         base = ImageClip(rgb)
@@ -4141,6 +4156,8 @@ $synth.Dispose()
             else:
                 base = base.set_mask(mask)
         base = self._set_clip_duration(base, duration)
+        if position is not None:
+            base = self._clip_with_position(base, position)
         if mask is not None:
             try:
                 mask = self._set_clip_duration(mask, duration)
@@ -4342,6 +4359,22 @@ $synth.Dispose()
             })
             cursor = end
         return beats
+
+    def _memory_safe_visual_hold_seconds(self, duration_sec: float) -> float:
+        """Limita a quantidade de composições simultâneas em vídeos longos.
+
+        O movimento cinematográfico continua em cada trecho; somente evitamos
+        manter dezenas de matrizes 720p extras em memória até o encode final.
+        """
+        duration = max(0.0, float(duration_sec or 0.0))
+        if duration < 5 * 60:
+            return DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC
+        try:
+            max_beats = int((os.getenv("VIDEO_LONG_MAX_VISUAL_BEATS") or "36").strip() or "36")
+        except Exception:
+            max_beats = 36
+        max_beats = max(24, min(72, max_beats))
+        return round(max(DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC, duration / max_beats), 3)
 
     def _motion_plan_override_from_scene(self, scene: Dict[str, Any], default_plan: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         if not isinstance(scene, dict):
@@ -4558,6 +4591,7 @@ $synth.Dispose()
         clips = []
         final_clip = None
         bg_music = None
+        cinematic_visual_hold_sec = DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC
         allow_non_ai_fallback_raw = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK")
         allow_non_ai_fallback = str(allow_non_ai_fallback_raw or "").strip().lower() in {"1", "true", "yes", "on"}
         image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
@@ -5644,6 +5678,12 @@ $synth.Dispose()
             clips.append(clip_title)
 
             total_scenes = len(scenes)
+            cinematic_visual_hold_sec = self._memory_safe_visual_hold_seconds(actual_total_audio_dur)
+            render_report["resource_profile"] = {
+                "long_video_memory_mode": bool(actual_total_audio_dur >= 5 * 60),
+                "visual_hold_target_sec": round(cinematic_visual_hold_sec, 3),
+                "caption_overlays_cropped": True,
+            }
             debug_ctx["scene_count"] = int(total_scenes)
             min_scene_visual_duration = 2.2 if total_scenes <= 2 else 2.8
             render_report["duration_plan"]["min_scene_visual_duration_sec"] = round(min_scene_visual_duration, 2)
@@ -5847,7 +5887,10 @@ $synth.Dispose()
                             reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
                         )
                     )
-                visual_beats = self._plan_cinematic_visual_beats(scene_dur)
+                visual_beats = self._plan_cinematic_visual_beats(
+                    scene_dur,
+                    max_hold_sec=cinematic_visual_hold_sec,
+                )
                 if not visual_beats:
                     visual_beats = [{"index": 0.0, "start": 0.0, "end": scene_dur, "duration": scene_dur}]
                 beat_effect_names: List[str] = []
@@ -5905,7 +5948,11 @@ $synth.Dispose()
                             text_color=(255, 255, 255),
                             reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
                         )
-                        overlay_clip = self._clip_from_rgba(overlay_arr, overlap_end - overlap_start)
+                        overlay_clip = self._clip_from_rgba(
+                            overlay_arr,
+                            overlap_end - overlap_start,
+                            crop_transparent=True,
+                        )
                         overlay_clip = self._set_clip_start(overlay_clip, overlap_start - beat_start)
                         beat_overlays.append(overlay_clip)
 
@@ -6543,7 +6590,7 @@ $synth.Dispose()
                 ]
                 if max_visual_holds:
                     visual_pacing_ok = all(
-                        hold <= (DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC + 0.05)
+                        hold <= (cinematic_visual_hold_sec + 0.05)
                         for hold in max_visual_holds
                     )
             except Exception:
@@ -6575,7 +6622,7 @@ $synth.Dispose()
                 "tolerance_ok": bool(tolerance_ok),
                 "scenes_ok": bool(scenes_ok),
                 "visual_pacing_ok": bool(visual_pacing_ok),
-                "max_visual_hold_target_sec": DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC,
+                "max_visual_hold_target_sec": round(cinematic_visual_hold_sec, 3),
                 "captions_ok": bool(captions_ok),
                 "cta_ok": bool(cta_ok),
                 "last_caption_end_sec": round(float(last_caption_end), 3) if last_caption_end else 0.0,

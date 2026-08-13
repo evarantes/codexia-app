@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
@@ -43,6 +44,42 @@ def _meminfo_mb(path: str = "/proc/meminfo") -> Dict[str, float]:
     except Exception:
         return {}
     return values
+
+
+def _proc_status_mb(path: str = "/proc/self/status") -> Dict[str, float]:
+    """Lê o consumo do processo sem depender de psutil."""
+    values: Dict[str, float] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, raw = line.partition(":")
+                if key not in {"VmRSS", "VmHWM"} or not raw:
+                    continue
+                try:
+                    values[str(key)] = float(raw.strip().split()[0]) / 1024.0
+                except Exception:
+                    continue
+    except Exception:
+        return {}
+    return values
+
+
+def _cgroup_memory_events(path: str = "/sys/fs/cgroup/memory.events") -> Dict[str, int]:
+    """Obtém contadores de pressão/OOM do cgroup v2 quando disponíveis."""
+    events: Dict[str, int] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                parts = line.strip().split()
+                if len(parts) != 2:
+                    continue
+                try:
+                    events[str(parts[0])] = int(parts[1])
+                except Exception:
+                    continue
+    except Exception:
+        return {}
+    return events
 
 
 def capture_resource_snapshot(
@@ -80,8 +117,11 @@ def capture_resource_snapshot(
     except Exception:
         load_1m = 0.0
     cpu_count = max(1, int(os.cpu_count() or 1))
+    process = _proc_status_mb()
+    memory_events = _cgroup_memory_events()
 
     return {
+        "captured_at": datetime.now(timezone.utc).isoformat(),
         "total_memory_mb": round(total_memory_mb, 1),
         "available_memory_mb": round(available_memory_mb, 1),
         "swap_total_mb": round(swap_total_mb, 1),
@@ -92,6 +132,65 @@ def capture_resource_snapshot(
         "load_1m": round(load_1m, 2),
         "cpu_count": cpu_count,
         "load_per_cpu": round(load_1m / float(cpu_count), 2),
+        "process_rss_mb": round(float(process.get("VmRSS") or 0.0), 1),
+        "process_peak_rss_mb": round(float(process.get("VmHWM") or 0.0), 1),
+        "cgroup_memory_events": memory_events,
+    }
+
+
+def evaluate_runtime_resource_health(
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Classifica recursos durante qualquer vídeo, sem interromper o pipeline.
+
+    A proteção de admissão de séries continua separada. Esta função é somente
+    observabilidade em tempo real e usa limites conservadores configuráveis.
+    """
+    current = dict(snapshot or capture_resource_snapshot())
+    available = float(current.get("available_memory_mb") or 0.0)
+    total = float(current.get("total_memory_mb") or 0.0)
+    swap_used = float(current.get("swap_used_percent") or 0.0)
+    disk_free = float(current.get("disk_free_gb") or 0.0)
+    load_per_cpu = float(current.get("load_per_cpu") or 0.0)
+
+    warning_memory = _env_float("VIDEO_RUNTIME_WARNING_MEMORY_MB", 768.0)
+    critical_memory = _env_float("VIDEO_RUNTIME_CRITICAL_MEMORY_MB", 384.0)
+    warning_swap = _env_float("VIDEO_RUNTIME_WARNING_SWAP_PERCENT", 85.0)
+    critical_swap = _env_float("VIDEO_RUNTIME_CRITICAL_SWAP_PERCENT", 95.0)
+    warning_disk = _env_float("VIDEO_RUNTIME_WARNING_DISK_GB", 5.0)
+    critical_disk = _env_float("VIDEO_RUNTIME_CRITICAL_DISK_GB", 2.0)
+    warning_load = _env_float("VIDEO_RUNTIME_WARNING_LOAD_PER_CPU", 2.5)
+
+    warnings = []
+    critical = []
+    if total > 0 and available <= critical_memory:
+        critical.append(f"Memória disponível crítica: {available:.0f} MB.")
+    elif total > 0 and available <= warning_memory:
+        warnings.append(f"Pouca memória disponível: {available:.0f} MB.")
+    if swap_used >= critical_swap:
+        critical.append(f"Swap em nível crítico: {swap_used:.1f}%.")
+    elif swap_used >= warning_swap:
+        warnings.append(f"Swap sob pressão: {swap_used:.1f}%.")
+    if disk_free <= critical_disk:
+        critical.append(f"Espaço livre crítico: {disk_free:.1f} GB.")
+    elif disk_free <= warning_disk:
+        warnings.append(f"Pouco espaço livre: {disk_free:.1f} GB.")
+    if warning_load > 0 and load_per_cpu >= warning_load:
+        warnings.append(f"Carga elevada: {load_per_cpu:.2f} por CPU.")
+
+    level = "critical" if critical else ("warning" if warnings else "ok")
+    reasons = critical + warnings
+    if level == "critical":
+        summary = "Servidor sob pressão crítica; a produção continua sendo monitorada."
+    elif level == "warning":
+        summary = "Servidor trabalhando com recursos reduzidos."
+    else:
+        summary = "Recursos do servidor dentro da faixa operacional."
+    return {
+        "level": level,
+        "summary": summary,
+        "reasons": reasons,
+        "snapshot": current,
     }
 
 
@@ -181,6 +280,7 @@ def resource_guard_message(report: Dict[str, Any]) -> str:
 
 __all__ = [
     "capture_resource_snapshot",
+    "evaluate_runtime_resource_health",
     "series_video_resource_requirements",
     "evaluate_series_video_resources",
     "resource_guard_message",

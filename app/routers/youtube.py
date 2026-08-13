@@ -55,6 +55,7 @@ from app.services.media_probe import media_durations_match, probe_media_file
 from app.services.task_manager import (
     create_task,
     update_task,
+    merge_task_result,
     get_task,
     get_task_by_idempotency_key,
     is_task_cancel_requested,
@@ -978,6 +979,41 @@ def _is_youtube_series_payload(payload: Dict[str, Any], task_id: Optional[str] =
         return False
 
 
+def _video_payload_duration_minutes(payload: Dict[str, Any]) -> int:
+    raw = payload if isinstance(payload, dict) else {}
+    candidates = [
+        raw.get("duration"),
+        raw.get("duration_minutes"),
+        raw.get("target_duration_min"),
+        raw.get("duration_min"),
+    ]
+    seeded = raw.get("seeded_script") if isinstance(raw.get("seeded_script"), dict) else {}
+    candidates.extend([
+        seeded.get("target_duration_min"),
+        seeded.get("duration_minutes"),
+    ])
+    for candidate in candidates:
+        try:
+            value = int(float(candidate))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 5
+
+
+def _requires_isolated_video_process(payload: Dict[str, Any], task_id: Optional[str] = None) -> bool:
+    """Mantém renderizações pesadas fora do processo web principal."""
+    if _is_youtube_series_payload(payload, task_id):
+        return True
+    try:
+        threshold = int((os.getenv("VIDEO_ISOLATED_PROCESS_MINUTES") or "5").strip() or "5")
+    except Exception:
+        threshold = 5
+    threshold = max(2, min(30, threshold))
+    return _video_payload_duration_minutes(payload) >= threshold
+
+
 def _series_resource_preflight(
     payload: Dict[str, Any],
     task_id: str,
@@ -1019,9 +1055,192 @@ def _series_resource_preflight(
     return report
 
 
+def _runtime_heartbeat_seconds() -> int:
+    try:
+        raw = int((os.getenv("VIDEO_RUNTIME_HEARTBEAT_SECONDS") or "").strip() or "15")
+    except Exception:
+        raw = 15
+    return max(5, min(60, raw))
+
+
+def _runtime_interruption_seconds() -> int:
+    try:
+        raw = int((os.getenv("VIDEO_RUNTIME_INTERRUPTION_SECONDS") or "").strip() or "300")
+    except Exception:
+        raw = 300
+    return max(120, min(30 * 60, raw))
+
+
+def _runtime_parse_dt(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if getattr(parsed, "tzinfo", None) is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
+
+
+def _runtime_view_for_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Traduz heartbeat e recursos em uma explicação curta para a interface."""
+    task_obj = task if isinstance(task, dict) else {}
+    status = str(task_obj.get("status") or "").strip().lower()
+    result = task_obj.get("result") if isinstance(task_obj.get("result"), dict) else {}
+    telemetry = result.get("runtime_telemetry") if isinstance(result.get("runtime_telemetry"), dict) else {}
+    resource_health = telemetry.get("resource_health") if isinstance(telemetry.get("resource_health"), dict) else {}
+    snapshot = resource_health.get("snapshot") if isinstance(resource_health.get("snapshot"), dict) else {}
+    now = datetime.utcnow()
+    interval = _runtime_heartbeat_seconds()
+
+    heartbeat_at = _runtime_parse_dt(telemetry.get("heartbeat_at"))
+    lease_heartbeat = _runtime_parse_dt(task_obj.get("executor_heartbeat_at"))
+    if not lease_heartbeat:
+        try:
+            lease = get_task_execution_lease(str(task_obj.get("task_id") or "")) or {}
+            lease_heartbeat = _runtime_parse_dt(lease.get("heartbeat_at"))
+        except Exception:
+            lease_heartbeat = None
+    if lease_heartbeat and (not heartbeat_at or lease_heartbeat > heartbeat_at):
+        heartbeat_at = lease_heartbeat
+    updated_at = _runtime_parse_dt(task_obj.get("updated_at") or task_obj.get("created_at"))
+    stage_changed_at = _runtime_parse_dt(telemetry.get("stage_changed_at")) or updated_at
+
+    heartbeat_age = max(0, int((now - heartbeat_at).total_seconds())) if heartbeat_at else None
+    update_age = max(0, int((now - updated_at).total_seconds())) if updated_at else None
+    stage_age = max(0, int((now - stage_changed_at).total_seconds())) if stage_changed_at else None
+    level = str(resource_health.get("level") or "unknown").lower()
+
+    if status not in {"pending", "processing"}:
+        state = "finished"
+        label = "Processo finalizado"
+        detail = "A tarefa não está mais em execução."
+    elif heartbeat_age is not None and heartbeat_age <= interval * 3:
+        if level == "critical":
+            state = "resource_pressure"
+            label = "Processando com pressão crítica"
+            detail = "O processo está ativo, mas o servidor está com poucos recursos."
+        elif level == "warning":
+            state = "resource_warning"
+            label = "Processando com recursos reduzidos"
+            detail = "O processo está ativo e continua sendo acompanhado."
+        else:
+            state = "working"
+            label = "Processo ativo"
+            detail = "O servidor confirmou que a produção continua trabalhando."
+    elif heartbeat_age is not None and heartbeat_age <= interval * 6:
+        state = "delayed"
+        label = "Sinal do processo atrasado"
+        detail = "A produção pode estar em uma operação demorada; o sistema ainda está aguardando o próximo sinal."
+    elif heartbeat_age is not None:
+        state = "possibly_interrupted"
+        label = "Produção possivelmente interrompida"
+        detail = "O executor deixou de enviar sinais. Verifique memória, reinício do contêiner ou encerramento do processo."
+    elif update_age is not None and update_age <= 60:
+        state = "starting"
+        label = "Iniciando monitoramento"
+        detail = "A tarefa foi atualizada recentemente e aguarda o primeiro sinal detalhado."
+    else:
+        state = "unmonitored"
+        label = "Sem telemetria detalhada"
+        detail = "Esta execução começou sem o monitor contínuo; use Diagnosticar para conferir os recursos."
+
+    reasons = [str(item) for item in (resource_health.get("reasons") or []) if str(item or "").strip()]
+    return {
+        "state": state,
+        "label": label,
+        "detail": detail,
+        "heartbeat_at": heartbeat_at.isoformat() if heartbeat_at else None,
+        "last_signal_seconds": heartbeat_age,
+        "stage_unchanged_seconds": stage_age,
+        "stage": telemetry.get("stage") or result.get("pipeline_stage"),
+        "resource_level": level,
+        "resource_reasons": reasons,
+        "resources": snapshot,
+        "monitor_interval_seconds": interval,
+    }
+
+
+def _start_video_runtime_monitor(task_id: str, executor_id: str):
+    """Mantém heartbeat e telemetria durante roteiro, imagens, áudio e render."""
+    stop_event = threading.Event()
+    interval = _runtime_heartbeat_seconds()
+
+    def _monitor():
+        sequence = 0
+        baseline_oom_kills: Optional[int] = None
+        while not stop_event.is_set():
+            try:
+                task = get_task(task_id) or {}
+                if str(task.get("status") or "").lower() not in {"pending", "processing"}:
+                    break
+                heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
+                from app.services.video_resource_guard import (
+                    capture_resource_snapshot,
+                    evaluate_runtime_resource_health,
+                )
+
+                snapshot = capture_resource_snapshot()
+                events = snapshot.get("cgroup_memory_events") if isinstance(snapshot.get("cgroup_memory_events"), dict) else {}
+                current_oom_kills = int(events.get("oom_kill") or 0)
+                if baseline_oom_kills is None:
+                    baseline_oom_kills = current_oom_kills
+                oom_kill_delta = max(0, current_oom_kills - int(baseline_oom_kills or 0))
+                resource_health = evaluate_runtime_resource_health(snapshot)
+                if oom_kill_delta > 0:
+                    resource_health = dict(resource_health)
+                    resource_health["level"] = "critical"
+                    resource_health["summary"] = "O sistema registrou encerramento por falta de memória durante esta execução."
+                    resource_health["reasons"] = [
+                        f"O kernel registrou {oom_kill_delta} encerramento(s) por memória insuficiente."
+                    ] + list(resource_health.get("reasons") or [])
+
+                result = task.get("result") if isinstance(task.get("result"), dict) else {}
+                merged = dict(result or {})
+                previous = merged.get("runtime_telemetry") if isinstance(merged.get("runtime_telemetry"), dict) else {}
+                stage = str(merged.get("pipeline_stage") or task.get("message") or "processing")
+                signature = f"{int(task.get('progress') or 0)}|{stage}|{str(task.get('message') or '')}"
+                now_iso = datetime.now(timezone.utc).isoformat()
+                stage_changed_at = previous.get("stage_changed_at")
+                if signature != str(previous.get("stage_signature") or "") or not stage_changed_at:
+                    stage_changed_at = now_iso
+                sequence = int(previous.get("sequence") or sequence or 0) + 1
+                runtime_telemetry = {
+                    "version": 1,
+                    "heartbeat_at": now_iso,
+                    "stage_changed_at": stage_changed_at,
+                    "stage_signature": signature,
+                    "stage": stage,
+                    "sequence": sequence,
+                    "executor_id": executor_id,
+                    "pid": os.getpid(),
+                    "resource_health": resource_health,
+                    "oom_kill_baseline": int(baseline_oom_kills or 0),
+                    "oom_kill_delta": oom_kill_delta,
+                }
+                merge_task_result(task_id, {"runtime_telemetry": runtime_telemetry})
+            except Exception:
+                pass
+            if stop_event.wait(interval):
+                break
+
+    thread = threading.Thread(
+        target=_monitor,
+        name=f"video-runtime-{str(task_id)[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
 def _prefer_renderer_as_oom_victim(payload: Dict[str, Any], task_id: str) -> None:
     """Prioriza encerrar o renderizador, nunca a API, se o kernel ficar sem RAM."""
-    if not _is_youtube_series_payload(payload, task_id):
+    if not (
+        bool((payload or {}).get("_isolated_renderer"))
+        or _requires_isolated_video_process(payload, task_id)
+    ):
         return
     try:
         with open("/proc/self/oom_score_adj", "w", encoding="utf-8") as handle:
@@ -1036,15 +1255,18 @@ def _start_isolated_video_generation(
     *,
     start_message: str = "Iniciando geração em processo isolado...",
 ) -> bool:
+    protected_process = _requires_isolated_video_process(payload, task_id)
     try:
         configured_method = str(os.getenv("VIDEO_GENERATION_PROCESS_START_METHOD") or "spawn").strip().lower()
         method = configured_method if configured_method in {"spawn", "forkserver", "fork"} else "spawn"
         if sys.platform == "win32":
             method = "spawn"
         ctx = multiprocessing.get_context(method)
+        child_payload = dict(payload or {})
+        child_payload["_isolated_renderer"] = True
         proc = ctx.Process(
             target=process_video_generation_payload,
-            args=(payload, task_id),
+            args=(child_payload, task_id),
             daemon=True,
         )
         proc.start()
@@ -1063,18 +1285,27 @@ def _start_isolated_video_generation(
                     task = get_task(tid) or {}
                     status = str(task.get("status") or "").lower()
                     if status not in {"completed", "failed", "cancelled"}:
+                        killed_by_system = int(child.exitcode or 0) < 0
                         suffix = (
-                            " O renderizador foi encerrado pelo sistema antes de concluir."
-                            if int(child.exitcode or 0) < 0
+                            " O renderizador foi encerrado pelo sistema, provavelmente por falta de memória."
+                            if killed_by_system
                             else " O processo isolado terminou com erro."
                         )
                         update_task(
                             tid,
                             status="failed",
-                            progress=0,
+                            progress=int(task.get("progress") or 0),
                             message=(
                                 "A produção não foi concluída, mas a API permaneceu protegida."
                                 f"{suffix} Código de saída: {child.exitcode}."
+                            ),
+                            result=_dispatch_task_result(
+                                tid,
+                                payload,
+                                "process_interrupted",
+                                retryable=True,
+                                likely_oom=bool(killed_by_system),
+                                exit_code=int(child.exitcode or 0),
                             ),
                         )
             except Exception:
@@ -1083,7 +1314,7 @@ def _start_isolated_video_generation(
         threading.Thread(target=_watch, args=(proc, task_id), daemon=True).start()
         return True
     except Exception as exc:
-        if _is_youtube_series_payload(payload, task_id):
+        if protected_process:
             update_task(
                 task_id,
                 status="failed",
@@ -1103,7 +1334,7 @@ def _start_isolated_video_generation(
 
 def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     payload = _maybe_enable_render_only_flags(payload, task_id)
-    is_series = _is_youtube_series_payload(payload, task_id)
+    requires_isolation = _requires_isolated_video_process(payload, task_id)
     resource_report = _series_resource_preflight(payload, task_id)
     if resource_report is not None and not bool(resource_report.get("allowed")):
         return
@@ -1154,25 +1385,13 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
                                 return
                         except Exception:
                             pass
-                        if _is_youtube_series_payload(pay, tid):
-                            try:
-                                update_task(
-                                    tid,
-                                    status="failed",
-                                    progress=0,
-                                    message=(
-                                        "Worker da fila indisponível. A recuperação dentro do processo web foi "
-                                        "bloqueada para proteger o servidor; reinicie a tarefa após normalizar o worker."
-                                    ),
-                                    result=_dispatch_task_result(
-                                        tid,
-                                        pay,
-                                        "rq_stale",
-                                        retryable=True,
-                                    ),
-                                )
-                            except Exception:
-                                pass
+                        if _requires_isolated_video_process(pay, tid):
+                            if _start_isolated_video_generation(
+                                pay,
+                                tid,
+                                start_message="Fila sem worker ativo. Recuperando em processo isolado...",
+                            ):
+                                return
                             return
                         try:
                             update_task(tid, status="processing", progress=2, message="Fila sem worker ativo. Recuperando a mesma tarefa com exclusividade...")
@@ -1204,14 +1423,14 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     if executor not in {"auto", "thread", "process"}:
         executor = "thread"
 
-    if is_series:
+    if requires_isolation:
         executor = "process"
 
-    use_process = executor == "process" and (conn is not None or is_series)
+    use_process = executor == "process" and (conn is not None or requires_isolation)
     if use_process:
         if _start_isolated_video_generation(payload, task_id):
             return
-        if is_series:
+        if requires_isolation:
             return
 
     msg = force_local_reason or "Iniciando geração local..."
@@ -5451,6 +5670,7 @@ def get_task_status(task_id: str):
     task = get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    task = dict(task)
     try:
         task_status = str((task.get("status") or "")).lower()
         if task_status in {"processing"}:
@@ -5483,6 +5703,44 @@ def get_task_status(task_id: str):
                             task = get_task(task_id) or task
     except Exception:
         pass
+    try:
+        task["runtime"] = _runtime_view_for_task(task)
+        result_obj = task.get("result") if isinstance(task.get("result"), dict) else {}
+        telemetry_obj = result_obj.get("runtime_telemetry") if isinstance(result_obj.get("runtime_telemetry"), dict) else {}
+        signal_age = task["runtime"].get("last_signal_seconds")
+        if (
+            str(task.get("status") or "").lower() == "processing"
+            and str(task["runtime"].get("state") or "") == "possibly_interrupted"
+            and signal_age is not None
+            and int(signal_age) >= (
+                _runtime_interruption_seconds()
+                if int(telemetry_obj.get("version") or 0) >= 1
+                else max(15 * 60, _runtime_interruption_seconds())
+            )
+        ):
+            monitored = int(telemetry_obj.get("version") or 0) >= 1
+            update_task(
+                task_id,
+                status="failed",
+                progress=int(task.get("progress") or 0),
+                message=(
+                    f"Produção interrompida: o executor não envia sinais há {int(signal_age)} segundos. "
+                    + (
+                        "O monitor registrou a interrupção e preservou os dados; use Reiniciar tarefa para continuar."
+                        if monitored
+                        else "A execução antiga perdeu o executor; os dados foram preservados e a tarefa pode ser reiniciada."
+                    )
+                ),
+                result=result_obj,
+            )
+            task = dict(get_task(task_id) or task)
+            task["runtime"] = _runtime_view_for_task(task)
+    except Exception:
+        task["runtime"] = {
+            "state": "unknown",
+            "label": "Monitoramento indisponível",
+            "detail": "Não foi possível calcular a atividade do processo neste instante.",
+        }
     return task
 
 
@@ -6080,13 +6338,41 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
     magick_path = shutil.which("magick") or shutil.which("convert")
     checks.append({"name": "ImageMagick no PATH", "ok": bool(magick_path), "value": magick_path})
 
-    # Memory Check
+    resource_health: Dict[str, Any] = {}
     try:
-        with open('/proc/meminfo', 'r') as f:
-            lines = f.readlines()
-            mem_total = int([l.split()[1] for l in lines if l.startswith('MemTotal')][0]) / 1024
-            mem_avail = int([l.split()[1] for l in lines if l.startswith('MemAvailable')][0]) / 1024
-            checks.append({"name": "Memória (MB)", "ok": mem_avail > 300, "value": f"Livre: {mem_avail:.0f} MB / Total: {mem_total:.0f} MB"})
+        from app.services.video_resource_guard import (
+            capture_resource_snapshot,
+            evaluate_runtime_resource_health,
+        )
+        resource_health = evaluate_runtime_resource_health(capture_resource_snapshot())
+        resources = resource_health.get("snapshot") if isinstance(resource_health.get("snapshot"), dict) else {}
+        checks.extend([
+            {
+                "name": "Memória RAM",
+                "ok": str(resource_health.get("level") or "") != "critical",
+                "value": f"Disponível: {float(resources.get('available_memory_mb') or 0):.0f} MB / Total: {float(resources.get('total_memory_mb') or 0):.0f} MB",
+            },
+            {
+                "name": "Swap",
+                "ok": float(resources.get("swap_used_percent") or 0) < 95.0,
+                "value": f"Em uso: {float(resources.get('swap_used_percent') or 0):.1f}%",
+            },
+            {
+                "name": "Espaço para mídia",
+                "ok": float(resources.get("disk_free_gb") or 0) > 2.0,
+                "value": f"Livre: {float(resources.get('disk_free_gb') or 0):.1f} GB em {resources.get('disk_path') or '/'}",
+            },
+            {
+                "name": "Carga do servidor",
+                "ok": float(resources.get("load_per_cpu") or 0) < 3.0,
+                "value": f"{float(resources.get('load_per_cpu') or 0):.2f} por CPU",
+            },
+            {
+                "name": "Memória do processo",
+                "ok": True,
+                "value": f"Atual: {float(resources.get('process_rss_mb') or 0):.0f} MB / Pico: {float(resources.get('process_peak_rss_mb') or 0):.0f} MB",
+            },
+        ])
     except Exception:
         pass
 
@@ -6095,6 +6381,7 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
         "checks": checks,
         "task": None,
         "recommendations": [],
+        "resource_health": resource_health,
         "ai": None,
     }
 
@@ -6104,10 +6391,26 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
         if not t:
             report["recommendations"].append("Task não encontrada: confirme se o deploy é o mesmo servidor e se o task_id é válido.")
         else:
+            t = dict(t)
+            runtime = _runtime_view_for_task(t)
+            t["runtime"] = runtime
+            report["task"] = t
             status = str((t.get("status") or "")).lower()
             msg = str((t.get("message") or ""))
+            runtime_state = str(runtime.get("state") or "")
+            if runtime_state == "working":
+                report["recommendations"].append("Produção ativa: o executor continua enviando sinais ao servidor.")
+            elif runtime_state in {"resource_warning", "resource_pressure"}:
+                report["recommendations"].append(
+                    "A produção está ativa, mas os recursos estão sob pressão: "
+                    + " ".join(runtime.get("resource_reasons") or [])
+                )
+            elif runtime_state == "delayed":
+                report["recommendations"].append("O sinal do processo está atrasado. Aguarde até 90 segundos e diagnostique novamente.")
+            elif runtime_state == "possibly_interrupted":
+                report["recommendations"].append("O executor parou de enviar sinais; a tarefa pode ter sido interrompida por memória ou reinício do contêiner.")
             if status in {"pending", "processing"} and ("enfileirando" in msg.lower() or "separado" in msg.lower() or (t.get("progress") in (0, 1))):
-                report["recommendations"].append("O processo parece travado no início. A geração via processo/thread pode ter falhado silenciosamente. Use o botão Reiniciar para forçar a execução local via thread na API.")
+                report["recommendations"].append("O processo parece travado no início. Use Reiniciar para recuperar a tarefa; vídeos longos serão executados em processo isolado para proteger a API.")
             if use_rq and (not workers):
                 report["recommendations"].append("USE_RQ_FOR_VIDEO_GENERATION está ativo, mas não há workers RQ. Desative USE_RQ_FOR_VIDEO_GENERATION ou suba um worker.")
             if (not ffmpeg_path):
@@ -6178,6 +6481,8 @@ def process_video_generation(request: VideoRequest, task_id):
     guardian_context = None
     guardian_preflight: Optional[Dict[str, Any]] = None
     guardian_cache_summary: Dict[str, Any] = {"stored_assets": 0, "cache_keys": []}
+    runtime_monitor_stop = None
+    runtime_monitor_thread = None
     try:
         _raise_if_cancelled()
         os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -6235,6 +6540,7 @@ def process_video_generation(request: VideoRequest, task_id):
             "attempt_number": int(lease_info.get("attempt_number") or 1),
             "pipeline_stage": "starting",
         }))
+        runtime_monitor_stop, runtime_monitor_thread = _start_video_runtime_monitor(task_id, executor_id)
         print(f"Iniciando geração de vídeo ({request.mode}): {topic_display}")
         heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
         
@@ -6848,7 +7154,18 @@ def process_video_generation(request: VideoRequest, task_id):
                 raw = 0
             raw = max(0, min(100, raw))
             task_pct, stage_msg, stage_key = _stage_for_pct(raw)
-            update_task(task_id, progress=task_pct, message=stage_msg, result=_merged_task_result({"pipeline_stage": stage_key}))
+            detail = str(message or "").strip()
+            detail = re.sub(r"\s*output=[^\s]+", "", detail).strip()
+            if detail and detail.lower().rstrip(".") != stage_msg.lower().rstrip("."):
+                visible_message = f"{stage_msg.rstrip('.')} — {detail}"
+            else:
+                visible_message = stage_msg
+            update_task(
+                task_id,
+                progress=task_pct,
+                message=visible_message[:500],
+                result=_merged_task_result({"pipeline_stage": stage_key, "stage_detail": detail[:300]}),
+            )
             try:
                 msg_txt = str(message or "")
                 if ("output=" in msg_txt) and (not render_output.get("filename")):
@@ -7331,6 +7648,16 @@ def process_video_generation(request: VideoRequest, task_id):
             result=_merged_task_result(failure_result),
         )
     finally:
+        if runtime_monitor_stop is not None:
+            try:
+                runtime_monitor_stop.set()
+            except Exception:
+                pass
+        if runtime_monitor_thread is not None:
+            try:
+                runtime_monitor_thread.join(timeout=1.0)
+            except Exception:
+                pass
         if guardian_db is not None:
             try:
                 guardian_db.close()
