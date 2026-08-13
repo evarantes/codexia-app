@@ -59,7 +59,10 @@ from app.services.task_manager import (
     get_task,
     get_task_by_idempotency_key,
     is_task_cancel_requested,
+    is_task_pause_requested,
     request_cancel_task,
+    request_pause_task,
+    mark_task_paused,
     reset_task_for_retry,
     claim_video_task,
     acquire_distributed_lock,
@@ -384,6 +387,7 @@ def _build_video_generation_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
     canonical = _build_video_generation_canonical_payload(payload)
     canonical_json = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     request_hash = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
     return {
         "canonical_payload": canonical,
         "canonical_json": canonical_json,
@@ -531,10 +535,18 @@ def _find_reusable_completed_task_by_content(
     return None
 
 
-def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]:
+def _load_story_video_task_rows(
+    db: Session,
+    limit: int = 50,
+    *,
+    include_paused: bool = False,
+) -> List[VideoTask]:
+    statuses = ["pending", "processing", "pause_requested"]
+    if include_paused:
+        statuses.append("paused")
     rows = (
         db.query(VideoTask)
-        .filter(VideoTask.status.in_(["pending", "processing"]))
+        .filter(VideoTask.status.in_(statuses))
         .order_by(VideoTask.created_at.asc(), VideoTask.id.asc())
         .limit(max(1, min(200, int(limit or 50))))
         .all()
@@ -549,7 +561,8 @@ def _load_story_video_task_rows(db: Session, limit: int = 50) -> List[VideoTask]
                 result_obj = None
         if _is_story_video_generation_task(result_obj):
             filtered.append(row)
-    filtered.sort(key=lambda r: (0 if str(r.status or "").lower() == "processing" else 1, r.created_at or datetime.utcnow(), str(r.id)))
+    status_order = {"processing": 0, "pause_requested": 0, "pending": 1, "paused": 2}
+    filtered.sort(key=lambda r: (status_order.get(str(r.status or "").lower(), 3), r.created_at or datetime.utcnow(), str(r.id)))
     return filtered
 
 
@@ -619,6 +632,15 @@ def _task_payload_timestamp(value: Optional[str]) -> Optional[datetime]:
         return dt
     except Exception:
         return None
+
+
+def _task_executor_is_alive(task_id: str) -> bool:
+    try:
+        lease = get_task_execution_lease(str(task_id)) or {}
+        lease_expires = _task_payload_timestamp(lease.get("lease_expires_at") or lease.get("expires_at"))
+        return bool(lease_expires and lease_expires > datetime.utcnow())
+    except Exception:
+        return False
 
 
 def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]] = None) -> Dict[str, Any]:
@@ -749,7 +771,27 @@ def _cleanup_story_video_task_queue(db: Session, rows: Optional[List[VideoTask]]
 def _story_video_task_item_from_row(row: VideoTask, position: int) -> Dict[str, Any]:
     result_obj = _video_task_result_obj(row) or {}
     payload = _video_task_result_payload(result_obj)
-    is_current = str(row.status or "").lower() == "processing"
+    status = str(row.status or "").lower()
+    is_current = status in {"processing", "pause_requested"}
+    task_snapshot = {
+        "task_id": str(row.id),
+        "status": status,
+        "progress": int(row.progress or 0),
+        "message": row.message,
+        "created_at": (row.created_at.isoformat() if getattr(row, "created_at", None) else None),
+        "updated_at": (row.updated_at.isoformat() if getattr(row, "updated_at", None) else None),
+        "result": result_obj,
+    }
+    runtime = _runtime_view_for_task(task_snapshot)
+    started_at = _task_payload_timestamp(result_obj.get("executor_started_at")) or getattr(row, "created_at", None)
+    elapsed_seconds = None
+    if started_at:
+        try:
+            if getattr(started_at, "tzinfo", None) is not None:
+                started_at = started_at.astimezone(timezone.utc).replace(tzinfo=None)
+            elapsed_seconds = max(0, int((datetime.utcnow() - started_at).total_seconds()))
+        except Exception:
+            elapsed_seconds = None
     return {
         "task_id": row.id,
         "status": row.status,
@@ -765,17 +807,27 @@ def _story_video_task_item_from_row(row: VideoTask, position: int) -> Dict[str, 
         "kind": result_obj.get("kind"),
         "source_type": "video_task",
         "source_label": "Fila desta geração",
-        "queue_label": "Em execução" if is_current else "Na fila",
+        "queue_label": (
+            "Pausa solicitada" if status == "pause_requested"
+            else ("Em execução" if is_current else ("Pausada" if status == "paused" else "Na fila"))
+        ),
         "can_open": True,
         "can_cancel": True,
+        "can_pause": bool(status == "processing"),
+        "can_resume": bool(status == "paused"),
         "cancel_kind": "task",
+        "pause_kind": "task",
+        "elapsed_seconds": elapsed_seconds,
+        "runtime": runtime,
+        "stage": runtime.get("stage") or result_obj.get("pipeline_stage"),
+        "last_signal_seconds": runtime.get("last_signal_seconds"),
     }
 
 def _active_video_task_blocker_item(db: Session, excluded_task_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
     excluded = {str(v) for v in (excluded_task_ids or set()) if str(v).strip()}
     rows = (
         db.query(VideoTask)
-        .filter(VideoTask.status.in_(["pending", "processing"]))
+        .filter(VideoTask.status.in_(["pending", "processing", "pause_requested"]))
         .order_by(VideoTask.updated_at.desc().nullslast(), VideoTask.created_at.desc().nullslast())
         .limit(50)
         .all()
@@ -783,7 +835,7 @@ def _active_video_task_blocker_item(db: Session, excluded_task_ids: Optional[set
     for row in rows:
         if str(row.id) in excluded:
             continue
-        if str(row.status or "").lower() != "processing":
+        if str(row.status or "").lower() not in {"processing", "pause_requested"}:
             continue
         item = _story_video_task_item_from_row(row, 1)
         item["title"] = _video_task_title_from_row(row)
@@ -825,6 +877,19 @@ def _active_production_video_blocker_item(db: Session) -> Optional[Dict[str, Any
     except Exception:
         duration = None
 
+    elapsed_seconds = None
+    job_started_at = getattr(job, "created_at", None)
+    if job_started_at:
+        try:
+            if getattr(job_started_at, "tzinfo", None) is not None:
+                job_started_at = job_started_at.astimezone(timezone.utc).replace(tzinfo=None)
+            elapsed_seconds = max(0, int((datetime.utcnow() - job_started_at).total_seconds()))
+        except Exception:
+            elapsed_seconds = None
+
+    pause_requested = normalized_status == "PAUSED"
+    cancel_requested = normalized_status == "CANCELLED"
+
     return {
         "task_id": None,
         "status": normalized_status or "PROCESSING",
@@ -840,11 +905,19 @@ def _active_production_video_blocker_item(db: Session) -> Optional[Dict[str, Any
         "kind": "production_video",
         "source_type": "production_video",
         "source_label": "Fila principal de produção",
-        "queue_label": "Ocupando o servidor",
+        "queue_label": (
+            "Cancelamento solicitado" if cancel_requested
+            else ("Pausa solicitada" if pause_requested else "Ocupando o servidor")
+        ),
         "can_open": False,
-        "can_cancel": True,
+        "can_cancel": not cancel_requested,
+        "can_pause": not pause_requested and not cancel_requested,
+        "can_resume": False,
         "cancel_kind": "production_video",
+        "pause_kind": "production_video",
         "production_video_id": int(video.id),
+        "elapsed_seconds": elapsed_seconds,
+        "stage": (job.step or "production").strip().lower(),
     }
 
 def _load_factory_blocker_item(db: Session, excluded_task_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
@@ -1113,7 +1186,15 @@ def _runtime_view_for_task(task: Dict[str, Any]) -> Dict[str, Any]:
     stage_age = max(0, int((now - stage_changed_at).total_seconds())) if stage_changed_at else None
     level = str(resource_health.get("level") or "unknown").lower()
 
-    if status not in {"pending", "processing"}:
+    if status == "paused":
+        state = "paused"
+        label = "Produção pausada"
+        detail = "O servidor foi liberado e os ativos concluídos continuam preservados para retomada."
+    elif status == "pause_requested":
+        state = "pausing"
+        label = "Pausa solicitada"
+        detail = "A etapa atual está sendo concluída com segurança antes de liberar o servidor."
+    elif status not in {"pending", "processing"}:
         state = "finished"
         label = "Processo finalizado"
         detail = "A tarefa não está mais em execução."
@@ -1284,7 +1365,7 @@ def _start_isolated_video_generation(
                 if child.exitcode and child.exitcode != 0:
                     task = get_task(tid) or {}
                     status = str(task.get("status") or "").lower()
-                    if status not in {"completed", "failed", "cancelled"}:
+                    if status not in {"completed", "failed", "cancelled", "paused", "pause_requested"}:
                         killed_by_system = int(child.exitcode or 0) < 0
                         suffix = (
                             " O renderizador foi encerrado pelo sistema, provavelmente por falta de memória."
@@ -1451,7 +1532,10 @@ def _kick_story_video_task_queue() -> Optional[str]:
             rows = _load_story_video_task_rows(db, limit=100)
             if not rows:
                 return None
-        processing = next((r for r in rows if str(r.status or "").lower() == "processing"), None)
+        processing = next(
+            (r for r in rows if str(r.status or "").lower() in {"processing", "pause_requested"}),
+            None,
+        )
         if processing:
             return processing.id
         if _is_video_factory_busy():
@@ -5671,6 +5755,13 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     task = dict(task)
+    if str(task.get("status") or "").strip().lower() == "pause_requested" and not _task_executor_is_alive(task_id):
+        paused = mark_task_paused(
+            task_id,
+            message="Produção pausada com segurança; o executor foi encerrado e o servidor está livre.",
+        )
+        task = dict(paused or get_task(task_id) or task)
+        _kick_story_video_task_queue_async()
     try:
         task_status = str((task.get("status") or "")).lower()
         if task_status in {"processing"}:
@@ -5892,10 +5983,24 @@ def list_active_tasks(limit: int = 10, _admin=Depends(get_current_admin_user)):
 def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admin_user)):
     db = SessionLocal()
     try:
-        rows = _load_story_video_task_rows(db, limit=limit)
+        rows = _load_story_video_task_rows(db, limit=limit, include_paused=True)
+        orphaned_pause = False
+        for row in rows:
+            if str(row.status or "").strip().lower() != "pause_requested":
+                continue
+            if not _task_executor_is_alive(str(row.id)):
+                mark_task_paused(
+                    str(row.id),
+                    message="Produção pausada com segurança; o executor foi encerrado e o servidor está livre.",
+                )
+                orphaned_pause = True
+        if orphaned_pause:
+            db.expire_all()
+            rows = _load_story_video_task_rows(db, limit=limit, include_paused=True)
+            _kick_story_video_task_queue_async()
         factory_busy = bool(_is_video_factory_busy())
         items: List[Dict[str, Any]] = []
-        if factory_busy and not any(str(r.status or "").lower() == "processing" for r in rows):
+        if factory_busy and not any(str(r.status or "").lower() in {"processing", "pause_requested"} for r in rows):
             blocker = _load_factory_blocker_item(db, excluded_task_ids={str(r.id) for r in rows})
             if blocker:
                 items.append(blocker)
@@ -5921,6 +6026,9 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
         payload = {
             "count": len(items),
             "processing_count": len([i for i in items if bool(i.get("is_current"))]),
+            "paused_count": len([i for i in items if str(i.get("status") or "").lower() == "paused"]),
+            "queued_count": len([i for i in items if str(i.get("status") or "").lower() == "pending"]),
+            "occupiers": [i for i in items if bool(i.get("is_current")) or str(i.get("queue_label") or "").lower() == "ocupando o servidor"],
             "items": items,
         }
         payload["factory_busy"] = factory_busy
@@ -6006,6 +6114,50 @@ def cancel_task(task_id: str):
     update_task(task_id, status="cancelled", progress=current_progress, message="Cancelado pelo usuário.")
     _kick_story_video_task_queue_async()
     return {"message": "Cancelado", "task_id": task_id, "status": "cancelled"}
+
+
+@router.post("/task/{task_id}/pause")
+def pause_task(task_id: str, _admin=Depends(get_current_admin_user)):
+    """Pausa a tarefa no próximo checkpoint e preserva todos os ativos."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    status = str(task.get("status") or "").strip().lower()
+    if status == "paused":
+        return {
+            "message": "A produção já está pausada.",
+            "task_id": task_id,
+            "status": "paused",
+            "assets_preserved": True,
+        }
+    if status == "pause_requested":
+        return {
+            "message": "A pausa já foi solicitada e será aplicada após a etapa atual.",
+            "task_id": task_id,
+            "status": "pause_requested",
+            "assets_preserved": True,
+        }
+    if status not in {"pending", "processing"}:
+        raise HTTPException(status_code=409, detail="Apenas tarefas na fila ou em execução podem ser pausadas.")
+
+    executor_alive = _task_executor_is_alive(task_id)
+    immediate = bool(status == "pending" or not executor_alive)
+    paused = request_pause_task(
+        task_id,
+        message="Pausa solicitada; a etapa atual será finalizada antes de liberar a próxima produção.",
+        immediate=immediate,
+    )
+    if not paused:
+        raise HTTPException(status_code=500, detail="Não foi possível solicitar a pausa da tarefa.")
+    if immediate:
+        _kick_story_video_task_queue_async()
+    return {
+        "message": paused.get("message") or "Pausa solicitada.",
+        "task_id": task_id,
+        "status": paused.get("status") or ("paused" if immediate else "pause_requested"),
+        "assets_preserved": True,
+        "pause_mode": "immediate" if immediate else "after_current_stage",
+    }
 
 
 @router.post("/task/{task_id}/discard")
@@ -6458,10 +6610,16 @@ def process_video_generation(request: VideoRequest, task_id):
     class _TaskCancelled(Exception):
         pass
 
+    class _TaskPaused(Exception):
+        pass
+
     def _raise_if_cancelled():
         t = get_task(task_id) or {}
-        if str((t.get("status") or "")).lower() == "cancelled" or _cancel_all_active():
+        status = str((t.get("status") or "")).lower()
+        if status == "cancelled" or _cancel_all_active():
             raise _TaskCancelled()
+        if status in {"pause_requested", "paused"} or is_task_pause_requested(task_id):
+            raise _TaskPaused()
 
     def _merged_task_result(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         current = get_task(task_id) or {}
@@ -7588,6 +7746,23 @@ def process_video_generation(request: VideoRequest, task_id):
                     except Exception:
                         pass
             
+    except _TaskPaused:
+        try:
+            t = get_task(task_id) or {}
+            try:
+                current_progress = int(t.get("progress") or 0)
+            except Exception:
+                current_progress = 0
+            mark_task_paused(
+                task_id,
+                message=(
+                    f"Produção pausada com segurança em {current_progress}%. "
+                    "Roteiro, imagens, áudio e demais ativos já concluídos foram preservados."
+                ),
+            )
+            _dbg_event("H3", "task paused", {"task_id": str(task_id), "executor_id": executor_id, "progress": current_progress})
+        except Exception:
+            pass
     except _TaskCancelled:
         try:
             t = get_task(task_id) or {}

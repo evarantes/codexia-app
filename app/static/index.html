@@ -2052,7 +2052,55 @@
                             <div class="bg-indigo-600 h-2.5 rounded-full" :style="{ width: (ytStoryTask.progress || 0) + '%' }"></div>
                         </div>
                         <div v-if="ytStoryTask.message" class="text-sm text-gray-700 mt-2">{{ ytStoryTask.message }}</div>
-                        <div v-if="ytStoryTask.runtime && ['pending','processing'].includes(String(ytStoryTask.status || '').toLowerCase())"
+                        <div v-if="String(ytStoryTask.status || '').toLowerCase() === 'pending' && ytServerOccupiers.length"
+                             class="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                            <div class="font-bold flex items-center gap-2">
+                                <i class="fas fa-server"></i>
+                                <span>Servidor ocupado por {{ ytServerOccupiers.length }} produção{{ ytServerOccupiers.length === 1 ? '' : 'ões' }}</span>
+                            </div>
+                            <div class="mt-2 space-y-2">
+                                <div v-for="occupier in ytServerOccupiers"
+                                     :key="'server-occupier-'+(occupier.task_id || occupier.production_video_id || occupier.position)"
+                                     class="rounded border border-amber-200 bg-white p-3">
+                                    <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+                                        <div class="min-w-0">
+                                            <div class="font-semibold text-gray-900">{{ occupier.title || 'Produção de vídeo' }}</div>
+                                            <div class="mt-1 text-xs text-gray-600 flex flex-wrap gap-x-3 gap-y-1">
+                                                <span><strong>Origem:</strong> {{ occupier.source_label || 'Produção de vídeo' }}</span>
+                                                <span v-if="occupier.stage"><strong>Etapa:</strong> {{ occupier.stage }}</span>
+                                                <span v-if="occupier.elapsed_seconds !== null && occupier.elapsed_seconds !== undefined"><strong>Tempo:</strong> {{ formatGuardianDuration(occupier.elapsed_seconds) }}</span>
+                                                <span v-if="occupier.last_signal_seconds !== null && occupier.last_signal_seconds !== undefined"><strong>Último sinal:</strong> {{ formatGuardianDuration(occupier.last_signal_seconds) }}</span>
+                                            </div>
+                                            <div v-if="occupier.message" class="mt-1 text-xs text-gray-700">{{ occupier.message }}</div>
+                                            <div v-if="occupier.runtime && occupier.runtime.resources && Object.keys(occupier.runtime.resources).length"
+                                                 class="mt-2 text-xs text-gray-600 flex flex-wrap gap-x-3 gap-y-1">
+                                                <span v-if="occupier.runtime.resources.available_memory_mb !== undefined"><strong>RAM livre:</strong> {{ Math.round(Number(occupier.runtime.resources.available_memory_mb || 0)) }} MB</span>
+                                                <span v-if="occupier.runtime.resources.swap_used_percent !== undefined"><strong>Swap:</strong> {{ Number(occupier.runtime.resources.swap_used_percent || 0).toFixed(1) }}%</span>
+                                                <span v-if="occupier.runtime.resources.disk_free_gb !== undefined"><strong>Disco livre:</strong> {{ Number(occupier.runtime.resources.disk_free_gb || 0).toFixed(1) }} GB</span>
+                                            </div>
+                                        </div>
+                                        <div class="flex flex-wrap gap-2 shrink-0">
+                                            <button v-if="occupier.can_pause"
+                                                    @click="pauseQueuedVideoTask(occupier)"
+                                                    :disabled="ytQueueActionId === queueTaskActionKey(occupier)"
+                                                    class="px-3 py-2 rounded border border-amber-300 bg-amber-100 hover:bg-amber-200 disabled:opacity-50 text-amber-900 text-xs font-semibold">
+                                                <i class="fas fa-pause mr-1"></i>Pausar após esta etapa
+                                            </button>
+                                            <button v-if="occupier.can_cancel"
+                                                    @click="cancelQueuedVideoTask(occupier)"
+                                                    :disabled="ytQueueActionId === queueTaskActionKey(occupier)"
+                                                    class="px-3 py-2 rounded border border-red-300 bg-red-50 hover:bg-red-100 disabled:opacity-50 text-red-700 text-xs font-semibold">
+                                                <i class="fas fa-ban mr-1"></i>Cancelar e liberar fila
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-2 text-xs">
+                                A pausa é segura: termina somente a etapa atual, preserva os arquivos gerados e então libera a próxima tarefa.
+                            </div>
+                        </div>
+                        <div v-if="ytStoryTask.runtime && ['pending','processing','pause_requested'].includes(String(ytStoryTask.status || '').toLowerCase())"
                              class="mt-3 rounded border p-3 text-sm"
                              :class="ytStoryTask.runtime.state === 'resource_pressure' || ytStoryTask.runtime.state === 'possibly_interrupted'
                                 ? 'border-red-200 bg-red-50 text-red-900'
@@ -2066,7 +2114,7 @@
                                 </div>
                             </div>
                             <div class="mt-1">{{ ytStoryTask.runtime.detail }}</div>
-                            <div v-if="ytStoryTask.runtime.resources" class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                            <div v-if="ytStoryTask.runtime.resources && Object.keys(ytStoryTask.runtime.resources).length" class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                                 <div><strong>RAM livre:</strong> {{ Math.round(Number(ytStoryTask.runtime.resources.available_memory_mb || 0)) }} MB</div>
                                 <div><strong>Swap:</strong> {{ Number(ytStoryTask.runtime.resources.swap_used_percent || 0).toFixed(1) }}%</div>
                                 <div><strong>Disco livre:</strong> {{ Number(ytStoryTask.runtime.resources.disk_free_gb || 0).toFixed(1) }} GB</div>
@@ -2088,11 +2136,18 @@
                                 <i v-if="ytStoryAssistLoading" class="fas fa-spinner fa-spin"></i>
                                 <span v-else><i class="fas fa-stethoscope"></i> Diagnosticar</span>
                             </button>
-                            <button @click="retryLatestRecoverableStoryTask" :disabled="ytStoryRetryLoading || !ytStoryTask || String(ytStoryTask.status || '').toLowerCase() !== 'failed'" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
+                            <button @click="retryLatestRecoverableStoryTask" :disabled="ytStoryRetryLoading || !ytStoryTask || !['failed','paused'].includes(String(ytStoryTask.status || '').toLowerCase())" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
                                 <i :class="ytStoryRetryLoading ? 'fas fa-spinner fa-spin' : 'fas fa-rotate-right'"></i>
-                                <span>Reiniciar tarefa</span>
+                                <span>{{ String(ytStoryTask.status || '').toLowerCase() === 'paused' ? 'Retomar tarefa' : 'Reiniciar tarefa' }}</span>
                             </button>
-                            <button @click="cancelStoryTask" :disabled="!ytStoryTaskId || (ytStoryTask && !['processing','pending'].includes(String(ytStoryTask.status||'').toLowerCase()))" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
+                            <button v-if="ytStoryTaskId && ['processing','pending'].includes(String(ytStoryTask.status || '').toLowerCase())"
+                                    @click="pauseQueuedVideoTask({ task_id: ytStoryTaskId, title: (ytStoryTask.result && ytStoryTask.result.title_hint) || 'Produção atual', pause_kind: 'task' })"
+                                    :disabled="ytQueueActionId === ('task:' + String(ytStoryTaskId || ''))"
+                                    class="px-3 py-2 rounded border bg-amber-50 hover:bg-amber-100 text-amber-800 disabled:opacity-50 text-sm flex items-center gap-2">
+                                <i class="fas fa-pause"></i>
+                                <span>Pausar com segurança</span>
+                            </button>
+                            <button @click="cancelStoryTask" :disabled="!ytStoryTaskId || (ytStoryTask && !['processing','pending','pause_requested','paused'].includes(String(ytStoryTask.status||'').toLowerCase()))" class="px-3 py-2 rounded border bg-white hover:bg-gray-100 disabled:opacity-50 text-sm flex items-center gap-2">
                                 <i class="fas fa-ban"></i>
                                 <span>Cancelar</span>
                             </button>
@@ -2143,6 +2198,8 @@
                                             <span class="font-semibold">{{ item.queue_label || (item.is_current ? 'Em execução' : 'Na fila') }}</span>
                                             <span v-if="item.source_label"> • {{ item.source_label }}</span>
                                             <span v-if="item.duration"> • {{ item.duration }} min</span>
+                                            <span v-if="item.stage"> • Etapa: {{ item.stage }}</span>
+                                            <span v-if="item.elapsed_seconds !== null && item.elapsed_seconds !== undefined"> • {{ formatGuardianDuration(item.elapsed_seconds) }}</span>
                                             <span v-if="item.created_at"> • {{ formatDate(item.created_at) }}</span>
                                         </div>
                                         <div class="mt-2">
@@ -2169,7 +2226,9 @@
                                             <i :class="ytStoryDiscardLoading ? 'fas fa-spinner fa-spin' : 'fas fa-trash-alt'"></i>
                                             <span>Descartar</span>
                                         </button>
-                                        <button v-if="item.can_cancel" @click="cancelQueuedVideoTask(item)" class="px-2 py-1 rounded border bg-red-50 hover:bg-red-100 text-red-700 text-xs">Cancelar</button>
+                                        <button v-if="item.can_pause" @click="pauseQueuedVideoTask(item)" :disabled="ytQueueActionId === queueTaskActionKey(item)" class="px-2 py-1 rounded border bg-amber-50 hover:bg-amber-100 text-amber-800 disabled:opacity-50 text-xs"><i class="fas fa-pause mr-1"></i>Pausar</button>
+                                        <button v-if="item.can_resume" @click="resumeQueuedVideoTask(item)" :disabled="ytQueueActionId === queueTaskActionKey(item)" class="px-2 py-1 rounded border bg-green-50 hover:bg-green-100 text-green-800 disabled:opacity-50 text-xs"><i class="fas fa-play mr-1"></i>Retomar</button>
+                                        <button v-if="item.can_cancel" @click="cancelQueuedVideoTask(item)" :disabled="ytQueueActionId === queueTaskActionKey(item)" class="px-2 py-1 rounded border bg-red-50 hover:bg-red-100 disabled:opacity-50 text-red-700 text-xs">Cancelar</button>
                                     </div>
                                 </div>
                             </div>
@@ -5063,7 +5122,9 @@
                     ytActiveVideoTasksLoading: false,
                     ytActiveVideoTasksLastLoadAt: 0,
                     ytActiveVideoTasks: [],
+                    ytServerOccupiers: [],
                     ytQueueFactoryBusy: false,
+                    ytQueueActionId: null,
                     ytStoryTaskPollFails: {},
                     ytStoryAssistLoading: false,
                     ytStoryRetryLoading: false,
@@ -6344,6 +6405,9 @@
                         if (!res.ok) return;
                         const items = (data && data.items && Array.isArray(data.items)) ? data.items : [];
                         this.ytActiveVideoTasks = items;
+                        this.ytServerOccupiers = (data && Array.isArray(data.occupiers))
+                            ? data.occupiers
+                            : items.filter((item) => item && (Boolean(item.is_current) || String(item.queue_label || '').toLowerCase() === 'ocupando o servidor'));
                         this.ytQueueFactoryBusy = Boolean(data && data.factory_busy);
                         if (autoOpen !== false && !this.ytStoryTaskId && items.length) {
                             const pick = items.find(t => t && t.can_open && t.task_id && Boolean(t.is_current))
@@ -6395,7 +6459,7 @@
                     if (this.ytStoryRetryLoading) return;
                     const status = String((this.ytStoryTask && this.ytStoryTask.status) || '').toLowerCase();
                     const currentTaskId = String(this.ytStoryTaskId || '').trim();
-                    if (status === 'failed' && currentTaskId) {
+                    if (['failed', 'paused'].includes(status) && currentTaskId) {
                         await this.retryStoryTask();
                         return;
                     }
@@ -6411,12 +6475,94 @@
                         message: 'Não foi possível localizar a tarefa recuperável. Toque em Atualizar fila e tente novamente.'
                     };
                 },
+                queueTaskActionKey(item) {
+                    const it = item || {};
+                    return `${String(it.pause_kind || it.cancel_kind || 'task')}:${String(it.task_id || it.production_video_id || it.position || '')}`;
+                },
+                async pauseQueuedVideoTask(item) {
+                    const it = item || {};
+                    const taskId = String(it.task_id || '').trim();
+                    const pauseKind = String(it.pause_kind || 'task').trim().toLowerCase();
+                    const productionVideoId = Number(it.production_video_id || 0);
+                    const title = String(it.title || 'produção em andamento').trim();
+                    if (!confirm(`Pausar "${title}" após a etapa atual?\n\nOs arquivos já gerados serão preservados. A próxima tarefa começará quando o servidor confirmar a pausa.`)) return;
+                    const actionKey = this.queueTaskActionKey(it);
+                    this.ytQueueActionId = actionKey;
+                    try {
+                        let res;
+                        if (pauseKind === 'production_video' && productionVideoId > 0) {
+                            res = await this.authFetch(`/youtube/videos/${productionVideoId}/pause`, { method: 'POST' });
+                        } else if (taskId) {
+                            res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/pause`, { method: 'POST' });
+                        } else {
+                            throw new Error('Não foi possível identificar a atividade que ocupa o servidor.');
+                        }
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao solicitar pausa.');
+                        if (taskId && String(this.ytStoryTaskId || '') === taskId) {
+                            const status = String(data.status || 'pause_requested').toLowerCase();
+                            this.ytStoryTask = {
+                                ...(this.ytStoryTask || {}),
+                                status,
+                                message: String(data.message || 'Pausa solicitada; finalizando a etapa atual com segurança.')
+                            };
+                            if (status === 'paused') {
+                                this.ytStoryVideoLoading = false;
+                                this.releaseVideoGenerationLockByTask(taskId);
+                            } else {
+                                this.pollStoryTask(taskId);
+                            }
+                        }
+                        await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
+                        try { this.fetchProductionQueue(); } catch (e) {}
+                        alert(data.message || 'Pausa solicitada. A próxima tarefa avançará após a etapa atual liberar o servidor.');
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.ytQueueActionId = null;
+                    }
+                },
+                async resumeQueuedVideoTask(item) {
+                    const it = item || {};
+                    const taskId = String(it.task_id || '').trim();
+                    const pauseKind = String(it.pause_kind || 'task').trim().toLowerCase();
+                    const productionVideoId = Number(it.production_video_id || 0);
+                    const actionKey = this.queueTaskActionKey(it);
+                    this.ytQueueActionId = actionKey;
+                    try {
+                        let res;
+                        if (pauseKind === 'production_video' && productionVideoId > 0) {
+                            res = await this.authFetch(`/youtube/videos/${productionVideoId}/resume`, { method: 'POST' });
+                        } else if (taskId) {
+                            res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/retry`, { method: 'POST' });
+                        } else {
+                            throw new Error('Não foi possível identificar a produção pausada.');
+                        }
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao retomar a produção.');
+                        if (taskId) {
+                            this.ytStoryTaskId = taskId;
+                            this.ytStoryVideoLoading = true;
+                            try { localStorage.setItem('ytStoryTaskId', taskId); } catch (e) {}
+                            this.pollStoryTask(taskId);
+                        }
+                        await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
+                        try { this.fetchProductionQueue(); } catch (e) {}
+                    } catch (e) {
+                        alert(e.message || String(e));
+                    } finally {
+                        this.ytQueueActionId = null;
+                    }
+                },
                 async cancelQueuedVideoTask(item) {
                     const it = item || {};
                     const taskId = String(it.task_id || '').trim();
                     const cancelKind = String(it.cancel_kind || 'task').trim().toLowerCase();
                     const productionVideoId = Number(it.production_video_id || 0);
-                    if (!confirm(`Cancelar a tarefa da fila #${it.position || '?'}?`)) return;
+                    const title = String(it.title || `tarefa #${it.position || '?'}`).trim();
+                    if (!confirm(`Cancelar "${title}" e liberar a fila?\n\nOs arquivos já gerados não serão apagados. A próxima tarefa avançará quando a etapa atual encerrar.`)) return;
+                    const actionKey = this.queueTaskActionKey(it);
+                    this.ytQueueActionId = actionKey;
                     try {
                         let res;
                         if (cancelKind === 'production_video' && productionVideoId > 0) {
@@ -6437,6 +6583,8 @@
                         try { this.fetchProductionQueue(); } catch (e) {}
                     } catch (e) {
                         alert(e.message || String(e));
+                    } finally {
+                        this.ytQueueActionId = null;
                     }
                 },
                 async runDiagnostics() {
@@ -9018,6 +9166,14 @@
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                             this.releaseVideoGenerationLockByTask(taskId);
                             this.ytStoryTaskId = String(taskId);
+                            return;
+                        }
+                        if (status === 'paused') {
+                            this.ytStoryVideoLoading = false;
+                            this.releaseVideoGenerationLockByTask(taskId);
+                            this.ytStoryTaskId = String(taskId);
+                            try { localStorage.setItem('ytStoryTaskId', String(taskId)); } catch (e) {}
+                            this.fetchActiveVideoTasks({ silent: true, autoOpen: false });
                             return;
                         }
                         if (status === 'cancelled') {
