@@ -680,6 +680,47 @@ def reset_task_for_retry(task_id: str, progress: int = 1, message: str = "Reinic
     finally:
         db.close()
 
+
+def enqueue_paused_task_for_resume(
+    task_id: str,
+    message: str = "Produção retomada e recolocada na fila.",
+) -> Optional[Dict[str, Any]]:
+    """Recoloca uma tarefa pausada na fila sem iniciar um segundo executor.
+
+    O progresso, o payload e os ativos já produzidos permanecem intactos. A
+    fila canônica decide quando a tarefa poderá voltar a executar, respeitando
+    o trabalho que já ocupa o servidor.
+    """
+    _control_set(task_id, {"cancel": False, "pause": False, "deleted": False})
+    db = SessionLocal()
+    try:
+        _ensure_task_support_tables()
+        db.execute(text(
+            f"""
+            DELETE FROM {_TASK_LEASE_TABLE}
+            WHERE task_id = :task_id
+            """
+        ), {"task_id": task_id})
+        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if not row:
+            return None
+        status = str(row.status or "").strip().lower()
+        if status not in {"paused", "pause_requested"}:
+            return _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+        row.status = "pending"
+        row.message = message
+        _sync_task_aux_state(db, task_id, status="pending", result_json=row.result_json)
+        db.commit()
+        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+        video_tasks[task_id] = current
+        _redis_set(task_id, current)
+        return current
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
 def mark_task_deleted(task_id: str):
     _control_set(task_id, {"deleted": True})
     try:

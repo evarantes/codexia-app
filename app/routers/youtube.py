@@ -35,6 +35,7 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 try:
     from rq import Worker
@@ -63,6 +64,7 @@ from app.services.task_manager import (
     request_cancel_task,
     request_pause_task,
     mark_task_paused,
+    enqueue_paused_task_for_resume,
     reset_task_for_retry,
     claim_video_task,
     acquire_distributed_lock,
@@ -813,7 +815,7 @@ def _story_video_task_item_from_row(row: VideoTask, position: int) -> Dict[str, 
         ),
         "can_open": True,
         "can_cancel": True,
-        "can_pause": bool(status == "processing"),
+        "can_pause": status in {"pending", "processing"},
         "can_resume": bool(status == "paused"),
         "cancel_kind": "task",
         "pause_kind": "task",
@@ -919,6 +921,151 @@ def _active_production_video_blocker_item(db: Session) -> Optional[Dict[str, Any
         "elapsed_seconds": elapsed_seconds,
         "stage": (job.step or "production").strip().lower(),
     }
+
+
+def _production_video_queue_item(db: Session, video: Video, position: int) -> Optional[Dict[str, Any]]:
+    """Serializa um item da fila principal para o painel unificado."""
+    jobs = (
+        db.query(Job)
+        .filter(Job.video_id == video.id)
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(20)
+        .all()
+    )
+    processing_job = next((job for job in jobs if str(job.status or "").lower() == "processing"), None)
+    pending_job = next((job for job in reversed(jobs) if str(job.status or "").lower() == "pending"), None)
+    paused_job = next((job for job in jobs if str(job.status or "").lower() == "paused"), None)
+    active_job = processing_job or pending_job or paused_job or (jobs[0] if jobs else None)
+    video_status = _normalize_video_status(video.status)
+
+    if video_status == "PAUSED" or paused_job:
+        status = "paused"
+        queue_label = "Pausada"
+        is_current = False
+    elif processing_job:
+        status = "processing"
+        queue_label = "Ocupando o servidor"
+        is_current = True
+    elif pending_job or video_status == "QUEUED":
+        status = "pending"
+        queue_label = "Na fila"
+        is_current = False
+    elif video_status in {"PROCESSING", "SCRIPT", "TTS", "VISUALS", "RENDER"}:
+        status = "processing"
+        queue_label = "Ocupando o servidor"
+        is_current = True
+    else:
+        return None
+
+    try:
+        job_progress = int(getattr(active_job, "progress", 0) or 0)
+    except Exception:
+        job_progress = 0
+    progress = max(job_progress, _progress_from_video_status(video_status))
+    if status == "paused" and job_progress:
+        progress = job_progress
+    message = _last_log_line(getattr(active_job, "logs", "") if active_job else "")
+    if not message:
+        if status == "processing":
+            message = f"Processando etapa: {getattr(active_job, 'step', None) or 'produção'}..."
+        elif status == "paused":
+            message = "Produção pausada pelo usuário; aguardando retomada manual."
+        else:
+            message = "Aguardando vez na fila de produção."
+
+    duration = None
+    try:
+        if getattr(video, "duration_sec", None):
+            duration = max(1, int(math.ceil(float(video.duration_sec) / 60.0)))
+    except Exception:
+        duration = None
+
+    created_at = getattr(active_job, "created_at", None) or getattr(video, "created_at", None)
+    elapsed_seconds = None
+    if is_current and created_at:
+        try:
+            current_start = created_at
+            if getattr(current_start, "tzinfo", None) is not None:
+                current_start = current_start.astimezone(timezone.utc).replace(tzinfo=None)
+            elapsed_seconds = max(0, int((datetime.utcnow() - current_start).total_seconds()))
+        except Exception:
+            elapsed_seconds = None
+
+    return {
+        "task_id": None,
+        "status": status,
+        "progress": max(0, min(100, int(progress or 0))),
+        "message": message,
+        "created_at": (created_at.isoformat() if created_at else None),
+        "updated_at": (
+            active_job.updated_at.isoformat()
+            if active_job and getattr(active_job, "updated_at", None)
+            else None
+        ),
+        "position": int(position),
+        "is_current": is_current,
+        "title": (video.title or f"Vídeo #{video.id}")[:120],
+        "duration": duration,
+        "mode": "production_queue",
+        "kind": "production_video",
+        "source_type": "production_video",
+        "source_label": "Fila principal de produção",
+        "queue_label": queue_label,
+        "can_open": False,
+        "can_cancel": True,
+        "can_pause": status in {"pending", "processing"},
+        "can_resume": status == "paused",
+        "cancel_kind": "production_video",
+        "pause_kind": "production_video",
+        "production_video_id": int(video.id),
+        "elapsed_seconds": elapsed_seconds,
+        "stage": (getattr(active_job, "step", None) or ("paused" if status == "paused" else "queued")),
+    }
+
+
+def _load_production_video_queue_items(
+    db: Session,
+    *,
+    excluded_task_ids: Optional[set] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Carrega trabalhos ativos, aguardando e pausados da fila principal."""
+    excluded = {str(value) for value in (excluded_task_ids or set()) if str(value).strip()}
+    videos = (
+        db.query(Video)
+        .filter(func.upper(func.trim(Video.status)).in_([
+            "QUEUED",
+            "PROCESSING",
+            "SCRIPT",
+            "TTS",
+            "VISUALS",
+            "RENDER",
+            "PAUSED",
+        ]))
+        .order_by(Video.created_at.asc(), Video.id.asc())
+        .limit(max(1, min(200, int(limit or 100))))
+        .all()
+    )
+    items: List[Dict[str, Any]] = []
+    for video in videos:
+        if getattr(video, "task_id", None) and str(video.task_id) in excluded:
+            continue
+        if getattr(video, "task_id", None):
+            task = get_task(str(video.task_id)) or {}
+            task_status = str(task.get("status") or "").strip().lower()
+            if task_status in {
+                "completed",
+                "awaiting_review",
+                "approved",
+                "published",
+                "failed",
+                "cancelled",
+            }:
+                continue
+        item = _production_video_queue_item(db, video, len(items) + 1)
+        if item:
+            items.append(item)
+    return items
 
 def _load_factory_blocker_item(db: Session, excluded_task_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
     item = _active_video_task_blocker_item(db, excluded_task_ids=excluded_task_ids)
@@ -1526,11 +1673,13 @@ def _kick_story_video_task_queue() -> Optional[str]:
     try:
         rows = _load_story_video_task_rows(db, limit=100)
         if not rows:
+            _kick_primary_production_queue_async()
             return None
         cleanup_info = _cleanup_story_video_task_queue(db, rows=rows)
         if cleanup_info.get("changed"):
             rows = _load_story_video_task_rows(db, limit=100)
             if not rows:
+                _kick_primary_production_queue_async()
                 return None
         processing = next(
             (r for r in rows if str(r.status or "").lower() in {"processing", "pause_requested"}),
@@ -1539,11 +1688,10 @@ def _kick_story_video_task_queue() -> Optional[str]:
         if processing:
             return processing.id
         if _is_video_factory_busy():
-            blocker = _load_factory_blocker_item(db, excluded_task_ids={str(r.id) for r in rows})
-            if blocker:
-                return None
+            return None
         pending = next((r for r in rows if str(r.status or "").lower() == "pending"), None)
         if not pending:
+            _kick_primary_production_queue_async()
             return None
         result_obj = None
         if pending.result_json:
@@ -1556,6 +1704,7 @@ def _kick_story_video_task_queue() -> Optional[str]:
             pending.status = "failed"
             pending.message = "Payload inválido para geração de vídeo."
             db.commit()
+            _kick_primary_production_queue_async()
             return None
     finally:
         db.close()
@@ -1569,7 +1718,52 @@ def _kick_story_video_task_queue() -> Optional[str]:
     return pending.id
 
 def _kick_story_video_task_queue_async():
-    threading.Thread(target=_kick_story_video_task_queue, daemon=True).start()
+    def _run_safely():
+        try:
+            _kick_story_video_task_queue()
+        except Exception as exc:
+            print(f"Aviso ao avançar fila canônica de vídeos: {type(exc).__name__}: {str(exc)[:200]}")
+
+    threading.Thread(target=_run_safely, daemon=True).start()
+
+
+def _kick_primary_production_queue() -> Optional[int]:
+    """Libera o próximo vídeo da fila principal usando o runner já existente."""
+    db = SessionLocal()
+    pending_job_id = None
+    try:
+        if db.query(Job).filter(Job.status == "processing").first():
+            return None
+        factory = VideoFactory(db)
+        factory._enqueue_next_long_video()
+        pending_jobs = (
+            db.query(Job)
+            .filter(Job.status == "pending")
+            .order_by(Job.created_at.asc(), Job.id.asc())
+            .limit(100)
+            .all()
+        )
+        for job in pending_jobs:
+            video = getattr(job, "video", None)
+            status = _normalize_video_status(getattr(video, "status", None)) if video else ""
+            if status not in {"PAUSED", "CANCELLED"}:
+                pending_job_id = int(job.id)
+                break
+    finally:
+        db.close()
+    if pending_job_id is not None:
+        process_jobs_background()
+    return pending_job_id
+
+
+def _kick_primary_production_queue_async():
+    def _run_safely():
+        try:
+            _kick_primary_production_queue()
+        except Exception as exc:
+            print(f"Aviso ao avançar fila principal de vídeos: {type(exc).__name__}: {str(exc)[:200]}")
+
+    threading.Thread(target=_run_safely, daemon=True).start()
 
 
 def _apply_youtube_auto_editorial_intelligence(
@@ -2807,6 +3001,7 @@ def pause_production_video(video_id: int, db: Session = Depends(get_db)):
 
     video.status = "PAUSED"
     db.commit()
+    _kick_story_video_task_queue_async()
     return {"status": "paused", "message": "Produção pausada com sucesso."}
 
 @router.post("/videos/{video_id}/resume")
@@ -2858,8 +3053,12 @@ def resume_production_video(video_id: int, background_tasks: BackgroundTasks, db
 
     factory = VideoFactory(db)
     factory._add_job(video.id, next_step)
-    background_tasks.add_task(process_jobs_background)
-    return {"status": "queued", "step": next_step, "message": "Produção retomada com sucesso."}
+    background_tasks.add_task(_kick_story_video_task_queue)
+    return {
+        "status": "queued",
+        "step": next_step,
+        "message": "Produção retomada e recolocada na fila.",
+    }
 
 @router.post("/videos/{video_id}/cancel")
 def cancel_production_video(video_id: int, db: Session = Depends(get_db)):
@@ -2894,6 +3093,7 @@ def cancel_production_video(video_id: int, db: Session = Depends(get_db)):
 
     video.status = "CANCELLED"
     db.commit()
+    _kick_story_video_task_queue_async()
     return {"status": "cancelled", "message": "Produção cancelada com sucesso."}
 
 @router.post("/videos/{video_id}/regenerate")
@@ -5999,14 +6199,50 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
             rows = _load_story_video_task_rows(db, limit=limit, include_paused=True)
             _kick_story_video_task_queue_async()
         factory_busy = bool(_is_video_factory_busy())
-        items: List[Dict[str, Any]] = []
-        if factory_busy and not any(str(r.status or "").lower() in {"processing", "pause_requested"} for r in rows):
-            blocker = _load_factory_blocker_item(db, excluded_task_ids={str(r.id) for r in rows})
+        task_ids = {str(row.id) for row in rows}
+        items: List[Dict[str, Any]] = [
+            _story_video_task_item_from_row(row, index)
+            for index, row in enumerate(rows, start=1)
+        ]
+        items.extend(
+            _load_production_video_queue_items(
+                db,
+                excluded_task_ids=task_ids,
+                limit=max(50, int(limit or 20)),
+            )
+        )
+
+        if factory_busy and not any(bool(item.get("is_current")) for item in items):
+            blocker = _load_factory_blocker_item(db, excluded_task_ids=task_ids)
+            blocker_key = None
             if blocker:
+                blocker_key = (
+                    str(blocker.get("source_type") or ""),
+                    str(blocker.get("task_id") or blocker.get("production_video_id") or ""),
+                )
+            existing_keys = {
+                (
+                    str(item.get("source_type") or ""),
+                    str(item.get("task_id") or item.get("production_video_id") or ""),
+                )
+                for item in items
+            }
+            if blocker and blocker_key not in existing_keys:
                 items.append(blocker)
-        for row in rows:
-            items.append(_story_video_task_item_from_row(row, len(items) + 1))
-        if not rows:
+
+        status_order = {
+            "processing": 0,
+            "pause_requested": 0,
+            "pending": 1,
+            "paused": 2,
+        }
+        items.sort(key=lambda item: (
+            status_order.get(str(item.get("status") or "").strip().lower(), 3),
+            str(item.get("created_at") or ""),
+            str(item.get("task_id") or item.get("production_video_id") or ""),
+        ))
+
+        if not items:
             recoverable = _load_latest_recoverable_story_video_task(db)
             if recoverable is not None:
                 recovery_item = _story_video_task_item_from_row(recoverable, len(items) + 1)
@@ -6021,8 +6257,15 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
                 })
                 items.append(recovery_item)
         items = items[: max(1, min(200, int(limit or 20)))]
+        runnable_position = 0
         for idx, item in enumerate(items, start=1):
             item["position"] = idx
+            normalized_status = str(item.get("status") or "").strip().lower()
+            if normalized_status in {"processing", "pause_requested", "pending"}:
+                runnable_position += 1
+                item["queue_position"] = runnable_position
+            else:
+                item["queue_position"] = None
         payload = {
             "count": len(items),
             "processing_count": len([i for i in items if bool(i.get("is_current"))]),
@@ -6030,6 +6273,10 @@ def list_story_video_task_queue(limit: int = 20, _admin=Depends(get_current_admi
             "queued_count": len([i for i in items if str(i.get("status") or "").lower() == "pending"]),
             "occupiers": [i for i in items if bool(i.get("is_current")) or str(i.get("queue_label") or "").lower() == "ocupando o servidor"],
             "items": items,
+            "next_task": next(
+                (i for i in items if str(i.get("status") or "").lower() == "pending"),
+                None,
+            ),
         }
         payload["factory_busy"] = factory_busy
         return payload
@@ -6421,6 +6668,54 @@ def retry_task(task_id: str, _admin=Depends(get_current_admin_user)):
             VideoRequest(**payload)
         except Exception:
             raise HTTPException(status_code=400, detail="Payload inválido para reiniciar a tarefa.")
+
+        if status == "paused":
+            merge_task_result(task_id, {
+                "payload": payload,
+                "resume_requested_at": datetime.utcnow().isoformat(),
+            })
+            resumed = enqueue_paused_task_for_resume(
+                task_id,
+                message="Produção retomada e recolocada na fila; aguardando sua vez.",
+            )
+            if not resumed or str(resumed.get("status") or "").lower() != "pending":
+                raise HTTPException(status_code=500, detail="Não foi possível recolocar a tarefa pausada na fila.")
+
+            pipeline_sync_warning = None
+            pipeline_db = SessionLocal()
+            try:
+                unified_video_pipeline().transition_status(
+                    pipeline_db,
+                    task_id,
+                    status="pending",
+                    step="queued_resume",
+                    progress=progress_n,
+                    message="Produção retomada pelo usuário e aguardando sua vez na fila.",
+                    merge_result={
+                        "recovery": {
+                            "same_task": True,
+                            "resumed_from_pause": True,
+                            "force_reuse_assets": True,
+                        }
+                    },
+                )
+            except Exception as exc:
+                pipeline_db.rollback()
+                pipeline_sync_warning = f"{type(exc).__name__}: {str(exc)[:160]}"
+            finally:
+                pipeline_db.close()
+
+            _kick_story_video_task_queue_async()
+            return {
+                "message": "Produção retomada e recolocada na fila. Ela iniciará quando chegar sua vez.",
+                "task_id": task_id,
+                "status": "pending",
+                "queued": True,
+                "reused_task": True,
+                "reuse_assets": True,
+                "pipeline": "unified_video_pipeline",
+                "pipeline_sync_warning": pipeline_sync_warning,
+            }
 
         reset = reset_task_for_retry(
             task_id,
