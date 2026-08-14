@@ -1,6 +1,7 @@
 import inspect
 import unittest
 
+import app
 import app.redis_client as redis_client
 import app.tasks as worker_tasks
 
@@ -39,6 +40,20 @@ class CX33QueueFailClosedTests(unittest.TestCase):
         self.assertIn("queue.enqueue_in", source)
         self.assertIn("execução inline bloqueada", source)
         self.assertNotIn("factory.process_job(job)\n                    return", source)
+
+    def test_video_task_terminal_status_mapping(self):
+        self.assertEqual(app._canonical_status_for_video_task("failed"), "failed")
+        self.assertEqual(app._canonical_status_for_video_task("cancelled"), "cancelled")
+        self.assertEqual(app._canonical_status_for_video_task("pending"), "queued")
+        self.assertEqual(app._canonical_status_for_video_task("processing"), "processing")
+        self.assertEqual(app._canonical_status_for_video_task("completed"), "completed")
+
+    def test_state_sync_updates_unified_row_by_task_id(self):
+        source = inspect.getsource(app._sync_video_task_state_to_unified)
+        self.assertIn("UPDATE unified_videos", source)
+        self.assertIn("WHERE task_id = :task_id", source)
+        self.assertIn("last_error", source)
+        self.assertIn("progress = :progress", source)
 
 
 if __name__ == "__main__":
