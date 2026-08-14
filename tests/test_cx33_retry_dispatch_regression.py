@@ -14,8 +14,12 @@ class _WorkerRow:
 
 
 class CX33RetryDispatchRegressionTests(unittest.TestCase):
-    def test_rq_worker_online_accepts_timezone_aware_heartbeat(self):
+    def test_rq_worker_online_uses_rq_registration_even_with_idle_heartbeat(self):
         class FakeWorker:
+            @classmethod
+            def count(cls, *args, **kwargs):
+                return 1
+
             @classmethod
             def all(cls, *args, **kwargs):
                 return [_WorkerRow(datetime.now(timezone.utc))]
@@ -25,6 +29,18 @@ class CX33RetryDispatchRegressionTests(unittest.TestCase):
             stack.enter_context(patch.object(youtube, "RQ_AVAILABLE", True))
             stack.enter_context(patch.object(youtube, "Worker", FakeWorker))
             self.assertTrue(youtube._rq_workers_online())
+
+    def test_rq_worker_offline_when_rq_has_no_registered_workers(self):
+        class FakeWorker:
+            @classmethod
+            def count(cls, *args, **kwargs):
+                return 0
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(youtube, "conn", object()))
+            stack.enter_context(patch.object(youtube, "RQ_AVAILABLE", True))
+            stack.enter_context(patch.object(youtube, "Worker", FakeWorker))
+            self.assertFalse(youtube._rq_workers_online())
 
     def test_production_never_falls_back_to_local_when_worker_offline(self):
         updates = []
