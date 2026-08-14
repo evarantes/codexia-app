@@ -3,6 +3,7 @@ name: Video pipeline CI
 on:
   pull_request:
     branches:
+      - main
       - homolog/youtube-auto-e2e
     paths:
       - ".github/workflows/video-pipeline-ci.yml"
@@ -77,7 +78,7 @@ jobs:
       - name: Apply canonical Alembic migration on PostgreSQL
         run: |
           python scripts/apply_migrations.py
-          alembic current | grep --fixed-strings "b1c2d3e4f5a6"
+          alembic current | grep --fixed-strings "d7e8f9a0b1c2"
           python scripts/check_schema_consistency.py
 
       - name: Start application against migrated PostgreSQL
