@@ -89,7 +89,9 @@ class CanonicalVideoArchitectureTests(unittest.TestCase):
 
     def test_only_story_executor_can_import_video_generator(self):
         violations = []
-        allowed = {APP / "routers" / "youtube.py"}
+        story_executor = APP / "routers" / "youtube.py"
+        checkpoint_guard = APP / "services" / "audio_checkpoint.py"
+        allowed = {story_executor, checkpoint_guard}
         for path in sorted(APP.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
@@ -99,8 +101,25 @@ class CanonicalVideoArchitectureTests(unittest.TestCase):
         self.assertEqual(
             violations,
             [],
-            "VideoGenerator só pode ser importado pelo executor História/Devocional: "
+            "VideoGenerator só pode ser importado pelo executor História/Devocional ou pelo guard de checkpoint que não executa pipeline: "
             + ", ".join(violations),
+        )
+
+        # O checkpoint pode instrumentar a classe canônica, mas nunca pode
+        # virar um segundo executor/renderizador. A criação de VideoGenerator
+        # continua exclusiva do fluxo História/Devocional em youtube.py.
+        guard_tree = ast.parse(checkpoint_guard.read_text(encoding="utf-8"), filename=str(checkpoint_guard))
+        guard_instantiations = [
+            node
+            for node in ast.walk(guard_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "VideoGenerator"
+        ]
+        self.assertEqual(
+            guard_instantiations,
+            [],
+            "audio_checkpoint.py pode instrumentar VideoGenerator, mas não instanciá-lo/executar pipeline próprio.",
         )
 
     def test_legacy_pipeline_fallback_is_globally_disabled(self):
