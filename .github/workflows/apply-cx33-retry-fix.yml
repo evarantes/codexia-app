@@ -23,7 +23,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          python -m pip install pytest
 
       - name: Apply targeted source patch
         run: python scripts/apply_cx33_retry_fix.py
@@ -35,7 +37,7 @@ jobs:
         env:
           APP_ENV: test
         run: |
-          pytest -q \
+          python -m pytest -q \
             tests/test_cx33_retry_dispatch_regression.py \
             tests/test_cx33_queue_fail_closed.py \
             tests/test_failed_story_retry_recovery.py
