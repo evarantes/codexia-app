@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   patch-and-validate:
-    if: ${{ !contains(github.event.head_commit.message, '[cx33-patched]') && !contains(github.event.head_commit.message, '[cleanup]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[cx33-patched]') && !contains(github.event.head_commit.message, '[cleanup]') && !contains(github.event.head_commit.message, '[ci-debug]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,10 +37,22 @@ jobs:
         env:
           APP_ENV: test
         run: |
+          set +e
           python -m pytest -q \
             tests/test_cx33_retry_dispatch_regression.py \
             tests/test_cx33_queue_fail_closed.py \
-            tests/test_failed_story_retry_recovery.py
+            tests/test_failed_story_retry_recovery.py > /tmp/cx33-pytest.log 2>&1
+          rc=$?
+          cat /tmp/cx33-pytest.log
+          if [ "$rc" -ne 0 ]; then
+            cp /tmp/cx33-pytest.log ci_cx33_failure.log
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ci_cx33_failure.log
+            git commit -m "ci: capture CX33 regression failure [ci-debug]"
+            git push origin HEAD:fix/cx33-retry-failclosed-diagnostics
+            exit "$rc"
+          fi
 
       - name: Commit validated patch
         run: |
