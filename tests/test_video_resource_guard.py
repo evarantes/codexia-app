@@ -170,6 +170,7 @@ class SeriesVideoExecutorProtectionTests(unittest.TestCase):
             os.environ,
             {
                 "USE_RQ_FOR_VIDEO_GENERATION": "false",
+                "ALLOW_INLINE_VIDEO_GENERATION": "true",
                 "VIDEO_GENERATION_EXECUTOR": "thread",
             },
             clear=False,
@@ -195,6 +196,7 @@ class SeriesVideoExecutorProtectionTests(unittest.TestCase):
             os.environ,
             {
                 "USE_RQ_FOR_VIDEO_GENERATION": "false",
+                "ALLOW_INLINE_VIDEO_GENERATION": "true",
                 "VIDEO_GENERATION_EXECUTOR": "thread",
                 "VIDEO_ISOLATED_PROCESS_MINUTES": "5",
             },
@@ -217,6 +219,7 @@ class SeriesVideoExecutorProtectionTests(unittest.TestCase):
             os.environ,
             {
                 "USE_RQ_FOR_VIDEO_GENERATION": "false",
+                "ALLOW_INLINE_VIDEO_GENERATION": "true",
                 "VIDEO_GENERATION_EXECUTOR": "thread",
                 "VIDEO_ISOLATED_PROCESS_MINUTES": "5",
             },
