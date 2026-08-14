@@ -37,6 +37,7 @@ jobs:
 
     env:
       APP_ENV: test
+      PYTHONPATH: .
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/codexia_test
       REDIS_URL: redis://127.0.0.1:6379/0
 
@@ -67,7 +68,7 @@ jobs:
         run: python scripts/apply_migrations.py
 
       - name: Run CX33 routing regression tests
-        run: pytest -q tests/test_cx33_retry_dispatch_regression.py tests/test_audio_checkpoint_regression.py
+        run: python -m pytest -q tests/test_cx33_retry_dispatch_regression.py tests/test_audio_checkpoint_regression.py
 
       - name: Commit validated source changes
         run: |
