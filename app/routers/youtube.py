@@ -1597,7 +1597,10 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
     preserved_progress = max(1, current_progress)
 
     worker_online = bool(conn is not None and _rq_workers_online())
-    if use_rq and worker_online:
+    # Um worker dedicado registrado sempre tem prioridade. Uma variável antiga
+    # USE_RQ_FOR_VIDEO_GENERATION=false não pode desviar produção pesada para
+    # o app principal quando o CX33 está disponível.
+    if worker_online:
         try:
             rq_queue.enqueue(
                 process_video_generation_payload,
@@ -1652,8 +1655,10 @@ def _dispatch_video_generation_task(payload: Dict[str, Any], task_id: str):
 
     # Fallback local mantido apenas para desenvolvimento/homologação explícita.
     allow_inline_raw = os.getenv("ALLOW_INLINE_VIDEO_GENERATION")
+    # Fail-closed por padrão: execução pesada local só existe quando um ambiente
+    # de desenvolvimento/homologação habilita explicitamente esta variável.
     if allow_inline_raw is None or not str(allow_inline_raw).strip():
-        allow_inline = True
+        allow_inline = False
     else:
         allow_inline = str(allow_inline_raw).strip().lower() in {"1", "true", "yes", "on"}
     if not allow_inline:
