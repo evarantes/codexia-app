@@ -203,40 +203,41 @@ def _rq_video_timeout_seconds() -> int:
     return max(600, v)
 
 def _rq_workers_online() -> bool:
-    """Retorna True somente para worker RQ com heartbeat recente.
+    """Retorna True quando o RQ registra worker ativo para a fila de vídeo.
 
-    RQ devolve ``last_heartbeat`` timezone-aware em versões atuais. O app usava
-    ``datetime.utcnow()`` (naive), o que fazia a subtração falhar silenciosamente
-    e classificava o CX33 vivo como offline.
+    Não use um corte fixo curto em ``last_heartbeat``. Enquanto o worker está
+    ocioso, o RQ pode manter o registro válido por vários minutos entre ciclos
+    de manutenção. O próprio registro/TTL do RQ é a fonte de verdade para
+    monitoramento; em produção continuamos fail-closed se nenhum worker estiver
+    registrado.
     """
     if not conn or not RQ_AVAILABLE or Worker is None:
         return False
     try:
+        if rq_queue is not None:
+            try:
+                return Worker.count(queue=rq_queue) > 0
+            except TypeError:
+                pass
+            except Exception:
+                pass
+
+        try:
+            return Worker.count(connection=conn) > 0
+        except TypeError:
+            try:
+                return Worker.count(conn) > 0
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Compatibilidade defensiva com versões/classes customizadas de RQ.
         try:
             workers = list(Worker.all(connection=conn))
         except TypeError:
             workers = list(Worker.all(conn))
-        if not workers:
-            return False
-
-        now = datetime.now(timezone.utc)
-        for worker in workers:
-            try:
-                heartbeat = getattr(worker, "last_heartbeat", None)
-                if not heartbeat:
-                    continue
-                if isinstance(heartbeat, str):
-                    heartbeat = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
-                if getattr(heartbeat, "tzinfo", None) is None:
-                    heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-                else:
-                    heartbeat = heartbeat.astimezone(timezone.utc)
-                age_seconds = (now - heartbeat).total_seconds()
-                if -5 <= age_seconds <= 120:
-                    return True
-            except Exception:
-                continue
-        return False
+        return bool(workers)
     except Exception:
         return False
 
