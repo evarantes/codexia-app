@@ -12,6 +12,35 @@ jobs:
   patch-and-validate:
     if: ${{ !contains(github.event.head_commit.message, '[cx33-patched]') && !contains(github.event.head_commit.message, '[cleanup]') && !contains(github.event.head_commit.message, '[ci-debug]') }}
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: codexia_ci
+          POSTGRES_USER: codexia_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U codexia_ci -d codexia_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: homologation
+      DATABASE_URL: postgresql://codexia_ci@127.0.0.1:5432/codexia_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,6 +56,9 @@ jobs:
           pip install -r requirements.txt
           python -m pip install pytest
 
+      - name: Apply canonical migrations
+        run: python scripts/apply_migrations.py
+
       - name: Apply targeted source patch
         run: python scripts/apply_cx33_retry_fix.py
 
@@ -34,8 +66,6 @@ jobs:
         run: python -m py_compile app/routers/youtube.py tests/test_cx33_retry_dispatch_regression.py
 
       - name: Run targeted regression tests
-        env:
-          APP_ENV: test
         run: |
           set +e
           python -m pytest -q \
