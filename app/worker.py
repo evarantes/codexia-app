@@ -11,6 +11,11 @@ from app.redis_client import conn
 load_dotenv()
 
 from app.database import DATABASE_DISPLAY
+from app.services.audio_checkpoint import install_audio_checkpoint_patch
+
+# O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
+# qualquer crítica/validação/render posterior. A instalação é idempotente.
+install_audio_checkpoint_patch()
 
 listen = ['default']
 
