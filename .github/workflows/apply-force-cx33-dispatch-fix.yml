@@ -1,0 +1,80 @@
+name: Apply CX33 Dispatch Fix
+
+on:
+  push:
+    branches:
+      - fix/force-cx33-dispatch-20260814
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: codexia_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d codexia_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/codexia_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/force-cx33-dispatch-20260814
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Apply patch
+        run: python scripts/apply_force_cx33_dispatch_fix.py
+
+      - name: Compile changed Python
+        run: |
+          python -m py_compile app/routers/youtube.py
+          python -m py_compile tests/test_cx33_retry_dispatch_regression.py
+
+      - name: Apply migrations
+        run: python scripts/apply_migrations.py
+
+      - name: Run CX33 routing regression tests
+        run: pytest -q tests/test_cx33_retry_dispatch_regression.py tests/test_audio_checkpoint_regression.py
+
+      - name: Commit validated source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/routers/youtube.py tests/test_cx33_retry_dispatch_regression.py
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(worker): force fresh video jobs onto CX33"
+            git push origin HEAD:fix/force-cx33-dispatch-20260814
+          fi
