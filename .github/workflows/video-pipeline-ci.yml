@@ -75,6 +75,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Apply and verify consolidated hardening
+        run: |
+          python scripts/apply_consolidated_hardening.py --apply
+          python scripts/apply_consolidated_hardening.py --check
+          python -m compileall -q app scripts
+
       - name: Apply canonical Alembic migration on PostgreSQL
         run: |
           python scripts/apply_migrations.py
@@ -91,7 +97,32 @@ jobs:
           APP_ENV: development
           ENABLE_SQLITE_DEV: "true"
           DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-ci.sqlite3
-        run: python -m unittest discover -s tests
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/codexia-unittest.log
+          test_status=${PIPESTATUS[0]}
+          if [ "$test_status" -ne 0 ]; then
+            python - <<'PY'
+          from pathlib import Path
+          import re
+          raw = Path('/tmp/codexia-unittest.log').read_text(encoding='utf-8', errors='replace')
+          lines = raw.splitlines()
+          compact = []
+          for line in lines:
+              stripped = line.strip()
+              if re.search(r'\.\.\.\s+(FAIL|ERROR)$', stripped) or stripped.startswith('FAIL: ') or stripped.startswith('ERROR: '):
+                  compact.append(stripped[:1200])
+              elif stripped.startswith('Ran ') or stripped.startswith('FAILED ('):
+                  compact.append(stripped[:1200])
+          if not compact:
+              compact = [line[:1200] for line in lines[-20:] if line.strip()]
+          message = '\n'.join(compact[-30:])[-7000:]
+          escaped = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Failing unit tests::{escaped}')
+          PY
+            exit "$test_status"
+          fi
 
       - name: Run real FFmpeg smoke without paid providers
         env:

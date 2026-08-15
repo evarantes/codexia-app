@@ -33,6 +33,12 @@ RUN python -m playwright install --with-deps chromium
 # Copy the current directory contents into the container at /app
 COPY . .
 
+# Apply deterministic hardening before any runtime validation/startup.
+# This keeps the legacy large files unchanged in unrelated regions while
+# enforcing UI boot safety and production/publication decoupling.
+RUN python scripts/apply_consolidated_hardening.py --apply && \
+    python scripts/apply_consolidated_hardening.py --check
+
 # Create directory for static files if not exists
 RUN mkdir -p app/static/videos app/static/covers app/static/icons && \
     chmod -R 755 /app && \
