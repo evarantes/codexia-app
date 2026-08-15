@@ -47,8 +47,11 @@ ENV VARIABLE_NAME="app"
 ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
 
-# Run the application with uvicorn directly (lighter for free tier)
+# Run the application with uvicorn directly (lighter for free tier).
+# In production, derive the exact YouTube OAuth callback from BASE_URL unless
+# YOUTUBE_OAUTH_REDIRECT_URI was explicitly configured. This keeps localhost
+# available only when no public BASE_URL exists (development/homologation).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-CMD sh -c "python scripts/apply_migrations.py && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+CMD sh -c 'if [ -z "${YOUTUBE_OAUTH_REDIRECT_URI:-}" ] && [ -n "${BASE_URL:-}" ]; then export YOUTUBE_OAUTH_REDIRECT_URI="${BASE_URL%/}/youtube/auth/callback"; fi; python scripts/apply_migrations.py && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'
