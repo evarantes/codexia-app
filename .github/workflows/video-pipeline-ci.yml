@@ -97,7 +97,22 @@ jobs:
           APP_ENV: development
           ENABLE_SQLITE_DEV: "true"
           DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-ci.sqlite3
-        run: python -m unittest discover -s tests
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/codexia-unittest.log
+          test_status=${PIPESTATUS[0]}
+          if [ "$test_status" -ne 0 ]; then
+            python - <<'PY'
+          from pathlib import Path
+          raw = Path('/tmp/codexia-unittest.log').read_text(encoding='utf-8', errors='replace')
+          lines = raw.splitlines()
+          tail = '\n'.join(lines[-80:])[-7000:]
+          escaped = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Unit test suite failed::{escaped}')
+          PY
+            exit "$test_status"
+          fi
 
       - name: Run real FFmpeg smoke without paid providers
         env:
