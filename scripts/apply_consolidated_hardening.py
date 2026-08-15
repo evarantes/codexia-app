@@ -86,7 +86,7 @@ def patch_youtube_router(text: str) -> str:
     text = _replace_once(
         text,
         '        "auto_upload": bool(payload.get("auto_upload")),\n',
-        '',
+        '        # auto_upload intencionalmente fora da identidade: publicar não cria outro MP4.\n',
         label="youtube/production-identity-independent-from-publish",
     )
     text = _replace_once(
