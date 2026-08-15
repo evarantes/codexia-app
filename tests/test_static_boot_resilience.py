@@ -61,12 +61,23 @@ class StaticBootResilienceTests(unittest.TestCase):
                 self.assertIn('/static/vendor/vue.global.prod.js', html)
                 self.assertNotIn('unpkg.com/vue', html)
 
-    def test_external_visual_assets_do_not_block_html_parser(self):
+    def test_external_visual_assets_have_safe_boot_contract(self):
         for page in VUE_PAGES:
             with self.subTest(page=page.relative_to(ROOT)):
                 html = page.read_text(encoding="utf-8")
-                self.assertIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
+                self.assertIn('https://cdn.tailwindcss.com', html)
                 self.assertIn('rel="stylesheet" media="print"', html)
+                if page.name == "index.html" and page.parent == STATIC:
+                    # No painel principal, Tailwind é parte crítica da experiência:
+                    # o app só pode ficar visível depois do CSS estar pronto. Isso
+                    # elimina a tela HTML crua observada ao abrir/F5.
+                    self.assertIn("tailwind-ready", html)
+                    self.assertIn("tailwind-load-error", html)
+                    self.assertIn("html:not(.tailwind-ready) #app", html)
+                    self.assertNotIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
+                else:
+                    # Demais páginas continuam sem bloquear o parser.
+                    self.assertIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
 
     def test_vendored_vue_bundle_and_service_worker_cache_are_present(self):
         vue_bundle = STATIC / "vendor" / "vue.global.prod.js"
@@ -91,6 +102,7 @@ class StaticBootResilienceTests(unittest.TestCase):
         self.assertEqual(1, len(created_hooks))
         mounted_source = html.split("            async mounted() {", 1)[1].split("            methods: {", 1)[0]
         self.assertIn("loader.style.display = 'none'", mounted_source)
+        self.assertIn("tailwind-ready", mounted_source)
         self.assertIn("window.clearTimeout(window.__codexiaBootTimer)", mounted_source)
         self.assertIn("A inicialização demorou mais do que o esperado.", html)
 
