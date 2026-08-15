@@ -105,11 +105,21 @@ jobs:
           if [ "$test_status" -ne 0 ]; then
             python - <<'PY'
           from pathlib import Path
+          import re
           raw = Path('/tmp/codexia-unittest.log').read_text(encoding='utf-8', errors='replace')
           lines = raw.splitlines()
-          tail = '\n'.join(lines[-80:])[-7000:]
-          escaped = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-          print(f'::error title=Unit test suite failed::{escaped}')
+          compact = []
+          for line in lines:
+              stripped = line.strip()
+              if re.search(r'\.\.\.\s+(FAIL|ERROR)$', stripped) or stripped.startswith('FAIL: ') or stripped.startswith('ERROR: '):
+                  compact.append(stripped[:1200])
+              elif stripped.startswith('Ran ') or stripped.startswith('FAILED ('):
+                  compact.append(stripped[:1200])
+          if not compact:
+              compact = [line[:1200] for line in lines[-20:] if line.strip()]
+          message = '\n'.join(compact[-30:])[-7000:]
+          escaped = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Failing unit tests::{escaped}')
           PY
             exit "$test_status"
           fi
