@@ -14,6 +14,10 @@ VUE_PAGES = (
     STATIC / "pages" / "bible-video-factory" / "index.html",
     STATIC / "pages" / "humor-factory" / "index.html",
 )
+AUTH_PAGES = {
+    STATIC / "login.html",
+    STATIC / "reset-password.html",
+}
 
 
 class _VueElseAdjacencyParser(HTMLParser):
@@ -65,18 +69,25 @@ class StaticBootResilienceTests(unittest.TestCase):
         for page in VUE_PAGES:
             with self.subTest(page=page.relative_to(ROOT)):
                 html = page.read_text(encoding="utf-8")
-                self.assertIn('https://cdn.tailwindcss.com', html)
                 self.assertIn('rel="stylesheet" media="print"', html)
-                if page.name == "index.html" and page.parent == STATIC:
+
+                if page in AUTH_PAGES:
+                    # Login e redefinição precisam funcionar mesmo se o CDN externo
+                    # estiver lento ou indisponível. O layout crítico é local.
+                    self.assertIn('href="/static/auth.css"', html)
+                    self.assertNotIn('https://cdn.tailwindcss.com', html)
+                elif page.name == "index.html" and page.parent == STATIC:
                     # No painel principal, Tailwind é parte crítica da experiência:
                     # o app só pode ficar visível depois do CSS estar pronto. Isso
                     # elimina a tela HTML crua observada ao abrir/F5.
+                    self.assertIn('https://cdn.tailwindcss.com', html)
                     self.assertIn("tailwind-ready", html)
                     self.assertIn("tailwind-load-error", html)
                     self.assertIn("html:not(.tailwind-ready) #app", html)
                     self.assertNotIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
                 else:
                     # Demais páginas continuam sem bloquear o parser.
+                    self.assertIn('https://cdn.tailwindcss.com', html)
                     self.assertIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
 
     def test_vendored_vue_bundle_and_service_worker_cache_are_present(self):
