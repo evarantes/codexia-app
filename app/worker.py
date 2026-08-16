@@ -15,6 +15,7 @@ from app.services.audio_checkpoint import install_audio_checkpoint_patch
 from app.services.visual_quality_shadow import install_visual_quality_shadow_patch
 from app.services.visual_quality_guard import install_visual_quality_guard_patch
 from app.services.visual_quality_rollout import apply_visual_quality_observe_rollout
+from app.services.scene_director_shadow import install_scene_director_shadow_patch
 
 # O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
 # qualquer crítica/validação/render posterior. A instalação é idempotente.
@@ -23,15 +24,15 @@ video_generator_cls = install_audio_checkpoint_patch()
 # Fase 1: observação local não bloqueante, sem chamadas pagas.
 install_visual_quality_shadow_patch(video_generator_cls)
 
-# Rollout controlado da Fase 2: liga SOMENTE o crítico multimodal em modo
-# observação quando não houver override explícito no ambiente. Não ativa
-# rejeição estrita, fail-closed nem regeneração automática.
+# Rollout controlado da Fase 2: crítico visual ativo e, por padrão, no máximo
+# uma regeneração seletiva SOMENTE quando o guard reprovar defeito crítico.
+# VISUAL_QA_FAIL_CLOSED permanece false, portanto QA nunca derruba o pipeline.
 visual_rollout = apply_visual_quality_observe_rollout()
-
-# Fase 2: crítico visual + retry seletivo na MESMA classe canônica.
-# Neste rollout, o crítico observa e registra notas; retries continuam
-# desligados enquanto ENABLE_STRICT_VISUAL_REJECT não for explicitamente true.
 install_visual_quality_guard_patch(video_generator_cls)
+
+# Diretor de Cenas: nesta etapa apenas audita repetição, variedade e oportunidades
+# simbólicas. Não modifica storyboard, prompts, timeline, áudio ou render.
+install_scene_director_shadow_patch(video_generator_cls)
 
 listen = ['default']
 
@@ -43,7 +44,9 @@ if __name__ == '__main__':
     print(
         f"Starting Worker... Listening on {listen} | Banco: {DATABASE_DISPLAY} | "
         f"VisualCritic={visual_rollout['ai_critic_enabled']} | "
-        f"StrictVisualReject={visual_rollout['strict_visual_reject']}"
+        f"StrictVisualReject={visual_rollout['strict_visual_reject']} | "
+        f"VisualRetries={visual_rollout['max_retries']} | "
+        f"VisualFailClosed={visual_rollout['fail_closed']} | SceneDirector=shadow"
     )
     queues = [Queue(name, connection=conn) for name in listen]
     worker = Worker(queues, connection=conn)
