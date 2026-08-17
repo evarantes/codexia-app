@@ -1,0 +1,100 @@
+name: Apply Review Text Editorial Flow
+
+on:
+  push:
+    branches:
+      - fix/review-text-editorial-flow-20260817
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: codexia
+          POSTGRES_PASSWORD: codexia
+          POSTGRES_DB: codexia_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U codexia -d codexia_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgresql://codexia:codexia@localhost:5432/codexia_test
+      REDIS_URL: redis://localhost:6379/0
+      APP_ENV: test
+      SECRET_KEY: test-secret-key
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/review-text-editorial-flow-20260817
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Apply patch
+        run: python scripts/apply_review_text_editorial_flow.py
+
+      - name: Compile changed Python
+        run: |
+          python -m py_compile app/services/story_review_editor.py app/services/narrative_editor.py app/routers/youtube.py
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Run focused regression tests
+        run: |
+          pytest -q tests/test_narrative_editor.py tests/test_scene_director_active.py
+
+      - name: Verify frontend contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('app/static/index.html').read_text(encoding='utf-8')
+          required = [
+              'v-model="ytStoryTitle"',
+              'override_title: String(this.ytStoryTitle',
+              'editorial_reviewed: true',
+              'this.ytStoryTitle = String(data.title',
+          ]
+          for needle in required:
+              assert needle in text, needle
+          PY
+
+      - name: Commit materialized changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/routers/youtube.py app/services/narrative_editor.py app/static/index.html
+          if git diff --cached --quiet; then
+            echo "No materialized changes"
+          else
+            git commit -m "fix(story): expose review-ready title and preserve approved narration"
+            git push origin HEAD:fix/review-text-editorial-flow-20260817
+          fi
