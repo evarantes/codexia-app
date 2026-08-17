@@ -36,6 +36,23 @@ def _replace_all_expected(text: str, old: str, new: str, *, label: str, min_coun
     return text.replace(old, new)
 
 
+def patch_factory_page(text: str) -> str:
+    """Garante estilo crítico local antes de qualquer CDN nas fábricas legadas.
+
+    O Tailwind Play CDN pode continuar como melhoria progressiva para preservar
+    toda a aparência histórica, mas nunca mais é a única fonte de layout. O
+    stylesheet local é bloqueante e servido pelo próprio Codexia, portanto uma
+    falha/latência externa não pode revelar HTML cru.
+    """
+    return _replace_once(
+        text,
+        '<script src="https://cdn.tailwindcss.com" defer></script>',
+        '<link href="/static/factory.css" rel="stylesheet">\n'
+        '    <script src="https://cdn.tailwindcss.com" defer></script>',
+        label="factory/local-critical-css",
+    )
+
+
 def patch_index(text: str) -> str:
     text = _replace_once(
         text,
@@ -228,6 +245,9 @@ def patch_unified_pipeline(text: str) -> str:
 
 PATCHERS: dict[str, Callable[[str], str]] = {
     "app/static/index.html": patch_index,
+    "app/static/pages/ai-factory/index.html": patch_factory_page,
+    "app/static/pages/bible-video-factory/index.html": patch_factory_page,
+    "app/static/pages/humor-factory/index.html": patch_factory_page,
     "app/routers/youtube.py": patch_youtube_router,
     "app/services/unified_video_pipeline.py": patch_unified_pipeline,
 }
