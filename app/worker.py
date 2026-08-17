@@ -18,6 +18,7 @@ from app.services.visual_quality_rollout import apply_visual_quality_observe_rol
 from app.services.scene_director_shadow import install_scene_director_shadow_patch
 from app.services.scene_director_active import install_scene_director_active_patch
 from app.services.cinematic_captions import apply_presentation_rollout, install_cinematic_caption_patch
+from app.services.channel_excellence_guard import apply_channel_excellence_rollout, install_channel_excellence_guard_patch
 from app.services.narrative_editor import install_narrative_editor_patch
 
 # O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
@@ -36,15 +37,19 @@ install_visual_quality_guard_patch(video_generator_cls)
 # Auditoria de variedade permanece para comparação antes/depois.
 install_scene_director_shadow_patch(video_generator_cls)
 
-# Fase 3: ativa direção visual conservadora e legenda premium. Ambas têm rollback
-# imediato por variável de ambiente e não alteram áudio, RQ ou timeline.
+# Direção visual + legenda premium.
 presentation_rollout = apply_presentation_rollout()
 install_scene_director_active_patch(video_generator_cls)
 install_cinematic_caption_patch(video_generator_cls)
 
-# Editor Narrativo é instalado por último para ser a camada externa do pipeline:
-# revisa título e texto ANTES de o Diretor de Cenas, TTS e render receberem o plano.
-# Se a IA editorial falhar, preserva o plano original e continua (fail-open).
+# Pacote de excelência: guard de pronúncia antes do TTS e endcard curto/mobile.
+# É instalado antes do Editor Narrativo para receber o plano já revisado pela
+# camada externa e então encaminhá-lo ao Diretor de Cenas/render.
+excellence_rollout = apply_channel_excellence_rollout()
+install_channel_excellence_guard_patch(video_generator_cls)
+
+# Editor Narrativo fica como camada externa: revisa título/texto primeiro.
+# Se a IA editorial falhar, preserva o plano e continua (fail-open).
 install_narrative_editor_patch(video_generator_cls)
 
 listen = ['default']
@@ -62,6 +67,7 @@ if __name__ == '__main__':
         f"VisualFailClosed={visual_rollout['fail_closed']} | "
         f"SceneDirector={presentation_rollout['scene_director_enabled']} | "
         f"CinematicCaptions={presentation_rollout['cinematic_captions_enabled']} | "
+        f"ChannelExcellence={excellence_rollout['enabled']} | "
         f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}}"
     )
     queues = [Queue(name, connection=conn) for name in listen]

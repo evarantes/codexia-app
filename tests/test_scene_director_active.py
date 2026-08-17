@@ -32,17 +32,35 @@ class SceneDirectorActiveTests(unittest.TestCase):
         self.assertFalse(report["changes_narration"])
         self.assertFalse(report["changes_scene_count"])
         self.assertNotEqual(report["directives"][0]["shot"], report["directives"][1]["shot"])
+        self.assertNotEqual(report["directives"][0]["visual_role"], report["directives"][1]["visual_role"])
 
-    def test_near_duplicate_prompt_gets_distinct_composition_instruction(self):
+    def test_duplicate_prompt_gets_hard_anti_repetition_instruction(self):
         plan = {
             "scenes": [
                 {"text": "Primeiro momento", "image_prompt": "Jesus talks with a sad woman in a warm biblical room"},
                 {"text": "Segundo momento", "image_prompt": "Jesus talks with a sad woman in a warm biblical room"},
+                {"text": "A esperança surge na luz", "image_prompt": "Jesus talks with a sad woman in a warm biblical room"},
             ]
         }
         directed, report = direct_scene_plan(plan)
         self.assertGreaterEqual(report["directives"][1]["previous_prompt_similarity"], 0.72)
-        self.assertIn("clearly distinct", directed["scenes"][1]["image_prompt"])
+        self.assertTrue(report["directives"][1]["anti_repetition"])
+        self.assertIn("do NOT reuse the same room", directed["scenes"][1]["image_prompt"])
+        self.assertGreaterEqual(report["anti_repetition_interventions"], 1)
+        self.assertIn("symbolic", report["directives"][2]["visual_role"])
+
+    def test_symbolic_scene_can_decenter_recurring_characters(self):
+        plan = {
+            "scenes": [
+                {"text": "A solidão parece enorme.", "image_prompt": "Jesus beside a sad person"},
+                {"text": "O caminho continua.", "image_prompt": "Jesus beside a sad person"},
+                {"text": "Uma luz de esperança aparece.", "image_prompt": "Jesus beside a sad person"},
+            ]
+        }
+        directed, _ = direct_scene_plan(plan)
+        symbolic_prompt = directed["scenes"][2]["image_prompt"]
+        self.assertIn("Omit nonessential characters", symbolic_prompt)
+        self.assertIn("dawn light", symbolic_prompt)
 
     def test_explicit_disable_is_immediate_rollback(self):
         os.environ["ENABLE_SCENE_DIRECTOR"] = "false"
