@@ -20,7 +20,7 @@ def _utc_iso() -> str:
 def _norm(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip().lower())
     text = re.sub(r"[^a-z0-9áàâãéêíóôõúç ]+", "", text)
-    return text[:1600]
+    return text[:1800]
 
 
 def _scene_list(plan: Any) -> List[Dict[str, Any]]:
@@ -37,15 +37,57 @@ def _jaccard(left: str, right: str) -> float:
     return (len(a & b) / len(union)) if union else 0.0
 
 
-SHOT_SEQUENCE = (
-    ("establishing_wide", "wide establishing shot, environment clearly visible, cinematic depth"),
-    ("medium_action", "medium shot focused on a clear physical action, natural body language"),
-    ("close_emotion", "close emotional portrait, expressive but natural face, shallow depth of field"),
-    ("symbolic_cutaway", "symbolic cinematic cutaway connected to the narrated idea, no repeated portrait composition"),
-    ("environment_detail", "environmental detail shot, meaningful object or landscape detail, strong visual storytelling"),
-    ("over_shoulder", "over-the-shoulder composition with layered foreground and background"),
-    ("wide_motion", "wide dynamic composition with visible movement through the environment"),
-    ("close_detail", "close detail shot of hands, object, light or environment; avoid repeating the previous portrait framing"),
+# Cada papel visual força uma função narrativa diferente. Isso evita que um vídeo
+# inteiro vire apenas variações do mesmo retrato de dois personagens.
+VISUAL_SEQUENCE = (
+    (
+        "establishing_wide",
+        "environment_story",
+        "wide establishing shot with the environment as the main subject, cinematic depth and a clear sense of place",
+        "Make the location and atmosphere the primary visual story. Characters, if present, should be small or secondary rather than a centered consolation portrait.",
+    ),
+    (
+        "medium_action",
+        "human_action",
+        "medium shot focused on a specific physical action, natural body language and visible interaction with the environment",
+        "Show a concrete action instead of a static pose. Avoid repeating a standing or seated two-person portrait from the previous scene.",
+    ),
+    (
+        "symbolic_cutaway",
+        "symbolic_metaphor",
+        "cinematic symbolic cutaway connected directly to the narrated idea, strong composition and no repeated portrait framing",
+        "Use an environment, object, weather, light, path, water or other story symbol as the primary subject. Omit nonessential characters when the narration can be represented symbolically.",
+    ),
+    (
+        "close_emotion",
+        "emotion_detail",
+        "close emotional portrait with a natural expression, believable skin and eyes, shallow depth of field",
+        "Use one clear emotional focal point. Do not reproduce the same character pairing, pose, camera angle or background from adjacent scenes.",
+    ),
+    (
+        "environment_detail",
+        "object_or_place",
+        "environmental detail shot of a meaningful object, architecture, landscape or natural element with cinematic lighting",
+        "No centered talking or consoling portrait. Let an object or place carry the meaning of this scene whenever context allows.",
+    ),
+    (
+        "over_shoulder",
+        "perspective_change",
+        "over-the-shoulder composition with layered foreground and background, clear spatial storytelling",
+        "Change viewpoint and depth decisively. If characters recur, place them differently and show a new environment or action.",
+    ),
+    (
+        "wide_motion",
+        "movement",
+        "wide dynamic composition with visible movement through the environment, natural gesture and cinematic scale",
+        "Prioritize movement, journey or transition. Avoid a static portrait or repeated room/background.",
+    ),
+    (
+        "close_detail",
+        "meaningful_detail",
+        "close detail shot of hands, an object, light, texture or environment connected to the narration",
+        "Use a meaningful detail rather than faces when possible. Do not repeat the immediately previous composition.",
+    ),
 )
 
 SYMBOLIC_CUES = {
@@ -64,65 +106,95 @@ SYMBOLIC_CUES = {
     "refugio": "a visually clear place of shelter",
     "mar": "a sea or shoreline environment",
     "ondas": "visible waves with realistic scale and motion",
+    "solidão": "a solitary figure in a spacious environment, meaningful negative space",
+    "solidao": "a solitary figure in a spacious environment, meaningful negative space",
+    "ansiedade": "restless hands, tense posture or a confined environment shown naturally",
+    "peso": "a visual sense of burden through posture, shadow, weather or a difficult path",
+    "oração": "hands in prayer, a quiet room, open Bible or kneeling silhouette shown naturally",
+    "oracao": "hands in prayer, a quiet room, open Bible or kneeling silhouette shown naturally",
+    "esperança": "dawn light, an opening path, horizon or warm light entering the scene",
+    "esperanca": "dawn light, an opening path, horizon or warm light entering the scene",
+    "lágrima": "a subtle tear or emotional detail without melodrama",
+    "lagrima": "a subtle tear or emotional detail without melodrama",
+    "noite": "a believable night environment with motivated practical light",
+    "amanhecer": "early dawn light and a horizon suggesting renewal",
+    "bíblia": "an open Bible used naturally as part of the scene",
+    "biblia": "an open Bible used naturally as part of the scene",
 }
 
 
 def direct_scene_plan(plan: Any) -> tuple[Any, Dict[str, Any]]:
-    """Adds conservative visual direction without changing narration, timing or scene count."""
+    """Adds strong but reversible visual direction without changing narration, timing or scene count."""
+    enabled = _enabled("ENABLE_SCENE_DIRECTOR", "true")
     report: Dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "generated_at": _utc_iso(),
-        "mode": "active" if _enabled("ENABLE_SCENE_DIRECTOR", "true") else "disabled",
-        "enabled": _enabled("ENABLE_SCENE_DIRECTOR", "true"),
+        "mode": "active" if enabled else "disabled",
+        "enabled": enabled,
         "mutated_scene_count": 0,
+        "anti_repetition_interventions": 0,
         "directives": [],
         "blocking": False,
         "changes_narration": False,
         "changes_scene_count": False,
     }
-    if not report["enabled"] or not isinstance(plan, dict):
+    if not enabled or not isinstance(plan, dict):
         return plan, report
 
     directed = deepcopy(plan)
     scenes = _scene_list(directed)
     previous_prompt = ""
+    previous_role = ""
 
     for idx, scene in enumerate(scenes):
         original_prompt = str(scene.get("image_prompt") or scene.get("visual_prompt") or "").strip()
-        narration = str(scene.get("text") or scene.get("narration") or scene.get("content") or "").strip()
-        shot_name, shot_instruction = SHOT_SEQUENCE[idx % len(SHOT_SEQUENCE)]
+        narration = str(scene.get("text") or scene.get("narration_text") or scene.get("narration") or scene.get("content") or "").strip()
+        shot_name, visual_role, shot_instruction, subject_rule = VISUAL_SEQUENCE[idx % len(VISUAL_SEQUENCE)]
         similarity = _jaccard(previous_prompt, original_prompt) if previous_prompt and original_prompt else 0.0
 
-        additions = [f"Camera direction: {shot_instruction}."]
-        if similarity >= 0.72:
+        additions = [
+            f"Camera direction: {shot_instruction}.",
+            f"Visual role: {visual_role}. {subject_rule}",
+            "Sequence diversity rule: this scene must be visually distinguishable from both adjacent scenes at a glance. Change at least three of these when possible: camera distance, camera angle, location/background, subject placement, action, dominant visual symbol, lighting direction.",
+        ]
+
+        # Limite mais rígido: prompts já moderadamente semelhantes recebem intervenção.
+        if similarity >= 0.55 or visual_role == previous_role:
             additions.append(
-                "Composition requirement: make this shot clearly distinct from the immediately previous scene by changing camera distance, angle and foreground/background arrangement while preserving character identity."
+                "Anti-repetition requirement: do NOT reuse the same room, same two-person grouping, same consoling pose, same centered portrait, same background or same camera setup as the immediately previous scene. If the narration permits, make an environment/object/metaphor the primary subject and keep recurring characters secondary."
             )
+            report["anti_repetition_interventions"] += 1
 
         normalized_narration = _norm(narration)
         normalized_prompt = _norm(original_prompt)
         cues_added: List[str] = []
         for cue, visual in SYMBOLIC_CUES.items():
             if cue in normalized_narration and cue not in normalized_prompt:
-                additions.append(f"Narrative visual cue: include {visual} when contextually appropriate; keep it natural and story-driven.")
+                additions.append(
+                    f"Narrative visual cue: represent the narrated idea with {visual} when contextually appropriate; integrate it naturally rather than as decoration."
+                )
                 cues_added.append(cue)
                 if len(cues_added) >= 2:
                     break
 
         additions.append(
-            "Continuity: preserve established character identity, age, gender, clothing palette and historical/biblical visual style; do not clone the previous composition."
+            "Continuity: preserve established character identity, age, gender, clothing palette and historical/biblical style where those characters are required; continuity does not mean repeating pose, room, framing or composition."
+        )
+        additions.append(
+            "Quality: realistic eyes, hands and anatomy; natural expressions; coherent lighting; no text baked into the generated image; no duplicated people or malformed limbs."
         )
 
         base = original_prompt or narration
         if base:
             directed_prompt = re.sub(r"\s+", " ", f"{base} {' '.join(additions)}").strip()
-            # Keep prompts bounded so the director cannot drown out the original scene intent.
-            directed_prompt = directed_prompt[:1800].rstrip()
+            directed_prompt = directed_prompt[:2400].rstrip()
             scene["image_prompt"] = directed_prompt
             scene["_scene_director"] = {
                 "shot": shot_name,
+                "visual_role": visual_role,
                 "previous_prompt_similarity": round(similarity, 3),
                 "symbolic_cues_added": cues_added,
+                "anti_repetition": bool(similarity >= 0.55 or visual_role == previous_role),
                 "mutated": directed_prompt != original_prompt,
             }
             if directed_prompt != original_prompt:
@@ -130,18 +202,23 @@ def direct_scene_plan(plan: Any) -> tuple[Any, Dict[str, Any]]:
         else:
             scene["_scene_director"] = {
                 "shot": shot_name,
+                "visual_role": visual_role,
                 "previous_prompt_similarity": round(similarity, 3),
                 "symbolic_cues_added": [],
+                "anti_repetition": False,
                 "mutated": False,
             }
 
         report["directives"].append({
             "scene": idx + 1,
             "shot": shot_name,
+            "visual_role": visual_role,
             "previous_prompt_similarity": round(similarity, 3),
             "symbolic_cues_added": cues_added,
+            "anti_repetition": bool(similarity >= 0.55 or visual_role == previous_role),
         })
         previous_prompt = original_prompt
+        previous_role = visual_role
 
     directed["scenes"] = scenes
     return directed, report
