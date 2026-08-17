@@ -16,6 +16,8 @@ from app.services.visual_quality_shadow import install_visual_quality_shadow_pat
 from app.services.visual_quality_guard import install_visual_quality_guard_patch
 from app.services.visual_quality_rollout import apply_visual_quality_observe_rollout
 from app.services.scene_director_shadow import install_scene_director_shadow_patch
+from app.services.scene_director_active import install_scene_director_active_patch
+from app.services.cinematic_captions import apply_presentation_rollout, install_cinematic_caption_patch
 
 # O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
 # qualquer crítica/validação/render posterior. A instalação é idempotente.
@@ -30,9 +32,14 @@ install_visual_quality_shadow_patch(video_generator_cls)
 visual_rollout = apply_visual_quality_observe_rollout()
 install_visual_quality_guard_patch(video_generator_cls)
 
-# Diretor de Cenas: nesta etapa apenas audita repetição, variedade e oportunidades
-# simbólicas. Não modifica storyboard, prompts, timeline, áudio ou render.
+# Auditoria de variedade permanece para comparação antes/depois.
 install_scene_director_shadow_patch(video_generator_cls)
+
+# Fase 3: ativa direção visual conservadora e legenda premium. Ambas têm rollback
+# imediato por variável de ambiente e não alteram narração, áudio, RQ ou timeline.
+presentation_rollout = apply_presentation_rollout()
+install_scene_director_active_patch(video_generator_cls)
+install_cinematic_caption_patch(video_generator_cls)
 
 listen = ['default']
 
@@ -46,7 +53,9 @@ if __name__ == '__main__':
         f"VisualCritic={visual_rollout['ai_critic_enabled']} | "
         f"StrictVisualReject={visual_rollout['strict_visual_reject']} | "
         f"VisualRetries={visual_rollout['max_retries']} | "
-        f"VisualFailClosed={visual_rollout['fail_closed']} | SceneDirector=shadow"
+        f"VisualFailClosed={visual_rollout['fail_closed']} | "
+        f"SceneDirector={presentation_rollout['scene_director_enabled']} | "
+        f"CinematicCaptions={presentation_rollout['cinematic_captions_enabled']}"
     )
     queues = [Queue(name, connection=conn) for name in listen]
     worker = Worker(queues, connection=conn)
