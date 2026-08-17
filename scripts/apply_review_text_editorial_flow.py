@@ -10,8 +10,16 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def replace_first(path: str, old: str, new: str) -> None:
+    p = Path(path)
+    text = p.read_text(encoding="utf-8")
+    if old not in text:
+        raise SystemExit(f"{path}: expected at least 1 match\nneedle={old[:140]!r}")
+    p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
 # Backend: structured review-ready generation and preservation marker.
-replace_once(
+replace_first(
     "app/routers/youtube.py",
     "from app.services.ai_generator import AIContentGenerator\n",
     "from app.services.ai_generator import AIContentGenerator\nfrom app.services.story_review_editor import generate_review_ready_story_text\n",
