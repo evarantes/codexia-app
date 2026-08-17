@@ -18,6 +18,11 @@ AUTH_PAGES = {
     STATIC / "login.html",
     STATIC / "reset-password.html",
 }
+FACTORY_PAGES = {
+    STATIC / "pages" / "ai-factory" / "index.html",
+    STATIC / "pages" / "bible-video-factory" / "index.html",
+    STATIC / "pages" / "humor-factory" / "index.html",
+}
 
 
 class _VueElseAdjacencyParser(HTMLParser):
@@ -58,6 +63,14 @@ class _VueElseAdjacencyParser(HTMLParser):
 
 
 class StaticBootResilienceTests(unittest.TestCase):
+    def test_every_static_html_entrypoint_is_covered_by_boot_contract(self):
+        discovered = set(STATIC.rglob("*.html"))
+        self.assertEqual(
+            set(VUE_PAGES),
+            discovered,
+            "Toda nova página HTML estática deve entrar explicitamente no contrato de boot visual.",
+        )
+
     def test_vue_is_served_locally_on_every_vue_page(self):
         for page in VUE_PAGES:
             with self.subTest(page=page.relative_to(ROOT)):
@@ -72,23 +85,47 @@ class StaticBootResilienceTests(unittest.TestCase):
                 self.assertIn('rel="stylesheet" media="print"', html)
 
                 if page in AUTH_PAGES:
-                    # Login e redefinição precisam funcionar mesmo se o CDN externo
-                    # estiver lento ou indisponível. O layout crítico é local.
+                    # Login e redefinição não dependem de CSS externo para o layout.
                     self.assertIn('href="/static/auth.css"', html)
                     self.assertNotIn('https://cdn.tailwindcss.com', html)
+                elif page in FACTORY_PAGES:
+                    # As fábricas têm CSS crítico local e bloqueante. Tailwind remoto
+                    # pode existir apenas como melhoria progressiva, nunca como fonte
+                    # única de layout; assim falha de CDN não revela HTML cru.
+                    self.assertIn('href="/static/factory.css"', html)
+                    self.assertIn('https://cdn.tailwindcss.com', html)
+                    self.assertIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
                 elif page.name == "index.html" and page.parent == STATIC:
-                    # No painel principal, Tailwind é parte crítica da experiência:
-                    # o app só pode ficar visível depois do CSS estar pronto. Isso
-                    # elimina a tela HTML crua observada ao abrir/F5.
+                    # No painel principal, Tailwind ainda é parte crítica da experiência:
+                    # o app só pode ficar visível depois do CSS estar pronto.
                     self.assertIn('https://cdn.tailwindcss.com', html)
                     self.assertIn("tailwind-ready", html)
                     self.assertIn("tailwind-load-error", html)
                     self.assertIn("html:not(.tailwind-ready) #app", html)
                     self.assertNotIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
                 else:
-                    # Demais páginas continuam sem bloquear o parser.
-                    self.assertIn('https://cdn.tailwindcss.com', html)
-                    self.assertIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
+                    self.fail(f"Página sem contrato visual explícito: {page.relative_to(ROOT)}")
+
+    def test_factory_fallback_is_local_dependency_free_and_structural(self):
+        css = (STATIC / "factory.css").read_text(encoding="utf-8")
+        self.assertGreater(len(css), 5_000)
+        self.assertNotIn("@import", css)
+        self.assertNotIn("http://", css)
+        self.assertNotIn("https://", css)
+        for selector in (
+            ".flex {",
+            ".grid {",
+            ".bg-white {",
+            ".bg-indigo-700 {",
+            ".rounded-xl {",
+            ".shadow {",
+            ".w-full {",
+            ".md\\:grid-cols-2",
+            ".lg\\:grid-cols-2",
+            ".xl\\:grid-cols-5",
+            "#app input",
+        ):
+            self.assertIn(selector, css)
 
     def test_vendored_vue_bundle_and_service_worker_cache_are_present(self):
         vue_bundle = STATIC / "vendor" / "vue.global.prod.js"
