@@ -1853,8 +1853,14 @@
                     </div>
 
                     <div class="mb-4">
+                        <label class="block font-bold mb-2">Título do vídeo</label>
+                        <input v-model="ytStoryTitle" type="text" maxlength="120" class="w-full border p-3 rounded bg-white" placeholder="O título gerado pela IA aparecerá aqui e poderá ser editado.">
+                        <p class="text-xs text-gray-500 mt-1">Este título será preservado quando você gerar o vídeo.</p>
+                    </div>
+
+                    <div class="mb-4">
                         <label class="block font-bold mb-2">Texto para narração</label>
-                        <textarea v-model="ytStoryContent" class="w-full border p-3 rounded" rows="10" placeholder="Cole aqui sua história/devocional, ou gere com IA acima."></textarea>
+                        <textarea v-model="ytStoryContent" @input="ytStoryEditorialReviewReady = true" class="w-full border p-3 rounded" rows="10" placeholder="Cole aqui sua história/devocional, ou gere com IA acima."></textarea>
                     </div>
 
                     <div v-if="ytStoryKind === 'prayer'" class="mb-4 bg-amber-50 border border-amber-200 rounded p-4">
@@ -5130,6 +5136,8 @@
                     ytStoryKind: 'story', // story | devotional
                     ytPrayerImageMode: 'single',
                     ytStoryInstruction: '',
+                    ytStoryTitle: '',
+                    ytStoryEditorialReviewReady: false,
                     ytStoryImproveInstruction: '',
                     ytStoryDurationMin: 10,
                     ytStoryDurationMax: 15,
@@ -8207,6 +8215,9 @@
                         kind: this.ytStoryKind || 'story',
                         topic: this.ytStoryContent ? String(this.ytStoryContent).slice(0, 120) : 'Simulação do Financial Guardian',
                         story_content: this.ytStoryContent || this.ytStoryInstruction || '',
+                        override_title: String(this.ytStoryTitle || '').trim() || null,
+                        editorial_reviewed: true,
+                        editorial_review_ready: Boolean(this.ytStoryEditorialReviewReady),
                         duration: Number(this.ytStoryVideoDuration || this.ytVideoDuration || 8) || 8,
                         auto_upload: Boolean(this.ytStoryAutoUpload),
                         aspect_ratio: this.ytStoryImagesAspectRatio || '16:9',
@@ -8765,6 +8776,8 @@
                         const data = await res.json().catch(() => ({}));
                         if (res.ok && data.text) {
                             this.ytStoryContent = data.text;
+                            this.ytStoryTitle = String(data.title || '').trim();
+                            this.ytStoryEditorialReviewReady = Boolean(data.editorial_review_ready);
                             this.ytStoryGeneratedImages = [];
                             this.ytStoryVideoDuration = this.ytStoryPredictedDurationMinutesValue || this.ytStoryVideoDuration;
                         } else {
@@ -8945,6 +8958,9 @@
                             duration: duration,
                             auto_upload: !!this.ytStoryAutoUpload,
                             story_content: this.ytStoryContent,
+                            override_title: String(this.ytStoryTitle || '').trim() || null,
+                            editorial_reviewed: true,
+                            editorial_review_ready: Boolean(this.ytStoryEditorialReviewReady),
                             selected_images: selectedImages,
                             voice_style: this.voiceStyle || null,
                             voice_gender: this.voiceGender || null,
