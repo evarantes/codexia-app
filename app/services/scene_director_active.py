@@ -345,7 +345,10 @@ def direct_scene_plan(plan: Any) -> tuple[Any, Dict[str, Any]]:
             "symbolic_cues_added": cues_added,
             "anti_repetition": bool(similarity >= 0.45 or visual_role == previous_role),
         })
-        previous_prompt = str(scene.get("image_prompt") or original_prompt)
+        # Compare the next scene against this scene's original visual concept,
+        # not against the fully decorated director prompt. Otherwise the added
+        # camera/quality directives dilute similarity and hide true duplicates.
+        previous_prompt = original_prompt
         previous_role = visual_role
 
     directed["scenes"] = scenes
