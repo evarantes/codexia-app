@@ -41,6 +41,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       APP_ENV: test
       SECRET_KEY: test-secret-key
+      PYTHONPATH: .
 
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +71,7 @@ jobs:
 
       - name: Run focused regression tests
         run: |
-          pytest -q tests/test_narrative_editor.py tests/test_scene_director_active.py
+          python -m pytest -q tests/test_narrative_editor.py tests/test_scene_director_active.py
 
       - name: Verify frontend contract
         run: |
