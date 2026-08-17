@@ -46,6 +46,7 @@ except Exception:
     Worker = None
 from app.services.youtube_service import YouTubeService
 from app.services.ai_generator import AIContentGenerator
+from app.services.story_review_editor import generate_review_ready_story_text
 from app.services.ai_router import AICapability, AIOperationBlocked
 from app.services.cinematic_quality_service import CinematicQualityService
 from app.services.financial_guardian import youtube_auto_financial_adapter
@@ -3305,6 +3306,8 @@ class VideoRequest(BaseModel):
     force_regenerate: bool = False
     force_reuse_assets: bool = False
     force_render_only: bool = False
+    editorial_reviewed: bool = False
+    editorial_review_ready: bool = False
 
 class StoryTextGenerateRequest(BaseModel):
     kind: str = "story"  # story | devotional | prayer
@@ -3784,13 +3787,19 @@ def generate_story_text(request: StoryTextGenerateRequest):
     if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
     try:
-        text = ai_service.generate_story_or_devotional_text(
+        package = generate_review_ready_story_text(
+            ai_service,
             instruction=request.instruction,
             kind=kind,
             duration_min_minutes=request.duration_min,
             duration_max_minutes=request.duration_max,
         )
-        return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+        return {
+            **package,
+            "kind": kind,
+            "duration_min": request.duration_min,
+            "duration_max": request.duration_max,
+        }
     except Exception as e:
         raise HTTPException(
             status_code=503,
@@ -7399,6 +7408,9 @@ def process_video_generation(request: VideoRequest, task_id):
                     minutes = 10
                 minutes = max(1, min(60, minutes))
                 script = _build_story_plan_from_text(request.story_content, minutes, kind_norm)
+                if isinstance(script, dict) and bool(getattr(request, 'editorial_reviewed', False)):
+                    script['editorial_reviewed'] = True
+                    script['editorial_review_ready'] = bool(getattr(request, 'editorial_review_ready', False))
             else:
                 topic = request.topic or "Motivação Genérica"
                 script = ai_service.generate_motivational_script(topic, requested_minutes)

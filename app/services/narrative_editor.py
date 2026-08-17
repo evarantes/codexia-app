@@ -317,7 +317,19 @@ def install_narrative_editor_patch(video_generator_cls: Type[Any]) -> Type[Any]:
         scenes = [item for item in (working.get("scenes") or []) if isinstance(item, dict)]
         if not _clean(working.get("title") or working.get("titulo")):
             working["title"] = _fallback_title(working, scenes)
-        revised, report = revise_plan_with_ai(self, working)
+        if bool(working.get('editorial_reviewed')):
+            report = {
+                'version': 3,
+                'enabled': True,
+                'mode': 'human_review_preserved',
+                'changed': False,
+                'fail_open': True,
+                'skip_reason': 'editorial_reviewed_before_video_generation',
+                'original': analyze_narrative_plan(working),
+            }
+            revised = None
+        else:
+            revised, report = revise_plan_with_ai(self, working)
         final_plan = revised if isinstance(revised, dict) else working
 
         # Mesmo em fail-open, remove frases penduradas e garante endcard legível.
