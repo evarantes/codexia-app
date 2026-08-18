@@ -10,6 +10,24 @@ def _enabled(name: str, default: str = "true") -> bool:
     }
 
 
+def _resolve_endcard_aspect_ratio(branding: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
+    candidates = [
+        branding.get("aspect_ratio"),
+        kwargs.get("aspect_ratio"),
+    ]
+    opening_visual = kwargs.get("opening_visual")
+    if isinstance(opening_visual, dict):
+        candidates.extend([
+            opening_visual.get("aspect_ratio"),
+            opening_visual.get("ratio"),
+        ])
+    for candidate in candidates:
+        value = str(candidate or "").strip().lower()
+        if value in {"16:9", "9:16", "1:1", "4:5", "4:3", "3:4"}:
+            return value
+    return "16:9"
+
+
 def install_final_video_presentation_guard(video_generator_cls: Type[Any]) -> Type[Any]:
     """Last-mile presentation hardening without creating a second renderer."""
     if getattr(video_generator_cls, "_codexia_final_video_presentation_guard_installed", False):
@@ -39,24 +57,34 @@ def install_final_video_presentation_guard(video_generator_cls: Type[Any]) -> Ty
                 if isinstance(resolved, dict) and resolved.get("path"):
                     return resolved
 
+            aspect_ratio = _resolve_endcard_aspect_ratio(branding, kwargs)
+            format_hint = {
+                "9:16": "vertical portrait composition",
+                "1:1": "square composition",
+                "4:5": "vertical social composition",
+                "3:4": "vertical portrait composition",
+                "4:3": "classic landscape composition",
+            }.get(aspect_ratio, "widescreen cinematic composition")
+
             if callable(ensure_image):
                 prompt = (
                     "Premium cinematic Christian devotional end card background, no people, no faces, no text, no logo. "
-                    "Peaceful dawn horizon with subtle volumetric light, refined deep blue and warm gold tonal contrast, "
+                    f"{format_hint}, peaceful dawn horizon with subtle volumetric light, refined deep blue and warm gold tonal contrast, "
                     "elegant atmospheric depth, restrained filmic composition, clean central negative space for title and logo, "
-                    "professional YouTube documentary finish, photorealistic, 16:9, no letters, no typography."
+                    "professional YouTube documentary finish, photorealistic, no letters, no typography."
                 )
                 try:
                     generated = ensure_image(
                         self,
                         prompt,
                         text_fallback="Encerramento",
-                        aspect_ratio="16:9",
+                        aspect_ratio=aspect_ratio,
                     )
                     if generated and os.path.exists(str(generated)):
                         return {
                             "path": str(generated),
                             "source": "generated_premium_endcard_ai",
+                            "aspect_ratio": aspect_ratio,
                         }
                 except Exception:
                     pass
@@ -67,8 +95,13 @@ def install_final_video_presentation_guard(video_generator_cls: Type[Any]) -> Ty
                 if str(payload.get("source") or "").lower() == "last_scene":
                     payload["path"] = None
                     payload["source"] = "dedicated_premium_endcard_fallback"
+                payload.setdefault("aspect_ratio", aspect_ratio)
                 return payload
-            return {"path": None, "source": "dedicated_premium_endcard_fallback"}
+            return {
+                "path": None,
+                "source": "dedicated_premium_endcard_fallback",
+                "aspect_ratio": aspect_ratio,
+            }
 
         video_generator_cls._resolve_closing_background_image = premium_endcard_background
 
