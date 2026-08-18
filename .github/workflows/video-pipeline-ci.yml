@@ -7,6 +7,8 @@ on:
       - homolog/youtube-auto-e2e
     paths:
       - ".github/workflows/video-pipeline-ci.yml"
+      - "Dockerfile"
+      - "Dockerfile.worker"
       - "alembic/**"
       - "app/**"
       - "scripts/**"
