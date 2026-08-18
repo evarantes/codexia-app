@@ -35,9 +35,11 @@ COPY . .
 
 # Apply deterministic hardening before any runtime validation/startup.
 # This keeps the legacy large files unchanged in unrelated regions while
-# enforcing UI boot safety and production/publication decoupling.
+# enforcing UI boot safety, publication decoupling and human duration approval.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
-    python scripts/apply_consolidated_hardening.py --check
+    python scripts/apply_consolidated_hardening.py --check && \
+    python scripts/apply_duration_confirmation_hardening.py --apply && \
+    python scripts/apply_duration_confirmation_hardening.py --check
 
 # Create directory for static files if not exists
 RUN mkdir -p app/static/videos app/static/covers app/static/icons && \
