@@ -127,11 +127,27 @@ def _approved_title_from_plan(plan: Any) -> str:
     return ""
 
 
-def _quality_gate(result: Any) -> Dict[str, Any]:
+def _has_manual_visuals(plan: Any) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    selected = plan.get("selected_images") or plan.get("custom_image_paths") or []
+    if isinstance(selected, (list, tuple)) and any(str(item or "").strip() for item in selected):
+        return True
+    scenes = plan.get("scenes") or []
+    for scene in scenes if isinstance(scenes, list) else []:
+        if not isinstance(scene, dict):
+            continue
+        if any(str(scene.get(key) or "").strip() for key in ("image_path", "selected_image", "image")):
+            return True
+    return False
+
+
+def _quality_gate(result: Any, plan: Any = None) -> Dict[str, Any]:
     report: Dict[str, Any] = {
         "passed": True,
         "checks": {},
         "violations": [],
+        "manual_visuals": _has_manual_visuals(plan),
     }
     if not isinstance(result, dict):
         report["passed"] = False
@@ -157,11 +173,14 @@ def _quality_gate(result: Any) -> Dict[str, Any]:
     generated = int(visual.get("generated_image_count") or 0)
     reused = int(visual.get("reused_image_count") or 0)
     avg_hold = float(visual.get("average_image_duration_sec") or 0.0)
-    if generated > 1:
+    manual_visuals = bool(report["manual_visuals"])
+
+    # A trava agressiva vale apenas para produção visual automática. Seleção
+    # manual do usuário continua soberana e não dispara regenerações pagas.
+    if generated > 1 and not manual_visuals:
         no_path_reuse = reused == 0
         pacing_ok = avg_hold <= 11.0 if avg_hold > 0 else True
     else:
-        # Manual/single-background modes are handled elsewhere; do not reject them here.
         no_path_reuse = True
         pacing_ok = True
     report["checks"]["no_reused_generated_image_paths"] = no_path_reuse
@@ -228,16 +247,11 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
     original_target_visual_count = getattr(video_generator_cls, "_target_visual_count", None)
     if callable(original_target_visual_count):
         def one_visual_per_scene_target(self: Any, scenes: Any, plan=None, *args: Any, **kwargs: Any):
-            if not _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true"):
+            if not _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true") or _has_manual_visuals(plan):
+                if plan is None:
+                    return original_target_visual_count(self, scenes, *args, **kwargs)
                 return original_target_visual_count(self, scenes, plan, *args, **kwargs)
-            scene_list = list(scenes or [])
-            selected = []
-            if isinstance(plan, dict):
-                selected = plan.get("selected_images") or plan.get("custom_image_paths") or []
-            # Preserva explicitamente modo manual de imagem única.
-            if len(selected) == 1:
-                return 1
-            return max(1, len(scene_list))
+            return max(1, len(list(scenes or [])))
         video_generator_cls._target_visual_count = one_visual_per_scene_target
 
     original_transition = getattr(video_generator_cls, "_build_visual_transition_decision", None)
@@ -279,11 +293,12 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
             branding = deepcopy(branding)
             branding["final_message"] = lines
             branding.setdefault("endcard_cta_text", guarded["endcard_cta_text"])
+            branding.setdefault("aspect_ratio", guarded.get("aspect_ratio") or "16:9")
             guarded["branding"] = branding
 
             result = original_create(self, guarded, *args, **kwargs)
             if isinstance(result, dict):
-                quality = _quality_gate(result)
+                quality = _quality_gate(result, plan=guarded)
                 result["channel_excellence_guard"] = {
                     "enabled": True,
                     "endcard_lines": lines,
