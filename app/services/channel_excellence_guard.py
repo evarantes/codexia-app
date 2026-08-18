@@ -97,12 +97,107 @@ def premium_endcard_lines(value: Any, max_lines: int = 2, max_chars: int = 38) -
     return (lines or ["Leve esta esperança com você."])[:max_lines]
 
 
+def _duration_target_seconds(plan: Any) -> int:
+    if not isinstance(plan, dict):
+        return 0
+    for key in ("target_duration_sec", "duration_max_sec", "duration_sec"):
+        try:
+            value = int(float(plan.get(key) or 0))
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return max(30, value)
+    for key in ("target_duration_min", "duration_max", "duration_min", "duration"):
+        try:
+            value = float(plan.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return max(30, int(round(value * 60)))
+    return 0
+
+
+def _narration_word_count(plan: Any) -> int:
+    if not isinstance(plan, dict):
+        return 0
+    parts: List[str] = []
+    title = _approved_title_from_plan(plan)
+    if title:
+        parts.append(title)
+    scenes = plan.get("scenes") or []
+    if isinstance(scenes, list):
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            for key in ("text", "narration_text", "narration"):
+                value = _clean_line(scene.get(key))
+                if value:
+                    parts.append(value)
+                    break
+    if not parts:
+        for key in ("story_content", "content", "script", "narration_text", "narration"):
+            value = _clean_line(plan.get(key))
+            if value:
+                parts.append(value)
+                break
+    return len(re.findall(r"\b[\wÀ-ÿ]+\b", " ".join(parts), flags=re.UNICODE))
+
+
+def _duration_preflight(plan: Any) -> Dict[str, Any]:
+    target_sec = _duration_target_seconds(plan)
+    word_count = _narration_word_count(plan)
+    if target_sec <= 0 or word_count <= 0:
+        return {
+            "checked": False,
+            "passed": True,
+            "reason": "duration_target_or_narration_missing",
+            "target_sec": target_sec,
+            "word_count": word_count,
+        }
+
+    try:
+        wpm = int(float(os.getenv("VIDEO_DURATION_ESTIMATED_WPM") or "150"))
+    except (TypeError, ValueError):
+        wpm = 150
+    wpm = max(120, min(190, wpm))
+
+    try:
+        tolerance_pct = float(os.getenv("VIDEO_DURATION_TARGET_TOLERANCE_PCT") or "25")
+    except (TypeError, ValueError):
+        tolerance_pct = 25.0
+    tolerance_pct = max(10.0, min(60.0, tolerance_pct))
+
+    try:
+        extra_seconds = int(float(os.getenv("VIDEO_DURATION_TARGET_EXTRA_SECONDS") or "20"))
+    except (TypeError, ValueError):
+        extra_seconds = 20
+    extra_seconds = max(5, min(60, extra_seconds))
+
+    estimated_sec = max(1, int(round((word_count / float(wpm)) * 60.0)))
+    allowed_extra = max(extra_seconds, int(round(target_sec * (tolerance_pct / 100.0))))
+    max_sec = target_sec + allowed_extra
+    passed = estimated_sec <= max_sec
+    return {
+        "checked": True,
+        "passed": passed,
+        "target_sec": target_sec,
+        "estimated_sec": estimated_sec,
+        "max_sec": max_sec,
+        "word_count": word_count,
+        "estimated_wpm": wpm,
+        "tolerance_pct": tolerance_pct,
+        "extra_seconds": extra_seconds,
+        "reason": "within_editorial_tolerance" if passed else "estimated_duration_far_above_target",
+    }
+
+
 def apply_channel_excellence_rollout() -> Dict[str, Any]:
     defaults = {
         "ENABLE_CHANNEL_EXCELLENCE_GUARD": "true",
         "ENABLE_APPROVED_NARRATION_ONLY": "true",
         "ENABLE_STRICT_VISUAL_UNIQUENESS": "true",
         "ENABLE_FINAL_VIDEO_QUALITY_GATE": "true",
+        "ENABLE_DURATION_SANITY_PREFLIGHT": "true",
     }
     for name, value in defaults.items():
         if name not in os.environ:
@@ -114,6 +209,7 @@ def apply_channel_excellence_rollout() -> Dict[str, Any]:
         "approved_narration_only": _enabled("ENABLE_APPROVED_NARRATION_ONLY", "true"),
         "strict_visual_uniqueness": _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true"),
         "final_quality_gate": _enabled("ENABLE_FINAL_VIDEO_QUALITY_GATE", "true"),
+        "duration_sanity_preflight": _enabled("ENABLE_DURATION_SANITY_PREFLIGHT", "true"),
     }
 
 
@@ -284,6 +380,21 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
             if not _enabled("ENABLE_CHANNEL_EXCELLENCE_GUARD", "true") or not isinstance(plan, dict):
                 return original_create(self, plan, *args, **kwargs)
             guarded = deepcopy(plan)
+
+            duration_preflight = _duration_preflight(guarded)
+            if (
+                _enabled("ENABLE_DURATION_SANITY_PREFLIGHT", "true")
+                and duration_preflight.get("checked")
+                and not duration_preflight.get("passed")
+            ):
+                raise RuntimeError(
+                    "Roteiro fora da tolerância editorial de duração antes de gerar mídia paga: "
+                    f"alvo {int(duration_preflight.get('target_sec') or 0)}s, "
+                    f"estimado {int(duration_preflight.get('estimated_sec') or 0)}s, "
+                    f"limite flexível {int(duration_preflight.get('max_sec') or 0)}s. "
+                    "Revise ou condense o roteiro sem cortar o fechamento natural."
+                )
+
             closing_source = guarded.get("final_message") or guarded.get("closing_message")
             lines = premium_endcard_lines(closing_source)
             guarded["final_message"] = lines
@@ -303,9 +414,11 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
                     "enabled": True,
                     "endcard_lines": lines,
                     "endcard_cta_text": guarded["endcard_cta_text"],
+                    "duration_preflight": deepcopy(duration_preflight),
                     "quality_gate": quality,
                 }
                 rr = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
+                rr["duration_preflight"] = deepcopy(duration_preflight)
                 rr["final_video_quality_gate"] = deepcopy(quality)
                 result["render_report"] = rr
                 if _enabled("ENABLE_FINAL_VIDEO_QUALITY_GATE", "true") and not quality.get("passed"):
