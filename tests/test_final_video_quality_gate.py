@@ -76,6 +76,10 @@ class FinalVideoQualityGateTests(unittest.TestCase):
         "ENABLE_STRICT_VISUAL_UNIQUENESS",
         "ENABLE_FINAL_VIDEO_QUALITY_GATE",
         "ENABLE_AI_PREMIUM_ENDCARD",
+        "ENABLE_DURATION_SANITY_PREFLIGHT",
+        "VIDEO_DURATION_ESTIMATED_WPM",
+        "VIDEO_DURATION_TARGET_TOLERANCE_PCT",
+        "VIDEO_DURATION_TARGET_EXTRA_SECONDS",
     )
 
     def tearDown(self):
@@ -120,7 +124,8 @@ class FinalVideoQualityGateTests(unittest.TestCase):
         cls = _fresh_cls("ManualSingleVisualGenerator")
         install_channel_excellence_guard_patch(cls)
         scenes = [{"text": "A"}, {"text": "B"}]
-        self.assertEqual(cls()._target_visual_count(scenes, {"selected_images": ["/tmp/manual.png"]}), 1)
+        self.assertEqual(instance := cls()._target_visual_count(scenes, {"selected_images": ["/tmp/manual.png"]}), 1)
+        self.assertEqual(instance, 1)
 
     def test_manual_visuals_do_not_trigger_paid_uniqueness_rejection(self):
         os.environ["ENABLE_FINAL_VIDEO_QUALITY_GATE"] = "true"
@@ -174,6 +179,43 @@ class FinalVideoQualityGateTests(unittest.TestCase):
         install_channel_excellence_guard_patch(cls)
         with self.assertRaisesRegex(RuntimeError, "controle final de qualidade"):
             cls().create_video_from_plan({"title": "Teste", "scenes": [{"text": "Mensagem"}]})
+
+    def test_duration_preflight_allows_natural_overrun_inside_editorial_tolerance(self):
+        os.environ["ENABLE_DURATION_SANITY_PREFLIGHT"] = "true"
+        cls = _fresh_cls("FlexibleDurationGenerator")
+        install_channel_excellence_guard_patch(cls)
+        text = " ".join(["esperança"] * 180)
+        result = cls().create_video_from_plan({
+            "title": "Jesus Está Presente",
+            "target_duration_sec": 60,
+            "scenes": [{"text": text}],
+        })
+        report = result["channel_excellence_guard"]["duration_preflight"]
+        self.assertTrue(report["checked"])
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["target_sec"], 60)
+        self.assertLessEqual(report["estimated_sec"], report["max_sec"])
+
+    def test_duration_preflight_blocks_extreme_overrun_before_render(self):
+        os.environ["ENABLE_DURATION_SANITY_PREFLIGHT"] = "true"
+
+        class CountingGenerator(QualityGenerator):
+            render_calls = 0
+
+            def create_video_from_plan(self, plan, *args, **kwargs):
+                type(self).render_calls += 1
+                return super().create_video_from_plan(plan, *args, **kwargs)
+
+        cls = type("BlockedDurationGenerator", (CountingGenerator,), {"render_calls": 0})
+        install_channel_excellence_guard_patch(cls)
+        text = " ".join(["esperança"] * 300)
+        with self.assertRaisesRegex(RuntimeError, "fora da tolerância editorial de duração"):
+            cls().create_video_from_plan({
+                "title": "Jesus Está Presente",
+                "target_duration_sec": 60,
+                "scenes": [{"text": text}],
+            })
+        self.assertEqual(cls.render_calls, 0)
 
     def test_premium_endcard_generates_dedicated_ai_background(self):
         os.environ["ENABLE_AI_PREMIUM_ENDCARD"] = "true"
