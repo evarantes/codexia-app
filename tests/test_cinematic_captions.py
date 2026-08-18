@@ -40,8 +40,9 @@ class CinematicCaptionTests(unittest.TestCase):
         install_cinematic_caption_patch(cls)
         generator = cls()
 
+        # Padrão final mais discreto: no máximo 6 palavras / 40 caracteres por bloco.
         units = generator._split_caption_units("mensagem")
-        self.assertEqual(units, ["7:46:mensagem"])
+        self.assertEqual(units, ["6:40:mensagem"])
 
         arr = generator.create_text_overlay("texto", vertical_anchor="bottom")
         original_top = 10
