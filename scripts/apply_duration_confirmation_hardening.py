@@ -137,9 +137,9 @@ def patch_youtube_router(text: str) -> str:
 
     text = _replace_once(
         text,
-        """        requested_minutes = max(1, min(60, requested_minutes))
-        default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"""",
-        """        requested_minutes = max(1, min(60, requested_minutes))
+        '''        requested_minutes = max(1, min(60, requested_minutes))
+        default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"''',
+        '''        requested_minutes = max(1, min(60, requested_minutes))
         try:
             requested_min_minutes = int(getattr(request, "duration_min", None) or requested_minutes)
         except Exception:
@@ -151,7 +151,7 @@ def patch_youtube_router(text: str) -> str:
         requested_min_minutes = max(1, min(60, requested_min_minutes))
         requested_max_minutes = max(requested_min_minutes, min(60, requested_max_minutes))
         duration_override_approved = bool(getattr(request, "duration_override_approved", False))
-        default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"""",
+        default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"''',
         label="youtube/normalize-duration-range",
     )
 
