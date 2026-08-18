@@ -12,49 +12,73 @@ def _enabled(name: str, default: str = "true") -> bool:
     }
 
 
+_FORBIDDEN_AUTOMATIC_OPENINGS = (
+    "uma mensagem de fé",
+    "uma mensagem de fe",
+    "mensagem de fé para",
+    "mensagem de fe para",
+    "prepare o coração",
+    "prepare o coracao",
+    "uma palavra para você",
+    "uma palavra para voce",
+    "uma reflexão para você",
+    "uma reflexao para voce",
+)
+
+
+def _fold(value: Any) -> str:
+    text = str(value or "").lower()
+    replacements = str.maketrans("áàâãéêíóôõúüç", "aaaaeeiooouuc")
+    return re.sub(r"\s+", " ", text.translate(replacements)).strip()
+
+
+def _contains_forbidden_opening(value: Any) -> bool:
+    folded = _fold(value)
+    return any(_fold(marker) in folded for marker in _FORBIDDEN_AUTOMATIC_OPENINGS)
+
+
 def prepare_spoken_text(text: Any) -> str:
-    """Small deterministic guard before TTS; preserves meaning and improves pt-BR clarity."""
+    """Deterministic pt-BR guard used only immediately before TTS."""
     value = re.sub(r"\s+", " ", str(text or "").strip())
     if not value:
         return value
 
-    # Evita a expressão que no teste foi pronunciada como "peli contrário".
+    # Expressão que já apresentou pronúncia ruim no TTS.
     value = re.sub(r"(?i)(?<!muito\s)\bpelo\s+contrário\b", "muito pelo contrário", value)
 
-    # Nunca deixa uma ponte de abertura incompleta chegar à voz.
+    # Forma fonética somente para a voz. Texto/legenda permanecem com a grafia oficial.
+    value = re.sub(r"(?i)\bjesus\b", "Jêzus", value)
+
+    # Nunca completa silenciosamente pontes incompletas com outro clichê.
     value = re.sub(
         r"(?i)\b(?:uma|esta)\s+mensagem\s+de\s*(?:\.{2,}|[.!?,;:]|$)",
-        "Esta mensagem é para você. ",
-        value,
+        "", value,
     )
     value = re.sub(
         r"(?i)\b(?:uma|esta)\s+palavra\s+de\s*(?:\.{2,}|[.!?,;:]|$)",
-        "Esta palavra é para você. ",
-        value,
+        "", value,
     )
 
-    # Pontuação ajuda TTS a separar ideias sem alterar o conteúdo.
     value = re.sub(r"\s*([,;:.!?])\s*", r"\1 ", value)
-    value = re.sub(r"\s+", " ", value).strip()
-    return value
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _clean_line(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
 
 
-def premium_endcard_lines(value: Any, max_lines: int = 2, max_chars: int = 46) -> List[str]:
-    """Creates a short, readable mobile endcard without tiny paragraphs."""
+def premium_endcard_lines(value: Any, max_lines: int = 2, max_chars: int = 38) -> List[str]:
+    """Short endcard copy: one reflection, never a paragraph."""
     if isinstance(value, (list, tuple)):
         text = " ".join(_clean_line(item) for item in value if _clean_line(item))
     else:
         text = _clean_line(value)
     if not text:
-        text = "Jesus continua presente. Leve esta esperança com você."
+        text = "Leve esta esperança com você."
 
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
     if sentences:
-        text = " ".join(sentences[:2])
+        text = sentences[0]
 
     words = text.split()
     lines: List[str] = []
@@ -70,24 +94,90 @@ def premium_endcard_lines(value: Any, max_lines: int = 2, max_chars: int = 46) -
             current.append(word)
     if current and len(lines) < max_lines:
         lines.append(" ".join(current).strip())
-
-    if not lines:
-        lines = ["Jesus continua presente."]
-    if len(lines) == max_lines and len(" ".join(lines)) < len(text):
-        lines[-1] = lines[-1].rstrip(" ,;:-")
-        if not lines[-1].endswith((".", "!", "?")):
-            lines[-1] += "."
-    return lines[:max_lines]
+    return (lines or ["Leve esta esperança com você."])[:max_lines]
 
 
 def apply_channel_excellence_rollout() -> Dict[str, Any]:
-    if "ENABLE_CHANNEL_EXCELLENCE_GUARD" not in os.environ:
-        os.environ["ENABLE_CHANNEL_EXCELLENCE_GUARD"] = "true"
+    defaults = {
+        "ENABLE_CHANNEL_EXCELLENCE_GUARD": "true",
+        "ENABLE_APPROVED_NARRATION_ONLY": "true",
+        "ENABLE_STRICT_VISUAL_UNIQUENESS": "true",
+        "ENABLE_FINAL_VIDEO_QUALITY_GATE": "true",
+    }
+    for name, value in defaults.items():
+        if name not in os.environ:
+            os.environ[name] = value
     return {
         "enabled": _enabled("ENABLE_CHANNEL_EXCELLENCE_GUARD", "true"),
         "tts_pronunciation_guard": True,
         "premium_endcard": True,
+        "approved_narration_only": _enabled("ENABLE_APPROVED_NARRATION_ONLY", "true"),
+        "strict_visual_uniqueness": _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true"),
+        "final_quality_gate": _enabled("ENABLE_FINAL_VIDEO_QUALITY_GATE", "true"),
     }
+
+
+def _approved_title_from_plan(plan: Any) -> str:
+    if not isinstance(plan, dict):
+        return ""
+    for key in ("override_title", "title", "topic"):
+        value = _clean_line(plan.get(key))
+        if value:
+            return value[:180]
+    return ""
+
+
+def _quality_gate(result: Any) -> Dict[str, Any]:
+    report: Dict[str, Any] = {
+        "passed": True,
+        "checks": {},
+        "violations": [],
+    }
+    if not isinstance(result, dict):
+        report["passed"] = False
+        report["violations"].append("render_result_missing")
+        return report
+
+    rr = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
+    narration = rr.get("narration_plan") if isinstance(rr.get("narration_plan"), dict) else {}
+    visual = rr.get("visual_plan") if isinstance(rr.get("visual_plan"), dict) else {}
+
+    opening = str(narration.get("opening_text") or "").strip()
+    no_generic_opening = not _contains_forbidden_opening(opening)
+    report["checks"]["no_generic_automatic_opening"] = no_generic_opening
+    if not no_generic_opening:
+        report["violations"].append("generic_automatic_opening")
+
+    closing = str(narration.get("closing_text") or "").strip()
+    no_hidden_spoken_cta = not bool(closing)
+    report["checks"]["no_hidden_spoken_cta"] = no_hidden_spoken_cta
+    if not no_hidden_spoken_cta:
+        report["violations"].append("hidden_spoken_closing")
+
+    generated = int(visual.get("generated_image_count") or 0)
+    reused = int(visual.get("reused_image_count") or 0)
+    avg_hold = float(visual.get("average_image_duration_sec") or 0.0)
+    if generated > 1:
+        no_path_reuse = reused == 0
+        pacing_ok = avg_hold <= 11.0 if avg_hold > 0 else True
+    else:
+        # Manual/single-background modes are handled elsewhere; do not reject them here.
+        no_path_reuse = True
+        pacing_ok = True
+    report["checks"]["no_reused_generated_image_paths"] = no_path_reuse
+    report["checks"]["average_visual_hold_ok"] = pacing_ok
+    report["metrics"] = {
+        "generated_image_count": generated,
+        "reused_image_count": reused,
+        "average_image_duration_sec": round(avg_hold, 2),
+    }
+    if not no_path_reuse:
+        report["violations"].append("generated_image_path_reused")
+    if not pacing_ok:
+        report["violations"].append("visual_hold_too_long")
+
+    report["passed"] = not report["violations"]
+    return report
 
 
 def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Type[Any]:
@@ -99,8 +189,68 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
         def guarded_audio(self: Any, text: Any, *args: Any, **kwargs: Any):
             if not _enabled("ENABLE_CHANNEL_EXCELLENCE_GUARD", "true"):
                 return original_audio(self, text, *args, **kwargs)
-            return original_audio(self, prepare_spoken_text(text), *args, **kwargs)
+            mutable_args = list(args)
+            if mutable_args and isinstance(mutable_args[0], str) and mutable_args[0].strip().lower().startswith("pt"):
+                mutable_args[0] = "pt"
+            if "lang" in kwargs and str(kwargs.get("lang") or "").strip().lower().startswith("pt"):
+                kwargs["lang"] = "pt"
+            return original_audio(self, prepare_spoken_text(text), *mutable_args, **kwargs)
         video_generator_cls.generate_audio = guarded_audio
+
+    # Abertura determinística: somente o título aprovado. Nada é inventado pelo renderer.
+    original_opening = getattr(video_generator_cls, "_default_opening_text", None)
+    if callable(original_opening):
+        def approved_opening(self: Any, channel_name: str, *, plan=None):
+            if not _enabled("ENABLE_APPROVED_NARRATION_ONLY", "true"):
+                return original_opening(self, channel_name, plan=plan)
+            return _approved_title_from_plan(plan)
+        video_generator_cls._default_opening_text = approved_opening
+
+    # Não injeta reflexão escondida além do roteiro que o usuário aprovou.
+    original_reflection = getattr(video_generator_cls, "_default_reflection_text", None)
+    if callable(original_reflection):
+        def no_hidden_reflection(self: Any, plan=None, scenes=None):
+            if not _enabled("ENABLE_APPROVED_NARRATION_ONLY", "true"):
+                return original_reflection(self, plan, scenes)
+            return ""
+        video_generator_cls._default_reflection_text = no_hidden_reflection
+
+    # CTA é visual no endcard; não é mais acrescentado silenciosamente à locução.
+    original_default_closing = getattr(video_generator_cls, "_default_closing_text", None)
+    if callable(original_default_closing):
+        def no_hidden_closing(self: Any, channel_name: str):
+            if not _enabled("ENABLE_APPROVED_NARRATION_ONLY", "true"):
+                return original_default_closing(self, channel_name)
+            return ""
+        video_generator_cls._default_closing_text = no_hidden_closing
+
+    # O planner não pode reduzir várias cenas automáticas a poucas imagens compartilhadas.
+    original_target_visual_count = getattr(video_generator_cls, "_target_visual_count", None)
+    if callable(original_target_visual_count):
+        def one_visual_per_scene_target(self: Any, scenes: Any, plan=None, *args: Any, **kwargs: Any):
+            if not _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true"):
+                return original_target_visual_count(self, scenes, plan, *args, **kwargs)
+            scene_list = list(scenes or [])
+            selected = []
+            if isinstance(plan, dict):
+                selected = plan.get("selected_images") or plan.get("custom_image_paths") or []
+            # Preserva explicitamente modo manual de imagem única.
+            if len(selected) == 1:
+                return 1
+            return max(1, len(scene_list))
+        video_generator_cls._target_visual_count = one_visual_per_scene_target
+
+    original_transition = getattr(video_generator_cls, "_build_visual_transition_decision", None)
+    if callable(original_transition):
+        def force_new_visual_transition(self: Any, previous_profile: Dict[str, Any], current_profile: Dict[str, Any]):
+            decision = original_transition(self, previous_profile, current_profile)
+            if not _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true"):
+                return decision
+            payload = dict(decision or {})
+            payload["should_generate_new"] = True
+            payload["forced_by_channel_excellence"] = True
+            return payload
+        video_generator_cls._build_visual_transition_decision = force_new_visual_transition
 
     original_closing = getattr(video_generator_cls, "_resolve_contextual_closing", None)
     if callable(original_closing):
@@ -130,13 +280,25 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
             branding["final_message"] = lines
             branding.setdefault("endcard_cta_text", guarded["endcard_cta_text"])
             guarded["branding"] = branding
+
             result = original_create(self, guarded, *args, **kwargs)
             if isinstance(result, dict):
+                quality = _quality_gate(result)
                 result["channel_excellence_guard"] = {
                     "enabled": True,
                     "endcard_lines": lines,
                     "endcard_cta_text": guarded["endcard_cta_text"],
+                    "quality_gate": quality,
                 }
+                rr = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
+                rr["final_video_quality_gate"] = deepcopy(quality)
+                result["render_report"] = rr
+                if _enabled("ENABLE_FINAL_VIDEO_QUALITY_GATE", "true") and not quality.get("passed"):
+                    violations = ", ".join(str(item) for item in quality.get("violations") or [])
+                    raise RuntimeError(
+                        "Vídeo reprovado pelo controle final de qualidade antes da revisão: "
+                        + (violations or "qualidade insuficiente")
+                    )
             return result
         video_generator_cls.create_video_from_plan = create_with_excellence_guard
 
