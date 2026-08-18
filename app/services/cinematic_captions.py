@@ -27,7 +27,7 @@ def apply_presentation_rollout() -> Dict[str, Any]:
 
 
 def install_cinematic_caption_patch(video_generator_cls: Type[Any]) -> Type[Any]:
-    """Makes narration captions smaller/cleaner while leaving opening/endcard APIs intact."""
+    """Makes narration captions compact and cinematic while keeping accessibility."""
     if getattr(video_generator_cls, "_codexia_cinematic_captions_installed", False):
         return video_generator_cls
 
@@ -57,24 +57,25 @@ def install_cinematic_caption_patch(video_generator_cls: Type[Any]) -> Type[Any]
 
         w, _h = size
         safe_area = {
-            "top": 0.08,
-            "bottom": max(0.065, float(reserved_bottom_ratio or 0.0)),
-            "left": 0.075,
-            "right": 0.075,
+            "top": 0.09,
+            "bottom": max(0.085, float(reserved_bottom_ratio or 0.0)),
+            "left": 0.09,
+            "right": 0.09,
         }
         if isinstance(safe_area_override, dict):
             safe_area.update({k: float(v) for k, v in safe_area_override.items() if v is not None})
 
         layout_engine = self._build_safe_text_layout(size=size, safe_area=safe_area)
-        base_size = max(22, min(52, int(w * 0.041)))
-        min_size = max(16, min(25, int(w * 0.020)))
+        # 1280px -> ~46px. Antes chegava a 52px e dominava demais a imagem.
+        base_size = max(20, min(46, int(w * 0.036)))
+        min_size = max(15, min(22, int(w * 0.0175)))
         metrics = layout_engine.fit_text_block(
             text=re.sub(r"\s+", " ", str(text or "").strip()),
             area=safe_area,
             preferred_font_size=base_size,
             min_font_size=min_size,
             max_lines=max_lines,
-            line_spacing_ratio=1.16,
+            line_spacing_ratio=1.12,
         )
         return {
             "fits": bool(metrics.get("fits")),
@@ -85,6 +86,7 @@ def install_cinematic_caption_patch(video_generator_cls: Type[Any]) -> Type[Any]
             "overflow_detected": bool(metrics.get("overflow_detected")),
             "layout": metrics,
             "cinematic_caption": True,
+            "premium_compact": True,
         }
 
     def premium_split_units(self: Any, text: str, max_words: int = 8, max_chars: int = 54) -> List[str]:
@@ -92,12 +94,12 @@ def install_cinematic_caption_patch(video_generator_cls: Type[Any]) -> Type[Any]
             if callable(original_split_units):
                 return original_split_units(self, text, max_words=max_words, max_chars=max_chars)
             return [str(text or "").strip()] if str(text or "").strip() else []
-        # Shorter phrase blocks reduce screen dominance without changing spoken narration.
+        # Blocos menores: leitura rápida sem cobrir a fotografia.
         return original_split_units(
             self,
             text,
-            max_words=min(int(max_words or 8), 7),
-            max_chars=min(int(max_chars or 54), 46),
+            max_words=min(int(max_words or 8), 6),
+            max_chars=min(int(max_chars or 54), 40),
         )
 
     def premium_overlay(self: Any, text: str, *args: Any, **kwargs: Any):
@@ -106,7 +108,6 @@ def install_cinematic_caption_patch(video_generator_cls: Type[Any]) -> Type[Any]
             return overlay
         anchor = str(kwargs.get("vertical_anchor") or "bottom").strip().lower()
         footer = str(kwargs.get("footer_text") or "").strip()
-        # Opening titles and branded endcards keep their existing placement.
         if anchor != "bottom" or footer:
             return overlay
         try:
@@ -115,7 +116,8 @@ def install_cinematic_caption_patch(video_generator_cls: Type[Any]) -> Type[Any]
             arr = np.asarray(overlay)
             if arr.ndim != 3 or arr.shape[0] <= 0:
                 return overlay
-            shift = max(2, int(arr.shape[0] * 0.018))
+            # Eleva discretamente a legenda, sem ocupar a região central.
+            shift = max(2, int(arr.shape[0] * 0.022))
             shifted = np.zeros_like(arr)
             shifted[shift:] = arr[:-shift]
             return shifted
