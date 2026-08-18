@@ -13,6 +13,7 @@ class QualityGenerator:
     def __init__(self, tmp_path: Path | None = None):
         self.tmp_path = tmp_path
         self.audio_text = ""
+        self.endcard_aspect_ratio = None
 
     def generate_audio(self, text, lang="pt", *args, **kwargs):
         self.audio_text = text
@@ -57,6 +58,7 @@ class QualityGenerator:
 
     def _ensure_image_for_scene(self, prompt, text_fallback, aspect_ratio="16:9", **kwargs):
         assert "no people" in prompt.lower()
+        self.endcard_aspect_ratio = aspect_ratio
         path = (self.tmp_path or Path("/tmp")) / "premium-endcard.png"
         path.write_bytes(b"fake-image")
         return str(path)
@@ -110,6 +112,35 @@ def test_manual_single_image_mode_is_preserved(monkeypatch):
     assert cls()._target_visual_count(scenes, {"selected_images": ["/tmp/manual.png"]}) == 1
 
 
+def test_manual_visuals_do_not_trigger_paid_uniqueness_rejection(monkeypatch):
+    monkeypatch.setenv("ENABLE_FINAL_VIDEO_QUALITY_GATE", "true")
+
+    class ManualGenerator(QualityGenerator):
+        def create_video_from_plan(self, plan, *args, **kwargs):
+            return {
+                "file_path": "/tmp/fake.mp4",
+                "render_report": {
+                    "narration_plan": {"opening_text": plan.get("title", ""), "closing_text": ""},
+                    "visual_plan": {
+                        "generated_image_count": 3,
+                        "reused_image_count": 2,
+                        "average_image_duration_sec": 18.0,
+                    },
+                },
+            }
+
+    cls = type("ManualQualityGenerator", (ManualGenerator,), {})
+    install_channel_excellence_guard_patch(cls)
+    result = cls().create_video_from_plan({
+        "title": "Teste",
+        "selected_images": ["/tmp/a.png", "/tmp/b.png"],
+        "scenes": [{"text": "A"}, {"text": "B"}],
+    })
+    quality = result["channel_excellence_guard"]["quality_gate"]
+    assert quality["manual_visuals"] is True
+    assert quality["passed"] is True
+
+
 def test_quality_gate_blocks_generic_opening_and_reused_generated_paths(monkeypatch):
     monkeypatch.setenv("ENABLE_FINAL_VIDEO_QUALITY_GATE", "true")
 
@@ -143,7 +174,19 @@ def test_premium_endcard_generates_dedicated_ai_background(monkeypatch, tmp_path
     instance = cls(tmp_path=tmp_path)
     result = instance._resolve_closing_background_image({})
     assert result["source"] == "generated_premium_endcard_ai"
+    assert result["aspect_ratio"] == "16:9"
     assert Path(result["path"]).exists()
+
+
+def test_premium_endcard_preserves_vertical_aspect_ratio(monkeypatch, tmp_path):
+    monkeypatch.setenv("ENABLE_AI_PREMIUM_ENDCARD", "true")
+    cls = _fresh_cls("VerticalPremiumEndcardGenerator")
+    install_final_video_presentation_guard(cls)
+    instance = cls(tmp_path=tmp_path)
+    result = instance._resolve_closing_background_image({"aspect_ratio": "9:16"})
+    assert result["source"] == "generated_premium_endcard_ai"
+    assert result["aspect_ratio"] == "9:16"
+    assert instance.endcard_aspect_ratio == "9:16"
 
 
 def test_quality_gate_accepts_clean_result(monkeypatch):
