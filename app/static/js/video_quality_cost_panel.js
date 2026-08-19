@@ -9,6 +9,7 @@
   let lastCostSummary = null;
   let lastTaskId = null;
   let budgetBypassUntil = 0;
+  let renderQueued = false;
 
   function number(value, fallback) {
     const parsed = Number(value);
@@ -116,13 +117,24 @@
       html += `<div class="mt-2 text-xs text-gray-600">Fonte: ${sourceLabels[summary.cost_source] || summary.cost_source || 'rastreamento Codexia'}. ${summary.note || ''}</div>`;
       html += '</div>';
     }
-    body.innerHTML = html;
+    if (body.innerHTML !== html) {
+      body.innerHTML = html;
+    }
     const budgetInput = document.getElementById('codexia-video-budget');
     if (budgetInput) {
-      budgetInput.addEventListener('change', function () {
+      budgetInput.onchange = function () {
         localStorage.setItem('codexiaVideoBudgetBrl', String(Math.max(0, number(this.value, 30))));
-      }, { once: true });
+      };
     }
+  }
+
+  function scheduleRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    window.requestAnimationFrame(function () {
+      renderQueued = false;
+      render();
+    });
   }
 
   function acceptTaskData(data, taskId) {
@@ -133,7 +145,7 @@
       if (data.cost_summary.brl_rate) {
         localStorage.setItem('codexiaUsdBrlRate', String(data.cost_summary.brl_rate));
       }
-      render();
+      scheduleRender();
     }
   }
 
@@ -151,7 +163,6 @@
     } catch (_) {}
   }
 
-  // Captura também as consultas feitas pelo próprio Vue, sem alterar seu fluxo.
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async function (...args) {
     const response = await nativeFetch(...args);
@@ -166,7 +177,6 @@
     return response;
   };
 
-  // Aviso de orçamento antes de qualquer chamada paga da geração narrada.
   document.addEventListener('click', function (event) {
     const button = event.target && event.target.closest ? event.target.closest('button') : null;
     if (!button) return;
@@ -191,11 +201,20 @@
     }
   }, true);
 
-  const observer = new MutationObserver(function () { render(); });
+  const observer = new MutationObserver(function (mutations) {
+    const meaningful = mutations.some((mutation) => {
+      if (mutation.type === 'characterData') return true;
+      return Array.from(mutation.addedNodes || []).some((node) => {
+        return !(node.nodeType === 1 && node.id === 'codexia-video-cost-panel');
+      });
+    });
+    if (meaningful) scheduleRender();
+  });
+
   function boot() {
     render();
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    setInterval(function () { render(); pollKnownTask(); }, 5000);
+    setInterval(function () { scheduleRender(); pollKnownTask(); }, 5000);
     pollKnownTask();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
