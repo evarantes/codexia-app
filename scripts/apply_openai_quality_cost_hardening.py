@@ -47,7 +47,7 @@ def patched_text(original: str) -> str:
 
 def check(text: str) -> None:
     required = (
-        '"gpt-image-2"',
+        'openai_image_model = _normalize_model_id(getattr(settings, "openai_image_model", None)) or str(os.getenv("CODEXIA_OPENAI_IMAGE_MODEL") or "gpt-image-2").strip()',
         'OPENAI_IMAGE_ESTIMATED_COST_USD',
         'OPENAI_IMAGE_SIZE',
         '"1536x1024"',
@@ -57,8 +57,15 @@ def check(text: str) -> None:
     missing = [token for token in required if token not in text]
     if missing:
         raise RuntimeError(f"OpenAI quality hardening incomplete: missing {missing}")
-    if 'or "gpt-image-1-mini"' in text:
-        raise RuntimeError("Legacy gpt-image-1-mini default still active")
+    # Scope the legacy check to the policy default assignment. The same literal can
+    # legitimately remain elsewhere as an error-classification fallback label and
+    # does not control which model is used for generation.
+    legacy_policy_default = (
+        'openai_image_model = _normalize_model_id(getattr(settings, "openai_image_model", None)) '
+        'or "gpt-image-1-mini"'
+    )
+    if legacy_policy_default in text:
+        raise RuntimeError("Legacy gpt-image-1-mini policy default still active")
     if 'OPENAI_IMAGE_QUALITY") or "low"' in text:
         raise RuntimeError("Legacy low-quality OpenAI default still active")
 
