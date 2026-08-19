@@ -29,12 +29,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the current directory contents into the container at /app
 COPY . .
 
-# Keep the worker runtime on the same duration-confirmation and OpenAI image
-# quality contracts as the API. Both patches are deterministic/idempotent.
+# Keep the worker runtime on the same duration, OpenAI quality and final video
+# quality/cost contracts as the API.
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
     python scripts/apply_openai_quality_cost_hardening.py --check && \
+    python scripts/apply_final_video_regression_hardening.py --apply && \
+    python scripts/apply_final_video_regression_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files and temp storage
