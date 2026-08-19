@@ -20,6 +20,7 @@ from app.services.scene_director_active import install_scene_director_active_pat
 from app.services.cinematic_captions import apply_presentation_rollout, install_cinematic_caption_patch
 from app.services.channel_excellence_guard import apply_channel_excellence_rollout, install_channel_excellence_guard_patch
 from app.services.final_video_presentation_guard import install_final_video_presentation_guard
+from app.services.final_cinematic_polish import install_final_cinematic_polish
 from app.services.narrative_editor import install_narrative_editor_patch
 
 # O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
@@ -52,6 +53,10 @@ install_channel_excellence_guard_patch(video_generator_cls)
 # jamais reaproveitar a última cena como encerramento.
 install_final_video_presentation_guard(video_generator_cls)
 
+# Último acabamento visual: reforça diversidade real entre chamadas de imagem,
+# quebra legendas por unidades naturais e garante endcard visualmente distinto.
+install_final_cinematic_polish(video_generator_cls)
+
 # Editor Narrativo fica como camada externa: revisa título/texto primeiro.
 # Se a IA editorial falhar, preserva o plano e continua (fail-open).
 install_narrative_editor_patch(video_generator_cls)
@@ -73,6 +78,7 @@ if __name__ == '__main__':
         f"CinematicCaptions={presentation_rollout['cinematic_captions_enabled']} | "
         f"ChannelExcellence={excellence_rollout['enabled']} | "
         f"FinalQualityGate={excellence_rollout['final_quality_gate']} | "
+        f"FinalCinematicPolish={str(os.getenv('ENABLE_FINAL_CINEMATIC_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}}"
     )
     queues = [Queue(name, connection=conn) for name in listen]
