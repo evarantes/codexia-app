@@ -91,6 +91,27 @@ def _query_operations(task_id: str) -> List[Dict[str, Any]]:
         db.close()
 
 
+def _project_10_minutes(minutes: float, tracked_total: float, fixed_cost_usd: float) -> float:
+    """Projeta 10 min sem achatar chamadas rastreadas pequenas.
+
+    `project_from_baseline` separa custo fixo/variável. Em uma amostra parcial,
+    porém, o total rastreado pode ser igual ou menor que o custo fixo de
+    referência; nesse caso a parte variável vira zero e a projeção de 10 min
+    ficaria artificialmente igual ao vídeo curto. Quando isso ocorrer e houver
+    custo rastreado real/estimado, escalamos pelo custo por minuto observado.
+    """
+    projection = project_from_baseline(
+        minutes,
+        tracked_total,
+        10.0,
+        fixed_cost_usd=fixed_cost_usd,
+    )
+    projected = _safe_float(projection.get("projected_total_cost_usd"))
+    if 10.0 > minutes and tracked_total > 0 and projected <= tracked_total:
+        projected = tracked_total * (10.0 / max(0.25, minutes))
+    return max(0.0, projected)
+
+
 def build_task_cost_summary(task_id: str, task: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Resumo financeiro de uma produção.
 
@@ -135,13 +156,7 @@ def build_task_cost_summary(task_id: str, task: Dict[str, Any] | None = None) ->
     models = sorted({str(op.get("model") or "").strip() for op in image_ops if str(op.get("model") or "").strip()})
     providers = sorted({str(op.get("provider") or "").strip() for op in image_ops if str(op.get("provider") or "").strip()})
 
-    projection = project_from_baseline(
-        minutes,
-        tracked_total,
-        10.0,
-        fixed_cost_usd=pre.fixed_cost_usd,
-    )
-    projected_10_usd = _safe_float(projection.get("projected_total_cost_usd"))
+    projected_10_usd = _project_10_minutes(minutes, tracked_total, pre.fixed_cost_usd)
 
     # Regenerações são inferidas apenas quando há mais chamadas de imagem que o
     # número-base estimado. É uma métrica operacional, não de faturamento.
