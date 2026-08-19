@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import os
 import re
-from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Type
 
 
@@ -18,13 +17,7 @@ def _clean(value: Any) -> str:
 
 
 def prepare_ptbr_tts_text(text: Any) -> str:
-    """Texto final enviado ao TTS em pt-BR.
-
-    Vozes nativas pt-BR (Antonio/Francisca no Edge) pronunciam "Jesus"
-    corretamente. O alias fonético antigo "Jêzus" passou a piorar a locução em
-    algumas rotas/provedores, portanto normalizamos qualquer alias legado de
-    volta para a grafia natural, sem alterar o roteiro/legenda visível.
-    """
+    """Normaliza somente a fronteira TTS; roteiro e legenda não são alterados."""
     value = str(text or "")
     value = re.sub(r"(?i)\bJ[êé]zus\b", "Jesus", value)
     value = re.sub(r"(?i)\bJezus\b", "Jesus", value)
@@ -85,12 +78,7 @@ def _narrated_cta(plan: Dict[str, Any]) -> str:
 
 
 def ensure_narrated_closing(plan: Any) -> Any:
-    """Garante conclusão e CTA DENTRO da narração, não como texto mudo.
-
-    O fechamento vira uma cena narrada própria para que áudio, legenda e imagem
-    permaneçam sincronizados. Isso também evita o bloco final longo em fonte
-    pequena que antes aparecia depois do fim da locução.
-    """
+    """Garante conclusão e CTA DENTRO da narração, nunca como reflexão muda."""
     if not isinstance(plan, dict):
         return plan
     payload = copy.deepcopy(plan)
@@ -102,7 +90,6 @@ def ensure_narrated_closing(plan: Any) -> Any:
     tail_text = _scene_text(scenes[-1])
     needs_cta = not _has_channel_cta(all_text)
     needs_closure = not _has_natural_closure(tail_text)
-
     closing = _closing_sentence(payload, scenes)
     cta = _narrated_cta(payload)
 
@@ -116,8 +103,6 @@ def ensure_narrated_closing(plan: Any) -> Any:
         template = copy.deepcopy(scenes[-1])
         key = _scene_text_key(template)
         template[key] = " ".join(final_parts).strip()
-        # Uma cena final narrada precisa de visual próprio. Removemos apenas
-        # referências de imagem herdadas; metadados narrativos continuam.
         for image_key in (
             "image_path", "image_url", "selected_image", "selected_image_path",
             "generated_image", "generated_image_path", "asset_path", "path",
@@ -137,8 +122,6 @@ def ensure_narrated_closing(plan: Any) -> Any:
         scenes.append(template)
 
     payload["scenes"] = scenes
-    # Nenhum texto reflexivo/CTA deve ser renderizado como bloco mudo depois da
-    # última fala. O endcard visual pode existir, mas sem mensagem longa oculta.
     payload["reflection_text"] = ""
     payload["closing_message"] = ""
     payload["final_message"] = ""
@@ -153,9 +136,7 @@ def ensure_narrated_closing(plan: Any) -> Any:
 def _extract_path(value: Any) -> Optional[str]:
     if isinstance(value, str):
         path = value.strip()
-        if path and os.path.exists(path):
-            return path
-        return None
+        return path if path and os.path.exists(path) else None
     if isinstance(value, dict):
         for key in ("path", "image_path", "file_path", "local_path", "generated_path"):
             found = _extract_path(value.get(key))
@@ -171,9 +152,8 @@ def _extract_path(value: Any) -> Optional[str]:
 
 def _image_fingerprint(path: str) -> Optional[tuple[int, tuple[int, ...]]]:
     try:
-        from PIL import Image, ImageStat
+        from PIL import Image
         image = Image.open(path).convert("RGB")
-        # dHash estrutural (64 bits)
         small = image.convert("L").resize((9, 8))
         px = list(small.getdata())
         bits = 0
@@ -184,10 +164,7 @@ def _image_fingerprint(path: str) -> Optional[tuple[int, tuple[int, ...]]]:
                 if px[base + col] > px[base + col + 1]:
                     bits |= 1 << bit_idx
                 bit_idx += 1
-        # Histograma de luminância/cor reduzido ajuda a capturar composições
-        # muito parecidas mesmo quando pequenos detalhes mudam.
-        hist_img = image.resize((32, 32)).convert("RGB")
-        hist = hist_img.histogram()
+        hist = image.resize((32, 32)).histogram()
         buckets = []
         for channel in range(3):
             segment = hist[channel * 256:(channel + 1) * 256]
@@ -211,10 +188,10 @@ def _hist_distance(a: tuple[int, ...], b: tuple[int, ...]) -> int:
 def _too_similar(fp: Optional[tuple[int, tuple[int, ...]]], previous: list[tuple[int, tuple[int, ...]]]) -> bool:
     if fp is None:
         return False
-    for old in previous[-6:]:
-        if _hamming(fp[0], old[0]) <= 8 and _hist_distance(fp[1], old[1]) <= 90:
-            return True
-    return False
+    return any(
+        _hamming(fp[0], old[0]) <= 8 and _hist_distance(fp[1], old[1]) <= 90
+        for old in previous[-6:]
+    )
 
 
 _RADICAL_DIVERSITY = (
@@ -230,26 +207,11 @@ def _with_diversity_prompt(prompt: str) -> str:
     return (f"{_clean(prompt)} {_RADICAL_DIVERSITY}").strip()[:3900]
 
 
-def _replace_prompt_call(args: tuple[Any, ...], kwargs: Dict[str, Any], prompt: str) -> tuple[tuple[Any, ...], Dict[str, Any]]:
-    new_args = list(args)
-    new_kwargs = dict(kwargs)
-    if new_args and isinstance(new_args[0], str):
-        new_args[0] = prompt
-    elif "prompt" in new_kwargs:
-        new_kwargs["prompt"] = prompt
-    else:
-        new_kwargs["prompt"] = prompt
-    return tuple(new_args), new_kwargs
-
-
 def install_final_production_guard(video_generator_cls: Type[Any]) -> Type[Any]:
     """Camada final de produção: TTS, conclusão narrada e anti-repetição real."""
     if getattr(video_generator_cls, "_codexia_final_production_guard_installed", False):
         return video_generator_cls
 
-    # O wrapper já instalado por channel_excellence_guard consulta estas funções
-    # globais em runtime. Substituí-las aqui remove o alias problemático Jêzus sem
-    # desmontar as demais proteções daquela camada.
     try:
         from app.services import channel_excellence_guard as excellence
         excellence._tts_pronunciation = prepare_ptbr_tts_text
@@ -283,12 +245,9 @@ def install_final_production_guard(video_generator_cls: Type[Any]) -> Type[Any]:
             fp = _image_fingerprint(path) if path else None
             previous = list(getattr(self, "_codexia_visual_fingerprints", []) or [])
             if fp is not None and _too_similar(fp, previous):
-                retry_prompt = _with_diversity_prompt(prompt)
-                retry_args, retry_kwargs = _replace_prompt_call(args, kwargs, retry_prompt)
-                retry_result = original_ensure(self, *retry_args, **retry_kwargs)
+                retry_result = original_ensure(self, _with_diversity_prompt(prompt), *args, **kwargs)
                 retry_path = _extract_path(retry_result)
                 retry_fp = _image_fingerprint(retry_path) if retry_path else None
-                # Usa a regeneração se ela realmente aumentar a diversidade.
                 if retry_fp is not None and not _too_similar(retry_fp, previous):
                     result, fp = retry_result, retry_fp
                 elif retry_fp is not None and fp is not None:
@@ -323,7 +282,10 @@ def install_openai_quality_policy_override() -> bool:
         if str(capability) not in {AICapability.IMAGE_GENERATION, AICapability.THUMBNAIL_GENERATION}:
             return policy
         model = str(os.getenv("CODEXIA_OPENAI_IMAGE_MODEL") or "gpt-image-2").strip() or "gpt-image-2"
-        estimated = float(os.getenv("OPENAI_IMAGE_ESTIMATED_COST_USD") or 0.05)
+        try:
+            estimated = float(os.getenv("OPENAI_IMAGE_ESTIMATED_COST_USD") or 0.05)
+        except Exception:
+            estimated = 0.05
         return AIPolicy(
             capability=str(capability),
             primary_provider="openai",
