@@ -51,23 +51,27 @@ def check(text: str) -> None:
         'OPENAI_IMAGE_ESTIMATED_COST_USD',
         'OPENAI_IMAGE_SIZE',
         '"1536x1024"',
-        'OPENAI_IMAGE_QUALITY',
-        'or "medium"',
+        'quality = str(os.getenv("OPENAI_IMAGE_QUALITY") or "medium").strip().lower()',
+        'else "medium"',
     )
     missing = [token for token in required if token not in text]
     if missing:
         raise RuntimeError(f"OpenAI quality hardening incomplete: missing {missing}")
-    # Scope the legacy check to the policy default assignment. The same literal can
-    # legitimately remain elsewhere as an error-classification fallback label and
-    # does not control which model is used for generation.
+    # Scope legacy checks to the exact active generation assignments. The same
+    # literals may legitimately remain in comments, error labels or compatibility
+    # code without controlling runtime image quality.
     legacy_policy_default = (
         'openai_image_model = _normalize_model_id(getattr(settings, "openai_image_model", None)) '
         'or "gpt-image-1-mini"'
     )
     if legacy_policy_default in text:
         raise RuntimeError("Legacy gpt-image-1-mini policy default still active")
-    if 'OPENAI_IMAGE_QUALITY") or "low"' in text:
-        raise RuntimeError("Legacy low-quality OpenAI default still active")
+    legacy_quality_default = 'quality = str(os.getenv("OPENAI_IMAGE_QUALITY") or "low").strip().lower()'
+    if legacy_quality_default in text:
+        raise RuntimeError("Legacy low-quality OpenAI generation default still active")
+    legacy_quality_fallback = 'kwargs["quality"] = quality if quality in {"low", "medium", "high", "auto"} else "low"'
+    if legacy_quality_fallback in text:
+        raise RuntimeError("Legacy low-quality OpenAI fallback still active")
 
 
 def main() -> int:
