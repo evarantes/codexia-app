@@ -83,6 +83,8 @@ jobs:
           python scripts/apply_consolidated_hardening.py --check
           python scripts/apply_duration_confirmation_hardening.py --apply
           python scripts/apply_duration_confirmation_hardening.py --check
+          python scripts/apply_openai_quality_cost_hardening.py --apply
+          python scripts/apply_openai_quality_cost_hardening.py --check
           python -m compileall -q app scripts
 
       - name: Apply canonical Alembic migration on PostgreSQL
