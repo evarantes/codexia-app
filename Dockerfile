@@ -34,15 +34,19 @@ RUN python -m playwright install --with-deps chromium
 COPY . .
 
 # Apply deterministic hardening before any runtime validation/startup.
-# This keeps the legacy large files unchanged in unrelated regions while
-# enforcing UI boot safety, publication decoupling, human duration approval
-# and the OpenAI production image quality profile.
+# Cost control runs after duration + OpenAI defaults so it can safely add
+# per-production quality, budget confirmation and the cost panel.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
-    python scripts/apply_openai_quality_cost_hardening.py --check
+    python scripts/apply_openai_quality_cost_hardening.py --check && \
+    python scripts/apply_video_cost_backend_hardening.py --apply && \
+    python scripts/apply_video_cost_backend_hardening.py --check && \
+    python scripts/apply_video_cost_ui_hardening.py --apply && \
+    python scripts/apply_video_cost_ui_hardening.py --check && \
+    python -m compileall -q app scripts
 
 # Create directory for static files if not exists
 RUN mkdir -p app/static/videos app/static/covers app/static/icons && \

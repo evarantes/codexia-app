@@ -3,14 +3,21 @@ from __future__ import annotations
 import os
 import unittest
 
-from app.services.video_cost_estimator import estimate_video_cost, project_from_baseline
+from app.services.video_cost_estimator import (
+    estimate_video_cost,
+    image_profile_for_mode,
+    project_from_baseline,
+)
 
 
 class VideoCostEstimatorTests(unittest.TestCase):
     def tearDown(self):
         for key in (
+            "CODEXIA_ECONOMY_IMAGES_PER_MINUTE",
             "CODEXIA_BALANCED_IMAGES_PER_MINUTE",
+            "CODEXIA_PREMIUM_IMAGES_PER_MINUTE",
             "CODEXIA_BALANCED_IMAGE_COST_USD",
+            "CODEXIA_BALANCED_IMAGE_QUALITY",
             "CODEXIA_VIDEO_FIXED_COST_USD",
             "CODEXIA_OPENAI_IMAGE_MODEL",
             "OPENAI_IMAGE_QUALITY",
@@ -22,23 +29,48 @@ class VideoCostEstimatorTests(unittest.TestCase):
         self.assertEqual(result.provider, "openai")
         self.assertEqual(result.model, "gpt-image-2")
         self.assertEqual(result.image_quality, "medium")
+        self.assertEqual(result.images_per_minute, 8.0)
         self.assertEqual(result.estimated_images, 16)
         self.assertEqual(result.estimated_regenerations, 2)
         self.assertEqual(result.estimated_endcards, 1)
         self.assertGreater(result.total_cost_usd, 0)
+
+    def test_modes_keep_cinematic_cadence_and_change_openai_quality(self):
+        economy = estimate_video_cost(2, mode="economy", regeneration_rate=0)
+        balanced = estimate_video_cost(2, mode="balanced", regeneration_rate=0)
+        premium = estimate_video_cost(2, mode="premium", regeneration_rate=0)
+        self.assertEqual(economy.estimated_images, 16)
+        self.assertEqual(balanced.estimated_images, 16)
+        self.assertEqual(premium.estimated_images, 16)
+        self.assertEqual(economy.image_quality, "low")
+        self.assertEqual(balanced.image_quality, "medium")
+        self.assertEqual(premium.image_quality, "high")
+        self.assertLess(economy.total_cost_usd, balanced.total_cost_usd)
+        self.assertLess(balanced.total_cost_usd, premium.total_cost_usd)
+
+    def test_global_openai_quality_does_not_lie_about_per_production_mode(self):
+        os.environ["OPENAI_IMAGE_QUALITY"] = "high"
+        result = estimate_video_cost(2, mode="economy", regeneration_rate=0)
+        self.assertEqual(result.image_quality, "low")
 
     def test_cost_estimate_is_configurable_without_code_change(self):
         os.environ["CODEXIA_BALANCED_IMAGES_PER_MINUTE"] = "6"
         os.environ["CODEXIA_BALANCED_IMAGE_COST_USD"] = "0.04"
         os.environ["CODEXIA_VIDEO_FIXED_COST_USD"] = "0.20"
         os.environ["CODEXIA_OPENAI_IMAGE_MODEL"] = "gpt-image-2-2026-04-21"
-        os.environ["OPENAI_IMAGE_QUALITY"] = "high"
+        os.environ["CODEXIA_BALANCED_IMAGE_QUALITY"] = "high"
         result = estimate_video_cost(2, mode="balanced", regeneration_rate=0.0)
         self.assertEqual(result.estimated_images, 12)
         self.assertEqual(result.estimated_regenerations, 0)
         self.assertEqual(result.image_quality, "high")
         self.assertEqual(result.model, "gpt-image-2-2026-04-21")
         self.assertAlmostEqual(result.total_cost_usd, 0.72, places=6)
+
+    def test_image_profile_can_be_reused_by_runtime_router(self):
+        profile = image_profile_for_mode("qualidade máxima")
+        self.assertEqual(profile["mode"], "premium")
+        self.assertEqual(profile["provider"], "openai")
+        self.assertEqual(profile["image_quality"], "high")
 
     def test_projection_separates_fixed_and_variable_cost(self):
         result = project_from_baseline(2, 6.10, 10, fixed_cost_usd=0.10)
