@@ -24,7 +24,7 @@ def patch(text: str) -> str:
     text = replace_once(
         text,
         "</body>",
-        '    <script src="/static/video_cost_control.js"></script>\n</body>',
+        '    <script src="/static/video_cost_control.js"></script>\n    <script src="/static/video_cost_control_watch.js"></script>\n</body>',
         "load-cost-panel",
     )
     text = replace_once(
