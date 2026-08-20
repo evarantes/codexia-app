@@ -23,6 +23,7 @@ from app.services.final_video_presentation_guard import install_final_video_pres
 from app.services.final_cinematic_polish import install_final_cinematic_polish
 from app.services.return_channel_polish import install_return_channel_polish
 from app.services.narrative_editor import install_narrative_editor_patch
+from app.services.canonical_caption_source import install_canonical_caption_source_patch
 
 # O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
 # qualquer crítica/validação/render posterior. A instalação é idempotente.
@@ -67,6 +68,10 @@ install_return_channel_polish(video_generator_cls)
 # Se a IA editorial falhar, preserva o plano e continua (fail-open).
 install_narrative_editor_patch(video_generator_cls)
 
+# Última camada textual do renderer: a transcrição fornece somente timestamps;
+# o conteúdo das legendas vem sempre do mesmo texto final enviado ao TTS.
+install_canonical_caption_source_patch(video_generator_cls)
+
 listen = ['default']
 
 if __name__ == '__main__':
@@ -86,7 +91,8 @@ if __name__ == '__main__':
         f"FinalQualityGate={excellence_rollout['final_quality_gate']} | "
         f"FinalCinematicPolish={str(os.getenv('ENABLE_FINAL_CINEMATIC_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"ReturnChannelPolish={str(os.getenv('ENABLE_RETURN_CHANNEL_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
-        f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}}"
+        f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
+        "CanonicalCaptionSource=true"
     )
     queues = [Queue(name, connection=conn) for name in listen]
     worker = Worker(queues, connection=conn)
