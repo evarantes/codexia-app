@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.services.return_channel_polish import ensure_narrated_return_cta
-from scripts.apply_voice_closure_hardening import patch_renderer, patch_scene_voice
+from scripts.apply_voice_closure_hardening import patch_renderer, patch_scene_voice, patch_voice
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +37,7 @@ def test_return_cta_is_a_real_narrated_scene_with_all_requested_actions():
     assert result["endcard_cta_text"] == "INSCREVA-SE • ATIVE O SININHO • COMPARTILHE"
 
 
-def test_existing_complete_cta_is_not_duplicated():
+def test_existing_complete_cta_in_scene_is_not_duplicated():
     plan = {
         "scenes": [
             {"text": "Jesus continua sendo o centro da mensagem."},
@@ -56,6 +56,33 @@ def test_existing_complete_cta_is_not_duplicated():
     joined = " ".join(scene["text"] for scene in result["scenes"]).lower()
     assert joined.count("inscreva-se") == 1
     assert result["codexia_narrated_channel_cta_applied"] is False
+
+
+def test_complete_legacy_cta_is_moved_into_scene_before_legacy_field_is_cleared():
+    legacy = (
+        "Inscreva-se no canal, ative o sininho para receber as próximas mensagens "
+        "e compartilhe este vídeo com alguém que precisa ouvi-lo."
+    )
+    plan = {
+        "scenes": [{"text": "Jesus permanece conosco e esta mensagem termina aqui."}],
+        "closing_text": legacy,
+    }
+
+    result = ensure_narrated_return_cta(plan)
+
+    assert len(result["scenes"]) == 2
+    assert result["scenes"][-1]["text"] == legacy
+    assert result["closing_text"] == ""
+    assert result["codexia_narrated_channel_cta_applied"] is True
+
+
+def test_excellence_guard_preserves_explicit_endcard_cta():
+    path = ROOT / "app/services/channel_excellence_guard.py"
+    transformed = patch_voice(path.read_text(encoding="utf-8"))
+
+    assert '_clean_line(guarded.get("endcard_cta_text"))' in transformed
+    assert 'branding["endcard_cta_text"] = guarded["endcard_cta_text"]' in transformed
+    assert 'branding.setdefault("endcard_cta_text", guarded["endcard_cta_text"])' not in transformed
 
 
 def test_inner_scene_director_no_longer_reintroduces_phonetic_jesus():
