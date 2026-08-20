@@ -29,14 +29,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the current directory contents into the container at /app
 COPY . .
 
-# Keep the worker runtime on the same duration, OpenAI image quality and
-# per-production cost-control contracts as the API.
+# Keep the worker runtime on the same duration, OpenAI image quality,
+# per-production cost-control and final voice/closure contracts as the API.
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
     python scripts/apply_openai_quality_cost_hardening.py --check && \
     python scripts/apply_video_cost_backend_hardening.py --apply && \
     python scripts/apply_video_cost_backend_hardening.py --check && \
+    python scripts/apply_voice_closure_hardening.py --apply && \
+    python scripts/apply_voice_closure_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files and temp storage
