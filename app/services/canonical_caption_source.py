@@ -162,8 +162,12 @@ def _persist_integrity_audit(generator: Any, audit: Dict[str, Any]) -> None:
         pass
 
 
-def install_canonical_caption_source_patch(video_generator_cls: Optional[Type[Any]] = None) -> Type[Any]:
+def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Type[Any]:
     """Faz TTS e legenda compartilharem uma única fonte textual oficial.
+
+    A classe do renderer é fornecida pelo executor canônico do worker. Este
+    módulo não importa nem instancia o VideoGenerator, preservando a fronteira
+    arquitetural do pipeline História/Devocional.
 
     O patch não altera geração de áudio, imagem, roteiro ou timing. Ele atua
     depois que a timeline já foi criada: mantém timestamps da transcrição e
@@ -173,9 +177,7 @@ def install_canonical_caption_source_patch(video_generator_cls: Optional[Type[An
     oficial para voz e legenda.
     """
     if video_generator_cls is None:
-        from app.services.video_generator import VideoGenerator
-
-        video_generator_cls = VideoGenerator
+        raise ValueError("video_generator_cls é obrigatório para preservar o executor canônico")
 
     if getattr(video_generator_cls, "_codexia_canonical_caption_source_installed", False):
         return video_generator_cls
