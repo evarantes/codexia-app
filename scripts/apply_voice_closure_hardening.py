@@ -27,7 +27,11 @@ def _replace_once(text: str, old: str, new: str, *, label: str) -> str:
 def patch_voice(text: str) -> str:
     old = '''    # Forma fonética somente para a voz. Texto/legenda permanecem com a grafia oficial.\n    value = re.sub(r"(?i)\\bjesus\\b", "Jêzus", value)'''
     new = '''    # Preserve a grafia oficial no texto enviado ao TTS. As vozes pt-BR atuais\n    # pronunciam "Jesus" corretamente; a antiga grafia fonética "Jêzus" podia\n    # distorcer a sílaba final em alguns providers/vozes.\n    value = re.sub(r"(?i)\\bjesus\\b", "Jesus", value)'''
-    return _replace_once(text, old, new, label="voice/preserve-jesus-spelling")
+    text = _replace_once(text, old, new, label="voice/preserve-jesus-spelling")
+
+    old_cta = '''            guarded["endcard_cta_text"] = "Inscreva-se e acompanhe novas mensagens."\n            branding = guarded.get("branding") if isinstance(guarded.get("branding"), dict) else {}\n            branding = deepcopy(branding)\n            branding["final_message"] = lines\n            branding.setdefault("endcard_cta_text", guarded["endcard_cta_text"])'''
+    new_cta = '''            # Respeita CTA explícito vindo da preparação final do canal. Assim\n            # inscrição + sininho + compartilhamento não são reduzidos pelo guard.\n            guarded["endcard_cta_text"] = (\n                _clean_line(guarded.get("endcard_cta_text"))\n                or "Inscreva-se e acompanhe novas mensagens."\n            )\n            branding = guarded.get("branding") if isinstance(guarded.get("branding"), dict) else {}\n            branding = deepcopy(branding)\n            branding["final_message"] = lines\n            branding["endcard_cta_text"] = guarded["endcard_cta_text"]'''
+    return _replace_once(text, old_cta, new_cta, label="voice/preserve-explicit-endcard-cta")
 
 
 def patch_scene_voice(text: str) -> str:
@@ -101,6 +105,8 @@ def check() -> None:
     required_voice = (
         'value = re.sub(r"(?i)\\bjesus\\b", "Jesus", value)',
         'antiga grafia fonética "Jêzus"',
+        '_clean_line(guarded.get("endcard_cta_text"))',
+        'branding["endcard_cta_text"] = guarded["endcard_cta_text"]',
     )
     for token in required_voice:
         if token not in voice:
