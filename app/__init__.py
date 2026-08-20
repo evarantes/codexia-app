@@ -6,6 +6,8 @@ do VideoTask, portanto uma falha/interrupção detectada pelo monitor não deixa
 UI canônica presa em ``queued / 0%``.
 """
 
+import json
+
 from sqlalchemy import event, inspect, text
 from sqlalchemy.orm import Session
 
@@ -23,6 +25,122 @@ def _canonical_status_for_video_task(status: str):
     if normalized in {"processing", "completed", "ready", "rendered_upload_failed"}:
         return normalized
     return None
+
+
+def _openai_credit_recovery_result(obj):
+    """Detecta retry humano após falha OPENAI_NO_CREDIT.
+
+    O retry seguro do YouTube Auto troca a tarefa de ``failed`` para
+    ``processing`` e usa a mensagem ``Retomada preparada...``. Esse gesto do
+    usuário passa a ser a confirmação de que o saldo foi recarregado. Não
+    liberamos o bloqueio em nenhuma transição automática e não repetimos a
+    chamada se a recarga ainda não estiver disponível.
+    """
+    try:
+        if str(getattr(obj, "__tablename__", "") or "") != "video_tasks":
+            return None
+        state = inspect(obj)
+        history = state.attrs.status.history
+        previous = {str(value or "").strip().lower() for value in (history.deleted or [])}
+        current = str(getattr(obj, "status", "") or "").strip().lower()
+        message = str(getattr(obj, "message", "") or "").strip().lower()
+        if "failed" not in previous or current not in {"processing", "pending"}:
+            return None
+        if "retomada preparada" not in message and "reaproveitamento" not in message:
+            return None
+
+        raw = str(getattr(obj, "result_json", "") or "").strip()
+        if not raw:
+            return None
+        result = json.loads(raw)
+        if not isinstance(result, dict):
+            return None
+        provider_error = result.get("provider_error")
+        if not isinstance(provider_error, dict):
+            return None
+        provider = str(provider_error.get("provider") or "").strip().lower()
+        code = str(provider_error.get("code") or "").strip().upper()
+        if provider != "openai" or code != "OPENAI_NO_CREDIT":
+            return None
+        return result
+    except Exception:
+        return None
+
+
+@event.listens_for(Session, "before_flush")
+def _resume_after_openai_credit_recharge(session, _flush_context, _instances):
+    """Libera ``openai_no_credit`` somente quando o usuário reinicia a mesma tarefa.
+
+    A falha continua protegida por padrão. Depois de recarregar a OpenAI, o
+    clique em ``Reiniciar tarefa/Reiniciar agora`` é a confirmação humana que
+    autoriza uma nova tentativa, preservando payload, imagens, áudio e demais
+    checkpoints já salvos pela recuperação canônica.
+    """
+    try:
+        candidates = list(session.dirty)
+    except Exception:
+        candidates = []
+
+    for obj in candidates:
+        result = _openai_credit_recovery_result(obj)
+        if not isinstance(result, dict):
+            continue
+
+        user_id = getattr(obj, "user_id", None)
+        try:
+            if user_id is None:
+                session.execute(
+                    text(
+                        """
+                        UPDATE settings
+                        SET openai_no_credit = :disabled
+                        WHERE id = (SELECT id FROM settings ORDER BY id DESC LIMIT 1)
+                        """
+                    ),
+                    {"disabled": False},
+                )
+            else:
+                session.execute(
+                    text(
+                        """
+                        UPDATE settings
+                        SET openai_no_credit = :disabled
+                        WHERE id = (
+                            SELECT id FROM settings
+                            WHERE user_id = :user_id
+                            ORDER BY id DESC
+                            LIMIT 1
+                        )
+                        """
+                    ),
+                    {"disabled": False, "user_id": int(user_id)},
+                )
+        except Exception:
+            # Não mascara o retry: se a configuração não puder ser liberada,
+            # a próxima chamada continuará bloqueada e a tarefa falhará de
+            # forma recuperável, sem entrar em repetição automática.
+            continue
+
+        # O alerta antigo não deve permanecer vermelho enquanto a mesma tarefa
+        # já está sendo retomada. Mantemos uma trilha de auditoria no resultado.
+        result.pop("provider_error", None)
+        recovery = result.get("provider_credit_recovery")
+        if not isinstance(recovery, dict):
+            recovery = {}
+        recovery.update(
+            {
+                "provider": "openai",
+                "credit_recharge_confirmed": True,
+                "confirmation_source": "explicit_same_task_retry",
+                "same_task": True,
+                "reuse_assets": True,
+            }
+        )
+        result["provider_credit_recovery"] = recovery
+        try:
+            obj.result_json = json.dumps(result, ensure_ascii=False)
+        except Exception:
+            pass
 
 
 @event.listens_for(Session, "after_flush")
