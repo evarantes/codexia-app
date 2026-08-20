@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import re
-from typing import Any, Dict, Iterable, Type
+from typing import Any, Dict, Type
 
 
 def _enabled(name: str, default: str = "true") -> bool:
@@ -66,6 +66,24 @@ def _closing_visual_prompt() -> str:
     )
 
 
+def _append_narrated_cta_scene(scenes: list[Dict[str, Any]], cta_text: str) -> None:
+    template = copy.deepcopy(scenes[-1])
+    text_key = _scene_text_key(template)
+    template[text_key] = _clean(cta_text) or _default_narrated_cta()
+
+    # Nunca reutiliza a arte/path da cena anterior para o CTA final.
+    for key in (
+        "image_path", "image_url", "selected_image", "selected_image_path",
+        "generated_image", "generated_image_path", "asset_path", "path", "image",
+    ):
+        template.pop(key, None)
+    template["image_prompt"] = _closing_visual_prompt()
+    template.pop("visual_prompt", None)
+    template.pop("prompt", None)
+    template["codexia_narrated_channel_cta"] = True
+    scenes.append(template)
+
+
 def ensure_narrated_return_cta(plan: Any) -> Any:
     """Garante CTA falado como última cena real, sem duplicar o que já existe.
 
@@ -81,35 +99,19 @@ def ensure_narrated_return_cta(plan: Any) -> Any:
     if not scenes:
         return payload
 
-    all_narration = " ".join(_scene_text(scene) for scene in scenes)
-    existing_extra = " ".join(
+    scene_narration = " ".join(_scene_text(scene) for scene in scenes)
+    legacy_candidates = [
         _clean(payload.get(key))
-        for key in ("cta_text", "narrated_cta_text", "closing_text")
+        for key in ("narrated_cta_text", "cta_text", "closing_text")
         if _clean(payload.get(key))
-    )
-    combined = f"{all_narration} {existing_extra}".strip()
+    ]
+    complete_legacy_cta = next((text for text in legacy_candidates if _has_complete_channel_cta(text)), "")
 
-    if not _has_complete_channel_cta(combined):
-        template = copy.deepcopy(scenes[-1])
-        text_key = _scene_text_key(template)
-        configured = _clean(payload.get("narrated_cta_text"))
-        cta_text = configured if _has_complete_channel_cta(configured) else _default_narrated_cta()
-        template[text_key] = cta_text
-
-        # Nunca reutiliza a arte/path da cena anterior para o CTA final.
-        for key in (
-            "image_path", "image_url", "selected_image", "selected_image_path",
-            "generated_image", "generated_image_path", "asset_path", "path", "image",
-        ):
-            template.pop(key, None)
-        template["image_prompt"] = _closing_visual_prompt()
-        template.pop("visual_prompt", None)
-        template.pop("prompt", None)
-        template["codexia_narrated_channel_cta"] = True
-        scenes.append(template)
-        payload["codexia_narrated_channel_cta_applied"] = True
-    else:
+    if _has_complete_channel_cta(scene_narration):
         payload["codexia_narrated_channel_cta_applied"] = False
+    else:
+        _append_narrated_cta_scene(scenes, complete_legacy_cta or _default_narrated_cta())
+        payload["codexia_narrated_channel_cta_applied"] = True
 
     payload["scenes"] = scenes
 
