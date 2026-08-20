@@ -46,6 +46,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_video_cost_backend_hardening.py --check && \
     python scripts/apply_video_cost_ui_hardening.py --apply && \
     python scripts/apply_video_cost_ui_hardening.py --check && \
+    python scripts/apply_voice_closure_hardening.py --apply && \
+    python scripts/apply_voice_closure_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
