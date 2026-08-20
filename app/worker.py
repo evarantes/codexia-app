@@ -21,6 +21,7 @@ from app.services.cinematic_captions import apply_presentation_rollout, install_
 from app.services.channel_excellence_guard import apply_channel_excellence_rollout, install_channel_excellence_guard_patch
 from app.services.final_video_presentation_guard import install_final_video_presentation_guard
 from app.services.final_cinematic_polish import install_final_cinematic_polish
+from app.services.return_channel_polish import install_return_channel_polish
 from app.services.narrative_editor import install_narrative_editor_patch
 
 # O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
@@ -57,6 +58,11 @@ install_final_video_presentation_guard(video_generator_cls)
 # quebra legendas por unidades naturais e garante endcard visualmente distinto.
 install_final_cinematic_polish(video_generator_cls)
 
+# O CTA do retorno entra como última cena narrada normal. É instalado antes do
+# Editor Narrativo para receber o plano já revisado quando a camada externa chama
+# o renderer interno; assim voz, legenda e imagem compartilham a mesma timeline.
+install_return_channel_polish(video_generator_cls)
+
 # Editor Narrativo fica como camada externa: revisa título/texto primeiro.
 # Se a IA editorial falhar, preserva o plano e continua (fail-open).
 install_narrative_editor_patch(video_generator_cls)
@@ -79,6 +85,7 @@ if __name__ == '__main__':
         f"ChannelExcellence={excellence_rollout['enabled']} | "
         f"FinalQualityGate={excellence_rollout['final_quality_gate']} | "
         f"FinalCinematicPolish={str(os.getenv('ENABLE_FINAL_CINEMATIC_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
+        f"ReturnChannelPolish={str(os.getenv('ENABLE_RETURN_CHANNEL_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}}"
     )
     queues = [Queue(name, connection=conn) for name in listen]
