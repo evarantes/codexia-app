@@ -69,7 +69,7 @@ class DurationConfirmationTests(unittest.TestCase):
     def test_extreme_overrun_without_confirmation_still_blocks_before_render(self):
         cls = self._generator_cls("DurationBlockedWithoutApproval")
         text = " ".join(["esperança"] * 300)
-        with self.assertRaisesRegex(RuntimeError, "Confirme o aviso de duração"):
+        with self.assertRaisesRegex(RuntimeError, "Continuar assim mesmo"):
             cls().create_video_from_plan({
                 "title": "Jesus Está Presente",
                 "duration_min": 1,
