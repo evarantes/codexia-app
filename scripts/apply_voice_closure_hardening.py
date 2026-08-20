@@ -6,7 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VOICE_TARGET = ROOT / "app/services/channel_excellence_guard.py"
+SCENE_VOICE_TARGET = ROOT / "app/services/scene_director_active.py"
 EDITOR_TARGET = ROOT / "app/services/story_review_editor.py"
+RENDER_TARGET = ROOT / "app/services/video_generator.py"
 
 
 class PatchError(RuntimeError):
@@ -26,6 +28,12 @@ def patch_voice(text: str) -> str:
     old = '''    # Forma fonética somente para a voz. Texto/legenda permanecem com a grafia oficial.\n    value = re.sub(r"(?i)\\bjesus\\b", "Jêzus", value)'''
     new = '''    # Preserve a grafia oficial no texto enviado ao TTS. As vozes pt-BR atuais\n    # pronunciam "Jesus" corretamente; a antiga grafia fonética "Jêzus" podia\n    # distorcer a sílaba final em alguns providers/vozes.\n    value = re.sub(r"(?i)\\bjesus\\b", "Jesus", value)'''
     return _replace_once(text, old, new, label="voice/preserve-jesus-spelling")
+
+
+def patch_scene_voice(text: str) -> str:
+    old = '''def _spoken_ptbr(text: Any) -> str:\n    value = str(text or "")\n    # A forma fonética só vai para o TTS; legenda/texto aprovado continuam "Jesus".\n    value = re.sub(r"(?i)\\bjesus\\b", "Jêzus", value)\n    return value'''
+    new = '''def _spoken_ptbr(text: Any) -> str:\n    value = str(text or "")\n    # Esta é a camada mais interna antes do provider. Ela também precisa preservar\n    # "Jesus"; caso contrário desfaz o guard externo e acelera/distorce a palavra.\n    value = re.sub(r"(?i)\\bjesus\\b", "Jesus", value)\n    return value'''
+    return _replace_once(text, old, new, label="scene-voice/preserve-jesus-at-inner-boundary")
 
 
 def patch_editor(text: str) -> str:
@@ -50,9 +58,46 @@ def patch_editor(text: str) -> str:
     return text
 
 
+def patch_renderer(text: str) -> str:
+    text = _replace_once(
+        text,
+        "DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.40\nDEFAULT_OPENING_SILENCE_SEC = 0.45\nDEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30\nDEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20",
+        "DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.10\nDEFAULT_OPENING_SILENCE_SEC = 0.45\nDEFAULT_SCENE_IMAGE_LEAD_SEC = 0.12\nDEFAULT_SCENE_CAPTION_LEAD_SEC = 0.0",
+        label="renderer/tighter-caption-audio-alignment",
+    )
+    text = _replace_once(
+        text,
+        '            pause_before_cta_sec = float(planning_meta.get("pause_duration_sec") or 1.25)',
+        '            _pause_configured = planning_meta.get("pause_duration_sec")\n            pause_before_cta_sec = max(0.0, float(_pause_configured if _pause_configured is not None else 0.45))',
+        label="renderer/honor-zero-pause-before-cta",
+    )
+    text = _replace_once(
+        text,
+        '            pause_before_cta_sec = float(planning_meta.get("pause_duration_sec") or pause_before_cta_sec or 1.25)\n            initial_opening_silence_sec = float(planning_meta.get("intro_opening_hold_sec") or initial_opening_silence_sec or DEFAULT_OPENING_SILENCE_SEC)\n            end_screen_target_duration_sec = float(planning_meta.get("end_screen_target_duration_sec") or 5.0)',
+        '            _pause_configured = planning_meta.get("pause_duration_sec")\n            pause_before_cta_sec = max(0.0, float(_pause_configured if _pause_configured is not None else pause_before_cta_sec))\n            if not closing_has_narration:\n                pause_before_cta_sec = 0.0\n            initial_opening_silence_sec = float(planning_meta.get("intro_opening_hold_sec") or initial_opening_silence_sec or DEFAULT_OPENING_SILENCE_SEC)\n            _end_screen_configured = planning_meta.get("end_screen_target_duration_sec")\n            end_screen_target_duration_sec = float(_end_screen_configured if _end_screen_configured is not None else 1.2)',
+        label="renderer/remove-orphan-closing-pause",
+    )
+    text = _replace_once(
+        text,
+        '            end_clip_duration = min(6.0, max(3.0, round(end_screen_target_duration_sec, 2)))',
+        '            end_clip_duration = min(1.6, max(0.8, round(end_screen_target_duration_sec, 2)))',
+        label="renderer/short-purposeful-endcard",
+    )
+    text = _replace_once(
+        text,
+        '            cta_ok = (3.0 <= float(end_clip_duration or 0.0) <= 6.0) if closing_has_narration else True',
+        '            cta_ok = (0.8 <= float(end_clip_duration or 0.0) <= 1.6) if closing_has_narration else True',
+        label="renderer/validate-short-endcard",
+    )
+    return text
+
+
 def check() -> None:
     voice = VOICE_TARGET.read_text(encoding="utf-8")
+    scene_voice = SCENE_VOICE_TARGET.read_text(encoding="utf-8")
     editor = EDITOR_TARGET.read_text(encoding="utf-8")
+    renderer = RENDER_TARGET.read_text(encoding="utf-8")
+
     required_voice = (
         'value = re.sub(r"(?i)\\bjesus\\b", "Jesus", value)',
         'antiga grafia fonética "Jêzus"',
@@ -61,7 +106,12 @@ def check() -> None:
         if token not in voice:
             raise PatchError(f"voice hardening incompleto: ausente {token}")
     if 'value = re.sub(r"(?i)\\bjesus\\b", "Jêzus", value)' in voice:
-        raise PatchError("substituição fonética antiga de Jesus ainda ativa")
+        raise PatchError("substituição fonética antiga de Jesus ainda ativa no channel guard")
+
+    if 'value = re.sub(r"(?i)\\bjesus\\b", "Jêzus", value)' in scene_voice:
+        raise PatchError("substituição fonética antiga de Jesus ainda ativa no scene director")
+    if 'value = re.sub(r"(?i)\\bjesus\\b", "Jesus", value)' not in scene_voice:
+        raise PatchError("scene director não preserva Jesus na fronteira interna do TTS")
 
     required_editor = (
         "def _closing_structure_issues",
@@ -74,10 +124,28 @@ def check() -> None:
         if token not in editor:
             raise PatchError(f"closure hardening incompleto: ausente {token}")
 
+    required_renderer = (
+        "DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.10",
+        "DEFAULT_SCENE_IMAGE_LEAD_SEC = 0.12",
+        "DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.0",
+        "if not closing_has_narration:\n                pause_before_cta_sec = 0.0",
+        "else 1.2)",
+        "end_clip_duration = min(1.6, max(0.8",
+        "cta_ok = (0.8 <= float(end_clip_duration or 0.0) <= 1.6)",
+    )
+    for token in required_renderer:
+        if token not in renderer:
+            raise PatchError(f"renderer hardening incompleto: ausente {token}")
+
 
 def apply(*, write: bool) -> int:
     changed = 0
-    targets = ((VOICE_TARGET, patch_voice), (EDITOR_TARGET, patch_editor))
+    targets = (
+        (VOICE_TARGET, patch_voice),
+        (SCENE_VOICE_TARGET, patch_scene_voice),
+        (EDITOR_TARGET, patch_editor),
+        (RENDER_TARGET, patch_renderer),
+    )
     for path, patcher in targets:
         original = path.read_text(encoding="utf-8")
         transformed = patcher(original)
@@ -90,7 +158,7 @@ def apply(*, write: bool) -> int:
             raise PatchError(f"{path}: transformação não idempotente")
     if write:
         check()
-    print(f"Voice/closure hardening: {changed} arquivo(s) alterado(s).")
+    print(f"Voice/closure/sync hardening: {changed} arquivo(s) alterado(s).")
     return changed
 
 
@@ -107,7 +175,7 @@ def main() -> int:
         if args.check:
             check()
     except PatchError as exc:
-        print(f"ERRO VOICE/CLOSURE HARDENING: {exc}")
+        print(f"ERRO VOICE/CLOSURE/SYNC HARDENING: {exc}")
         return 2
     return 0
 
