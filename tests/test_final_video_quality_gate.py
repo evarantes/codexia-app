@@ -99,13 +99,14 @@ class FinalVideoQualityGateTests(unittest.TestCase):
         self.assertEqual(instance._default_reflection_text(plan, []), "")
         self.assertEqual(instance._default_closing_text("Canal"), "")
 
-    def test_ptbr_guard_normalizes_jesus_and_pelo_contrario(self):
+    def test_ptbr_guard_preserves_jesus_and_normalizes_pelo_contrario(self):
         os.environ["ENABLE_CHANNEL_EXCELLENCE_GUARD"] = "true"
         cls = _fresh_cls("PtBrFinalGenerator")
         install_channel_excellence_guard_patch(cls)
         result = cls().generate_audio("Jesus disse: pelo contrário, continue.", lang="pt-BR")
         self.assertEqual(result["lang"], "pt")
-        self.assertIn("Jêzus", result["text"])
+        self.assertIn("Jesus", result["text"])
+        self.assertNotIn("Jêzus", result["text"])
         self.assertIn("muito pelo contrário", result["text"].lower())
 
     def test_auto_video_requires_one_visual_target_per_scene(self):
