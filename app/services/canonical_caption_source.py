@@ -4,7 +4,7 @@ import hashlib
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 
 def _utc_iso() -> str:
@@ -33,6 +33,42 @@ def _task_id_from_generator(generator: Any) -> Optional[str]:
     ai_service = getattr(generator, "ai_service", None)
     task_id = getattr(ai_service, "ai_task_id", None) if ai_service is not None else None
     return str(task_id).strip() if task_id else None
+
+
+def _canonical_text_from_tts_checkpoint(generator: Any, narration_fallback: str) -> Tuple[str, str]:
+    """Obtém a fonte textual mais próxima possível do áudio que foi gerado.
+
+    ``audio_checkpoint.final_text_sent_to_tts`` é persistido imediatamente após
+    o TTS pelo patch de checkpoint. Ele é a autoridade. A variável ``narration``
+    só é usada quando não existe task/checkpoint (testes, legado ou execução sem
+    persistência).
+    """
+    task_id = _task_id_from_generator(generator)
+    if task_id:
+        try:
+            from app.services.task_manager import get_task
+
+            task = get_task(task_id) or {}
+            result = task.get("result") if isinstance(task.get("result"), dict) else {}
+            checkpoint = result.get("audio_checkpoint") if isinstance(result.get("audio_checkpoint"), dict) else {}
+            text = str(checkpoint.get("final_text_sent_to_tts") or "").strip()
+            if text:
+                return _normalize_with_generator(generator, text), "audio_checkpoint.final_text_sent_to_tts"
+
+            audio_generation = result.get("audio_generation") if isinstance(result.get("audio_generation"), dict) else {}
+            text = str(audio_generation.get("final_text_sent_to_tts") or "").strip()
+            if text:
+                return _normalize_with_generator(generator, text), "audio_generation.final_text_sent_to_tts"
+
+            render_report = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
+            render_audio = render_report.get("audio_generation") if isinstance(render_report.get("audio_generation"), dict) else {}
+            text = str(render_audio.get("final_text_sent_to_tts") or "").strip()
+            if text:
+                return _normalize_with_generator(generator, text), "render_report.audio_generation.final_text_sent_to_tts"
+        except Exception:
+            pass
+
+    return _normalize_with_generator(generator, narration_fallback), "renderer.final_narration_text"
 
 
 def _timeline_joined_text(timeline: Any) -> str:
@@ -98,7 +134,6 @@ def _redistribute_canonical_text(
             cumulative += weights[idx]
             end_idx = int(round(total_words * cumulative / total_weight))
             end_idx = max(cursor, min(total_words, end_idx))
-            # Quando há palavras suficientes, evita blocos vazios no meio.
             remaining_blocks = len(out) - idx - 1
             max_for_this = total_words - remaining_blocks
             if total_words >= len(out):
@@ -107,7 +142,6 @@ def _redistribute_canonical_text(
         item["text_source"] = "canonical_narration"
         cursor = end_idx
 
-    # Defesa final contra arredondamentos futuros.
     if cursor < total_words and out:
         tail = " ".join(words[cursor:]).strip()
         current = _collapse_ws(out[-1].get("caption") or "")
@@ -131,10 +165,12 @@ def _persist_integrity_audit(generator: Any, audit: Dict[str, Any]) -> None:
 def install_canonical_caption_source_patch(video_generator_cls: Optional[Type[Any]] = None) -> Type[Any]:
     """Faz TTS e legenda compartilharem uma única fonte textual oficial.
 
-    O patch é deliberadamente pequeno e não altera geração de áudio, imagem,
-    roteiro ou timing. Ele atua somente depois que a timeline de legenda já foi
-    criada, preservando os timestamps obtidos da transcrição e substituindo o
-    texto reconhecido pelo texto canônico entregue ao TTS.
+    O patch não altera geração de áudio, imagem, roteiro ou timing. Ele atua
+    depois que a timeline já foi criada: mantém timestamps da transcrição e
+    substitui apenas o texto reconhecido pela fonte persistida no checkpoint do
+    TTS. Assim o botão Melhorar pode mudar o roteiro quantas vezes forem
+    necessárias antes da produção; depois do TTS existe somente uma versão
+    oficial para voz e legenda.
     """
     if video_generator_cls is None:
         from app.services.video_generator import VideoGenerator
@@ -162,18 +198,21 @@ def install_canonical_caption_source_patch(video_generator_cls: Optional[Type[An
         if not isinstance(timeline, list) or not timeline:
             return details
 
-        canonical_text = _normalize_with_generator(self, narration)
+        canonical_text, canonical_source = _canonical_text_from_tts_checkpoint(self, narration)
+        if not canonical_text:
+            return details
+
         before_text = _timeline_joined_text(timeline)
         before_normalized = _normalize_with_generator(self, before_text)
-
-        # Se já é idêntico, não mexemos em nada além da auditoria.
         changed = before_normalized != canonical_text
         if changed:
             remapped = _redistribute_canonical_text(timeline, canonical_text)
             if remapped:
                 details = dict(details)
                 details["timeline"] = remapped
-                details["canonical_text_source"] = "final_narration_sent_to_tts"
+                details["canonical_text_source"] = canonical_source
+                # ``source`` não muda: código existente usa text_fallback para
+                # aplicar o deslocamento da abertura. Guardamos timing separado.
                 details["timing_source"] = str(details.get("source") or "unknown")
                 details["canonical_text_remapped"] = True
 
@@ -181,10 +220,10 @@ def install_canonical_caption_source_patch(video_generator_cls: Optional[Type[An
         after_text = _timeline_joined_text(final_timeline)
         after_normalized = _normalize_with_generator(self, after_text)
         audit = {
-            "version": 1,
+            "version": 2,
             "checked_at": _utc_iso(),
             "task_id": _task_id_from_generator(self),
-            "canonical_text_source": "final_narration_sent_to_tts",
+            "canonical_text_source": canonical_source,
             "timing_source": str(details.get("source") or "unknown"),
             "canonical_text_sha256": _sha256(canonical_text),
             "caption_text_before_sha256": _sha256(before_normalized),
@@ -198,8 +237,6 @@ def install_canonical_caption_source_patch(video_generator_cls: Optional[Type[An
         self._codexia_canonical_narration_integrity = audit
         _persist_integrity_audit(self, audit)
 
-        # Fail-closed apenas para defeito interno: após o remapeamento não pode
-        # existir uma segunda versão textual. Isso acontece antes do render.
         if after_normalized != canonical_text:
             raise RuntimeError(
                 "Falha interna de integridade: legenda não pôde ser vinculada ao texto canônico da narração."
