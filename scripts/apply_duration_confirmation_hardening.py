@@ -6,6 +6,11 @@ de falha. A previsão continua protegendo custos, mas qualquer desvio para cima
 ou para baixo é apresentado antes de enfileirar o vídeo. Se o usuário confirmar,
 o backend registra a autorização e permite que o pipeline prossiga.
 
+Também cobre o caso em que a revisão editorial aumenta o roteiro somente depois
+do envio. Nesse cenário a primeira tentativa para antes de mídia paga e a mesma
+tarefa pode ser retomada pelo botão "Continuar assim mesmo"; o retry explícito
+passa a valer como confirmação humana do desvio de duração.
+
 O patch é determinístico, idempotente e roda no CI/build sem reescrever os
 arquivos legados grandes no repositório.
 """
@@ -107,6 +112,43 @@ def patch_index(text: str) -> str:
                             auto_upload: !!this.ytStoryAutoUpload,""",
         label="index/send-duration-range-and-approval",
     )
+
+    # Se o desvio só aparecer depois da revisão editorial do backend, o cartão
+    # da tarefa deve mostrar uma ação explícita em vez do genérico Reiniciar.
+    text = _replace_once(
+        text,
+        """                                <span>{{ String(ytStoryTask.status || '').toLowerCase() === 'paused' ? 'Retomar tarefa' : 'Reiniciar tarefa' }}</span>""",
+        """                                <span>{{ String(ytStoryTask.status || '').toLowerCase() === 'paused'
+                                    ? 'Retomar tarefa'
+                                    : (String(ytStoryTask.message || '').toLowerCase().includes('roteiro fora da tolerância editorial de duração')
+                                        ? 'Continuar assim mesmo'
+                                        : 'Reiniciar tarefa') }}</span>""",
+        label="index/duration-warning-explicit-retry-label",
+    )
+
+    # O clique de retry numa falha de duração é uma confirmação humana explícita.
+    # A confirmação acontece antes de chamar o endpoint de retry e continua sem
+    # criar nova produção; o backend reaproveita a mesma tarefa recuperável.
+    text = _replace_once(
+        text,
+        """                    const taskId = String(this.ytStoryTaskId);
+                    this.ytStoryRetryLoading = true;
+                    this.ytStoryVideoLoading = true;""",
+        """                    const taskId = String(this.ytStoryTaskId);
+                    const retryMessage = String((this.ytStoryTask && this.ytStoryTask.message) || '');
+                    const isDurationWarningRetry = retryMessage.toLowerCase().includes('roteiro fora da tolerância editorial de duração');
+                    if (isDurationWarningRetry) {
+                        const confirmed = window.confirm(
+                            `Confirmar duração do roteiro?\n\n${retryMessage}\n\n` +
+                            `Nenhuma mídia paga foi gerada nesta tentativa.\n\n` +
+                            `OK = Continuar assim mesmo com o roteiro atual\nCancelar = Voltar e ajustar o roteiro`
+                        );
+                        if (!confirmed) return;
+                    }
+                    this.ytStoryRetryLoading = true;
+                    this.ytStoryVideoLoading = true;""",
+        label="index/confirm-duration-on-retry",
+    )
     return text
 
 
@@ -204,25 +246,30 @@ def patch_channel_excellence_guard(text: str) -> str:
                 )""",
         """            duration_preflight = _duration_preflight(guarded)
             duration_override_approved = bool(guarded.get("duration_override_approved"))
+            duration_retry_approved = bool(guarded.get("force_reuse_assets"))
+            duration_confirmation_approved = bool(duration_override_approved or duration_retry_approved)
             duration_was_outside_tolerance = bool(
                 duration_preflight.get("checked") and not duration_preflight.get("passed")
             )
             duration_preflight["overridden_by_user"] = bool(
-                duration_override_approved and duration_was_outside_tolerance
+                duration_confirmation_approved and duration_was_outside_tolerance
             )
             if duration_preflight["overridden_by_user"]:
-                duration_preflight["approval_source"] = "user_confirmation"
+                duration_preflight["approval_source"] = (
+                    "user_confirmation" if duration_override_approved else "retry_after_duration_warning"
+                )
             if (
                 _enabled("ENABLE_DURATION_SANITY_PREFLIGHT", "true")
                 and duration_was_outside_tolerance
-                and not duration_override_approved
+                and not duration_confirmation_approved
             ):
                 raise RuntimeError(
                     "Roteiro fora da tolerância editorial de duração antes de gerar mídia paga: "
                     f"alvo {int(duration_preflight.get('target_sec') or 0)}s, "
                     f"estimado {int(duration_preflight.get('estimated_sec') or 0)}s, "
                     f"limite flexível {int(duration_preflight.get('max_sec') or 0)}s. "
-                    "Confirme o aviso de duração para continuar assim mesmo ou ajuste o roteiro."
+                    "Na tela da tarefa, clique em Continuar assim mesmo para confirmar esta duração, "
+                    "ou ajuste/condense o roteiro antes de tentar novamente."
                 )""",
         label="guard/user-can-confirm-duration-deviation",
     )

@@ -10,7 +10,7 @@ from app.services.channel_excellence_guard import install_channel_excellence_gua
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class _DurationGenerator:
+class _RetryDurationGenerator:
     render_calls = 0
 
     def generate_audio(self, text, lang="pt", *args, **kwargs):
@@ -52,7 +52,7 @@ class _DurationGenerator:
         }
 
 
-class DurationConfirmationTests(unittest.TestCase):
+class DurationRetryConfirmationTests(unittest.TestCase):
     def setUp(self):
         os.environ["ENABLE_DURATION_SANITY_PREFLIGHT"] = "true"
         os.environ["ENABLE_FINAL_VIDEO_QUALITY_GATE"] = "true"
@@ -61,27 +61,9 @@ class DurationConfirmationTests(unittest.TestCase):
         os.environ.pop("ENABLE_DURATION_SANITY_PREFLIGHT", None)
         os.environ.pop("ENABLE_FINAL_VIDEO_QUALITY_GATE", None)
 
-    def _generator_cls(self, name: str):
-        cls = type(name, (_DurationGenerator,), {"render_calls": 0})
+    def test_retry_of_duration_failure_is_explicit_confirmation(self):
+        cls = type("DurationApprovedByRetry", (_RetryDurationGenerator,), {"render_calls": 0})
         install_channel_excellence_guard_patch(cls)
-        return cls
-
-    def test_extreme_overrun_without_confirmation_still_blocks_before_render(self):
-        cls = self._generator_cls("DurationBlockedWithoutApproval")
-        text = " ".join(["esperança"] * 300)
-        with self.assertRaisesRegex(RuntimeError, "Continuar assim mesmo"):
-            cls().create_video_from_plan({
-                "title": "Jesus Está Presente",
-                "duration_min": 1,
-                "duration_max": 1,
-                "duration_max_sec": 60,
-                "target_duration_sec": 60,
-                "scenes": [{"text": text}],
-            })
-        self.assertEqual(cls.render_calls, 0)
-
-    def test_extreme_overrun_with_user_confirmation_proceeds_and_is_audited(self):
-        cls = self._generator_cls("DurationApprovedByUser")
         text = " ".join(["esperança"] * 300)
         result = cls().create_video_from_plan({
             "title": "Jesus Está Presente",
@@ -89,35 +71,21 @@ class DurationConfirmationTests(unittest.TestCase):
             "duration_max": 1,
             "duration_max_sec": 60,
             "target_duration_sec": 60,
-            "duration_override_approved": True,
+            "force_reuse_assets": True,
             "scenes": [{"text": text}],
         })
         self.assertEqual(cls.render_calls, 1)
         report = result["channel_excellence_guard"]["duration_preflight"]
         self.assertFalse(report["passed"])
         self.assertTrue(report["overridden_by_user"])
-        self.assertEqual(report["approval_source"], "user_confirmation")
+        self.assertEqual(report["approval_source"], "retry_after_duration_warning")
 
-    def test_frontend_uses_requested_range_and_warns_before_submit(self):
+    def test_frontend_exposes_post_editorial_duration_confirmation(self):
         html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
-        self.assertIn("const requestedMin = Math.max(1", html)
-        self.assertIn("const requestedMax = Math.max(requestedMin", html)
-        self.assertIn("Aviso de duração do vídeo", html)
-        self.assertIn("duration_override_approved: durationOverrideApproved", html)
-        self.assertIn("duration_min: requestedMin", html)
-        self.assertIn("duration_max: requestedMax", html)
-        self.assertNotIn(
-            "const duration = Number(this.ytStoryPredictedDurationMinutesValue || this.ytStoryVideoDuration",
-            html,
-        )
-
-    def test_backend_contract_accepts_and_propagates_duration_confirmation(self):
-        router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
-        self.assertIn("duration_min: Optional[int] = None", router)
-        self.assertIn("duration_max: Optional[int] = None", router)
-        self.assertIn("duration_override_approved: bool = False", router)
-        self.assertIn('script["duration_override_approved"] = duration_override_approved', router)
-        self.assertIn('script["duration_max_sec"] = int(requested_max_minutes * 60)', router)
+        self.assertIn("Continuar assim mesmo", html)
+        self.assertIn("isDurationWarningRetry", html)
+        self.assertIn("Nenhuma mídia paga foi gerada nesta tentativa.", html)
+        self.assertIn("Confirmar duração do roteiro?", html)
 
 
 if __name__ == "__main__":
