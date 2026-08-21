@@ -62,6 +62,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_final_render_recovery.py --check && \
     python scripts/apply_final_render_recovery_compat.py --apply && \
     python scripts/apply_final_render_recovery_compat.py --check && \
+    python scripts/apply_final_render_recovery_scope.py --apply && \
+    python scripts/apply_final_render_recovery_scope.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
