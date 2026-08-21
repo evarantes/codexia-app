@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TASK_MANAGER = ROOT / "app/services/task_manager.py"
 YOUTUBE = ROOT / "app/routers/youtube.py"
+SERVICE = ROOT / "app/services/production_manifest.py"
 MARKER_TASK = "# CODEXIA_PRODUCTION_MANIFEST_TASK_SYNC_V1"
 MARKER_YT = "# CODEXIA_PRODUCTION_MANIFEST_RECOVERY_V1"
 
@@ -64,6 +65,7 @@ def apply() -> None:
 def check() -> None:
     task_text = TASK_MANAGER.read_text(encoding="utf-8")
     yt_text = YOUTUBE.read_text(encoding="utf-8")
+    service_text = SERVICE.read_text(encoding="utf-8")
     task_required = (
         MARKER_TASK,
         "sync_task_snapshot(str(task_id)",
@@ -75,16 +77,24 @@ def check() -> None:
         "recovery_confirmation_message(manifest_plan)",
         "recovery_ready_message(manifest_plan",
         'manifest_plan.get("action") == "regenerate_missing_images"',
+    )
+    service_required = (
+        "def sync_task_snapshot(",
+        "def build_recovery_plan(",
+        "def confirm_or_prepare_partial_recovery(",
         "Nenhuma chamada paga foi feita ainda",
+        "_recovery_generate_missing_images_only",
     )
     missing = [token for token in task_required if token not in task_text]
     missing.extend(token for token in yt_required if token not in yt_text)
+    missing.extend(token for token in service_required if token not in service_text)
     if missing:
         raise PatchError(f"production manifest hardening incompleto: {missing}")
     if PAID_GUARD_OLD in yt_text:
         raise PatchError("guard antigo de recuperação paga ainda está presente")
     compile(task_text, str(TASK_MANAGER), "exec")
     compile(yt_text, str(YOUTUBE), "exec")
+    compile(service_text, str(SERVICE), "exec")
 
 
 def main() -> int:
