@@ -95,6 +95,8 @@ jobs:
           python scripts/apply_caption_integrity_self_heal.py --check
           python scripts/apply_final_visual_quality_gate_self_heal.py --apply
           python scripts/apply_final_visual_quality_gate_self_heal.py --check
+          python scripts/apply_recovery_checkpoint_hardening.py --apply
+          python scripts/apply_recovery_checkpoint_hardening.py --check
           python -m compileall -q app scripts
 
       - name: Apply canonical Alembic migration on PostgreSQL
