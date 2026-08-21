@@ -19,6 +19,8 @@ class FinalRenderRecoveryTests(unittest.TestCase):
         self.assertIn("transition_to_awaiting_review_if_valid", router)
         self.assertIn("uv_missing_at_recovery = uv is None", router)
         self.assertIn("def _recovery_ensure_unified_row_for_final_render(", router)
+        self.assertIn("if not isinstance(rows, (list, tuple, set)):", router)
+        self.assertIn("rows = list(rows)", router)
         self.assertIn(
             "Recuperação segura não encontrou um MP4 final utilizável antes da retomada paga.",
             router,
