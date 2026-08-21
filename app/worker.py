@@ -68,9 +68,16 @@ install_return_channel_polish(video_generator_cls)
 # Se a IA editorial falhar, preserva o plano e continua (fail-open).
 install_narrative_editor_patch(video_generator_cls)
 
-# Última camada textual do renderer: a transcrição fornece somente timestamps;
-# o conteúdo das legendas vem sempre do mesmo texto final enviado ao TTS.
+# Última camada textual do renderer: a transcrição fornece timestamps; conteúdo
+# e recuperação vêm sempre do texto final realmente vinculado ao TTS.
 install_canonical_caption_source_patch(video_generator_cls)
+
+# Contrato de startup: é melhor o worker recusar iniciar do que consumir TTS e
+# imagens com uma versão que volte a derrubar a produção por divergência textual.
+if not callable(getattr(video_generator_cls, "_codexia_force_canonical_caption_timeline", None)):
+    raise RuntimeError("CaptionIntegritySelfHeal ausente: worker recusou iniciar.")
+if int(getattr(video_generator_cls, "_codexia_caption_integrity_version", 0) or 0) < 4:
+    raise RuntimeError("CaptionIntegritySelfHeal desatualizado: esperado v4.")
 
 listen = ['default']
 
@@ -92,7 +99,7 @@ if __name__ == '__main__':
         f"FinalCinematicPolish={str(os.getenv('ENABLE_FINAL_CINEMATIC_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"ReturnChannelPolish={str(os.getenv('ENABLE_RETURN_CHANNEL_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
-        "CanonicalCaptionSource=true"
+        "CaptionIntegritySelfHeal=v4"
     )
     queues = [Queue(name, connection=conn) for name in listen]
     worker = Worker(queues, connection=conn)

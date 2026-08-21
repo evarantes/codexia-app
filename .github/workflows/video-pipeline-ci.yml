@@ -91,6 +91,8 @@ jobs:
           python scripts/apply_video_cost_ui_hardening.py --check
           python scripts/apply_voice_closure_hardening.py --apply
           python scripts/apply_voice_closure_hardening.py --check
+          python scripts/apply_caption_integrity_self_heal.py --apply
+          python scripts/apply_caption_integrity_self_heal.py --check
           python -m compileall -q app scripts
 
       - name: Apply canonical Alembic migration on PostgreSQL
