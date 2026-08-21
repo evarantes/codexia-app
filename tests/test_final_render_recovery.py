@@ -11,11 +11,13 @@ class FinalRenderRecoveryTests(unittest.TestCase):
     def test_built_router_recovers_final_render_before_paid_retry(self):
         router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
         self.assertIn("CODEXIA_FINAL_RENDER_RECOVERY_V1_START", router)
+        self.assertIn("CODEXIA_FINAL_RENDER_RECOVERY_COMPAT_V1", router)
         self.assertIn("_recovery_try_promote_final_render(payload, task_id)", router)
         self.assertIn("probe_media_file(path)", router)
         self.assertIn("media_durations_match(probe)", router)
         self.assertIn("recovered_final_render_frames", router)
         self.assertIn("transition_to_awaiting_review_if_valid", router)
+        self.assertIn('if uv is None or not isinstance(getattr(uv, "task_id", None), str):', router)
 
         salvage_pos = router.index("_recovery_try_promote_final_render(payload, task_id)")
         paid_block_pos = router.index('if bool(payload.get("_recovery_block_paid_regeneration"))', salvage_pos)
@@ -47,8 +49,8 @@ class FinalRenderRecoveryTests(unittest.TestCase):
             [
                 "/data/media/videos/a.mp4",
                 "/media/videos/b.mp4",
-                "/data/media/videos/d.mp4",
                 "/data/media/videos/c.mp4",
+                "/data/media/videos/d.mp4",
             ],
         )
 
@@ -57,8 +59,11 @@ class FinalRenderRecoveryTests(unittest.TestCase):
             content = (ROOT / filename).read_text(encoding="utf-8")
             checkpoint = content.index("apply_recovery_checkpoint_hardening.py --check")
             final_recovery = content.index("apply_final_render_recovery.py --apply")
+            compat = content.index("apply_final_render_recovery_compat.py --apply")
             self.assertLess(checkpoint, final_recovery)
+            self.assertLess(final_recovery, compat)
             self.assertIn("apply_final_render_recovery.py --check", content)
+            self.assertIn("apply_final_render_recovery_compat.py --check", content)
 
 
 if __name__ == "__main__":
