@@ -163,18 +163,18 @@ def _persist_integrity_audit(generator: Any, audit: Dict[str, Any]) -> None:
 
 
 def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Type[Any]:
-    """Faz TTS e legenda compartilharem uma única fonte textual oficial.
+    """Faz TTS, legenda e validação compartilharem uma única fonte textual.
 
     A classe do renderer é fornecida pelo executor canônico do worker. Este
     módulo não importa nem instancia o VideoGenerator, preservando a fronteira
     arquitetural do pipeline História/Devocional.
 
-    O patch não altera geração de áudio, imagem, roteiro ou timing. Ele atua
-    depois que a timeline já foi criada: mantém timestamps da transcrição e
-    substitui apenas o texto reconhecido pela fonte persistida no checkpoint do
-    TTS. Assim o botão Melhorar pode mudar o roteiro quantas vezes forem
-    necessárias antes da produção; depois do TTS existe somente uma versão
-    oficial para voz e legenda.
+    Depois que o TTS termina, ``audio_checkpoint.final_text_sent_to_tts`` passa
+    a ser a autoridade textual. A transcrição fornece apenas os timestamps; o
+    renderer também consulta esta mesma autoridade antes de sua trava de
+    integridade. Assim não existe mais a situação em que a legenda foi corrigida
+    para o texto realmente falado, mas a validação ainda compara com uma versão
+    editorial anterior mantida em ``final_narration_text``.
     """
     if video_generator_cls is None:
         raise ValueError("video_generator_cls é obrigatório para preservar o executor canônico")
@@ -186,13 +186,28 @@ def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Ty
     if not callable(original_builder):
         return video_generator_cls
 
+    def resolve_canonical_narration_text(self: Any, narration_fallback: str) -> str:
+        canonical_text, canonical_source = _canonical_text_from_tts_checkpoint(self, narration_fallback)
+        self._codexia_canonical_text_source = canonical_source
+        self._codexia_canonical_text_sha256 = _sha256(canonical_text)
+        return canonical_text
+
     def canonical_caption_timeline_details(
         self: Any,
         narration: str,
         duration: float,
         audio_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        details = original_builder(self, narration, duration, audio_path=audio_path)
+        canonical_text = resolve_canonical_narration_text(self, narration)
+        canonical_source = str(
+            getattr(self, "_codexia_canonical_text_source", "renderer.final_narration_text")
+            or "renderer.final_narration_text"
+        )
+
+        # Também passamos a fonte canônica para o builder original. Se ele usar
+        # fallback textual, já nasce com o texto realmente falado; se usar ASR,
+        # os timestamps continuam reais e o conteúdo é remapeado abaixo.
+        details = original_builder(self, canonical_text or narration, duration, audio_path=audio_path)
         if not isinstance(details, dict):
             return details
 
@@ -200,7 +215,6 @@ def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Ty
         if not isinstance(timeline, list) or not timeline:
             return details
 
-        canonical_text, canonical_source = _canonical_text_from_tts_checkpoint(self, narration)
         if not canonical_text:
             return details
 
@@ -222,7 +236,7 @@ def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Ty
         after_text = _timeline_joined_text(final_timeline)
         after_normalized = _normalize_with_generator(self, after_text)
         audit = {
-            "version": 2,
+            "version": 3,
             "checked_at": _utc_iso(),
             "task_id": _task_id_from_generator(self),
             "canonical_text_source": canonical_source,
@@ -245,6 +259,7 @@ def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Ty
             )
         return details
 
+    video_generator_cls._codexia_resolve_canonical_narration_text = resolve_canonical_narration_text
     video_generator_cls._build_caption_timeline_details = canonical_caption_timeline_details
     video_generator_cls._codexia_canonical_caption_source_installed = True
     return video_generator_cls
