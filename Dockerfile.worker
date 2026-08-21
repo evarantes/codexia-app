@@ -32,8 +32,8 @@ COPY . .
 # Keep the worker runtime on the same duration, OpenAI image quality,
 # per-production cost-control and final voice/closure contracts as the API.
 # Caption self-heal runs after voice/closure; final visual quality self-heal
-# keeps a valid render; checkpoint recovery then normalizes the persisted
-# representations used by render-only retry.
+# keeps a valid render; checkpoint recovery normalizes persisted assets; final
+# render recovery then salvages a completed MP4 before any paid retry.
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
@@ -48,6 +48,8 @@ RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_final_visual_quality_gate_self_heal.py --check && \
     python scripts/apply_recovery_checkpoint_hardening.py --apply && \
     python scripts/apply_recovery_checkpoint_hardening.py --check && \
+    python scripts/apply_final_render_recovery.py --apply && \
+    python scripts/apply_final_render_recovery.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files and temp storage
