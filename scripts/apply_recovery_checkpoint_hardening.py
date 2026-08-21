@@ -107,8 +107,6 @@ def _recovery_audio_duration_plausible(duration_sec: Any, target_minutes: Any) -
         target_sec = 300.0
     if duration <= 1.0:
         return False
-    # Editorial review can stretch/condense the target, but a short orphaned
-    # checkpoint (for example 55s) can never satisfy a 10-minute production.
     return (target_sec * 0.60) <= duration <= (target_sec * 1.80)
 
 
@@ -169,7 +167,6 @@ def _recovery_probe_audio_duration(path_value: Any) -> float:
 
 
 def _recovery_unified_snapshot(db: Any, task_id: str) -> Dict[str, Any]:
-    """Materialize artifacts mirrored in UnifiedVideo into recovery shape."""
     try:
         uv = (
             db.query(UnifiedVideo)
@@ -243,7 +240,6 @@ def _recovery_choose_audio(sources: List[Dict[str, Any]], target_minutes: Any) -
     best_duration = 0.0
     best_source = ""
     best_distance = float("inf")
-
     for source_index, source in enumerate(sources):
         if not isinstance(source, dict):
             continue
@@ -254,16 +250,11 @@ def _recovery_choose_audio(sources: List[Dict[str, Any]], target_minutes: Any) -
             if not path:
                 continue
             try:
-                duration = float(
-                    checkpoint.get("final_audio_duration_sec")
-                    or checkpoint.get("duration_seconds")
-                    or 0.0
-                )
+                duration = float(checkpoint.get("final_audio_duration_sec") or checkpoint.get("duration_seconds") or 0.0)
             except Exception:
                 duration = 0.0
             if duration > 0:
                 known_durations[path] = duration
-
         for path in _recovery_collect_audio_candidates(source):
             if not _file_ok(path):
                 continue
@@ -292,7 +283,6 @@ def _recovery_choose_script(sources: List[Dict[str, Any]]) -> Tuple[Optional[Dic
 
 
 def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Dict[str, Any]:
-    """Resume only from a fully verified checkpoint; never spend silently."""
     if not isinstance(payload, dict):
         return payload
     payload["force_reuse_assets"] = True
@@ -310,7 +300,6 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
 
         seed_script, script_source = _recovery_choose_script(sources)
         script_ok = _is_valid_seed_script(seed_script)
-
         valid_images: List[str] = []
         visual_source_counts = {"video_task": 0, "unified_video": 0}
         for source_index, source in enumerate(sources):
@@ -330,27 +319,20 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 if isinstance(unified_obj.get("_unified_recovery_meta"), dict)
                 else 0
             ) or 5
-
         audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
         audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
         render_only = bool(script_ok and images_ok and audio_ok)
 
-        # Normalize both the persisted task result and the live request consumed
-        # by process_video_generation. V2 only normalized result_json; the live
-        # payload could therefore still enter stage_2 without seeded assets.
-        changed = False
         if script_ok and isinstance(seed_script, dict):
             seed_script = dict(seed_script)
             if valid_images:
                 seed_script["selected_images"] = list(valid_images)
             result_obj["script"] = seed_script
             payload["seeded_script"] = seed_script
-            changed = True
         if valid_images:
             result_obj["selected_images"] = list(valid_images)
             payload["selected_images"] = list(valid_images)
-            changed = True
         if audio_ok:
             report = result_obj.get("render_report") if isinstance(result_obj.get("render_report"), dict) else {}
             report = dict(report)
@@ -364,7 +346,6 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             result_obj["render_report"] = report
             result_obj["audio_checkpoint"] = dict(audio_generation)
             payload["reuse_audio_from"] = dict(audio_generation)
-            changed = True
 
         payload["force_render_only"] = bool(render_only)
         missing: List[str] = []
@@ -374,13 +355,9 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             missing.append("imagens")
         if not audio_ok:
             missing.append("áudio")
-
         if missing:
             payload["_recovery_block_paid_regeneration"] = True
             payload["_recovery_missing_assets"] = list(missing)
-        else:
-            payload.pop("_recovery_block_paid_regeneration", None)
-            payload.pop("_recovery_missing_assets", None)
 
         recovery = result_obj.get("recovery_checkpoint") if isinstance(result_obj.get("recovery_checkpoint"), dict) else {}
         recovery = dict(recovery)
@@ -402,14 +379,11 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         })
         result_obj["recovery_checkpoint"] = recovery
         result_obj["payload"] = dict(payload)
-        changed = True
-
-        if changed:
-            try:
-                row.result_json = json.dumps(result_obj, ensure_ascii=False)
-                db.commit()
-            except Exception:
-                db.rollback()
+        try:
+            row.result_json = json.dumps(result_obj, ensure_ascii=False)
+            db.commit()
+        except Exception:
+            db.rollback()
         return payload
     finally:
         db.close()
@@ -427,8 +401,8 @@ def _strip_existing(text: str) -> str:
         ("# CODEXIA_RECOVERY_CHECKPOINT_V2_START", "# CODEXIA_RECOVERY_CHECKPOINT_V2_END"),
         (START, END),
     ):
-        pattern = re.compile(rf"\\n?{re.escape(start)}.*?{re.escape(end)}\\n?", flags=re.DOTALL)
-        text = pattern.sub("\\n", text)
+        pattern = re.compile(rf"\n?{re.escape(start)}.*?{re.escape(end)}\n?", flags=re.DOTALL)
+        text = pattern.sub("\n", text)
     return text.rstrip() + "\n"
 
 
