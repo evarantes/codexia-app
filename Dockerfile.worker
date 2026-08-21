@@ -34,6 +34,8 @@ COPY . .
 # Caption self-heal runs after voice/closure; final visual quality self-heal
 # keeps a valid render; checkpoint recovery normalizes persisted assets; final
 # render recovery then salvages a completed MP4 before any paid retry.
+# Production manifest runs last so every worker-side checkpoint and media file
+# is durably tied to the same task used by the API.
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
@@ -54,6 +56,8 @@ RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_final_render_recovery_compat.py --check && \
     python scripts/apply_final_render_recovery_scope.py --apply && \
     python scripts/apply_final_render_recovery_scope.py --check && \
+    python scripts/apply_production_manifest_hardening.py --apply && \
+    python scripts/apply_production_manifest_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files and temp storage
