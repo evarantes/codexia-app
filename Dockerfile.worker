@@ -31,8 +31,8 @@ COPY . .
 
 # Keep the worker runtime on the same duration, OpenAI image quality,
 # per-production cost-control and final voice/closure contracts as the API.
-# Caption self-heal is deliberately applied AFTER voice/closure because it
-# replaces the legacy fail-closed validator introduced in that renderer layer.
+# Caption self-heal runs after voice/closure; final visual quality self-heal
+# runs last so a valid render is never discarded for review-only warnings.
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
@@ -43,6 +43,8 @@ RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_voice_closure_hardening.py --check && \
     python scripts/apply_caption_integrity_self_heal.py --apply && \
     python scripts/apply_caption_integrity_self_heal.py --check && \
+    python scripts/apply_final_visual_quality_gate_self_heal.py --apply && \
+    python scripts/apply_final_visual_quality_gate_self_heal.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files and temp storage

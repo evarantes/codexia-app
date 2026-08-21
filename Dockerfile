@@ -36,8 +36,8 @@ COPY . .
 # Apply deterministic hardening before any runtime validation/startup.
 # Cost control runs after duration + OpenAI defaults so it can safely add
 # per-production quality, budget confirmation and the cost panel.
-# Caption integrity runs last because it converts the legacy text mismatch
-# validator into deterministic local recovery.
+# Caption integrity converts the legacy text mismatch validator into local
+# recovery; final visual quality then makes visual warnings review-safe.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -52,6 +52,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_voice_closure_hardening.py --check && \
     python scripts/apply_caption_integrity_self_heal.py --apply && \
     python scripts/apply_caption_integrity_self_heal.py --check && \
+    python scripts/apply_final_visual_quality_gate_self_heal.py --apply && \
+    python scripts/apply_final_visual_quality_gate_self_heal.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
