@@ -45,11 +45,13 @@ class _AlreadyMatchingGenerator:
 class _CheckpointGenerator:
     def __init__(self):
         self.ai_service = SimpleNamespace(ai_task_id="task-improved-text")
+        self.builder_narration = None
 
     def _normalize_tts_text(self, text: str) -> str:
         return re.sub(r"\s+", " ", str(text or "")).strip()
 
     def _build_caption_timeline_details(self, narration: str, duration: float, audio_path=None):
+        self.builder_narration = narration
         # Simula ASR devolvendo uma terceira variante textual.
         return {
             "source": "real_segments_aligned_to_narration",
@@ -97,8 +99,11 @@ class CanonicalCaptionSourceTests(unittest.TestCase):
         with patch("app.services.task_manager.get_task", return_value=fake_task), patch(
             "app.services.task_manager.merge_task_result", return_value=fake_task
         ):
+            resolved = generator._codexia_resolve_canonical_narration_text(old_renderer_text)
             details = generator._build_caption_timeline_details(old_renderer_text, 4.0, audio_path="fake.mp3")
 
+        self.assertEqual(resolved, improved_text_sent_to_tts)
+        self.assertEqual(generator.builder_narration, improved_text_sent_to_tts)
         joined = " ".join(item["caption"] for item in details["timeline"] if item.get("caption")).strip()
         self.assertEqual(joined, improved_text_sent_to_tts)
         audit = generator._codexia_canonical_narration_integrity
@@ -122,8 +127,10 @@ class CanonicalCaptionSourceTests(unittest.TestCase):
     def test_patch_is_idempotent(self):
         cls = install_canonical_caption_source_patch(_DummyGenerator)
         wrapped = cls._build_caption_timeline_details
+        resolver = cls._codexia_resolve_canonical_narration_text
         cls = install_canonical_caption_source_patch(cls)
         self.assertIs(cls._build_caption_timeline_details, wrapped)
+        self.assertIs(cls._codexia_resolve_canonical_narration_text, resolver)
 
 
 if __name__ == "__main__":

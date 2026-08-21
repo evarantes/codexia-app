@@ -93,6 +93,35 @@ def patch_renderer(text: str) -> str:
         '            cta_ok = (0.8 <= float(end_clip_duration or 0.0) <= 1.6) if closing_has_narration else True',
         label="renderer/validate-short-endcard",
     )
+
+    old_caption_builder = '''            caption_timeline_details = self._build_caption_timeline_details(\n                final_narration_text,\n                actual_total_audio_dur,\n                audio_path=main_audio_path,\n            )'''
+    new_caption_builder = '''            # A variável editorial ``final_narration_text`` pode ficar defasada\n            # depois que o TTS foi segmentado (corpo + CTA). A fonte oficial passa\n            # a ser o texto persistido no checkpoint real do áudio.\n            caption_narration_text = final_narration_text\n            canonical_text_source = "renderer.final_narration_text"\n            canonical_resolver = getattr(self, "_codexia_resolve_canonical_narration_text", None)\n            if callable(canonical_resolver):\n                try:\n                    resolved_canonical_text = str(canonical_resolver(final_narration_text) or "").strip()\n                    if resolved_canonical_text:\n                        caption_narration_text = resolved_canonical_text\n                        canonical_text_source = str(\n                            getattr(self, "_codexia_canonical_text_source", canonical_text_source)\n                            or canonical_text_source\n                        )\n                except Exception:\n                    pass\n            if isinstance(render_report.get("audio_generation"), dict):\n                render_report["audio_generation"]["final_text_sent_to_tts"] = caption_narration_text\n                render_report["audio_generation"]["canonical_text_source"] = canonical_text_source\n\n            caption_timeline_details = self._build_caption_timeline_details(\n                caption_narration_text,\n                actual_total_audio_dur,\n                audio_path=main_audio_path,\n            )'''
+    text = _replace_once(
+        text,
+        old_caption_builder,
+        new_caption_builder,
+        label="renderer/use-real-tts-text-for-caption-builder",
+    )
+    text = _replace_once(
+        text,
+        '            if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and final_narration_text:\n                shifted_timeline = self._caption_timeline_from_text(\n                    final_narration_text,',
+        '            if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and caption_narration_text:\n                shifted_timeline = self._caption_timeline_from_text(\n                    caption_narration_text,',
+        label="renderer/use-real-tts-text-for-shifted-fallback",
+    )
+    text = _replace_once(
+        text,
+        '            normalized_tts_text = self._normalize_tts_text(final_narration_text)',
+        '            normalized_tts_text = self._normalize_tts_text(caption_narration_text)',
+        label="renderer/validate-against-real-tts-text",
+    )
+    old_integrity = '''            render_report["text_integrity"] = {\n                "final_text_sent_to_tts": final_narration_text,\n                "captions_source_text": caption_text_joined,\n                "tts_contains_non_ascii": bool(re.search(r"[^\\x00-\\x7F]", final_narration_text)),\n                "captions_contain_non_ascii": bool(re.search(r"[^\\x00-\\x7F]", caption_text_joined)),\n                "tts_contains_punctuation": bool(re.search(r"[,.!?;:…\\\"“”'‘’\\-–—]", final_narration_text)),\n                "captions_contain_punctuation": bool(re.search(r"[,.!?;:…\\\"“”'‘’\\-–—]", caption_text_joined)),\n                "captions_match_narration_source": normalized_caption_text == normalized_tts_text,\n            }'''
+    new_integrity = '''            render_report["text_integrity"] = {\n                "final_text_sent_to_tts": caption_narration_text,\n                "planning_text_before_tts_canonicalization": final_narration_text,\n                "canonical_text_source": canonical_text_source,\n                "captions_source_text": caption_text_joined,\n                "tts_contains_non_ascii": bool(re.search(r"[^\\x00-\\x7F]", caption_narration_text)),\n                "captions_contain_non_ascii": bool(re.search(r"[^\\x00-\\x7F]", caption_text_joined)),\n                "tts_contains_punctuation": bool(re.search(r"[,.!?;:…\\\"“”'‘’\\-–—]", caption_narration_text)),\n                "captions_contain_punctuation": bool(re.search(r"[,.!?;:…\\\"“”'‘’\\-–—]", caption_text_joined)),\n                "captions_match_narration_source": normalized_caption_text == normalized_tts_text,\n            }'''
+    text = _replace_once(
+        text,
+        old_integrity,
+        new_integrity,
+        label="renderer/audit-real-tts-text",
+    )
     return text
 
 
@@ -138,6 +167,11 @@ def check() -> None:
         "else 1.2)",
         "end_clip_duration = min(1.6, max(0.8",
         "cta_ok = (0.8 <= float(end_clip_duration or 0.0) <= 1.6)",
+        'canonical_resolver = getattr(self, "_codexia_resolve_canonical_narration_text", None)',
+        "caption_narration_text = resolved_canonical_text",
+        "normalized_tts_text = self._normalize_tts_text(caption_narration_text)",
+        '"planning_text_before_tts_canonicalization": final_narration_text',
+        '"canonical_text_source": canonical_text_source',
     )
     for token in required_renderer:
         if token not in renderer:
