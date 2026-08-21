@@ -37,9 +37,9 @@ COPY . .
 # Cost control runs after duration + OpenAI defaults so it can safely add
 # per-production quality, budget confirmation and the cost panel.
 # Caption integrity converts the legacy text mismatch validator into local
-# recovery; final visual quality makes visual warnings review-safe; highest
-# checkpoint recovery runs last so retry cannot fall back to paid stages when
-# valid script/audio/images already exist in persisted checkpoints.
+# recovery; final visual quality makes visual warnings review-safe; checkpoint
+# recovery normalizes saved assets; final-render recovery runs last so an MP4
+# already written at stage_6 is salvaged before any paid retry can start.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -58,6 +58,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_final_visual_quality_gate_self_heal.py --check && \
     python scripts/apply_recovery_checkpoint_hardening.py --apply && \
     python scripts/apply_recovery_checkpoint_hardening.py --check && \
+    python scripts/apply_final_render_recovery.py --apply && \
+    python scripts/apply_final_render_recovery.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
