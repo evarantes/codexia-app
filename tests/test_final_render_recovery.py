@@ -12,6 +12,7 @@ class FinalRenderRecoveryTests(unittest.TestCase):
         router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
         self.assertIn("CODEXIA_FINAL_RENDER_RECOVERY_V1_START", router)
         self.assertIn("CODEXIA_FINAL_RENDER_RECOVERY_COMPAT_V2", router)
+        self.assertIn("CODEXIA_FINAL_RENDER_RECOVERY_SCOPE_V1", router)
         self.assertIn("_recovery_try_promote_final_render(payload, task_id)", router)
         self.assertIn("probe_media_file(path)", router)
         self.assertIn("media_durations_match(probe)", router)
@@ -25,6 +26,11 @@ class FinalRenderRecoveryTests(unittest.TestCase):
             "Recuperação segura não encontrou um MP4 final utilizável antes da retomada paga.",
             router,
         )
+        self.assertIn(
+            'if bool(payload.get("_recovery_block_paid_regeneration")):',
+            router,
+        )
+        self.assertIn("Um retry normal continua usando o fluxo histórico", router)
         self.assertNotIn(
             'if uv is None:\n            return None\n\n        choice = _recovery_choose_existing_final_video',
             router,
@@ -78,10 +84,19 @@ class FinalRenderRecoveryTests(unittest.TestCase):
             checkpoint = content.index("apply_recovery_checkpoint_hardening.py --check")
             final_recovery = content.index("apply_final_render_recovery.py --apply")
             compat = content.index("apply_final_render_recovery_compat.py --apply")
+            scope = content.index("apply_final_render_recovery_scope.py --apply")
             self.assertLess(checkpoint, final_recovery)
             self.assertLess(final_recovery, compat)
+            self.assertLess(compat, scope)
             self.assertIn("apply_final_render_recovery.py --check", content)
             self.assertIn("apply_final_render_recovery_compat.py --check", content)
+            self.assertIn("apply_final_render_recovery_scope.py --check", content)
+
+        workflow = (ROOT / ".github/workflows/video-pipeline-ci.yml").read_text(encoding="utf-8")
+        compat = workflow.index("apply_final_render_recovery_compat.py --apply")
+        scope = workflow.index("apply_final_render_recovery_scope.py --apply")
+        self.assertLess(compat, scope)
+        self.assertIn("apply_final_render_recovery_scope.py --check", workflow)
 
 
 if __name__ == "__main__":
