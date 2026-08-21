@@ -35,11 +35,40 @@ class RecoveryCheckpointHardeningTests(unittest.TestCase):
             ["/data/generated/a.png", "/data/generated/b.png"],
         )
 
-    def test_runtime_build_applies_checkpoint_hardening_last(self):
+    def test_visuals_are_recovered_from_unified_images_and_storyboard_shape(self):
+        unified_shape = {
+            "selected_images": [
+                "/data/unified/images/one.png",
+                "/data/unified/images/two.png",
+            ],
+            "storyboard": {
+                "scenes": [
+                    {"image_path": "/data/unified/images/three.png"},
+                    {"image_path": "/data/unified/images/one.png"},
+                ]
+            },
+        }
+        self.assertEqual(
+            _recovery_collect_visual_candidates(unified_shape),
+            [
+                "/data/unified/images/one.png",
+                "/data/unified/images/two.png",
+                "/data/unified/images/three.png",
+            ],
+        )
+
+    def test_runtime_build_applies_checkpoint_v3_and_blocks_silent_paid_retry(self):
         router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
-        self.assertIn("CODEXIA_RECOVERY_CHECKPOINT_V2_START", router)
-        self.assertIn('"strategy": "highest_valid_checkpoint"', router)
-        self.assertIn('payload["force_render_only"] = render_only', router)
+        self.assertIn("CODEXIA_RECOVERY_CHECKPOINT_V3_START", router)
+        self.assertNotIn("CODEXIA_RECOVERY_CHECKPOINT_V2_START", router)
+        self.assertIn('"strategy": "highest_valid_checkpoint_v3"', router)
+        self.assertIn('payload["seeded_script"] = seed_script', router)
+        self.assertIn('payload["selected_images"] = list(valid_images)', router)
+        self.assertIn('payload["reuse_audio_from"] = dict(audio_generation)', router)
+        self.assertIn('payload["force_render_only"] = bool(render_only)', router)
+        self.assertIn('payload["_recovery_block_paid_regeneration"] = True', router)
+        self.assertIn("db.query(UnifiedVideo)", router)
+        self.assertIn("Nenhuma nova mídia foi gerada nesta tentativa.", router)
 
         for filename in ("Dockerfile", "Dockerfile.worker"):
             content = (ROOT / filename).read_text(encoding="utf-8")
