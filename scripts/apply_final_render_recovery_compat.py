@@ -13,6 +13,9 @@ NEW_SNAPSHOT = '''        try:\n            unified_obj = _recovery_unified_snap
 OLD_UV_GUARD = '''        if uv is None:\n            return None\n\n        choice = _recovery_choose_existing_final_video'''
 NEW_UV_GUARD = '''        # Não abandonar o salvamento só porque a linha UnifiedVideo não existe.\n        # O MP4 pode ter sido escrito pelo worker antes da falha do wrapper final.\n        uv_missing_at_recovery = uv is None\n\n        choice = _recovery_choose_existing_final_video'''
 
+OLD_CLAIMED_PATHS = '''    try:\n        rows = db.query(UnifiedVideo).filter(UnifiedVideo.task_id != str(task_id)).all()\n    except Exception:\n        rows = []\n    for uv in rows:'''
+NEW_CLAIMED_PATHS = '''    try:\n        rows = db.query(UnifiedVideo).filter(UnifiedVideo.task_id != str(task_id)).all()\n    except Exception:\n        rows = []\n    # Consultas SQLAlchemy reais retornam uma lista. Testes legados e alguns\n    # adaptadores podem devolver um Mock/objeto não iterável; isso não deve\n    # impedir a recuperação física nem transformar retry em erro 500.\n    if not isinstance(rows, (list, tuple, set)):\n        try:\n            rows = list(rows)\n        except Exception:\n            rows = []\n    for uv in rows:'''
+
 OLD_FRAME_COUNT = '''        requested_frames = max(1, min(64, int(getattr(uv, "image_count", 1) or 1)))'''
 NEW_FRAME_COUNT = '''        try:\n            recovered_image_count = int(getattr(uv, "image_count", 0) or 0) if uv is not None else 0\n        except Exception:\n            recovered_image_count = 0\n        if recovered_image_count <= 0:\n            try:\n                recovered_image_count = int(payload.get("image_count") or 0)\n            except Exception:\n                recovered_image_count = 0\n        if recovered_image_count <= 0:\n            # Para produção antiga sem manifesto de imagens, usar uma amostra de\n            # auditoria suficiente sem inventar dezenas de frames obrigatórios.\n            recovered_image_count = 8\n        requested_frames = max(1, min(64, recovered_image_count))'''
 
@@ -50,6 +53,7 @@ def apply() -> None:
     for old, new, label in (
         (OLD_SNAPSHOT, NEW_SNAPSHOT, "snapshot-fail-open"),
         (OLD_UV_GUARD, NEW_UV_GUARD, "remove-unified-hard-dependency"),
+        (OLD_CLAIMED_PATHS, NEW_CLAIMED_PATHS, "claimed-paths-legacy-query-tolerance"),
         (OLD_FRAME_COUNT, NEW_FRAME_COUNT, "frame-count-without-unified"),
         (OLD_UV_WRITE, NEW_UV_WRITE, "rebuild-unified-after-valid-mp4"),
         (OLD_NOT_FOUND_RETURN, NEW_NOT_FOUND_RETURN, "surface-final-render-diagnostics"),
@@ -77,6 +81,8 @@ def check() -> None:
         MARKER,
         "try:\n            unified_obj = _recovery_unified_snapshot(db, str(task_id))",
         "uv_missing_at_recovery = uv is None",
+        "if not isinstance(rows, (list, tuple, set)):",
+        "rows = list(rows)",
         "def _recovery_ensure_unified_row_for_final_render(",
         "recovered_image_count = int(getattr(uv, \"image_count\", 0) or 0) if uv is not None else 0",
         "Recuperação segura não encontrou um MP4 final utilizável antes da retomada paga.",
