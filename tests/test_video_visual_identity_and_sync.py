@@ -191,7 +191,7 @@ class VideoVisualIdentityAndSyncTests(unittest.TestCase):
         self.assertIn("quando o desafio aparece", narration["opening_text"].lower())
         self.assertEqual(narration["end_screen_target_duration_sec"], 4.0)
 
-    def test_cinematic_closing_uses_one_clear_cta_instead_of_four_commands(self):
+    def test_cinematic_closing_requires_subscribe_bell_and_share_without_extra_commands(self):
         generator = VideoGenerator()
         narration = generator.prepare_final_narration_text(
             {
@@ -204,10 +204,10 @@ class VideoVisualIdentityAndSyncTests(unittest.TestCase):
 
         self.assertIn("herdeiros das promessas", closing)
         self.assertIn("inscreva-se", closing)
+        self.assertIn("ative o sininho", closing)
+        self.assertIn("compartilhe", closing)
         self.assertNotIn("curta este vídeo", closing)
         self.assertNotIn("comente", closing)
-        self.assertNotIn("compartilhe", closing)
-        self.assertNotIn("ative o sininho", closing)
 
     def test_endcard_uses_explicit_bible_reference_without_inventing_a_verse(self):
         generator = VideoGenerator()
