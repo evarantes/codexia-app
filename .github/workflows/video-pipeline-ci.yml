@@ -113,6 +113,10 @@ jobs:
           python scripts/apply_manifest_asset_recovery_hardening.py --check
           python scripts/apply_adaptive_render_threads_hardening.py --apply
           python scripts/apply_adaptive_render_threads_hardening.py --check
+          python scripts/apply_recovery_render_stall_hardening.py --apply
+          python scripts/apply_recovery_render_stall_hardening.py --check
+          python scripts/apply_recovery_render_stall_compat.py --apply
+          python scripts/apply_recovery_render_stall_compat.py --check
           python -m compileall -q app scripts
 
       - name: Apply canonical Alembic migration on PostgreSQL
