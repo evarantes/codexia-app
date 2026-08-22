@@ -315,6 +315,57 @@ def _extract_script(result: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
     return dict(candidate) if isinstance(candidate, dict) else {}
 
 
+def _extract_selected_image_references(result: Any, payload: Dict[str, Any], script: Dict[str, Any]) -> List[str]:
+    """Preserve the original scene-image order even when paths later go stale."""
+    references: List[str] = []
+
+    def _add(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        item = value.strip()
+        if item and item not in references:
+            references.append(item)
+
+    def _add_list(value: Any) -> None:
+        if not isinstance(value, list):
+            return
+        for item in value:
+            if isinstance(item, str):
+                _add(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            for key in (
+                "image_path",
+                "generated_image_path",
+                "source_path",
+                "background_image_path",
+                "selected_image_path",
+                "path",
+                "image_url",
+                "url",
+                "storage_key",
+            ):
+                _add(item.get(key))
+
+    sources = [payload, result if isinstance(result, dict) else {}, script]
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("selected_images", "rendered_images", "images", "custom_image_paths"):
+            _add_list(source.get(key))
+
+    if isinstance(result, dict):
+        report = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
+        _add_list(report.get("scene_visuals"))
+        visual_plan = report.get("visual_plan") if isinstance(report.get("visual_plan"), dict) else {}
+        for key in ("selected_images", "rendered_images", "images"):
+            _add_list(visual_plan.get(key))
+        storyboard = result.get("storyboard") if isinstance(result.get("storyboard"), dict) else {}
+        _add_list(storyboard.get("scenes"))
+    return references
+
+
 def _expected_image_count(result: Any, payload: Dict[str, Any], script: Dict[str, Any]) -> int:
     candidates: List[int] = []
     for source in (payload, result if isinstance(result, dict) else {}, script):
@@ -422,6 +473,9 @@ def sync_task_snapshot(task_id: Any, snapshot: Any) -> Dict[str, Any]:
                 (manifest_dir(task_key) / "script.json").write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 pass
+        selected_image_references = _extract_selected_image_references(result, payload, script)
+        if selected_image_references:
+            existing["selected_image_references"] = selected_image_references
         expected_images = _expected_image_count(result, payload, script or existing.get("script") or {})
         if expected_images > 0:
             existing["expected_image_count"] = expected_images
@@ -482,6 +536,236 @@ def _valid_artifacts(manifest: Dict[str, Any], kind: str) -> List[Dict[str, Any]
     return valid
 
 
+def _usable_image_file(path_value: Any, *, min_bytes: int = 1000) -> bool:
+    path = str(path_value or "").strip()
+    try:
+        if not path or not os.path.isfile(path) or os.path.getsize(path) < int(min_bytes or 1):
+            return False
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.verify()
+        with Image.open(path) as image:
+            width, height = image.size
+        return int(width or 0) >= 32 and int(height or 0) >= 32
+    except Exception:
+        return False
+
+
+def _normalized_path_key(value: Any) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    raw = raw.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return raw
+
+
+def _artifact_aliases(item: Dict[str, Any]) -> Tuple[set, set]:
+    full: set = set()
+    names: set = set()
+    for key in ("original_path", "durable_path", "resolved_path"):
+        value = _normalized_path_key(item.get(key))
+        if not value:
+            continue
+        full.add(value)
+        name = Path(value).name.lower()
+        if not name:
+            continue
+        names.add(name)
+        names.add(re.sub(r"^[0-9a-f]{10}_", "", name))
+    return full, names
+
+
+def _scene_number_from_artifact(item: Dict[str, Any]) -> int:
+    names: List[str] = []
+    for key in ("original_path", "durable_path", "resolved_path"):
+        name = Path(_normalized_path_key(item.get(key))).name.lower()
+        if name:
+            names.append(re.sub(r"^[0-9a-f]{10}_", "", name))
+    patterns = (
+        r"(?:scene|cena|image|imagem|frame|visual|group|grupo)[_-]?(\d{1,3})(?:\D|$)",
+        r"^(\d{1,3})[_-]",
+    )
+    for name in names:
+        for pattern in patterns:
+            match = re.search(pattern, name)
+            if match:
+                try:
+                    return int(match.group(1))
+                except Exception:
+                    continue
+    return 0
+
+
+def resolve_recovery_image_paths(
+    task_id: Any,
+    selected_values: Optional[Iterable[Any]] = None,
+    *,
+    expected_count: int = 0,
+) -> Dict[str, Any]:
+    """Map stale selected_images references to worker-local durable files.
+
+    Exact original-path and filename matches are preferred. Extra artifacts are
+    never selected arbitrarily when more candidates exist than scene slots.
+    This function is read-only and never invokes an external provider.
+    """
+    task_key = _safe_task_id(task_id)
+    manifest = load_manifest(task_key) if task_key else {}
+    try:
+        target = int(expected_count or manifest.get("expected_image_count") or 0)
+    except Exception:
+        target = 0
+    target = max(0, target)
+
+    raw_references = list(selected_values or [])
+    if not raw_references:
+        stored = manifest.get("selected_image_references")
+        raw_references = list(stored) if isinstance(stored, list) else []
+    if not raw_references:
+        for source in (
+            manifest.get("payload") if isinstance(manifest.get("payload"), dict) else {},
+            manifest.get("script") if isinstance(manifest.get("script"), dict) else {},
+        ):
+            for key in ("selected_images", "rendered_images", "images", "custom_image_paths"):
+                values = source.get(key) if isinstance(source, dict) else None
+                if isinstance(values, list) and values:
+                    raw_references.extend(values)
+
+    candidates: List[Dict[str, Any]] = []
+    invalid_candidate_count = 0
+    seen_candidate_keys: set = set()
+    for artifact in _valid_artifacts(manifest, "image"):
+        path = str(artifact.get("resolved_path") or "").strip()
+        if not _usable_image_file(path):
+            invalid_candidate_count += 1
+            continue
+        entry = dict(artifact)
+        entry["resolved_path"] = os.path.abspath(path)
+        content_key = str(entry.get("sha256_sample") or "").strip() or _sample_hash(path) or os.path.realpath(path)
+        if content_key in seen_candidate_keys:
+            continue
+        seen_candidate_keys.add(content_key)
+        entry["_content_key"] = content_key
+        full_aliases, name_aliases = _artifact_aliases(entry)
+        entry["_full_aliases"] = full_aliases
+        entry["_name_aliases"] = name_aliases
+        entry["_scene_number"] = _scene_number_from_artifact(entry)
+        candidates.append(entry)
+
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("mtime_epoch") or 0.0),
+            str(item.get("first_seen_at") or ""),
+            str(item.get("original_path") or item.get("resolved_path") or ""),
+        )
+    )
+
+    chosen: List[str] = []
+    chosen_keys: set = set()
+    matched_reference_count = 0
+    direct_reference_count = 0
+    ambiguous_reference_count = 0
+
+    def _choose(entry: Dict[str, Any]) -> bool:
+        content_key = str(entry.get("_content_key") or "")
+        path = str(entry.get("resolved_path") or "")
+        if not path or content_key in chosen_keys:
+            return False
+        chosen.append(path)
+        chosen_keys.add(content_key)
+        return True
+
+    for raw in raw_references:
+        if target and len(chosen) >= target:
+            break
+        reference = _normalized_path_key(raw)
+        if not reference:
+            continue
+        direct = _resolve_existing_path(reference, "image")
+        if direct and _usable_image_file(direct):
+            direct_key = _sample_hash(direct) or os.path.realpath(direct)
+            direct_entry = {
+                "resolved_path": os.path.abspath(direct),
+                "_content_key": direct_key,
+            }
+            if _choose(direct_entry):
+                direct_reference_count += 1
+                matched_reference_count += 1
+            continue
+
+        full_matches = [item for item in candidates if reference in item.get("_full_aliases", set())]
+        matches = full_matches
+        if not matches:
+            name = Path(reference).name.lower()
+            normalized_name = re.sub(r"^[0-9a-f]{10}_", "", name)
+            matches = [
+                item
+                for item in candidates
+                if name in item.get("_name_aliases", set())
+                or normalized_name in item.get("_name_aliases", set())
+            ]
+        unique_matches = {str(item.get("_content_key") or ""): item for item in matches}
+        if len(unique_matches) == 1:
+            if _choose(next(iter(unique_matches.values()))):
+                matched_reference_count += 1
+        elif len(unique_matches) > 1:
+            ambiguous_reference_count += 1
+
+    fallback_count = 0
+    ambiguous_fallback = False
+    needed = max(0, target - len(chosen)) if target else 0
+    remaining = [item for item in candidates if str(item.get("_content_key") or "") not in chosen_keys]
+    if target and needed > 0:
+        if len(remaining) == needed:
+            for entry in remaining:
+                if _choose(entry):
+                    fallback_count += 1
+        elif len(remaining) > needed:
+            slots: Dict[int, List[Dict[str, Any]]] = {}
+            for entry in remaining:
+                scene_number = int(entry.get("_scene_number") or 0)
+                if 1 <= scene_number <= target:
+                    slots.setdefault(scene_number, []).append(entry)
+            used_scene_numbers = {
+                int(item.get("_scene_number") or 0)
+                for item in candidates
+                if str(item.get("_content_key") or "") in chosen_keys
+            }
+            slot_candidates = [
+                items[0]
+                for scene_number, items in sorted(slots.items())
+                if scene_number not in used_scene_numbers and len(items) == 1
+            ]
+            if len(slot_candidates) == needed:
+                for entry in slot_candidates:
+                    if _choose(entry):
+                        fallback_count += 1
+            else:
+                ambiguous_fallback = True
+    elif not target and not chosen:
+        for entry in remaining:
+            if _choose(entry):
+                fallback_count += 1
+
+    if target and len(chosen) > target:
+        chosen = chosen[:target]
+
+    return {
+        "task_id": task_key,
+        "paths": chosen,
+        "expected_count": target,
+        "selected_reference_count": len([x for x in raw_references if str(x or "").strip()]),
+        "matched_reference_count": matched_reference_count,
+        "direct_reference_count": direct_reference_count,
+        "fallback_count": fallback_count,
+        "candidate_count": len(candidates),
+        "invalid_candidate_count": invalid_candidate_count,
+        "ambiguous_reference_count": ambiguous_reference_count,
+        "ambiguous_fallback": ambiguous_fallback,
+        "complete": bool(chosen and (target <= 0 or len(chosen) >= target)),
+        "paid_calls_performed": False,
+        "strategy": "manifest_original_path_then_unique_scene_slot_v1",
+    }
+
+
 def _plan_hash(plan: Dict[str, Any]) -> str:
     stable = {
         "task_id": plan.get("task_id"),
@@ -491,6 +775,9 @@ def _plan_hash(plan: Dict[str, Any]) -> str:
         "valid_image_count": plan.get("valid_image_count"),
         "expected_image_count": plan.get("expected_image_count"),
         "missing_image_count": plan.get("missing_image_count"),
+        "audio_reusable": plan.get("audio_reusable"),
+        "audio_rebuild_required": plan.get("audio_rebuild_required"),
+        "estimated_new_cost_usd": plan.get("estimated_new_cost_usd"),
     }
     return hashlib.sha256(json.dumps(stable, sort_keys=True).encode("utf-8")).hexdigest()[:24]
 
@@ -514,19 +801,41 @@ def _image_cost_estimate(missing_count: int, duration_minutes: float, mode: str)
     return usd, round(usd * brl_rate, 2)
 
 
+def _audio_cost_estimate(duration_minutes: float) -> Tuple[float, float]:
+    minutes = max(0.0, float(duration_minutes or 0.0))
+    try:
+        unit_usd = max(0.0, float(os.getenv("YOUTUBE_AUTO_TTS_MINUTE_COST_UNIT") or 0.0120))
+    except Exception:
+        unit_usd = 0.0120
+    usd = round(minutes * unit_usd, 6)
+    try:
+        brl_rate = max(0.01, float(os.getenv("CODEXIA_USD_BRL") or 5.20))
+    except Exception:
+        brl_rate = 5.20
+    return usd, round(usd * brl_rate, 2)
+
+
 def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     task_key = _safe_task_id(task_id)
     manifest = load_manifest(task_key)
     payload = dict(payload_override or manifest.get("payload") or {})
     script = manifest.get("script") if isinstance(manifest.get("script"), dict) else {}
-    images = _valid_artifacts(manifest, "image")
     audio = _valid_artifacts(manifest, "audio")
     videos = _valid_artifacts(manifest, "video")
 
     target_minutes = float(payload.get("duration") or payload.get("duration_minutes") or manifest.get("expected_duration_minutes") or 0.0)
     target_seconds = max(60.0, target_minutes * 60.0) if target_minutes > 0 else 0.0
-    expected_images = int(manifest.get("expected_image_count") or _expected_image_count({}, payload, script) or len(images) or 0)
-    valid_image_count = len(images)
+    expected_images = int(manifest.get("expected_image_count") or _expected_image_count({}, payload, script) or 0)
+    selected_references = payload.get("selected_images") if isinstance(payload.get("selected_images"), list) else None
+    image_resolution = resolve_recovery_image_paths(
+        task_key,
+        selected_references,
+        expected_count=expected_images,
+    )
+    existing_image_paths = [str(path) for path in image_resolution.get("paths") or [] if str(path or "").strip()]
+    if expected_images <= 0:
+        expected_images = len(existing_image_paths)
+    valid_image_count = len(existing_image_paths)
     missing_images = max(0, expected_images - valid_image_count) if expected_images > 0 else 0
 
     audio_choice: Optional[Dict[str, Any]] = None
@@ -540,7 +849,11 @@ def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]]
         audio_choice = item
         audio_duration = duration
         break
-
+    audio_found = audio_choice is not None
+    audio_reusable = bool(
+        audio_choice
+        and str(audio_choice.get("source") or "").strip().lower() == "tts_immediate"
+    )
     video_choice: Optional[Dict[str, Any]] = None
     for item in sorted(videos, key=lambda x: float(x.get("mtime_epoch") or 0.0), reverse=True):
         duration = _probe_duration(str(item.get("resolved_path") or ""))
@@ -553,7 +866,7 @@ def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]]
         break
 
     script_ok = bool(script and isinstance(script.get("scenes"), list) and script.get("scenes"))
-    audio_ok = audio_choice is not None
+    audio_ok = audio_reusable
     images_ok = bool(valid_image_count > 0 and (expected_images <= 0 or valid_image_count >= expected_images))
     video_ok = video_choice is not None
 
@@ -563,11 +876,19 @@ def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]]
         action = "rerender_without_paid_media"
     elif script_ok and audio_ok and missing_images > 0:
         action = "regenerate_missing_images"
+    elif script_ok and images_ok:
+        action = "rebuild_untrusted_audio" if audio_found else "rebuild_missing_audio"
+    elif script_ok and missing_images > 0:
+        action = "rebuild_audio_and_missing_images"
     else:
         action = "blocked"
 
     mode = str(payload.get("production_mode") or payload.get("mode") or "balanced")
-    cost_usd, cost_brl = _image_cost_estimate(missing_images, target_minutes or 1.0, mode)
+    image_cost_usd, image_cost_brl = _image_cost_estimate(missing_images, target_minutes or 1.0, mode)
+    rebuilds_audio = action in {"rebuild_untrusted_audio", "rebuild_missing_audio", "rebuild_audio_and_missing_images"}
+    audio_cost_usd, audio_cost_brl = _audio_cost_estimate(target_minutes or 1.0) if rebuilds_audio else (0.0, 0.0)
+    cost_usd = round(image_cost_usd + audio_cost_usd, 6)
+    cost_brl = round(image_cost_brl + audio_cost_brl, 2)
     plan = {
         "schema_version": _SCHEMA_VERSION,
         "task_id": task_key,
@@ -580,12 +901,33 @@ def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]]
         "expected_image_count": expected_images,
         "missing_image_count": missing_images,
         "audio_duration_sec": round(audio_duration, 3),
+        "audio_found": audio_found,
+        "audio_reusable": audio_reusable,
+        "audio_trust": "narration_contract_v1" if audio_reusable else ("legacy_unverified" if audio_found else "missing"),
+        "audio_rebuild_required": rebuilds_audio,
         "target_duration_minutes": round(target_minutes, 3),
+        "estimated_image_cost_usd": image_cost_usd,
+        "estimated_image_cost_brl": image_cost_brl,
+        "estimated_audio_cost_usd": audio_cost_usd,
+        "estimated_audio_cost_brl": audio_cost_brl,
         "estimated_new_cost_usd": cost_usd,
         "estimated_new_cost_brl": cost_brl,
-        "new_paid_calls_required": bool(action == "regenerate_missing_images" and missing_images > 0),
-        "existing_image_paths": [str(item.get("resolved_path") or "") for item in images],
-        "audio_path": str((audio_choice or {}).get("resolved_path") or ""),
+        "new_paid_calls_required": bool(
+            (action in {"regenerate_missing_images", "rebuild_audio_and_missing_images"} and missing_images > 0)
+            or rebuilds_audio
+        ),
+        "paid_operations": [
+            operation
+            for operation, enabled in (
+                ("generate_missing_images", missing_images > 0 and action in {"regenerate_missing_images", "rebuild_audio_and_missing_images"}),
+                ("rebuild_narration", rebuilds_audio),
+            )
+            if enabled
+        ],
+        "existing_image_paths": existing_image_paths,
+        "image_resolution": {key: value for key, value in image_resolution.items() if key != "paths"},
+        "audio_path": str((audio_choice or {}).get("resolved_path") or "") if audio_reusable else "",
+        "audio_candidate_path": str((audio_choice or {}).get("resolved_path") or ""),
         "video_path": str((video_choice or {}).get("resolved_path") or ""),
         "generated_at": _utc_iso(),
     }
@@ -604,7 +946,7 @@ def recovery_payload_patch(task_id: Any, payload: Dict[str, Any], plan: Dict[str
     if existing_images:
         patched["selected_images"] = existing_images
     audio_path = str(plan.get("audio_path") or "").strip()
-    if audio_path:
+    if audio_path and bool(plan.get("audio_reusable")):
         patched["reuse_audio_from"] = {
             "output_path": audio_path,
             "final_audio_path": audio_path,
@@ -613,6 +955,8 @@ def recovery_payload_patch(task_id: Any, payload: Dict[str, Any], plan: Dict[str
             "final_audio_duration_sec": float(plan.get("audio_duration_sec") or 0.0),
             "source": "production_manifest",
         }
+    else:
+        patched.pop("reuse_audio_from", None)
     patched["force_reuse_assets"] = True
     patched["_production_manifest_recovery"] = True
     patched["_recovery_plan_hash"] = str(plan.get("plan_hash") or "")
@@ -626,6 +970,36 @@ def recovery_payload_patch(task_id: Any, payload: Dict[str, Any], plan: Dict[str
         patched["_recovery_missing_image_count"] = int(plan.get("missing_image_count") or 0)
         patched.pop("_recovery_block_paid_regeneration", None)
         patched.pop("_recovery_missing_assets", None)
+    elif plan.get("action") in {"rebuild_untrusted_audio", "rebuild_missing_audio", "rebuild_audio_and_missing_images"}:
+        patched["force_render_only"] = False
+        rebuilds_images = plan.get("action") == "rebuild_audio_and_missing_images"
+        patched["_recovery_generate_missing_images_only"] = bool(rebuilds_images)
+        patched["_recovery_missing_image_count"] = int(plan.get("missing_image_count") or 0) if rebuilds_images else 0
+        seeded = patched.get("seeded_script") if isinstance(patched.get("seeded_script"), dict) else {}
+        if seeded:
+            seeded = dict(seeded)
+            seeded["_manifest_recovery_policy"] = {
+                "version": 1,
+                "rebuild_audio": True,
+                "reuse_images": bool(existing_images),
+                "generate_missing_images_only": bool(rebuilds_images),
+                "existing_image_count": len(existing_images),
+                "expected_image_count": int(plan.get("expected_image_count") or 0),
+                "missing_image_count": int(plan.get("missing_image_count") or 0),
+                "plan_hash": str(plan.get("plan_hash") or ""),
+                "paid_confirmation_consumed": True,
+            }
+            if rebuilds_images:
+                seeded["_partial_image_recovery"] = {
+                    "enabled": True,
+                    "existing_image_count": len(existing_images),
+                    "expected_image_count": int(plan.get("expected_image_count") or 0),
+                    "missing_image_count": int(plan.get("missing_image_count") or 0),
+                    "plan_hash": str(plan.get("plan_hash") or ""),
+                }
+            patched["seeded_script"] = seeded
+        patched.pop("_recovery_block_paid_regeneration", None)
+        patched.pop("_recovery_missing_assets", None)
     return patched
 
 
@@ -634,11 +1008,17 @@ def confirm_or_prepare_partial_recovery(task_id: Any, payload: Dict[str, Any]) -
 
     First call records a short-lived confirmation request and blocks. A second
     call for the exact same plan consumes the confirmation and returns a payload
-    that reuses script/audio and allows only the missing-image stage.
+    that reuses every trusted asset and permits only the confirmed paid stages.
     """
     task_key = _safe_task_id(task_id)
     plan = build_recovery_plan(task_key, payload_override=payload)
-    if plan.get("action") != "regenerate_missing_images":
+    paid_actions = {
+        "regenerate_missing_images",
+        "rebuild_untrusted_audio",
+        "rebuild_missing_audio",
+        "rebuild_audio_and_missing_images",
+    }
+    if plan.get("action") not in paid_actions:
         return {"allow": False, "plan": plan, "reason": str(plan.get("action") or "blocked")}
     with _LOCK:
         manifest = load_manifest(task_key)
@@ -652,6 +1032,8 @@ def confirm_or_prepare_partial_recovery(task_id: Any, payload: Dict[str, Any]) -
                 "plan_hash": plan.get("plan_hash"),
                 "confirmed_at": _utc_iso(),
                 "missing_image_count": plan.get("missing_image_count"),
+                "audio_rebuild_required": bool(plan.get("audio_rebuild_required")),
+                "paid_operations": list(plan.get("paid_operations") or []),
                 "estimated_new_cost_usd": plan.get("estimated_new_cost_usd"),
                 "estimated_new_cost_brl": plan.get("estimated_new_cost_brl"),
             }
@@ -668,6 +1050,8 @@ def confirm_or_prepare_partial_recovery(task_id: Any, payload: Dict[str, Any]) -
             "requested_at": _utc_iso(),
             "expires_epoch": now + 10 * 60,
             "missing_image_count": plan.get("missing_image_count"),
+            "audio_rebuild_required": bool(plan.get("audio_rebuild_required")),
+            "paid_operations": list(plan.get("paid_operations") or []),
             "estimated_new_cost_usd": plan.get("estimated_new_cost_usd"),
             "estimated_new_cost_brl": plan.get("estimated_new_cost_brl"),
         }
@@ -680,19 +1064,31 @@ def recovery_confirmation_message(plan: Dict[str, Any]) -> str:
     usd = float(plan.get("estimated_new_cost_usd") or 0.0)
     brl = float(plan.get("estimated_new_cost_brl") or 0.0)
     cost = f"US$ {usd:.4f} / aprox. R$ {brl:.2f}" if usd > 0 else "custo do provedor a confirmar"
+    operations: List[str] = []
+    if bool(plan.get("audio_rebuild_required")):
+        operations.append("reconstruir somente a narração")
+    if count > 0:
+        operations.append(f"gerar somente {count} imagem(ns) ausente(s)")
+    operation_label = " e ".join(operations) or "executar a recuperação necessária"
+    preserved = "Roteiro e imagens válidas serão preservados" if bool(plan.get("audio_rebuild_required")) else "Roteiro e áudio confiável serão preservados"
     return (
-        "Recuperação parcial disponível. Roteiro e áudio estão preservados; "
-        f"faltam {count} imagem(ns). Custo preventivo estimado para gerar somente o que falta: {cost}. "
-        "Nenhuma chamada paga foi feita ainda. Para confirmar esse custo e continuar, clique Retomar novamente; "
-        "para desistir, use Cancelar."
+        f"Recuperação parcial disponível. {preserved}; será necessário {operation_label}. "
+        f"Custo preventivo máximo estimado: {cost}. Nenhuma chamada paga foi feita ainda. "
+        "Para confirmar esse custo e continuar, clique Retomar novamente; para desistir, use Cancelar."
     )
 
 
 def recovery_ready_message(plan: Dict[str, Any]) -> str:
+    actions: List[str] = []
+    if bool(plan.get("audio_rebuild_required")):
+        actions.append("a narração será reconstruída")
+    missing = int(plan.get("missing_image_count") or 0)
+    if missing > 0:
+        actions.append(f"somente {missing} imagem(ns) ausente(s) poderão ser geradas")
     return (
-        "Recuperação confirmada: roteiro e áudio preservados serão reutilizados; "
-        f"somente {int(plan.get('missing_image_count') or 0)} imagem(ns) ausente(s) poderão ser geradas. "
-        "O manifesto permanente continuará registrando cada novo ativo e checkpoint."
+        "Recuperação confirmada: roteiro e ativos válidos serão reutilizados; "
+        + (" e ".join(actions) if actions else "nenhuma nova mídia paga será gerada")
+        + ". O manifesto permanente continuará registrando cada novo ativo e checkpoint."
     )
 
 
@@ -704,5 +1100,6 @@ __all__ = [
     "recovery_confirmation_message",
     "recovery_payload_patch",
     "recovery_ready_message",
+    "resolve_recovery_image_paths",
     "sync_task_snapshot",
 ]

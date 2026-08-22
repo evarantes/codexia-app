@@ -31,10 +31,31 @@ PAID_GUARD_OLD = '''        if bool(payload.get("_recovery_block_paid_regenerati
 
 PAID_GUARD_NEW = '''        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]\n            # O manifesto é a segunda fonte de verdade. Mesmo quando o registro\n            # legado perdeu a referência de áudio/imagens, ativos físicos já\n            # preservados podem permitir rerender sem custo ou recuperação\n            # parcial somente das imagens ausentes.\n            try:\n                manifest_plan = build_recovery_plan(task_id, payload_override=payload)\n            except Exception:\n                manifest_plan = {}\n            manifest_action = str(manifest_plan.get("action") or "") if isinstance(manifest_plan, dict) else ""\n            if manifest_action == "rerender_without_paid_media":\n                payload = recovery_payload_patch(task_id, payload, manifest_plan)\n                ready_message = (\n                    "Recuperação sem novas chamadas pagas: roteiro, áudio e imagens preservados serão reutilizados; "\n                    "somente a composição/renderização será refeita."\n                )\n                update_task(task_id, message=ready_message)\n            elif manifest_action == "regenerate_missing_images":\n                try:\n                    manifest_decision = confirm_or_prepare_partial_recovery(task_id, payload)\n                except Exception:\n                    manifest_decision = {"allow": False, "plan": manifest_plan, "reason": "manifest_error"}\n                confirmed_plan = manifest_decision.get("plan") if isinstance(manifest_decision, dict) else manifest_plan\n                if isinstance(manifest_decision, dict) and bool(manifest_decision.get("allow")):\n                    recovered_payload = manifest_decision.get("payload")\n                    if isinstance(recovered_payload, dict):\n                        payload = recovered_payload\n                    ready_message = recovery_ready_message(confirmed_plan if isinstance(confirmed_plan, dict) else {})\n                    update_task(task_id, message=ready_message)\n                else:\n                    recovery_message = recovery_confirmation_message(confirmed_plan if isinstance(confirmed_plan, dict) else manifest_plan)\n                    update_task(task_id, message=recovery_message)\n                    raise HTTPException(status_code=409, detail=recovery_message)\n            else:\n                missing_label = ", ".join(missing) if missing else "ativos necessários"\n                recovery_message = (\n                    "Recuperação segura bloqueada antes de novas chamadas pagas: "\n                    f"faltam {missing_label}. Os ativos existentes foram preservados. "\n                    "Nenhuma nova mídia foi gerada nesta tentativa."\n                )\n                update_task(task_id, message=recovery_message)\n                raise HTTPException(status_code=409, detail=recovery_message)\n        try:\n            VideoRequest(**payload)'''
 
+PAID_GUARD_NEW = PAID_GUARD_NEW.replace(
+    '            elif manifest_action == "regenerate_missing_images":',
+    '''            elif manifest_action in {
+                "regenerate_missing_images",
+                "rebuild_untrusted_audio",
+                "rebuild_missing_audio",
+                "rebuild_audio_and_missing_images",
+            }:''',
+)
+
 
 SCOPE_OLD = '''            if bool(payload.get("_recovery_block_paid_regeneration")):\n                update_task(task_id, message=message)\n                return {\n                    "recovered": False,\n                    "blocked": True,\n                    "task_id": task_id,\n                    "message": message,\n                    "reason": base_reason,\n                }\n            return None'''
 
 SCOPE_NEW = '''            if bool(payload.get("_recovery_block_paid_regeneration")):\n                # Deixe o manifesto decidir se há recuperação parcial ou\n                # rerender sem custo. Nenhuma chamada paga acontece nesta fase.\n                try:\n                    manifest_plan = build_recovery_plan(task_id, payload_override=payload)\n                except Exception:\n                    manifest_plan = {}\n                manifest_action = str(manifest_plan.get("action") or "") if isinstance(manifest_plan, dict) else ""\n                if manifest_action not in {"regenerate_missing_images", "rerender_without_paid_media"}:\n                    update_task(task_id, message=message)\n                    return {\n                        "recovered": False,\n                        "blocked": True,\n                        "task_id": task_id,\n                        "message": message,\n                        "reason": base_reason,\n                    }\n            return None'''
+
+SCOPE_NEW = SCOPE_NEW.replace(
+    '{"regenerate_missing_images", "rerender_without_paid_media"}',
+    '''{
+                    "regenerate_missing_images",
+                    "rerender_without_paid_media",
+                    "rebuild_untrusted_audio",
+                    "rebuild_missing_audio",
+                    "rebuild_audio_and_missing_images",
+                }''',
+)
 
 
 SERVICE_PARTIAL_OLD = '''    elif plan.get("action") == "regenerate_missing_images":\n        patched["force_render_only"] = False\n        patched["_recovery_generate_missing_images_only"] = True\n        patched["_recovery_missing_image_count"] = int(plan.get("missing_image_count") or 0)\n        patched.pop("_recovery_block_paid_regeneration", None)\n        patched.pop("_recovery_missing_assets", None)'''
@@ -46,10 +67,29 @@ SEED_AUDIO_OLD = '''                try:\n                    seed_audio_path = 
 
 SEED_AUDIO_NEW = '''                try:\n                    seed_audio_path = str(((seed_render_report.get("audio_generation") or {}).get("output_path") or "")).strip()\n                except Exception:\n                    seed_audio_path = ""\n                # Manifest recovery may carry the durable audio only in the\n                # request. Prefer it when legacy task JSON lost the reference.\n                if not seed_audio_path and isinstance(getattr(request, "reuse_audio_from", None), dict):\n                    reuse_audio = dict(getattr(request, "reuse_audio_from", None) or {})\n                    for reuse_key in ("output_path", "final_audio_path", "audio_path"):\n                        candidate = str(reuse_audio.get(reuse_key) or "").strip()\n                        if candidate and _file_ok(candidate):\n                            seed_audio_path = candidate\n                            break\n                seed_narration_text = ""'''
 
+SEED_AUDIO_NEW = SEED_AUDIO_NEW.replace(
+    '                seed_narration_text = ""',
+    '''                request_seed_for_policy = request.seeded_script if isinstance(getattr(request, "seeded_script", None), dict) else {}
+                recovery_policy = request_seed_for_policy.get("_manifest_recovery_policy") if isinstance(request_seed_for_policy, dict) else {}
+                if isinstance(recovery_policy, dict) and bool(recovery_policy.get("rebuild_audio")):
+                    # A confirmação explícita autoriza reconstruir a narração;
+                    # nunca recoloque o áudio legado apenas porque ainda existe.
+                    seed_audio_path = ""
+                seed_narration_text = ""''',
+)
+
 
 SEED_SCRIPT_OLD = '''                elif bool(getattr(request, "force_reuse_assets", False)) and seed_script_ok:\n                    script = dict(seed_script or {})\n                    reused: List[str] = ["roteiro"]'''
 
 SEED_SCRIPT_NEW = '''                elif bool(getattr(request, "force_reuse_assets", False)) and seed_script_ok:\n                    script = dict(seed_script or {})\n                    # Preserve recovery metadata supplied by the durable\n                    # manifest even when the canonical task JSON contributes\n                    # the actual script body.\n                    request_seed = request.seeded_script if isinstance(getattr(request, "seeded_script", None), dict) else {}\n                    partial_meta = request_seed.get("_partial_image_recovery") if isinstance(request_seed, dict) else None\n                    if isinstance(partial_meta, dict):\n                        script["_partial_image_recovery"] = dict(partial_meta)\n                    reused: List[str] = ["roteiro"]'''
+
+SEED_SCRIPT_NEW = SEED_SCRIPT_NEW.replace(
+    '                    reused: List[str] = ["roteiro"]',
+    '''                    recovery_policy = request_seed.get("_manifest_recovery_policy") if isinstance(request_seed, dict) else None
+                    if isinstance(recovery_policy, dict):
+                        script["_manifest_recovery_policy"] = dict(recovery_policy)
+                    reused: List[str] = ["roteiro"]''',
+)
 
 
 VIDEO_SETUP_OLD = '''            selected_image_paths = []\n            selected_primary_path = None\n            scene_image_pool = []\n            scene_image_seen = set()\n            scene_reuse_counts = {}\n            selected_raw = plan.get("selected_images") or plan.get("images") or []'''
@@ -126,10 +166,15 @@ def check() -> None:
         "confirm_or_prepare_partial_recovery(task_id, payload)",
         "recovery_confirmation_message(confirmed_plan",
         "recovery_payload_patch(task_id, payload, manifest_plan)",
-        'manifest_action == "regenerate_missing_images"',
+        '"regenerate_missing_images"',
         'manifest_action == "rerender_without_paid_media"',
+        '"rebuild_untrusted_audio"',
+        '"rebuild_missing_audio"',
+        '"rebuild_audio_and_missing_images"',
         'getattr(request, "reuse_audio_from", None)',
         'script["_partial_image_recovery"] = dict(partial_meta)',
+        'script["_manifest_recovery_policy"] = dict(recovery_policy)',
+        'bool(recovery_policy.get("rebuild_audio"))',
     )
     video_required = (
         MARKER_VIDEO,

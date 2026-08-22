@@ -82,6 +82,32 @@ class ProductionManifestDiagnosticsTests(unittest.TestCase):
         self.assertFalse(result["manifest_found"])
         self.assertFalse(result["automatic_paid_recovery_allowed"])
 
+    def test_diagnostic_uses_recoverable_checkpoint_progress_instead_of_stale_failure_value(self):
+        manifest = {
+            "schema_version": 1,
+            "artifacts": [
+                {"kind": "video", "exists": True, "source": "render_immediate"},
+                {"kind": "audio", "exists": True, "source": "tts_immediate"},
+            ],
+        }
+        plan = self._base_plan()
+        plan.update({"action": "review_existing_render", "video_ok": True})
+        report = {
+            "task": {"status": "failed", "progress": 20, "message": "Falha tardia"},
+            "checks": [],
+            "recommendations": ["Tarefa falhou em 20%: Falha tardia"],
+        }
+        with patch("app.services.production_manifest_diagnostics.load_manifest", return_value=manifest), patch(
+            "app.services.production_manifest_diagnostics.build_recovery_plan", return_value=plan
+        ):
+            enriched = enrich_video_diagnostic_report(report, task_id="task-late")
+
+        self.assertEqual(enriched["task"]["recorded_progress"], 20)
+        self.assertEqual(enriched["task"]["progress"], 85)
+        self.assertEqual(enriched["task"]["progress_source"], "production_manifest_checkpoint")
+        self.assertNotIn("Tarefa falhou em 20%: Falha tardia", enriched["recommendations"])
+        self.assertIn("85% recuperável", enriched["recommendations"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

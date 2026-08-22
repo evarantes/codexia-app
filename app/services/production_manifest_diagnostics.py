@@ -65,6 +65,19 @@ def _max_checkpoint(plan: Dict[str, Any], audio_info: Dict[str, Any]) -> str:
     return "starting"
 
 
+def _checkpoint_progress_floor(checkpoint: Any) -> int:
+    return {
+        "starting": 0,
+        "stage_1_editorial": 8,
+        "stage_2_voice": 20,
+        "stage_3_images": 35,
+        "stage_4_sync": 50,
+        "stage_5_compose": 70,
+        "stage_6_render": 85,
+        "stage_7_validation": 92,
+    }.get(str(checkpoint or "").strip(), 0)
+
+
 def build_manifest_diagnostic(task_id: Any) -> Dict[str, Any]:
     task_key = str(task_id or "").strip()
     if not task_key:
@@ -93,20 +106,26 @@ def build_manifest_diagnostic(task_id: Any) -> Dict[str, Any]:
 
     planned_action = str(plan.get("action") or "blocked")
     effective_action = planned_action
-    if audio_info.get("found") and not audio_info.get("reusable"):
+    if planned_action != "review_existing_render" and audio_info.get("found") and not audio_info.get("reusable"):
         if valid_images > 0 or bool(plan.get("script_ok")):
             effective_action = "rebuild_untrusted_audio_then_recover"
         else:
             effective_action = "blocked"
 
     recommendation = "Recuperação bloqueada até confirmação dos ativos."
-    if effective_action == "rebuild_untrusted_audio_then_recover":
+    if planned_action == "review_existing_render":
+        if audio_info.get("found") and not audio_info.get("reusable"):
+            recommendation = (
+                "Existe MP4 candidato: validar primeiro o render preservado. Se ele for rejeitado, preservar "
+                "roteiro/imagens e reconstruir somente a narração após confirmação explícita de custo."
+            )
+        else:
+            recommendation = "Existe MP4 candidato; revisar o arquivo antes de qualquer nova geração."
+    elif effective_action == "rebuild_untrusted_audio_then_recover":
         recommendation = (
             "Preservar roteiro/imagens encontrados, rejeitar o áudio legado e reconstruir somente "
             "a narração após validação. Nenhuma chamada paga deve ocorrer sem confirmação explícita."
         )
-    elif planned_action == "review_existing_render":
-        recommendation = "Existe MP4 candidato; revisar o arquivo antes de qualquer nova geração."
     elif planned_action == "rerender_without_paid_media":
         recommendation = "Ativos validados permitem novo render sem regenerar mídia paga."
     elif planned_action == "regenerate_missing_images":
@@ -114,6 +133,7 @@ def build_manifest_diagnostic(task_id: Any) -> Dict[str, Any]:
             f"Faltam {missing_images} imagem(ns). Exigir confirmação explícita do custo antes de gerar."
         )
 
+    max_checkpoint = _max_checkpoint(plan, audio_info)
     return {
         "manifest_found": True,
         "task_id": task_key,
@@ -127,14 +147,19 @@ def build_manifest_diagnostic(task_id: Any) -> Dict[str, Any]:
             "complete": bool(plan.get("images_ok")),
         },
         "video_preserved": bool(plan.get("video_ok")),
-        "max_recoverable_checkpoint": _max_checkpoint(plan, audio_info),
+        "max_recoverable_checkpoint": max_checkpoint,
+        "recoverable_progress_floor": _checkpoint_progress_floor(max_checkpoint),
         "planned_action": planned_action,
         "effective_action": effective_action,
-        "estimated_missing_image_cost_usd": float(plan.get("estimated_new_cost_usd") or 0.0),
-        "estimated_missing_image_cost_brl": float(plan.get("estimated_new_cost_brl") or 0.0),
+        "estimated_missing_image_cost_usd": float(plan.get("estimated_image_cost_usd") or 0.0),
+        "estimated_missing_image_cost_brl": float(plan.get("estimated_image_cost_brl") or 0.0),
+        "estimated_audio_rebuild_cost_usd": float(plan.get("estimated_audio_cost_usd") or 0.0),
+        "estimated_audio_rebuild_cost_brl": float(plan.get("estimated_audio_cost_brl") or 0.0),
         "automatic_paid_recovery_allowed": False,
         "requires_explicit_paid_confirmation": bool(
-            missing_images > 0 or (audio_info.get("found") and not audio_info.get("reusable"))
+            missing_images > 0
+            or bool(plan.get("audio_rebuild_required"))
+            or (audio_info.get("found") and not audio_info.get("reusable"))
         ),
         "recommendation": recommendation,
     }
@@ -158,6 +183,33 @@ def enrich_video_diagnostic_report(report: Any, *, task_id: Any) -> Dict[str, An
         checks.append({"name": "Manifesto da produção", "ok": False, "value": "não encontrado"})
         recommendations.append(str(diagnostic.get("recommendation") or "Manifesto não encontrado."))
         return enriched
+
+    task = enriched.get("task") if isinstance(enriched.get("task"), dict) else None
+    if task is not None:
+        try:
+            recorded_progress = max(0, min(100, int(task.get("progress") or 0)))
+        except Exception:
+            recorded_progress = 0
+        recoverable_progress = max(0, min(100, int(diagnostic.get("recoverable_progress_floor") or 0)))
+        if recoverable_progress > recorded_progress:
+            task["recorded_progress"] = recorded_progress
+            task["progress"] = recoverable_progress
+            task["progress_source"] = "production_manifest_checkpoint"
+            task["progress_note"] = (
+                f"Registro antigo: {recorded_progress}%; manifesto comprova "
+                f"{diagnostic.get('max_recoverable_checkpoint')} ({recoverable_progress}% mínimo)."
+            )
+            stale_prefix = f"Tarefa falhou em {recorded_progress}%:"
+            recommendations[:] = [
+                item
+                for item in recommendations
+                if not str(item or "").startswith(stale_prefix)
+            ]
+            recommendations.insert(
+                0,
+                f"Tarefa falhou após alcançar {diagnostic.get('max_recoverable_checkpoint')} "
+                f"({recoverable_progress}% recuperável): {task.get('message') or 'sem mensagem técnica registrada.'}",
+            )
 
     images = diagnostic.get("images") if isinstance(diagnostic.get("images"), dict) else {}
     audio = diagnostic.get("audio") if isinstance(diagnostic.get("audio"), dict) else {}
