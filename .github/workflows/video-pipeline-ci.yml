@@ -105,6 +105,8 @@ jobs:
           python scripts/apply_final_render_recovery_scope.py --check
           python scripts/apply_production_manifest_hardening.py --apply
           python scripts/apply_production_manifest_hardening.py --check
+          python scripts/apply_narration_contract_hardening.py --apply
+          python scripts/apply_narration_contract_hardening.py --check
           python -m compileall -q app scripts
 
       - name: Apply canonical Alembic migration on PostgreSQL

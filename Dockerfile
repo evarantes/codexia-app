@@ -40,8 +40,8 @@ COPY . .
 # recovery; final visual quality makes visual warnings review-safe; checkpoint
 # recovery normalizes saved assets; final-render recovery runs last so an MP4
 # already written at stage_6 is salvaged before any paid retry can start.
-# Production manifest runs after all recovery layers so every task snapshot and
-# every newly-created media file is durably tied to its task before runtime.
+# Production manifest runs after all recovery layers; narration contract then
+# protects TTS/CTA and persists paid assets immediately before temp cleanup.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -68,6 +68,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_final_render_recovery_scope.py --check && \
     python scripts/apply_production_manifest_hardening.py --apply && \
     python scripts/apply_production_manifest_hardening.py --check && \
+    python scripts/apply_narration_contract_hardening.py --apply && \
+    python scripts/apply_narration_contract_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
