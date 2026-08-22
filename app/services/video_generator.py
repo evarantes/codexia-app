@@ -13,6 +13,7 @@ from typing import Optional, Callable, List, Dict, Any
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 from app.services.media_probe import duration_sync_tolerance_seconds
+from app.services.recovery_image_budget import RecoveryImageCallBudget
 from app.services.safe_text_layout import SafeTextLayout
 
 CAPTION_SAFE_AREA_X_RATIO = 0.06
@@ -2177,6 +2178,10 @@ class VideoGenerator:
         scene_count = max(0, len(scenes or []))
         if scene_count <= 1:
             return max(1, scene_count)
+        recovery_budget = RecoveryImageCallBudget(plan)
+        if recovery_budget.enabled:
+            target = int(recovery_budget.target_image_count or 0)
+            return max(1, min(scene_count, target))
         if selected_image_count > 0:
             return min(scene_count, selected_image_count)
         if use_single_bg:
@@ -2350,6 +2355,7 @@ class VideoGenerator:
         image_max_rounds: int = 2,
         allow_non_ai_fallback: bool = False,
         status_callback=None,
+        paid_call_guard=None,
         generated_group_paths: Optional[Dict[int, str]] = None,
         generated_group_sources: Optional[Dict[int, str]] = None,
         scene_to_group: Optional[Dict[int, int]] = None,
@@ -2381,6 +2387,7 @@ class VideoGenerator:
                     aspect_ratio=aspect_ratio,
                     status_callback=status_callback,
                     max_rounds=image_max_rounds,
+                    paid_call_guard=paid_call_guard,
                     # A abertura precisa revelar falha real da capa temática;
                     # o fallback genérico só entra depois, explicitamente.
                     allow_non_ai_fallback=False,
@@ -2539,6 +2546,7 @@ class VideoGenerator:
             use_single_bg=use_single_bg,
             selected_image_count=selected_image_count,
         )
+        recovery_budget_limited = RecoveryImageCallBudget(plan).enabled
         ideal_group_size = max(1, int(math.ceil(float(scene_count) / float(max(1, target_count)))))
         groups: List[Dict[str, Any]] = []
         current_indexes: List[int] = []
@@ -2574,7 +2582,11 @@ class VideoGenerator:
                 _flush_group()
                 continue
             transition = self._build_visual_transition_decision(profiles[idx], profiles[idx + 1])
-            force_new = transition["should_generate_new"]
+            # A confirmação de recuperação define um número menor de imagens
+            # que o total de cenas. Nesse caso distribuímos os grupos de forma
+            # uniforme; a trava global de unicidade não pode concentrar quase
+            # todas as cenas na última imagem nem ampliar o gasto aprovado.
+            force_new = bool(transition["should_generate_new"]) and not recovery_budget_limited
             enough_for_split = len(current_indexes) >= ideal_group_size and remaining_scenes >= max(1, remaining_groups)
             if force_new:
                 scene_decisions.append({
@@ -2586,7 +2598,11 @@ class VideoGenerator:
                 scene_decisions.append({
                     "scene_index": idx + 1,
                     "decision": "reuse_image",
-                    "justification": transition["justification"],
+                    "justification": (
+                        "Reutilização distribuída dentro do limite de imagens confirmado pelo usuário"
+                        if recovery_budget_limited
+                        else transition["justification"]
+                    ),
                 })
             if remaining_groups > 0 and (force_new or enough_for_split):
                 _flush_group()
@@ -4012,7 +4028,8 @@ $synth.Dispose()
         aspect_ratio="9:16",
         status_callback=None,
         max_rounds=2,
-        allow_non_ai_fallback=False
+        allow_non_ai_fallback=False,
+        paid_call_guard=None,
     ):
         """
         Gera imagem por IA usando OpenAI e retorna o motivo exato quando falha.
@@ -4072,7 +4089,15 @@ $synth.Dispose()
         # timeout, pois isso poderia gerar uma imagem cobrada e disparar outra.
         _ = max_rounds  # compatibilidade com chamadas antigas; retries automáticos foram removidos.
         try:
-            notify("Gerando imagem com OpenAI (uma chamada protegida contra duplicação)...")
+            budget_state = paid_call_guard() if callable(paid_call_guard) else {}
+            budget_suffix = ""
+            if isinstance(budget_state, dict) and bool(budget_state.get("enabled")):
+                budget_suffix = (
+                    " Limite confirmado: imagem paga "
+                    f"{int(budget_state.get('used_new_image_calls') or 0)}/"
+                    f"{int(budget_state.get('allowed_new_image_calls') or 0)}."
+                )
+            notify("Gerando imagem com OpenAI (uma chamada protegida contra duplicação)..." + budget_suffix)
             url = self.ai_service.generate_image(
                 final_prompt,
                 aspect_ratio=aspect_ratio,
@@ -4595,6 +4620,8 @@ $synth.Dispose()
         allow_non_ai_fallback_raw = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK")
         allow_non_ai_fallback = str(allow_non_ai_fallback_raw or "").strip().lower() in {"1", "true", "yes", "on"}
         image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
+        recovery_image_budget = RecoveryImageCallBudget(plan)
+        paid_image_call_guard = recovery_image_budget.consume if recovery_image_budget.enabled else None
         image_cache = {}
         cached_temp_paths = set()
         fallback_bg_path = None
@@ -4935,6 +4962,7 @@ $synth.Dispose()
                 "continuity_anchor": continuity_anchor,
                 "requested_image_count": int(visual_group_plan.get("target_image_count") or 0),
                 "group_count": len(visual_group_plan.get("groups") or []),
+                "recovery_image_budget": recovery_image_budget.snapshot(),
                 "cinematic_engine_v2": {
                     "enabled": bool(cinematic_v2_meta.get("enabled")),
                     "version": cinematic_v2_meta.get("version"),
@@ -5030,6 +5058,7 @@ $synth.Dispose()
                             status_callback=_bg_status,
                             max_rounds=image_max_rounds,
                             allow_non_ai_fallback=allow_non_ai_fallback,
+                            paid_call_guard=paid_image_call_guard,
                         )
                         if path:
                             video_bg_paths.append(path)
@@ -5091,7 +5120,8 @@ $synth.Dispose()
                         aspect_ratio=aspect_ratio,
                         status_callback=_music_status,
                         max_rounds=image_max_rounds,
-                        allow_non_ai_fallback=allow_non_ai_fallback
+                        allow_non_ai_fallback=allow_non_ai_fallback,
+                        paid_call_guard=paid_image_call_guard,
                     )
 
                     if img_path and os.path.exists(img_path):
@@ -5604,6 +5634,7 @@ $synth.Dispose()
                 image_max_rounds=image_max_rounds,
                 allow_non_ai_fallback=allow_non_ai_fallback,
                 status_callback=_opening_status,
+                paid_call_guard=paid_image_call_guard,
                 generated_group_paths=generated_group_paths,
                 generated_group_sources=generated_group_sources,
                 scene_to_group=scene_to_group,
@@ -5826,7 +5857,8 @@ $synth.Dispose()
                                 aspect_ratio=aspect_ratio,
                                 status_callback=_scene_status,
                                 max_rounds=image_max_rounds,
-                                allow_non_ai_fallback=allow_non_ai_fallback
+                                allow_non_ai_fallback=allow_non_ai_fallback,
+                                paid_call_guard=paid_image_call_guard,
                             )
                             visual_source = "generated_group"
                             if bg_image_path:
@@ -6503,6 +6535,7 @@ $synth.Dispose()
             if progress_callback:
                 progress_callback(100, "Vídeo renderizado com sucesso!")
 
+            render_report["visual_plan"]["recovery_image_budget"] = recovery_image_budget.snapshot()
             render_report["visual_plan"]["generated_image_count"] = len({
                 item.get("image_path") for item in render_report["scene_visuals"] if item.get("image_path")
             })

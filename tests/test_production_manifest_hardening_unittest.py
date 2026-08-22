@@ -31,6 +31,8 @@ class ProductionManifestHardeningTests(unittest.TestCase):
             "audio_duration_sec": 600.0,
             "expected_image_count": 3,
             "missing_image_count": 2,
+            "estimated_image_cost_usd": 0.124,
+            "estimated_image_cost_brl": 0.64,
         }
         with patch.object(pm, "load_manifest", return_value=manifest):
             payload = pm.recovery_payload_patch("task-1", {"duration": 10}, plan)
@@ -44,6 +46,8 @@ class ProductionManifestHardeningTests(unittest.TestCase):
         self.assertEqual(meta["existing_image_count"], 1)
         self.assertEqual(meta["expected_image_count"], 3)
         self.assertEqual(meta["missing_image_count"], 2)
+        self.assertEqual(meta["estimated_image_cost_usd"], 0.124)
+        self.assertEqual(meta["estimated_image_cost_brl"], 0.64)
         self.assertEqual(meta["plan_hash"], "plan-123")
 
     def test_video_generator_keeps_full_group_plan_and_only_fills_missing_groups(self):

@@ -995,6 +995,8 @@ def recovery_payload_patch(task_id: Any, payload: Dict[str, Any], plan: Dict[str
                     "existing_image_count": len(existing_images),
                     "expected_image_count": int(plan.get("expected_image_count") or 0),
                     "missing_image_count": int(plan.get("missing_image_count") or 0),
+                    "estimated_image_cost_usd": float(plan.get("estimated_image_cost_usd") or 0.0),
+                    "estimated_image_cost_brl": float(plan.get("estimated_image_cost_brl") or 0.0),
                     "plan_hash": str(plan.get("plan_hash") or ""),
                 }
             patched["seeded_script"] = seeded
