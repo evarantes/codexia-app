@@ -42,6 +42,7 @@ COPY . .
 # already written at stage_6 is salvaged before any paid retry can start.
 # Production manifest runs after all recovery layers; narration contract then
 # protects TTS/CTA and persists paid assets immediately before temp cleanup.
+# Manifest diagnostics is read-only and exposes the durable recovery state.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -70,6 +71,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_production_manifest_hardening.py --check && \
     python scripts/apply_narration_contract_hardening.py --apply && \
     python scripts/apply_narration_contract_hardening.py --check && \
+    python scripts/apply_manifest_diagnostics_hardening.py --apply && \
+    python scripts/apply_manifest_diagnostics_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
