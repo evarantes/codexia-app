@@ -223,6 +223,20 @@ def _approved_title_from_plan(plan: Any) -> str:
     return ""
 
 
+def _approved_opening_for_tts(plan: Any) -> str:
+    """Preserve the approved title verbatim while making it a closed utterance.
+
+    Approved titles are intentionally reused as the spoken opening. A title is
+    allowed to omit terminal punctuation in the UI, but the pre-TTS narration
+    contract requires every utterance to be explicitly closed. Only punctuation
+    is added here; wording is never generated or inferred.
+    """
+    value = _approved_title_from_plan(plan)
+    if not value or re.search(r"[.!?…][\"”’')\]]*$", value):
+        return value
+    return value.rstrip(" ,;:-—–") + "."
+
+
 def _has_manual_visuals(plan: Any) -> bool:
     if not isinstance(plan, dict):
         return False
@@ -318,7 +332,7 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
         def approved_opening(self: Any, channel_name: str, *, plan=None):
             if not _enabled("ENABLE_APPROVED_NARRATION_ONLY", "true"):
                 return original_opening(self, channel_name, plan=plan)
-            return _approved_title_from_plan(plan)
+            return _approved_opening_for_tts(plan)
         video_generator_cls._default_opening_text = approved_opening
 
     # Não injeta reflexão escondida além do roteiro que o usuário aprovou.

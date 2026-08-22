@@ -9210,6 +9210,10 @@
                         }
                         if (status === 'failed') {
                             this.ytStoryVideoLoading = false;
+                            // O diagnóstico é um retrato do instante em que foi solicitado.
+                            // Ao mudar para falha, removemos o retrato antigo para nunca
+                            // exibir "processing" ao lado do estado real "failed".
+                            this.ytStoryAssistReport = null;
                             try { localStorage.removeItem('ytStoryTaskId'); } catch (e) {}
                             this.releaseVideoGenerationLockByTask(taskId);
                             this.ytStoryTaskId = String(taskId);
