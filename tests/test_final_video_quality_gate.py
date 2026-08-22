@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.services.channel_excellence_guard import install_channel_excellence_guard_patch
 from app.services.final_video_presentation_guard import install_final_video_presentation_guard
+from app.services.narration_contract_guard import validate_narration_text
 
 
 class QualityGenerator:
@@ -98,6 +99,17 @@ class FinalVideoQualityGateTests(unittest.TestCase):
         self.assertNotIn("mensagem de fé", opening.lower())
         self.assertEqual(instance._default_reflection_text(plan, []), "")
         self.assertEqual(instance._default_closing_text("Canal"), "")
+
+    def test_approved_title_without_punctuation_is_closed_without_changing_words(self):
+        os.environ["ENABLE_APPROVED_NARRATION_ONLY"] = "true"
+        cls = _fresh_cls("ApprovedTitlePunctuationGenerator")
+        install_channel_excellence_guard_patch(cls)
+
+        title = "O Pastor Que Conhece Cada Passo Seu"
+        opening = cls()._default_opening_text("Canal", plan={"title": title})
+
+        self.assertEqual(opening, title + ".")
+        self.assertEqual(validate_narration_text(opening, label="abertura"), opening)
 
     def test_ptbr_guard_preserves_jesus_and_normalizes_pelo_contrario(self):
         os.environ["ENABLE_CHANNEL_EXCELLENCE_GUARD"] = "true"

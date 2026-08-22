@@ -199,6 +199,7 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         failed_branch = poll_story.split("if (status === 'failed') {", 1)[1].split("if (status === 'cancelled')", 1)[0]
         self.assertIn("this.ytStoryTaskId = String(taskId)", failed_branch)
         self.assertIn("localStorage.removeItem('ytStoryTaskId')", failed_branch)
+        self.assertIn("this.ytStoryAssistReport = null", failed_branch)
         queue_loader = html.split("async fetchActiveVideoTasks", 1)[1].split("openStoryTaskFromQueue(item)", 1)[0]
         self.assertIn("!t.recoverable", queue_loader)
         self.assertNotIn("|| items.find(t => t && t.can_open && t.task_id)\n", queue_loader)
