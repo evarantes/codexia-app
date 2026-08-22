@@ -88,6 +88,25 @@ class RecoveryImageBudgetCapTests(unittest.TestCase):
         self.assertEqual(snapshot["estimated_consumed_image_cost_usd"], 0.62)
         self.assertEqual(snapshot["estimated_consumed_image_cost_brl"], 3.22)
 
+    def test_exhausted_budget_reuses_verified_image_without_provider_call(self):
+        with tempfile.TemporaryDirectory(prefix="recovery-reuse-") as tmp:
+            image_path = Path(tmp) / "preserved.png"
+            image_path.write_bytes(b"x" * 2048)
+            fake = _SuccessfulImageService(str(image_path))
+            generator = VideoGenerator(output_dir=tmp, ai_service=fake)
+            budget = RecoveryImageCallBudget(_recovery_plan(expected=1, missing=1))
+            budget.consume()
+
+            reused = generator._recovery_image_from_pool(
+                budget,
+                [str(image_path)],
+                visual_group_id=4,
+            )
+
+        self.assertTrue(budget.exhausted)
+        self.assertEqual(reused, str(image_path))
+        self.assertEqual(fake.calls, 0)
+
     def test_strict_uniqueness_does_not_override_confirmed_recovery_target(self):
         os.environ["ENABLE_STRICT_VISUAL_UNIQUENESS"] = "true"
 

@@ -82,6 +82,28 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertGreaterEqual(len(manifest2["checkpoints"]), 2)
         self.assertTrue(os.path.isfile(durable))
 
+    def test_record_artifact_copies_image_immediately_to_task_manifest(self):
+        transient_dir = Path(self.tmp.name) / "ephemeral"
+        transient_dir.mkdir(parents=True, exist_ok=True)
+        image = transient_dir / "paid-scene.png"
+        _write_image(image)
+
+        entry = pm.record_artifact(
+            "task-immediate-image",
+            str(image),
+            kind="image",
+            source="renderer_immediate",
+        )
+        image.unlink()
+
+        manifest = pm.load_manifest("task-immediate-image")
+        self.assertEqual(entry["kind"], "image")
+        self.assertTrue(os.path.isfile(entry["durable_path"]))
+        self.assertTrue(any(
+            item.get("durable_path") == entry["durable_path"]
+            for item in manifest.get("artifacts") or []
+        ))
+
     def test_filesystem_checkpoint_only_claims_new_files(self):
         old = self.images / "old.png"
         _write_image(old, (20, 20, 20))

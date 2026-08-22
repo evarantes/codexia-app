@@ -68,6 +68,22 @@ class SeriesImageCachePersistenceTests(unittest.TestCase):
         )
         self.assertFalse(generator.ai_router.kwargs["reclaim_missing_completed_file"])
 
+    def test_youtube_auto_uses_persistent_directory_and_reclaims_stale_cache(self):
+        with tempfile.TemporaryDirectory(prefix="youtube-auto-images-") as tmp:
+            generator = self._generator()
+            generator.set_operation_context(
+                user_id=1,
+                task_id="youtube-auto-task",
+                source_module="youtube_auto",
+            )
+            with patch("app.services.ai_generator.IMAGES_OUTPUT_DIR", tmp):
+                result = generator.generate_image("Cinematic biblical scene")
+
+            self.assertTrue(os.path.isfile(result))
+            self.assertTrue(os.path.abspath(result).startswith(os.path.abspath(tmp)))
+            self.assertEqual(generator.ai_router.kwargs["output_dir"], tmp)
+            self.assertTrue(generator.ai_router.kwargs["reclaim_missing_completed_file"])
+
     def test_completed_image_cache_requires_physical_file(self):
         with tempfile.TemporaryDirectory(prefix="series-cache-") as tmp:
             valid = Path(tmp) / "valid.png"

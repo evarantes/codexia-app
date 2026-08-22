@@ -3810,10 +3810,11 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             "final_prompt_length": len(full_prompt),
         }
 
-        is_youtube_series = self.ai_source_module == "youtube_series"
-        # Séries são retomadas depois de deploys. Seus arquivos precisam ficar
-        # no volume persistente; os demais consumidores mantêm o contrato atual.
-        base_dir = Path(IMAGES_OUTPUT_DIR) if is_youtube_series else Path("generated_assets/openai_images")
+        is_durable_youtube_task = self.ai_source_module in {"youtube_series", "youtube_auto"}
+        # Toda produção de vídeo pode atravessar deploys ou ser retomada pelo
+        # manifesto. Imagens ligadas a uma tarefa canônica precisam ficar no
+        # volume persistente, não em generated_assets dentro do contêiner.
+        base_dir = Path(IMAGES_OUTPUT_DIR) if is_durable_youtube_task else Path("generated_assets/openai_images")
         base_dir.mkdir(parents=True, exist_ok=True)
 
         def _extract_openai_error_message(err: Exception) -> str:
@@ -3852,9 +3853,12 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 capability=AICapability.IMAGE_GENERATION,
                 prompt=full_prompt,
                 output_dir=str(base_dir),
-                reclaim_missing_completed_file=is_youtube_series,
+                # Um registro concluído cujo arquivo desapareceu no deploy não
+                # é cache válido. A operação é reclamada sob o mesmo lock e só
+                # então pode gerar novamente, respeitando o orçamento externo.
+                reclaim_missing_completed_file=is_durable_youtube_task,
             )
-            if is_youtube_series:
+            if is_durable_youtube_task:
                 return str(image_path)
             fname = Path(str(image_path)).name
             return f"/generated_assets/openai_images/{fname}"
