@@ -504,6 +504,42 @@ def sync_task_snapshot(task_id: Any, snapshot: Any) -> Dict[str, Any]:
         return dict(existing)
 
 
+def record_artifact(task_id: Any, path: str, *, kind: str, source: str = "runtime") -> Dict[str, Any]:
+    """Persiste um ativo imediatamente, antes de limpeza temporária ou crash."""
+    # CODEXIA_IMMEDIATE_ARTIFACT_MANIFEST_V1
+    task_key = _safe_task_id(task_id)
+    kind_norm = str(kind or "").strip().lower()
+    if not task_key or kind_norm not in {"image", "audio", "video"}:
+        return {}
+    resolved = _resolve_existing_path(path, kind_norm)
+    if not resolved:
+        raw = os.path.abspath(str(path or "")) if str(path or "").strip() else ""
+        if raw and os.path.isfile(raw):
+            resolved = raw
+    if not resolved or not os.path.isfile(resolved):
+        return {}
+    with _LOCK:
+        mpath = manifest_path(task_key)
+        existing = _read_json(mpath)
+        now_epoch = time.time()
+        if not existing:
+            existing = {
+                "schema_version": _SCHEMA_VERSION,
+                "task_id": task_key,
+                "created_at": _utc_iso(),
+                "manifest_created_at": _utc_iso(),
+                "scan_cursor_epoch": now_epoch,
+                "artifacts": [],
+                "checkpoints": [],
+            }
+        entry = _artifact_entry(task_key, resolved, kind_norm, str(source or "runtime"))
+        existing["artifacts"] = _merge_artifacts(existing.get("artifacts") or [], [entry])
+        existing["updated_at"] = _utc_iso()
+        existing["scan_cursor_epoch"] = now_epoch
+        _atomic_write_json(mpath, existing)
+        return dict(entry)
+
+
 def _probe_duration(path: str) -> float:
     try:
         from app.services.media_probe import probe_media_file
@@ -1099,6 +1135,7 @@ __all__ = [
     "confirm_or_prepare_partial_recovery",
     "load_manifest",
     "manifest_path",
+    "record_artifact",
     "recovery_confirmation_message",
     "recovery_payload_patch",
     "recovery_ready_message",

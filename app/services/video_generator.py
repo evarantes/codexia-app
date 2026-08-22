@@ -2350,6 +2350,35 @@ class VideoGenerator:
             group_index = 0
         return paths[min(group_index, len(paths) - 1)]
 
+    def _recovery_image_from_pool(
+        self,
+        budget: RecoveryImageCallBudget,
+        image_paths: List[str],
+        visual_group_id: int,
+    ) -> Optional[str]:
+        """Reuse a verified image after the confirmed provider-call cap.
+
+        This helper is deliberately provider-free. It is safe to call before
+        `_ensure_image_for_scene` and therefore proves that the renderer cannot
+        start an extra paid request after the confirmed ceiling.
+        """
+        if not budget.enabled or not budget.exhausted:
+            return None
+        valid_paths: List[str] = []
+        for path in image_paths or []:
+            try:
+                if isinstance(path, str) and os.path.isfile(path) and os.path.getsize(path) >= 1000:
+                    valid_paths.append(path)
+            except Exception:
+                continue
+        if not valid_paths:
+            return None
+        try:
+            index = max(0, int(visual_group_id or 0)) % len(valid_paths)
+        except Exception:
+            index = 0
+        return valid_paths[index]
+
     def _resolve_scene_visual_duration(
         self,
         scene_timeline_entry: Dict[str, Any],
@@ -4818,6 +4847,14 @@ $synth.Dispose()
             try:
                 if not p or not isinstance(p, str):
                     return
+                # CODEXIA_IMMEDIATE_IMAGE_MANIFEST_V1
+                task_id = str(getattr(self, "_codexia_task_id", "") or "").strip()
+                if task_id and os.path.isfile(p):
+                    try:
+                        from app.services.production_manifest import record_artifact
+                        record_artifact(task_id, p, kind="image", source="renderer_immediate")
+                    except Exception:
+                        pass
                 pp = os.path.abspath(p)
                 static_root = os.path.abspath(os.path.join("app", "static"))
                 if not pp.startswith(static_root):
@@ -6035,16 +6072,45 @@ $synth.Dispose()
                             bg_image_path = cached
                             visual_source = "cached_group_image"
                         else:
-                            bg_image_path = self._ensure_image_for_scene(
-                                group_prompt or image_prompt,
-                                text_fallback=clean_text,
-                                aspect_ratio=aspect_ratio,
-                                status_callback=_scene_status,
-                                max_rounds=image_max_rounds,
-                                allow_non_ai_fallback=allow_non_ai_fallback,
-                                paid_call_guard=paid_image_call_guard,
+                            bg_image_path = self._recovery_image_from_pool(
+                                recovery_image_budget,
+                                scene_image_pool,
+                                visual_group_id,
                             )
-                            visual_source = "generated_group"
+                            if bg_image_path:
+                                reused_from_pool = True
+                                visual_source = "recovery_budget_reused_pool"
+                                _scene_status(
+                                    "Limite de imagens atingido; reutilizando ativo válido sem nova cobrança..."
+                                )
+                            else:
+                                try:
+                                    bg_image_path = self._ensure_image_for_scene(
+                                        group_prompt or image_prompt,
+                                        text_fallback=clean_text,
+                                        aspect_ratio=aspect_ratio,
+                                        status_callback=_scene_status,
+                                        max_rounds=image_max_rounds,
+                                        allow_non_ai_fallback=allow_non_ai_fallback,
+                                        paid_call_guard=paid_image_call_guard,
+                                    )
+                                    visual_source = "generated_group"
+                                except RecoveryImageBudgetExceeded:
+                                    # Há uma corrida benigna possível entre a
+                                    # pré-checagem e o guard. Repita somente a
+                                    # seleção local; nunca a chamada externa.
+                                    bg_image_path = self._recovery_image_from_pool(
+                                        recovery_image_budget,
+                                        scene_image_pool,
+                                        visual_group_id,
+                                    )
+                                    if not bg_image_path:
+                                        raise
+                                    reused_from_pool = True
+                                    visual_source = "recovery_budget_reused_pool"
+                                    _scene_status(
+                                        "Limite de imagens atingido; reutilizando ativo válido sem nova cobrança..."
+                                    )
                             if bg_image_path:
                                 generated_group_paths[visual_group_id] = bg_image_path
                                 generated_group_sources[visual_group_id] = visual_source

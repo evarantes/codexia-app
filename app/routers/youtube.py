@@ -7072,7 +7072,14 @@ def process_video_generation(request: VideoRequest, task_id):
         guardian_user_id = getattr(guardian_task_row, "user_id", None) if guardian_task_row else None
         current_task = get_task(task_id) or {}
         current_result = current_task.get("result") if isinstance(current_task.get("result"), dict) else {}
-        source_module = "youtube_series" if isinstance(current_result.get("series_context"), dict) else None
+        # Toda produção do YouTube Auto precisa manter imagens em /data. Sem
+        # esse contexto o roteador usava generated_assets (efêmero) e, após um
+        # deploy, reutilizava no banco caminhos de arquivos que já não existiam.
+        source_module = (
+            "youtube_series"
+            if isinstance(current_result.get("series_context"), dict)
+            else "youtube_auto"
+        )
         ai_service.set_operation_context(
             user_id=guardian_user_id,
             task_id=str(task_id),

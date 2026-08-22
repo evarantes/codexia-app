@@ -91,6 +91,12 @@ class RecoveryImageCallBudget:
             return None
         return _non_negative_int(self._state.get("expected_image_count"))
 
+    @property
+    def exhausted(self) -> bool:
+        if not self.enabled:
+            return False
+        return _non_negative_int(self._state.get("remaining_new_image_calls")) <= 0
+
     def consume(self) -> Dict[str, Any]:
         if not self.enabled:
             return self.snapshot()
