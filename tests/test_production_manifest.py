@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from app.services import production_manifest as pm
 
 
@@ -17,6 +19,12 @@ def _script(scene_count: int = 4):
             for idx in range(scene_count)
         ],
     }
+
+
+def _write_image(path: Path, color=(40, 80, 120)) -> None:
+    base = Image.new("RGB", (160, 96), color)
+    noise = Image.effect_noise(base.size, 60).convert("RGB")
+    Image.blend(base, noise, 0.35).save(path, format="PNG")
 
 
 class ProductionManifestTests(unittest.TestCase):
@@ -45,7 +53,7 @@ class ProductionManifestTests(unittest.TestCase):
 
     def test_manifest_persists_task_assets_and_failure_checkpoint(self):
         image = self.images / "scene_001.png"
-        image.write_bytes(b"x" * 4096)
+        _write_image(image)
         snapshot = {
             "task_id": "task-123",
             "status": "processing",
@@ -76,7 +84,7 @@ class ProductionManifestTests(unittest.TestCase):
 
     def test_filesystem_checkpoint_only_claims_new_files(self):
         old = self.images / "old.png"
-        old.write_bytes(b"o" * 4096)
+        _write_image(old, (20, 20, 20))
         os.utime(old, (1, 1))
         base = {
             "task_id": "task-new",
@@ -89,7 +97,7 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertFalse(any(Path(a.get("original_path", "")).name == "old.png" for a in first["artifacts"]))
 
         fresh = self.images / "fresh.png"
-        fresh.write_bytes(b"f" * 4096)
+        _write_image(fresh, (30, 30, 30))
         second_snapshot = dict(base)
         second_snapshot.update({"status": "processing", "progress": 30, "message": "Gerando imagem (router)..."})
         second = pm.sync_task_snapshot("task-new", second_snapshot)
@@ -99,7 +107,7 @@ class ProductionManifestTests(unittest.TestCase):
         audio = self.audio / "voice.mp3"
         audio.write_bytes(b"a" * 4096)
         image = self.images / "scene_001.png"
-        image.write_bytes(b"i" * 4096)
+        _write_image(image)
         snapshot = {
             "task_id": "task-recovery",
             "status": "paused",
@@ -116,6 +124,7 @@ class ProductionManifestTests(unittest.TestCase):
             },
         }
         pm.sync_task_snapshot("task-recovery", snapshot)
+        pm.record_artifact("task-recovery", str(audio), kind="audio", source="tts_immediate")
         with patch.object(pm, "_probe_duration", side_effect=lambda path: 600.0 if str(path).endswith("voice.mp3") else 0.0), patch.object(
             pm, "_image_cost_estimate", side_effect=lambda missing, duration, mode: (0.12 * missing, 0.62 * missing)
         ):
@@ -142,6 +151,104 @@ class ProductionManifestTests(unittest.TestCase):
             self.assertTrue(patched["reuse_audio_from"]["output_path"].endswith("voice.mp3"))
             self.assertEqual(len(patched["selected_images"]), 1)
             self.assertIsInstance(patched["seeded_script"], dict)
+
+    def test_stale_selected_paths_are_remapped_to_durable_worker_files(self):
+        original_paths = []
+        for index in range(1, 4):
+            path = self.images / f"scene_{index:03d}.png"
+            _write_image(path, (index * 30, 40, 90))
+            original_paths.append(str(path))
+        extra = self.images / "cover_extra.png"
+        _write_image(extra, (220, 180, 20))
+        snapshot = {
+            "task_id": "task-remap",
+            "status": "failed",
+            "progress": 85,
+            "message": "Falha na renderização",
+            "result": {
+                "payload": {"duration": 10, "image_count": 3},
+                "script": _script(3),
+                "selected_images": original_paths,
+            },
+        }
+        manifest = pm.sync_task_snapshot("task-remap", snapshot)
+        for path in original_paths:
+            Path(path).unlink()
+
+        resolved = pm.resolve_recovery_image_paths(
+            "task-remap",
+            original_paths,
+            expected_count=3,
+        )
+
+        self.assertTrue(resolved["complete"])
+        self.assertEqual(len(resolved["paths"]), 3)
+        self.assertEqual(resolved["matched_reference_count"], 3)
+        self.assertFalse(resolved["ambiguous_fallback"])
+        self.assertTrue(all(Path(path).is_file() for path in resolved["paths"]))
+        self.assertTrue(all("production_manifests" not in path or "assets" in path for path in resolved["paths"]))
+        self.assertEqual(manifest["expected_image_count"], 3)
+
+    def test_more_unordered_candidates_than_slots_are_not_chosen_arbitrarily(self):
+        for name, color in (
+            ("alpha.png", (20, 40, 60)),
+            ("beta.png", (50, 70, 90)),
+            ("gamma.png", (80, 100, 120)),
+        ):
+            _write_image(self.images / name, color)
+        snapshot = {
+            "task_id": "task-ambiguous",
+            "status": "failed",
+            "progress": 35,
+            "message": "Falha após imagens",
+            "result": {
+                "payload": {"duration": 5, "image_count": 2},
+                "script": _script(2),
+            },
+        }
+        pm.sync_task_snapshot("task-ambiguous", snapshot)
+
+        resolved = pm.resolve_recovery_image_paths("task-ambiguous", [], expected_count=2)
+
+        self.assertFalse(resolved["complete"])
+        self.assertTrue(resolved["ambiguous_fallback"])
+        self.assertEqual(resolved["paths"], [])
+        self.assertFalse(resolved["paid_calls_performed"])
+
+    def test_untrusted_audio_requires_explicit_second_confirmation(self):
+        image = self.images / "scene_001.png"
+        _write_image(image)
+        audio = self.audio / "legacy.mp3"
+        audio.write_bytes(b"a" * 4096)
+        snapshot = {
+            "task_id": "task-untrusted-audio",
+            "status": "failed",
+            "progress": 85,
+            "message": "Falha na renderização",
+            "result": {
+                "payload": {"duration": 10, "image_count": 1},
+                "script": _script(1),
+                "selected_images": [str(image)],
+                "audio_checkpoint": {"output_path": str(audio), "duration_seconds": 600.0},
+            },
+        }
+        pm.sync_task_snapshot("task-untrusted-audio", snapshot)
+        with patch.object(pm, "_probe_duration", return_value=600.0):
+            plan = pm.build_recovery_plan("task-untrusted-audio")
+            self.assertEqual(plan["action"], "rebuild_untrusted_audio")
+            self.assertTrue(plan["audio_found"])
+            self.assertFalse(plan["audio_reusable"])
+
+            first = pm.confirm_or_prepare_partial_recovery("task-untrusted-audio", {"duration": 10})
+            self.assertFalse(first["allow"])
+            self.assertEqual(first["reason"], "confirmation_required")
+
+            second = pm.confirm_or_prepare_partial_recovery("task-untrusted-audio", {"duration": 10})
+            self.assertTrue(second["allow"])
+            payload = second["payload"]
+            self.assertNotIn("reuse_audio_from", payload)
+            self.assertTrue(payload["seeded_script"]["_manifest_recovery_policy"]["rebuild_audio"])
+            self.assertFalse(payload["force_render_only"])
 
     def test_no_paid_confirmation_when_script_or_audio_missing(self):
         snapshot = {

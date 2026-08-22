@@ -27,6 +27,7 @@ class ProductionManifestHardeningTests(unittest.TestCase):
             "plan_hash": "plan-123",
             "existing_image_paths": ["/data/media/images/existing-1.png"],
             "audio_path": "/data/media/audio/voice.mp3",
+            "audio_reusable": True,
             "audio_duration_sec": 600.0,
             "expected_image_count": 3,
             "missing_image_count": 2,
@@ -59,8 +60,11 @@ class ProductionManifestHardeningTests(unittest.TestCase):
         source = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
         self.assertIn('getattr(request, "reuse_audio_from", None)', source)
         self.assertIn('script["_partial_image_recovery"] = dict(partial_meta)', source)
-        self.assertIn('manifest_action == "regenerate_missing_images"', source)
+        self.assertIn('"regenerate_missing_images"', source)
         self.assertIn('manifest_action == "rerender_without_paid_media"', source)
+        self.assertIn('"rebuild_untrusted_audio"', source)
+        self.assertIn('script["_manifest_recovery_policy"] = dict(recovery_policy)', source)
+        self.assertIn('bool(recovery_policy.get("rebuild_audio"))', source)
         self.assertIn("confirm_or_prepare_partial_recovery(task_id, payload)", source)
 
     def test_task_manager_syncs_manifest_before_redis(self):

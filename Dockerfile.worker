@@ -35,7 +35,8 @@ COPY . .
 # render recovery then salvages a completed MP4 before any paid retry.
 # Narration contract runs after the durable manifest so temporary paid media is
 # copied immediately and code/JSON cannot reach TTS.
-# Adaptive render threads chooses at most 2 threads and falls back to 1 under pressure.
+# Manifest asset recovery remaps stale API/container paths locally before the
+# adaptive renderer chooses at most 2 threads (or 1 under pressure).
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
@@ -60,6 +61,8 @@ RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_production_manifest_hardening.py --check && \
     python scripts/apply_narration_contract_hardening.py --apply && \
     python scripts/apply_narration_contract_hardening.py --check && \
+    python scripts/apply_manifest_asset_recovery_hardening.py --apply && \
+    python scripts/apply_manifest_asset_recovery_hardening.py --check && \
     python scripts/apply_adaptive_render_threads_hardening.py --apply && \
     python scripts/apply_adaptive_render_threads_hardening.py --check && \
     python -m compileall -q app scripts
