@@ -1322,6 +1322,7 @@ def _runtime_view_for_task(task: Dict[str, Any]) -> Dict[str, Any]:
     snapshot = resource_health.get("snapshot") if isinstance(resource_health.get("snapshot"), dict) else {}
     now = datetime.utcnow()
     interval = _runtime_heartbeat_seconds()
+    interruption_threshold = max(interval * 6, _runtime_interruption_seconds())
 
     heartbeat_at = _runtime_parse_dt(telemetry.get("heartbeat_at"))
     lease_heartbeat = _runtime_parse_dt(task_obj.get("executor_heartbeat_at"))
@@ -1366,14 +1367,14 @@ def _runtime_view_for_task(task: Dict[str, Any]) -> Dict[str, Any]:
             state = "working"
             label = "Processo ativo"
             detail = "O servidor confirmou que a produção continua trabalhando."
-    elif heartbeat_age is not None and heartbeat_age <= interval * 6:
+    elif heartbeat_age is not None and heartbeat_age <= interruption_threshold:
         state = "delayed"
         label = "Sinal do processo atrasado"
-        detail = "A produção pode estar em uma operação demorada; o sistema ainda está aguardando o próximo sinal."
+        detail = "A produção pode estar aguardando uma operação externa demorada; o sistema ainda está dentro do limite de interrupção."
     elif heartbeat_age is not None:
         state = "possibly_interrupted"
         label = "Produção possivelmente interrompida"
-        detail = "O executor deixou de enviar sinais. Verifique memória, reinício do contêiner ou encerramento do processo."
+        detail = "O executor ultrapassou o limite sem sinais. Verifique timeout do provedor, reinício do contêiner ou encerramento do processo."
     elif update_age is not None and update_age <= 60:
         state = "starting"
         label = "Iniciando monitoramento"
@@ -1396,6 +1397,7 @@ def _runtime_view_for_task(task: Dict[str, Any]) -> Dict[str, Any]:
         "resource_reasons": reasons,
         "resources": snapshot,
         "monitor_interval_seconds": interval,
+        "interruption_threshold_seconds": interruption_threshold,
     }
 
 
@@ -1407,12 +1409,23 @@ def _start_video_runtime_monitor(task_id: str, executor_id: str):
     def _monitor():
         sequence = 0
         baseline_oom_kills: Optional[int] = None
+        consecutive_inactive_reads = 0
+        monitor_errors = 0
+        last_monitor_error = None
         while not stop_event.is_set():
             try:
+                # Renova primeiro o lease: uma leitura/mescla de telemetria não pode
+                # fazer uma execução saudável parecer morta para o painel.
+                heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
                 task = get_task(task_id) or {}
                 if str(task.get("status") or "").lower() not in {"pending", "processing"}:
-                    break
-                heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
+                    consecutive_inactive_reads += 1
+                    if consecutive_inactive_reads >= 2:
+                        break
+                    if stop_event.wait(interval):
+                        break
+                    continue
+                consecutive_inactive_reads = 0
                 from app.services.video_resource_guard import (
                     capture_resource_snapshot,
                     evaluate_runtime_resource_health,
@@ -1455,10 +1468,13 @@ def _start_video_runtime_monitor(task_id: str, executor_id: str):
                     "resource_health": resource_health,
                     "oom_kill_baseline": int(baseline_oom_kills or 0),
                     "oom_kill_delta": oom_kill_delta,
+                    "monitor_errors": monitor_errors,
+                    "last_monitor_error": last_monitor_error,
                 }
                 merge_task_result(task_id, {"runtime_telemetry": runtime_telemetry})
-            except Exception:
-                pass
+            except Exception as exc:
+                monitor_errors += 1
+                last_monitor_error = f"{type(exc).__name__}: {exc}"[:300]
             if stop_event.wait(interval):
                 break
 
@@ -6894,9 +6910,15 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
                     + " ".join(runtime.get("resource_reasons") or [])
                 )
             elif runtime_state == "delayed":
-                report["recommendations"].append("O sinal do processo está atrasado. Aguarde até 90 segundos e diagnostique novamente.")
+                report["recommendations"].append(
+                    "O sinal está atrasado, mas ainda dentro do limite de interrupção de "
+                    f"{int(runtime.get('interruption_threshold_seconds') or _runtime_interruption_seconds())} segundos."
+                )
             elif runtime_state == "possibly_interrupted":
-                report["recommendations"].append("O executor parou de enviar sinais; a tarefa pode ter sido interrompida por memória ou reinício do contêiner.")
+                report["recommendations"].append(
+                    "O executor ultrapassou o limite sem sinais; verifique timeout do provedor, "
+                    "reinício do contêiner ou encerramento do processo."
+                )
             if status in {"pending", "processing"} and ("enfileirando" in msg.lower() or "separado" in msg.lower() or (t.get("progress") in (0, 1))):
                 report["recommendations"].append("O processo parece travado no início. Use Reiniciar para recuperar a tarefa; vídeos longos serão executados em processo isolado para proteger a API.")
             if use_rq and (not workers):
