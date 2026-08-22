@@ -83,6 +83,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_adaptive_render_threads_hardening.py --check && \
     python scripts/apply_recovery_render_stall_hardening.py --apply && \
     python scripts/apply_recovery_render_stall_hardening.py --check && \
+    python scripts/apply_recovery_render_stall_compat.py --apply && \
+    python scripts/apply_recovery_render_stall_compat.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
