@@ -558,6 +558,30 @@ def is_task_pause_requested(task_id: str) -> bool:
     c = _control_get(task_id)
     return bool(c.get("pause") is True)
 
+
+def _mark_row_runtime_paused(row: VideoTask, message: str) -> None:
+    """Sincroniza a telemetria persistida com uma pausa já confirmada."""
+    current_result: Dict[str, Any] = {}
+    if getattr(row, "result_json", None):
+        try:
+            parsed = json.loads(row.result_json)
+            if isinstance(parsed, dict):
+                current_result = parsed
+        except Exception:
+            current_result = {}
+    now_iso = datetime.utcnow().isoformat()
+    previous = current_result.get("runtime_telemetry")
+    telemetry = dict(previous) if isinstance(previous, dict) else {}
+    telemetry.update({
+        "heartbeat_at": now_iso,
+        "stage_changed_at": now_iso,
+        "stage_signature": f"paused|{message}",
+        "stage": "paused",
+        "state": "paused",
+    })
+    current_result["runtime_telemetry"] = telemetry
+    row.result_json = _json_dumps(current_result)
+
 def request_pause_task(
     task_id: str,
     message: str = "Pausa solicitada; finalizando a etapa atual com segurança.",
@@ -586,6 +610,8 @@ def request_pause_task(
             if row.status == "paused"
             else message
         )
+        if row.status == "paused":
+            _mark_row_runtime_paused(row, row.message)
         _sync_task_aux_state(db, task_id, status=row.status, result_json=row.result_json)
         db.commit()
         current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
@@ -613,6 +639,7 @@ def mark_task_paused(
             return _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
         row.status = "paused"
         row.message = message
+        _mark_row_runtime_paused(row, message)
         _sync_task_aux_state(db, task_id, status="paused", result_json=row.result_json)
         db.commit()
         current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))

@@ -9,6 +9,8 @@ import time
 import difflib
 import unicodedata
 import math
+import hashlib
+from contextlib import contextmanager
 from typing import Optional, Callable, List, Dict, Any
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
@@ -26,6 +28,56 @@ DEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30
 DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20
 DEFAULT_CINEMATIC_END_SCREEN_SEC = 4.0
 DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC = 7.0
+
+
+def _bounded_timeout_seconds(env_name: str, default: int) -> int:
+    try:
+        raw = int((os.getenv(env_name) or "").strip() or str(default))
+    except Exception:
+        raw = int(default)
+    return max(30, min(180, raw))
+
+
+@contextmanager
+def _narration_activity_pulse(
+    callback: Optional[Callable[[str], None]],
+    message: str,
+    *,
+    interval_seconds: Optional[float] = None,
+):
+    """Mantém o heartbeat da tarefa vivo enquanto um provedor bloqueia a thread."""
+    if not callback:
+        yield
+        return
+    stop_event = threading.Event()
+    try:
+        interval = float(
+            interval_seconds
+            if interval_seconds is not None
+            else (os.getenv("NARRATION_HEARTBEAT_SECONDS") or "15")
+        )
+    except Exception:
+        interval = 15.0
+    interval = max(0.01 if interval_seconds is not None else 5.0, min(60.0, interval))
+
+    def _emit() -> None:
+        try:
+            callback(message)
+        except Exception:
+            pass
+
+    def _run() -> None:
+        while not stop_event.wait(interval):
+            _emit()
+
+    _emit()
+    thread = threading.Thread(target=_run, name="narration-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        thread.join(timeout=min(1.0, interval + 0.1))
 
 class VideoGenerator:
     def __init__(self, output_dir=None, ai_service=None):
@@ -1421,13 +1473,20 @@ class VideoGenerator:
         voice_gender: Optional[str] = None,
         pause_duration_sec: float = 1.25,
         initial_silence_duration_sec: float = 0.0,
+        status_callback: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         try:
             from moviepy.editor import AudioFileClip, concatenate_audioclips, AudioClip
         except ImportError:
             from moviepy import AudioFileClip, concatenate_audioclips, AudioClip
 
-        main_audio_path = self.generate_audio(main_text, voice_style=voice_style, voice_gender=voice_gender)
+        main_audio_path = self.generate_audio(
+            main_text,
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+            status_callback=status_callback,
+            segment_label="narração principal",
+        )
         if not main_audio_path or not os.path.exists(main_audio_path):
             raise Exception("Falha ao gerar o audio principal da narracao.")
 
@@ -1445,7 +1504,13 @@ class VideoGenerator:
             if initial_silence_duration_sec > 0:
                 initial_silence_clip = AudioClip(lambda t: 0, duration=initial_silence_duration_sec, fps=fps)
             if cta_text:
-                cta_audio_path = self.generate_audio(cta_text, voice_style=voice_style, voice_gender=voice_gender)
+                cta_audio_path = self.generate_audio(
+                    cta_text,
+                    voice_style=voice_style,
+                    voice_gender=voice_gender,
+                    status_callback=status_callback,
+                    segment_label="encerramento",
+                )
                 if not cta_audio_path or not os.path.exists(cta_audio_path):
                     raise Exception("Falha ao gerar o audio do CTA.")
                 cta_audio_clip = AudioFileClip(cta_audio_path)
@@ -3469,7 +3534,15 @@ class VideoGenerator:
         t = re.sub(r"(\s*[-–—|:]?\s*E\.?MA\.?\s*)$", "", t, flags=re.IGNORECASE).strip()
         return t or "Música"
 
-    def generate_audio(self, text, lang='pt', voice_style=None, voice_gender=None):
+    def generate_audio(
+        self,
+        text,
+        lang='pt',
+        voice_style=None,
+        voice_gender=None,
+        status_callback: Optional[Callable[[str], None]] = None,
+        segment_label: str = "narração",
+    ):
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text or not text.strip(): 
             print("Aviso: Texto vazio para generate_audio")
@@ -3495,6 +3568,40 @@ class VideoGenerator:
             "attempts": [],
         }
         self._last_tts_debug = tts_debug
+
+        cache_fingerprint = hashlib.sha256(
+            "\n".join([clean_text, str(lang or ""), style, gender]).encode("utf-8")
+        ).hexdigest()[:32]
+        cache_path = os.path.join(self.output_dir, f"tts_cache_{cache_fingerprint}.mp3")
+
+        def _valid_audio(path: str, minimum_size: int = 500) -> tuple:
+            if not path or not os.path.exists(path):
+                return False, 0.0
+            try:
+                if int(os.path.getsize(path) or 0) <= minimum_size:
+                    return False, 0.0
+                duration = float(self._ffprobe_duration_seconds(path) or 0.0)
+                return duration > 0.2, duration
+            except Exception:
+                return False, 0.0
+
+        cached_ok, cached_duration = _valid_audio(cache_path)
+        if cached_ok:
+            tts_debug.update({
+                "provider_used": "preserved_tts_cache",
+                "fallback_used": False,
+                "cache_hit": True,
+                "final_audio_duration_sec": round(cached_duration, 2),
+                "output_path": cache_path,
+            })
+            tts_debug["attempts"] = [{
+                "provider": "preserved_tts_cache",
+                "status": "success",
+                "reason": "Áudio idêntico já estava preservado; nenhuma chamada de provedor foi repetida.",
+            }]
+            if status_callback:
+                status_callback(f"Gerando {segment_label} — reutilizando áudio preservado...")
+            return cache_path
 
         def _record_attempt(provider: str, status: str, reason: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
             item: Dict[str, Any] = {"provider": provider, "status": status}
@@ -3646,12 +3753,23 @@ class VideoGenerator:
         # 1. ElevenLabs/OpenAI TTS (ai_service tenta ElevenLabs primeiro, depois OpenAI)
         # Importante: não depende de OPENAI_API_KEY para usar ElevenLabs.
         if openai_voice and self.ai_service and hasattr(self.ai_service, "generate_audio"):
+            if status_callback:
+                status_callback(f"Gerando {segment_label} — iniciando provedor de voz...")
             try:
                 print(f"Tentando TTS premium ({openai_voice})...")
                 voice_settings = _infer_voice_settings(clean_text, is_male=(gender == "male"), style_tag=style)
                 audio_content = None
                 if hasattr(self.ai_service, "generate_audio_with_diagnostics"):
-                    premium_debug = self.ai_service.generate_audio_with_diagnostics(clean_text, voice=openai_voice, voice_settings=voice_settings)
+                    with _narration_activity_pulse(
+                        status_callback,
+                        f"Gerando {segment_label} — aguardando provedor de voz...",
+                    ):
+                        premium_debug = self.ai_service.generate_audio_with_diagnostics(
+                            clean_text,
+                            voice=openai_voice,
+                            voice_settings=voice_settings,
+                            activity_callback=status_callback,
+                        )
                     if isinstance(premium_debug, dict):
                         for key, value in premium_debug.items():
                             if key not in {"attempts", "audio_content"}:
@@ -3661,13 +3779,20 @@ class VideoGenerator:
                                 tts_debug.setdefault("attempts", []).append(dict(attempt))
                         audio_content = premium_debug.get("audio_content")
                 else:
-                    audio_content = self.ai_service.generate_audio(clean_text, voice=openai_voice, voice_settings=voice_settings)
+                    with _narration_activity_pulse(
+                        status_callback,
+                        f"Gerando {segment_label} — aguardando provedor de voz...",
+                    ):
+                        audio_content = self.ai_service.generate_audio(
+                            clean_text,
+                            voice=openai_voice,
+                            voice_settings=voice_settings,
+                        )
                     if audio_content:
                         tts_debug["provider_used"] = "premium_unknown"
                         _record_attempt("premium_unknown", "success", "Audio gerado via ai_service sem diagnostico detalhado.")
                 if audio_content:
-                    filename = f"{uuid.uuid4()}.mp3"
-                    path = os.path.join(self.output_dir, filename)
+                    path = os.path.join(self.output_dir, f"tts_tmp_{uuid.uuid4().hex}.mp3")
                     with open(path, "wb") as f:
                         f.write(audio_content)
                     dur = 0.0
@@ -3676,7 +3801,10 @@ class VideoGenerator:
                     except Exception:
                         dur = 0.0
                     if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
+                        os.replace(path, cache_path)
+                        path = cache_path
                         tts_debug["provider_used"] = tts_debug.get("provider_used") or "premium_unknown"
+                        tts_debug["cache_hit"] = False
                         tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
                         tts_debug["output_path"] = path
                         print(f"TTS premium sucesso: {path} ({dur:.2f}s)")
@@ -3698,6 +3826,8 @@ class VideoGenerator:
 
         # 3. Edge TTS (Qualidade Natural Gratuita - Microsoft)
         if style not in ["robotic", "robotica", "robótica"]:
+            if status_callback:
+                status_callback(f"Gerando {segment_label} — preparando fallback gratuito Edge TTS...")
             try:
                 print("Tentando Edge TTS...")
                 import edge_tts
@@ -3717,20 +3847,33 @@ class VideoGenerator:
                         voice = "en-US-JennyNeural"
                     lang_tag = "en-US"
 
-                filename = f"{uuid.uuid4()}.mp3"
-                path = os.path.join(self.output_dir, filename)
+                path = os.path.join(self.output_dir, f"tts_edge_tmp_{uuid.uuid4().hex}.mp3")
                 rate, pitch, volume = _infer_edge_prosody(clean_text, is_male=(gender == "male"), style_tag=style)
                 ssml = _edge_ssml(clean_text, voice_name=voice, rate=rate, pitch=pitch, volume=volume, lang_tag=lang_tag)
+                edge_timeout = _bounded_timeout_seconds("NARRATION_EDGE_TTS_TIMEOUT_SECONDS", 90)
+                edge_error: Dict[str, Any] = {}
 
                 async def _run_edge_tts():
                     communicate = edge_tts.Communicate(ssml, voice)
-                    await asyncio.wait_for(communicate.save(path), timeout=90)
-                    
-                t = threading.Thread(target=lambda: asyncio.run(_run_edge_tts()))
-                t.start()
-                t.join(timeout=95)
+                    await asyncio.wait_for(communicate.save(path), timeout=edge_timeout)
+
+                def _edge_worker():
+                    try:
+                        asyncio.run(_run_edge_tts())
+                    except Exception as exc:
+                        edge_error["error"] = exc
+
+                with _narration_activity_pulse(
+                    status_callback,
+                    f"Gerando {segment_label} — fallback gratuito Edge TTS...",
+                ):
+                    t = threading.Thread(target=_edge_worker, name="edge-tts", daemon=True)
+                    t.start()
+                    t.join(timeout=edge_timeout + 5)
                 if t.is_alive():
-                    raise TimeoutError("Edge TTS timeout")
+                    raise TimeoutError(f"Edge TTS excedeu {edge_timeout}s")
+                if edge_error.get("error"):
+                    raise edge_error["error"]
 
                 ffprobe_available = bool(tts_debug.get("ffprobe_available"))
                 file_size = 0
@@ -3759,6 +3902,8 @@ class VideoGenerator:
                         dur = estimated_dur
 
                 if os.path.exists(path) and file_size > 500 and dur > 0.2:
+                    os.replace(path, cache_path)
+                    path = cache_path
                     _record_attempt(
                         "edge_tts",
                         "success",
@@ -3774,6 +3919,7 @@ class VideoGenerator:
                     )
                     tts_debug["provider_used"] = "edge_tts"
                     tts_debug["fallback_used"] = True
+                    tts_debug["cache_hit"] = False
                     tts_debug["edge_tts_file_size_bytes"] = file_size
                     tts_debug["edge_tts_duration_source"] = "estimated_from_text" if used_estimated_duration else "ffprobe"
                     tts_debug["edge_tts_measured_duration_sec"] = round(float(self._ffprobe_duration_seconds(path) or 0.0), 2) if ffprobe_available else 0.0
@@ -3799,6 +3945,11 @@ class VideoGenerator:
             except Exception as e:
                  _record_attempt("edge_tts", "failed", str(e))
                  print(f"Edge TTS falhou: {e}")
+                 try:
+                     if "path" in locals() and str(path).startswith(str(self.output_dir)) and os.path.exists(path) and path != cache_path:
+                         os.remove(path)
+                 except Exception:
+                     pass
 
         # 4. Fallback offline no Windows via System.Speech
         if os.name == "nt":
@@ -3870,13 +4021,33 @@ $synth.Dispose()
                 print(f"Windows SAPI falhou: {e}")
 
         # 4. Fallback gTTS (Robótico)
+        if status_callback:
+            status_callback(f"Gerando {segment_label} — preparando fallback gratuito gTTS...")
         try:
             from gtts import gTTS
             print("Tentando Fallback gTTS (Robótico)...")
             tts = gTTS(text=clean_text, lang=lang)
-            filename = f"{uuid.uuid4()}.mp3"
-            path = os.path.join(self.output_dir, filename)
-            tts.save(path)
+            path = os.path.join(self.output_dir, f"tts_gtts_tmp_{uuid.uuid4().hex}.mp3")
+            gtts_timeout = _bounded_timeout_seconds("NARRATION_GTTS_TIMEOUT_SECONDS", 90)
+            gtts_error: Dict[str, Any] = {}
+
+            def _gtts_worker():
+                try:
+                    tts.save(path)
+                except Exception as exc:
+                    gtts_error["error"] = exc
+
+            with _narration_activity_pulse(
+                status_callback,
+                f"Gerando {segment_label} — fallback gratuito gTTS...",
+            ):
+                t = threading.Thread(target=_gtts_worker, name="gtts", daemon=True)
+                t.start()
+                t.join(timeout=gtts_timeout)
+            if t.is_alive():
+                raise TimeoutError(f"gTTS excedeu {gtts_timeout}s")
+            if gtts_error.get("error"):
+                raise gtts_error["error"]
             
             # Verificação de segurança
             dur = 0.0
@@ -3885,9 +4056,12 @@ $synth.Dispose()
             except Exception:
                 dur = 0.0
             if os.path.exists(path) and os.path.getsize(path) > 100 and dur > 0.2:
+                os.replace(path, cache_path)
+                path = cache_path
                 _record_attempt("gtts", "success", "Fallback gTTS gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
                 tts_debug["provider_used"] = "gtts"
                 tts_debug["fallback_used"] = True
+                tts_debug["cache_hit"] = False
                 tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
                 tts_debug["output_path"] = path
                 print(f"gTTS sucesso: {path} ({dur:.2f}s)")
@@ -3901,6 +4075,11 @@ $synth.Dispose()
             _record_attempt("gtts", "failed", str(e))
             tts_debug["error_summary"] = self._summarize_tts_failure(tts_debug)
             print(f"Erro no TTS Final (gTTS): {e}")
+            try:
+                if "path" in locals() and os.path.exists(path) and path != cache_path:
+                    os.remove(path)
+            except Exception:
+                pass
             return None
 
     def download_image(self, url, retries=3, timeout=20):
@@ -5224,7 +5403,11 @@ $synth.Dispose()
 
             # --- MODO NORMAL (NARRADO) ---
             if progress_callback:
-                progress_callback(5, "Planejando narracao final...")
+                progress_callback(5, "Preparando síntese da narração final...")
+
+            def _tts_status(message: str) -> None:
+                if progress_callback:
+                    progress_callback(8, str(message or "Gerando narração..."))
 
             clean_title = title
             if "Music:" in clean_title:
@@ -5329,6 +5512,7 @@ $synth.Dispose()
                     voice_gender=voice_gender,
                     pause_duration_sec=pause_before_cta_sec,
                     initial_silence_duration_sec=initial_opening_silence_sec,
+                    status_callback=_tts_status,
                 )
                 main_audio_path = segmented_audio.get("audio_path")
                 tts_debug = dict(self._last_tts_debug or {})

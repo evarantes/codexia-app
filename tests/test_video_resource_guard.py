@@ -256,16 +256,24 @@ class VideoRuntimeTelemetryTests(unittest.TestCase):
                 },
             },
         }
-        with patch.object(youtube, "get_task_execution_lease", return_value=None):
+        with patch.object(youtube, "get_task_execution_lease", return_value=None), \
+             patch.dict(os.environ, {"VIDEO_RUNTIME_INTERRUPTION_SECONDS": "300"}, clear=False):
             active = youtube._runtime_view_for_task(base)
-            interrupted_task = dict(base)
-            interrupted_task["result"] = dict(base["result"])
-            interrupted_task["result"]["runtime_telemetry"] = dict(base["result"]["runtime_telemetry"])
-            interrupted_task["result"]["runtime_telemetry"]["heartbeat_at"] = (now - timedelta(minutes=3)).isoformat()
+            delayed_task = dict(base)
+            delayed_task["result"] = dict(base["result"])
+            delayed_task["result"]["runtime_telemetry"] = dict(base["result"]["runtime_telemetry"])
+            delayed_task["result"]["runtime_telemetry"]["heartbeat_at"] = (now - timedelta(minutes=3)).isoformat()
+            delayed = youtube._runtime_view_for_task(delayed_task)
+            interrupted_task = dict(delayed_task)
+            interrupted_task["result"] = dict(delayed_task["result"])
+            interrupted_task["result"]["runtime_telemetry"] = dict(delayed_task["result"]["runtime_telemetry"])
+            interrupted_task["result"]["runtime_telemetry"]["heartbeat_at"] = (now - timedelta(minutes=6)).isoformat()
             interrupted = youtube._runtime_view_for_task(interrupted_task)
 
         self.assertEqual(active["state"], "working")
+        self.assertEqual(delayed["state"], "delayed")
         self.assertEqual(interrupted["state"], "possibly_interrupted")
+        self.assertEqual(interrupted["interruption_threshold_seconds"], 300)
         self.assertGreaterEqual(active["stage_unchanged_seconds"], 119)
 
     def test_runtime_monitor_persists_heartbeat_and_resource_snapshot(self):

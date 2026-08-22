@@ -6,7 +6,7 @@ import base64
 import openai
 import requests
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from dotenv import load_dotenv
 from app.config import IMAGES_OUTPUT_DIR
 from app.database import SessionLocal
@@ -66,6 +66,14 @@ def _env_flag_enabled(*names: str) -> bool:
         if raw in {"1", "true", "yes", "sim", "on", "enabled", "enable"}:
             return True
     return False
+
+
+def _narration_provider_timeout_seconds() -> int:
+    try:
+        raw = int((os.getenv("NARRATION_PROVIDER_TIMEOUT_SECONDS") or "").strip() or "90")
+    except Exception:
+        raw = 90
+    return max(30, min(180, raw))
 
 
 _PAID_AI_DISABLE_FLAG = Path(__file__).resolve().parents[2] / "artifacts" / "financial_guardian" / "disable_paid_ai.flag"
@@ -394,7 +402,13 @@ class AIContentGenerator:
             "voice_selection_source": "env_or_provider_default",
         }
 
-    def _generate_audio_openai_tts(self, text: str, voice_hint: str = "nova", voice_settings: Optional[Dict[str, Any]] = None):
+    def _generate_audio_openai_tts(
+        self,
+        text: str,
+        voice_hint: str = "nova",
+        voice_settings: Optional[Dict[str, Any]] = None,
+        timeout_seconds: Optional[int] = None,
+    ):
         if not self.api_key or not text or not text.strip():
             return None
         try:
@@ -403,7 +417,10 @@ class AIContentGenerator:
             if voice.lower() in {"my_voice", "myvoice", "minha_voz", "minhavoz"}:
                 voice = "nova"
             model = (os.getenv("OPENAI_TTS_MODEL") or "gpt-4o-mini-tts").strip() or "gpt-4o-mini-tts"
-            client = openai.OpenAI(api_key=(self.api_key or "").strip(), timeout=180.0)
+            client = openai.OpenAI(
+                api_key=(self.api_key or "").strip(),
+                timeout=float(timeout_seconds or _narration_provider_timeout_seconds()),
+            )
             response = client.audio.speech.create(
                 model=model,
                 voice=voice,
@@ -420,12 +437,25 @@ class AIContentGenerator:
             print(f"OpenAI TTS error: {e}")
             return None
 
-    def generate_audio_with_diagnostics(self, text, voice="onyx", voice_settings: Optional[Dict[str, Any]] = None, preferred_provider: Optional[str] = None) -> Dict[str, Any]:
+    def generate_audio_with_diagnostics(
+        self,
+        text,
+        voice="onyx",
+        voice_settings: Optional[Dict[str, Any]] = None,
+        preferred_provider: Optional[str] = None,
+        activity_callback: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
         self._load_config()
         configured_provider = self._normalize_voice_provider(preferred_provider or self.voice_provider)
         attempts: List[Dict[str, Any]] = []
         provider_order = self._tts_provider_order(preferred_provider=preferred_provider)
         paid_ai_disabled = self._paid_ai_disabled()
+        provider_timeout = _narration_provider_timeout_seconds()
+        # Uma tarefa de produção nunca atravessa vários provedores pagos para o
+        # mesmo trecho. Se a primeira tentativa for inconclusiva, o chamador usa
+        # fallback gratuito e a retomada reutiliza o cache local.
+        max_paid_attempts = 1 if getattr(self, "ai_task_id", None) else len(provider_order)
+        paid_attempts = 0
         diagnostics: Dict[str, Any] = {
             "configured_provider": configured_provider,
             "provider_order": provider_order,
@@ -449,6 +479,14 @@ class AIContentGenerator:
             if details:
                 item["details"] = details
             attempts.append(item)
+
+        def _activity(message: str) -> None:
+            if not activity_callback:
+                return
+            try:
+                activity_callback(message)
+            except Exception:
+                pass
 
         providers = {
             "edenai": {
@@ -484,6 +522,13 @@ class AIContentGenerator:
             if not provider_meta["available"]:
                 _add_attempt(provider, "skipped", provider_meta["reason"])
                 continue
+            if paid_attempts >= max_paid_attempts:
+                _add_attempt(
+                    provider,
+                    "skipped",
+                    "Limite rígido de uma tentativa paga por trecho atingido; seguindo para fallback gratuito.",
+                )
+                continue
             try:
                 provider_voice_meta: Dict[str, Any] = {}
                 if provider == "elevenlabs":
@@ -496,8 +541,21 @@ class AIContentGenerator:
                         "voice_name_used": str((voice or self.default_voice or "nova")).strip() or "nova",
                         "voice_selection_source": "request_or_provider_default",
                     }
-                audio_content = provider_meta["fn"](text, voice, voice_settings=voice_settings)
+                paid_attempts += 1
+                _activity(
+                    f"Gerando narração — aguardando {provider} "
+                    f"(limite de {provider_timeout}s, tentativa paga {paid_attempts}/{max_paid_attempts})..."
+                )
+                audio_content = provider_meta["fn"](
+                    text,
+                    voice,
+                    voice_settings=voice_settings,
+                    timeout_seconds=provider_timeout,
+                )
                 if audio_content:
+                    diagnostics["paid_attempts"] = paid_attempts
+                    diagnostics["paid_attempt_limit"] = max_paid_attempts
+                    diagnostics["provider_timeout_seconds"] = provider_timeout
                     diagnostics["provider_used"] = provider
                     diagnostics["fallback_used"] = bool(idx > 0 or provider != configured_provider)
                     diagnostics["audio_content"] = audio_content
@@ -508,6 +566,10 @@ class AIContentGenerator:
                 _add_attempt(provider, "failed", "Provider retornou resposta vazia.")
             except Exception as e:
                 _add_attempt(provider, "failed", str(e))
+
+        diagnostics["paid_attempts"] = paid_attempts
+        diagnostics["paid_attempt_limit"] = max_paid_attempts
+        diagnostics["provider_timeout_seconds"] = provider_timeout
 
         diagnostics["error_summary"] = "Nenhum provider premium conseguiu gerar audio."
         return diagnostics
@@ -3806,10 +3868,18 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         diagnostics = self.generate_audio_with_diagnostics(text, voice=voice, voice_settings=voice_settings)
         return diagnostics.get("audio_content")
 
-    def _generate_audio_edenai_elevenlabs(self, text: str, voice_hint: str = "onyx", voice_settings: Optional[Dict[str, Any]] = None):
+    def _generate_audio_edenai_elevenlabs(
+        self,
+        text: str,
+        voice_hint: str = "onyx",
+        voice_settings: Optional[Dict[str, Any]] = None,
+        timeout_seconds: Optional[int] = None,
+    ):
         if not (self.edenai_key or "").strip() or not text or not text.strip():
             return None
         try:
+            provider_timeout = int(timeout_seconds or _narration_provider_timeout_seconds())
+            request_timeout = max(15, provider_timeout // 2)
             normalized_text = self._assert_tts_text_not_truncated(text, provider="EdenAI ElevenLabs", max_chars=5000)
             hint = (voice_hint or "").strip().lower()
             custom_voice_id = (self.elevenlabs_voice_id or "").strip()
@@ -3846,7 +3916,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 "https://api.edenai.run/v2/audio/text_to_speech",
                 headers=headers,
                 json=payload,
-                timeout=120,
+                timeout=request_timeout,
             )
             if r.status_code >= 400:
                 print(f"Eden AI TTS HTTP {r.status_code}: {(r.text or '')[:240]}")
@@ -3866,7 +3936,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             if not audio_url:
                 return None
 
-            rr = requests.get(audio_url, timeout=120)
+            rr = requests.get(audio_url, timeout=request_timeout)
             if rr.status_code >= 400 or not rr.content:
                 return None
             return rr.content
@@ -3874,7 +3944,13 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             print(f"Eden AI TTS error: {e}")
             return None
 
-    def _generate_audio_elevenlabs(self, text: str, voice_hint: str = "onyx", voice_settings: Optional[Dict[str, Any]] = None):
+    def _generate_audio_elevenlabs(
+        self,
+        text: str,
+        voice_hint: str = "onyx",
+        voice_settings: Optional[Dict[str, Any]] = None,
+        timeout_seconds: Optional[int] = None,
+    ):
         """Gera áudio usando ElevenLabs API (vozes ultra-realistas)."""
         if not self.elevenlabs_key or not text or not text.strip():
             return None
@@ -3902,7 +3978,12 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 "model_id": "eleven_multilingual_v2",
                 "voice_settings": settings,
             }
-            r = requests.post(url, json=payload, headers=headers, timeout=120)
+            r = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=int(timeout_seconds or _narration_provider_timeout_seconds()),
+            )
             if r.status_code == 200:
                 return r.content
             print(f"ElevenLabs TTS HTTP {r.status_code}: {r.text[:240]}")
