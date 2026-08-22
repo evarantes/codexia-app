@@ -5,6 +5,8 @@ import re
 from copy import deepcopy
 from typing import Any, Dict, List, Type
 
+from app.services.recovery_image_budget import resolve_recovery_image_budget
+
 
 def _enabled(name: str, default: str = "true") -> bool:
     return str(os.getenv(name) or default).strip().lower() in {
@@ -252,12 +254,18 @@ def _has_manual_visuals(plan: Any) -> bool:
     return False
 
 
+def _recovery_visual_budget(plan: Any) -> Dict[str, Any]:
+    budget = resolve_recovery_image_budget(plan)
+    return budget if isinstance(budget, dict) else {"enabled": False}
+
+
 def _quality_gate(result: Any, plan: Any = None) -> Dict[str, Any]:
     report: Dict[str, Any] = {
         "passed": True,
         "checks": {},
         "violations": [],
         "manual_visuals": _has_manual_visuals(plan),
+        "budget_limited_visuals": bool(_recovery_visual_budget(plan).get("enabled")),
     }
     if not isinstance(result, dict):
         report["passed"] = False
@@ -280,32 +288,98 @@ def _quality_gate(result: Any, plan: Any = None) -> Dict[str, Any]:
     if not no_hidden_spoken_cta:
         report["violations"].append("hidden_spoken_closing")
 
+    # final_visual_quality_gate_self_heal_v1
     generated = int(visual.get("generated_image_count") or 0)
     reused = int(visual.get("reused_image_count") or 0)
-    avg_hold = float(visual.get("average_image_duration_sec") or 0.0)
+    legacy_avg_hold = float(visual.get("average_image_duration_sec") or 0.0)
     manual_visuals = bool(report["manual_visuals"])
+    budget_limited_visuals = bool(report["budget_limited_visuals"])
 
-    # A trava agressiva vale apenas para produção visual automática. Seleção
-    # manual do usuário continua soberana e não dispara regenerações pagas.
-    if generated > 1 and not manual_visuals:
+    # O renderer já divide cenas longas em beats cinematográficos. O antigo
+    # cálculo somava a duração total por CAMINHO de imagem e produzia falso
+    # positivo quando um arquivo era reutilizado. A qualidade visual deve medir
+    # o maior hold real de cada beat, não a duração acumulada do asset.
+    scene_visuals = rr.get("scene_visuals") if isinstance(rr.get("scene_visuals"), list) else []
+    beat_holds = []
+    for item in scene_visuals:
+        if not isinstance(item, dict):
+            continue
+        try:
+            hold = float(item.get("max_visual_hold_sec") or 0.0)
+        except (TypeError, ValueError):
+            hold = 0.0
+        if hold > 0:
+            beat_holds.append(hold)
+
+    resource_profile = rr.get("resource_profile") if isinstance(rr.get("resource_profile"), dict) else {}
+    try:
+        planned_hold_target = float(resource_profile.get("visual_hold_target_sec") or 0.0)
+    except (TypeError, ValueError):
+        planned_hold_target = 0.0
+    hold_limit = max(11.0, planned_hold_target + 0.75 if planned_hold_target > 0 else 11.0)
+    max_beat_hold = max(beat_holds) if beat_holds else 0.0
+    avg_beat_hold = (sum(beat_holds) / len(beat_holds)) if beat_holds else 0.0
+
+    if generated > 1 and not manual_visuals and not budget_limited_visuals:
         no_path_reuse = reused == 0
-        pacing_ok = avg_hold <= 11.0 if avg_hold > 0 else True
+        pacing_ok = max_beat_hold <= hold_limit if max_beat_hold > 0 else True
     else:
         no_path_reuse = True
         pacing_ok = True
+
     report["checks"]["no_reused_generated_image_paths"] = no_path_reuse
-    report["checks"]["average_visual_hold_ok"] = pacing_ok
+    report["checks"]["visual_beat_hold_ok"] = pacing_ok
     report["metrics"] = {
         "generated_image_count": generated,
         "reused_image_count": reused,
-        "average_image_duration_sec": round(avg_hold, 2),
+        "legacy_average_image_duration_sec": round(legacy_avg_hold, 2),
+        "average_visual_beat_hold_sec": round(avg_beat_hold, 2),
+        "max_visual_beat_hold_sec": round(max_beat_hold, 2),
+        "visual_hold_limit_sec": round(hold_limit, 2),
+        "visual_hold_target_sec": round(planned_hold_target, 2),
     }
-    if not no_path_reuse:
-        report["violations"].append("generated_image_path_reused")
-    if not pacing_ok:
-        report["violations"].append("visual_hold_too_long")
+    if budget_limited_visuals:
+        budget = _recovery_visual_budget(plan)
+        visual_budget = visual.get("recovery_image_budget") if isinstance(visual.get("recovery_image_budget"), dict) else {}
+        allowed = int(budget.get("allowed_new_image_calls") or 0)
+        used = int(visual_budget.get("used_new_image_calls") or 0)
+        respected = used <= allowed
+        report["checks"]["confirmed_recovery_image_budget_respected"] = respected
+        report["metrics"]["confirmed_new_image_limit"] = allowed
+        report["metrics"]["paid_image_calls_used"] = used
+        report["metrics"]["confirmed_max_image_cost_usd"] = float(
+            visual_budget.get("confirmed_max_image_cost_usd") or budget.get("confirmed_max_image_cost_usd") or 0.0
+        )
+        report["metrics"]["confirmed_max_image_cost_brl"] = float(
+            visual_budget.get("confirmed_max_image_cost_brl") or budget.get("confirmed_max_image_cost_brl") or 0.0
+        )
+        report["metrics"]["estimated_consumed_image_cost_usd"] = float(
+            visual_budget.get("estimated_consumed_image_cost_usd") or 0.0
+        )
+        report["metrics"]["estimated_consumed_image_cost_brl"] = float(
+            visual_budget.get("estimated_consumed_image_cost_brl") or 0.0
+        )
+        if not respected:
+            report["violations"].append("confirmed_recovery_image_budget_exceeded")
 
-    report["passed"] = not report["violations"]
+    # Esses dois sinais são importantes para a REVISÃO HUMANA, mas não podem
+    # destruir um MP4 válido já renderizado nem forçar novo gasto automático.
+    # O renderer aplica movimentos/beats diferentes quando há reaproveitamento.
+    visual_warnings = []
+    if not no_path_reuse:
+        visual_warnings.append("generated_image_path_reused")
+    if not pacing_ok:
+        visual_warnings.append("visual_hold_too_long")
+
+    # Violações anteriores continuam bloqueantes. Os alertas visuais são
+    # mantidos para revisão humana sem invalidar um render já concluído.
+    blocking_violations = list(report["violations"])
+    report["violations"].extend(visual_warnings)
+    report["warnings"] = visual_warnings
+    report["blocking_violations"] = blocking_violations
+    report["review_recommended"] = bool(visual_warnings)
+    report["auto_render_preserved"] = bool(visual_warnings)
+    report["passed"] = not blocking_violations
     return report
 
 
@@ -357,7 +431,11 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
     original_target_visual_count = getattr(video_generator_cls, "_target_visual_count", None)
     if callable(original_target_visual_count):
         def one_visual_per_scene_target(self: Any, scenes: Any, plan=None, *args: Any, **kwargs: Any):
-            if not _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true") or _has_manual_visuals(plan):
+            if (
+                not _enabled("ENABLE_STRICT_VISUAL_UNIQUENESS", "true")
+                or _has_manual_visuals(plan)
+                or bool(_recovery_visual_budget(plan).get("enabled"))
+            ):
                 if plan is None:
                     return original_target_visual_count(self, scenes, *args, **kwargs)
                 return original_target_visual_count(self, scenes, plan, *args, **kwargs)
@@ -436,7 +514,8 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
                 rr["final_video_quality_gate"] = deepcopy(quality)
                 result["render_report"] = rr
                 if _enabled("ENABLE_FINAL_VIDEO_QUALITY_GATE", "true") and not quality.get("passed"):
-                    violations = ", ".join(str(item) for item in quality.get("violations") or [])
+                    blocking = quality.get("blocking_violations") or quality.get("violations") or []
+                    violations = ", ".join(str(item) for item in blocking)
                     raise RuntimeError(
                         "Vídeo reprovado pelo controle final de qualidade antes da revisão: "
                         + (violations or "qualidade insuficiente")
