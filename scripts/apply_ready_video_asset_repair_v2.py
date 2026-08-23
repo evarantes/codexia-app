@@ -50,6 +50,56 @@ def _replace_first(text: str, old: str, new: str, label: str) -> str:
     return text[:pos] + new + text[pos + len(old):]
 
 
+def _patch_visual_selected_guard(text: str) -> str:
+    """Adiciona o limite do reparo sem apagar condições de hardenings anteriores."""
+    if "can_use_selected_image =" in text:
+        return text
+
+    marker = "                selected_image_index = None\n"
+    start = text.find(marker)
+    if start < 0:
+        raise PatchError("grupos além do pool preservado: selected_image_index não encontrado")
+    search_from = start + len(marker)
+    block_end = text.find("                elif use_single_bg", search_from)
+    if block_end < 0:
+        block_end = min(len(text), search_from + 4000)
+
+    cursor = search_from
+    condition_pos = -1
+    condition_end = -1
+    condition_expr = ""
+    while cursor < block_end:
+        pos = text.find("                if ", cursor, block_end)
+        if pos < 0:
+            break
+        line_end = text.find("\n", pos, block_end)
+        if line_end < 0:
+            line_end = block_end
+        line = text[pos:line_end]
+        stripped = line.strip()
+        if "selected_image_paths" in stripped and stripped.startswith("if ") and stripped.endswith(":"):
+            condition_pos = pos
+            condition_end = line_end
+            condition_expr = stripped[3:-1].strip()
+            break
+        cursor = line_end + 1
+
+    if condition_pos < 0 or not condition_expr:
+        raise PatchError("grupos além do pool preservado: condição selected_image_paths não encontrada")
+
+    replacement = f'''                # CODEXIA_READY_VIDEO_ASSET_REPAIR_V2
+                # Preserve qualquer condição já adicionada por hardenings anteriores.
+                # Em reparo, cada imagem preservada é usada no máximo uma vez;
+                # grupos seguintes seguem para geração sob RecoveryImageCallBudget.
+                repair_complete_visuals = bool(isinstance(plan, dict) and plan.get("repair_complete_visuals"))
+                can_use_selected_image = bool({condition_expr}) and (
+                    (not repair_complete_visuals)
+                    or int(visual_group_id or 0) < len(selected_image_paths)
+                )
+                if can_use_selected_image:'''
+    return text[:condition_pos] + replacement + text[condition_end:]
+
+
 RAW_REPAIR_GUARD = '''
     # CODEXIA_READY_VIDEO_ASSET_REPAIR_V2
     # Uma correção editorial precisa reconstruir voz e vídeo. Não permita que
@@ -178,10 +228,13 @@ def patch_youtube(text: str) -> str:
 
 
 def patch_generator(text: str) -> str:
-    if TARGET_SELECTED_NEW not in text:
+    if "if selected_image_count > 0 and not repair_complete_visuals:" not in text:
         text = _replace_first(text, TARGET_SELECTED_OLD, TARGET_SELECTED_NEW, "imagens preservadas não são teto")
-    if VISUAL_SELECTED_NEW not in text:
-        text = _replace_first(text, VISUAL_SELECTED_OLD, VISUAL_SELECTED_NEW, "grupos além do pool preservado")
+    if "can_use_selected_image =" not in text:
+        if VISUAL_SELECTED_OLD in text:
+            text = _replace_first(text, VISUAL_SELECTED_OLD, VISUAL_SELECTED_NEW, "grupos além do pool preservado")
+        else:
+            text = _patch_visual_selected_guard(text)
     if "repair_selected_primary" not in text:
         text = _insert_after_first(text, OPENING_ANCHOR, OPENING_REPAIR, "abertura sem gasto adicional")
     return text
