@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from scripts import apply_ready_video_asset_repair as legacy
+try:
+    # Funciona quando importado a partir da raiz do repositório.
+    from scripts import apply_ready_video_asset_repair as legacy
+except ModuleNotFoundError:
+    # Funciona quando executado diretamente: python scripts/<arquivo>.py
+    import apply_ready_video_asset_repair as legacy
 
 
 ROOT = Path(__file__).resolve().parents[1]
