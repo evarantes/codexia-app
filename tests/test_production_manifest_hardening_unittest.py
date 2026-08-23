@@ -57,7 +57,7 @@ class ProductionManifestHardeningTests(unittest.TestCase):
             "selected_image_count=(0 if partial_image_recovery else len(selected_image_paths))",
             source,
         )
-        self.assertIn("visual_group_id < len(selected_image_paths)", source)
+        self.assertIn("int(visual_group_id or 0) < len(selected_image_paths)", source)
         self.assertIn("selected_primary_path if partial_image_recovery", source)
 
     def test_router_uses_manifest_audio_and_requires_paid_confirmation(self):

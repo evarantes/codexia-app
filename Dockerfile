@@ -49,6 +49,8 @@ COPY . .
 # fix avoids false failures during legitimate long renders. Recoverable archive
 # preserves stopped work; final post-render quality hardening makes a real
 # spoken/captioned closing valid and preserves completed MP4s for review.
+# Ready-video repair runs last so it can deliberately bypass old MP4/audio
+# recovery while reusing the valid script/images under a confirmed image cap.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -95,6 +97,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_recoverable_archive_queue_compat.py --check && \
     python scripts/apply_final_quality_postrender_hardening.py --apply && \
     python scripts/apply_final_quality_postrender_hardening.py --check && \
+    python scripts/apply_ready_video_asset_repair_v2.py --apply && \
+    python scripts/apply_ready_video_asset_repair_v2.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists

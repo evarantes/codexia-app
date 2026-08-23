@@ -41,6 +41,8 @@ COPY . .
 # the follow-up fix avoids false stalls on legitimate long renders; archive
 # hardening keeps cancelled jobs recoverable with their original task_id. The
 # final post-render gate preserves completed MP4s and validates real closings.
+# Ready-video repair runs last to force clean audio/new missing visuals while
+# retaining the original script and valid images under a confirmed paid cap.
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
@@ -81,6 +83,8 @@ RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_recoverable_archive_queue_compat.py --check && \
     python scripts/apply_final_quality_postrender_hardening.py --apply && \
     python scripts/apply_final_quality_postrender_hardening.py --check && \
+    python scripts/apply_ready_video_asset_repair_v2.py --apply && \
+    python scripts/apply_ready_video_asset_repair_v2.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files and temp storage
