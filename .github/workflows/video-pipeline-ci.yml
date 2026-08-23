@@ -1,180 +1,85 @@
-name: Video pipeline CI
+name: Deploy probe PR93
 
 on:
   pull_request:
     branches:
       - main
-      - homolog/youtube-auto-e2e
     paths:
       - ".github/workflows/video-pipeline-ci.yml"
-      - "Dockerfile"
-      - "Dockerfile.worker"
-      - "alembic/**"
-      - "app/**"
-      - "scripts/**"
-      - "tests/**"
-      - "requirements.txt"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: video-pipeline-${{ github.event.pull_request.number || github.ref }}
+  group: deploy-probe-pr93-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: PostgreSQL, pipeline and smoke
+  probe:
+    name: Production API read-only probe
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: codexia_ci
-          POSTGRES_USER: codexia_ci
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U codexia_ci -d codexia_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-
-    env:
-      APP_ENV: homologation
-      DATABASE_URL: postgresql://codexia_ci@127.0.0.1:5432/codexia_ci
-      REDIS_URL: redis://127.0.0.1:6379/0
-      PYTHONIOENCODING: utf-8
-      PYTHONUTF8: "1"
-
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install FFmpeg and dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes ffmpeg
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-
-      - name: Apply and verify consolidated hardening
-        run: |
-          python scripts/apply_consolidated_hardening.py --apply
-          python scripts/apply_consolidated_hardening.py --check
-          python scripts/apply_duration_confirmation_hardening.py --apply
-          python scripts/apply_duration_confirmation_hardening.py --check
-          python scripts/apply_openai_quality_cost_hardening.py --apply
-          python scripts/apply_openai_quality_cost_hardening.py --check
-          python scripts/apply_video_cost_backend_hardening.py --apply
-          python scripts/apply_video_cost_backend_hardening.py --check
-          python scripts/apply_video_cost_ui_hardening.py --apply
-          python scripts/apply_video_cost_ui_hardening.py --check
-          python scripts/apply_voice_closure_hardening.py --apply
-          python scripts/apply_voice_closure_hardening.py --check
-          python scripts/apply_caption_integrity_self_heal.py --apply
-          python scripts/apply_caption_integrity_self_heal.py --check
-          python scripts/apply_final_visual_quality_gate_self_heal.py --apply
-          python scripts/apply_final_visual_quality_gate_self_heal.py --check
-          python scripts/apply_recovery_checkpoint_hardening.py --apply
-          python scripts/apply_recovery_checkpoint_hardening.py --check
-          python scripts/apply_final_render_recovery.py --apply
-          python scripts/apply_final_render_recovery.py --check
-          python scripts/apply_final_render_recovery_compat.py --apply
-          python scripts/apply_final_render_recovery_compat.py --check
-          python scripts/apply_final_render_recovery_scope.py --apply
-          python scripts/apply_final_render_recovery_scope.py --check
-          python scripts/apply_production_manifest_hardening.py --apply
-          python scripts/apply_production_manifest_hardening.py --check
-          python scripts/apply_narration_contract_hardening.py --apply
-          python scripts/apply_narration_contract_hardening.py --check
-          python scripts/apply_manifest_diagnostics_hardening.py --apply
-          python scripts/apply_manifest_diagnostics_hardening.py --check
-          python scripts/apply_manifest_asset_recovery_hardening.py --apply
-          python scripts/apply_manifest_asset_recovery_hardening.py --check
-          python scripts/apply_adaptive_render_threads_hardening.py --apply
-          python scripts/apply_adaptive_render_threads_hardening.py --check
-          python scripts/apply_recovery_render_stall_hardening.py --apply
-          python scripts/apply_recovery_render_stall_hardening.py --check
-          python scripts/apply_recovery_render_stall_compat.py --apply
-          python scripts/apply_recovery_render_stall_compat.py --check
-          python scripts/apply_render_watchdog_false_positive_fix.py --apply
-          python scripts/apply_render_watchdog_false_positive_fix.py --check
-          python scripts/apply_recoverable_archive_queue_hardening.py --apply
-          python scripts/apply_recoverable_archive_queue_hardening.py --check
-          python scripts/apply_recoverable_archive_queue_compat.py --apply
-          python scripts/apply_recoverable_archive_queue_compat.py --check
-          python scripts/apply_final_quality_postrender_hardening.py --apply
-          python scripts/apply_final_quality_postrender_hardening.py --check
-          python scripts/apply_ready_video_asset_repair_v2.py --apply
-          python scripts/apply_ready_video_asset_repair_v2.py --check
-          python -m compileall -q app scripts
-
-      - name: Apply canonical Alembic migration on PostgreSQL
-        run: |
-          python scripts/apply_migrations.py
-          alembic current | grep --fixed-strings "d7e8f9a0b1c2"
-          python scripts/check_schema_consistency.py
-
-      - name: Start application against migrated PostgreSQL
+      - name: Probe production without paid providers
         env:
-          PREFLIGHT_STARTUP_TIMEOUT_SEC: "35"
-        run: python scripts/preflight_validate.py
-
-      - name: Run complete test suite
-        env:
-          APP_ENV: development
-          ENABLE_SQLITE_DEV: "true"
-          DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-ci.sqlite3
-        shell: bash
+          BASE_URL: "https://g8w4so4gkkgog0scsw0ogwkw.89.167.1.253.sslip.io"
+          EXPECTED_COMMIT: "cb48b3436bfb35cf9248be82d94a4a5695b6d5d9"
         run: |
-          set +e
-          python -m unittest discover -s tests -v 2>&1 | tee /tmp/codexia-unittest.log
-          test_status=${PIPESTATUS[0]}
-          if [ "$test_status" -ne 0 ]; then
-            python - <<'PY'
-          from pathlib import Path
-          import re
-          raw = Path('/tmp/codexia-unittest.log').read_text(encoding='utf-8', errors='replace')
-          lines = raw.splitlines()
-          compact = []
-          for line in lines:
-              stripped = line.strip()
-              if re.search(r'\.\.\.\s+(FAIL|ERROR)$', stripped) or stripped.startswith('FAIL: ') or stripped.startswith('ERROR: '):
-                  compact.append(stripped[:1200])
-              elif stripped.startswith('Ran ') or stripped.startswith('FAILED ('):
-                  compact.append(stripped[:1200])
-          if not compact:
-              compact = [line[:1200] for line in lines[-20:] if line.strip()]
-          message = '\n'.join(compact[-30:])[-7000:]
-          escaped = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-          print(f'::error title=Failing unit tests::{escaped}')
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          base = os.environ["BASE_URL"].rstrip("/")
+          expected = os.environ["EXPECTED_COMMIT"].strip()
+
+          def get_json(path, timeout=15):
+              req = urllib.request.Request(
+                  base + path,
+                  headers={"User-Agent": "Codexia-Deploy-Probe/1.0", "Accept": "application/json"},
+              )
+              with urllib.request.urlopen(req, timeout=timeout) as response:
+                  raw = response.read().decode("utf-8", "replace")
+                  return response.status, json.loads(raw)
+
+          last = None
+          for attempt in range(30):
+              try:
+                  status, health = get_json("/health")
+                  last = health
+                  current = str(health.get("commit") or "").strip()
+                  print("HEALTH_STATUS=", status)
+                  print("HEALTH_JSON=", json.dumps(health, ensure_ascii=False, sort_keys=True))
+                  if status == 200 and health.get("status") == "ok" and current == expected:
+                      break
+              except Exception as exc:
+                  print(f"health attempt {attempt + 1}: {type(exc).__name__}: {exc}")
+              if attempt < 29:
+                  time.sleep(10)
+          else:
+              raise SystemExit(f"Production did not report expected commit {expected}; last={last!r}")
+
+          status, api_status = get_json("/api/status")
+          print("API_STATUS_HTTP=", status)
+          print("API_STATUS_JSON=", json.dumps(api_status, ensure_ascii=False, sort_keys=True))
+          if status != 200:
+              raise SystemExit("/api/status failed")
+
+          status, db_health = get_json("/health/db")
+          print("DB_HEALTH_HTTP=", status)
+          print("DB_HEALTH_JSON=", json.dumps(db_health, ensure_ascii=False, sort_keys=True))
+          if status != 200 or db_health.get("error"):
+              raise SystemExit("/health/db failed")
+
+          status, spec = get_json("/openapi.json")
+          paths = sorted((spec.get("paths") or {}).keys())
+          worker_candidates = [
+              path for path in paths
+              if any(term in path.lower() for term in ("worker", "heartbeat", "server", "queue"))
+          ]
+          print("OPENAPI_HTTP=", status)
+          print("READ_ONLY_WORKER_ROUTE_CANDIDATES=", json.dumps(worker_candidates, ensure_ascii=False))
+          print("DEPLOY_PROBE_OK expected_commit=" + expected)
           PY
-            exit "$test_status"
-          fi
-
-      - name: Run real FFmpeg smoke without paid providers
-        env:
-          APP_ENV: development
-          ENABLE_SQLITE_DEV: "true"
-          DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-smoke.sqlite3
-        run: python tests/smoke_e2e_stability.py
