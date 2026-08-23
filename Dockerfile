@@ -45,9 +45,10 @@ COPY . .
 # Manifest diagnostics is read-only and exposes the durable recovery state;
 # asset-path recovery then remaps old container paths on the active worker.
 # Adaptive render threads may choose 1 or 2 FFmpeg threads. Recovery/render
-# stall hardening protects task-owned assets and real render I/O. Recoverable
-# archive hardening runs last so server shutdown never discards failed history
-# and the UI can restore archived tasks with the same task_id.
+# stall hardening protects task-owned assets and real render I/O; the follow-up
+# fix avoids false failures during legitimate long renders. Recoverable archive
+# hardening runs last so server shutdown never discards failed history and the
+# UI can restore archived tasks with the same task_id.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -86,6 +87,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_recovery_render_stall_hardening.py --check && \
     python scripts/apply_recovery_render_stall_compat.py --apply && \
     python scripts/apply_recovery_render_stall_compat.py --check && \
+    python scripts/apply_render_watchdog_false_positive_fix.py --apply && \
+    python scripts/apply_render_watchdog_false_positive_fix.py --check && \
     python scripts/apply_recoverable_archive_queue_hardening.py --apply && \
     python scripts/apply_recoverable_archive_queue_hardening.py --check && \
     python scripts/apply_recoverable_archive_queue_compat.py --apply && \
@@ -97,7 +100,7 @@ RUN mkdir -p app/static/videos app/static/covers app/static/icons && \
     chmod -R 755 /app && \
     ls -la /app/app/static
 
-# Make port 8000 available to the world outside this container
+# Make port 8000 available to the world
 EXPOSE 8000
 
 # Set environment variables
