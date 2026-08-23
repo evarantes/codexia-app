@@ -88,6 +88,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_recovery_render_stall_compat.py --check && \
     python scripts/apply_recoverable_archive_queue_hardening.py --apply && \
     python scripts/apply_recoverable_archive_queue_hardening.py --check && \
+    python scripts/apply_recoverable_archive_queue_compat.py --apply && \
+    python scripts/apply_recoverable_archive_queue_compat.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
