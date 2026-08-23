@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import os
 import re
 import unicodedata
@@ -9,6 +10,32 @@ from typing import Any, Dict, List, Optional, Type
 DEFAULT_COMPLETE_CTA = (
     "Se esta mensagem falou com você, inscreva-se no canal, ative o sininho "
     "para receber as próximas mensagens e compartilhe este vídeo com alguém que precisa ouvi-lo."
+)
+
+# Markup de pausa é metadado de direção, nunca conteúdo narrável. Alguns provedores
+# aceitam SSML e outros escapam a tag, fazendo a voz ler literalmente "break time".
+# O contrato canônico do Codexia é texto puro: pausas são convertidas em pontuação
+# ANTES do último guard que antecede qualquer chamada paga de TTS.
+_PAUSE_MARKUP_PATTERNS = (
+    re.compile(r"(?is)<\s*break\b[^>]*?/?>"),
+    re.compile(
+        r"(?ix)\[\s*(?:break|pause|pausa)\s*(?:time|duration|tempo|dura[cç][aã]o)?\s*[:=]?\s*"
+        r"[\"']?\d+(?:[.,]\d+)?\s*(?:ms|s|sec|secs|seconds?|segundos?)?[\"']?\s*\]"
+    ),
+    re.compile(
+        r"(?ix)\(\s*(?:break|pause|pausa)\s*(?:time|duration|tempo|dura[cç][aã]o)?\s*[:=]?\s*"
+        r"[\"']?\d+(?:[.,]\d+)?\s*(?:ms|s|sec|secs|seconds?|segundos?)?[\"']?\s*\)"
+    ),
+    re.compile(
+        r"(?ix)\b(?:break\s*time|pause\s*(?:time|duration)?|pausa\s*(?:tempo|dura[cç][aã]o)?)\s*[:=]\s*"
+        r"[\"']?\d+(?:[.,]\d+)?\s*(?:ms|s|sec|secs|seconds?|segundos?)?[\"']?\s*/?>?"
+    ),
+)
+
+# Tags SSML de contêiner/ênfase não carregam palavras narráveis por si mesmas.
+# Removê-las preserva o texto interno e impede que provedores plain-text as leiam.
+_SAFE_SSML_CONTAINER_TAG = re.compile(
+    r"(?is)</?\s*(?:speak|prosody|voice|p|s|emphasis|sub|phoneme)\b[^>]*>"
 )
 
 _STRUCTURAL_PATTERNS = (
@@ -26,6 +53,13 @@ _STRUCTURAL_PATTERNS = (
         r"(?im)^\s*(?:image_prompt|visual_prompt|camera_movement|motion_effect|scene_qc|"
         r"scene_card|metadata|system_prompt|assistant|json|payload|render_report)\s*[:=]"
     )),
+    ("technical_timing_assignment", re.compile(
+        r"(?i)\b(?:break\s*time|pause(?:[_\s]*(?:time|duration))?|pausa(?:[_\s]*(?:tempo|dura[cç][aã]o))?|"
+        r"start[_\s]*time|end[_\s]*time|timestamp|timecode|duration[_\s]*(?:sec|seconds)?|"
+        r"scene[_\s]*id|segment[_\s]*id)\b\s*[:=]"
+    )),
+    ("template_placeholder", re.compile(r"\{\{[^{}]+\}\}|\$\{[^{}]+\}")),
+    ("xml_or_ssml_residue", re.compile(r"(?is)<\s*/?\s*[A-Za-z][^>]*>")),
 )
 
 
@@ -42,6 +76,24 @@ def _fold(text: Any) -> str:
 def _clean(text: Any) -> str:
     raw = unicodedata.normalize("NFKC", str(text or "")).replace("\x00", " ")
     return re.sub(r"\s+", " ", raw).strip()
+
+
+def sanitize_narration_text(text: Any) -> str:
+    """Converte somente markup editorial seguro em texto puro narrável.
+
+    Não tenta "consertar" JSON/código arbitrário: qualquer resíduo técnico é
+    detectado depois por ``structural_issues`` e bloqueia o TTS fail-closed.
+    """
+    raw = unicodedata.normalize("NFKC", html.unescape(str(text or ""))).replace("\x00", " ")
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+    for pattern in _PAUSE_MARKUP_PATTERNS:
+        raw = pattern.sub(", ", raw)
+    raw = _SAFE_SSML_CONTAINER_TAG.sub(" ", raw)
+    # Normaliza pontuação criada pela remoção de pausas sem colar palavras.
+    raw = re.sub(r"\s*,\s*,+\s*", ", ", raw)
+    raw = re.sub(r"\s+([,;:.!?])", r"\1", raw)
+    raw = re.sub(r"([,;:.!?])(?=[^\s\n\"”’')\]])", r"\1 ", raw)
+    return re.sub(r"\s+", " ", raw).strip(" ,")
 
 
 def cta_signals(text: Any) -> set[str]:
@@ -75,7 +127,7 @@ def validate_narration_text(
     require_terminal_sentence: bool = True,
     require_complete_cta: bool = False,
 ) -> str:
-    cleaned = _clean(text)
+    cleaned = sanitize_narration_text(text)
     if not cleaned:
         raise NarrationContractError(f"{label}: texto vazio; TTS bloqueado antes de qualquer chamada paga.")
     issues = structural_issues(cleaned)
@@ -98,7 +150,7 @@ def validate_narration_text(
 
 def _scene_text(scene: Dict[str, Any]) -> str:
     for key in ("_tts_text", "text", "narration_text", "narration", "content"):
-        value = _clean(scene.get(key))
+        value = sanitize_narration_text(scene.get(key))
         if value:
             return value
     return ""
@@ -116,10 +168,10 @@ def _estimate(self: Any, text: str, voice_style: Optional[str], voice_gender: Op
 def _pick_complete_cta(plan: Dict[str, Any], marked: List[str], fallback: Any = "") -> str:
     candidates = list(marked)
     for key in ("narrated_cta_text", "cta_text", "closing_text"):
-        value = _clean(plan.get(key))
+        value = sanitize_narration_text(plan.get(key))
         if value:
             candidates.append(value)
-    fallback_clean = _clean(fallback)
+    fallback_clean = sanitize_narration_text(fallback)
     if fallback_clean:
         candidates.append(fallback_clean)
     candidates.append(DEFAULT_COMPLETE_CTA)
@@ -154,10 +206,14 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
             meta = dict(original_prepare(
                 self, safe_plan, scenes, voice_style=voice_style, voice_gender=voice_gender
             ) or {})
-            opening = validate_narration_text(meta.get("opening_text"), label="abertura")
-            body = validate_narration_text(meta.get("body_text"), label="corpo da narração")
-            reflection_raw = _clean(meta.get("reflection_text"))
-            reflection = validate_narration_text(reflection_raw, label="reflexão final") if reflection_raw else ""
+            raw_opening = _clean(meta.get("opening_text"))
+            raw_body = _clean(meta.get("body_text"))
+            raw_reflection = _clean(meta.get("reflection_text"))
+            raw_cta = _clean(meta.get("cta_text") or meta.get("closing_text"))
+
+            opening = validate_narration_text(raw_opening, label="abertura")
+            body = validate_narration_text(raw_body, label="corpo da narração")
+            reflection = validate_narration_text(raw_reflection, label="reflexão final") if raw_reflection else ""
 
             if reflection and body.endswith(reflection):
                 body = body[:-len(reflection)].rstrip()
@@ -165,10 +221,10 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                     body = body.rstrip(",;:-") + "."
                 body = validate_narration_text(body, label="corpo da narração")
 
-            cta = _pick_complete_cta(safe_plan, marked_cta, meta.get("cta_text") or meta.get("closing_text"))
+            cta = _pick_complete_cta(safe_plan, marked_cta, raw_cta)
             cta = validate_narration_text(cta, label="CTA final", require_complete_cta=True)
             full_text = " ".join(part for part in [opening, body, reflection, cta] if part).strip()
-            validate_narration_text(full_text, label="narração final")
+            full_text = validate_narration_text(full_text, label="narração final")
 
             meta["opening_text"] = opening
             meta["body_text"] = body
@@ -195,12 +251,23 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                 + float(meta.get("pause_duration_sec") or 0.0),
                 2,
             )
+            sanitized_fields = []
+            for name, before, after in (
+                ("opening_text", raw_opening, opening),
+                ("body_text", raw_body, body),
+                ("reflection_text", raw_reflection, reflection),
+                ("closing_text", raw_cta, cta),
+            ):
+                if before and sanitize_narration_text(before) != before:
+                    sanitized_fields.append(name)
             meta["protected_closing_contract"] = {
-                "version": 1,
+                "version": 2,
                 "reflection_protected": bool(reflection),
                 "cta_protected": True,
                 "cta_signals": sorted(cta_signals(cta)),
-                "structural_issues": [],
+                "structural_issues": structural_issues(full_text),
+                "technical_markup_sanitized_fields": sorted(set(sanitized_fields)),
+                "tts_plain_text_only": True,
                 "tts_allowed": True,
             }
             return meta
@@ -210,7 +277,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
     if callable(original_segmented):
         def segmented_guarded(self: Any, *, main_text: str, cta_text: str, **kwargs: Any):
             main_clean = validate_narration_text(main_text, label="narração principal")
-            cta_clean = _clean(cta_text)
+            cta_clean = sanitize_narration_text(cta_text)
             if not has_complete_cta(cta_clean):
                 cta_clean = DEFAULT_COMPLETE_CTA
             cta_clean = validate_narration_text(
@@ -221,7 +288,17 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
 
     if callable(original_generate_audio):
         def generate_audio_guarded(self: Any, text: str, *args: Any, **kwargs: Any):
-            clean = validate_narration_text(text, label="texto enviado ao TTS")
+            raw = _clean(text)
+            clean = validate_narration_text(raw, label="texto enviado ao TTS")
+            try:
+                debug = dict(getattr(self, "_last_tts_debug", {}) or {})
+                debug["narration_contract_version"] = 2
+                debug["tts_plain_text_only"] = True
+                debug["technical_markup_sanitized"] = bool(raw != clean)
+                debug["remaining_structural_issues"] = structural_issues(clean)
+                self._last_tts_debug = debug
+            except Exception:
+                pass
             output = original_generate_audio(self, clean, *args, **kwargs)
             task_id = str(getattr(self, "_codexia_task_id", "") or "").strip()
             if task_id and output and isinstance(output, str) and os.path.isfile(output):
@@ -234,6 +311,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
         video_generator_cls.generate_audio = generate_audio_guarded
 
     video_generator_cls._codexia_narration_contract_guard_v1 = True
+    video_generator_cls._codexia_narration_contract_guard_version = 2
     return video_generator_cls
 
 
@@ -242,6 +320,7 @@ __all__ = [
     "NarrationContractError",
     "cta_signals",
     "has_complete_cta",
+    "sanitize_narration_text",
     "structural_issues",
     "validate_narration_text",
     "install_narration_contract_guard",
