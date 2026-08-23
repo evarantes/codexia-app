@@ -37,7 +37,8 @@ COPY . .
 # copied immediately and code/JSON cannot reach TTS.
 # Manifest asset recovery remaps stale API/container paths locally before the
 # adaptive renderer chooses at most 2 threads (or 1 under pressure). The final
-# recovery/render-stall layer protects task-owned assets and real render I/O.
+# recovery/render-stall layer protects task-owned assets and real render I/O;
+# archive hardening keeps cancelled jobs recoverable with their original task_id.
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
@@ -70,6 +71,8 @@ RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_recovery_render_stall_hardening.py --check && \
     python scripts/apply_recovery_render_stall_compat.py --apply && \
     python scripts/apply_recovery_render_stall_compat.py --check && \
+    python scripts/apply_recoverable_archive_queue_hardening.py --apply && \
+    python scripts/apply_recoverable_archive_queue_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files and temp storage
