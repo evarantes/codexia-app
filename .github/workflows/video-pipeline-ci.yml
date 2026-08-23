@@ -172,6 +172,15 @@ jobs:
             exit "$test_status"
           fi
 
+      - name: Upload complete test suite log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittest-complete-log
+          path: /tmp/codexia-unittest.log
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Run real FFmpeg smoke without paid providers
         env:
           APP_ENV: development
