@@ -55,6 +55,24 @@ def _patch_visual_selected_guard(text: str) -> str:
     if "can_use_selected_image =" in text:
         return text
 
+    # O production_manifest_hardening roda antes deste script e transforma a
+    # seleção simples em uma condição multilinha para recuperação parcial.
+    # Preserve essa proteção e some o modo de reparo editorial à mesma regra.
+    partial_old = '''                if selected_image_paths and (
+                    (not partial_image_recovery) or visual_group_id < len(selected_image_paths)
+                ):'''
+    partial_new = '''                # CODEXIA_READY_VIDEO_ASSET_REPAIR_V2
+                # Recuperação parcial e reparo editorial compartilham o mesmo
+                # princípio: imagens preservadas são um prefixo, nunca um ciclo.
+                repair_complete_visuals = bool(isinstance(plan, dict) and plan.get("repair_complete_visuals"))
+                can_use_selected_image = bool(selected_image_paths) and (
+                    ((not repair_complete_visuals) and (not partial_image_recovery))
+                    or int(visual_group_id or 0) < len(selected_image_paths)
+                )
+                if can_use_selected_image:'''
+    if partial_old in text:
+        return text.replace(partial_old, partial_new, 1)
+
     marker = "                selected_image_index = None\n"
     start = text.find(marker)
     if start < 0:
