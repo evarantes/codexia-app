@@ -47,8 +47,8 @@ COPY . .
 # Adaptive render threads may choose 1 or 2 FFmpeg threads. Recovery/render
 # stall hardening protects task-owned assets and real render I/O; the follow-up
 # fix avoids false failures during legitimate long renders. Recoverable archive
-# hardening runs last so server shutdown never discards failed history and the
-# UI can restore archived tasks with the same task_id.
+# preserves stopped work; final post-render quality hardening makes a real
+# spoken/captioned closing valid and preserves completed MP4s for review.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -93,6 +93,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_recoverable_archive_queue_hardening.py --check && \
     python scripts/apply_recoverable_archive_queue_compat.py --apply && \
     python scripts/apply_recoverable_archive_queue_compat.py --check && \
+    python scripts/apply_final_quality_postrender_hardening.py --apply && \
+    python scripts/apply_final_quality_postrender_hardening.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
