@@ -10,7 +10,7 @@ try:
     from scripts import apply_stage6_repair_local_retry as stage6_retry
     from scripts import apply_retry_image_path_compat as image_path_compat
     from scripts import apply_stale_factory_lock_recovery as stale_lock_recovery
-    from scripts import apply_intelligent_cost_optimization as intelligent_cost
+    from scripts import apply_intelligent_cost_optimization_compat as intelligent_cost
 except ModuleNotFoundError:
     import apply_ready_video_asset_repair_v4 as v4
     import apply_ready_queue_title_edit as title_edit
@@ -18,7 +18,7 @@ except ModuleNotFoundError:
     import apply_stage6_repair_local_retry as stage6_retry
     import apply_retry_image_path_compat as image_path_compat
     import apply_stale_factory_lock_recovery as stale_lock_recovery
-    import apply_intelligent_cost_optimization as intelligent_cost
+    import apply_intelligent_cost_optimization_compat as intelligent_cost
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,7 +130,7 @@ def main() -> int:
         stage6_retry.PatchError,
         image_path_compat.PatchError,
         stale_lock_recovery.PatchError,
-        intelligent_cost.PatchError,
+        intelligent_cost.base.PatchError,
     ) as exc:
         print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH/STALELOCK/INTELLIGENTCOST: {exc}")
         return 2
