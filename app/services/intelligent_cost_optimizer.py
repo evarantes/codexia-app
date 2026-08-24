@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from typing import Any, Dict, Iterable, List
 
@@ -95,4 +96,4 @@ def validate_optimization_confirmation(plan: Dict[str, Any], supplied_hash: Any)
         return True
     expected = str(plan.get("plan_hash") or "").strip()
     supplied = str(supplied_hash or "").strip()
-    return bool(expected and supplied and hashlib.compare_digest(expected, supplied))
+    return bool(expected and supplied and hmac.compare_digest(expected, supplied))
