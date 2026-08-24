@@ -93,11 +93,13 @@ class IntelligentCostOptimizerTests(unittest.TestCase):
         legacy = optimizer_patch.UI_RETRY_OLD
         html = f"<script>\n{legacy}\n// segundo caminho\n{legacy}\n</script>"
         patched = optimizer_compat._patch_index_all(html)
+        final_marker = f"<!-- {optimizer_patch.MARKER} -->"
 
         self.assertNotIn(legacy, patched)
         self.assertEqual(patched.count("retry-plan"), 2)
         self.assertEqual(patched.count("optimization_plan_hash"), 2)
-        self.assertEqual(patched.count(optimizer_patch.MARKER), 1)
+        self.assertEqual(patched.count(final_marker), 1)
+        self.assertTrue(patched.rstrip().endswith(final_marker))
         self.assertEqual(optimizer_compat._patch_index_all(patched), patched)
 
 
