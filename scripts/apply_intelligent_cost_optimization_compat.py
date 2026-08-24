@@ -8,12 +8,12 @@ except ModuleNotFoundError:
     import apply_intelligent_cost_optimization as base
 
 
-MARKER = "CODEXIA_INTELLIGENT_COST_OPTIMIZATION_COMPAT_V2"
+MARKER = "CODEXIA_INTELLIGENT_COST_OPTIMIZATION_COMPAT_V3"
 
 SMALL_SEED_ANCHOR = '''                seed_script_ok = _is_valid_seed_script(seed_script)'''
 
 SMALL_SEED_REPLACEMENT = '''                # CODEXIA_INTELLIGENT_COST_OPTIMIZATION_V1
-                # Compat V2: use a confirmação/payload como fallback antes da
+                # Compat V3: use a confirmação/payload como fallback antes da
                 # validação. A âncora curta preserva o guard de áudio do reparo
                 # que é inserido entre seed_audio_ok e seed_images_ok.
                 request_seed_script = getattr(request, "seeded_script", None)
@@ -50,9 +50,23 @@ SMALL_SEED_REPLACEMENT = '''                # CODEXIA_INTELLIGENT_COST_OPTIMIZAT
                 seed_script_ok = _is_valid_seed_script(seed_script)'''
 
 
+def _patch_index_all(text: str) -> str:
+    """Protect every equivalent retry entry point, never only the first one."""
+    if base.MARKER in text:
+        return text
+    count = text.count(base.UI_RETRY_OLD)
+    if count < 1:
+        raise base.PatchError("retry optimization confirmation UI: nenhum caminho legado encontrado")
+    text = text.replace(base.UI_RETRY_OLD, base.UI_RETRY_NEW)
+    return text.rstrip() + f"\n<!-- {base.MARKER} -->\n"
+
+
 def _configure_base() -> None:
     base.WORKER_SEED_ANCHOR = SMALL_SEED_ANCHOR
     base.WORKER_SEED_NEW = SMALL_SEED_REPLACEMENT
+    # O V2/V3 de reparo pode produzir mais de um caminho equivalente de retry.
+    # Todos precisam consultar o retry-plan e exigir o mesmo plan_hash.
+    base.patch_index = _patch_index_all
 
 
 def apply() -> None:
@@ -65,11 +79,17 @@ def check() -> None:
     base.check()
     text = base.YOUTUBE.read_text(encoding="utf-8")
     if "request_seed_script = getattr(request, \"seeded_script\", None)" not in text:
-        raise base.PatchError("compat V2 não aplicou fallback de roteiro")
+        raise base.PatchError("compat V3 não aplicou fallback de roteiro")
     if "request_selected_images = getattr(request, \"selected_images\", None)" not in text:
-        raise base.PatchError("compat V2 não aplicou fallback de imagens")
+        raise base.PatchError("compat V3 não aplicou fallback de imagens")
     if "request_reuse_audio = getattr(request, \"reuse_audio_from\", None)" not in text:
-        raise base.PatchError("compat V2 não aplicou fallback de áudio")
+        raise base.PatchError("compat V3 não aplicou fallback de áudio")
+
+    index = base.INDEX.read_text(encoding="utf-8")
+    if base.UI_RETRY_OLD in index:
+        raise base.PatchError("compat V3 deixou caminho de retry sem confirmação inteligente")
+    if "retry-plan" not in index or "optimization_plan_hash" not in index:
+        raise base.PatchError("compat V3 não protegeu a UI com plano/hash de confirmação")
 
 
 def main() -> int:
@@ -85,7 +105,7 @@ def main() -> int:
         if args.check:
             check()
     except base.PatchError as exc:
-        print(f"ERRO INTELLIGENT COST OPTIMIZATION COMPAT V2: {exc}")
+        print(f"ERRO INTELLIGENT COST OPTIMIZATION COMPAT V3: {exc}")
         return 2
     return 0
 
