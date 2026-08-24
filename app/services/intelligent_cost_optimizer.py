@@ -19,6 +19,16 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def proportional_visual_index(group_index: int, image_count: int, group_count: int) -> int:
+    """Map ordered narrative groups to ordered images without round-robin jumps."""
+    images = max(1, int(image_count or 1))
+    groups = max(1, int(group_count or 1))
+    group = max(0, min(int(group_index or 0), groups - 1))
+    if images >= groups:
+        return min(group, images - 1)
+    return min(images - 1, (group * images) // groups)
+
+
 def build_sparse_visual_optimization_plan(
     *,
     task_id: str,
