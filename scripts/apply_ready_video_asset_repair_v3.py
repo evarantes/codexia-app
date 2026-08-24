@@ -8,11 +8,13 @@ try:
     from scripts import apply_ready_queue_title_edit as title_edit
     from scripts import apply_runtime_render_monitor_compat as runtime_monitor
     from scripts import apply_stage6_repair_local_retry as stage6_retry
+    from scripts import apply_retry_image_path_compat as image_path_compat
 except ModuleNotFoundError:
     import apply_ready_video_asset_repair_v4 as v4
     import apply_ready_queue_title_edit as title_edit
     import apply_runtime_render_monitor_compat as runtime_monitor
     import apply_stage6_repair_local_retry as stage6_retry
+    import apply_retry_image_path_compat as image_path_compat
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,12 +72,14 @@ def apply() -> None:
         raise PatchError("patch V3 não é idempotente")
     if transformed != original:
         YOUTUBE.write_text(transformed, encoding="utf-8")
-    # V4, edição segura do título, compatibilidade do monitor e retry local de
-    # stage_6 são encadeados aqui porque API, worker e CI executam V3 no build.
+    # V4, edição segura do título, compatibilidade do monitor, retry local de
+    # stage_6 e compatibilidade de caminhos absolutos são encadeados aqui porque
+    # API, worker e CI executam V3 no build.
     v4.apply()
     title_edit.apply()
     runtime_monitor.apply()
     stage6_retry.apply()
+    image_path_compat.apply()
 
 
 def check() -> None:
@@ -95,6 +99,7 @@ def check() -> None:
     title_edit.check()
     runtime_monitor.check()
     stage6_retry.check()
+    image_path_compat.check()
 
 
 def main() -> int:
@@ -109,8 +114,15 @@ def main() -> int:
             apply()
         if args.check:
             check()
-    except (PatchError, v4.PatchError, title_edit.PatchError, runtime_monitor.PatchError, stage6_retry.PatchError) as exc:
-        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME/STAGE6: {exc}")
+    except (
+        PatchError,
+        v4.PatchError,
+        title_edit.PatchError,
+        runtime_monitor.PatchError,
+        stage6_retry.PatchError,
+        image_path_compat.PatchError,
+    ) as exc:
+        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH: {exc}")
         return 2
     return 0
 
