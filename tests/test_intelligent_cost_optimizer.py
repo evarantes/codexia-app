@@ -5,6 +5,8 @@ from app.services.intelligent_cost_optimizer import (
     proportional_visual_index,
     validate_optimization_confirmation,
 )
+from scripts import apply_intelligent_cost_optimization as optimizer_patch
+from scripts import apply_intelligent_cost_optimization_compat as optimizer_compat
 
 
 class IntelligentCostOptimizerTests(unittest.TestCase):
@@ -86,6 +88,17 @@ class IntelligentCostOptimizerTests(unittest.TestCase):
         indexes = [proportional_visual_index(group, 3, 8) for group in range(8)]
         self.assertEqual(indexes, [0, 0, 0, 1, 1, 1, 2, 2])
         self.assertNotEqual(indexes, [0, 1, 2, 2, 2, 2, 2, 2])
+
+    def test_compat_protects_every_equivalent_retry_path(self):
+        legacy = optimizer_patch.UI_RETRY_OLD
+        html = f"<script>\n{legacy}\n// segundo caminho\n{legacy}\n</script>"
+        patched = optimizer_compat._patch_index_all(html)
+
+        self.assertNotIn(legacy, patched)
+        self.assertEqual(patched.count("retry-plan"), 2)
+        self.assertEqual(patched.count("optimization_plan_hash"), 2)
+        self.assertEqual(patched.count(optimizer_patch.MARKER), 1)
+        self.assertEqual(optimizer_compat._patch_index_all(patched), patched)
 
 
 if __name__ == "__main__":
