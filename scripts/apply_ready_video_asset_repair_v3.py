@@ -11,6 +11,7 @@ try:
     from scripts import apply_retry_image_path_compat as image_path_compat
     from scripts import apply_stale_factory_lock_recovery as stale_lock_recovery
     from scripts import apply_intelligent_cost_optimization_compat as intelligent_cost
+    from scripts import apply_lightweight_stage6_recovery as lightweight_stage6
 except ModuleNotFoundError:
     import apply_ready_video_asset_repair_v4 as v4
     import apply_ready_queue_title_edit as title_edit
@@ -19,6 +20,7 @@ except ModuleNotFoundError:
     import apply_retry_image_path_compat as image_path_compat
     import apply_stale_factory_lock_recovery as stale_lock_recovery
     import apply_intelligent_cost_optimization_compat as intelligent_cost
+    import apply_lightweight_stage6_recovery as lightweight_stage6
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,8 +79,9 @@ def apply() -> None:
     if transformed != original:
         YOUTUBE.write_text(transformed, encoding="utf-8")
     # V4, edição segura do título, compatibilidade do monitor, retry local de
-    # stage_6, caminhos absolutos, lock órfão e otimização inteligente de custo
-    # são encadeados aqui porque API, worker e CI executam V3 no build.
+    # stage_6, caminhos absolutos, lock órfão, otimização inteligente de custo
+    # e render leve confirmado são encadeados aqui porque API, worker e CI
+    # executam V3 no build.
     v4.apply()
     title_edit.apply()
     runtime_monitor.apply()
@@ -86,6 +89,7 @@ def apply() -> None:
     image_path_compat.apply()
     stale_lock_recovery.apply()
     intelligent_cost.apply()
+    lightweight_stage6.apply()
 
 
 def check() -> None:
@@ -108,6 +112,7 @@ def check() -> None:
     image_path_compat.check()
     stale_lock_recovery.check()
     intelligent_cost.check()
+    lightweight_stage6.check()
 
 
 def main() -> int:
@@ -131,8 +136,13 @@ def main() -> int:
         image_path_compat.PatchError,
         stale_lock_recovery.PatchError,
         intelligent_cost.base.PatchError,
+        lightweight_stage6.PatchError,
     ) as exc:
-        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH/STALELOCK/INTELLIGENTCOST: {exc}")
+        print(
+            "ERRO READY VIDEO ASSET REPAIR "
+            "V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH/STALELOCK/INTELLIGENTCOST/LIGHTWEIGHT: "
+            f"{exc}"
+        )
         return 2
     return 0
 
