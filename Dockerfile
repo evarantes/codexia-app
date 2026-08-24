@@ -99,6 +99,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_final_quality_postrender_hardening.py --check && \
     python scripts/apply_ready_video_asset_repair_v2.py --apply && \
     python scripts/apply_ready_video_asset_repair_v2.py --check && \
+    python scripts/apply_ready_video_asset_repair_v3.py --apply && \
+    python scripts/apply_ready_video_asset_repair_v3.py --check && \
     python -m compileall -q app scripts
 
 # Create directory for static files if not exists
