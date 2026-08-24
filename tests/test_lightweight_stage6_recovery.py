@@ -25,10 +25,21 @@ from app.services.lightweight_recovery_renderer import (
 class LightweightStage6RecoveryTests(unittest.TestCase):
     def _image(self, root: str, name: str, value: int) -> str:
         path = os.path.join(root, name)
-        # O renderer rejeita arquivos muito pequenos (<1 KB) para não aceitar
-        # placeholders/corrompidos como ativo preservado. Use compressão zero no
-        # fixture para gerar um PNG local real acima desse guard sem enfraquecê-lo.
-        Image.new("RGB", (320, 180), (value, value, value)).save(path, compress_level=0)
+        # Gere um quadro determinístico com detalhe visual realista para o smoke.
+        # O renderer rejeita ativos <1 KB e MP4 final <50 KB; um PNG chapado pode
+        # comprimir artificialmente abaixo desses guards, algo que não representa
+        # as imagens preservadas de produção. Mantemos os guards intactos.
+        width, height = 320, 180
+        data = bytearray(width * height * 3)
+        for idx in range(width * height):
+            x = idx % width
+            y = idx // width
+            seed = (x * 37 + y * 53 + value * 17 + (x * y) * 3) & 0xFF
+            base = idx * 3
+            data[base] = seed
+            data[base + 1] = (seed * 3 + value * 11) & 0xFF
+            data[base + 2] = (seed * 7 + x + y) & 0xFF
+        Image.frombytes("RGB", (width, height), bytes(data)).save(path)
         self.assertGreater(os.path.getsize(path), 1000)
         return path
 
