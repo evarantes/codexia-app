@@ -7,10 +7,12 @@ try:
     from scripts import apply_ready_video_asset_repair_v4 as v4
     from scripts import apply_ready_queue_title_edit as title_edit
     from scripts import apply_runtime_render_monitor_compat as runtime_monitor
+    from scripts import apply_stage6_retry_cost_guard as stage6_cost_guard
 except ModuleNotFoundError:
     import apply_ready_video_asset_repair_v4 as v4
     import apply_ready_queue_title_edit as title_edit
     import apply_runtime_render_monitor_compat as runtime_monitor
+    import apply_stage6_retry_cost_guard as stage6_cost_guard
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,11 +70,10 @@ def apply() -> None:
         raise PatchError("patch V3 não é idempotente")
     if transformed != original:
         YOUTUBE.write_text(transformed, encoding="utf-8")
-    # V4, edição segura do título e compatibilidade do monitor são encadeados
-    # aqui porque API, worker e CI já executam V3 em todos os builds.
     v4.apply()
     title_edit.apply()
     runtime_monitor.apply()
+    stage6_cost_guard.apply()
 
 
 def check() -> None:
@@ -91,6 +92,7 @@ def check() -> None:
     v4.check()
     title_edit.check()
     runtime_monitor.check()
+    stage6_cost_guard.check()
 
 
 def main() -> int:
@@ -105,8 +107,8 @@ def main() -> int:
             apply()
         if args.check:
             check()
-    except (PatchError, v4.PatchError, title_edit.PatchError, runtime_monitor.PatchError) as exc:
-        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME: {exc}")
+    except (PatchError, v4.PatchError, title_edit.PatchError, runtime_monitor.PatchError, stage6_cost_guard.PatchError) as exc:
+        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME/STAGE6: {exc}")
         return 2
     return 0
 
