@@ -25,7 +25,11 @@ from app.services.lightweight_recovery_renderer import (
 class LightweightStage6RecoveryTests(unittest.TestCase):
     def _image(self, root: str, name: str, value: int) -> str:
         path = os.path.join(root, name)
-        Image.new("RGB", (320, 180), (value, value, value)).save(path)
+        # O renderer rejeita arquivos muito pequenos (<1 KB) para não aceitar
+        # placeholders/corrompidos como ativo preservado. Use compressão zero no
+        # fixture para gerar um PNG local real acima desse guard sem enfraquecê-lo.
+        Image.new("RGB", (320, 180), (value, value, value)).save(path, compress_level=0)
+        self.assertGreater(os.path.getsize(path), 1000)
         return path
 
     def _wav(self, root: str, seconds: float = 2.0) -> str:
