@@ -10,6 +10,7 @@ try:
     from scripts import apply_stage6_repair_local_retry as stage6_retry
     from scripts import apply_retry_image_path_compat as image_path_compat
     from scripts import apply_stale_factory_lock_recovery as stale_lock_recovery
+    from scripts import apply_intelligent_cost_optimization as intelligent_cost
 except ModuleNotFoundError:
     import apply_ready_video_asset_repair_v4 as v4
     import apply_ready_queue_title_edit as title_edit
@@ -17,6 +18,7 @@ except ModuleNotFoundError:
     import apply_stage6_repair_local_retry as stage6_retry
     import apply_retry_image_path_compat as image_path_compat
     import apply_stale_factory_lock_recovery as stale_lock_recovery
+    import apply_intelligent_cost_optimization as intelligent_cost
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,14 +77,15 @@ def apply() -> None:
     if transformed != original:
         YOUTUBE.write_text(transformed, encoding="utf-8")
     # V4, edição segura do título, compatibilidade do monitor, retry local de
-    # stage_6, compatibilidade de caminhos absolutos e autocura fail-closed de
-    # lock órfão são encadeados aqui porque API, worker e CI executam V3 no build.
+    # stage_6, caminhos absolutos, lock órfão e otimização inteligente de custo
+    # são encadeados aqui porque API, worker e CI executam V3 no build.
     v4.apply()
     title_edit.apply()
     runtime_monitor.apply()
     stage6_retry.apply()
     image_path_compat.apply()
     stale_lock_recovery.apply()
+    intelligent_cost.apply()
 
 
 def check() -> None:
@@ -104,6 +107,7 @@ def check() -> None:
     stage6_retry.check()
     image_path_compat.check()
     stale_lock_recovery.check()
+    intelligent_cost.check()
 
 
 def main() -> int:
@@ -126,8 +130,9 @@ def main() -> int:
         stage6_retry.PatchError,
         image_path_compat.PatchError,
         stale_lock_recovery.PatchError,
+        intelligent_cost.PatchError,
     ) as exc:
-        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH/STALELOCK: {exc}")
+        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH/STALELOCK/INTELLIGENTCOST: {exc}")
         return 2
     return 0
 
