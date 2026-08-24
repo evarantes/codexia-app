@@ -5,8 +5,10 @@ from pathlib import Path
 
 try:
     from scripts import apply_ready_video_asset_repair_v4 as v4
+    from scripts import apply_ready_queue_title_edit as title_edit
 except ModuleNotFoundError:
     import apply_ready_video_asset_repair_v4 as v4
+    import apply_ready_queue_title_edit as title_edit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,8 +66,9 @@ def apply() -> None:
         raise PatchError("patch V3 não é idempotente")
     if transformed != original:
         YOUTUBE.write_text(transformed, encoding="utf-8")
-    # O V4 é encadeado aqui porque API, worker e CI já executam V3.
+    # V4 e a edição segura do título são encadeados aqui porque API/CI já executam V3.
     v4.apply()
+    title_edit.apply()
 
 
 def check() -> None:
@@ -82,6 +85,7 @@ def check() -> None:
         raise PatchError("ready-video repair V3 incompleto: " + ", ".join(missing))
     compile(text, str(YOUTUBE), "exec")
     v4.check()
+    title_edit.check()
 
 
 def main() -> int:
@@ -96,8 +100,8 @@ def main() -> int:
             apply()
         if args.check:
             check()
-    except (PatchError, v4.PatchError) as exc:
-        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4: {exc}")
+    except (PatchError, v4.PatchError, title_edit.PatchError) as exc:
+        print(f"ERRO READY VIDEO ASSET REPAIR V3/V4/TITLE: {exc}")
         return 2
     return 0
 
