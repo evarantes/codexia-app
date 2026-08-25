@@ -80,9 +80,15 @@ class LocalRenderWorkerPhase1Tests(unittest.TestCase):
     def test_hardened_build_wires_router(self):
         source = (ROOT / "scripts" / "apply_ready_video_asset_repair_v3.py").read_text(encoding="utf-8")
         patcher = (ROOT / "scripts" / "apply_local_render_worker_phase1.py").read_text(encoding="utf-8")
+        procfile = (ROOT / "Procfile").read_text(encoding="utf-8")
         self.assertIn("local_worker_phase1.apply()", source)
         self.assertIn("local_worker_phase1.check()", source)
         self.assertIn("app.include_router(local_render_worker.router)", patcher)
+        self.assertIn("apply_local_render_worker_phase1.py --apply --check", procfile)
+        self.assertLess(
+            procfile.index("apply_local_render_worker_phase1.py --apply --check"),
+            procfile.index("uvicorn app.main:app"),
+        )
 
 
 if __name__ == "__main__":
