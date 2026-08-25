@@ -55,6 +55,20 @@ def _replace_once_or_already(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _replace_all_or_already(text: str, old: str, new: str, label: str) -> str:
+    """Substitui todas as cópias equivalentes sem enfraquecer o fail-closed.
+
+    Alguns hardenings anteriores podem materializar o mesmo handler de retry-plan
+    em mais de um fluxo da UI durante o build. Todas essas ocorrências precisam
+    exibir o detail estruturado corretamente. Zero ocorrências continua sendo erro.
+    """
+    if old not in text:
+        if new in text:
+            return text
+        raise PatchError(f"{label}: esperado ao menos 1 trecho, encontrado 0")
+    return text.replace(old, new)
+
+
 def patch_youtube(text: str) -> str:
     if BACKEND_NEW in text:
         return text
@@ -67,7 +81,7 @@ def patch_youtube(text: str) -> str:
 
 
 def patch_index(text: str) -> str:
-    text = _replace_once_or_already(
+    text = _replace_all_or_already(
         text,
         PLAN_ERROR_OLD,
         PLAN_ERROR_NEW,
@@ -126,6 +140,8 @@ def check() -> None:
     missing = [token for token in required_index if token not in index]
     if missing:
         raise PatchError("UI de retry/diagnóstico incompleta: " + ", ".join(missing))
+    if PLAN_ERROR_OLD in index:
+        raise PatchError("UI ainda contém handler legado de retry-plan")
 
     compile(youtube, str(YOUTUBE), "exec")
 
