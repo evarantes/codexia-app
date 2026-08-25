@@ -32,6 +32,22 @@ def test_retry_ui_surfaces_structured_api_error_and_keeps_cancelled_task_for_dia
     assert hardening.patch_index(patched) == patched
 
 
+def test_retry_plan_ui_hardening_handles_multiple_equivalent_handlers():
+    source = "\n".join(
+        [
+            hardening.PLAN_ERROR_OLD,
+            hardening.PLAN_ERROR_OLD,
+            hardening.RETRY_ERROR_OLD,
+            hardening.OPEN_RECOVERABLE_OLD,
+        ]
+    )
+    patched = hardening.patch_index(source)
+
+    assert hardening.PLAN_ERROR_OLD not in patched
+    assert patched.count("const planDetail = planData && planData.detail;") == 2
+    assert hardening.patch_index(patched) == patched
+
+
 def test_no_paid_media_or_content_policy_is_changed_by_this_fix():
     script = open("scripts/apply_retry_plan_confirmation_stability.py", encoding="utf-8").read()
 
