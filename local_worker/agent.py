@@ -64,7 +64,8 @@ class LocalRenderAgent:
 
     def api(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}{path}"
-        response = self.session.request(method, url, timeout=60, **kwargs)
+        timeout = kwargs.pop("timeout", 60)
+        response = self.session.request(method, url, timeout=timeout, **kwargs)
         if response.status_code >= 400:
             try:
                 detail = response.json().get("detail")
