@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+from unittest.mock import Mock
 
 from local_worker.agent import LocalRenderAgent, WorkerError
 
@@ -15,6 +16,23 @@ class LocalRenderWorkerPhase1Tests(unittest.TestCase):
     def test_agent_requires_dedicated_nontrivial_token(self):
         with self.assertRaisesRegex(WorkerError, "Token"):
             LocalRenderAgent(base_url="https://codexia.example", token="short")
+
+    def test_api_uses_default_timeout_once_and_honors_override(self):
+        agent = LocalRenderAgent(base_url="https://codexia.example", token="x" * 32)
+        response = Mock(status_code=200)
+        agent.session.request = Mock(return_value=response)
+
+        agent.api("GET", "/health")
+        agent.session.request.assert_called_once_with("GET", "https://codexia.example/health", timeout=60)
+
+        agent.session.request.reset_mock()
+        agent.api("POST", "/upload", timeout=600, data={"ok": "1"})
+        agent.session.request.assert_called_once_with(
+            "POST",
+            "https://codexia.example/upload",
+            timeout=600,
+            data={"ok": "1"},
+        )
 
     def test_agent_has_no_database_or_redis_client_imports(self):
         source = (ROOT / "local_worker" / "agent.py").read_text(encoding="utf-8")
