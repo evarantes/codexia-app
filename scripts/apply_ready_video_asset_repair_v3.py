@@ -13,6 +13,7 @@ try:
     from scripts import apply_intelligent_cost_optimization_compat as intelligent_cost
     from scripts import apply_lightweight_stage6_recovery as lightweight_stage6
     from scripts import apply_retry_plan_confirmation_stability as retry_plan_stability
+    from scripts import apply_local_render_worker_phase1 as local_worker_phase1
 except ModuleNotFoundError:
     import apply_ready_video_asset_repair_v4 as v4
     import apply_ready_queue_title_edit as title_edit
@@ -23,6 +24,7 @@ except ModuleNotFoundError:
     import apply_intelligent_cost_optimization_compat as intelligent_cost
     import apply_lightweight_stage6_recovery as lightweight_stage6
     import apply_retry_plan_confirmation_stability as retry_plan_stability
+    import apply_local_render_worker_phase1 as local_worker_phase1
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,8 +84,8 @@ def apply() -> None:
         YOUTUBE.write_text(transformed, encoding="utf-8")
     # V4, edição segura do título, compatibilidade do monitor, retry local de
     # stage_6, caminhos absolutos, lock órfão, otimização inteligente de custo,
-    # render leve confirmado e estabilidade do hash são encadeados aqui porque
-    # API, worker e CI executam V3 no build.
+    # render leve confirmado, estabilidade do hash e fase 1 do worker local são
+    # encadeados aqui porque API, worker e CI executam V3 no build.
     v4.apply()
     title_edit.apply()
     runtime_monitor.apply()
@@ -93,6 +95,7 @@ def apply() -> None:
     intelligent_cost.apply()
     lightweight_stage6.apply()
     retry_plan_stability.apply()
+    local_worker_phase1.apply()
 
 
 def check() -> None:
@@ -117,6 +120,7 @@ def check() -> None:
     intelligent_cost.check()
     lightweight_stage6.check()
     retry_plan_stability.check()
+    local_worker_phase1.check()
 
 
 def main() -> int:
@@ -142,10 +146,11 @@ def main() -> int:
         intelligent_cost.base.PatchError,
         lightweight_stage6.PatchError,
         retry_plan_stability.PatchError,
+        local_worker_phase1.PatchError,
     ) as exc:
         print(
             "ERRO READY VIDEO ASSET REPAIR "
-            "V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH/STALELOCK/INTELLIGENTCOST/LIGHTWEIGHT/RETRYPLAN: "
+            "V3/V4/TITLE/RUNTIME/STAGE6/IMAGEPATH/STALELOCK/INTELLIGENTCOST/LIGHTWEIGHT/RETRYPLAN/LOCALWORKER: "
             f"{exc}"
         )
         return 2
