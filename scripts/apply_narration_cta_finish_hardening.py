@@ -101,8 +101,8 @@ def _brace_detail_handler(text: str, variable: str, fallback: str) -> str:
     # `if (...) const ...`, JavaScript inválido. Corrija apenas esse formato.
     detail = "retryDetail" if variable == "data" else "planDetail"
     start_re = re.compile(
-        rf"(?P<indent>^[ \\t]*)if \\((?P<cond>![A-Za-z_$][A-Za-z0-9_$.]*\\.ok)\\) "
-        rf"const {detail} = {variable} && {variable}\\.detail;",
+        rf"(?P<indent>^[ \t]*)if \((?P<cond>![A-Za-z_$][A-Za-z0-9_$.]*\.ok)\) "
+        rf"const {detail} = {variable} && {variable}\.detail;",
         re.MULTILINE,
     )
     match = start_re.search(text)
@@ -159,7 +159,7 @@ def check() -> None:
         raise PatchError("CTA visual incompleto: " + ", ".join(missing))
 
     invalid_js = re.search(
-        r"if\\s*\\([^)]*\\)\\s+const\\s+(?:retryDetail|planDetail)\\b",
+        r"if\s*\([^)]*\)\s+const\s+(?:retryDetail|planDetail)\b",
         index,
     )
     if invalid_js:
