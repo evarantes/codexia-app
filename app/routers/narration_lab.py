@@ -9,6 +9,10 @@ from app.database import get_db
 from app.models import Settings, User
 from app.routers.auth import get_current_admin_user
 from app.services.narration_lab import NarrationLabError, narration_lab_service
+from app.services.youtube_narration_gate import (
+    YouTubeNarrationGateError,
+    youtube_narration_gate_service,
+)
 
 
 router = APIRouter(prefix="/youtube/narration-lab", tags=["youtube", "narration-lab"])
@@ -21,6 +25,17 @@ class NarrationLabGenerateRequest(BaseModel):
     voice_style: str = "human"
     voice_gender: Literal["female", "male"] = "female"
     confirm_paid_generation: bool = False
+
+
+class NarrationGateGenerateRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=30000)
+    voice: Optional[str] = "auto"
+    voice_gender: Literal["female", "male"] = "female"
+
+
+class NarrationGateApproveRequest(BaseModel):
+    preview_id: str = Field(..., min_length=32, max_length=32)
+    expected_text: str = Field(..., min_length=1, max_length=30000)
 
 
 def _settings_for_user(db: Session, user_id: int):
@@ -36,6 +51,13 @@ def _settings_for_user(db: Session, user_id: int):
 
 
 def _raise_lab_error(exc: NarrationLabError):
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": str(exc)},
+    ) from exc
+
+
+def _raise_gate_error(exc: YouTubeNarrationGateError):
     raise HTTPException(
         status_code=exc.status_code,
         detail={"code": exc.code, "message": str(exc)},
@@ -86,5 +108,58 @@ def get_narration_lab_audio(
             "Cache-Control": "private, no-store",
             "Accept-Ranges": "bytes",
             "Content-Disposition": f'inline; filename="amostra-narracao-{sample_id[:8]}.mp3"',
+        },
+    )
+
+
+@router.post("/production-preview")
+def generate_production_narration_preview(
+    payload: NarrationGateGenerateRequest,
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Generate the complete narration only; never enqueue/render/generate images."""
+    try:
+        return youtube_narration_gate_service.generate(
+            text=payload.text,
+            user_id=current_user.id,
+            voice=payload.voice,
+            voice_gender=payload.voice_gender,
+        )
+    except YouTubeNarrationGateError as exc:
+        _raise_gate_error(exc)
+
+
+@router.post("/production-preview/approve")
+def approve_production_narration_preview(
+    payload: NarrationGateApproveRequest,
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Approve the exact text/audio pair and expose a canonical reuse_audio_from payload."""
+    try:
+        return youtube_narration_gate_service.approve(
+            preview_id=payload.preview_id,
+            expected_text=payload.expected_text,
+            user_id=current_user.id,
+        )
+    except YouTubeNarrationGateError as exc:
+        _raise_gate_error(exc)
+
+
+@router.get("/production-preview/audio/{preview_id}")
+def get_production_narration_preview_audio(
+    preview_id: str,
+    current_user: User = Depends(get_current_admin_user),
+):
+    try:
+        path = youtube_narration_gate_service.audio_path(preview_id=preview_id, user_id=current_user.id)
+    except YouTubeNarrationGateError as exc:
+        _raise_gate_error(exc)
+    return FileResponse(
+        str(path),
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f'inline; filename="narracao-aprovacao-{preview_id[:8]}.mp3"',
         },
     )
