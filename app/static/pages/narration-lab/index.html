@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#312e81">
+    <title>Bancada de Narração — Codexia</title>
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <style>
+        :root {
+            color-scheme: light;
+            --ink: #172033;
+            --muted: #657086;
+            --line: #dce2ef;
+            --primary: #4338ca;
+            --primary-dark: #312e81;
+            --soft: #eef2ff;
+            --success: #047857;
+            --warning: #a16207;
+            --danger: #b91c1c;
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: #f4f6fb; }
+        [v-cloak] { display: none; }
+        button, input, select, textarea { font: inherit; }
+        button { cursor: pointer; }
+        .topbar { background: linear-gradient(120deg, var(--primary-dark), #4f46e5); color: white; }
+        .topbar-inner { max-width: 1180px; margin: 0 auto; padding: 24px 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        .brand { display: flex; align-items: center; gap: 14px; }
+        .brand-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 16px; background: rgba(255,255,255,.16); font-size: 24px; }
+        h1 { margin: 0; font-size: clamp(1.35rem, 3vw, 2rem); }
+        .subtitle { margin: 5px 0 0; color: #dbeafe; font-size: .94rem; }
+        .back { color: white; text-decoration: none; border: 1px solid rgba(255,255,255,.34); border-radius: 10px; padding: 10px 14px; white-space: nowrap; }
+        .layout { max-width: 1180px; margin: 24px auto; padding: 0 22px 40px; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); gap: 22px; align-items: start; }
+        .card { background: white; border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 10px 28px rgba(30,41,59,.06); padding: 22px; }
+        .guard { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+        .guard-item { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; border-radius: 12px; padding: 11px; font-size: .82rem; font-weight: 700; text-align: center; }
+        .section-title { font-size: 1.08rem; margin: 0 0 15px; }
+        .field { margin-bottom: 16px; }
+        label { display: block; font-weight: 700; font-size: .88rem; margin-bottom: 7px; }
+        textarea, select { width: 100%; border: 1px solid #cbd5e1; background: white; border-radius: 11px; padding: 11px 12px; color: var(--ink); outline: none; transition: .15s; }
+        textarea:focus, select:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.14); }
+        textarea { min-height: 170px; resize: vertical; line-height: 1.55; }
+        .counter { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: .78rem; margin-top: 6px; }
+        .counter .over { color: var(--danger); font-weight: 800; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .provider-note { margin-top: 8px; padding: 10px 12px; border-radius: 10px; font-size: .82rem; background: #f8fafc; color: var(--muted); border: 1px solid #e2e8f0; }
+        .provider-note.warning { color: #854d0e; background: #fefce8; border-color: #fde68a; }
+        .confirm { display: flex; align-items: flex-start; gap: 10px; background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; padding: 12px; border-radius: 11px; margin: 15px 0; font-size: .86rem; }
+        .confirm input { width: 18px; height: 18px; margin-top: 1px; flex: 0 0 auto; }
+        .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .primary { border: 0; border-radius: 11px; background: var(--primary); color: white; padding: 12px 17px; font-weight: 800; }
+        .primary:hover { background: var(--primary-dark); }
+        .primary:disabled { background: #a5b4fc; cursor: not-allowed; }
+        .secondary { border: 1px solid #cbd5e1; border-radius: 11px; background: white; color: #334155; padding: 11px 15px; font-weight: 700; }
+        .error { margin-top: 14px; background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; border-radius: 11px; padding: 12px; white-space: pre-wrap; }
+        .result { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 20px; }
+        audio { width: 100%; margin: 10px 0 14px; }
+        .badges { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 13px; }
+        .badge { background: var(--soft); color: #3730a3; border-radius: 999px; padding: 5px 9px; font-size: .75rem; font-weight: 800; }
+        .badge.green { background: #ecfdf5; color: var(--success); }
+        .badge.amber { background: #fffbeb; color: var(--warning); }
+        .spoken { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 11px; padding: 12px; font-size: .87rem; line-height: 1.5; max-height: 150px; overflow: auto; white-space: pre-wrap; }
+        .history { display: grid; gap: 10px; }
+        .history-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: white; text-align: left; width: 100%; color: inherit; }
+        .history-item:hover, .history-item.active { border-color: #818cf8; background: #f5f3ff; }
+        .history-top { display: flex; justify-content: space-between; gap: 8px; font-size: .76rem; color: var(--muted); margin-bottom: 7px; }
+        .history-text { font-size: .86rem; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+        .empty { color: var(--muted); text-align: center; padding: 25px 10px; font-size: .9rem; }
+        .loading { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: .85rem; }
+        .spinner { width: 16px; height: 16px; border: 2px solid #c7d2fe; border-top-color: var(--primary); border-radius: 50%; animation: spin .7s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (max-width: 850px) { .layout { grid-template-columns: 1fr; } .guard { grid-template-columns: 1fr; } }
+        @media (max-width: 560px) { .topbar-inner { align-items: flex-start; } .grid-2 { grid-template-columns: 1fr; } .layout { padding: 0 12px 30px; } .card { padding: 17px; } .back { padding: 8px 10px; font-size: .82rem; } }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div class="brand">
+                <div class="brand-mark">🎙️</div>
+                <div>
+                    <h1>Bancada de Narração</h1>
+                    <p class="subtitle">Teste a voz antes de produzir o vídeo completo.</p>
+                </div>
+            </div>
+            <a class="back" href="/">← Voltar ao Codexia</a>
+        </div>
+    </header>
+
+    <main id="app" class="layout" v-cloak>
+        <section class="card">
+            <div class="guard">
+                <div class="guard-item">✓ Sem render de vídeo</div>
+                <div class="guard-item">✓ Sem geração de imagens</div>
+                <div class="guard-item">✓ Sem entrar na fila</div>
+            </div>
+
+            <h2 class="section-title">Nova amostra</h2>
+            <div class="field">
+                <label for="sample-text">Texto que será realmente enviado à voz</label>
+                <textarea id="sample-text" v-model="form.text" :maxlength="maxChars + 100" placeholder="Digite uma frase completa para testar ritmo, pronúncia e emoção."></textarea>
+                <div class="counter">
+                    <span>Use uma frase completa, terminando com ponto, exclamação ou interrogação.</span>
+                    <span :class="{ over: charCount > maxChars }">{{ charCount }} / {{ maxChars }}</span>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="field">
+                    <label for="provider">Provedor</label>
+                    <select id="provider" v-model="form.provider">
+                        <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                            {{ provider.label }}{{ provider.paid ? ' — pago' : ' — gratuito' }}
+                        </option>
+                    </select>
+                    <div v-if="selectedProvider" class="provider-note" :class="{ warning: selectedProvider.paid || !selectedProvider.ready }">
+                        {{ selectedProvider.message }}
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="voice">Voz</label>
+                    <select id="voice" v-model="form.voice">
+                        <option v-for="voice in availableVoices" :key="voice.id" :value="voice.id">{{ voice.label }}</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="field">
+                    <label for="style">Estilo</label>
+                    <select id="style" v-model="form.voice_style">
+                        <option v-for="style in styles" :key="style.id" :value="style.id">{{ style.label }}</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="gender">Direção de voz</label>
+                    <select id="gender" v-model="form.voice_gender">
+                        <option value="female">Feminina</option>
+                        <option value="male">Masculina</option>
+                    </select>
+                </div>
+            </div>
+
+            <label v-if="selectedProvider && selectedProvider.paid" class="confirm">
+                <input type="checkbox" v-model="form.confirm_paid_generation">
+                <span>Confirmo gerar uma amostra curta com este provedor pago. Uma amostra idêntica já preservada será reutilizada sem nova chamada.</span>
+            </label>
+
+            <div class="actions">
+                <button class="primary" @click="generateSample" :disabled="!canGenerate || generating">
+                    {{ generating ? 'Gerando somente o áudio…' : 'Gerar amostra de áudio' }}
+                </button>
+                <button class="secondary" @click="resetForm" :disabled="generating">Restaurar texto de teste</button>
+                <span v-if="generating" class="loading"><span class="spinner"></span> Nenhum vídeo está sendo renderizado.</span>
+            </div>
+
+            <div v-if="error" class="error">{{ error }}</div>
+
+            <div v-if="selectedSample" class="result">
+                <h2 class="section-title">Ouça e compare</h2>
+                <div class="badges">
+                    <span class="badge">{{ providerLabel(selectedSample.provider_used) }}</span>
+                    <span class="badge">{{ selectedSample.effective_voice_hint || selectedSample.voice_name_used || 'voz automática' }}</span>
+                    <span class="badge">{{ formatDuration(selectedSample.audio_duration_sec) }}</span>
+                    <span v-if="selectedSample.cache_hit" class="badge green">reutilizada • sem nova chamada</span>
+                    <span v-else-if="selectedSample.paid_provider" class="badge amber">nova amostra paga</span>
+                    <span v-else class="badge green">gratuita</span>
+                </div>
+                <audio v-if="audioObjectUrl" :src="audioObjectUrl" controls preload="metadata"></audio>
+                <div v-else class="loading"><span class="spinner"></span> Carregando áudio protegido…</div>
+                <label>Texto exato enviado ao TTS</label>
+                <div class="spoken">{{ selectedSample.spoken_text_sent_to_tts }}</div>
+            </div>
+        </section>
+
+        <aside class="card">
+            <h2 class="section-title">Últimas amostras</h2>
+            <div v-if="historyLoading" class="loading"><span class="spinner"></span> Carregando…</div>
+            <div v-else-if="!samples.length" class="empty">Nenhuma amostra gerada ainda.</div>
+            <div v-else class="history">
+                <button v-for="sample in samples" :key="sample.sample_id" class="history-item" :class="{ active: selectedSample && selectedSample.sample_id === sample.sample_id }" @click="selectSample(sample)">
+                    <div class="history-top">
+                        <span>{{ providerLabel(sample.provider_used) }} • {{ formatDuration(sample.audio_duration_sec) }}</span>
+                        <span>{{ formatDate(sample.created_at) }}</span>
+                    </div>
+                    <div class="history-text">{{ sample.spoken_text_sent_to_tts }}</div>
+                </button>
+            </div>
+        </aside>
+    </main>
+
+    <script>
+        const { createApp } = Vue;
+        createApp({
+            data() {
+                return {
+                    options: null,
+                    providers: [],
+                    styles: [],
+                    maxChars: 1200,
+                    generating: false,
+                    historyLoading: false,
+                    error: '',
+                    samples: [],
+                    selectedSample: null,
+                    audioObjectUrl: '',
+                    defaultText: 'Mesmo nos dias difíceis, Deus continua presente e cuidando de cada detalhe. Confie, respire com calma e permaneça firme na esperança.',
+                    form: {
+                        text: '',
+                        provider: 'edge_tts',
+                        voice: 'auto',
+                        voice_style: 'human',
+                        voice_gender: 'female',
+                        confirm_paid_generation: false
+                    }
+                };
+            },
+            computed: {
+                charCount() { return String(this.form.text || '').length; },
+                selectedProvider() { return this.providers.find(item => item.id === this.form.provider) || null; },
+                availableVoices() { return (this.selectedProvider && this.selectedProvider.voices) || []; },
+                canGenerate() {
+                    if (!this.selectedProvider || !this.selectedProvider.ready) return false;
+                    if (this.charCount < 20 || this.charCount > this.maxChars) return false;
+                    if (this.selectedProvider.paid && !this.form.confirm_paid_generation) return false;
+                    return true;
+                }
+            },
+            watch: {
+                'form.provider'() {
+                    this.form.voice = 'auto';
+                    this.form.confirm_paid_generation = false;
+                    this.error = '';
+                }
+            },
+            async mounted() {
+                this.form.text = this.defaultText;
+                if (!localStorage.getItem('access_token')) {
+                    window.location.href = '/static/login.html';
+                    return;
+                }
+                await Promise.all([this.loadOptions(), this.loadHistory()]);
+            },
+            beforeUnmount() { this.revokeAudioUrl(); },
+            methods: {
+                async authFetch(url, options = {}) {
+                    const token = localStorage.getItem('access_token');
+                    const headers = new Headers(options.headers || {});
+                    if (token) headers.set('Authorization', `Bearer ${token}`);
+                    const response = await fetch(url, { ...options, headers });
+                    if (response.status === 401) {
+                        localStorage.removeItem('access_token');
+                        window.location.href = '/static/login.html';
+                    }
+                    return response;
+                },
+                apiError(payload, fallback) {
+                    const detail = payload && payload.detail;
+                    if (detail && typeof detail === 'object') return detail.message || fallback;
+                    return detail || (payload && payload.message) || fallback;
+                },
+                async loadOptions() {
+                    try {
+                        const response = await this.authFetch('/youtube/narration-lab/options');
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(this.apiError(data, 'Não foi possível carregar os provedores.'));
+                        this.options = data;
+                        this.providers = Array.isArray(data.providers) ? data.providers : [];
+                        this.styles = Array.isArray(data.styles) ? data.styles : [];
+                        this.maxChars = Number(data.max_text_chars || 1200);
+                        if (!this.providers.some(item => item.id === this.form.provider)) this.form.provider = (this.providers[0] || {}).id || 'edge_tts';
+                    } catch (error) {
+                        this.error = error.message || String(error);
+                    }
+                },
+                async loadHistory() {
+                    this.historyLoading = true;
+                    try {
+                        const response = await this.authFetch('/youtube/narration-lab/samples?limit=12');
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(this.apiError(data, 'Não foi possível carregar as amostras.'));
+                        this.samples = Array.isArray(data.items) ? data.items : [];
+                    } catch (error) {
+                        this.error = error.message || String(error);
+                    } finally {
+                        this.historyLoading = false;
+                    }
+                },
+                async generateSample() {
+                    if (!this.canGenerate || this.generating) return;
+                    this.generating = true;
+                    this.error = '';
+                    try {
+                        const response = await this.authFetch('/youtube/narration-lab/generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.form)
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(this.apiError(data, 'Falha ao gerar a amostra.'));
+                        await this.selectSample(data);
+                        await this.loadHistory();
+                    } catch (error) {
+                        this.error = error.message || String(error);
+                    } finally {
+                        this.generating = false;
+                    }
+                },
+                async selectSample(sample) {
+                    this.selectedSample = sample;
+                    this.error = '';
+                    this.revokeAudioUrl();
+                    try {
+                        const response = await this.authFetch(sample.audio_url);
+                        if (!response.ok) {
+                            const data = await response.json().catch(() => ({}));
+                            throw new Error(this.apiError(data, 'Não foi possível abrir o áudio.'));
+                        }
+                        const blob = await response.blob();
+                        this.audioObjectUrl = URL.createObjectURL(blob);
+                    } catch (error) {
+                        this.error = error.message || String(error);
+                    }
+                },
+                revokeAudioUrl() {
+                    if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl);
+                    this.audioObjectUrl = '';
+                },
+                resetForm() {
+                    this.form.text = this.defaultText;
+                    this.form.voice_style = 'human';
+                    this.form.voice_gender = 'female';
+                    this.form.voice = 'auto';
+                    this.form.confirm_paid_generation = false;
+                    this.error = '';
+                },
+                providerLabel(id) {
+                    const provider = this.providers.find(item => item.id === id);
+                    return provider ? provider.label : String(id || 'TTS');
+                },
+                formatDuration(seconds) {
+                    const value = Number(seconds || 0);
+                    if (!Number.isFinite(value) || value <= 0) return 'duração indisponível';
+                    return value < 60 ? `${value.toFixed(1)} s` : `${Math.floor(value / 60)} min ${Math.round(value % 60)} s`;
+                },
+                formatDate(value) {
+                    try { return new Date(value).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+                    catch (_) { return ''; }
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

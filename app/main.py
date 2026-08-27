@@ -13,6 +13,7 @@ load_dotenv()
 
 from app.database import engine, Base, get_db, SessionLocal, DATABASE_DISPLAY
 from app.routers import books, marketing, settings, video, crm, webhook, youtube, youtube_series, book_factory, auth, diagnostics, hotmart, music, admin, social_media, image_storyboard, whatsapp
+from app.routers import narration_lab
 from app.modules.ai_factory import router as ai_factory
 from app.modules.ai_factory import models as ai_models
 from app.modules.bible_video_factory import router as bible_video_factory
@@ -1242,6 +1243,7 @@ app.include_router(video.router)
 app.include_router(crm.router)
 app.include_router(youtube.router)
 app.include_router(youtube_series.router)
+app.include_router(narration_lab.router)
 app.include_router(webhook.router)
 app.include_router(diagnostics.router)
 app.include_router(book_factory.router)
