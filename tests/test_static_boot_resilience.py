@@ -13,6 +13,7 @@ VUE_PAGES = (
     STATIC / "pages" / "ai-factory" / "index.html",
     STATIC / "pages" / "bible-video-factory" / "index.html",
     STATIC / "pages" / "humor-factory" / "index.html",
+    STATIC / "pages" / "narration-lab" / "index.html",
 )
 AUTH_PAGES = {
     STATIC / "login.html",
@@ -22,6 +23,9 @@ FACTORY_PAGES = {
     STATIC / "pages" / "ai-factory" / "index.html",
     STATIC / "pages" / "bible-video-factory" / "index.html",
     STATIC / "pages" / "humor-factory" / "index.html",
+}
+LOCAL_STYLE_PAGES = {
+    STATIC / "pages" / "narration-lab" / "index.html",
 }
 
 
@@ -82,13 +86,22 @@ class StaticBootResilienceTests(unittest.TestCase):
         for page in VUE_PAGES:
             with self.subTest(page=page.relative_to(ROOT)):
                 html = page.read_text(encoding="utf-8")
-                self.assertIn('rel="stylesheet" media="print"', html)
 
-                if page in AUTH_PAGES:
+                if page in LOCAL_STYLE_PAGES:
+                    # A bancada é deliberadamente autocontida: o layout crítico
+                    # vive no próprio HTML e não depende de Tailwind, fontes ou
+                    # folhas de estilo externas para aparecer.
+                    self.assertIn("<style>", html)
+                    self.assertGreater(len(html.split("<style>", 1)[1].split("</style>", 1)[0]), 5_000)
+                    self.assertNotIn('https://cdn.tailwindcss.com', html)
+                    self.assertNotIn('rel="stylesheet"', html)
+                elif page in AUTH_PAGES:
+                    self.assertIn('rel="stylesheet" media="print"', html)
                     # Login e redefinição não dependem de CSS externo para o layout.
                     self.assertIn('href="/static/auth.css"', html)
                     self.assertNotIn('https://cdn.tailwindcss.com', html)
                 elif page in FACTORY_PAGES:
+                    self.assertIn('rel="stylesheet" media="print"', html)
                     # As fábricas têm CSS crítico local e bloqueante. Tailwind remoto
                     # pode existir apenas como melhoria progressiva, nunca como fonte
                     # única de layout; assim falha de CDN não revela HTML cru.
@@ -96,6 +109,7 @@ class StaticBootResilienceTests(unittest.TestCase):
                     self.assertIn('https://cdn.tailwindcss.com', html)
                     self.assertIn('<script src="https://cdn.tailwindcss.com" defer></script>', html)
                 elif page.name == "index.html" and page.parent == STATIC:
+                    self.assertIn('rel="stylesheet" media="print"', html)
                     # No painel principal, Tailwind ainda é parte crítica da experiência:
                     # o app só pode ficar visível depois do CSS estar pronto.
                     self.assertIn('https://cdn.tailwindcss.com', html)

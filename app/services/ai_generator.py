@@ -444,11 +444,17 @@ class AIContentGenerator:
         voice_settings: Optional[Dict[str, Any]] = None,
         preferred_provider: Optional[str] = None,
         activity_callback: Optional[Callable[[str], None]] = None,
+        allow_provider_fallback: bool = True,
     ) -> Dict[str, Any]:
         self._load_config()
         configured_provider = self._normalize_voice_provider(preferred_provider or self.voice_provider)
         attempts: List[Dict[str, Any]] = []
         provider_order = self._tts_provider_order(preferred_provider=preferred_provider)
+        if not allow_provider_fallback:
+            # A bancada de narração precisa testar exatamente o provedor escolhido.
+            # Sem esta barreira, uma falha da OpenAI poderia consumir ElevenLabs (ou
+            # o inverso) e o usuário ouviria uma voz diferente da selecionada.
+            provider_order = [configured_provider]
         paid_ai_disabled = self._paid_ai_disabled()
         provider_timeout = _narration_provider_timeout_seconds()
         # Uma tarefa de produção nunca atravessa vários provedores pagos para o
@@ -470,6 +476,7 @@ class AIContentGenerator:
             "voice_id_used": None,
             "voice_name_used": None,
             "voice_selection_source": None,
+            "provider_fallback_allowed": bool(allow_provider_fallback),
         }
 
         def _add_attempt(provider: str, status: str, reason: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
