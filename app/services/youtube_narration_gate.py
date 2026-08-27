@@ -144,7 +144,10 @@ class YouTubeNarrationGateService:
             except Exception:
                 pass
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {**meta, "audio_url": f"/youtube/narration-gate/audio/{preview_id}"}
+        return {
+            **meta,
+            "audio_url": f"/youtube/narration-lab/production-preview/audio/{preview_id}",
+        }
 
     def approve(self, *, preview_id: str, expected_text: Any, user_id: int) -> Dict[str, Any]:
         safe_id = str(preview_id or "").strip().lower()
