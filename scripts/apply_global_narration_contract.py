@@ -9,11 +9,13 @@ AI = ROOT / "app/services/ai_generator.py"
 VIDEO = ROOT / "app/services/video_generator.py"
 YOUTUBE = ROOT / "app/routers/youtube.py"
 GATE_JS = ROOT / "app/static/youtube_narration_gate.js"
+NARRATION_GUARD = ROOT / "app/services/narration_contract_guard.py"
 
 MARKER_AI = "CODEXIA_GLOBAL_TTS_PROVIDER_GUARD_V1"
 MARKER_VIDEO = "CODEXIA_GLOBAL_VIDEO_TTS_GUARD_V1"
 MARKER_SEED = "CODEXIA_APPROVED_NARRATION_FAIL_CLOSED_V1"
 MARKER_GATE = "CODEXIA_APPROVED_NARRATION_NETWORK_GUARD_V1"
+MARKER_SERIALIZED = "CODEXIA_SERIALIZED_TECHNICAL_PAYLOAD_GUARD_V1"
 
 
 class PatchError(RuntimeError):
@@ -74,9 +76,21 @@ def patch_gate_js(text: str) -> str:
     return replace_once(text, old_fetch, new_fetch, "gate/fail-closed-interceptor")
 
 
+def patch_narration_guard(text: str) -> str:
+    old = '''def structural_issues(text: Any) -> List[str]:\n    raw = str(text or "")\n    issues = [name for name, pattern in _STRUCTURAL_PATTERNS if pattern.search(raw)]\n    if re.search(r"\\\\[nrt]\\s*[\\\"']?[A-Za-z_][A-Za-z0-9_]*[\\\"']?\\s*:", raw):\n        issues.append("escaped_serialized_field")\n    return sorted(set(issues))'''
+    new = '''def structural_issues(text: Any) -> List[str]:\n    raw = str(text or "")\n    issues = [name for name, pattern in _STRUCTURAL_PATTERNS if pattern.search(raw)]\n    if re.search(r"\\\\[nrt]\\s*[\\\"']?[A-Za-z_][A-Za-z0-9_]*[\\\"']?\\s*:", raw):\n        issues.append("escaped_serialized_field")\n\n    # CODEXIA_SERIALIZED_TECHNICAL_PAYLOAD_GUARD_V1\n    # Bloqueia dumps YAML/log/key-value mesmo depois da normalização de espaços.\n    # Exigimos dois ou mais campos técnicos para evitar falso positivo em prosa\n    # comum que eventualmente use uma palavra como \"status\" seguida de dois-pontos.\n    technical_field_pattern = re.compile(\n        r"(?i)(?<!\\w)(?:status|progress|output_path|file_path|video_path|audio_path|"\n        r"task_id|job_id|request_id|executor_id|provider|model|pipeline_stage|"\n        r"render_stage|error_code|result_json|payload_json)\\s*[:=]"\n    )\n    if len(technical_field_pattern.findall(raw)) >= 2:\n        issues.append("serialized_technical_payload")\n    return sorted(set(issues))'''
+    return replace_once(text, old, new, "guard/serialized-technical-payload")
+
+
 def apply(write: bool) -> int:
     changed = 0
-    for path, patcher in ((AI, patch_ai), (VIDEO, patch_video), (YOUTUBE, patch_youtube), (GATE_JS, patch_gate_js)):
+    for path, patcher in (
+        (AI, patch_ai),
+        (VIDEO, patch_video),
+        (YOUTUBE, patch_youtube),
+        (GATE_JS, patch_gate_js),
+        (NARRATION_GUARD, patch_narration_guard),
+    ):
         source = path.read_text(encoding="utf-8")
         transformed = patcher(source)
         if patcher(transformed) != transformed:
@@ -95,6 +109,7 @@ def check() -> None:
         VIDEO: [MARKER_VIDEO, MARKER_SEED, 'debug_ctx["approved_narration_reused"] = True'],
         YOUTUBE: [MARKER_SEED, 'script["approved_narration_required"] = True', '"tts_regeneration_allowed": False'],
         GATE_JS: [MARKER_GATE, "approvedLaunchArmed", "payload.approved_narration_required = true", "geração bloqueada"],
+        NARRATION_GUARD: [MARKER_SERIALIZED, "serialized_technical_payload", "technical_field_pattern"],
     }
     for path, needles in requirements.items():
         source = path.read_text(encoding="utf-8")
