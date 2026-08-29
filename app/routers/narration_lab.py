@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -38,6 +39,10 @@ class NarrationGateApproveRequest(BaseModel):
     expected_text: str = Field(..., min_length=1, max_length=30000)
 
 
+class NarrationLogoTestRequest(BaseModel):
+    preview_id: str = Field(..., min_length=32, max_length=32)
+
+
 def _settings_for_user(db: Session, user_id: int):
     settings = (
         db.query(Settings)
@@ -48,6 +53,28 @@ def _settings_for_user(db: Session, user_id: int):
     if settings is not None:
         return settings
     return db.query(Settings).order_by(Settings.id.desc()).first()
+
+
+def _official_logo_path(settings: Optional[Settings]) -> str:
+    if settings is None:
+        return ""
+    raw_path = str(getattr(settings, "official_channel_logo_path", None) or "").strip()
+    if raw_path:
+        candidate = Path(raw_path).expanduser()
+        if candidate.is_file():
+            return str(candidate.resolve())
+    raw_url = str(getattr(settings, "official_channel_logo_url", None) or "").strip()
+    for value in (raw_path, raw_url):
+        if not value:
+            continue
+        try:
+            from app.config import absolute_path_for_static
+            resolved = absolute_path_for_static(value)
+            if resolved and Path(resolved).is_file():
+                return str(Path(resolved).resolve())
+        except Exception:
+            continue
+    return ""
 
 
 def _raise_lab_error(exc: NarrationLabError):
@@ -161,5 +188,47 @@ def get_production_narration_preview_audio(
             "Cache-Control": "private, no-store",
             "Accept-Ranges": "bytes",
             "Content-Disposition": f'inline; filename="narracao-aprovacao-{preview_id[:8]}.mp3"',
+        },
+    )
+
+
+@router.post("/production-preview/logo-test")
+def generate_production_logo_test_video(
+    payload: NarrationLogoTestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Render a zero-image test MP4 from the exact preview audio + official channel logo."""
+    settings = _settings_for_user(db, current_user.id)
+    logo_path = _official_logo_path(settings)
+    try:
+        return youtube_narration_gate_service.generate_logo_test_video(
+            preview_id=payload.preview_id,
+            user_id=current_user.id,
+            logo_path=logo_path,
+        )
+    except YouTubeNarrationGateError as exc:
+        _raise_gate_error(exc)
+
+
+@router.get("/production-preview/logo-test/{preview_id}")
+def get_production_logo_test_video(
+    preview_id: str,
+    current_user: User = Depends(get_current_admin_user),
+):
+    try:
+        path = youtube_narration_gate_service.logo_test_video_path(
+            preview_id=preview_id,
+            user_id=current_user.id,
+        )
+    except YouTubeNarrationGateError as exc:
+        _raise_gate_error(exc)
+    return FileResponse(
+        str(path),
+        media_type="video/mp4",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f'inline; filename="teste-logo-narracao-{preview_id[:8]}.mp4"',
         },
     )
