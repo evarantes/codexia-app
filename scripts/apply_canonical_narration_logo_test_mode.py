@@ -11,6 +11,18 @@ LOGO_JS = Path("app/static/youtube_logo_test_mode.js")
 LOGO_TAG = '<script src="/static/youtube_logo_test_mode.js"></script>'
 BODY = "</body>"
 MARKER = "CODEXIA_DIRECT_USES_SUPERVISION_PATH_V1"
+GLOBAL_LOGO_ONLY_MARKERS = [
+    "codexia.logoOnlyVisuals.v1",
+    "Usar apenas a logo do canal",
+    "logo_only_visuals",
+    "X-Codexia-Logo-Only-Visuals",
+]
+LEGACY_LOGO_TEST_MARKERS = [
+    "/youtube/narration-lab/production-preview",
+    "/youtube/narration-lab/production-preview/logo-test",
+    "imagens IA: 0",
+    "áudio reutilizado: SIM",
+]
 
 OLD_DIRECT = '''    panel.querySelector('[data-ng-direct]').addEventListener('click', () => {\n      clearApproved();\n      const button = existingGenerateButton(card);\n      if (button) button.click(); else setStatus(panel, 'Não encontrei o botão de geração do vídeo.', 'error');\n    });'''
 
@@ -20,7 +32,7 @@ NEW_DIRECT = '''    panel.querySelector('[data-ng-direct]').addEventListener('cl
 def apply() -> bool:
     changed = False
     if not LOGO_JS.is_file():
-        raise SystemExit("canonical narration/logo mode: JS do teste com logo ausente")
+        raise SystemExit("canonical narration/logo mode: JS do modo com logo ausente")
 
     index = INDEX.read_text(encoding="utf-8")
     if LOGO_TAG not in index:
@@ -46,7 +58,7 @@ def check() -> None:
     gate = GATE_JS.read_text(encoding="utf-8")
     logo = LOGO_JS.read_text(encoding="utf-8")
     if index.count(LOGO_TAG) != 1:
-        raise SystemExit("canonical narration/logo mode: script do teste com logo deve aparecer exatamente uma vez")
+        raise SystemExit("canonical narration/logo mode: script do modo com logo deve aparecer exatamente uma vez")
     required_gate = [
         MARKER,
         "await generatePreview(panel, card)",
@@ -58,15 +70,20 @@ def check() -> None:
         raise SystemExit(f"canonical narration/logo mode: caminho direto divergente: {missing_gate}")
     if OLD_DIRECT in gate:
         raise SystemExit("canonical narration/logo mode: caminho direto legado ainda presente")
-    required_logo = [
-        "/youtube/narration-lab/production-preview",
-        "/youtube/narration-lab/production-preview/logo-test",
-        "imagens IA: 0",
-        "áudio reutilizado: SIM",
-    ]
-    missing_logo = [needle for needle in required_logo if needle not in logo]
-    if missing_logo:
-        raise SystemExit(f"canonical narration/logo mode: contrato do teste econômico incompleto: {missing_logo}")
+
+    # PR #123 substitui o botão isolado de teste econômico por um modo global
+    # de produção. O contrato legado continua aceito para branches antigas, mas
+    # o novo checkbox é o sucessor canônico quando todos os marcadores globais
+    # estão presentes.
+    global_mode_complete = all(needle in logo for needle in GLOBAL_LOGO_ONLY_MARKERS)
+    legacy_mode_complete = all(needle in logo for needle in LEGACY_LOGO_TEST_MARKERS)
+    if not global_mode_complete and not legacy_mode_complete:
+        missing_global = [needle for needle in GLOBAL_LOGO_ONLY_MARKERS if needle not in logo]
+        missing_legacy = [needle for needle in LEGACY_LOGO_TEST_MARKERS if needle not in logo]
+        raise SystemExit(
+            "canonical narration/logo mode: nenhum contrato válido encontrado; "
+            f"global ausente={missing_global}; legado ausente={missing_legacy}"
+        )
 
 
 def main() -> int:
