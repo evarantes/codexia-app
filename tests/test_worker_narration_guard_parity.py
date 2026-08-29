@@ -14,6 +14,8 @@ def test_worker_applies_same_narration_guards_as_api() -> None:
         "scripts/apply_youtube_narration_gate.py --check",
         "scripts/apply_global_narration_contract.py --apply",
         "scripts/apply_global_narration_contract.py --check",
+        "scripts/apply_canonical_narration_logo_test_mode.py --apply",
+        "scripts/apply_canonical_narration_logo_test_mode.py --check",
     )
     for needle in required:
         assert needle in api, f"API sem contrato obrigatório: {needle}"
@@ -26,5 +28,6 @@ def test_worker_guard_order_matches_api() -> None:
     for content, label in ((api, "API"), (worker, "worker")):
         gate = content.index("scripts/apply_youtube_narration_gate.py --apply")
         global_guard = content.index("scripts/apply_global_narration_contract.py --apply")
+        canonical = content.index("scripts/apply_canonical_narration_logo_test_mode.py --apply")
         compileall = content.index("python -m compileall -q app scripts")
-        assert gate < global_guard < compileall, f"Ordem incorreta dos guards no {label}"
+        assert gate < global_guard < canonical < compileall, f"Ordem incorreta dos guards no {label}"
