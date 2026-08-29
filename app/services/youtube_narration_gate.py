@@ -3,6 +3,9 @@
 Generates the complete narration audio before video production, without images,
 rendering or queue dispatch. The approved MP3 is then reused by the canonical
 video pipeline so TTS is not executed a second time.
+
+This service also owns the zero-image logo-test render. That path deliberately
+reuses the exact preview MP3 and never calls an image provider.
 """
 from __future__ import annotations
 
@@ -85,6 +88,13 @@ class YouTubeNarrationGateService:
         except Exception:
             return 0.0
 
+    @staticmethod
+    def _safe_preview_id(preview_id: Any) -> str:
+        safe_id = str(preview_id or "").strip().lower()
+        if len(safe_id) != 32 or any(ch not in "0123456789abcdef" for ch in safe_id):
+            raise YouTubeNarrationGateError("Identificador de narração inválido.", code="PREVIEW_ID_INVALID")
+        return safe_id
+
     def generate(self, *, text: Any, user_id: int, voice: Any = "auto", voice_gender: Any = "female") -> Dict[str, Any]:
         spoken = self._normalize_text(text)
         selected_voice = self._voice(voice, voice_gender)
@@ -150,9 +160,7 @@ class YouTubeNarrationGateService:
         }
 
     def approve(self, *, preview_id: str, expected_text: Any, user_id: int) -> Dict[str, Any]:
-        safe_id = str(preview_id or "").strip().lower()
-        if len(safe_id) != 32 or any(ch not in "0123456789abcdef" for ch in safe_id):
-            raise YouTubeNarrationGateError("Identificador de narração inválido.", code="PREVIEW_ID_INVALID")
+        safe_id = self._safe_preview_id(preview_id)
         spoken = self._normalize_text(expected_text)
         user_dir = self._user_dir(user_id)
         mp3_path = user_dir / f"{safe_id}.mp3"
@@ -187,12 +195,76 @@ class YouTubeNarrationGateService:
         }
 
     def audio_path(self, *, preview_id: str, user_id: int) -> Path:
-        safe_id = str(preview_id or "").strip().lower()
-        if len(safe_id) != 32 or any(ch not in "0123456789abcdef" for ch in safe_id):
-            raise YouTubeNarrationGateError("Identificador de narração inválido.", code="PREVIEW_ID_INVALID")
+        safe_id = self._safe_preview_id(preview_id)
         path = self._user_dir(user_id) / f"{safe_id}.mp3"
         if not path.is_file():
             raise YouTubeNarrationGateError("Áudio não encontrado.", code="PREVIEW_NOT_FOUND", status_code=404)
+        return path
+
+    def generate_logo_test_video(self, *, preview_id: str, user_id: int, logo_path: str) -> Dict[str, Any]:
+        """Render a cheap narration homologation MP4 using only the official logo.
+
+        No image provider, thumbnail provider, queue or AI image call is allowed in
+        this path. The audio input is exactly the already generated preview MP3.
+        """
+        safe_id = self._safe_preview_id(preview_id)
+        audio_path = self.audio_path(preview_id=safe_id, user_id=user_id)
+        logo = Path(str(logo_path or "")).expanduser().resolve()
+        if not logo.is_file() or logo.stat().st_size <= 256:
+            raise YouTubeNarrationGateError(
+                "Logo oficial do canal não encontrado. Configure/envie o logo em Configurações.",
+                code="OFFICIAL_LOGO_NOT_FOUND",
+                status_code=422,
+            )
+        if not shutil.which("ffmpeg"):
+            raise YouTubeNarrationGateError("FFmpeg não está disponível no servidor.", code="FFMPEG_UNAVAILABLE", status_code=503)
+
+        user_dir = self._user_dir(user_id)
+        output = user_dir / f"{safe_id}-logo-test.mp4"
+        newest_input = max(audio_path.stat().st_mtime, logo.stat().st_mtime)
+        cache_hit = bool(output.is_file() and output.stat().st_size > 50_000 and output.stat().st_mtime >= newest_input)
+        if not cache_hit:
+            tmp = user_dir / f"{safe_id}-logo-test.tmp.mp4"
+            tmp.unlink(missing_ok=True)
+            command = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-loop", "1", "-i", str(logo),
+                "-i", str(audio_path),
+                "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+                "-pix_fmt", "yuv420p", "-r", "24",
+                "-c:a", "aac", "-b:a", "128k",
+                "-shortest", "-movflags", "+faststart", str(tmp),
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=15 * 60, check=False)
+            if result.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 50_000:
+                tmp.unlink(missing_ok=True)
+                raise YouTubeNarrationGateError(
+                    f"Falha ao renderizar vídeo-teste com o logo: {(result.stderr or 'erro desconhecido')[-500:]}",
+                    code="LOGO_TEST_RENDER_FAILED",
+                    status_code=502,
+                )
+            os.replace(tmp, output)
+
+        return {
+            "ok": True,
+            "preview_id": safe_id,
+            "mode": "logo_only_narration_test",
+            "images_generated": 0,
+            "thumbnail_generated": False,
+            "audio_reused_exactly": True,
+            "audio_path": str(audio_path),
+            "audio_duration_sec": self._duration(audio_path),
+            "video_duration_sec": self._duration(output),
+            "cache_hit": cache_hit,
+            "video_url": f"/youtube/narration-lab/production-preview/logo-test/{safe_id}",
+        }
+
+    def logo_test_video_path(self, *, preview_id: str, user_id: int) -> Path:
+        safe_id = self._safe_preview_id(preview_id)
+        path = self._user_dir(user_id) / f"{safe_id}-logo-test.mp4"
+        if not path.is_file() or path.stat().st_size <= 50_000:
+            raise YouTubeNarrationGateError("Vídeo-teste não encontrado.", code="LOGO_TEST_NOT_FOUND", status_code=404)
         return path
 
 
