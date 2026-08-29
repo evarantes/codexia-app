@@ -23,10 +23,13 @@ class YouTubeLogoNarrationTestModeTests(unittest.TestCase):
             audio = user_dir / f"{preview_id}.mp3"
             logo = root / "logo.png"
             Image.new("RGB", (640, 360), (20, 20, 20)).save(logo)
+            # Keep this fixture cheap, but long enough for the production
+            # validity guard (> 50 KB) to exercise a real MP4 instead of
+            # failing only because a 1.2 s synthetic clip is too small.
             proc = subprocess.run(
                 [
                     "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=5.0",
                     "-c:a", "libmp3lame", str(audio),
                 ],
                 capture_output=True,
