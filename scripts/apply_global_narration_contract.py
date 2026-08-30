@@ -57,9 +57,17 @@ def patch_youtube(text: str) -> str:
     new = '''            script["approved_narration_text_sha256"] = approved_text_hash\n            script["narration_source"] = "approved_preview_reuse"\n            # CODEXIA_APPROVED_NARRATION_FAIL_CLOSED_V1\n            # Esta flag chega ao renderer e transforma qualquer perda do MP3\n            # aprovado em erro explícito, nunca em regeneração de TTS.\n            script["approved_narration_required"] = True'''
     text = replace_once(text, old, new, "youtube/approved-required")
 
-    old_result = '''                    "audio_path": str(approved_path),\n                    "tts_regeneration_allowed": False,'''
-    new_result = '''                    "audio_path": str(approved_path),\n                    "tts_regeneration_allowed": False,\n                    "approved_narration_required": True,\n                    "contract_version": 3,'''
-    return replace_once(text, old_result, new_result, "youtube/approved-audit")
+    old_result_v1 = '''                    "audio_path": str(approved_path),\n                    "tts_regeneration_allowed": False,'''
+    old_result_v2 = '''                    "audio_path": str(approved_path),\n                    "text_source": "youtube_narration_gate_metadata",\n                    "tts_regeneration_allowed": False,'''
+    new_result = '''                    "audio_path": str(approved_path),\n                    "text_source": "youtube_narration_gate_metadata",\n                    "tts_regeneration_allowed": False,\n                    "approved_narration_required": True,\n                    "contract_version": 3,'''
+    if new_result in text:
+        return text
+    if old_result_v2 in text:
+        return text.replace(old_result_v2, new_result, 1)
+    if old_result_v1 in text:
+        legacy_new_result = '''                    "audio_path": str(approved_path),\n                    "tts_regeneration_allowed": False,\n                    "approved_narration_required": True,\n                    "contract_version": 3,'''
+        return text.replace(old_result_v1, legacy_new_result, 1)
+    raise PatchError("youtube/approved-audit: contrato v1/v2 não reconhecido")
 
 
 def patch_gate_js(text: str) -> str:
