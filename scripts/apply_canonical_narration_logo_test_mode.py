@@ -12,6 +12,7 @@ LOGO_TAG = '<script src="/static/youtube_logo_test_mode.js"></script>'
 BODY = "</body>"
 MARKER = "CODEXIA_DIRECT_USES_SUPERVISION_PATH_V1"
 SOURCE_TEXT_MARKER = "CODEXIA_APPROVED_SOURCE_TEXT_GUARD_V1"
+GLOBAL_NETWORK_MARKER = "CODEXIA_APPROVED_NARRATION_NETWORK_GUARD_V1"
 GLOBAL_LOGO_ONLY_MARKERS = [
     "codexia.logoOnlyVisuals.v1",
     "Usar apenas a logo do canal",
@@ -45,6 +46,10 @@ OLD_FETCH_GUARD = '''        const text = normalizeText(payload.story_content ||
 
 NEW_FETCH_GUARD = '''        const text = normalizeText(payload.story_content || payload.script_text || '');\n        const approvedSourceHash = approved.source_text_sha256 || '';\n        if (text && approvedSourceHash && await sha256(text) === approvedSourceHash) {\n          payload.reuse_audio_from = approved.reuse_audio_from;\n          payload.approved_narration_preview_id = approved.preview_id;\n          payload.approved_narration_text_sha256 = approved.text_sha256;\n          init = { ...init, body: JSON.stringify(payload) };\n        } else if (text) {\n          clearApproved();\n        }'''
 
+OLD_GLOBAL_FETCH_GUARD = '''        const payload = JSON.parse(init.body);\n        const text = normalizeText(payload.story_content || payload.script_text || '');\n        if (!text || await sha256(text) !== approved.text_sha256) {\n          approvedLaunchArmed = false;\n          clearApproved();\n          throw new Error('O texto do vídeo não corresponde à narração aprovada; geração bloqueada.');\n        }\n        payload.reuse_audio_from = approved.reuse_audio_from;'''
+
+NEW_GLOBAL_FETCH_GUARD = '''        const payload = JSON.parse(init.body);\n        const text = normalizeText(payload.story_content || payload.script_text || '');\n        const approvedSourceHash = approved.source_text_sha256 || '';\n        if (!text || !approvedSourceHash || await sha256(text) !== approvedSourceHash) {\n          approvedLaunchArmed = false;\n          clearApproved();\n          throw new Error('O texto do vídeo não corresponde ao texto-fonte aprovado; geração bloqueada.');\n        }\n        payload.reuse_audio_from = approved.reuse_audio_from;'''
+
 
 def _replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
     count = text.count(old)
@@ -75,7 +80,10 @@ def apply() -> bool:
         gate, _ = _replace_once(gate, OLD_APPROVED_SAVE, NEW_APPROVED_SAVE, "saveApproved")
         gate, _ = _replace_once(gate, OLD_CONTINUE_GUARD, NEW_CONTINUE_GUARD, "continue guard")
         gate, _ = _replace_once(gate, OLD_INPUT_GUARD, NEW_INPUT_GUARD, "input guard")
-        gate, _ = _replace_once(gate, OLD_FETCH_GUARD, NEW_FETCH_GUARD, "fetch guard")
+        if GLOBAL_NETWORK_MARKER in gate:
+            gate, _ = _replace_once(gate, OLD_GLOBAL_FETCH_GUARD, NEW_GLOBAL_FETCH_GUARD, "global fetch guard")
+        else:
+            gate, _ = _replace_once(gate, OLD_FETCH_GUARD, NEW_FETCH_GUARD, "fetch guard")
         gate_changed = True
     if gate_changed:
         GATE_JS.write_text(gate, encoding="utf-8")
@@ -103,7 +111,7 @@ def check() -> None:
         raise SystemExit(f"canonical narration/logo mode: caminho de narração divergente: {missing_gate}")
     if OLD_DIRECT in gate:
         raise SystemExit("canonical narration/logo mode: caminho direto legado ainda presente")
-    if "await sha256(text) === approved.text_sha256" in gate:
+    if "await sha256(text) === approved.text_sha256" in gate or "await sha256(text) !== approved.text_sha256" in gate:
         raise SystemExit("canonical narration/logo mode: frontend ainda compara texto bruto com hash do texto autenticado do TTS")
 
     global_mode_complete = all(needle in logo for needle in GLOBAL_LOGO_ONLY_MARKERS)
