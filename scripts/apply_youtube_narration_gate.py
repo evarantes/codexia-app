@@ -139,6 +139,9 @@ APPROVED_AUDIO_BLOCK_V3 = '''        # narration-gate-approved-audio-reuse-v3
         script["approved_narration_preview_id"] = approved_preview_id
         script["approved_narration_text_sha256"] = approved_text_hash
         script["narration_source"] = "approved_preview_reuse"
+        # CODEXIA_APPROVED_NARRATION_FAIL_CLOSED_V1
+        # Esta flag chega ao renderer e transforma qualquer perda do MP3
+        # aprovado em erro explícito, nunca em regeneração de TTS.
         script["approved_narration_required"] = True
         update_task(task_id, result=_merged_task_result({
             "approved_narration_reuse": {
@@ -146,11 +149,12 @@ APPROVED_AUDIO_BLOCK_V3 = '''        # narration-gate-approved-audio-reuse-v3
                 "preview_id": approved_preview_id,
                 "text_sha256": approved_text_hash,
                 "audio_path": str(approved_path),
-                "metadata_path": str(approved_meta_path),
                 "text_source": "youtube_narration_gate_metadata",
-                "resolver": "structural_v3",
                 "tts_regeneration_allowed": False,
                 "approved_narration_required": True,
+                "contract_version": 3,
+                "metadata_path": str(approved_meta_path),
+                "resolver": "structural_v3",
             }
         }))
 
