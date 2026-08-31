@@ -7,7 +7,7 @@ INDEX = Path("app/static/index.html")
 JS = Path("app/static/youtube_narration_gate.js")
 YOUTUBE_ROUTER = Path("app/routers/youtube.py")
 TAG = '<script src="/static/youtube_narration_gate.js"></script>'
-MARKER = "</body>"
+BODY = "</body>"
 
 OLD_BUTTON_LOOKUP = "return [...card.querySelectorAll('button')].find(btn => normalizeText(btn.textContent).toLowerCase().includes('gerar vídeo narrado')) || null;"
 NEW_BUTTON_LOOKUP = "return [...card.querySelectorAll('button')].find(btn => !btn.closest('[data-youtube-narration-gate]') && normalizeText(btn.textContent).toLowerCase().includes('gerar vídeo narrado')) || null;"
@@ -21,9 +21,9 @@ STRUCTURAL_RESOLVER_MARKER = "CODEXIA_APPROVED_NARRATION_STRUCTURAL_RESOLVER_V1"
 
 APPROVED_AUDIO_BLOCK_V3 = '''        # narration-gate-approved-audio-reuse-v3
         # CODEXIA_APPROVED_NARRATION_STRUCTURAL_RESOLVER_V1
-        # O worker reconstrói a aprovação a partir do preview_id + registro
-        # protegido do narration gate. Campos do request e do payload persistido
-        # são apenas pistas; a fonte de verdade é o JSON approved=true ao lado do MP3.
+        # Reconstrói a aprovação a partir do preview_id e do JSON protegido do
+        # narration gate. Request/payload são pistas; approved=true + MP3 + hash
+        # do texto realmente enviado ao TTS são a fonte de verdade.
         approved_audio = request.reuse_audio_from if isinstance(request.reuse_audio_from, dict) else {}
         task_payload = {}
         try:
@@ -160,13 +160,7 @@ APPROVED_AUDIO_BLOCK_V3 = '''        # narration-gate-approved-audio-reuse-v3
 def _replace_approved_router_block(source: str) -> str:
     if APPROVED_AUDIO_MARKER_V3 in source and STRUCTURAL_RESOLVER_MARKER in source:
         return source
-    starts = [
-        pos for pos in (
-            source.find(APPROVED_AUDIO_MARKER_V2),
-            source.find(APPROVED_AUDIO_MARKER_V1),
-        )
-        if pos >= 0
-    ]
+    starts = [pos for pos in (source.find(APPROVED_AUDIO_MARKER_V2), source.find(APPROVED_AUDIO_MARKER_V1)) if pos >= 0]
     if starts:
         start = min(starts)
         line_start = source.rfind("\n", 0, start) + 1
@@ -175,87 +169,71 @@ def _replace_approved_router_block(source: str) -> str:
             raise SystemExit("youtube narration gate: canonical render call missing after approved-audio block")
         return source[:line_start] + APPROVED_AUDIO_BLOCK_V3 + source[end:]
     if source.count(RENDER_CALL_MARKER) != 1:
-        raise SystemExit(
-            f"youtube narration gate: expected one canonical render call marker, found {source.count(RENDER_CALL_MARKER)}"
-        )
+        raise SystemExit(f"youtube narration gate: expected one canonical render call marker, found {source.count(RENDER_CALL_MARKER)}")
     return source.replace(RENDER_CALL_MARKER, APPROVED_AUDIO_BLOCK_V3 + RENDER_CALL_MARKER, 1)
-
-
-def _apply_router_patch() -> bool:
-    if not YOUTUBE_ROUTER.is_file():
-        raise SystemExit("youtube narration gate: youtube router missing")
-    source = YOUTUBE_ROUTER.read_text(encoding="utf-8")
-    upgraded = _replace_approved_router_block(source)
-    if upgraded == source:
-        return False
-    YOUTUBE_ROUTER.write_text(upgraded, encoding="utf-8")
-    return True
 
 
 def apply() -> bool:
     changed = False
-    text = INDEX.read_text(encoding="utf-8")
-    if TAG not in text:
-        if MARKER not in text:
+    index = INDEX.read_text(encoding="utf-8")
+    if TAG not in index:
+        if BODY not in index:
             raise SystemExit("youtube narration gate: </body> marker not found")
-        text = text.replace(MARKER, f"    {TAG}\n{MARKER}", 1)
-        INDEX.write_text(text, encoding="utf-8")
+        INDEX.write_text(index.replace(BODY, f"    {TAG}\n{BODY}", 1), encoding="utf-8")
         changed = True
 
     if not JS.is_file():
         raise SystemExit("youtube narration gate: JS asset missing")
-    source = JS.read_text(encoding="utf-8")
-    if OLD_BUTTON_LOOKUP in source:
-        source = source.replace(OLD_BUTTON_LOOKUP, NEW_BUTTON_LOOKUP, 1)
-        JS.write_text(source, encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    if OLD_BUTTON_LOOKUP in js:
+        JS.write_text(js.replace(OLD_BUTTON_LOOKUP, NEW_BUTTON_LOOKUP, 1), encoding="utf-8")
         changed = True
-    elif NEW_BUTTON_LOOKUP not in source:
+    elif NEW_BUTTON_LOOKUP not in js:
         raise SystemExit("youtube narration gate: canonical video button lookup not found")
 
-    if _apply_router_patch():
+    if not YOUTUBE_ROUTER.is_file():
+        raise SystemExit("youtube narration gate: youtube router missing")
+    router = YOUTUBE_ROUTER.read_text(encoding="utf-8")
+    upgraded = _replace_approved_router_block(router)
+    if upgraded != router:
+        YOUTUBE_ROUTER.write_text(upgraded, encoding="utf-8")
         changed = True
-
     return changed
 
 
 def check() -> None:
-    text = INDEX.read_text(encoding="utf-8")
-    if text.count(TAG) != 1:
-        raise SystemExit(f"youtube narration gate: expected exactly one script tag, found {text.count(TAG)}")
-    if not JS.is_file():
-        raise SystemExit("youtube narration gate: JS asset missing")
-    source = JS.read_text(encoding="utf-8")
-    required = [
+    index = INDEX.read_text(encoding="utf-8")
+    if index.count(TAG) != 1:
+        raise SystemExit(f"youtube narration gate: expected exactly one script tag, found {index.count(TAG)}")
+    js = JS.read_text(encoding="utf-8")
+    for item in [
         "Gerar primeiro o áudio da narração",
         "Avançar para geração do vídeo com este áudio",
         "/youtube/narration-lab/production-preview",
         "reuse_audio_from",
         "approved_narration_text_sha256",
         NEW_BUTTON_LOOKUP,
-    ]
-    missing = [item for item in required if item not in source]
-    if missing:
-        raise SystemExit(f"youtube narration gate: JS contract missing {missing}")
-    if OLD_BUTTON_LOOKUP in source:
-        raise SystemExit("youtube narration gate: supervised button can still shadow canonical video button")
+    ]:
+        if item not in js:
+            raise SystemExit(f"youtube narration gate: JS contract missing {item}")
 
-    router_source = YOUTUBE_ROUTER.read_text(encoding="utf-8")
-    router_required = [
+    router = YOUTUBE_ROUTER.read_text(encoding="utf-8")
+    required = [
         APPROVED_AUDIO_MARKER_V3,
         STRUCTURAL_RESOLVER_MARKER,
         REQUEST_FALLBACK_MARKER,
         'task_payload.get("reuse_audio_from")',
         'approved_root.glob(f"*/{approved_preview_id_hint}.json")',
-        'approved_narration_required"] = True',
-        'resolver": "structural_v3"',
-        'tts_regeneration_allowed": False',
+        'script["approved_narration_required"] = True',
+        '"resolver": "structural_v3"',
+        '"tts_regeneration_allowed": False',
     ]
-    router_missing = [item for item in router_required if item not in router_source]
-    if router_missing:
-        raise SystemExit(f"youtube narration gate: approved-audio v3 contract missing {router_missing}")
-    if APPROVED_AUDIO_MARKER_V1 in router_source or APPROVED_AUDIO_MARKER_V2 in router_source:
+    missing = [item for item in required if item not in router]
+    if missing:
+        raise SystemExit(f"youtube narration gate: approved-audio v3 contract missing {missing}")
+    if APPROVED_AUDIO_MARKER_V1 in router or APPROVED_AUDIO_MARKER_V2 in router:
         raise SystemExit("youtube narration gate: legacy approved-audio contract still present")
-    if 'approved_source == "youtube_narration_gate_approved"' in router_source:
+    if 'approved_source == "youtube_narration_gate_approved"' in router:
         raise SystemExit("youtube narration gate: source-string legacy guard still blocks structural recovery")
 
 
@@ -267,8 +245,7 @@ def main() -> None:
     if not args.apply and not args.check:
         parser.error("use --apply and/or --check")
     if args.apply:
-        changed = apply()
-        print("youtube narration gate:", "applied" if changed else "already applied")
+        print("youtube narration gate:", "applied" if apply() else "already applied")
     if args.check:
         check()
         print("youtube narration gate: OK")
