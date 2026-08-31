@@ -7,12 +7,14 @@ from pathlib import Path
 INDEX = Path("app/static/index.html")
 GATE_JS = Path("app/static/youtube_narration_gate.js")
 LOGO_JS = Path("app/static/youtube_logo_test_mode.js")
+YOUTUBE_ROUTER = Path("app/routers/youtube.py")
 
 LOGO_TAG = '<script src="/static/youtube_logo_test_mode.js"></script>'
 BODY = "</body>"
 MARKER = "CODEXIA_DIRECT_USES_SUPERVISION_PATH_V1"
 SOURCE_TEXT_MARKER = "CODEXIA_APPROVED_SOURCE_TEXT_GUARD_V1"
 GLOBAL_NETWORK_MARKER = "CODEXIA_APPROVED_NARRATION_NETWORK_GUARD_V1"
+REQUEST_FALLBACK_MARKER = "CODEXIA_APPROVED_NARRATION_REQUEST_FALLBACK_V1"
 GLOBAL_LOGO_ONLY_MARKERS = [
     "codexia.logoOnlyVisuals.v1",
     "Usar apenas a logo do canal",
@@ -49,6 +51,10 @@ NEW_FETCH_GUARD = '''        const text = normalizeText(payload.story_content ||
 OLD_GLOBAL_FETCH_GUARD = '''        const payload = JSON.parse(init.body);\n        const text = normalizeText(payload.story_content || payload.script_text || '');\n        if (!text || await sha256(text) !== approved.text_sha256) {\n          approvedLaunchArmed = false;\n          clearApproved();\n          throw new Error('O texto do vídeo não corresponde à narração aprovada; geração bloqueada.');\n        }\n        payload.reuse_audio_from = approved.reuse_audio_from;'''
 
 NEW_GLOBAL_FETCH_GUARD = '''        const payload = JSON.parse(init.body);\n        const text = normalizeText(payload.story_content || payload.script_text || '');\n        const approvedSourceHash = approved.source_text_sha256 || '';\n        if (!text || !approvedSourceHash || await sha256(text) !== approvedSourceHash) {\n          approvedLaunchArmed = false;\n          clearApproved();\n          throw new Error('O texto do vídeo não corresponde ao texto-fonte aprovado; geração bloqueada.');\n        }\n        payload.reuse_audio_from = approved.reuse_audio_from;'''
+
+OLD_BACKEND_APPROVED_IDS = '''            approved_text_hash = str(approved_audio.get("text_sha256") or "").strip().lower()\n            approved_preview_id = str(approved_audio.get("preview_id") or "").strip().lower()'''
+
+NEW_BACKEND_APPROVED_IDS = '''            # CODEXIA_APPROVED_NARRATION_REQUEST_FALLBACK_V1\n            # O frontend envia estes identificadores em dois lugares: dentro de\n            # reuse_audio_from e também no nível superior do request. Algumas\n            # normalizações do pipeline podem preservar apenas um dos formatos.\n            # Aceitamos qualquer um deles, mas a validação final continua\n            # obrigatoriamente vinculada ao JSON protegido do narration gate.\n            request_text_hash = str(getattr(request, "approved_narration_text_sha256", "") or "").strip().lower()\n            request_preview_id = str(getattr(request, "approved_narration_preview_id", "") or "").strip().lower()\n            approved_text_hash = str(approved_audio.get("text_sha256") or request_text_hash or "").strip().lower()\n            approved_preview_id = str(approved_audio.get("preview_id") or request_preview_id or "").strip().lower()'''
 
 
 def _replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
@@ -88,6 +94,13 @@ def apply() -> bool:
     if gate_changed:
         GATE_JS.write_text(gate, encoding="utf-8")
         changed = True
+
+    router = YOUTUBE_ROUTER.read_text(encoding="utf-8")
+    if REQUEST_FALLBACK_MARKER not in router:
+        router, _ = _replace_once(router, OLD_BACKEND_APPROVED_IDS, NEW_BACKEND_APPROVED_IDS, "backend approved metadata fallback")
+        YOUTUBE_ROUTER.write_text(router, encoding="utf-8")
+        changed = True
+
     return changed
 
 
@@ -95,6 +108,7 @@ def check() -> None:
     index = INDEX.read_text(encoding="utf-8")
     gate = GATE_JS.read_text(encoding="utf-8")
     logo = LOGO_JS.read_text(encoding="utf-8")
+    router = YOUTUBE_ROUTER.read_text(encoding="utf-8")
     if index.count(LOGO_TAG) != 1:
         raise SystemExit("canonical narration/logo mode: script do modo com logo deve aparecer exatamente uma vez")
     required_gate = [
@@ -113,6 +127,18 @@ def check() -> None:
         raise SystemExit("canonical narration/logo mode: caminho direto legado ainda presente")
     if "await sha256(text) === approved.text_sha256" in gate or "await sha256(text) !== approved.text_sha256" in gate:
         raise SystemExit("canonical narration/logo mode: frontend ainda compara texto bruto com hash do texto autenticado do TTS")
+
+    required_router = [
+        REQUEST_FALLBACK_MARKER,
+        'getattr(request, "approved_narration_text_sha256", "")',
+        'getattr(request, "approved_narration_preview_id", "")',
+        'approved_meta.get("approved") is True',
+        'approved_story_hash == approved_text_hash',
+        'approved_source == "youtube_narration_gate_approved"',
+    ]
+    missing_router = [needle for needle in required_router if needle not in router]
+    if missing_router:
+        raise SystemExit(f"canonical narration/logo mode: fallback autenticado do backend incompleto: {missing_router}")
 
     global_mode_complete = all(needle in logo for needle in GLOBAL_LOGO_ONLY_MARKERS)
     legacy_mode_complete = all(needle in logo for needle in LEGACY_LOGO_TEST_MARKERS)
