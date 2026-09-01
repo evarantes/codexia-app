@@ -45,6 +45,9 @@ _STANDARD_STRUCTURE = {
     },
 }
 
+# Formatos especiais têm contratos próprios e não devem herdar automaticamente
+# toda a estrutura de um vídeo narrado longo. Se o chamador quiser o perfil mesmo
+# assim, ele pode usar um kind narrado normal e controlar duração/aspect ratio.
 _SKIP_KINDS = {
     "music",
     "musica",
@@ -52,6 +55,10 @@ _SKIP_KINDS = {
     "soundtrack",
     "instrumental",
     "karaoke",
+    "short",
+    "shorts",
+    "youtube_short",
+    "youtube_shorts",
 }
 
 
