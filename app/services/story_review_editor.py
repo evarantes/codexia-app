@@ -4,6 +4,12 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from app.services.narrative_structure_standard import (
+    apply_narrative_standard_metadata,
+    narrative_structure_prompt,
+    select_narrative_profile,
+)
+
 
 def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).strip()
@@ -132,8 +138,6 @@ def _editorial_quality_issues(title: str, text: str, instruction: str) -> List[s
     if question_count >= 4:
         issues.append("too_many_rhetorical_questions")
 
-    # O fechamento deve voltar ao tema central. Usamos palavras significativas
-    # do pedido como um guardrail leve, sem exigir cópia literal.
     theme_tokens = [
         token for token in re.findall(r"[a-záàâãéêíóôõúç]{4,}", source, flags=re.IGNORECASE)
         if token not in {"quem", "vida", "para", "como", "qual", "uma", "você"}
@@ -154,6 +158,7 @@ def _build_editorial_prompt(
     max_m: int,
     min_words: int,
     max_words: int,
+    narrative_profile: str,
     retry_issues: Optional[List[str]] = None,
 ) -> str:
     retry_note = ""
@@ -164,6 +169,12 @@ def _build_editorial_prompt(
             + ". Corrija especificamente esses pontos sem mencionar a rejeição.\n"
         )
 
+    global_narrative_contract = narrative_structure_prompt(
+        narrative_profile,
+        kind=safe_kind,
+        instruction=source_instruction,
+    )
+
     return f"""
 Crie o conteúdo FINAL para revisão humana antes da geração de um vídeo cristão premium.
 
@@ -172,6 +183,8 @@ TEMA / INSTRUÇÃO DO USUÁRIO: {source_instruction}
 DURAÇÃO: {min_m} a {max_m} minuto(s)
 FAIXA DE NARRAÇÃO: aproximadamente {min_words} a {max_words} palavras.
 {retry_note}
+{global_narrative_contract}
+
 PADRÃO EDITORIAL OBRIGATÓRIO:
 1. TÍTULO: específico ao tema, memorável e natural. Evite títulos genéricos que serviriam para qualquer devocional. Não use clickbait barato.
 2. COMEÇO: entre diretamente no conflito, ideia, cena mental ou verdade central do tema. NÃO comece com "Você já...", "Quantas vezes você já...", "Você alguma vez...", "Em meio ao turbilhão da vida...", "Na jornada da vida...", "Há momentos em que..." ou fórmulas equivalentes.
@@ -206,11 +219,11 @@ def generate_review_ready_story_text(
     duration_min_minutes: int = 10,
     duration_max_minutes: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Gera o conteúdo que o usuário revisará ANTES do pipeline de vídeo.
+    """Gera texto final com o padrão narrativo global antes de qualquer mídia.
 
-    Faz no máximo duas tentativas textuais. A segunda só acontece quando o
-    controle editorial detecta sinais objetivos de título/abertura genéricos,
-    excesso de metáforas ou fechamento desconectado do tema. Não gera mídia.
+    O YouTube Auto usa este editor compartilhado, e o contrato foi desenhado
+    para ser reutilizado pelos demais módulos narrados do Codexia. Faz no
+    máximo duas tentativas textuais e não executa geração paga de mídia.
     """
     safe_kind = str(kind or "story").strip().lower()
     if safe_kind not in {"story", "devotional", "prayer"}:
@@ -220,6 +233,7 @@ def generate_review_ready_story_text(
     min_words = max(90, int(min_m * 125))
     max_words = max(min_words + 20, int(max_m * 165))
     source_instruction = _clean(instruction)
+    narrative_profile = select_narrative_profile(safe_kind, source_instruction)
 
     retry_issues: Optional[List[str]] = None
     best_result: Optional[Dict[str, Any]] = None
@@ -232,6 +246,7 @@ def generate_review_ready_story_text(
             max_m=max_m,
             min_words=min_words,
             max_words=max_words,
+            narrative_profile=narrative_profile,
             retry_issues=retry_issues,
         )
         try:
@@ -239,7 +254,9 @@ def generate_review_ready_story_text(
                 prompt,
                 system_prompt=(
                     "Você é o Editor-Chefe Narrativo do Codexia para um canal cristão premium. "
-                    "Priorize especificidade, naturalidade, progressão temática e conclusão completa. "
+                    "Aplique o padrão narrativo global do Codexia, priorizando especificidade, naturalidade, "
+                    "progressão temática, retenção legítima e conclusão completa. "
+                    "Nunca transforme rótulos estruturais ou metadados em texto narrável. "
                     "Responda somente JSON válido em português do Brasil."
                 ),
                 json_mode=True,
@@ -255,14 +272,14 @@ def generate_review_ready_story_text(
                 retry_issues = ["missing_title_or_text"]
                 continue
 
-            result = {
+            result = apply_narrative_standard_metadata({
                 "title": title,
                 "text": text,
                 "closing_message": _short_closing(parsed.get("closing_message")),
                 "endcard_cta_text": _clean(parsed.get("endcard_cta_text"))[:90] or "Inscreva-se e acompanhe novas mensagens.",
                 "editorial_review_ready": True,
                 "editorial_source": "structured_ai" if attempt == 0 else "structured_ai_retry",
-            }
+            }, profile=narrative_profile)
             issues = _editorial_quality_issues(title, text, source_instruction)
             result["editorial_quality_issues"] = issues
             best_result = result
@@ -272,8 +289,6 @@ def generate_review_ready_story_text(
         except Exception:
             retry_issues = ["generation_error"]
 
-    # Fail-open: se houve resposta estruturada válida, preserva a melhor
-    # tentativa para revisão humana em vez de cair para um texto legado pior.
     if best_result:
         return best_result
 
@@ -284,7 +299,7 @@ def generate_review_ready_story_text(
         duration_max_minutes=max_m,
     )
     legacy_text = _repair_opening(str(legacy or ""))
-    return {
+    return apply_narrative_standard_metadata({
         "title": _fallback_title(source_instruction, safe_kind),
         "text": legacy_text,
         "closing_message": "Leve esta esperança com você: Deus continua presente.",
@@ -294,4 +309,4 @@ def generate_review_ready_story_text(
         "editorial_quality_issues": _editorial_quality_issues(
             _fallback_title(source_instruction, safe_kind), legacy_text, source_instruction
         ),
-    }
+    }, profile=narrative_profile)
