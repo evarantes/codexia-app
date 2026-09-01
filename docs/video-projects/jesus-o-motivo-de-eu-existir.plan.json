@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "project_id": "jesus-o-motivo-de-eu-existir",
+  "title": "Jesus, o motivo de eu existir",
+  "kind": "devotional",
+  "channel_name": "HERDEIROS DAS PROMESSAS",
+  "language": "pt-BR",
+  "target_duration_sec": 300,
+  "aspect_ratio": "16:9",
+  "opening_text": "Existe uma pergunta que, em algum momento da vida, todos nós fazemos: por que eu existo? Qual é o meu propósito? Por que estou aqui?",
+  "reflection_text": "Você não está aqui por acaso. Existe um propósito para a sua vida. E em cada capítulo da sua história, Jesus pode estar presente.",
+  "narrated_cta_text": "Se esta mensagem falou com você, curta este vídeo, inscreva-se no canal, ative o sininho para receber as próximas mensagens e compartilhe este vídeo com alguém que precisa ouvi-lo.",
+  "music_mood": "peaceful",
+  "music_mood_fallback": "drama",
+  "music_prompt": "soft instrumental underscore, gentle piano and warm strings, reverent, hopeful and emotional, no vocals, unobtrusive under spoken narration, subtle rise near the climax and smooth fade-out",
+  "bg_music_volume": 0.025,
+  "captions_enabled": true,
+  "caption_language": "pt-BR",
+  "caption_max_lines": 2,
+  "export_srt": true,
+  "automatic_opening": true,
+  "automatic_closing": true,
+  "voice_delivery_profile": "natural_warm_reverent_pt_br",
+  "visual_style": "cinematic photorealistic devotional imagery, reverent, warm natural light, emotional human moments, coherent biblical representation, no text baked into source images, no watermark",
+  "thumbnail_brief": {
+    "headline": "O MOTIVO DE EU EXISTIR",
+    "concept": "Jesus em primeiro plano com luz suave e uma pessoa vista de costas olhando para Ele; composição emocional, reverente e limpa; forte contraste de leitura para thumbnail do YouTube."
+  },
+  "scenes": [
+    {
+      "text": "Talvez você já tenha procurado essa resposta nas conquistas, no trabalho, no dinheiro, nos sonhos, nas pessoas ou até mesmo tentando encontrar dentro de si uma razão para continuar. Mas existe uma verdade que mudou completamente a minha maneira de enxergar a vida. Eu existo porque Deus me amou. E Jesus é a maior prova desse amor.",
+      "image_prompt": "Cinematic sunrise over a quiet landscape, a contemplative person in silhouette looking toward warm light, subtle Christian devotional atmosphere, realistic, emotional, hopeful, no text"
+    },
+    {
+      "text": "Jesus não é apenas um personagem de uma história contada há milhares de anos. Ele não é apenas alguém sobre quem ouvimos falar nas igrejas. Jesus é vida. É esperança quando tudo parece perdido. É força quando já não temos forças. É companhia quando a solidão aperta. É perdão quando acreditamos que fomos longe demais. E é o caminho que nos conduz novamente para Deus.",
+      "image_prompt": "Reverent cinematic depiction of Jesus walking among ordinary people with compassion, warm natural light, historically inspired biblical clothing, realistic faces, hopeful atmosphere, no text"
+    },
+    {
+      "text": "Existem dias em que tudo parece fazer sentido. Mas também existem dias em que acordamos e perguntamos: Deus, onde o Senhor está? Dias em que choramos escondidos. Dias em que ninguém percebe a batalha que está acontecendo dentro de nós. Dias em que fazemos perguntas e não encontramos respostas. Mas mesmo nesses momentos, Jesus continua ali. Ele nunca prometeu que não enfrentaríamos tempestades. Mas prometeu que não precisaríamos atravessá-las sozinhos.",
+      "image_prompt": "Realistic cinematic sequence feeling: person alone beside a rain-streaked window, hands clasped in prayer, soft interior light, storm outside, emotional but dignified, hope beginning to appear, no text"
+    },
+    {
+      "text": "Talvez você esteja vivendo uma dessas tempestades agora. Talvez alguém tenha desistido de você. Talvez um sonho tenha acabado. Talvez você tenha perdido algo ou alguém muito importante. Ou talvez ninguém saiba o peso que você tem carregado. Mas eu quero que você escute isso: a sua história ainda não terminou.",
+      "image_prompt": "Cinematic close-up of a weary person slowly lifting their eyes toward dawn after a difficult night, realistic tears, gentle hopeful light breaking through clouds, reverent tone, no text"
+    },
+    {
+      "text": "Jesus conhece aquilo que ninguém conhece. Ele conhece as lágrimas que você enxugou antes que alguém pudesse perceber. Conhece as orações que você nem conseguiu terminar. Conhece suas dúvidas, seus erros e seus medos. E mesmo conhecendo tudo isso, Ele continua amando você. Esse é o amor de Cristo. Um amor que não depende da nossa perfeição. Um amor que nos encontra exatamente onde estamos, mas que não nos deixa permanecer da mesma maneira.",
+      "image_prompt": "Compassionate cinematic depiction of Jesus near a praying person, respectful personal distance, gentle expression, warm golden light, realistic biblical styling, intimate devotional mood, no text"
+    },
+    {
+      "text": "Porque quando Jesus entra verdadeiramente em uma vida, alguma coisa começa a mudar. Talvez não aconteça tudo de uma vez. Mas começa. Onde havia desespero, nasce esperança. Onde havia culpa, encontramos perdão. Onde havia vazio, encontramos propósito. E onde antes existia apenas uma pergunta, por que eu existo, começamos a encontrar uma resposta.",
+      "image_prompt": "Cinematic visual metaphor of darkness transitioning into warm morning light, person leaving a shadowed path toward a sunlit open landscape, realistic, uplifting, subtle Christian symbolism, no text"
+    },
+    {
+      "text": "Eu existo para conhecer Deus. Eu existo para amar. Para servir. Para aprender. Para perdoar. Para fazer diferença na vida de alguém. Eu existo porque a minha vida tem um propósito nas mãos daquele que me criou. E quando compreendemos isso, percebemos que Jesus não é apenas parte da nossa existência. Ele se torna o motivo dela.",
+      "image_prompt": "Cinematic montage feeling in one coherent frame: family embrace, helping hands, quiet prayer, service to another person, warm sunlight, authentic human expressions, meaningful purpose, realistic, no text"
+    },
+    {
+      "text": "Talvez você tenha se afastado de Deus. Talvez faça muito tempo que você não conversa com Ele. Não espere estar perfeito para voltar. Não espere resolver todos os seus problemas. Não espere se tornar uma pessoa diferente primeiro. Apenas volte. Fale com Jesus exatamente como você está. Talvez a única oração que consiga fazer hoje seja: Jesus, eu preciso do Senhor. E isso já pode ser o começo.",
+      "image_prompt": "Person kneeling in simple heartfelt prayer in a quiet room at dusk, soft warm lamp and window light, humble authentic setting, sense of return and reconciliation with God, cinematic realism, no text"
+    },
+    {
+      "text": "Porque uma vida com Jesus não significa uma vida sem problemas. Significa descobrir que nenhum problema precisa ser enfrentado sem esperança. E se hoje alguém me perguntasse qual é o motivo de você continuar, minha resposta seria simples: Jesus. Quando eu não entender o caminho, Jesus. Quando eu tiver medo, Jesus. Quando eu cair e precisar começar novamente, Jesus. Nos dias bons, Jesus. Nos dias difíceis, Jesus. No início, no meio e até o último dia da minha vida, Jesus. O motivo da minha esperança. O motivo da minha fé. O motivo de eu existir.",
+      "image_prompt": "Powerful reverent cinematic depiction of Jesus at sunrise, calm compassionate expression, wide landscape and radiant natural backlight, emotional climax, realistic biblical clothing, majestic but not exaggerated, no text"
+    },
+    {
+      "text": "Se hoje você precisava de uma resposta, guarde esta verdade no coração: sua vida não é um acidente. Deus vê você, conhece sua caminhada e ainda pode escrever novos capítulos na sua história. Faça hoje uma oração sincera e permita que Jesus volte a ocupar o centro da sua vida.",
+      "image_prompt": "Peaceful cinematic closing scene, open Bible beside clasped hands, early morning window light, serene hopeful atmosphere, shallow depth of field, realistic, no text"
+    }
+  ],
+  "render_requirements": {
+    "voice": "use the most human-realistic configured pt-BR neural voice; natural pauses; warm and reverent delivery; never narrate code, labels, prompts or metadata",
+    "captions": "derive timings from the final generated narration audio; maximum two lines; keep inside safe area; export SRT",
+    "music": "instrumental only; keep well below narration; no competing melody; fade smoothly at the end",
+    "opening": "start the spoken hook immediately; title treatment should be cinematic and concise",
+    "closing": "preserve reflection and complete narrated CTA; automatic channel endcard after narration",
+    "quality_gate": "do not approve if narration, captions, video duration or CTA are truncated or out of sync"
+  }
+}
