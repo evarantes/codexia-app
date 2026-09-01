@@ -6,11 +6,14 @@ import re
 import unicodedata
 from typing import Any, Dict, List, Optional, Type
 
-
-DEFAULT_COMPLETE_CTA = (
-    "Se esta mensagem falou com você, inscreva-se no canal, ative o sininho "
-    "para receber as próximas mensagens e compartilhe este vídeo com alguém que precisa ouvi-lo."
+from app.services.video_creation_standard import (
+    STANDARD_COMPLETE_CTA,
+    STANDARD_REQUIRED_CTA_SIGNALS,
+    apply_standard_video_structure,
 )
+
+
+DEFAULT_COMPLETE_CTA = STANDARD_COMPLETE_CTA
 
 # Markup de pausa é metadado de direção, nunca conteúdo narrável. Alguns provedores
 # aceitam SSML e outros escapam a tag, fazendo a voz ler literalmente "break time".
@@ -99,6 +102,8 @@ def sanitize_narration_text(text: Any) -> str:
 def cta_signals(text: Any) -> set[str]:
     folded = _fold(text)
     signals: set[str] = set()
+    if "curta" in folded or "curtir" in folded or "deixe seu like" in folded or "deixe o like" in folded:
+        signals.add("like")
     if "inscreva" in folded or "inscricao" in folded:
         signals.add("subscribe")
     if "sininho" in folded or "notifica" in folded:
@@ -109,7 +114,7 @@ def cta_signals(text: Any) -> set[str]:
 
 
 def has_complete_cta(text: Any) -> bool:
-    return {"subscribe", "bell", "share"}.issubset(cta_signals(text))
+    return STANDARD_REQUIRED_CTA_SIGNALS.issubset(cta_signals(text))
 
 
 def structural_issues(text: Any) -> List[str]:
@@ -141,7 +146,7 @@ def validate_narration_text(
             f"{label}: frase final parece truncada; TTS bloqueado antes de qualquer chamada paga."
         )
     if require_complete_cta and not has_complete_cta(cleaned):
-        missing = sorted({"subscribe", "bell", "share"} - cta_signals(cleaned))
+        missing = sorted(STANDARD_REQUIRED_CTA_SIGNALS - cta_signals(cleaned))
         raise NarrationContractError(
             f"{label}: CTA incompleto ({', '.join(missing)}); TTS bloqueado antes de qualquer chamada paga."
         )
@@ -189,6 +194,12 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
 
     if callable(original_prepare):
         def prepare_guarded(self: Any, plan: Optional[Dict[str, Any]], scenes: List[Dict[str, Any]], voice_style=None, voice_gender=None):
+            if isinstance(plan, dict):
+                # O perfil padrão é aplicado de forma aditiva ao próprio plano
+                # para que música/legendas/abertura/fechamento sejam observados
+                # também nas etapas posteriores do renderer. Campos explícitos
+                # do pedido do usuário nunca são sobrescritos.
+                apply_standard_video_structure(plan)
             safe_plan = dict(plan or {}) if isinstance(plan, dict) else {}
             marked_cta: List[str] = []
             if isinstance(scenes, list):
@@ -232,6 +243,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
             meta["cta_text"] = cta
             meta["closing_text"] = cta
             meta["full_text"] = full_text
+            meta["video_creation_standard"] = dict(safe_plan.get("codexia_video_standard") or {})
             try:
                 meta["char_count"] = len(full_text)
                 meta["word_count"] = int(self._count_words(full_text))
@@ -261,10 +273,11 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                 if before and sanitize_narration_text(before) != before:
                     sanitized_fields.append(name)
             meta["protected_closing_contract"] = {
-                "version": 2,
+                "version": 3,
                 "reflection_protected": bool(reflection),
                 "cta_protected": True,
                 "cta_signals": sorted(cta_signals(cta)),
+                "required_cta_signals": sorted(STANDARD_REQUIRED_CTA_SIGNALS),
                 "structural_issues": structural_issues(full_text),
                 "technical_markup_sanitized_fields": sorted(set(sanitized_fields)),
                 "tts_plain_text_only": True,
@@ -292,7 +305,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
             clean = validate_narration_text(raw, label="texto enviado ao TTS")
             try:
                 debug = dict(getattr(self, "_last_tts_debug", {}) or {})
-                debug["narration_contract_version"] = 2
+                debug["narration_contract_version"] = 3
                 debug["tts_plain_text_only"] = True
                 debug["technical_markup_sanitized"] = bool(raw != clean)
                 debug["remaining_structural_issues"] = structural_issues(clean)
@@ -311,7 +324,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
         video_generator_cls.generate_audio = generate_audio_guarded
 
     video_generator_cls._codexia_narration_contract_guard_v1 = True
-    video_generator_cls._codexia_narration_contract_guard_version = 2
+    video_generator_cls._codexia_narration_contract_guard_version = 3
     return video_generator_cls
 
 
