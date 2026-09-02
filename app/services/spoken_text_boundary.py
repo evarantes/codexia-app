@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import Any, Iterable, List
+from typing import Any, List
 
 
 SPOKEN_TEXT_BOUNDARY_VERSION = 4
@@ -102,14 +102,15 @@ _TECHNICAL_LABEL = re.compile(
     r")\s*[:=\-–—]+\s*.*$"
 )
 
+# Em modo verbose (#) inicia comentário; por isso o caractere literal é \#.
 _SCENE_ONLY = re.compile(
-    r"(?ix)^\s*(?:cena|scene|take|shot|plano|bloco|segmento)\s*#?\s*\d+"
+    r"(?ix)^\s*(?:cena|scene|take|shot|plano|bloco|segmento)\s*\#?\s*\d+"
     r"(?:\s*(?:de|/|\-)\s*\d+)?\s*[:.\-–—]*\s*$"
 )
 
 # Permite "CENA 1 — NARRAÇÃO: texto" sem jogar fora a fala.
 _SCENE_PREFIX = re.compile(
-    r"(?ix)^\s*(?:cena|scene|take|shot|plano|bloco|segmento)\s*#?\s*\d+"
+    r"(?ix)^\s*(?:cena|scene|take|shot|plano|bloco|segmento)\s*\#?\s*\d+"
     r"(?:\s*(?:de|/|\-)\s*\d+)?\s*[:.\-–—]+\s*(.+)$"
 )
 
