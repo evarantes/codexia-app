@@ -16,6 +16,8 @@ class WorkerNarrationGuardParityTests(unittest.TestCase):
             "scripts/apply_youtube_narration_gate.py --check",
             "scripts/apply_global_narration_contract.py --apply",
             "scripts/apply_global_narration_contract.py --check",
+            "scripts/apply_spoken_text_boundary_v4.py --apply",
+            "scripts/apply_spoken_text_boundary_v4.py --check",
             "scripts/apply_canonical_narration_logo_test_mode.py --apply",
             "scripts/apply_canonical_narration_logo_test_mode.py --check",
         )
@@ -29,10 +31,12 @@ class WorkerNarrationGuardParityTests(unittest.TestCase):
         for content, label in ((api, "API"), (worker, "worker")):
             gate = content.index("scripts/apply_youtube_narration_gate.py --apply")
             global_guard = content.index("scripts/apply_global_narration_contract.py --apply")
+            spoken_boundary = content.index("scripts/apply_spoken_text_boundary_v4.py --apply")
             canonical = content.index("scripts/apply_canonical_narration_logo_test_mode.py --apply")
             compileall = content.index("python -m compileall -q app scripts")
             self.assertLess(gate, global_guard, f"gate/global fora de ordem no {label}")
-            self.assertLess(global_guard, canonical, f"global/canonical fora de ordem no {label}")
+            self.assertLess(global_guard, spoken_boundary, f"global/boundary fora de ordem no {label}")
+            self.assertLess(spoken_boundary, canonical, f"boundary/canonical fora de ordem no {label}")
             self.assertLess(canonical, compileall, f"canonical/compileall fora de ordem no {label}")
 
 

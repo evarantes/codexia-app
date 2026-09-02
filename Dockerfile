@@ -105,6 +105,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_youtube_narration_gate.py --check && \
     python scripts/apply_global_narration_contract.py --apply && \
     python scripts/apply_global_narration_contract.py --check && \
+    python scripts/apply_spoken_text_boundary_v4.py --apply && \
+    python scripts/apply_spoken_text_boundary_v4.py --check && \
     python scripts/apply_canonical_narration_logo_test_mode.py --apply && \
     python scripts/apply_canonical_narration_logo_test_mode.py --check && \
     python scripts/apply_global_logo_only_visual_mode.py --apply && \
