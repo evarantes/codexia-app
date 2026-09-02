@@ -88,6 +88,32 @@ def patch_index(text: str) -> str:
         "                    if (oauthStatus && (oauthStatus === 'success' || oauthStatus === 'fail' || oauthStatus === 'error')) {\n                        this.currentTab = 'youtube';\n                        this.youtubeSubTab = 'production';\n                        let flashType = oauthStatus;",
         label="index/oauth-return-tab",
     )
+    text = _replace_once(
+        text,
+        '                <!-- Story/Devotional to Video -->\n'
+        '                <div class="bg-white rounded-lg shadow p-6 mb-8 border-l-4 border-indigo-500">\n'
+        '                    <div class="flex justify-between items-center mb-4">\n'
+        '                        <h2 class="text-xl font-bold text-indigo-800"><i class="fas fa-book-open"></i> História/Devocional (Texto → Vídeo)</h2>\n'
+        '                    </div>\n',
+        '                <!-- Story/Devotional to Video -->\n'
+        '                <div class="bg-white rounded-lg shadow p-6 mb-8 border-l-4 border-indigo-500">\n'
+        '                    <div class="flex justify-between items-center mb-4">\n'
+        '                        <h2 class="text-xl font-bold text-indigo-800"><i class="fas fa-book-open"></i> História/Devocional (Texto → Vídeo)</h2>\n'
+        '                    </div>\n'
+        '                    <div class="mb-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4">\n'
+        '                        <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">\n'
+        '                            <div>\n'
+        '                                <div class="flex flex-wrap items-center gap-2">\n'
+        '                                    <span class="inline-flex items-center rounded-full bg-emerald-600 px-2.5 py-1 text-xs font-bold text-white"><i class="fas fa-check-circle mr-1"></i>ATIVO</span>\n'
+        '                                    <span class="font-bold text-emerald-950">Padrão Global Codexia — ATIVO</span>\n'
+        '                                </div>\n'
+        '                                <p class="mt-2 text-sm text-emerald-900">O motor narrativo global orienta os vídeos narrados compatíveis em todo o sistema. Nesta aba, o perfil narrativo é escolhido automaticamente conforme o tema e o tipo do conteúdo.</p>\n'
+        '                                <p class="mt-1 text-xs text-emerald-800"><strong>Escopo:</strong> todo o Codexia • Gancho → desenvolvimento → verdade central → transformação → aplicação → clímax → reflexão → CTA separado. Shorts e música mantêm estrutura própria.</p>\n'
+        '                            </div>\n'
+        '                        </div>\n'
+        '                    </div>\n',
+        label="index/youtube-global-narrative-standard-badge",
+    )
     return text
 
 
