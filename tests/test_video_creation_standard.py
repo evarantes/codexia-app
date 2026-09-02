@@ -127,7 +127,7 @@ class VideoCreationStandardIntegrationTests(unittest.TestCase):
         self.assertTrue(plan["captions_enabled"])
         self.assertTrue(has_complete_cta(meta["cta_text"]))
         self.assertIn("curta", meta["cta_text"].lower())
-        self.assertEqual(meta["protected_closing_contract"]["version"], 3)
+        self.assertEqual(meta["protected_closing_contract"]["version"], 4)
         self.assertEqual(
             set(meta["protected_closing_contract"]["required_cta_signals"]),
             set(STANDARD_REQUIRED_CTA_SIGNALS),
