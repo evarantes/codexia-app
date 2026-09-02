@@ -6,7 +6,25 @@ from app.services.spoken_text_boundary import (
     SPOKEN_TEXT_BOUNDARY_VERSION,
     prepare_spoken_narration_text,
 )
-from app.services.narration_contract_guard import NarrationContractError, validate_narration_text
+from app.services.narration_contract_guard import (
+    NarrationContractError,
+    install_narration_contract_guard,
+    validate_narration_text,
+)
+
+
+class _BoundaryDummyVideoGenerator:
+    def __init__(self):
+        self.provider_calls = 0
+        self.provider_texts = []
+
+    def generate_audio(self, text, *args, **kwargs):
+        self.provider_calls += 1
+        self.provider_texts.append(text)
+        return "/tmp/nonexistent-boundary-v4.mp3"
+
+
+install_narration_contract_guard(_BoundaryDummyVideoGenerator)
 
 
 class SpokenTextBoundaryV4Tests(unittest.TestCase):
@@ -47,6 +65,17 @@ TEXTO NA TELA: Deus não esqueceu de você.
             "Jesus é o caminho, a verdade e a vida.",
         )
 
+    def test_strict_validator_still_rejects_raw_json(self):
+        raw = json.dumps(
+            {
+                "narration_text": "Jesus é o caminho, a verdade e a vida.",
+                "image_prompt": "cinematic portrait",
+            },
+            ensure_ascii=False,
+        )
+        with self.assertRaises(NarrationContractError):
+            validate_narration_text(raw)
+
     def test_nested_scenes_extract_narration_in_order(self):
         raw = json.dumps(
             {
@@ -83,19 +112,25 @@ TEXTO NA TELA: Deus não esqueceu de você.
                 "Jesus permanece fiel. Depois use prompt visual com câmera cinematográfica."
             )
 
-    def test_global_guard_uses_boundary_after_hardening(self):
+    def test_guarded_tts_port_sends_only_spoken_text_to_provider(self):
         raw = """
 CENA 1
 NARRAÇÃO: Cristo é a nossa esperança.
 PROMPT DE IMAGEM: luz dourada, cinematic, ultra detailed.
+DURAÇÃO: 7 segundos
 """
-        self.assertEqual(validate_narration_text(raw), "Cristo é a nossa esperança.")
+        generator = _BoundaryDummyVideoGenerator()
+        generator.generate_audio(raw)
+        self.assertEqual(generator.provider_calls, 1)
+        self.assertEqual(generator.provider_texts, ["Cristo é a nossa esperança."])
 
     def test_ambiguous_technical_payload_never_reaches_tts(self):
+        generator = _BoundaryDummyVideoGenerator()
         with self.assertRaises(NarrationContractError):
-            validate_narration_text(
+            generator.generate_audio(
                 "PROMPT VISUAL: cinematic portrait\nDURAÇÃO: 8 segundos\nMOVIMENTO DE CÂMERA: zoom lento"
             )
+        self.assertEqual(generator.provider_calls, 0)
 
     def test_contract_version_and_cache_invalidation_are_applied(self):
         self.assertEqual(SPOKEN_TEXT_BOUNDARY_VERSION, 4)
