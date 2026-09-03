@@ -25,51 +25,32 @@ def _replace_once_or_already(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _validate_source_owned_narration_guard(text: str) -> None:
+    """Valida as proteções sem reescrever o guard canônico.
+
+    Desde o Narration Core v1, ``narration_contract_guard.py`` pertence ao
+    código-fonte e não pode mais ser modificado por hardenings de build. Este
+    script continua responsável pelo acabamento visual do CTA e pela correção
+    de compatibilidade do frontend, mas apenas CONFERE as barreiras de fala.
+    """
+    required = (
+        '"inline_code"',
+        '"source_code_assignment"',
+        '"source_code_declaration"',
+        '"source_code_arrow"',
+        '"sql_statement"',
+        'raw = re.sub(r"(?m)^\\s{0,3}#{1,6}\\s+", "", raw)',
+    )
+    missing = [token for token in required if token not in text]
+    if missing:
+        raise PatchError(
+            "narration guard source-owned sem proteções obrigatórias: "
+            + ", ".join(missing)
+        )
+
+
 def patch_narration_guard(text: str) -> str:
-    pattern_anchor = '    ("code_fence", re.compile(r"```|~~~")),\n'
-    pattern_block = '''    ("code_fence", re.compile(r"```|~~~")),
-    # Código inline e instruções de programação nunca podem chegar ao TTS. A
-    # detecção é conservadora para não bloquear palavras comuns da narração.
-    ("inline_code", re.compile(r"`[^`\\n]+`")),
-    ("source_code_assignment", re.compile(
-        r"(?i)\\b(?:const|let|var)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*="
-    )),
-    ("source_code_declaration", re.compile(
-        r"(?i)\\b(?:def|class|function)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*[(:]"
-    )),
-    ("source_code_arrow", re.compile(r"=>")),
-    ("sql_statement", re.compile(
-        r"(?i)\\b(?:SELECT\\s+.+?\\s+FROM|INSERT\\s+INTO|UPDATE\\s+[A-Za-z_][A-Za-z0-9_]*\\s+SET|DELETE\\s+FROM)\\b"
-    )),
-'''
-    text = _replace_once_or_already(
-        text,
-        pattern_anchor,
-        pattern_block,
-        "narration/reject-inline-source-code",
-    )
-
-    sanitizer_anchor = '    raw = _SAFE_SSML_CONTAINER_TAG.sub(" ", raw)\n'
-    sanitizer_block = '''    raw = _SAFE_SSML_CONTAINER_TAG.sub(" ", raw)
-    # Markdown editorial é formatação, não conteúdo falado. Remova somente os
-    # marcadores seguros; backticks ficam intactos para o fail-closed acima
-    # rejeitar qualquer código inline em vez de tentar adivinhar seu conteúdo.
-    raw = re.sub(r"(?m)^\\s{0,3}#{1,6}\\s+", "", raw)
-    raw = re.sub(r"(?m)^\\s*(?:[-+*]|\\d+[.)])\\s+", "", raw)
-    raw = re.sub(r"(?m)^\\s*>\\s?", "", raw)
-    raw = re.sub(r"(?<!\\*)\\*{2}([^*\\n]+)\\*{2}(?!\\*)", r"\\1", raw)
-    raw = re.sub(r"__([^_\\n]+)__", r"\\1", raw)
-    raw = re.sub(r"~~([^~\\n]+)~~", r"\\1", raw)
-'''
-    text = _replace_once_or_already(
-        text,
-        sanitizer_anchor,
-        sanitizer_block,
-        "narration/strip-safe-markdown",
-    )
-
-    if MARKER not in text:
-        text = text.rstrip() + f"\n\n# {MARKER}\n"
+    _validate_source_owned_narration_guard(text)
     return text
 
 
@@ -135,18 +116,9 @@ def check() -> None:
     video = VIDEO.read_text(encoding="utf-8")
     index = INDEX.read_text(encoding="utf-8")
 
-    required_narration = (
-        MARKER,
-        '"inline_code"',
-        '"source_code_assignment"',
-        '"source_code_declaration"',
-        '"source_code_arrow"',
-        '"sql_statement"',
-        'raw = re.sub(r"(?m)^\\s{0,3}#{1,6}\\s+", "", raw)',
-    )
-    missing = [token for token in required_narration if token not in narration]
-    if missing:
-        raise PatchError("narration hardening incompleto: " + ", ".join(missing))
+    # O guard de narração não recebe mais marker/patch deste script. Apenas
+    # verificamos que o Narration Core v1 já contém as proteções necessárias.
+    _validate_source_owned_narration_guard(narration)
 
     required_video = (
         MARKER,
