@@ -100,12 +100,14 @@ class DurationConfirmationTests(unittest.TestCase):
 
     def test_frontend_uses_requested_range_and_warns_before_submit(self):
         html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
-        self.assertIn("const requestedMin = Math.max(1", html)
-        self.assertIn("const requestedMax = Math.max(requestedMin", html)
+        self.assertIn("ytStoryDurationUnit", html)
+        self.assertIn("Segundos — teste rápido", html)
+        self.assertIn("const requestedMinSeconds = durationUnit === 'seconds'", html)
         self.assertIn("Aviso de duração do vídeo", html)
         self.assertIn("duration_override_approved: durationOverrideApproved", html)
         self.assertIn("duration_min: requestedMin", html)
         self.assertIn("duration_max: requestedMax", html)
+        self.assertIn("duration_unit: durationUnit", html)
         self.assertNotIn(
             "const duration = Number(this.ytStoryPredictedDurationMinutesValue || this.ytStoryVideoDuration",
             html,
@@ -113,11 +115,13 @@ class DurationConfirmationTests(unittest.TestCase):
 
     def test_backend_contract_accepts_and_propagates_duration_confirmation(self):
         router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
-        self.assertIn("duration_min: Optional[int] = None", router)
-        self.assertIn("duration_max: Optional[int] = None", router)
+        self.assertIn("duration_min: Optional[float] = None", router)
+        self.assertIn("duration_max: Optional[float] = None", router)
+        self.assertIn('duration_unit: str = "minutes"', router)
         self.assertIn("duration_override_approved: bool = False", router)
         self.assertIn('script["duration_override_approved"] = duration_override_approved', router)
-        self.assertIn('script["duration_max_sec"] = int(requested_max_minutes * 60)', router)
+        self.assertIn('script["duration_max_sec"] = int(round(requested_max_minutes * 60))', router)
+        self.assertIn('script["target_duration_sec"] = int(round(requested_minutes * 60))', router)
 
 
 if __name__ == "__main__":

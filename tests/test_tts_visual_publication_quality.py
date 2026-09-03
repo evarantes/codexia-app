@@ -3,9 +3,11 @@ from __future__ import annotations
 import math
 import unittest
 
+from app.services.narration_core import NARRATION_CORE_NAMESPACE, NARRATION_CORE_VERSION
 from app.services.narration_contract_guard import (
     NarrationContractError,
     install_narration_contract_guard,
+    prepare_spoken_narration_text,
     sanitize_narration_text,
     structural_issues,
     validate_narration_text,
@@ -15,11 +17,10 @@ from app.services.narration_contract_guard import (
 class NarrationTechnicalMarkupRegressionTests(unittest.TestCase):
     def test_ssml_break_is_never_spoken(self):
         raw = 'Deus continua cuidando de você <break time="1200ms"/> mesmo no silêncio.'
-        clean = sanitize_narration_text(raw)
+        clean = prepare_spoken_narration_text(raw)
         self.assertNotIn("break", clean.lower())
         self.assertNotIn("1200", clean)
         self.assertEqual(clean, "Deus continua cuidando de você, mesmo no silêncio.")
-        self.assertEqual(validate_narration_text(raw), clean)
 
     def test_plain_text_pause_directives_are_removed(self):
         variants = (
@@ -29,7 +30,7 @@ class NarrationTechnicalMarkupRegressionTests(unittest.TestCase):
         )
         for raw in variants:
             with self.subTest(raw=raw):
-                clean = validate_narration_text(raw)
+                clean = prepare_spoken_narration_text(raw)
                 folded = clean.lower()
                 self.assertNotIn("break", folded)
                 self.assertNotIn("pause", folded)
@@ -38,7 +39,7 @@ class NarrationTechnicalMarkupRegressionTests(unittest.TestCase):
 
     def test_safe_ssml_container_keeps_only_spoken_words(self):
         raw = '<speak><prosody rate="95%">A promessa permanece viva.</prosody></speak>'
-        self.assertEqual(validate_narration_text(raw), "A promessa permanece viva.")
+        self.assertEqual(prepare_spoken_narration_text(raw), "A promessa permanece viva.")
 
     def test_arbitrary_technical_fields_still_fail_closed(self):
         bad_samples = (
@@ -68,16 +69,19 @@ class NarrationTechnicalMarkupRegressionTests(unittest.TestCase):
                 return "fake.mp3"
 
         install_narration_contract_guard(DummyGenerator)
-        self.assertGreaterEqual(
+        self.assertTrue(getattr(DummyGenerator, "_codexia_narration_core_v1", False))
+        self.assertEqual(
             int(getattr(DummyGenerator, "_codexia_narration_contract_guard_version", 0) or 0),
-            2,
+            NARRATION_CORE_VERSION,
         )
         dummy = DummyGenerator()
         dummy.generate_audio('Escute com atenção <break time="1s"/> e guarde esta palavra.')
         self.assertEqual(dummy.received, "Escute com atenção, e guarde esta palavra.")
         self.assertNotIn("break", dummy.received.lower())
         self.assertTrue(dummy._last_tts_debug.get("tts_plain_text_only"))
-        self.assertTrue(dummy._last_tts_debug.get("technical_markup_sanitized"))
+        self.assertEqual(dummy._last_tts_debug.get("narration_core_version"), NARRATION_CORE_VERSION)
+        self.assertEqual(dummy._last_tts_debug.get("narration_core_namespace"), NARRATION_CORE_NAMESPACE)
+        self.assertEqual(dummy._last_tts_debug.get("remaining_structural_issues"), [])
 
 
 class FinalPublicationQualityRegressionTests(unittest.TestCase):

@@ -1,18 +1,20 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/apply_canonical_narration_logo_test_mode.py"
+SCRIPT = ROOT / "scripts/apply_youtube_narration_gate.py"
 
 
-def test_guard_accepts_authenticated_top_level_fallback_metadata():
+def test_guard_uses_core_owned_storage_and_source():
     text = SCRIPT.read_text(encoding="utf-8")
-    assert "CODEXIA_APPROVED_NARRATION_REQUEST_FALLBACK_V1" in text
-    assert 'getattr(request, "approved_narration_preview_id", "")' in text
-    assert 'getattr(request, "approved_narration_text_sha256", "")' in text
+    assert 'Path(_APPROVED_AUDIO_ROOT).resolve() / "youtube_narration_core_v1"' in text
+    assert 'approved_source == "youtube_narration_core_v1_approved"' in text
+    assert 'script["approved_narration_required"] = True' in text
 
 
-def test_guard_remains_fail_closed_against_gate_metadata():
+def test_guard_remains_fail_closed_against_core_metadata():
     text = SCRIPT.read_text(encoding="utf-8")
     assert 'approved_meta.get("approved") is True' in text
     assert 'approved_story_hash == approved_text_hash' in text
-    assert 'approved_source == "youtube_narration_gate_approved"' in text
+    assert 'approved_meta.get("narration_core_version")' in text
+    assert 'approved_meta.get("narration_core_namespace")' in text
+    assert '"tts_regeneration_allowed": False' in text

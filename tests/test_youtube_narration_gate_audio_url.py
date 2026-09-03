@@ -1,12 +1,15 @@
-import hashlib
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from app.services.youtube_narration_gate import (
-    NARRATION_GATE_CONTRACT_VERSION,
-    YouTubeNarrationGateService,
+from app.services.narration_core import (
+    NARRATION_CORE_NAMESPACE,
+    NARRATION_CORE_VERSION,
+    build_narration_artifact,
+    narration_fingerprint,
 )
+from app.services.youtube_narration_gate import YouTubeNarrationGateService
 
 
 class YouTubeNarrationGateAudioUrlTests(unittest.TestCase):
@@ -16,10 +19,27 @@ class YouTubeNarrationGateAudioUrlTests(unittest.TestCase):
             user_dir = service._user_dir(1)
             spoken = "Esta é uma narração completa e segura para teste."
             voice = "pt-BR-FranciscaNeural"
-            preview_id = hashlib.sha256(
-                f"v{NARRATION_GATE_CONTRACT_VERSION}\n{voice}\n{spoken}".encode("utf-8")
-            ).hexdigest()[:32]
+            artifact = build_narration_artifact(spoken)
+            preview_id = narration_fingerprint(
+                spoken_text=spoken,
+                voice=voice,
+                provider="edge_tts",
+            )
             (user_dir / f"{preview_id}.mp3").write_bytes(b"x" * 1024)
+            (user_dir / f"{preview_id}.json").write_text(
+                json.dumps(
+                    {
+                        "preview_id": preview_id,
+                        "text_sha256": artifact.text_sha256,
+                        "voice": voice,
+                        "provider": "edge_tts",
+                        "approved": False,
+                        "narration_core_version": NARRATION_CORE_VERSION,
+                        "narration_core_namespace": NARRATION_CORE_NAMESPACE,
+                    }
+                ),
+                encoding="utf-8",
+            )
             with patch.object(service, "_duration", return_value=1.0):
                 result = service.generate(text=spoken, user_id=1, voice=voice, voice_gender="female")
             self.assertEqual(
@@ -27,7 +47,9 @@ class YouTubeNarrationGateAudioUrlTests(unittest.TestCase):
                 f"/youtube/narration-lab/production-preview/audio/{preview_id}",
             )
             self.assertEqual(result["preview_id"], preview_id)
-            self.assertEqual(result["narration_contract_version"], NARRATION_GATE_CONTRACT_VERSION)
+            self.assertEqual(result["narration_core_version"], NARRATION_CORE_VERSION)
+            self.assertEqual(result["narration_core_namespace"], NARRATION_CORE_NAMESPACE)
+            self.assertTrue(result["cache_hit"])
 
 
 if __name__ == "__main__":

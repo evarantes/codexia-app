@@ -1,19 +1,26 @@
 import unittest
 
+from app.services import narration_contract_guard
 from scripts import apply_narration_cta_finish_hardening as hardening
 
 
 class NarrationCtaFinishHardeningTests(unittest.TestCase):
-    def test_narration_guard_rejects_code_and_strips_safe_markdown(self):
-        source = '''import re\n\n_STRUCTURAL_PATTERNS = (\n    ("code_fence", re.compile(r"```|~~~")),\n)\n\ndef sanitize_narration_text(text):\n    raw = str(text)\n    raw = _SAFE_SSML_CONTAINER_TAG.sub(" ", raw)\n    return raw\n'''
+    def test_narration_guard_is_source_owned_and_validated_without_rewrite(self):
+        source = hardening.NARRATION.read_text(encoding="utf-8")
         patched = hardening.patch_narration_guard(source)
-        self.assertIn('"inline_code"', patched)
-        self.assertIn('"source_code_assignment"', patched)
-        self.assertIn('"source_code_declaration"', patched)
-        self.assertIn('"source_code_arrow"', patched)
-        self.assertIn('"sql_statement"', patched)
-        self.assertIn('^\\s{0,3}#{1,6}\\s+', patched)
-        self.assertEqual(hardening.patch_narration_guard(patched), patched)
+        self.assertEqual(patched, source)
+        self.assertIn('"inline_code"', source)
+        self.assertIn('"source_code_assignment"', source)
+        self.assertIn('"source_code_declaration"', source)
+        self.assertIn('"source_code_arrow"', source)
+        self.assertIn('"sql_statement"', source)
+        self.assertIn('^\\s{0,3}#{1,6}\\s+', source)
+        self.assertIsNotNone(narration_contract_guard.install_narration_contract_guard)
+
+    def test_incomplete_guard_is_rejected_instead_of_patched(self):
+        source = '''import re\n\n_STRUCTURAL_PATTERNS = (("code_fence", re.compile(r"```|~~~")),)\n'''
+        with self.assertRaises(hardening.PatchError):
+            hardening.patch_narration_guard(source)
 
     def test_cta_endcard_is_visible_for_four_to_six_seconds(self):
         source = '''            end_screen_target_duration_sec = float(_end_screen_configured if _end_screen_configured is not None else 1.2)\n            end_clip_duration = min(1.6, max(0.8, round(end_screen_target_duration_sec, 2)))\n            cta_ok = (0.8 <= float(end_clip_duration or 0.0) <= 1.6) if closing_has_narration else True\n'''

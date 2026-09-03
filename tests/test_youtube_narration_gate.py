@@ -1,10 +1,10 @@
-import asyncio
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
 
+from app.services.narration_core import NARRATION_CORE_NAMESPACE, NARRATION_CORE_VERSION
 from app.services.youtube_narration_gate import (
     YouTubeNarrationGateError,
     YouTubeNarrationGateService,
@@ -13,10 +13,12 @@ from app.services.youtube_narration_gate import (
 
 class _FakeCommunicate:
     calls = 0
+    texts = []
 
     def __init__(self, text, voice, **kwargs):
         self.text = text
         self.voice = voice
+        type(self).texts.append(text)
 
     async def save(self, path):
         type(self).calls += 1
@@ -30,6 +32,7 @@ class YouTubeNarrationGateTests(unittest.TestCase):
         self.old_edge = sys.modules.get("edge_tts")
         sys.modules["edge_tts"] = types.SimpleNamespace(Communicate=_FakeCommunicate)
         _FakeCommunicate.calls = 0
+        _FakeCommunicate.texts = []
         self.service._duration = lambda _path: 123.4
 
     def tearDown(self):
@@ -39,7 +42,7 @@ class YouTubeNarrationGateTests(unittest.TestCase):
         else:
             sys.modules["edge_tts"] = self.old_edge
 
-    def test_blocks_code_before_tts(self):
+    def test_blocks_pure_technical_payload_before_tts(self):
         with self.assertRaises(YouTubeNarrationGateError) as ctx:
             self.service.generate(
                 text='{"image_prompt": "Jesus"}',
@@ -47,8 +50,22 @@ class YouTubeNarrationGateTests(unittest.TestCase):
                 voice="auto",
                 voice_gender="female",
             )
-        self.assertEqual(ctx.exception.code, "NARRATION_CONTRACT_BLOCKED")
+        self.assertEqual(ctx.exception.code, "NARRATION_CORE_BLOCKED")
         self.assertEqual(_FakeCommunicate.calls, 0)
+
+    def test_mixed_production_script_sends_only_spoken_sentence(self):
+        raw = """CENA 1
+NARRAÇÃO: Jesus permanece conosco mesmo nos dias mais difíceis.
+PROMPT VISUAL: Jesus caminhando por uma estrada, iluminação cinematográfica, 16:9.
+DURAÇÃO: 8 segundos.
+MOVIMENTO DE CÂMERA: travelling lento.
+TEXTO NA TELA: Deus não esqueceu de você.
+"""
+        result = self.service.generate(text=raw, user_id=7)
+        self.assertEqual(_FakeCommunicate.calls, 1)
+        self.assertEqual(_FakeCommunicate.texts, ["Jesus permanece conosco mesmo nos dias mais difíceis."])
+        self.assertEqual(result["spoken_text_sent_to_tts"], _FakeCommunicate.texts[0])
+        self.assertGreaterEqual(result["removed_technical_blocks"], 5)
 
     def test_generates_once_and_reuses_identical_audio(self):
         text = "Esta é uma narração limpa, completa e pronta para o vídeo."
@@ -57,6 +74,8 @@ class YouTubeNarrationGateTests(unittest.TestCase):
         self.assertFalse(first["cache_hit"])
         self.assertTrue(second["cache_hit"])
         self.assertEqual(first["preview_id"], second["preview_id"])
+        self.assertEqual(first["narration_core_version"], NARRATION_CORE_VERSION)
+        self.assertEqual(first["narration_core_namespace"], NARRATION_CORE_NAMESPACE)
         self.assertEqual(_FakeCommunicate.calls, 1)
 
     def test_approval_returns_reuse_audio_and_rejects_changed_text(self):
@@ -68,7 +87,8 @@ class YouTubeNarrationGateTests(unittest.TestCase):
             user_id=9,
         )
         self.assertTrue(approved["approved"])
-        self.assertEqual(approved["reuse_audio_from"]["source"], "youtube_narration_gate_approved")
+        self.assertEqual(approved["reuse_audio_from"]["source"], "youtube_narration_core_v1_approved")
+        self.assertEqual(approved["reuse_audio_from"]["narration_core_version"], NARRATION_CORE_VERSION)
         self.assertTrue(Path(approved["reuse_audio_from"]["output_path"]).is_file())
         with self.assertRaises(YouTubeNarrationGateError) as ctx:
             self.service.approve(

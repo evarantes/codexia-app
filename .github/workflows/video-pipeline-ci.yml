@@ -72,10 +72,10 @@ jobs:
 
       - name: Install FFmpeg and dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes ffmpeg
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet=2 ffmpeg >/dev/null
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt
 
       - name: Apply and verify consolidated hardening
         run: |
@@ -83,6 +83,8 @@ jobs:
           python scripts/apply_consolidated_hardening.py --check
           python scripts/apply_duration_confirmation_hardening.py --apply
           python scripts/apply_duration_confirmation_hardening.py --check
+          python scripts/apply_duration_seconds_support.py --apply
+          python scripts/apply_duration_seconds_support.py --check
           python scripts/apply_openai_quality_cost_hardening.py --apply
           python scripts/apply_openai_quality_cost_hardening.py --check
           python scripts/apply_video_cost_backend_hardening.py --apply
@@ -131,15 +133,13 @@ jobs:
           python scripts/apply_ready_video_asset_repair_v3.py --check
           python scripts/apply_youtube_narration_gate.py --apply
           python scripts/apply_youtube_narration_gate.py --check
-          python scripts/apply_global_narration_contract.py --apply
-          python scripts/apply_global_narration_contract.py --check
-          python scripts/apply_spoken_text_boundary_v4.py --apply
-          python scripts/apply_spoken_text_boundary_v4.py --check
-          python scripts/apply_canonical_narration_logo_test_mode.py --apply
-          python scripts/apply_canonical_narration_logo_test_mode.py --check
           python scripts/apply_global_logo_only_visual_mode.py --apply
           python scripts/apply_global_logo_only_visual_mode.py --check
           python -m compileall -q app scripts
+          # The canonical narration files are source-owned. No hardening step may rewrite them.
+          git diff --exit-code -- app/services/narration_core.py app/services/youtube_narration_gate.py app/services/narration_contract_guard.py app/static/youtube_narration_gate.js
+          python -m unittest tests.test_narration_core_v1 -q
+          python -m unittest tests.test_duration_seconds_support -q
 
       - name: Apply canonical Alembic migration on PostgreSQL
         run: |
@@ -160,9 +160,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          python -m unittest discover -s tests -v 2>&1 | tee /tmp/codexia-unittest.log
-          test_status=${PIPESTATUS[0]}
+          python -m unittest discover -s tests -q > /tmp/codexia-unittest.log 2>&1
+          test_status=$?
           if [ "$test_status" -ne 0 ]; then
+            echo "===== UNIT TEST FAILURES ====="
+            tail -n 180 /tmp/codexia-unittest.log
             python - <<'PY'
           from pathlib import Path
           import re
@@ -171,18 +173,19 @@ jobs:
           compact = []
           for line in lines:
               stripped = line.strip()
-              if re.search(r'\.\.\.\s+(FAIL|ERROR)$', stripped) or stripped.startswith('FAIL: ') or stripped.startswith('ERROR: '):
+              if stripped.startswith('FAIL: ') or stripped.startswith('ERROR: '):
                   compact.append(stripped[:1200])
               elif stripped.startswith('Ran ') or stripped.startswith('FAILED ('):
                   compact.append(stripped[:1200])
           if not compact:
-              compact = [line[:1200] for line in lines[-20:] if line.strip()]
-          message = '\n'.join(compact[-30:])[-7000:]
+              compact = [line[:1200] for line in lines[-30:] if line.strip()]
+          message = '\n'.join(compact[-40:])[-7000:]
           escaped = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
           print(f'::error title=Failing unit tests::{escaped}')
           PY
             exit "$test_status"
           fi
+          echo "Complete unit suite: OK"
 
       - name: Run real FFmpeg smoke without paid providers
         env:

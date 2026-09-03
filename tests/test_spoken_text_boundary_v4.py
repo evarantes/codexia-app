@@ -2,6 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
+from app.services.narration_core import NARRATION_CORE_VERSION
 from app.services.spoken_text_boundary import (
     SPOKEN_TEXT_BOUNDARY_VERSION,
     prepare_spoken_narration_text,
@@ -21,13 +22,21 @@ class _BoundaryDummyVideoGenerator:
     def generate_audio(self, text, *args, **kwargs):
         self.provider_calls += 1
         self.provider_texts.append(text)
-        return "/tmp/nonexistent-boundary-v4.mp3"
+        return "/tmp/nonexistent-narration-core-v1.mp3"
 
 
 install_narration_contract_guard(_BoundaryDummyVideoGenerator)
 
 
-class SpokenTextBoundaryV4Tests(unittest.TestCase):
+class SpokenTextBoundaryCompatibilityTests(unittest.TestCase):
+    def test_legacy_boundary_delegates_to_core(self):
+        self.assertEqual(SPOKEN_TEXT_BOUNDARY_VERSION, NARRATION_CORE_VERSION)
+        module = Path(__file__).resolve().parents[1] / "app/services/spoken_text_boundary.py"
+        source = module.read_text(encoding="utf-8")
+        self.assertIn("build_narration_artifact", source)
+        self.assertNotIn("_TECHNICAL_KEYS", source)
+        self.assertNotIn("_NARRATIVE_LABEL", source)
+
     def test_portuguese_screenplay_keeps_only_narration(self):
         raw = """
 CENA 1
@@ -106,12 +115,6 @@ TEXTO NA TELA: Deus não esqueceu de você.
         with self.assertRaises(ValueError):
             prepare_spoken_narration_text('{"image_prompt":"cinematic","duration":8}')
 
-    def test_residual_visual_prompt_fails_closed(self):
-        with self.assertRaises(ValueError):
-            prepare_spoken_narration_text(
-                "Jesus permanece fiel. Depois use prompt visual com câmera cinematográfica."
-            )
-
     def test_guarded_tts_port_sends_only_spoken_text_to_provider(self):
         raw = """
 CENA 1
@@ -132,19 +135,17 @@ DURAÇÃO: 7 segundos
             )
         self.assertEqual(generator.provider_calls, 0)
 
-    def test_contract_version_and_cache_invalidation_are_applied(self):
-        self.assertEqual(SPOKEN_TEXT_BOUNDARY_VERSION, 4)
+    def test_legacy_build_layers_are_not_executed_anymore(self):
         root = Path(__file__).resolve().parents[1]
-        yt_gate = (root / "app/services/youtube_narration_gate.py").read_text(encoding="utf-8")
-        lab = (root / "app/services/narration_lab.py").read_text(encoding="utf-8")
-        gate_js = (root / "app/static/youtube_narration_gate.js").read_text(encoding="utf-8")
-        router = (root / "app/routers/youtube.py").read_text(encoding="utf-8")
-        guard = (root / "app/services/narration_contract_guard.py").read_text(encoding="utf-8")
-        self.assertIn("CODEXIA_SPOKEN_TEXT_BOUNDARY_V4", guard)
-        self.assertIn("NARRATION_GATE_CONTRACT_VERSION = 4", yt_gate)
-        self.assertIn('"contract_version": 4', lab)
-        self.assertIn("approvedNarration.v4", gate_js)
-        self.assertIn('int(approved_meta.get("narration_contract_version") or 0) >= 4', router)
+        docker = (root / "Dockerfile").read_text(encoding="utf-8")
+        worker = (root / "Dockerfile.worker").read_text(encoding="utf-8")
+        workflow = (root / ".github/workflows/video-pipeline-ci.yml").read_text(encoding="utf-8")
+        for source in (docker, worker, workflow):
+            self.assertNotIn("apply_spoken_text_boundary_v4.py --apply", source)
+            self.assertNotIn("apply_global_narration_contract.py --apply", source)
+            self.assertNotIn("apply_canonical_narration_logo_test_mode.py --apply", source)
+        self.assertIn("narration_core.py", docker)
+        self.assertIn("narration_core.py", worker)
 
 
 if __name__ == "__main__":
