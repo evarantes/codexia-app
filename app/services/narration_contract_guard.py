@@ -25,7 +25,7 @@ _SAFE_SSML_CONTAINER_TAG = re.compile(
     r"(?is)</?\s*(?:speak|prosody|voice|p|s|emphasis|sub|phoneme)\b[^>]*>"
 )
 _BREAK_TAG = re.compile(r"(?is)<\s*break\b[^>]*?/?>")
-_STRICT_STRUCTURAL_PATTERNS = (
+_STRUCTURAL_PATTERNS = (
     ("code_fence", re.compile(r"```|~~~")),
     ("json_field", re.compile(
         r"(?i)[\"']?(?:image_prompt|visual_prompt|camera_movement|motion_effect|scene_qc|"
@@ -65,7 +65,17 @@ def sanitize_narration_text(text: Any) -> str:
 
 def structural_issues(text: Any) -> List[str]:
     raw = str(text or "")
-    return sorted({name for name, pattern in _STRICT_STRUCTURAL_PATTERNS if pattern.search(raw)})
+    issues = [name for name, pattern in _STRUCTURAL_PATTERNS if pattern.search(raw)]
+    if re.search(r"\\[nrt]\s*[\"']?[A-Za-z_][A-Za-z0-9_]*[\"']?\s*:", raw):
+        issues.append("escaped_serialized_field")
+    technical_field_pattern = re.compile(
+        r"(?i)(?<!\w)(?:status|progress|output_path|file_path|video_path|audio_path|"
+        r"task_id|job_id|request_id|executor_id|provider|model|pipeline_stage|"
+        r"render_stage|error_code|result_json|payload_json)\s*[:=]"
+    )
+    if len(technical_field_pattern.findall(raw)) >= 2:
+        issues.append("serialized_technical_payload")
+    return sorted(set(issues))
 
 
 def cta_signals(text: Any) -> set[str]:
@@ -178,6 +188,20 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
             if isinstance(plan, dict):
                 apply_standard_video_structure(plan)
             safe_plan = dict(plan or {}) if isinstance(plan, dict) else {}
+
+            # Áudio supervisionado é uma fonte fechada: se foi exigido, nenhum TTS novo
+            # pode acontecer. A ausência do MP3 para imediatamente antes de providers.
+            approved_required = bool(safe_plan.get("approved_narration_required"))
+            seed_audio_path = str(safe_plan.get("seed_audio_path") or "").strip()
+            seed_valid = bool(seed_audio_path and os.path.isfile(seed_audio_path) and os.path.getsize(seed_audio_path) > 512)
+            self._codexia_approved_narration_required = approved_required
+            self._codexia_approved_seed_audio_path = seed_audio_path if seed_valid else ""
+            if approved_required and not seed_valid:
+                raise NarrationContractError(
+                    "Narração aprovada obrigatória, mas o MP3 aprovado não está disponível; "
+                    "render e novo TTS foram bloqueados."
+                )
+
             marked_cta: List[str] = []
             if isinstance(scenes, list):
                 body_scenes: List[Dict[str, Any]] = []
@@ -219,6 +243,8 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                 "full_text": full_text,
                 "narration_core_version": NARRATION_CORE_VERSION,
                 "narration_core_namespace": NARRATION_CORE_NAMESPACE,
+                "approved_narration_required": approved_required,
+                "approved_narration_seed_valid": seed_valid,
                 "video_creation_standard": dict(safe_plan.get("codexia_video_standard") or {}),
             })
             try:
@@ -240,7 +266,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                 "required_cta_signals": sorted(STANDARD_REQUIRED_CTA_SIGNALS),
                 "narration_core_namespace": NARRATION_CORE_NAMESPACE,
                 "tts_plain_text_only": True,
-                "tts_allowed": True,
+                "tts_allowed": not approved_required,
             }
             return meta
 
@@ -248,6 +274,10 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
 
     if callable(original_segmented):
         def segmented_guarded(self: Any, *, main_text: str, cta_text: str, **kwargs: Any):
+            if bool(getattr(self, "_codexia_approved_narration_required", False)):
+                raise NarrationContractError(
+                    "Áudio aprovado obrigatório: síntese segmentada bloqueada para preservar o MP3 aprovado."
+                )
             main_clean = prepare_spoken_narration_text(main_text, label="narração principal")
             try:
                 cta_clean = prepare_spoken_narration_text(cta_text, label="CTA final")
@@ -261,6 +291,10 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
 
     if callable(original_generate_audio):
         def generate_audio_guarded(self: Any, text: str, *args: Any, **kwargs: Any):
+            if bool(getattr(self, "_codexia_approved_narration_required", False)):
+                raise NarrationContractError(
+                    "Áudio aprovado obrigatório: novo TTS bloqueado. O renderer deve reutilizar o MP3 aprovado."
+                )
             clean = prepare_spoken_narration_text(text, label="texto enviado ao TTS")
             try:
                 debug = dict(getattr(self, "_last_tts_debug", {}) or {})
@@ -285,7 +319,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
         video_generator_cls.generate_audio = generate_audio_guarded
 
     video_generator_cls._codexia_narration_core_v1 = True
-    # Mantém o marcador externo antigo apenas para consumidores que checam presença.
+    # Compatibilidade externa: consumidores antigos só verificam presença do guard.
     video_generator_cls._codexia_narration_contract_guard_v1 = True
     video_generator_cls._codexia_narration_contract_guard_version = NARRATION_CORE_VERSION
     return video_generator_cls
