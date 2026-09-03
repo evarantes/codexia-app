@@ -1,12 +1,21 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'codexia.youtubeAuto.approvedNarration.v1';
+  const STORAGE_KEY = 'codexia.youtubeAuto.approvedNarration.coreV1';
+  const LEGACY_STORAGE_KEYS = [
+    'codexia.youtubeAuto.approvedNarration.v1',
+    'codexia.youtubeAuto.approvedNarration.v4'
+  ];
+  const CORE_VERSION = 1;
+  const CORE_NAMESPACE = 'codexia-narration-core-v1';
   const originalFetch = window.fetch.bind(window);
   let mountedCard = null;
   let preview = null;
   let approved = null;
   let audioObjectUrl = '';
+  // CODEXIA_APPROVED_NARRATION_NETWORK_GUARD_V1
+  let approvedLaunchArmed = false;
+  let approvedInjectionCount = 0;
 
   function tokenHeaders(extra = {}) {
     const headers = new Headers(extra || {});
@@ -56,23 +65,37 @@
   }
 
   function existingGenerateButton(card) {
-    return [...card.querySelectorAll('button')].find(btn => normalizeText(btn.textContent).toLowerCase().includes('gerar vídeo narrado')) || null;
+    return [...card.querySelectorAll('button')].find(btn => !btn.closest('[data-youtube-narration-gate]') && normalizeText(btn.textContent).toLowerCase().includes('gerar vídeo narrado')) || null;
+  }
+
+  function isCurrentApproved(value) {
+    if (!value || !value.reuse_audio_from || !value.text_sha256 || !value.source_text_sha256) return false;
+    const reuse = value.reuse_audio_from || {};
+    return Number(value.narration_core_version || reuse.narration_core_version || 0) === CORE_VERSION
+      && String(value.narration_core_namespace || reuse.narration_core_namespace || '') === CORE_NAMESPACE;
   }
 
   function loadApproved() {
+    LEGACY_STORAGE_KEYS.forEach(key => localStorage.removeItem(key));
     try {
       const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-      if (value && value.reuse_audio_from && value.text_sha256) approved = value;
-    } catch (_) {}
+      if (isCurrentApproved(value)) approved = value;
+      else localStorage.removeItem(STORAGE_KEY);
+    } catch (_) {
+      localStorage.removeItem(STORAGE_KEY);
+    }
   }
 
   function saveApproved(value) {
+    if (!isCurrentApproved(value)) throw new Error('A narração não pertence ao Narration Core v1.');
     approved = value;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
   }
 
   function clearApproved() {
     approved = null;
+    approvedLaunchArmed = false;
+    approvedInjectionCount = 0;
     localStorage.removeItem(STORAGE_KEY);
   }
 
@@ -104,12 +127,15 @@
   async function generatePreview(panel, card) {
     const textarea = storyTextarea(card);
     const text = normalizeText(textarea && textarea.value);
-    if (!text) return setStatus(panel, 'Gere ou cole o texto da narração antes de criar o áudio.', 'error');
+    if (!text) {
+      setStatus(panel, 'Gere ou cole o texto da narração antes de criar o áudio.', 'error');
+      return false;
+    }
     const btn = panel.querySelector('[data-ng-preview]');
     btn.disabled = true;
     clearApproved();
     preview = null;
-    setStatus(panel, 'Gerando somente a narração. Nenhuma imagem ou vídeo será criado…');
+    setStatus(panel, 'Narration Core v1: separando fala e gerando somente o áudio. Nenhuma imagem ou vídeo será criado…');
     try {
       const response = await authFetch('/youtube/narration-lab/production-preview', {
         method: 'POST',
@@ -118,22 +144,33 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(detailMessage(data, 'Falha ao gerar a narração.'));
+      if (Number(data.narration_core_version || 0) !== CORE_VERSION || String(data.narration_core_namespace || '') !== CORE_NAMESPACE) {
+        throw new Error('O servidor respondeu com uma versão antiga da narração. Atualize o deploy antes de continuar.');
+      }
       preview = data;
-      panel.querySelector('[data-ng-spoken]').textContent = data.spoken_text_sent_to_tts || text;
+      panel.querySelector('[data-ng-spoken]').textContent = data.spoken_text_sent_to_tts || '';
       panel.querySelector('[data-ng-result]').hidden = false;
       panel.querySelector('[data-ng-approve]').disabled = false;
       await loadProtectedAudio(data.audio_url, panel);
       const duration = Number(data.audio_duration_sec || 0);
-      setStatus(panel, `Narração pronta${duration ? ` • ${Math.floor(duration / 60)}m ${Math.round(duration % 60)}s` : ''}${data.cache_hit ? ' • áudio reaproveitado' : ''}. Ouça antes de aprovar.`, 'success');
+      const removed = Number(data.removed_technical_blocks || 0);
+      const removedLabel = removed ? ` • ${removed} bloco(s) técnico(s) removido(s)` : '';
+      setStatus(panel, `Narração pronta${duration ? ` • ${Math.floor(duration / 60)}m ${Math.round(duration % 60)}s` : ''}${data.cache_hit ? ' • áudio reaproveitado' : ''}${removedLabel}. Ouça antes de aprovar.`, 'success');
+      return true;
     } catch (err) {
+      preview = null;
       setStatus(panel, err && err.message ? err.message : String(err), 'error');
+      return false;
     } finally {
       btn.disabled = false;
     }
   }
 
   async function approvePreview(panel, card) {
-    if (!preview || !preview.preview_id) return setStatus(panel, 'Gere a narração antes de aprovar.', 'error');
+    if (!preview || !preview.preview_id) {
+      setStatus(panel, 'Gere a narração antes de aprovar.', 'error');
+      return false;
+    }
     const text = normalizeText(storyTextarea(card)?.value);
     const btn = panel.querySelector('[data-ng-approve]');
     btn.disabled = true;
@@ -145,17 +182,24 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(detailMessage(data, 'Não foi possível aprovar a narração.'));
-      saveApproved({
+      // CODEXIA_APPROVED_SOURCE_TEXT_GUARD_V1
+      const value = {
         preview_id: data.preview_id,
         text_sha256: data.text_sha256,
+        source_text_sha256: await sha256(text),
+        narration_core_version: Number(data.narration_core_version || data.reuse_audio_from?.narration_core_version || 0),
+        narration_core_namespace: String(data.narration_core_namespace || data.reuse_audio_from?.narration_core_namespace || ''),
         reuse_audio_from: data.reuse_audio_from,
         approved_at: new Date().toISOString()
-      });
+      };
+      saveApproved(value);
       panel.querySelector('[data-ng-continue]').disabled = false;
-      setStatus(panel, 'Narração aprovada. O vídeo usará exatamente este MP3 e não deverá gerar TTS novamente.', 'success');
+      setStatus(panel, 'Narração aprovada pelo Core v1. O vídeo usará exatamente este MP3; novo TTS fica bloqueado.', 'success');
+      return true;
     } catch (err) {
       clearApproved();
       setStatus(panel, err && err.message ? err.message : String(err), 'error');
+      return false;
     } finally {
       btn.disabled = false;
     }
@@ -164,17 +208,38 @@
   async function continueWithApproved(panel, card) {
     const textarea = storyTextarea(card);
     const text = normalizeText(textarea && textarea.value);
-    if (!approved) return setStatus(panel, 'Aprove a narração antes de avançar.', 'error');
+    if (!approved || !isCurrentApproved(approved)) {
+      clearApproved();
+      return setStatus(panel, 'Aprove uma narração nova do Narration Core v1 antes de avançar.', 'error');
+    }
     const currentHash = await sha256(text);
-    if (currentHash !== approved.text_sha256) {
+    const approvedSourceHash = approved.source_text_sha256 || '';
+    if (!approvedSourceHash || currentHash !== approvedSourceHash) {
       clearApproved();
       panel.querySelector('[data-ng-continue]').disabled = true;
       return setStatus(panel, 'O texto foi alterado após a aprovação. Gere e aprove uma nova narração antes de continuar.', 'error');
     }
     const button = existingGenerateButton(card);
     if (!button) return setStatus(panel, 'Não encontrei o botão “Gerar vídeo narrado”. Recarregue a página e tente novamente.', 'error');
-    setStatus(panel, 'Iniciando o vídeo com a narração aprovada e preservada…', 'success');
+    approvedLaunchArmed = true;
+    approvedInjectionCount = 0;
+    setStatus(panel, 'Iniciando o vídeo com o MP3 aprovado pelo Narration Core v1…', 'success');
     button.click();
+    window.setTimeout(() => {
+      if (approvedLaunchArmed && approvedInjectionCount === 0) {
+        approvedLaunchArmed = false;
+        setStatus(panel, 'O pedido de vídeo não recebeu o áudio aprovado. Geração bloqueada; recarregue a página e tente novamente.', 'error');
+      }
+    }, 2500);
+  }
+
+  async function directWithSameCore(panel, card) {
+    // CODEXIA_DIRECT_USES_SUPERVISION_PATH_V1
+    clearApproved();
+    setStatus(panel, 'Modo direto: gerando primeiro a narração pelo mesmo Narration Core v1…');
+    if (!await generatePreview(panel, card)) return;
+    if (!await approvePreview(panel, card)) return;
+    await continueWithApproved(panel, card);
   }
 
   function mount() {
@@ -189,8 +254,8 @@
     panel.dataset.youtubeNarrationGate = '1';
     panel.className = 'mt-4 border-2 border-indigo-200 bg-indigo-50 rounded-xl p-4';
     panel.innerHTML = `
-      <div class="font-bold text-indigo-900 mb-1">🎙️ Supervisão da narração antes do vídeo</div>
-      <div class="text-sm text-slate-600 mb-3">Escolha entre produzir direto ou ouvir primeiro o áudio completo. A prévia não gera imagens, não renderiza MP4 e não entra na fila pesada.</div>
+      <div class="font-bold text-indigo-900 mb-1">🎙️ Narration Core v1 — supervisão única</div>
+      <div class="text-sm text-slate-600 mb-3">Todo vídeo narrado desta aba passa pelo mesmo núcleo. A prévia não gera imagens, não renderiza MP4 e mostra exatamente o texto enviado ao TTS.</div>
       <div class="flex flex-wrap gap-2 mb-3">
         <button type="button" data-ng-direct class="bg-green-600 text-white px-4 py-2 rounded-lg font-semibold">🎬 Gerar vídeo narrado</button>
         <button type="button" data-ng-preview class="bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold">🎙️ Gerar primeiro o áudio da narração</button>
@@ -214,14 +279,11 @@
     panel.querySelector('[data-ng-redo]').addEventListener('click', () => generatePreview(panel, card));
     panel.querySelector('[data-ng-approve]').addEventListener('click', () => approvePreview(panel, card));
     panel.querySelector('[data-ng-continue]').addEventListener('click', () => continueWithApproved(panel, card));
-    panel.querySelector('[data-ng-direct]').addEventListener('click', () => {
-      clearApproved();
-      const button = existingGenerateButton(card);
-      if (button) button.click(); else setStatus(panel, 'Não encontrei o botão de geração do vídeo.', 'error');
-    });
+    panel.querySelector('[data-ng-direct]').addEventListener('click', () => directWithSameCore(panel, card));
     textarea.addEventListener('input', async () => {
       if (!approved) return;
-      if (await sha256(textarea.value) !== approved.text_sha256) {
+      const approvedSourceHash = approved.source_text_sha256 || '';
+      if (!approvedSourceHash || await sha256(textarea.value) !== approvedSourceHash) {
         clearApproved();
         panel.querySelector('[data-ng-continue]').disabled = true;
         setStatus(panel, 'Texto alterado: a aprovação do áudio foi invalidada. Gere uma nova narração.', 'error');
@@ -230,23 +292,37 @@
   }
 
   window.fetch = async function narrationGateFetch(input, init = {}) {
-    try {
-      const url = typeof input === 'string' ? input : (input && input.url) || '';
-      const method = String(init.method || (input && input.method) || 'GET').toUpperCase();
-      if (method === 'POST' && /\/youtube\/generate_video(?:\?|$)/.test(url) && approved && typeof init.body === 'string') {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const method = String(init.method || (input && input.method) || 'GET').toUpperCase();
+    const isVideoRequest = method === 'POST' && /\/youtube\/generate_video(?:\?|$)/.test(url);
+    if (isVideoRequest && approvedLaunchArmed) {
+      try {
+        if (!approved || !isCurrentApproved(approved) || typeof init.body !== 'string') {
+          approvedLaunchArmed = false;
+          throw new Error('Narração aprovada ausente no pedido de vídeo; geração bloqueada.');
+        }
         const payload = JSON.parse(init.body);
         const text = normalizeText(payload.story_content || payload.script_text || '');
-        if (text && await sha256(text) === approved.text_sha256) {
-          payload.reuse_audio_from = approved.reuse_audio_from;
-          payload.approved_narration_preview_id = approved.preview_id;
-          payload.approved_narration_text_sha256 = approved.text_sha256;
-          init = { ...init, body: JSON.stringify(payload) };
-        } else if (text) {
+        const approvedSourceHash = approved.source_text_sha256 || '';
+        if (!text || !approvedSourceHash || await sha256(text) !== approvedSourceHash) {
+          approvedLaunchArmed = false;
           clearApproved();
+          throw new Error('O texto do vídeo não corresponde ao texto-fonte aprovado; geração bloqueada.');
         }
+        payload.reuse_audio_from = approved.reuse_audio_from;
+        payload.approved_narration_preview_id = approved.preview_id;
+        payload.approved_narration_text_sha256 = approved.text_sha256;
+        payload.approved_narration_required = true;
+        payload.narration_core_version = CORE_VERSION;
+        payload.narration_core_namespace = CORE_NAMESPACE;
+        approvedInjectionCount += 1;
+        approvedLaunchArmed = false;
+        init = { ...init, body: JSON.stringify(payload) };
+      } catch (err) {
+        approvedLaunchArmed = false;
+        console.error('Codexia Narration Core bloqueou o pedido:', err);
+        return Promise.reject(err);
       }
-    } catch (err) {
-      console.warn('Codexia narration gate interceptor warning:', err);
     }
     return originalFetch(input, init);
   };
