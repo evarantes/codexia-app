@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the current directory contents into the container at /app
 COPY . .
 
-# API and worker share the exact same source-owned app/services/narration_core.py.
+# Narration Core v1: API and worker share the exact same source-owned app/services/narration_core.py.
 # Build steps may install renderer/worker adapters and recovery contracts, but
 # do not run the legacy narration parsers (global/v4/canonical patch layers).
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
