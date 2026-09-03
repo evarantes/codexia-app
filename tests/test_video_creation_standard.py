@@ -1,5 +1,6 @@
 import unittest
 
+from app.services.narration_core import NARRATION_CORE_VERSION
 from app.services.narration_contract_guard import (
     has_complete_cta,
     install_narration_contract_guard,
@@ -127,7 +128,7 @@ class VideoCreationStandardIntegrationTests(unittest.TestCase):
         self.assertTrue(plan["captions_enabled"])
         self.assertTrue(has_complete_cta(meta["cta_text"]))
         self.assertIn("curta", meta["cta_text"].lower())
-        self.assertEqual(meta["protected_closing_contract"]["version"], 4)
+        self.assertEqual(meta["protected_closing_contract"]["version"], NARRATION_CORE_VERSION)
         self.assertEqual(
             set(meta["protected_closing_contract"]["required_cta_signals"]),
             set(STANDARD_REQUIRED_CTA_SIGNALS),
