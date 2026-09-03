@@ -143,7 +143,7 @@ _SCENE_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _STAGE_DIRECTION = re.compile(
-    r"[\[(]\s*(?:pausa|pause|break|sil[eê]ncio|respira[cç][aã]o|"
+    r"[\[(]\s*(?:(?:pausa|pause|break|sil[eê]ncio|respira[cç][aã]o)(?:\s+[^\])]+)?|"
     r"tom\s+[^\])]+|voz\s+[^\])]+|m[uú]sica\s+[^\])]+|"
     r"c[aâ]mera\s+[^\])]+|camera\s+[^\])]+|efeito\s+[^\])]+)\s*[\])]",
     re.IGNORECASE,
@@ -205,7 +205,10 @@ def _normalize_plain_text(value: Any) -> str:
     raw = _STAGE_DIRECTION.sub(" ", raw)
     raw = re.sub(r"[ \t]+", " ", raw)
     raw = re.sub(r"\s+([,;:.!?])", r"\1", raw)
-    raw = re.sub(r"([,;:.!?])(?=[^\s\n\"”’')\]])", r"\1 ", raw)
+    # Não insere espaço no ':' quando ele faz parte de referência bíblica,
+    # horário ou outra relação numérica como Romanos 8:17 / 10:30.
+    raw = re.sub(r"([,;.!?])(?=[^\s\n\"”’')\]])", r"\1 ", raw)
+    raw = re.sub(r"(?<!\d):(?=[^\s\n\"”’')\]])", ": ", raw)
     return raw.strip()
 
 
