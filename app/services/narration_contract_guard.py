@@ -27,6 +27,13 @@ _SAFE_SSML_CONTAINER_TAG = re.compile(
 _BREAK_TAG = re.compile(r"(?is)<\s*break\b[^>]*?/?>")
 _STRUCTURAL_PATTERNS = (
     ("code_fence", re.compile(r"```|~~~")),
+    ("inline_code", re.compile(r"`[^`\n]+`")),
+    ("source_code_assignment", re.compile(r"(?i)\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=")),
+    ("source_code_declaration", re.compile(r"(?i)\b(?:def|class|function)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*[(:]")),
+    ("source_code_arrow", re.compile(r"=>")),
+    ("sql_statement", re.compile(
+        r"(?i)\b(?:SELECT\s+.+?\s+FROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|DELETE\s+FROM)\b"
+    )),
     ("json_field", re.compile(
         r"(?i)[\"']?(?:image_prompt|visual_prompt|camera_movement|motion_effect|scene_qc|"
         r"scene_card|narration_text|on_screen_text|selected_images|generated_image_path|"
@@ -59,6 +66,14 @@ def sanitize_narration_text(text: Any) -> str:
     raw = raw.replace("\r\n", "\n").replace("\r", "\n")
     raw = _BREAK_TAG.sub(", ", raw)
     raw = _SAFE_SSML_CONTAINER_TAG.sub(" ", raw)
+    # Markdown editorial seguro pode ser removido; backticks não são removidos
+    # porque representam código inline e devem falhar fechado antes do TTS.
+    raw = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", raw)
+    raw = re.sub(r"(?m)^\s*(?:[-+*]|\d+[.)])\s+", "", raw)
+    raw = re.sub(r"(?m)^\s*>\s?", "", raw)
+    raw = re.sub(r"(?<!\*)\*{2}([^*\n]+)\*{2}(?!\*)", r"\1", raw)
+    raw = re.sub(r"__([^_\n]+)__", r"\1", raw)
+    raw = re.sub(r"~~([^~\n]+)~~", r"\1", raw)
     raw = re.sub(r"\s+", " ", raw).strip(" ,")
     return raw
 
@@ -324,6 +339,9 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
     video_generator_cls._codexia_narration_contract_guard_version = NARRATION_CORE_VERSION
     return video_generator_cls
 
+
+# CODEXIA_NARRATION_CTA_FINISH_HARDENING_V1
+# As validações úteis deste antigo hardening agora são fonte canônica e não um patch de build.
 
 __all__ = [
     "DEFAULT_COMPLETE_CTA",
