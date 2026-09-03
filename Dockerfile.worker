@@ -33,6 +33,8 @@ COPY . .
 # do not run the legacy narration parsers (global/v4/canonical patch layers).
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
+    python scripts/apply_duration_seconds_support.py --apply && \
+    python scripts/apply_duration_seconds_support.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
     python scripts/apply_openai_quality_cost_hardening.py --check && \
     python scripts/apply_video_cost_backend_hardening.py --apply && \
