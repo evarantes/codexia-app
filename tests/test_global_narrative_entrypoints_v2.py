@@ -1,7 +1,5 @@
-from app.services.narrative_structure_standard import (
-    NARRATIVE_STRUCTURE_STANDARD_VERSION,
-    prepare_global_narrative_request,
-)
+from app.services.global_narrative_entrypoint import prepare_global_narrative_request
+from app.services.narrative_structure_standard import NARRATIVE_STRUCTURE_STANDARD_VERSION
 
 
 def _assert_global(payload):
