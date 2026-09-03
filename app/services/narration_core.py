@@ -98,6 +98,21 @@ _TECHNICAL_KEYS = {
     "prompt",
     "system_prompt",
     "payload",
+    "status",
+    "progress",
+    "output_path",
+    "file_path",
+    "video_path",
+    "audio_path",
+    "task_id",
+    "job_id",
+    "request_id",
+    "executor_id",
+    "pipeline_stage",
+    "render_stage",
+    "error_code",
+    "result_json",
+    "payload_json",
 }
 
 _NARRATIVE_LABEL = re.compile(
@@ -109,8 +124,15 @@ _TECHNICAL_LABEL = re.compile(
     r"dura[cç][aã]o|duration|movimento\s*(?:de\s*)?c[aâ]mera|camera\s*movement|"
     r"texto\s*na\s*tela|on\s*screen\s*text|transi[cç][aã]o|transition|"
     r"efeito\s*sonoro|sound\s*effect|m[uú]sica|music|trilha|lighting|ilumina[cç][aã]o|"
-    r"enquadramento|framing|negative\s*prompt|metadata|payload|render\s*report)\s*[:=\-–—]",
+    r"enquadramento|framing|negative\s*prompt|metadata|payload|render\s*report|"
+    r"status|progress|output\s*path|file\s*path|video\s*path|audio\s*path|task\s*id|job\s*id|"
+    r"request\s*id|executor\s*id|pipeline\s*stage|render\s*stage|error\s*code)\s*[:=\-–—]",
     re.IGNORECASE,
+)
+_INLINE_TECHNICAL_MARKER = re.compile(
+    r"(?i)\s+(?=(?:prompt\s*(?:visual|de\s*imagem|imagem)?|image\s*prompt|visual\s*prompt|"
+    r"dura[cç][aã]o|duration|movimento\s*(?:de\s*)?c[aâ]mera|camera\s*movement|"
+    r"texto\s*na\s*tela|on\s*screen\s*text|metadata|payload|render\s*report)\s*[:=\-–—])"
 )
 _SCENE_ONLY = re.compile(
     r"^\s*(?:cena|scene|take|shot|segmento|segment)\s*(?:#\s*)?\d+[A-Za-z]?\s*$",
@@ -131,17 +153,30 @@ _SAFE_SSML_CONTAINER = re.compile(
 )
 _BREAK_TAG = re.compile(r"(?is)<\s*break\b[^>]*?/?>")
 _CODE_FENCE = re.compile(r"```|~~~")
+_INLINE_CODE = re.compile(r"`[^`\n]+`")
+_SOURCE_CODE_ASSIGNMENT = re.compile(r"(?i)\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=")
+_SOURCE_CODE_DECLARATION = re.compile(r"(?i)\b(?:def|class|function)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*[(:]")
+_SOURCE_CODE_ARROW = re.compile(r"=>")
+_SQL_STATEMENT = re.compile(
+    r"(?i)\b(?:SELECT\s+.+?\s+FROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET|DELETE\s+FROM)\b"
+)
 _JSON_FIELD_RESIDUE = re.compile(
     r"(?i)[\"']?(?:image_prompt|visual_prompt|camera_movement|motion_effect|"
     r"on_screen_text|metadata|payload|render_report|system_prompt)[\"']?\s*:"
 )
 _TECH_RESIDUE = re.compile(
-    r"(?im)^\s*(?:prompt\s*visual|prompt\s*de\s*imagem|image_prompt|visual_prompt|"
+    r"(?im)(?:^|\s)(?:prompt\s*visual|prompt\s*de\s*imagem|image_prompt|visual_prompt|"
     r"dura[cç][aã]o|duration|movimento\s*(?:de\s*)?c[aâ]mera|camera_movement|"
     r"texto\s*na\s*tela|on_screen_text|metadata|payload|render_report)\s*[:=]"
 )
 _TEMPLATE_RESIDUE = re.compile(r"\{\{[^{}]+\}\}|\$\{[^{}]+\}")
 _XML_RESIDUE = re.compile(r"(?is)<\s*/?\s*[A-Za-z][^>]*>")
+_SERIALIZED_TECH_FIELD = re.compile(
+    r"(?i)(?<!\w)(?:status|progress|output_path|file_path|video_path|audio_path|"
+    r"task_id|job_id|request_id|executor_id|provider|model|pipeline_stage|"
+    r"render_stage|error_code|result_json|payload_json)\s*[:=]"
+)
+_ESCAPED_SERIALIZED_FIELD = re.compile(r"\\[nrt]\s*[\"']?[A-Za-z_][A-Za-z0-9_]*[\"']?\s*:")
 
 
 def _fold_key(value: Any) -> str:
@@ -151,11 +186,22 @@ def _fold_key(value: Any) -> str:
     return re.sub(r"_+", "_", raw)
 
 
+def _strip_safe_markdown(raw: str) -> str:
+    raw = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", raw)
+    raw = re.sub(r"(?m)^\s*(?:[-+*]|\d+[.)])\s+", "", raw)
+    raw = re.sub(r"(?m)^\s*>\s?", "", raw)
+    raw = re.sub(r"(?<!\*)\*{2}([^*\n]+)\*{2}(?!\*)", r"\1", raw)
+    raw = re.sub(r"__([^_\n]+)__", r"\1", raw)
+    raw = re.sub(r"~~([^~\n]+)~~", r"\1", raw)
+    return raw
+
+
 def _normalize_plain_text(value: Any) -> str:
     raw = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).replace("\x00", " ")
     raw = raw.replace("\r\n", "\n").replace("\r", "\n")
     raw = _BREAK_TAG.sub(", ", raw)
     raw = _SAFE_SSML_CONTAINER.sub(" ", raw)
+    raw = _strip_safe_markdown(raw)
     raw = _STAGE_DIRECTION.sub(" ", raw)
     raw = re.sub(r"[ \t]+", " ", raw)
     raw = re.sub(r"\s+([,;:.!?])", r"\1", raw)
@@ -200,15 +246,27 @@ def _collect_structured(value: Any, *, removed: List[int]) -> List[str]:
     return out
 
 
+def _truncate_inline_technical_suffix(value: str) -> tuple[str, bool]:
+    match = _INLINE_TECHNICAL_MARKER.search(value)
+    if not match:
+        return value, False
+    return value[:match.start()].rstrip(), True
+
+
 def _extract_from_lines(value: str) -> tuple[str, int]:
     raw = _normalize_plain_text(value)
     removed = 0
     spoken: List[str] = []
+    in_code_fence = False
     for original_line in raw.split("\n"):
         line = original_line.strip()
         if not line:
             continue
         if _CODE_FENCE.search(line):
+            in_code_fence = not in_code_fence
+            removed += 1
+            continue
+        if in_code_fence:
             removed += 1
             continue
         if _SCENE_ONLY.match(line):
@@ -221,6 +279,9 @@ def _extract_from_lines(value: str) -> tuple[str, int]:
         narrative_match = _NARRATIVE_LABEL.match(line)
         if narrative_match:
             candidate = narrative_match.group(1).strip()
+            candidate, truncated = _truncate_inline_technical_suffix(candidate)
+            if truncated:
+                removed += 1
             if candidate:
                 spoken.append(candidate)
             removed += 1
@@ -231,7 +292,11 @@ def _extract_from_lines(value: str) -> tuple[str, int]:
         if _JSON_FIELD_RESIDUE.search(line) or _TECH_RESIDUE.search(line):
             removed += 1
             continue
-        spoken.append(line)
+        candidate, truncated = _truncate_inline_technical_suffix(line)
+        if truncated:
+            removed += 1
+        if candidate:
+            spoken.append(candidate)
 
     text = " ".join(spoken)
     text = re.sub(r"\s+", " ", text).strip(" ,")
@@ -252,6 +317,16 @@ def _assert_no_technical_residue(text: str) -> None:
     issues: List[str] = []
     if _CODE_FENCE.search(text):
         issues.append("code_fence")
+    if _INLINE_CODE.search(text):
+        issues.append("inline_code")
+    if _SOURCE_CODE_ASSIGNMENT.search(text):
+        issues.append("source_code_assignment")
+    if _SOURCE_CODE_DECLARATION.search(text):
+        issues.append("source_code_declaration")
+    if _SOURCE_CODE_ARROW.search(text):
+        issues.append("source_code_arrow")
+    if _SQL_STATEMENT.search(text):
+        issues.append("sql_statement")
     if _JSON_FIELD_RESIDUE.search(text):
         issues.append("technical_json_field")
     if _TECH_RESIDUE.search(text):
@@ -260,6 +335,10 @@ def _assert_no_technical_residue(text: str) -> None:
         issues.append("template_placeholder")
     if _XML_RESIDUE.search(text):
         issues.append("xml_or_ssml_residue")
+    if _ESCAPED_SERIALIZED_FIELD.search(text):
+        issues.append("escaped_serialized_field")
+    if len(_SERIALIZED_TECH_FIELD.findall(text)) >= 2:
+        issues.append("serialized_technical_payload")
     if issues:
         raise NarrationCoreError(
             "conteúdo técnico residual detectado: " + ", ".join(sorted(set(issues)))
