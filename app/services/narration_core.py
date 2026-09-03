@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
 
 NARRATION_CORE_VERSION = 1
@@ -112,8 +112,12 @@ _TECHNICAL_LABEL = re.compile(
     r"enquadramento|framing|negative\s*prompt|metadata|payload|render\s*report)\s*[:=\-–—]",
     re.IGNORECASE,
 )
-_SCENE_HEADER = re.compile(
-    r"^\s*(?:cena|scene|take|shot|segmento|segment)\s*(?:#\s*)?\d+[A-Za-z]?\s*(?:[:=\-–—].*)?$",
+_SCENE_ONLY = re.compile(
+    r"^\s*(?:cena|scene|take|shot|segmento|segment)\s*(?:#\s*)?\d+[A-Za-z]?\s*$",
+    re.IGNORECASE,
+)
+_SCENE_PREFIX = re.compile(
+    r"^\s*(?:cena|scene|take|shot|segmento|segment)\s*(?:#\s*)?\d+[A-Za-z]?\s*[:=\-–—]+\s*(.+)$",
     re.IGNORECASE,
 )
 _STAGE_DIRECTION = re.compile(
@@ -185,8 +189,6 @@ def _collect_structured(value: Any, *, removed: List[int]) -> List[str]:
             if normalized in _NARRATIVE_KEYS:
                 saw_narrative = True
                 out.extend(_collect_structured(item, removed=removed))
-        # Estruturas neutras como scenes/segments podem conter campos narrativos.
-        # Só percorremos os filhos que ainda não foram consumidos/descartados.
         for key, item in value.items():
             normalized = _fold_key(key)
             if normalized in _NARRATIVE_KEYS or normalized in _TECHNICAL_KEYS:
@@ -194,7 +196,6 @@ def _collect_structured(value: Any, *, removed: List[int]) -> List[str]:
             if isinstance(item, (dict, list)):
                 out.extend(_collect_structured(item, removed=removed))
         if not saw_narrative and not out:
-            # Um objeto puramente técnico não pode virar fala por fallback.
             return []
     return out
 
@@ -210,9 +211,13 @@ def _extract_from_lines(value: str) -> tuple[str, int]:
         if _CODE_FENCE.search(line):
             removed += 1
             continue
-        if _SCENE_HEADER.match(line):
+        if _SCENE_ONLY.match(line):
             removed += 1
             continue
+        scene_prefix = _SCENE_PREFIX.match(line)
+        if scene_prefix:
+            line = scene_prefix.group(1).strip()
+            removed += 1
         narrative_match = _NARRATIVE_LABEL.match(line)
         if narrative_match:
             candidate = narrative_match.group(1).strip()
@@ -223,7 +228,6 @@ def _extract_from_lines(value: str) -> tuple[str, int]:
         if _TECHNICAL_LABEL.match(line):
             removed += 1
             continue
-        # Linhas serializadas/técnicas nunca são transformadas em prosa.
         if _JSON_FIELD_RESIDUE.search(line) or _TECH_RESIDUE.search(line):
             removed += 1
             continue
