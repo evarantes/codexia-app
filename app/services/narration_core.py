@@ -152,6 +152,10 @@ _SAFE_SSML_CONTAINER = re.compile(
     r"(?is)</?\s*(?:speak|prosody|voice|p|s|emphasis|sub|phoneme)\b[^>]*>"
 )
 _BREAK_TAG = re.compile(r"(?is)<\s*break\b[^>]*?/?>")
+_PLAIN_PAUSE_DIRECTIVE = re.compile(
+    r"(?ix)\b(?:break\s+time|pause\s+duration|pausa\s+dura[cç][aã]o)\s*=\s*"
+    r"(?:[\"']\s*)?\d+(?:[.,]\d+)?\s*(?:ms|s|sec|secs|second|seconds|seg|segs|segundo|segundos)(?:\s*[\"'])?"
+)
 _CODE_FENCE = re.compile(r"```|~~~")
 _INLINE_CODE = re.compile(r"`[^`\n]+`")
 _SOURCE_CODE_ASSIGNMENT = re.compile(r"(?i)\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=")
@@ -203,10 +207,9 @@ def _normalize_plain_text(value: Any) -> str:
     raw = _SAFE_SSML_CONTAINER.sub(" ", raw)
     raw = _strip_safe_markdown(raw)
     raw = _STAGE_DIRECTION.sub(" ", raw)
+    raw = _PLAIN_PAUSE_DIRECTIVE.sub(" ", raw)
     raw = re.sub(r"[ \t]+", " ", raw)
     raw = re.sub(r"\s+([,;:.!?])", r"\1", raw)
-    # Não insere espaço no ':' quando ele faz parte de referência bíblica,
-    # horário ou outra relação numérica como Romanos 8:17 / 10:30.
     raw = re.sub(r"([,;.!?])(?=[^\s\n\"”’')\]])", r"\1 ", raw)
     raw = re.sub(r"(?<!\d):(?=[^\s\n\"”’')\]])", ": ", raw)
     return raw.strip()
