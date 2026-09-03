@@ -83,6 +83,8 @@ jobs:
           python scripts/apply_consolidated_hardening.py --check
           python scripts/apply_duration_confirmation_hardening.py --apply
           python scripts/apply_duration_confirmation_hardening.py --check
+          python scripts/apply_duration_seconds_support.py --apply
+          python scripts/apply_duration_seconds_support.py --check
           python scripts/apply_openai_quality_cost_hardening.py --apply
           python scripts/apply_openai_quality_cost_hardening.py --check
           python scripts/apply_video_cost_backend_hardening.py --apply
@@ -137,6 +139,7 @@ jobs:
           # The canonical narration files are source-owned. No hardening step may rewrite them.
           git diff --exit-code -- app/services/narration_core.py app/services/youtube_narration_gate.py app/services/narration_contract_guard.py app/static/youtube_narration_gate.js
           python -m unittest tests.test_narration_core_v1 -v
+          python -m unittest tests.test_duration_seconds_support -v
 
       - name: Apply canonical Alembic migration on PostgreSQL
         run: |
