@@ -34,23 +34,9 @@ RUN python -m playwright install --with-deps chromium
 COPY . .
 
 # Apply deterministic hardening before any runtime validation/startup.
-# Cost control runs after duration + OpenAI defaults so it can safely add
-# per-production quality, budget confirmation and the cost panel.
-# Caption integrity converts the legacy text mismatch validator into local
-# recovery; final visual quality makes visual warnings review-safe; checkpoint
-# recovery normalizes saved assets; final-render recovery runs last so an MP4
-# already written at stage_6 is salvaged before any paid retry can start.
-# Production manifest runs after all recovery layers; narration contract then
-# protects TTS/CTA and persists paid assets immediately before temp cleanup.
-# Manifest diagnostics is read-only and exposes the durable recovery state;
-# asset-path recovery then remaps old container paths on the active worker.
-# Adaptive render threads may choose 1 or 2 FFmpeg threads. Recovery/render
-# stall hardening protects task-owned assets and real render I/O; the follow-up
-# fix avoids false failures during legitimate long renders. Recoverable archive
-# preserves stopped work; final post-render quality hardening makes a real
-# spoken/captioned closing valid and preserves completed MP4s for review.
-# Ready-video repair runs last so it can deliberately bypass old MP4/audio
-# recovery while reusing the valid script/images under a confirmed image cap.
+# Narration parsing itself is source-owned by app/services/narration_core.py.
+# Build hardening may install the renderer/worker adapter and preserve assets,
+# but must never rewrite the canonical narration parser/gate with legacy layers.
 RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
@@ -103,12 +89,6 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_ready_video_asset_repair_v3.py --check && \
     python scripts/apply_youtube_narration_gate.py --apply && \
     python scripts/apply_youtube_narration_gate.py --check && \
-    python scripts/apply_global_narration_contract.py --apply && \
-    python scripts/apply_global_narration_contract.py --check && \
-    python scripts/apply_spoken_text_boundary_v4.py --apply && \
-    python scripts/apply_spoken_text_boundary_v4.py --check && \
-    python scripts/apply_canonical_narration_logo_test_mode.py --apply && \
-    python scripts/apply_canonical_narration_logo_test_mode.py --check && \
     python scripts/apply_global_logo_only_visual_mode.py --apply && \
     python scripts/apply_global_logo_only_visual_mode.py --check && \
     python -m compileall -q app scripts
