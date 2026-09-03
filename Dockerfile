@@ -41,6 +41,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_consolidated_hardening.py --check && \
     python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
+    python scripts/apply_duration_seconds_support.py --apply && \
+    python scripts/apply_duration_seconds_support.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
     python scripts/apply_openai_quality_cost_hardening.py --check && \
     python scripts/apply_video_cost_backend_hardening.py --apply && \
