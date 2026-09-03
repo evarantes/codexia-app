@@ -28,26 +28,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the current directory contents into the container at /app
 COPY . .
 
-# Keep the worker runtime on the same duration, OpenAI image quality,
-# per-production cost-control and final voice/closure contracts as the API.
-# Caption self-heal runs after voice/closure; final visual quality self-heal
-# keeps a valid render; checkpoint recovery normalizes persisted assets; final
-# render recovery then salvages a completed MP4 before any paid retry.
-# Narration contract runs after the durable manifest so temporary paid media is
-# copied immediately and code/JSON cannot reach TTS.
-# Manifest asset recovery remaps stale API/container paths locally before the
-# adaptive renderer chooses at most 2 threads (or 1 under pressure). The final
-# recovery/render-stall layer protects task-owned assets and real render I/O;
-# the follow-up fix avoids false stalls on legitimate long renders; archive
-# hardening keeps cancelled jobs recoverable with their original task_id. The
-# final post-render gate preserves completed MP4s and validates real closings.
-# Ready-video repair runs last to force clean audio/new missing visuals while
-# retaining the original script and valid images under a confirmed paid cap.
-# IMPORTANT: YouTube narration gate + global narration contract MUST also run
-# in the dedicated worker image. The worker is the process that actually
-# executes TTS/rendering in production; applying these guards only to the API
-# creates divergent execution paths and can reintroduce narrated code or ignore
-# an approved MP3.
+# API and worker share the exact same source-owned Narration Core v1.
+# Build steps may install renderer/worker adapters and recovery contracts, but
+# do not run the legacy narration parsers (global/v4/canonical patch layers).
 RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_duration_confirmation_hardening.py --check && \
     python scripts/apply_openai_quality_cost_hardening.py --apply && \
@@ -94,12 +77,6 @@ RUN python scripts/apply_duration_confirmation_hardening.py --apply && \
     python scripts/apply_ready_video_asset_repair_v3.py --check && \
     python scripts/apply_youtube_narration_gate.py --apply && \
     python scripts/apply_youtube_narration_gate.py --check && \
-    python scripts/apply_global_narration_contract.py --apply && \
-    python scripts/apply_global_narration_contract.py --check && \
-    python scripts/apply_spoken_text_boundary_v4.py --apply && \
-    python scripts/apply_spoken_text_boundary_v4.py --check && \
-    python scripts/apply_canonical_narration_logo_test_mode.py --apply && \
-    python scripts/apply_canonical_narration_logo_test_mode.py --check && \
     python scripts/apply_global_logo_only_visual_mode.py --apply && \
     python scripts/apply_global_logo_only_visual_mode.py --check && \
     python -m compileall -q app scripts
