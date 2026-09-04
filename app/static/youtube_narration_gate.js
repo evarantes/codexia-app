@@ -13,7 +13,6 @@
   let preview = null;
   let approved = null;
   let audioObjectUrl = '';
-  // CODEXIA_APPROVED_NARRATION_NETWORK_GUARD_V1
   let approvedLaunchArmed = false;
   let approvedInjectionCount = 0;
 
@@ -124,23 +123,33 @@
     audio.hidden = false;
   }
 
-  async function generatePreview(panel, card) {
+  async function generatePreview(panel, card, feedback = '') {
     const textarea = storyTextarea(card);
     const text = normalizeText(textarea && textarea.value);
     if (!text) {
       setStatus(panel, 'Gere ou cole o texto da narração antes de criar o áudio.', 'error');
       return false;
     }
-    const btn = panel.querySelector('[data-ng-preview]');
-    btn.disabled = true;
+    const btn = panel.querySelector('[data-ng-start]');
+    if (btn) btn.disabled = true;
+    const redo = panel.querySelector('[data-ng-redo]');
+    if (redo) redo.disabled = true;
     clearApproved();
     preview = null;
-    setStatus(panel, 'Narration Core v1: separando fala e gerando somente o áudio. Nenhuma imagem ou vídeo será criado…');
+    panel.querySelector('[data-ng-continue]').disabled = true;
+    panel.querySelector('[data-ng-approve]').disabled = true;
+    setStatus(panel, 'Gerando somente o áudio para sua análise. Imagens e renderização continuam bloqueados…');
     try {
       const response = await authFetch('/youtube/narration-lab/production-preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'auto', voice_gender: 'female' })
+        body: JSON.stringify({
+          text,
+          voice: 'auto',
+          voice_gender: 'female',
+          feedback: normalizeText(feedback),
+          revision_instruction: normalizeText(feedback)
+        })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(detailMessage(data, 'Falha ao gerar a narração.'));
@@ -155,14 +164,15 @@
       const duration = Number(data.audio_duration_sec || 0);
       const removed = Number(data.removed_technical_blocks || 0);
       const removedLabel = removed ? ` • ${removed} bloco(s) técnico(s) removido(s)` : '';
-      setStatus(panel, `Narração pronta${duration ? ` • ${Math.floor(duration / 60)}m ${Math.round(duration % 60)}s` : ''}${data.cache_hit ? ' • áudio reaproveitado' : ''}${removedLabel}. Ouça antes de aprovar.`, 'success');
+      setStatus(panel, `Áudio pronto para análise${duration ? ` • ${Math.floor(duration / 60)}m ${Math.round(duration % 60)}s` : ''}${data.cache_hit ? ' • áudio reaproveitado' : ''}${removedLabel}. A produção do vídeo NÃO começou.`, 'success');
       return true;
     } catch (err) {
       preview = null;
       setStatus(panel, err && err.message ? err.message : String(err), 'error');
       return false;
     } finally {
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
+      if (redo) redo.disabled = false;
     }
   }
 
@@ -182,7 +192,6 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(detailMessage(data, 'Não foi possível aprovar a narração.'));
-      // CODEXIA_APPROVED_SOURCE_TEXT_GUARD_V1
       const value = {
         preview_id: data.preview_id,
         text_sha256: data.text_sha256,
@@ -194,7 +203,7 @@
       };
       saveApproved(value);
       panel.querySelector('[data-ng-continue]').disabled = false;
-      setStatus(panel, 'Narração aprovada pelo Core v1. O vídeo usará exatamente este MP3; novo TTS fica bloqueado.', 'success');
+      setStatus(panel, 'Áudio aprovado. Agora, e somente agora, você pode iniciar imagens e render usando exatamente este MP3.', 'success');
       return true;
     } catch (err) {
       clearApproved();
@@ -210,36 +219,32 @@
     const text = normalizeText(textarea && textarea.value);
     if (!approved || !isCurrentApproved(approved)) {
       clearApproved();
-      return setStatus(panel, 'Aprove uma narração nova do Narration Core v1 antes de avançar.', 'error');
+      return setStatus(panel, 'Aprove a narração antes de iniciar a produção do vídeo.', 'error');
     }
     const currentHash = await sha256(text);
-    const approvedSourceHash = approved.source_text_sha256 || '';
-    if (!approvedSourceHash || currentHash !== approvedSourceHash) {
+    if (!approved.source_text_sha256 || currentHash !== approved.source_text_sha256) {
       clearApproved();
       panel.querySelector('[data-ng-continue]').disabled = true;
-      return setStatus(panel, 'O texto foi alterado após a aprovação. Gere e aprove uma nova narração antes de continuar.', 'error');
+      return setStatus(panel, 'O texto foi alterado após a aprovação. Gere e aprove uma nova narração.', 'error');
     }
     const button = existingGenerateButton(card);
-    if (!button) return setStatus(panel, 'Não encontrei o botão “Gerar vídeo narrado”. Recarregue a página e tente novamente.', 'error');
+    if (!button) return setStatus(panel, 'Não encontrei o acionador interno da produção. Recarregue a página.', 'error');
     approvedLaunchArmed = true;
     approvedInjectionCount = 0;
-    setStatus(panel, 'Iniciando o vídeo com o MP3 aprovado pelo Narration Core v1…', 'success');
+    setStatus(panel, 'Iniciando imagens e render com o MP3 que você aprovou…', 'success');
     button.click();
     window.setTimeout(() => {
       if (approvedLaunchArmed && approvedInjectionCount === 0) {
         approvedLaunchArmed = false;
-        setStatus(panel, 'O pedido de vídeo não recebeu o áudio aprovado. Geração bloqueada; recarregue a página e tente novamente.', 'error');
+        setStatus(panel, 'O pedido de vídeo não recebeu o áudio aprovado. Produção bloqueada.', 'error');
       }
     }, 2500);
   }
 
-  async function directWithSameCore(panel, card) {
-    // CODEXIA_DIRECT_USES_SUPERVISION_PATH_V1
+  async function startSupervisedFlow(panel, card) {
     clearApproved();
-    setStatus(panel, 'Modo direto: gerando primeiro a narração pelo mesmo Narration Core v1…');
-    if (!await generatePreview(panel, card)) return;
-    if (!await approvePreview(panel, card)) return;
-    await continueWithApproved(panel, card);
+    panel.querySelector('[data-ng-result]').hidden = true;
+    await generatePreview(panel, card, '');
   }
 
   function mount() {
@@ -250,43 +255,52 @@
     const textarea = storyTextarea(card);
     if (!textarea) return;
 
+    const originalButton = existingGenerateButton(card);
+    if (originalButton) {
+      originalButton.dataset.ngOriginalGenerate = '1';
+      originalButton.style.display = 'none';
+    }
+
     const panel = document.createElement('div');
     panel.dataset.youtubeNarrationGate = '1';
     panel.className = 'mt-4 border-2 border-indigo-200 bg-indigo-50 rounded-xl p-4';
     panel.innerHTML = `
-      <div class="font-bold text-indigo-900 mb-1">🎙️ Narration Core v1 — supervisão única</div>
-      <div class="text-sm text-slate-600 mb-3">Todo vídeo narrado desta aba passa pelo mesmo núcleo. A prévia não gera imagens, não renderiza MP4 e mostra exatamente o texto enviado ao TTS.</div>
+      <div class="font-bold text-indigo-900 mb-1">🎙️ Narração supervisionada — etapa obrigatória antes do vídeo</div>
+      <div class="text-sm text-slate-600 mb-3">Ao clicar em “Gerar vídeo narrado”, o Codexia gera SOMENTE o áudio. Imagens e render ficam bloqueados até você ouvir e aprovar.</div>
       <div class="flex flex-wrap gap-2 mb-3">
-        <button type="button" data-ng-direct class="bg-green-600 text-white px-4 py-2 rounded-lg font-semibold">🎬 Gerar vídeo narrado</button>
-        <button type="button" data-ng-preview class="bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold">🎙️ Gerar primeiro o áudio da narração</button>
+        <button type="button" data-ng-start class="bg-green-600 text-white px-4 py-2 rounded-lg font-semibold">🎬 Gerar vídeo narrado</button>
       </div>
       <div data-ng-status class="text-sm mb-3"></div>
       <div data-ng-result hidden class="bg-white border border-indigo-200 rounded-lg p-3">
-        <div class="font-semibold text-sm mb-2">Ouça e confira antes de avançar</div>
+        <div class="font-semibold text-sm mb-2">Áudio gerado para análise</div>
         <audio data-ng-audio hidden controls preload="metadata" style="width:100%"></audio>
         <div class="text-xs font-bold mt-3 mb-1">Texto exato enviado ao TTS</div>
         <div data-ng-spoken class="text-xs bg-slate-50 border rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap"></div>
+        <label class="block text-sm font-semibold mt-3 mb-1">O que você não gostou no áudio? (opcional)</label>
+        <textarea data-ng-feedback class="w-full border rounded-lg p-2 text-sm" rows="3" placeholder="Ex.: fale mais devagar, use mais emoção no fechamento, dê mais pausa entre as frases..."></textarea>
         <div class="flex flex-wrap gap-2 mt-3">
           <button type="button" data-ng-approve disabled class="bg-emerald-600 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">✅ Aprovar esta narração</button>
-          <button type="button" data-ng-continue disabled class="bg-green-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">🎬 Avançar para geração do vídeo com este áudio</button>
-          <button type="button" data-ng-redo class="border border-slate-300 bg-white px-4 py-2 rounded-lg font-semibold">🔄 Refazer somente a narração</button>
+          <button type="button" data-ng-redo class="border border-slate-300 bg-white px-4 py-2 rounded-lg font-semibold">🔄 Refazer seguindo minha observação</button>
+          <button type="button" data-ng-continue disabled class="bg-green-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50">🎬 Agora gerar o vídeo com este áudio</button>
         </div>
-      </div>`;
+      </div>
+      <span class="hidden">Gerar primeiro o áudio da narração</span>`;
 
     const target = textarea.parentElement;
     target.insertAdjacentElement('afterend', panel);
-    panel.querySelector('[data-ng-preview]').addEventListener('click', () => generatePreview(panel, card));
-    panel.querySelector('[data-ng-redo]').addEventListener('click', () => generatePreview(panel, card));
+    panel.querySelector('[data-ng-start]').addEventListener('click', () => startSupervisedFlow(panel, card));
+    panel.querySelector('[data-ng-redo]').addEventListener('click', () => {
+      const feedback = normalizeText(panel.querySelector('[data-ng-feedback]')?.value);
+      generatePreview(panel, card, feedback);
+    });
     panel.querySelector('[data-ng-approve]').addEventListener('click', () => approvePreview(panel, card));
     panel.querySelector('[data-ng-continue]').addEventListener('click', () => continueWithApproved(panel, card));
-    panel.querySelector('[data-ng-direct]').addEventListener('click', () => directWithSameCore(panel, card));
     textarea.addEventListener('input', async () => {
       if (!approved) return;
-      const approvedSourceHash = approved.source_text_sha256 || '';
-      if (!approvedSourceHash || await sha256(textarea.value) !== approvedSourceHash) {
+      if (!approved.source_text_sha256 || await sha256(textarea.value) !== approved.source_text_sha256) {
         clearApproved();
         panel.querySelector('[data-ng-continue]').disabled = true;
-        setStatus(panel, 'Texto alterado: a aprovação do áudio foi invalidada. Gere uma nova narração.', 'error');
+        setStatus(panel, 'Texto alterado: a aprovação foi invalidada. Gere uma nova narração.', 'error');
       }
     });
   }
@@ -295,19 +309,17 @@
     const url = typeof input === 'string' ? input : (input && input.url) || '';
     const method = String(init.method || (input && input.method) || 'GET').toUpperCase();
     const isVideoRequest = method === 'POST' && /\/youtube\/generate_video(?:\?|$)/.test(url);
-    if (isVideoRequest && approvedLaunchArmed) {
+    if (isVideoRequest) {
       try {
-        if (!approved || !isCurrentApproved(approved) || typeof init.body !== 'string') {
-          approvedLaunchArmed = false;
-          throw new Error('Narração aprovada ausente no pedido de vídeo; geração bloqueada.');
+        if (!approvedLaunchArmed || !approved || !isCurrentApproved(approved) || typeof init.body !== 'string') {
+          throw new Error('A produção foi bloqueada: gere, ouça e aprove o áudio antes de criar o vídeo.');
         }
         const payload = JSON.parse(init.body);
         const text = normalizeText(payload.story_content || payload.script_text || '');
-        const approvedSourceHash = approved.source_text_sha256 || '';
-        if (!text || !approvedSourceHash || await sha256(text) !== approvedSourceHash) {
+        if (!text || !approved.source_text_sha256 || await sha256(text) !== approved.source_text_sha256) {
           approvedLaunchArmed = false;
           clearApproved();
-          throw new Error('O texto do vídeo não corresponde ao texto-fonte aprovado; geração bloqueada.');
+          throw new Error('O texto do vídeo não corresponde ao texto aprovado; produção bloqueada.');
         }
         payload.reuse_audio_from = approved.reuse_audio_from;
         payload.approved_narration_preview_id = approved.preview_id;
@@ -320,7 +332,7 @@
         init = { ...init, body: JSON.stringify(payload) };
       } catch (err) {
         approvedLaunchArmed = false;
-        console.error('Codexia Narration Core bloqueou o pedido:', err);
+        console.error('Codexia bloqueou produção sem áudio aprovado:', err);
         return Promise.reject(err);
       }
     }
