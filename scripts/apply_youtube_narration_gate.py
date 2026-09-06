@@ -12,6 +12,9 @@ PRODUCTION_JOB_STORE = Path("app/services/production_job_store.py")
 TAG = '<script src="/static/youtube_narration_gate.js"></script>'
 MARKER = "</body>"
 
+# CI synchronization marker: the job-folder contract is source-owned and must
+# be validated against the service integration plus the physical job store.
+
 
 def apply() -> bool:
     """Keep hardening idempotent without rewriting canonical narration sources.
