@@ -143,7 +143,14 @@ class ProductionJobStore:
         self._write_json(job_dir / "job.json", job)
         return job
 
-    def approve_preview(self, *, user_id: int, job_id: str, preview_id: str) -> Dict[str, Any]:
+    def approve_preview(
+        self,
+        *,
+        user_id: int,
+        job_id: str,
+        preview_id: str,
+        approved_meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         job = self.create_or_get(user_id=user_id, job_id=job_id)
         versions = list(job.get("narration_versions") or [])
         selected = next((v for v in reversed(versions) if str(v.get("preview_id") or "") == str(preview_id)), None)
@@ -153,7 +160,35 @@ class ProductionJobStore:
         src_json = Path(str(selected.get("meta_path") or ""))
         if not src_mp3.is_file() or src_mp3.stat().st_size <= 512 or not src_json.is_file():
             raise ProductionJobStoreError("A versão escolhida da narração não está íntegra.")
-        meta = self._read_json(src_json)
+        selected_audio_sha256 = str(selected.get("audio_sha256") or "").strip().lower()
+        if not selected_audio_sha256 or self._sha256_file(src_mp3) != selected_audio_sha256:
+            raise ProductionJobStoreError("A integridade da versão escolhida da narração não confere.")
+
+        stored_meta = self._read_json(src_json)
+        if approved_meta is not None:
+            incoming_meta = dict(approved_meta) if isinstance(approved_meta, dict) else {}
+            same_version = bool(
+                incoming_meta.get("approved") is True
+                and str(incoming_meta.get("preview_id") or "") == str(preview_id)
+                and str(incoming_meta.get("text_sha256") or "")
+                == str(stored_meta.get("text_sha256") or "")
+                and int(incoming_meta.get("narration_core_version") or 0)
+                == int(stored_meta.get("narration_core_version") or 0)
+                and str(incoming_meta.get("narration_core_namespace") or "")
+                == str(stored_meta.get("narration_core_namespace") or "")
+                and str(incoming_meta.get("voice") or "")
+                == str(stored_meta.get("voice") or "")
+                and str(incoming_meta.get("provider") or "")
+                == str(stored_meta.get("provider") or "")
+            )
+            if not same_version:
+                raise ProductionJobStoreError(
+                    "A aprovação recebida não corresponde à versão registrada neste trabalho."
+                )
+            self._write_json(src_json, incoming_meta)
+            meta = incoming_meta
+        else:
+            meta = stored_meta
         if meta.get("approved") is not True or str(meta.get("preview_id") or "") != str(preview_id):
             raise ProductionJobStoreError("A narração ainda não foi aprovada pelo Narration Core.")
 

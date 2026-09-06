@@ -27,7 +27,11 @@ from app.services.narration_core import (
     narration_fingerprint,
     require_current_core,
 )
-from app.services.production_job_store import ProductionJobStoreError, production_job_store
+from app.services.production_job_store import (
+    ProductionJobStore,
+    ProductionJobStoreError,
+    production_job_store,
+)
 
 
 MAX_TEXT_CHARS = 30000
@@ -42,9 +46,16 @@ class YouTubeNarrationGateError(RuntimeError):
 
 
 class YouTubeNarrationGateService:
-    def __init__(self, output_root: str | None = None):
+    def __init__(self, output_root: str | None = None, job_store: ProductionJobStore | None = None):
         self.output_root = Path(output_root or AUDIO_OUTPUT_DIR) / "youtube_narration_core_v1"
         self.output_root.mkdir(parents=True, exist_ok=True)
+        # Instâncias de teste/isoladas precisam manter previews e jobs sob a
+        # mesma raiz. O singleton de produção continua usando o store global.
+        self.job_store = job_store or (
+            ProductionJobStore(output_root=output_root)
+            if output_root is not None
+            else production_job_store
+        )
 
     def _user_dir(self, user_id: int) -> Path:
         path = self.output_root / str(max(0, int(user_id or 0)))
@@ -176,7 +187,7 @@ class YouTubeNarrationGateService:
         self._write_meta(meta_path, meta)
 
         try:
-            job = production_job_store.register_preview(
+            job = self.job_store.register_preview(
                 user_id=user_id,
                 source_mp3=mp3_path,
                 source_meta=meta_path,
@@ -235,8 +246,13 @@ class YouTubeNarrationGateService:
         job_id = str(production_job_id or "").strip()
         if job_id:
             try:
-                job = production_job_store.approve_preview(user_id=user_id, job_id=job_id, preview_id=safe_id)
-                validated = production_job_store.validated_approved_audio(user_id=user_id, job_id=job_id)
+                job = self.job_store.approve_preview(
+                    user_id=user_id,
+                    job_id=job_id,
+                    preview_id=safe_id,
+                    approved_meta=meta,
+                )
+                validated = self.job_store.validated_approved_audio(user_id=user_id, job_id=job_id)
                 approved_path = validated["audio_path"].resolve()
                 approved_meta_path = Path(str(job.get("approved_audio_meta_path") or "")).resolve()
             except ProductionJobStoreError as exc:

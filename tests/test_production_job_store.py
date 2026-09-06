@@ -77,6 +77,35 @@ class ProductionJobStoreTest(unittest.TestCase):
         with self.assertRaises(ProductionJobStoreError):
             store.validated_approved_audio(user_id=9, job_id=job["job_id"])
 
+    def test_verified_core_approval_updates_the_job_version_before_freezing(self):
+        store = self._store()
+        preview_id = "d" * 32
+        mp3, meta_path = self._preview_files(preview_id)
+        preview_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        preview_meta["approved"] = False
+        preview_meta["voice"] = "pt-BR-FranciscaNeural"
+        preview_meta["provider"] = "edge_tts"
+        meta_path.write_text(json.dumps(preview_meta), encoding="utf-8")
+        job = store.register_preview(
+            user_id=12,
+            source_mp3=mp3,
+            source_meta=meta_path,
+            preview_id=preview_id,
+        )
+
+        approved_meta = dict(preview_meta)
+        approved_meta["approved"] = True
+        approved = store.approve_preview(
+            user_id=12,
+            job_id=job["job_id"],
+            preview_id=preview_id,
+            approved_meta=approved_meta,
+        )
+
+        self.assertEqual(approved["status"], "narration_approved")
+        frozen_meta = json.loads(Path(approved["approved_audio_meta_path"]).read_text(encoding="utf-8"))
+        self.assertTrue(frozen_meta["approved"])
+
 
 if __name__ == "__main__":
     unittest.main()
