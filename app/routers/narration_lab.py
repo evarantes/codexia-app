@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models import Settings, User
 from app.routers.auth import get_current_admin_user
 from app.services.narration_lab import NarrationLabError, narration_lab_service
+from app.services.production_job_store import ProductionJobStoreError, production_job_store
 from app.services.youtube_narration_gate import (
     YouTubeNarrationGateError,
     youtube_narration_gate_service,
@@ -32,11 +33,16 @@ class NarrationGateGenerateRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=30000)
     voice: Optional[str] = "auto"
     voice_gender: Literal["female", "male"] = "female"
+    production_job_id: Optional[str] = Field(default=None, max_length=64)
+    theme: Optional[str] = Field(default=None, max_length=500)
+    feedback: Optional[str] = Field(default=None, max_length=2000)
+    revision_instruction: Optional[str] = Field(default=None, max_length=2000)
 
 
 class NarrationGateApproveRequest(BaseModel):
     preview_id: str = Field(..., min_length=32, max_length=32)
     expected_text: str = Field(..., min_length=1, max_length=30000)
+    production_job_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class NarrationLogoTestRequest(BaseModel):
@@ -78,41 +84,26 @@ def _official_logo_path(settings: Optional[Settings]) -> str:
 
 
 def _raise_lab_error(exc: NarrationLabError):
-    raise HTTPException(
-        status_code=exc.status_code,
-        detail={"code": exc.code, "message": str(exc)},
-    ) from exc
+    raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 def _raise_gate_error(exc: YouTubeNarrationGateError):
-    raise HTTPException(
-        status_code=exc.status_code,
-        detail={"code": exc.code, "message": str(exc)},
-    ) from exc
+    raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 @router.get("/options")
-def narration_lab_options(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user),
-):
+def narration_lab_options(db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
     settings = _settings_for_user(db, current_user.id)
     return narration_lab_service.provider_options(settings=settings)
 
 
 @router.get("/samples")
-def narration_lab_samples(
-    limit: int = Query(12, ge=1, le=20),
-    current_user: User = Depends(get_current_admin_user),
-):
+def narration_lab_samples(limit: int = Query(12, ge=1, le=20), current_user: User = Depends(get_current_admin_user)):
     return {"items": narration_lab_service.list_samples(user_id=current_user.id, limit=limit)}
 
 
 @router.post("/generate")
-def generate_narration_lab_sample(
-    payload: NarrationLabGenerateRequest,
-    current_user: User = Depends(get_current_admin_user),
-):
+def generate_narration_lab_sample(payload: NarrationLabGenerateRequest, current_user: User = Depends(get_current_admin_user)):
     try:
         return narration_lab_service.generate(payload.dict(), user_id=current_user.id)
     except NarrationLabError as exc:
@@ -120,115 +111,96 @@ def generate_narration_lab_sample(
 
 
 @router.get("/audio/{sample_id}")
-def get_narration_lab_audio(
-    sample_id: str,
-    current_user: User = Depends(get_current_admin_user),
-):
+def get_narration_lab_audio(sample_id: str, current_user: User = Depends(get_current_admin_user)):
     try:
         path = narration_lab_service.audio_path(user_id=current_user.id, sample_id=sample_id)
     except NarrationLabError as exc:
         _raise_lab_error(exc)
-    return FileResponse(
-        str(path),
-        media_type="audio/mpeg",
-        headers={
-            "Cache-Control": "private, no-store",
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": f'inline; filename="amostra-narracao-{sample_id[:8]}.mp3"',
-        },
-    )
+    return FileResponse(str(path), media_type="audio/mpeg", headers={
+        "Cache-Control": "private, no-store", "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="amostra-narracao-{sample_id[:8]}.mp3"',
+    })
 
 
 @router.post("/production-preview")
-def generate_production_narration_preview(
-    payload: NarrationGateGenerateRequest,
-    current_user: User = Depends(get_current_admin_user),
-):
-    """Generate the complete narration only; never enqueue/render/generate images."""
+def generate_production_narration_preview(payload: NarrationGateGenerateRequest, current_user: User = Depends(get_current_admin_user)):
+    """Gera somente áudio e já o vincula a uma pasta de trabalho própria."""
     try:
         return youtube_narration_gate_service.generate(
             text=payload.text,
             user_id=current_user.id,
             voice=payload.voice,
             voice_gender=payload.voice_gender,
+            production_job_id=payload.production_job_id,
+            theme=payload.theme or "",
         )
     except YouTubeNarrationGateError as exc:
         _raise_gate_error(exc)
 
 
 @router.post("/production-preview/approve")
-def approve_production_narration_preview(
-    payload: NarrationGateApproveRequest,
-    current_user: User = Depends(get_current_admin_user),
-):
-    """Approve the exact text/audio pair and expose a canonical reuse_audio_from payload."""
+def approve_production_narration_preview(payload: NarrationGateApproveRequest, current_user: User = Depends(get_current_admin_user)):
+    """Aprova o MP3 e o congela dentro da pasta exclusiva daquele trabalho."""
     try:
         return youtube_narration_gate_service.approve(
             preview_id=payload.preview_id,
             expected_text=payload.expected_text,
             user_id=current_user.id,
+            production_job_id=payload.production_job_id,
         )
     except YouTubeNarrationGateError as exc:
         _raise_gate_error(exc)
 
 
+@router.get("/production-jobs/{job_id}")
+def get_production_job(job_id: str, current_user: User = Depends(get_current_admin_user)):
+    """Diagnóstico barato: valida a pasta/MP3 aprovado antes de qualquer imagem."""
+    try:
+        validated = production_job_store.validated_approved_audio(user_id=current_user.id, job_id=job_id)
+        job = validated["job"]
+        return {
+            "job_id": job.get("job_id"),
+            "theme": job.get("theme"),
+            "status": job.get("status"),
+            "tts_locked": job.get("tts_locked") is True,
+            "approved_preview_id": job.get("approved_preview_id"),
+            "approved_audio_path": job.get("approved_audio_path"),
+            "approved_audio_sha256": job.get("approved_audio_sha256"),
+            "approved_audio_present": True,
+        }
+    except ProductionJobStoreError as exc:
+        raise HTTPException(status_code=409, detail={"code": "PRODUCTION_JOB_NOT_READY", "message": str(exc)}) from exc
+
+
 @router.get("/production-preview/audio/{preview_id}")
-def get_production_narration_preview_audio(
-    preview_id: str,
-    current_user: User = Depends(get_current_admin_user),
-):
+def get_production_narration_preview_audio(preview_id: str, current_user: User = Depends(get_current_admin_user)):
     try:
         path = youtube_narration_gate_service.audio_path(preview_id=preview_id, user_id=current_user.id)
     except YouTubeNarrationGateError as exc:
         _raise_gate_error(exc)
-    return FileResponse(
-        str(path),
-        media_type="audio/mpeg",
-        headers={
-            "Cache-Control": "private, no-store",
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": f'inline; filename="narracao-aprovacao-{preview_id[:8]}.mp3"',
-        },
-    )
+    return FileResponse(str(path), media_type="audio/mpeg", headers={
+        "Cache-Control": "private, no-store", "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="narracao-aprovacao-{preview_id[:8]}.mp3"',
+    })
 
 
 @router.post("/production-preview/logo-test")
-def generate_production_logo_test_video(
-    payload: NarrationLogoTestRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user),
-):
-    """Render a zero-image test MP4 from the exact preview audio + official channel logo."""
+def generate_production_logo_test_video(payload: NarrationLogoTestRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
     settings = _settings_for_user(db, current_user.id)
     logo_path = _official_logo_path(settings)
     try:
-        return youtube_narration_gate_service.generate_logo_test_video(
-            preview_id=payload.preview_id,
-            user_id=current_user.id,
-            logo_path=logo_path,
-        )
+        return youtube_narration_gate_service.generate_logo_test_video(preview_id=payload.preview_id, user_id=current_user.id, logo_path=logo_path)
     except YouTubeNarrationGateError as exc:
         _raise_gate_error(exc)
 
 
 @router.get("/production-preview/logo-test/{preview_id}")
-def get_production_logo_test_video(
-    preview_id: str,
-    current_user: User = Depends(get_current_admin_user),
-):
+def get_production_logo_test_video(preview_id: str, current_user: User = Depends(get_current_admin_user)):
     try:
-        path = youtube_narration_gate_service.logo_test_video_path(
-            preview_id=preview_id,
-            user_id=current_user.id,
-        )
+        path = youtube_narration_gate_service.logo_test_video_path(preview_id=preview_id, user_id=current_user.id)
     except YouTubeNarrationGateError as exc:
         _raise_gate_error(exc)
-    return FileResponse(
-        str(path),
-        media_type="video/mp4",
-        headers={
-            "Cache-Control": "private, no-store",
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": f'inline; filename="teste-logo-narracao-{preview_id[:8]}.mp4"',
-        },
-    )
+    return FileResponse(str(path), media_type="video/mp4", headers={
+        "Cache-Control": "private, no-store", "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="teste-logo-narracao-{preview_id[:8]}.mp4"',
+    })

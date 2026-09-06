@@ -12,6 +12,7 @@
   let mountedCard = null;
   let preview = null;
   let approved = null;
+  let productionJobId = '';
   let audioObjectUrl = '';
   let approvedLaunchArmed = false;
   let approvedInjectionCount = 0;
@@ -68,26 +69,30 @@
   }
 
   function isCurrentApproved(value) {
-    if (!value || !value.reuse_audio_from || !value.text_sha256 || !value.source_text_sha256) return false;
+    if (!value || !value.reuse_audio_from || !value.text_sha256 || !value.source_text_sha256 || !value.production_job_id) return false;
     const reuse = value.reuse_audio_from || {};
     return Number(value.narration_core_version || reuse.narration_core_version || 0) === CORE_VERSION
-      && String(value.narration_core_namespace || reuse.narration_core_namespace || '') === CORE_NAMESPACE;
+      && String(value.narration_core_namespace || reuse.narration_core_namespace || '') === CORE_NAMESPACE
+      && String(reuse.production_job_id || '') === String(value.production_job_id || '');
   }
 
   function loadApproved() {
     LEGACY_STORAGE_KEYS.forEach(key => localStorage.removeItem(key));
     try {
       const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-      if (isCurrentApproved(value)) approved = value;
-      else localStorage.removeItem(STORAGE_KEY);
+      if (isCurrentApproved(value)) {
+        approved = value;
+        productionJobId = String(value.production_job_id || '');
+      } else localStorage.removeItem(STORAGE_KEY);
     } catch (_) {
       localStorage.removeItem(STORAGE_KEY);
     }
   }
 
   function saveApproved(value) {
-    if (!isCurrentApproved(value)) throw new Error('A narração não pertence ao Narration Core v1.');
+    if (!isCurrentApproved(value)) throw new Error('A narração não pertence ao trabalho atual do Narration Core v1.');
     approved = value;
+    productionJobId = String(value.production_job_id || '');
     localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
   }
 
@@ -109,6 +114,12 @@
     if (!el) return;
     el.textContent = text || '';
     el.style.color = kind === 'error' ? '#991b1b' : kind === 'success' ? '#047857' : '#475569';
+  }
+
+  function setJobLabel(panel) {
+    const el = panel.querySelector('[data-ng-job]');
+    if (!el) return;
+    el.textContent = productionJobId ? `Trabalho: ${productionJobId}` : 'Trabalho: será criado ao gerar o áudio';
   }
 
   async function loadProtectedAudio(url, panel) {
@@ -138,7 +149,7 @@
     preview = null;
     panel.querySelector('[data-ng-continue]').disabled = true;
     panel.querySelector('[data-ng-approve]').disabled = true;
-    setStatus(panel, 'Gerando somente o áudio para sua análise. Imagens e renderização continuam bloqueados…');
+    setStatus(panel, 'Gerando somente o áudio dentro da pasta exclusiva deste trabalho. Imagens e render continuam bloqueados…');
     try {
       const response = await authFetch('/youtube/narration-lab/production-preview', {
         method: 'POST',
@@ -147,6 +158,8 @@
           text,
           voice: 'auto',
           voice_gender: 'female',
+          production_job_id: productionJobId || null,
+          theme: text.split('\n').find(Boolean)?.slice(0, 300) || '',
           feedback: normalizeText(feedback),
           revision_instruction: normalizeText(feedback)
         })
@@ -156,6 +169,9 @@
       if (Number(data.narration_core_version || 0) !== CORE_VERSION || String(data.narration_core_namespace || '') !== CORE_NAMESPACE) {
         throw new Error('O servidor respondeu com uma versão antiga da narração. Atualize o deploy antes de continuar.');
       }
+      if (!data.production_job_id) throw new Error('O servidor não criou o código/pasta do trabalho. Produção bloqueada.');
+      productionJobId = String(data.production_job_id);
+      setJobLabel(panel);
       preview = data;
       panel.querySelector('[data-ng-spoken]').textContent = data.spoken_text_sent_to_tts || '';
       panel.querySelector('[data-ng-result]').hidden = false;
@@ -164,7 +180,7 @@
       const duration = Number(data.audio_duration_sec || 0);
       const removed = Number(data.removed_technical_blocks || 0);
       const removedLabel = removed ? ` • ${removed} bloco(s) técnico(s) removido(s)` : '';
-      setStatus(panel, `Áudio pronto para análise${duration ? ` • ${Math.floor(duration / 60)}m ${Math.round(duration % 60)}s` : ''}${data.cache_hit ? ' • áudio reaproveitado' : ''}${removedLabel}. A produção do vídeo NÃO começou.`, 'success');
+      setStatus(panel, `Áudio pronto para análise • trabalho ${productionJobId}${duration ? ` • ${Math.floor(duration / 60)}m ${Math.round(duration % 60)}s` : ''}${data.cache_hit ? ' • áudio reaproveitado' : ''}${removedLabel}. Nenhuma imagem foi iniciada.`, 'success');
       return true;
     } catch (err) {
       preview = null;
@@ -177,8 +193,8 @@
   }
 
   async function approvePreview(panel, card) {
-    if (!preview || !preview.preview_id) {
-      setStatus(panel, 'Gere a narração antes de aprovar.', 'error');
+    if (!preview || !preview.preview_id || !productionJobId) {
+      setStatus(panel, 'Gere a narração dentro de um trabalho antes de aprovar.', 'error');
       return false;
     }
     const text = normalizeText(storyTextarea(card)?.value);
@@ -188,12 +204,14 @@
       const response = await authFetch('/youtube/narration-lab/production-preview/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ preview_id: preview.preview_id, expected_text: text })
+        body: JSON.stringify({ preview_id: preview.preview_id, expected_text: text, production_job_id: productionJobId })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(detailMessage(data, 'Não foi possível aprovar a narração.'));
+      if (!data.production_job_id || String(data.production_job_id) !== productionJobId) throw new Error('A aprovação retornou um trabalho diferente. Produção bloqueada.');
       const value = {
         preview_id: data.preview_id,
+        production_job_id: productionJobId,
         text_sha256: data.text_sha256,
         source_text_sha256: await sha256(text),
         narration_core_version: Number(data.narration_core_version || data.reuse_audio_from?.narration_core_version || 0),
@@ -202,8 +220,14 @@
         approved_at: new Date().toISOString()
       };
       saveApproved(value);
+      const check = await authFetch(`/youtube/narration-lab/production-jobs/${encodeURIComponent(productionJobId)}`, { cache: 'no-store' });
+      const checkData = await check.json().catch(() => ({}));
+      if (!check.ok || checkData.approved_audio_present !== true || checkData.tts_locked !== true) {
+        clearApproved();
+        throw new Error(detailMessage(checkData, 'A pasta do trabalho não confirmou o MP3 aprovado.'));
+      }
       panel.querySelector('[data-ng-continue]').disabled = false;
-      setStatus(panel, 'Áudio aprovado. Agora, e somente agora, você pode iniciar imagens e render usando exatamente este MP3.', 'success');
+      setStatus(panel, `Áudio aprovado e congelado no trabalho ${productionJobId}. Agora, e somente agora, imagens/render podem iniciar.`, 'success');
       return true;
     } catch (err) {
       clearApproved();
@@ -217,9 +241,9 @@
   async function continueWithApproved(panel, card) {
     const textarea = storyTextarea(card);
     const text = normalizeText(textarea && textarea.value);
-    if (!approved || !isCurrentApproved(approved)) {
+    if (!approved || !isCurrentApproved(approved) || !productionJobId) {
       clearApproved();
-      return setStatus(panel, 'Aprove a narração antes de iniciar a produção do vídeo.', 'error');
+      return setStatus(panel, 'Aprove a narração dentro do trabalho antes de iniciar o vídeo.', 'error');
     }
     const currentHash = await sha256(text);
     if (!approved.source_text_sha256 || currentHash !== approved.source_text_sha256) {
@@ -227,22 +251,29 @@
       panel.querySelector('[data-ng-continue]').disabled = true;
       return setStatus(panel, 'O texto foi alterado após a aprovação. Gere e aprove uma nova narração.', 'error');
     }
+    const check = await authFetch(`/youtube/narration-lab/production-jobs/${encodeURIComponent(productionJobId)}`, { cache: 'no-store' });
+    const checkData = await check.json().catch(() => ({}));
+    if (!check.ok || checkData.approved_audio_present !== true || checkData.tts_locked !== true) {
+      return setStatus(panel, detailMessage(checkData, 'MP3 aprovado ausente na pasta do trabalho. Produção bloqueada antes das imagens.'), 'error');
+    }
     const button = existingGenerateButton(card);
     if (!button) return setStatus(panel, 'Não encontrei o acionador interno da produção. Recarregue a página.', 'error');
     approvedLaunchArmed = true;
     approvedInjectionCount = 0;
-    setStatus(panel, 'Iniciando imagens e render com o MP3 que você aprovou…', 'success');
+    setStatus(panel, `Iniciando imagens e render do trabalho ${productionJobId} com o MP3 congelado…`, 'success');
     button.click();
     window.setTimeout(() => {
       if (approvedLaunchArmed && approvedInjectionCount === 0) {
         approvedLaunchArmed = false;
-        setStatus(panel, 'O pedido de vídeo não recebeu o áudio aprovado. Produção bloqueada.', 'error');
+        setStatus(panel, 'O pedido de vídeo não recebeu o trabalho/áudio aprovado. Produção bloqueada.', 'error');
       }
     }, 2500);
   }
 
   async function startSupervisedFlow(panel, card) {
     clearApproved();
+    productionJobId = '';
+    setJobLabel(panel);
     panel.querySelector('[data-ng-result]').hidden = true;
     await generatePreview(panel, card, '');
   }
@@ -265,8 +296,9 @@
     panel.dataset.youtubeNarrationGate = '1';
     panel.className = 'mt-4 border-2 border-indigo-200 bg-indigo-50 rounded-xl p-4';
     panel.innerHTML = `
-      <div class="font-bold text-indigo-900 mb-1">🎙️ Narração supervisionada — etapa obrigatória antes do vídeo</div>
-      <div class="text-sm text-slate-600 mb-3">Ao clicar em “Gerar vídeo narrado”, o Codexia gera SOMENTE o áudio. Imagens e render ficam bloqueados até você ouvir e aprovar.</div>
+      <div class="font-bold text-indigo-900 mb-1">🎙️ Narração supervisionada — trabalho isolado</div>
+      <div class="text-sm text-slate-600 mb-1">Cada vídeo recebe um código e uma pasta própria. O MP3 aprovado fica congelado nessa pasta e é a única fonte permitida para o render.</div>
+      <div data-ng-job class="text-xs font-semibold text-indigo-800 mb-3"></div>
       <div class="flex flex-wrap gap-2 mb-3">
         <button type="button" data-ng-start class="bg-green-600 text-white px-4 py-2 rounded-lg font-semibold">🎬 Gerar vídeo narrado</button>
       </div>
@@ -288,6 +320,7 @@
 
     const target = textarea.parentElement;
     target.insertAdjacentElement('afterend', panel);
+    setJobLabel(panel);
     panel.querySelector('[data-ng-start]').addEventListener('click', () => startSupervisedFlow(panel, card));
     panel.querySelector('[data-ng-redo]').addEventListener('click', () => {
       const feedback = normalizeText(panel.querySelector('[data-ng-feedback]')?.value);
@@ -311,8 +344,8 @@
     const isVideoRequest = method === 'POST' && /\/youtube\/generate_video(?:\?|$)/.test(url);
     if (isVideoRequest) {
       try {
-        if (!approvedLaunchArmed || !approved || !isCurrentApproved(approved) || typeof init.body !== 'string') {
-          throw new Error('A produção foi bloqueada: gere, ouça e aprove o áudio antes de criar o vídeo.');
+        if (!approvedLaunchArmed || !approved || !isCurrentApproved(approved) || !productionJobId || typeof init.body !== 'string') {
+          throw new Error('A produção foi bloqueada: gere, ouça e aprove o áudio dentro do trabalho antes de criar o vídeo.');
         }
         const payload = JSON.parse(init.body);
         const text = normalizeText(payload.story_content || payload.script_text || '');
@@ -321,6 +354,7 @@
           clearApproved();
           throw new Error('O texto do vídeo não corresponde ao texto aprovado; produção bloqueada.');
         }
+        payload.production_job_id = productionJobId;
         payload.reuse_audio_from = approved.reuse_audio_from;
         payload.approved_narration_preview_id = approved.preview_id;
         payload.approved_narration_text_sha256 = approved.text_sha256;
@@ -332,7 +366,7 @@
         init = { ...init, body: JSON.stringify(payload) };
       } catch (err) {
         approvedLaunchArmed = false;
-        console.error('Codexia bloqueou produção sem áudio aprovado:', err);
+        console.error('Codexia bloqueou produção sem trabalho/áudio aprovado:', err);
         return Promise.reject(err);
       }
     }

@@ -372,6 +372,7 @@ def _build_video_generation_canonical_payload(payload: Dict[str, Any]) -> Dict[s
     override_tags = _normalize_hash_list(payload.get("override_tags") or [], lower=True)
     selected_images = _normalize_hash_list(payload.get("selected_images") or [])
     custom_image_paths = _normalize_hash_list(payload.get("custom_image_paths") or [])
+    approved_narration_required = bool(payload.get("approved_narration_required"))
     canonical = {
         "mode": mode,
         "kind": kind,
@@ -389,6 +390,19 @@ def _build_video_generation_canonical_payload(payload: Dict[str, Any]) -> Dict[s
         "override_tags": override_tags,
         "selected_images": selected_images,
         "custom_image_paths": custom_image_paths,
+        "approved_narration_required": approved_narration_required,
+        "production_job_id": (
+            _normalize_hash_text(payload.get("production_job_id") or "")
+            if approved_narration_required else ""
+        ),
+        "approved_narration_preview_id": (
+            _normalize_hash_text(payload.get("approved_narration_preview_id") or "", lower=True)
+            if approved_narration_required else ""
+        ),
+        "approved_narration_text_sha256": (
+            _normalize_hash_text(payload.get("approved_narration_text_sha256") or "", lower=True)
+            if approved_narration_required else ""
+        ),
     }
     return canonical
 
@@ -3309,6 +3323,15 @@ class VideoRequest(BaseModel):
     selected_images: Optional[List[str]] = None
     seeded_script: Optional[Dict[str, Any]] = None
     reuse_audio_from: Optional[Dict[str, Any]] = None
+    # Contrato da narração supervisionada. Estes campos precisam existir no
+    # modelo; caso contrário o Pydantic os descarta antes de persistir a task e
+    # o worker deixa de saber qual pasta/MP3 aprovado deve usar.
+    production_job_id: Optional[str] = None
+    approved_narration_required: bool = False
+    approved_narration_preview_id: Optional[str] = None
+    approved_narration_text_sha256: Optional[str] = None
+    narration_core_version: Optional[int] = None
+    narration_core_namespace: Optional[str] = None
     music_file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
     override_title: Optional[str] = None
@@ -3324,6 +3347,190 @@ class VideoRequest(BaseModel):
     force_render_only: bool = False
     editorial_reviewed: bool = False
     editorial_review_ready: bool = False
+
+
+class ApprovedNarrationJobError(RuntimeError):
+    """Falha fechada do vínculo entre a produção e o MP3 aprovado."""
+
+
+def _load_approved_narration_contract(
+    request: VideoRequest,
+    *,
+    user_id: Optional[int],
+) -> Dict[str, Any]:
+    """Resolve a narração aprovada pela pasta do trabalho, nunca pelo browser.
+
+    O ``reuse_audio_from`` enviado pelo frontend é apenas uma confirmação do
+    contrato que o usuário aprovou. Caminho, metadados e SHA-256 usados pela
+    produção são recarregados do ``ProductionJobStore`` no backend.
+    """
+    if not bool(getattr(request, "approved_narration_required", False)):
+        return {}
+
+    job_id = str(getattr(request, "production_job_id", None) or "").strip()
+    if not job_id:
+        raise ApprovedNarrationJobError(
+            "Narração aprovada obrigatória, mas o production_job_id não foi informado."
+        )
+    try:
+        owner_id = int(user_id or 0)
+    except Exception:
+        owner_id = 0
+    if owner_id <= 0:
+        raise ApprovedNarrationJobError(
+            "Não foi possível identificar o usuário proprietário da pasta de produção."
+        )
+
+    try:
+        from app.services.narration_core import (
+            NARRATION_CORE_NAMESPACE,
+            NARRATION_CORE_VERSION,
+        )
+        from app.services.production_job_store import (
+            ProductionJobStoreError,
+            production_job_store,
+        )
+    except Exception as exc:
+        raise ApprovedNarrationJobError(
+            f"Não foi possível carregar o validador da pasta do trabalho {job_id}: {exc}"
+        ) from exc
+    try:
+        validated = production_job_store.validated_approved_audio(
+            user_id=owner_id,
+            job_id=job_id,
+        )
+    except ProductionJobStoreError as exc:
+        raise ApprovedNarrationJobError(
+            f"O trabalho {job_id} não possui um MP3 aprovado íntegro: {exc}"
+        ) from exc
+    except Exception as exc:
+        raise ApprovedNarrationJobError(
+            f"Não foi possível validar a pasta do trabalho {job_id}: {exc}"
+        ) from exc
+
+    job = validated.get("job") if isinstance(validated, dict) else None
+    meta = validated.get("meta") if isinstance(validated, dict) else None
+    audio_path = validated.get("audio_path") if isinstance(validated, dict) else None
+    if not isinstance(job, dict) or not isinstance(meta, dict) or not isinstance(audio_path, Path):
+        raise ApprovedNarrationJobError("O contrato físico da narração aprovada está incompleto.")
+
+    try:
+        stored_owner_id = int(job.get("user_id") or 0)
+    except Exception:
+        stored_owner_id = 0
+    stored_job_id = str(job.get("job_id") or "").strip()
+    preview_id = str(job.get("approved_preview_id") or "").strip().lower()
+    meta_preview_id = str(meta.get("preview_id") or "").strip().lower()
+    text_sha256 = str(meta.get("text_sha256") or "").strip().lower()
+    spoken_text = str(meta.get("spoken_text_sent_to_tts") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    computed_text_sha256 = hashlib.sha256(spoken_text.encode("utf-8")).hexdigest() if spoken_text else ""
+    try:
+        core_version = int(meta.get("narration_core_version") or 0)
+    except Exception:
+        core_version = 0
+    core_namespace = str(meta.get("narration_core_namespace") or "").strip()
+
+    if stored_owner_id != owner_id or stored_job_id != job_id:
+        raise ApprovedNarrationJobError("A pasta de produção não pertence ao trabalho/usuário solicitado.")
+    if not preview_id or preview_id != meta_preview_id:
+        raise ApprovedNarrationJobError("A versão aprovada não corresponde aos metadados do MP3.")
+    if not text_sha256 or text_sha256 != computed_text_sha256:
+        raise ApprovedNarrationJobError("O texto aprovado não corresponde ao hash registrado na pasta do trabalho.")
+    if core_version != NARRATION_CORE_VERSION or core_namespace != NARRATION_CORE_NAMESPACE:
+        raise ApprovedNarrationJobError("A narração foi criada por uma versão antiga do Narration Core.")
+
+    requested_preview_id = str(getattr(request, "approved_narration_preview_id", None) or "").strip().lower()
+    requested_text_sha256 = str(getattr(request, "approved_narration_text_sha256", None) or "").strip().lower()
+    try:
+        requested_core_version = int(getattr(request, "narration_core_version", None) or 0)
+    except Exception:
+        requested_core_version = 0
+    requested_core_namespace = str(getattr(request, "narration_core_namespace", None) or "").strip()
+    if requested_preview_id != preview_id:
+        raise ApprovedNarrationJobError("O preview aprovado no pedido não corresponde à pasta do trabalho.")
+    if requested_text_sha256 != text_sha256:
+        raise ApprovedNarrationJobError("O hash da narração no pedido não corresponde à versão aprovada.")
+    if requested_core_version != NARRATION_CORE_VERSION or requested_core_namespace != NARRATION_CORE_NAMESPACE:
+        raise ApprovedNarrationJobError("O pedido de vídeo usa um contrato de narração antigo ou incompleto.")
+
+    browser_reuse = getattr(request, "reuse_audio_from", None)
+    if isinstance(browser_reuse, dict):
+        browser_job_id = str(browser_reuse.get("production_job_id") or "").strip()
+        if browser_job_id and browser_job_id != job_id:
+            raise ApprovedNarrationJobError("O áudio indicado pelo navegador pertence a outro trabalho.")
+
+    audio_sha256 = str(job.get("approved_audio_sha256") or "").strip().lower()
+    meta_path = str(job.get("approved_audio_meta_path") or "").strip()
+    canonical_reuse = {
+        "output_path": str(audio_path.resolve()),
+        "metadata_path": meta_path,
+        "production_job_id": job_id,
+        "source": "youtube_narration_core_v1_approved",
+        "preview_id": preview_id,
+        "provider": str(meta.get("provider") or "edge_tts"),
+        "voice": meta.get("voice"),
+        "text_sha256": text_sha256,
+        "audio_sha256": audio_sha256,
+        "narration_core_version": NARRATION_CORE_VERSION,
+        "narration_core_namespace": NARRATION_CORE_NAMESPACE,
+    }
+    return {
+        "production_job_id": job_id,
+        "audio_path": str(audio_path.resolve()),
+        "audio_sha256": audio_sha256,
+        "preview_id": preview_id,
+        "text_sha256": text_sha256,
+        "spoken_text": spoken_text,
+        "narration_core_version": NARRATION_CORE_VERSION,
+        "narration_core_namespace": NARRATION_CORE_NAMESPACE,
+        "reuse_audio_from": canonical_reuse,
+    }
+
+
+def _preserve_approved_narration_for_task(
+    contract: Dict[str, Any],
+    *,
+    task_id: str,
+) -> Dict[str, Any]:
+    """Copia o MP3 validado para o manifesto durável da task e reconfere o hash."""
+    if not contract:
+        return {}
+    try:
+        from app.services.production_manifest import record_artifact
+
+        entry = record_artifact(
+            task_id,
+            str(contract.get("audio_path") or ""),
+            kind="audio",
+            source="approved_narration_core_v1",
+        )
+        durable_path_raw = str((entry or {}).get("durable_path") or "").strip()
+        durable_path = Path(durable_path_raw).resolve() if durable_path_raw else None
+        durable_ok = bool(
+            durable_path is not None
+            and durable_path.is_file()
+            and durable_path.stat().st_size > 1000
+        )
+        durable_sha256 = ""
+        if durable_ok and durable_path is not None:
+            durable_sha256 = hashlib.sha256(durable_path.read_bytes()).hexdigest()
+            durable_ok = durable_sha256 == str(contract.get("audio_sha256") or "").strip().lower()
+        if not durable_ok or durable_path is None:
+            raise ApprovedNarrationJobError(
+                "O MP3 aprovado foi validado, mas não pôde ser preservado no manifesto da tarefa; "
+                "imagens, render e novo TTS foram bloqueados."
+            )
+    except ApprovedNarrationJobError:
+        raise
+    except Exception as exc:
+        raise ApprovedNarrationJobError(
+            "O MP3 aprovado não pôde ser preparado para o worker; imagens, render e novo TTS foram bloqueados."
+        ) from exc
+
+    resolved = dict(contract)
+    resolved["render_audio_path"] = str(durable_path)
+    resolved["manifest_persisted"] = True
+    return resolved
 
 class StoryTextGenerateRequest(BaseModel):
     kind: str = "story"  # story | devotional | prayer
@@ -5874,21 +6081,51 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
             payload = request.model_dump(mode="python")
         except Exception:
             payload = request.dict()
+    user_id = int(getattr(current_user, "id", None) or 0) or None
+
+    # O frontend não é fonte de verdade para caminho de arquivo. Antes de
+    # dedupe/fila (e portanto antes de qualquer imagem), recarregamos a pasta
+    # identificada por production_job_id e substituímos reuse_audio_from pela
+    # versão canônica validada no servidor.
+    try:
+        approved_narration_contract = _load_approved_narration_contract(
+            request,
+            user_id=user_id,
+        )
+    except ApprovedNarrationJobError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "APPROVED_NARRATION_JOB_INVALID",
+                "message": str(exc),
+            },
+        ) from exc
+    if approved_narration_contract:
+        payload.update({
+            "production_job_id": approved_narration_contract["production_job_id"],
+            "approved_narration_required": True,
+            "approved_narration_preview_id": approved_narration_contract["preview_id"],
+            "approved_narration_text_sha256": approved_narration_contract["text_sha256"],
+            "narration_core_version": approved_narration_contract["narration_core_version"],
+            "narration_core_namespace": approved_narration_contract["narration_core_namespace"],
+            "reuse_audio_from": approved_narration_contract["reuse_audio_from"],
+        })
     identity = _build_video_generation_identity(payload)
     payload["idempotency_key"] = identity["idempotency_key"]
     payload["request_hash"] = identity["request_hash"]
     content_hash = _payload_content_hash(payload)
     if content_hash:
         payload["content_hash"] = content_hash
-    user_id = int(getattr(current_user, "id", None) or 0) or None
-
     # ====== Dedupe GLOBAL POR CONTEÚDO (últimas 48h) ======
     # Proteção extra anti-gasto: mesmo que idempotency_key tenha mudado
     # (ex: usuário clicou novamente após "Nova geração liberada", ou
     # microtime/UA varia), se o conteúdo (título/texto/minutos/kind) é
     # idêntico e já tem vídeo COMPLETED e válido, REUTILIZA esse resultado,
     # NÃO gera nova renderização → evita MP4 duplicado e custo extra.
-    if not bool(getattr(request, "force_regenerate", False)):
+    if (
+        not bool(getattr(request, "force_regenerate", False))
+        and not bool(getattr(request, "approved_narration_required", False))
+    ):
         try:
             _reused_candidate = _find_reusable_completed_task_by_content(
                 db, payload, excluded_task_id=None
@@ -7070,6 +7307,37 @@ def process_video_generation(request: VideoRequest, task_id):
         guardian_db = SessionLocal()
         guardian_task_row = guardian_db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
         guardian_user_id = getattr(guardian_task_row, "user_id", None) if guardian_task_row else None
+        approved_narration_contract: Dict[str, Any] = {}
+        try:
+            approved_narration_contract = _load_approved_narration_contract(
+                request,
+                user_id=guardian_user_id,
+            )
+            if approved_narration_contract:
+                approved_narration_contract = _preserve_approved_narration_for_task(
+                    approved_narration_contract,
+                    task_id=str(task_id),
+                )
+        except ApprovedNarrationJobError as exc:
+            finalize_task_once(
+                task_id,
+                status="failed",
+                progress=0,
+                message=f"Produção bloqueada antes das imagens: {exc}",
+                result=_merged_task_result({
+                    "pipeline_stage": "approved_narration_validation_failed",
+                    "approved_narration_reuse": {
+                        "used": False,
+                        "production_job_id": str(getattr(request, "production_job_id", None) or ""),
+                        "approved_narration_required": bool(
+                            getattr(request, "approved_narration_required", False)
+                        ),
+                        "tts_regeneration_allowed": False,
+                        "error": str(exc),
+                    },
+                }),
+            )
+            return
         current_task = get_task(task_id) or {}
         current_result = current_task.get("result") if isinstance(current_task.get("result"), dict) else {}
         # Toda produção do YouTube Auto precisa manter imagens em /data. Sem
@@ -7635,6 +7903,39 @@ def process_video_generation(request: VideoRequest, task_id):
                 ai_service=ai_service,
                 task_id=str(task_id),
             )
+            if approved_narration_contract:
+                if not isinstance(script, dict):
+                    raise ApprovedNarrationJobError(
+                        "Roteiro inválido ao aplicar o MP3 aprovado; produção bloqueada."
+                    )
+                script["seed_audio_path"] = approved_narration_contract["render_audio_path"]
+                script["seed_narration_text"] = approved_narration_contract["spoken_text"]
+                script["production_job_id"] = approved_narration_contract["production_job_id"]
+                script["approved_narration_preview_id"] = approved_narration_contract["preview_id"]
+                script["approved_narration_text_sha256"] = approved_narration_contract["text_sha256"]
+                script["approved_narration_required"] = True
+                script["approved_narration_audio_sha256"] = approved_narration_contract["audio_sha256"]
+                script["narration_core_version"] = approved_narration_contract["narration_core_version"]
+                script["narration_core_namespace"] = approved_narration_contract["narration_core_namespace"]
+                script["narration_source"] = "approved_narration_core_v1_job_folder"
+                script["tts_locked"] = True
+                script["allow_tts_generation"] = False
+                update_task(task_id, result=_merged_task_result({
+                    "approved_narration_reuse": {
+                        "used": True,
+                        "production_job_id": approved_narration_contract["production_job_id"],
+                        "preview_id": approved_narration_contract["preview_id"],
+                        "text_sha256": approved_narration_contract["text_sha256"],
+                        "audio_sha256": approved_narration_contract["audio_sha256"],
+                        "audio_path": approved_narration_contract["render_audio_path"],
+                        "manifest_persisted": True,
+                        "tts_regeneration_allowed": False,
+                        "approved_narration_required": True,
+                        "narration_core_version": approved_narration_contract["narration_core_version"],
+                        "narration_core_namespace": approved_narration_contract["narration_core_namespace"],
+                    },
+                    "script": script,
+                }))
             update_task(task_id, result=_merged_task_result({
                 "editorial_intelligence": script.get("editorial_intelligence") if isinstance(script, dict) else {},
                 "script": script if isinstance(script, dict) else None,

@@ -1,5 +1,4 @@
 import hashlib
-import importlib.util
 import os
 import tempfile
 import unittest
@@ -10,15 +9,7 @@ from app.services.production_manifest import record_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HARDENING_PATH = ROOT / "scripts" / "apply_youtube_narration_gate.py"
-
-
-def _load_hardening_module():
-    spec = importlib.util.spec_from_file_location("approved_narration_hardening", HARDENING_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+YOUTUBE_ROUTER = ROOT / "app" / "routers" / "youtube.py"
 
 
 class ApprovedNarrationDurableAudioTests(unittest.TestCase):
@@ -55,33 +46,21 @@ class ApprovedNarrationDurableAudioTests(unittest.TestCase):
             self.assertTrue(durable.is_file())
             self.assertEqual(hashlib.sha256(durable.read_bytes()).hexdigest(), expected_sha)
 
-    def test_hardening_upgrades_existing_core_block_to_durable_contract(self):
-        hardening = _load_hardening_module()
-        old_source = (
-            "prefix\n"
-            "        # narration-core-approved-audio-reuse-v1\n"
-            "        old approved audio block\n"
-            + hardening.RENDER_CALL_MARKER
-            + "            script\n"
-            "suffix\n"
-        )
-        upgraded = hardening._replace_existing_router_block(old_source)
+    def test_source_owned_router_preserves_job_audio_in_task_manifest(self):
+        router = YOUTUBE_ROUTER.read_text(encoding="utf-8")
+        self.assertIn("def _preserve_approved_narration_for_task(", router)
+        self.assertIn("record_artifact(", router)
+        self.assertIn('source="approved_narration_core_v1"', router)
+        self.assertIn('script["seed_audio_path"] = approved_narration_contract["render_audio_path"]', router)
+        self.assertIn('"manifest_persisted": True', router)
+        self.assertIn('"tts_regeneration_allowed": False', router)
 
-        self.assertIn(hardening.APPROVED_AUDIO_DURABLE_MARKER, upgraded)
-        self.assertIn("_record_production_artifact(", upgraded)
-        self.assertIn('source="approved_narration_core_v1"', upgraded)
-        self.assertIn('script["seed_audio_path"] = str(durable_audio_path)', upgraded)
-        self.assertIn('"tts_regeneration_allowed": False', upgraded)
-        self.assertNotIn("old approved audio block", upgraded)
-        self.assertEqual(upgraded.count(hardening.RENDER_CALL_MARKER), 1)
-
-    def test_durable_block_fails_closed_if_manifest_persistence_fails(self):
-        hardening = _load_hardening_module()
-        block = hardening.APPROVED_AUDIO_BLOCK_CORE
-        self.assertIn("não pôde ser preservado no manifesto da tarefa", block)
-        self.assertIn("nenhum novo TTS será criado", block)
-        self.assertIn('script["approved_narration_required"] = True', block)
-        self.assertIn('"manifest_persisted": True', block)
+    def test_source_owned_router_fails_closed_if_manifest_persistence_fails(self):
+        router = YOUTUBE_ROUTER.read_text(encoding="utf-8")
+        self.assertIn("não pôde ser preservado no manifesto da tarefa", router)
+        self.assertIn("imagens, render e novo TTS foram bloqueados", router)
+        self.assertIn('script["approved_narration_required"] = True', router)
+        self.assertIn('script["allow_tts_generation"] = False', router)
 
 
 if __name__ == "__main__":

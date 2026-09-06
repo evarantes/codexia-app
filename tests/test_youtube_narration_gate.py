@@ -98,6 +98,27 @@ TEXTO NA TELA: Deus não esqueceu de você.
             )
         self.assertEqual(ctx.exception.code, "TEXT_CHANGED_AFTER_PREVIEW")
 
+    def test_job_approval_freezes_the_exact_mp3_in_its_own_folder(self):
+        text = "Jesus nos chama a caminhar com fé e esperança."
+        preview = self.service.generate(text=text, user_id=11, theme="Esperança")
+        job_id = preview["production_job_id"]
+
+        approved = self.service.approve(
+            preview_id=preview["preview_id"],
+            expected_text=text,
+            user_id=11,
+            production_job_id=job_id,
+        )
+
+        approved_path = Path(approved["reuse_audio_from"]["output_path"])
+        self.assertEqual(approved["production_job_id"], job_id)
+        self.assertEqual(approved["production_job_status"], "narration_approved")
+        self.assertEqual(approved_path.name, "approved_narration.mp3")
+        self.assertTrue(approved_path.is_file())
+        validated = self.service.job_store.validated_approved_audio(user_id=11, job_id=job_id)
+        self.assertEqual(validated["audio_path"].resolve(), approved_path.resolve())
+        self.assertTrue(validated["job"]["tts_locked"])
+
 
 if __name__ == "__main__":
     unittest.main()

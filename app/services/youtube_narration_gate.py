@@ -3,8 +3,9 @@
 A regra é deliberadamente simples:
 1. o núcleo transforma a entrada em um artefato de fala seguro;
 2. o TTS recebe exatamente ``artifact.spoken_text``;
-3. a aprovação grava hash + versão do núcleo;
-4. o vídeo final só pode reutilizar esse MP3 aprovado, nunca sintetizar em silêncio.
+3. cada produção recebe um job_id e uma pasta própria;
+4. a aprovação congela o MP3 dentro da pasta do trabalho;
+5. o vídeo final reutiliza esse MP3 aprovado, nunca sintetiza em silêncio.
 """
 from __future__ import annotations
 
@@ -26,6 +27,11 @@ from app.services.narration_core import (
     narration_fingerprint,
     require_current_core,
 )
+from app.services.production_job_store import (
+    ProductionJobStore,
+    ProductionJobStoreError,
+    production_job_store,
+)
 
 
 MAX_TEXT_CHARS = 30000
@@ -40,10 +46,16 @@ class YouTubeNarrationGateError(RuntimeError):
 
 
 class YouTubeNarrationGateService:
-    def __init__(self, output_root: str | None = None):
-        # Namespace físico novo: áudios legados não entram no cache desta arquitetura.
+    def __init__(self, output_root: str | None = None, job_store: ProductionJobStore | None = None):
         self.output_root = Path(output_root or AUDIO_OUTPUT_DIR) / "youtube_narration_core_v1"
         self.output_root.mkdir(parents=True, exist_ok=True)
+        # Instâncias de teste/isoladas precisam manter previews e jobs sob a
+        # mesma raiz. O singleton de produção continua usando o store global.
+        self.job_store = job_store or (
+            ProductionJobStore(output_root=output_root)
+            if output_root is not None
+            else production_job_store
+        )
 
     def _user_dir(self, user_id: int) -> Path:
         path = self.output_root / str(max(0, int(user_id or 0)))
@@ -54,25 +66,17 @@ class YouTubeNarrationGateService:
     def _artifact(text: Any) -> NarrationArtifact:
         raw = str(text or "") if not isinstance(text, (dict, list)) else text
         if isinstance(raw, str) and len(raw) > MAX_TEXT_CHARS:
-            raise YouTubeNarrationGateError(
-                f"A narração excede o limite de {MAX_TEXT_CHARS} caracteres.",
-                code="TEXT_TOO_LONG",
-            )
+            raise YouTubeNarrationGateError(f"A narração excede o limite de {MAX_TEXT_CHARS} caracteres.", code="TEXT_TOO_LONG")
         try:
             artifact = build_narration_artifact(raw)
         except NarrationCoreError as exc:
             raise YouTubeNarrationGateError(
-                f"Narração bloqueada antes do TTS: {exc}",
-                code="NARRATION_CORE_BLOCKED",
-                status_code=422,
+                f"Narração bloqueada antes do TTS: {exc}", code="NARRATION_CORE_BLOCKED", status_code=422
             ) from exc
         if not artifact.spoken_text:
             raise YouTubeNarrationGateError("O texto da narração está vazio.", code="TEXT_REQUIRED")
         if len(artifact.spoken_text) > MAX_TEXT_CHARS:
-            raise YouTubeNarrationGateError(
-                f"A fala segura excede o limite de {MAX_TEXT_CHARS} caracteres.",
-                code="TEXT_TOO_LONG",
-            )
+            raise YouTubeNarrationGateError(f"A fala segura excede o limite de {MAX_TEXT_CHARS} caracteres.", code="TEXT_TOO_LONG")
         return artifact
 
     @staticmethod
@@ -91,10 +95,7 @@ class YouTubeNarrationGateService:
         try:
             result = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
+                capture_output=True, text=True, timeout=20, check=False,
             )
             return max(0.0, float((result.stdout or "0").strip() or 0)) if result.returncode == 0 else 0.0
         except Exception:
@@ -121,15 +122,20 @@ class YouTubeNarrationGateService:
         temp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, path)
 
-    def generate(self, *, text: Any, user_id: int, voice: Any = "auto", voice_gender: Any = "female") -> Dict[str, Any]:
+    def generate(
+        self,
+        *,
+        text: Any,
+        user_id: int,
+        voice: Any = "auto",
+        voice_gender: Any = "female",
+        production_job_id: Any = None,
+        theme: Any = "",
+    ) -> Dict[str, Any]:
         artifact = self._artifact(text)
         spoken = artifact.spoken_text
         selected_voice = self._voice(voice, voice_gender)
-        preview_id = narration_fingerprint(
-            spoken_text=spoken,
-            voice=selected_voice,
-            provider="edge_tts",
-        )
+        preview_id = narration_fingerprint(spoken_text=spoken, voice=selected_voice, provider="edge_tts")
         user_dir = self._user_dir(user_id)
         mp3_path = user_dir / f"{preview_id}.mp3"
         meta_path = user_dir / f"{preview_id}.json"
@@ -138,45 +144,27 @@ class YouTubeNarrationGateService:
         if mp3_path.is_file() and mp3_path.stat().st_size > 512 and old_meta:
             try:
                 require_current_core(old_meta)
-                cache_hit = (
-                    str(old_meta.get("text_sha256") or "") == artifact.text_sha256
-                    and str(old_meta.get("voice") or "") == selected_voice
-                )
+                cache_hit = str(old_meta.get("text_sha256") or "") == artifact.text_sha256 and str(old_meta.get("voice") or "") == selected_voice
             except NarrationCoreError:
                 cache_hit = False
 
         if not cache_hit:
-            # Nunca sobrescreve um MP3 parcialmente gerado/legado no lugar.
             mp3_path.unlink(missing_ok=True)
             meta_path.unlink(missing_ok=True)
             try:
                 import edge_tts
             except Exception as exc:
-                raise YouTubeNarrationGateError(
-                    "Edge TTS não está disponível no servidor.",
-                    code="EDGE_TTS_UNAVAILABLE",
-                    status_code=503,
-                ) from exc
+                raise YouTubeNarrationGateError("Edge TTS não está disponível no servidor.", code="EDGE_TTS_UNAVAILABLE", status_code=503) from exc
 
             async def _save() -> None:
-                communicator = edge_tts.Communicate(
-                    spoken,
-                    selected_voice,
-                    rate="+0%",
-                    pitch="+0Hz",
-                    volume="+0%",
-                )
+                communicator = edge_tts.Communicate(spoken, selected_voice, rate="+0%", pitch="+0Hz", volume="+0%")
                 await communicator.save(str(mp3_path))
 
             try:
                 asyncio.run(_save())
             except Exception as exc:
                 mp3_path.unlink(missing_ok=True)
-                raise YouTubeNarrationGateError(
-                    f"Falha ao gerar a narração: {str(exc)[:240]}",
-                    code="EDGE_TTS_FAILED",
-                    status_code=502,
-                ) from exc
+                raise YouTubeNarrationGateError(f"Falha ao gerar a narração: {str(exc)[:240]}", code="EDGE_TTS_FAILED", status_code=502) from exc
 
         if not mp3_path.is_file() or mp3_path.stat().st_size <= 512:
             raise YouTubeNarrationGateError("O áudio gerado é inválido.", code="AUDIO_INVALID", status_code=502)
@@ -197,12 +185,34 @@ class YouTubeNarrationGateService:
             "approved": bool(cache_hit and old_meta.get("approved")),
         }
         self._write_meta(meta_path, meta)
+
+        try:
+            job = self.job_store.register_preview(
+                user_id=user_id,
+                source_mp3=mp3_path,
+                source_meta=meta_path,
+                preview_id=preview_id,
+                theme=str(theme or ""),
+                job_id=str(production_job_id or "").strip() or None,
+            )
+        except ProductionJobStoreError as exc:
+            raise YouTubeNarrationGateError(str(exc), code="PRODUCTION_JOB_ERROR", status_code=409) from exc
+
         return {
             **meta,
+            "production_job_id": job["job_id"],
+            "production_job_status": job.get("status"),
             "audio_url": f"/youtube/narration-lab/production-preview/audio/{preview_id}",
         }
 
-    def approve(self, *, preview_id: str, expected_text: Any, user_id: int) -> Dict[str, Any]:
+    def approve(
+        self,
+        *,
+        preview_id: str,
+        expected_text: Any,
+        user_id: int,
+        production_job_id: Any = None,
+    ) -> Dict[str, Any]:
         safe_id = self._safe_preview_id(preview_id)
         artifact = self._artifact(expected_text)
         user_dir = self._user_dir(user_id)
@@ -220,30 +230,48 @@ class YouTubeNarrationGateService:
         if str(meta.get("text_sha256") or "") != artifact.text_sha256:
             raise YouTubeNarrationGateError(
                 "O texto foi alterado depois da geração do áudio. Gere e aprove uma nova narração.",
-                code="TEXT_CHANGED_AFTER_PREVIEW",
-                status_code=409,
+                code="TEXT_CHANGED_AFTER_PREVIEW", status_code=409,
             )
-        expected_id = narration_fingerprint(
-            spoken_text=artifact.spoken_text,
-            voice=str(meta.get("voice") or ""),
-            provider=str(meta.get("provider") or "edge_tts"),
-        )
+        expected_id = narration_fingerprint(spoken_text=artifact.spoken_text, voice=str(meta.get("voice") or ""), provider=str(meta.get("provider") or "edge_tts"))
         if expected_id != safe_id:
             raise YouTubeNarrationGateError(
                 "O áudio não corresponde ao núcleo/voz/texto atual. Gere uma nova narração.",
-                code="PREVIEW_FINGERPRINT_MISMATCH",
-                status_code=409,
+                code="PREVIEW_FINGERPRINT_MISMATCH", status_code=409,
             )
         meta["approved"] = True
         self._write_meta(meta_path, meta)
+
+        approved_path = mp3_path.resolve()
+        approved_meta_path = meta_path.resolve()
+        job_id = str(production_job_id or "").strip()
+        if job_id:
+            try:
+                job = self.job_store.approve_preview(
+                    user_id=user_id,
+                    job_id=job_id,
+                    preview_id=safe_id,
+                    approved_meta=meta,
+                )
+                validated = self.job_store.validated_approved_audio(user_id=user_id, job_id=job_id)
+                approved_path = validated["audio_path"].resolve()
+                approved_meta_path = Path(str(job.get("approved_audio_meta_path") or "")).resolve()
+            except ProductionJobStoreError as exc:
+                raise YouTubeNarrationGateError(str(exc), code="PRODUCTION_JOB_APPROVAL_ERROR", status_code=409) from exc
+        else:
+            job = None
+
         return {
             "approved": True,
             "preview_id": safe_id,
+            "production_job_id": job_id or None,
+            "production_job_status": (job or {}).get("status") if isinstance(job, dict) else None,
             "text_sha256": artifact.text_sha256,
             "narration_core_version": NARRATION_CORE_VERSION,
             "narration_core_namespace": NARRATION_CORE_NAMESPACE,
             "reuse_audio_from": {
-                "output_path": str(mp3_path.resolve()),
+                "output_path": str(approved_path),
+                "metadata_path": str(approved_meta_path),
+                "production_job_id": job_id or None,
                 "source": "youtube_narration_core_v1_approved",
                 "preview_id": safe_id,
                 "provider": "edge_tts",
@@ -269,19 +297,13 @@ class YouTubeNarrationGateService:
         return path
 
     def generate_logo_test_video(self, *, preview_id: str, user_id: int, logo_path: str) -> Dict[str, Any]:
-        """Render barato de homologação; usa exatamente o MP3 do núcleo aprovado."""
         safe_id = self._safe_preview_id(preview_id)
         audio_path = self.audio_path(preview_id=safe_id, user_id=user_id)
         logo = Path(str(logo_path or "")).expanduser().resolve()
         if not logo.is_file() or logo.stat().st_size <= 256:
-            raise YouTubeNarrationGateError(
-                "Logo oficial do canal não encontrado. Configure/envie o logo em Configurações.",
-                code="OFFICIAL_LOGO_NOT_FOUND",
-                status_code=422,
-            )
+            raise YouTubeNarrationGateError("Logo oficial do canal não encontrado. Configure/envie o logo em Configurações.", code="OFFICIAL_LOGO_NOT_FOUND", status_code=422)
         if not shutil.which("ffmpeg"):
             raise YouTubeNarrationGateError("FFmpeg não está disponível no servidor.", code="FFMPEG_UNAVAILABLE", status_code=503)
-
         user_dir = self._user_dir(user_id)
         output = user_dir / f"{safe_id}-logo-test.mp4"
         newest_input = max(audio_path.stat().st_mtime, logo.stat().st_mtime)
@@ -290,38 +312,21 @@ class YouTubeNarrationGateService:
             tmp = user_dir / f"{safe_id}-logo-test.tmp.mp4"
             tmp.unlink(missing_ok=True)
             command = [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-loop", "1", "-i", str(logo),
-                "-i", str(audio_path),
-                "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-                "-pix_fmt", "yuv420p", "-r", "24",
-                "-c:a", "aac", "-b:a", "128k",
-                "-shortest", "-movflags", "+faststart", str(tmp),
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-i", str(logo),
+                "-i", str(audio_path), "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-pix_fmt", "yuv420p", "-r", "24",
+                "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", str(tmp),
             ]
             result = subprocess.run(command, capture_output=True, text=True, timeout=15 * 60, check=False)
             if result.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 50_000:
                 tmp.unlink(missing_ok=True)
-                raise YouTubeNarrationGateError(
-                    f"Falha ao renderizar vídeo-teste com o logo: {(result.stderr or 'erro desconhecido')[-500:]}",
-                    code="LOGO_TEST_RENDER_FAILED",
-                    status_code=502,
-                )
+                raise YouTubeNarrationGateError(f"Falha ao renderizar vídeo-teste com o logo: {(result.stderr or 'erro desconhecido')[-500:]}", code="LOGO_TEST_RENDER_FAILED", status_code=502)
             os.replace(tmp, output)
-
         return {
-            "ok": True,
-            "preview_id": safe_id,
-            "mode": "logo_only_narration_test",
-            "images_generated": 0,
-            "thumbnail_generated": False,
-            "audio_reused_exactly": True,
-            "narration_core_version": NARRATION_CORE_VERSION,
-            "audio_path": str(audio_path),
-            "audio_duration_sec": self._duration(audio_path),
-            "video_duration_sec": self._duration(output),
-            "cache_hit": cache_hit,
-            "video_url": f"/youtube/narration-lab/production-preview/logo-test/{safe_id}",
+            "ok": True, "preview_id": safe_id, "mode": "logo_only_narration_test", "images_generated": 0,
+            "thumbnail_generated": False, "audio_reused_exactly": True, "narration_core_version": NARRATION_CORE_VERSION,
+            "audio_path": str(audio_path), "audio_duration_sec": self._duration(audio_path), "video_duration_sec": self._duration(output),
+            "cache_hit": cache_hit, "video_url": f"/youtube/narration-lab/production-preview/logo-test/{safe_id}",
         }
 
     def logo_test_video_path(self, *, preview_id: str, user_id: int) -> Path:

@@ -127,19 +127,22 @@ def _apply_youtube_contract() -> bool:
     text = _read(YOUTUBE)
     changed = False
 
-    if "logo_only_visuals: bool = False" not in text:
-        old = "    editorial_review_ready: bool = False\n\nclass StoryTextGenerateRequest"
-        new = "    editorial_review_ready: bool = False\n    logo_only_visuals: bool = False\n\nclass StoryTextGenerateRequest"
-        text = _replace_once(text, old, new, "VideoRequest logo_only_visuals")
-        old = "    image_mode: Optional[str] = None  # single | multiple\n\nclass StoryShortsRequest"
-        new = "    image_mode: Optional[str] = None  # single | multiple\n    logo_only_visuals: bool = False\n\nclass StoryShortsRequest"
-        text = _replace_once(text, old, new, "StoryImagesRequest logo_only_visuals")
+    video_field = "    editorial_review_ready: bool = False\n    logo_only_visuals: bool = False\n"
+    if video_field not in text:
+        old = "    editorial_review_ready: bool = False\n"
+        text = _replace_once(text, old, old + "    logo_only_visuals: bool = False\n", "VideoRequest logo_only_visuals")
+        changed = True
+
+    story_images_field = "    image_mode: Optional[str] = None  # single | multiple\n    logo_only_visuals: bool = False\n"
+    if story_images_field not in text:
+        old = "    image_mode: Optional[str] = None  # single | multiple\n"
+        text = _replace_once(text, old, old + "    logo_only_visuals: bool = False\n", "StoryImagesRequest logo_only_visuals")
         changed = True
 
     canonical_marker = f"{MARKER}:canonical-hash"
     if canonical_marker not in text:
-        old = '        "custom_image_paths": custom_image_paths,\n    }\n    return canonical\n'
-        new = f'        "custom_image_paths": custom_image_paths,\n        "logo_only_visuals": bool(payload.get("logo_only_visuals")),  # {canonical_marker}\n    }}\n    return canonical\n'
+        old = '        "custom_image_paths": custom_image_paths,\n'
+        new = old + f'        "logo_only_visuals": bool(payload.get("logo_only_visuals")),  # {canonical_marker}\n'
         text = _replace_once(text, old, new, "canonical hash")
         changed = True
 
