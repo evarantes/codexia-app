@@ -8,6 +8,7 @@ JS = Path("app/static/youtube_narration_gate.js")
 YOUTUBE_ROUTER = Path("app/routers/youtube.py")
 NARRATION_ROUTER = Path("app/routers/narration_lab.py")
 NARRATION_SERVICE = Path("app/services/youtube_narration_gate.py")
+PRODUCTION_JOB_STORE = Path("app/services/production_job_store.py")
 TAG = '<script src="/static/youtube_narration_gate.js"></script>'
 MARKER = "</body>"
 
@@ -76,16 +77,34 @@ def check() -> None:
         "narration router job-folder",
     )
 
+    # The narration service is responsible only for creating/approving previews
+    # and delegating durable ownership to the ProductionJobStore.
     _require(
         NARRATION_SERVICE,
         [
             "production_job_id",
-            "approved_narration.mp3",
-            "job.json",
-            "tts_locked",
-            "audio_sha256",
+            "production_job_store.register_preview",
+            "production_job_store.approve_preview",
+            "production_job_store.validated_approved_audio",
+            "reuse_audio_from",
         ],
-        "narration service job-folder",
+        "narration service job integration",
+    )
+
+    # The physical job store is the single source of truth for the approved MP3.
+    _require(
+        PRODUCTION_JOB_STORE,
+        [
+            "job.json",
+            "approved_narration.mp3",
+            "approved_narration.json",
+            "approved_audio_sha256",
+            "tts_locked",
+            "_sha256_file",
+            "validated_approved_audio",
+            "A integridade do MP3 aprovado não confere",
+        ],
+        "production job store",
     )
 
     # The video endpoint must carry the job id to the persisted task/worker.
