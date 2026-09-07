@@ -53,7 +53,13 @@ class GlobalLogoOnlyVisualModeTests(unittest.TestCase):
             "app/services/ai_generator.py": ["CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:provider:ai_generator.py", "image_provider_override"],
             "app/services/ai_router.py": ["CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:provider:ai_router.py", "image_provider_override"],
             "app/services/image_storyboard_service.py": ["CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:thumbnail", "images_generated"],
-            "app/routers/youtube.py": ["logo_only_visuals: bool = False", "CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:dispatch"],
+            "app/routers/youtube.py": [
+                "logo_only_visuals: bool = False",
+                "CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:dispatch",
+                "CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:worker-plan",
+                "CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:progress-labels",
+                "CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:worker-provider-context",
+            ],
             "app/services/unified_video_pipeline.py": ["logo_only_visuals: bool = False", "CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:unified-builder"],
             "app/services/video_generator.py": ["CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:opening", "CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:music", "ai_image_generation_disabled"],
         }
@@ -71,6 +77,29 @@ class GlobalLogoOnlyVisualModeTests(unittest.TestCase):
         self.assertIn("X-Codexia-Logo-Only-Visuals", js)
         self.assertNotIn("Testar vídeo somente com o logo", js)
         self.assertNotIn("Teste econômico de narração", js)
+
+    def test_worker_reapplies_logo_contract_and_blocks_provider_calls(self):
+        root = Path(__file__).resolve().parents[1]
+        worker = (root / "app/routers/youtube.py").read_text(encoding="utf-8")
+
+        self.assertIn('script = apply_logo_only_to_payload(', worker)
+        self.assertIn('{**script, "logo_only_visuals": True}', worker)
+        self.assertIn('with logo_only_visual_context(', worker)
+        self.assertIn('logo_path=(script.get("logo_only_logo_path")', worker)
+        self.assertIn('logo_url=(script.get("logo_only_logo_url")', worker)
+
+        plan_pos = worker.index("CODEXIA_GLOBAL_LOGO_ONLY_VISUALS_V1:worker-plan")
+        render_pos = worker.index("video_service.create_video_from_plan(")
+        self.assertLess(plan_pos, render_pos)
+
+    def test_progress_labels_describe_reuse_and_logo_mode_truthfully(self):
+        root = Path(__file__).resolve().parents[1]
+        worker = (root / "app/routers/youtube.py").read_text(encoding="utf-8")
+
+        self.assertIn("2/8 Reutilizando narração aprovada...", worker)
+        self.assertIn("3/8 Aplicando logo oficial às cenas...", worker)
+        self.assertIn("_approved_audio_progress", worker)
+        self.assertIn("_logo_only_progress", worker)
 
     def test_global_script_is_loaded_by_every_static_html_page(self):
         root = Path(__file__).resolve().parents[1]
