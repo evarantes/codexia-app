@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, Optional, Type
 
+from app.services.narration_core import NARRATION_CORE_NAMESPACE, NARRATION_CORE_VERSION
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -21,6 +26,12 @@ def _normalize_text(value: Any) -> str:
 
 def _text_sha256(value: Any) -> str:
     return hashlib.sha256(_normalize_text(value).encode("utf-8")).hexdigest()
+
+
+def _approved_text_sha256(value: Any) -> str:
+    """Replica o hash exato gravado pelo Narration Core para a versão aprovada."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
 
 
 def _file_sha256(path: str) -> Optional[str]:
@@ -296,9 +307,116 @@ def _build_checkpoint(generator: Any, segmented: Dict[str, Any], kwargs: Dict[st
     return checkpoint
 
 
+def _approved_seed_checkpoint(generator: Any, plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Valida e vincula um MP3 aprovado que não foi sintetizado pela task atual.
+
+    O fluxo supervisionado cria e aprova o MP3 antes de existir uma tarefa de
+    vídeo. Por isso ele não possui o checkpoint histórico da task que o
+    renderizará. A identidade forte desse seed é o contrato do Narration Core
+    (trabalho + preview + hashes exatos), não um checkpoint TTS anterior.
+    """
+
+    def reject(reason: str) -> None:
+        raise RuntimeError(
+            f"Contrato da narração aprovada inválido: {reason}; "
+            "render e novo TTS foram bloqueados."
+        )
+
+    seed_path = str(plan.get("seed_audio_path") or "").strip()
+    production_job_id = str(plan.get("production_job_id") or "").strip()
+    preview_id = str(plan.get("approved_narration_preview_id") or "").strip().lower()
+    expected_audio_sha256 = str(plan.get("approved_narration_audio_sha256") or "").strip().lower()
+    expected_text_sha256 = str(plan.get("approved_narration_text_sha256") or "").strip().lower()
+    seed_text = str(plan.get("seed_narration_text") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    if not production_job_id:
+        reject("production_job_id ausente")
+    if not preview_id:
+        reject("identificador do preview aprovado ausente")
+    try:
+        core_version = int(plan.get("narration_core_version") or 0)
+    except Exception:
+        core_version = 0
+    core_namespace = str(plan.get("narration_core_namespace") or "").strip()
+    if core_version != NARRATION_CORE_VERSION or core_namespace != NARRATION_CORE_NAMESPACE:
+        reject("versão ou namespace do Narration Core não corresponde ao contrato atual")
+    if plan.get("tts_locked") is not True or plan.get("allow_tts_generation") is not False:
+        reject("trava de TTS ausente")
+    if not seed_path or not os.path.isfile(seed_path):
+        reject("MP3 aprovado não está disponível")
+
+    metadata = _file_metadata(seed_path)
+    if not metadata.get("exists") or int(metadata.get("size_bytes") or 0) < 1000:
+        reject("MP3 aprovado está vazio ou incompleto")
+    if not _SHA256_RE.fullmatch(expected_audio_sha256):
+        reject("hash SHA-256 do MP3 aprovado ausente ou malformado")
+    actual_audio_sha256 = str(metadata.get("sha256") or "").lower()
+    if actual_audio_sha256 != expected_audio_sha256:
+        reject("integridade SHA-256 do MP3 aprovado não confere")
+    if not seed_text:
+        reject("texto exato da narração aprovada ausente")
+    if not _SHA256_RE.fullmatch(expected_text_sha256):
+        reject("hash SHA-256 do texto aprovado ausente ou malformado")
+    if _approved_text_sha256(seed_text) != expected_text_sha256:
+        reject("texto do seed não corresponde ao hash da narração aprovada")
+
+    task_id = _task_id_from_generator(generator)
+    checkpoint: Dict[str, Any] = {
+        "checkpoint_version": 2,
+        "checkpoint_status": "approved_reuse",
+        "checkpoint_at": _utc_iso(),
+        "task_id": task_id,
+        "output_path": seed_path,
+        "final_audio_path": seed_path,
+        "audio_path": seed_path,
+        "audio_size_bytes": int(metadata.get("size_bytes") or 0),
+        "audio_sha256": actual_audio_sha256,
+        "configured_provider": "approved_narration_core_v1",
+        "provider_used": "approved_narration_core_v1",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "attempts": [],
+        "provider_attempt_count": 0,
+        "segment_count": 1,
+        "call_count": 0,
+        "final_text_sent_to_tts": seed_text,
+        "final_text_sha256": _text_sha256(seed_text),
+        "approved_narration_text_sha256": expected_text_sha256,
+        "production_job_id": production_job_id,
+        "approved_narration_preview_id": preview_id,
+        "narration_core_version": core_version,
+        "narration_core_namespace": core_namespace,
+        "source_plan_fingerprint": getattr(generator, "_codexia_source_plan_fingerprint", None),
+        "approved_narration_required": True,
+        "tts_locked": True,
+        "tts_regeneration_allowed": False,
+        "validation_status": "approved_contract_valid",
+    }
+    persisted = _persist_checkpoint(generator, checkpoint)
+    return {
+        "has_seed": True,
+        "compatible": True,
+        "reason": "approved_narration_contract_valid",
+        "seed_audio_path": seed_path,
+        "checkpoint_path": seed_path,
+        "checkpoint_persisted": bool(persisted),
+        "production_job_id": production_job_id,
+        "preview_id": preview_id,
+        "audio_sha256": actual_audio_sha256,
+        "checked_at": _utc_iso(),
+    }
+
+
 def _validate_seed_before_reuse(generator: Any, plan: Any) -> Dict[str, Any]:
     if not isinstance(plan, dict):
         return {"has_seed": False, "compatible": True, "reason": "no_plan"}
+
+    # Um MP3 supervisionado nasce antes da task de vídeo e, legitimamente, não
+    # possui checkpoint TTS dessa task. Valide seu contrato criptográfico e o
+    # registre como checkpoint oficial; jamais remova o seed e libere novo TTS.
+    if bool(plan.get("approved_narration_required")):
+        return _approved_seed_checkpoint(generator, plan)
+
     seed_path = str(plan.get("seed_audio_path") or "").strip()
     if not seed_path:
         return {"has_seed": False, "compatible": True, "reason": "no_seed"}
