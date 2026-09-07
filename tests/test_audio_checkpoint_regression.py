@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from app.services import audio_checkpoint as ac
+from app.services.narration_contract_guard import install_narration_contract_guard
 
 
 class _FakeAI:
@@ -63,6 +64,23 @@ class AudioCheckpointRegressionTests(unittest.TestCase):
                 return {"video_url": "/media/videos/test.mp4", "render_report": {}}
 
         return FakeGenerator
+
+    def _approved_plan(self, audio_path, *, text="O tempo de espera esta chegando ao fim."):
+        return {
+            "seed_audio_path": audio_path,
+            "seed_narration_text": text,
+            "production_job_id": "YT-20260907-regression",
+            "approved_narration_preview_id": "preview-regression-01",
+            "approved_narration_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "approved_narration_audio_sha256": ac._file_sha256(audio_path),
+            "approved_narration_required": True,
+            "narration_core_version": 1,
+            "narration_core_namespace": "codexia-narration-core-v1",
+            "tts_locked": True,
+            "allow_tts_generation": False,
+            "force_render_only": True,
+            "scenes": [{"text": text}],
+        }
 
     def test_checkpoint_is_emitted_before_later_audio_critic_failure(self):
         audio_path = self._audio_file()
@@ -161,6 +179,134 @@ class AudioCheckpointRegressionTests(unittest.TestCase):
             result = FakeGenerator().create_video_from_plan(plan)
 
         self.assertEqual(result["seed_audio_path"], audio_path)
+
+    def test_approved_seed_without_prior_task_checkpoint_is_kept_and_checkpointed(self):
+        audio_path = self._audio_file(b"approved-production-audio" * 200)
+        captured = []
+
+        class FakeGenerator:
+            def __init__(self):
+                self.ai_service = _FakeAI("task-approved-seed")
+
+            def _compose_segmented_narration_audio(self, **kwargs):
+                raise AssertionError("novo TTS nao pode ser chamado")
+
+            def create_video_from_plan(self, plan, *args, **kwargs):
+                return {
+                    "seed_audio_path": plan.get("seed_audio_path"),
+                    "tts_locked": plan.get("tts_locked"),
+                    "allow_tts_generation": plan.get("allow_tts_generation"),
+                }
+
+        with mock.patch.object(ac, "_checkpoint_from_task", return_value={}), \
+             mock.patch.object(
+                 ac,
+                 "_persist_checkpoint",
+                 side_effect=lambda _generator, checkpoint, **_kwargs: captured.append(dict(checkpoint)) or True,
+             ):
+            ac.install_audio_checkpoint_patch(FakeGenerator)
+            plan = self._approved_plan(audio_path)
+            result = FakeGenerator().create_video_from_plan(plan)
+
+        self.assertEqual(result["seed_audio_path"], audio_path)
+        self.assertTrue(result["tts_locked"])
+        self.assertFalse(result["allow_tts_generation"])
+        self.assertEqual(len(captured), 1)
+        checkpoint = captured[0]
+        self.assertEqual(checkpoint["checkpoint_status"], "approved_reuse")
+        self.assertEqual(checkpoint["validation_status"], "approved_contract_valid")
+        self.assertEqual(checkpoint["audio_sha256"], ac._file_sha256(audio_path))
+        self.assertEqual(checkpoint["production_job_id"], "YT-20260907-regression")
+        self.assertEqual(checkpoint["call_count"], 0)
+
+    def test_approved_seed_crosses_worker_checkpoint_and_narration_guard_without_new_tts(self):
+        audio_path = self._audio_file(b"approved-worker-chain" * 200)
+
+        class FakeWorkerGenerator:
+            def __init__(self):
+                self.ai_service = _FakeAI("task-approved-worker-chain")
+                self.provider_calls = 0
+
+            def _count_words(self, text):
+                return len(str(text or "").split())
+
+            def _estimate_text_duration_with_voice(self, text, **_kwargs):
+                return len(str(text or "").split()) / 2.4
+
+            def prepare_final_narration_text(self, plan, scenes, voice_style=None, voice_gender=None):
+                story = " ".join(str(scene.get("text") or "") for scene in scenes)
+                reflection = "Cristo continua sendo nossa esperança."
+                return {
+                    "opening_text": "Hoje existe uma resposta para você.",
+                    "body_text": f"{story} {reflection}".strip(),
+                    "reflection_text": reflection,
+                    "cta_text": "Inscreva-se no canal.",
+                    "closing_text": "Inscreva-se no canal.",
+                    "full_text": story,
+                }
+
+            def generate_audio(self, text, *args, **kwargs):
+                self.provider_calls += 1
+                raise AssertionError("provider TTS não pode ser chamado")
+
+            def _compose_segmented_narration_audio(self, *, main_text, cta_text, **kwargs):
+                self.provider_calls += 1
+                raise AssertionError("síntese segmentada não pode ser chamada")
+
+            def create_video_from_plan(self, plan, *args, **kwargs):
+                self.prepare_final_narration_text(plan, plan.get("scenes") or [])
+                if not plan.get("seed_audio_path"):
+                    self._compose_segmented_narration_audio(main_text="novo", cta_text="novo")
+                return {"seed_audio_path": plan.get("seed_audio_path")}
+
+        with mock.patch.object(ac, "_checkpoint_from_task", return_value={}), \
+             mock.patch.object(ac, "_persist_checkpoint", return_value=True):
+            ac.install_audio_checkpoint_patch(FakeWorkerGenerator)
+            install_narration_contract_guard(FakeWorkerGenerator)
+            generator = FakeWorkerGenerator()
+            result = generator.create_video_from_plan(self._approved_plan(audio_path))
+
+        self.assertEqual(result["seed_audio_path"], audio_path)
+        self.assertEqual(generator.provider_calls, 0)
+
+    def test_tampered_approved_seed_fails_closed_without_unlocking_tts(self):
+        audio_path = self._audio_file(b"approved-before-tamper" * 200)
+        plan = self._approved_plan(audio_path)
+        plan["approved_narration_audio_sha256"] = hashlib.sha256(b"another-audio").hexdigest()
+
+        with mock.patch.object(ac, "_persist_checkpoint") as persist:
+            with self.assertRaisesRegex(RuntimeError, "integridade SHA-256"):
+                ac._validate_seed_before_reuse(mock.Mock(ai_service=_FakeAI()), plan)
+
+        persist.assert_not_called()
+        self.assertEqual(plan["seed_audio_path"], audio_path)
+        self.assertTrue(plan["tts_locked"])
+        self.assertFalse(plan["allow_tts_generation"])
+
+    def test_approved_seed_with_changed_text_fails_closed(self):
+        audio_path = self._audio_file(b"approved-text-contract" * 200)
+        plan = self._approved_plan(audio_path)
+        plan["seed_narration_text"] = "Outro texto que nunca foi aprovado."
+
+        with mock.patch.object(ac, "_persist_checkpoint") as persist:
+            with self.assertRaisesRegex(RuntimeError, "texto do seed"):
+                ac._validate_seed_before_reuse(mock.Mock(ai_service=_FakeAI()), plan)
+
+        persist.assert_not_called()
+        self.assertEqual(plan["seed_audio_path"], audio_path)
+        self.assertFalse(plan["allow_tts_generation"])
+
+    def test_approved_seed_requires_current_core_and_tts_lock(self):
+        audio_path = self._audio_file(b"approved-lock-contract" * 200)
+        old_core = self._approved_plan(audio_path)
+        old_core["narration_core_version"] = 0
+        unlocked = self._approved_plan(audio_path)
+        unlocked["allow_tts_generation"] = True
+
+        with self.assertRaisesRegex(RuntimeError, "Narration Core"):
+            ac._validate_seed_before_reuse(mock.Mock(ai_service=_FakeAI()), old_core)
+        with self.assertRaisesRegex(RuntimeError, "trava de TTS"):
+            ac._validate_seed_before_reuse(mock.Mock(ai_service=_FakeAI()), unlocked)
 
     def test_file_hash_detects_changed_audio(self):
         audio_path = self._audio_file(b"before" * 300)
