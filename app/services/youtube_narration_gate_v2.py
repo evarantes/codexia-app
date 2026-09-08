@@ -88,7 +88,7 @@ class YouTubeNarrationGateV2Service(YouTubeNarrationGateService):
         preview_id = narration_fingerprint(
             spoken_text=spoken,
             voice=selected_voice,
-            provider="edge_tts",
+            provider="edge_tts_ptbr_performance_v3",
         )
         user_dir = self._user_dir(user_id)
         mp3_path = user_dir / f"{preview_id}.mp3"
@@ -175,13 +175,14 @@ class YouTubeNarrationGateV2Service(YouTubeNarrationGateService):
             "removed_technical_blocks": source_artifact.removed_technical_blocks,
             "source_kind": source_artifact.source_kind,
             "voice": selected_voice,
-            "provider": "edge_tts",
+            "provider": "edge_tts_ptbr_performance_v3",
             "language": "pt-BR",
             "audio_size_bytes": int(mp3_path.stat().st_size),
             "audio_duration_sec": self._duration(mp3_path),
             "narration_contract": narration_contract,
             "caption_timeline": caption_timeline,
-            "caption_timing_source": "edge_tts_word_boundaries_exact_ptbr_v2",
+            "caption_timing_source": "edge_tts_exact_ptbr_v3",
+            "caption_alignment_mode": "word_boundaries_or_exact_segment_audio",
             "caption_alignment_exact": True,
             "performance_segment_count": int(performance.get("segment_count") or 0),
             "performance_pause_total_sec": float(performance.get("pause_total_sec") or 0.0),
