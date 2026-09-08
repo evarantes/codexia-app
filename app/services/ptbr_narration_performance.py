@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import struct
 import shutil
 import subprocess
 import tempfile
@@ -239,6 +240,32 @@ def _ffmpeg_decode_to_wav(source: Path, target: Path) -> None:
         )
 
 
+def _trim_wav_silence(source: Path, target: Path, *, threshold: int = 320, pad_ms: int = 60) -> float:
+    """Remove codec silence at chunk edges while preserving a short breath pad."""
+    with wave.open(str(source), "rb") as reader:
+        rate = int(reader.getframerate())
+        channels = int(reader.getnchannels())
+        width = int(reader.getsampwidth())
+        frames = reader.readframes(reader.getnframes())
+    if width != 2 or channels != 1 or rate <= 0:
+        raise PtBrNarrationPerformanceError("Formato PCM inesperado ao aparar silêncio.")
+    samples = struct.unpack("<" + "h" * (len(frames) // 2), frames) if frames else ()
+    active = [index for index, sample in enumerate(samples) if abs(sample) >= threshold]
+    if not active:
+        target.write_bytes(source.read_bytes())
+        return 0.0
+    pad = max(0, int(rate * max(0, pad_ms) / 1000.0))
+    first = max(0, active[0] - pad)
+    last = min(len(samples), active[-1] + pad + 1)
+    trimmed = frames[first * 2:last * 2]
+    with wave.open(str(target), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(rate)
+        writer.writeframes(trimmed)
+    return first / float(rate)
+
+
 def _encode_wav_to_mp3(source: Path, target: Path) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -296,6 +323,7 @@ async def synthesize_edge_ptbr_performance(
             for index, segment in enumerate(segments):
                 segment_mp3 = temp_dir / f"segment-{index:03d}.mp3"
                 segment_wav = temp_dir / f"segment-{index:03d}.wav"
+                trimmed_wav = temp_dir / f"segment-{index:03d}-trimmed.wav"
                 communicator = edge_tts.Communicate(
                     segment.text,
                     voice,
@@ -333,7 +361,8 @@ async def synthesize_edge_ptbr_performance(
                 if not segment_mp3.is_file() or segment_mp3.stat().st_size <= 512:
                     raise PtBrNarrationPerformanceError("O TTS retornou um trecho de áudio inválido.")
                 _ffmpeg_decode_to_wav(segment_mp3, segment_wav)
-                with wave.open(str(segment_wav), "rb") as reader:
+                leading_trim_sec = _trim_wav_silence(segment_wav, trimmed_wav)
+                with wave.open(str(trimmed_wav), "rb") as reader:
                     if reader.getnchannels() != 1 or reader.getsampwidth() != 2 or reader.getframerate() != 24000:
                         raise PtBrNarrationPerformanceError("Formato PCM inesperado na montagem da narração.")
                     frames = reader.readframes(reader.getnframes())
@@ -354,8 +383,8 @@ async def synthesize_edge_ptbr_performance(
                     }]
 
                 for item in local_timeline:
-                    local_start = min(segment_duration, max(0.0, float(item["start"])))
-                    local_end = min(segment_duration, max(local_start, float(item["end"])))
+                    local_start = min(segment_duration, max(0.0, float(item["start"]) - leading_trim_sec))
+                    local_end = min(segment_duration, max(local_start, float(item["end"]) - leading_trim_sec))
                     if local_end <= local_start:
                         raise PtBrNarrationPerformanceError(
                             "O limite temporal de uma palavra caiu fora do áudio sintetizado."
@@ -390,6 +419,7 @@ async def synthesize_edge_ptbr_performance(
         "caption_timeline": final_timeline,
         "segment_count": len(segments),
         "pause_total_sec": round(pause_total, 3),
+        "edge_silence_trimmed": True,
         "performance_version": PTBR_NARRATION_PERFORMANCE_VERSION,
         "performance_namespace": PTBR_NARRATION_PERFORMANCE_NAMESPACE,
         "rate": PTBR_EDGE_RATE,
