@@ -1963,6 +1963,41 @@ class VideoGenerator:
                 })
         return sliced
 
+    def _caption_overlay_clips_for_window(
+        self,
+        timeline: List[Dict[str, Any]],
+        start_sec: float,
+        end_sec: float,
+        size,
+    ) -> List[Any]:
+        """Build literal, audio-timed overlays for opening or closing windows."""
+        overlays: List[Any] = []
+        sliced = self._slice_caption_timeline(timeline, start_sec, end_sec)
+        expanded: List[Dict[str, Any]] = []
+        for item in sliced:
+            expanded.extend(
+                self._expand_caption_item_for_overlay(
+                    item,
+                    size=size,
+                    reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
+                )
+            )
+        for item in expanded:
+            caption = str(item.get("caption") or "").strip()
+            start = float(item.get("start") or 0.0)
+            end = float(item.get("end") or 0.0)
+            if not caption or end <= start:
+                continue
+            overlay_arr = self.create_text_overlay(
+                caption,
+                size=size,
+                text_color=(255, 255, 255),
+                reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
+            )
+            overlay_clip = self._clip_from_rgba(overlay_arr, end - start, crop_transparent=True)
+            overlays.append(self._set_clip_start(overlay_clip, start))
+        return overlays
+
     def _clean_image_prompt_seed(self, prompt: str, max_chars: int = 180) -> str:
         cleaned = self._clean_text(prompt)
         if not cleaned:
@@ -6022,7 +6057,15 @@ $synth.Dispose()
             )
             if title_overlay is not None:
                 opening_overlays.append(title_overlay)
-            render_report["visual_plan"]["opening_caption_suppressed"] = True
+            opening_caption_overlays = self._caption_overlay_clips_for_window(
+                full_caption_timeline,
+                0.0,
+                opening_visual_duration,
+                video_size,
+            )
+            opening_overlays.extend(opening_caption_overlays)
+            render_report["visual_plan"]["opening_caption_suppressed"] = False
+            render_report["visual_plan"]["opening_caption_blocks"] = len(opening_caption_overlays)
             render_report["visual_plan"]["opening_background_source"] = (
                 opening_visual.get("source") if isinstance(opening_visual, dict) else "fallback_background"
             )
@@ -6465,9 +6508,20 @@ $synth.Dispose()
                     fade_in_sec=min(0.35, voice_closing_duration * 0.14),
                     fade_out_sec=min(0.35, voice_closing_duration * 0.18),
                 )
+                closing_audio_start = float((closing_timeline_entry or {}).get("audio_start") or 0.0)
+                closing_audio_end = float((closing_timeline_entry or {}).get("audio_end") or closing_audio_start)
+                closing_caption_overlays = self._caption_overlay_clips_for_window(
+                    full_caption_timeline,
+                    closing_audio_start,
+                    closing_audio_end,
+                    video_size,
+                )
+                if closing_caption_overlays:
+                    clip_cta = CompositeVideoClip([clip_cta] + closing_caption_overlays, size=video_size)
                 clips.append(clip_cta)
                 render_report["cta_rendered"] = True
                 render_report["visual_plan"]["cta_visual_mode"] = "cinematic_background_bridge"
+                render_report["visual_plan"]["closing_caption_blocks"] = len(closing_caption_overlays)
 
             img_end = self._build_cinematic_endcard_frame(
                 branding_profile,
@@ -6490,7 +6544,7 @@ $synth.Dispose()
             clips.append(clip_end)
             render_report["visual_plan"]["closing_background_source"] = closing_background.get("source")
             render_report["visual_plan"]["closing_logo_present"] = bool(branding_profile.get("logo_path"))
-            render_report["visual_plan"]["closing_caption_suppressed"] = True
+            render_report["visual_plan"]["closing_caption_suppressed"] = False
             render_report["visual_plan"]["closing_message_lines"] = list(branding_profile.get("final_message_lines") or [])
             render_report["visual_plan"]["contextual_closing"] = dict(branding_profile.get("contextual_closing") or {})
             render_report["visual_plan"]["endcard_cta_text"] = branding_profile.get("endcard_cta_text")
