@@ -332,12 +332,6 @@ async def synthesize_edge_ptbr_performance(
 
                 if not segment_mp3.is_file() or segment_mp3.stat().st_size <= 512:
                     raise PtBrNarrationPerformanceError("O TTS retornou um trecho de áudio inválido.")
-                if not raw_boundaries:
-                    raise PtBrNarrationPerformanceError(
-                        "O TTS não retornou limites de palavra; a narração foi bloqueada para não gerar legenda aproximada."
-                    )
-
-                local_timeline = align_canonical_word_boundaries(segment.text, raw_boundaries)
                 _ffmpeg_decode_to_wav(segment_mp3, segment_wav)
                 with wave.open(str(segment_wav), "rb") as reader:
                     if reader.getnchannels() != 1 or reader.getsampwidth() != 2 or reader.getframerate() != 24000:
@@ -345,6 +339,19 @@ async def synthesize_edge_ptbr_performance(
                     frames = reader.readframes(reader.getnframes())
                     segment_duration = reader.getnframes() / float(reader.getframerate())
                 wav_writer.writeframes(frames)
+
+                # Edge ocasionalmente entrega o áudio sem eventos WordBoundary.
+                # O trecho já é uma unidade canônica de fala: usamos seu
+                # intervalo PCM exato como legenda do trecho, sem distribuir
+                # artificialmente tempo entre palavras nem alterar o texto.
+                if raw_boundaries:
+                    local_timeline = align_canonical_word_boundaries(segment.text, raw_boundaries)
+                else:
+                    local_timeline = [{
+                        "start": 0.0,
+                        "end": segment_duration,
+                        "word": segment.text,
+                    }]
 
                 for item in local_timeline:
                     local_start = min(segment_duration, max(0.0, float(item["start"])))
@@ -370,7 +377,13 @@ async def synthesize_edge_ptbr_performance(
         finally:
             wav_writer.close()
 
-        final_timeline = align_canonical_word_boundaries(spoken_text, global_timeline)
+        rebuilt_text = _collapse_spaces(" ".join(str(item.get("word") or "") for item in global_timeline))
+        canonical_text = _collapse_spaces(spoken_text)
+        if rebuilt_text != canonical_text:
+            raise PtBrNarrationPerformanceError(
+                "A legenda por trechos não é idêntica ao texto aprovado."
+            )
+        final_timeline = global_timeline
         _encode_wav_to_mp3(combined_wav, output_path)
 
     return {
