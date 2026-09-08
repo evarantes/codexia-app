@@ -9026,6 +9026,11 @@
                         this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
                         this.ytStoryTaskPollFails[taskId] = 0;
                         await this.pollStoryTask(taskId);
+                        if (data && data.recovery_confirmation_required) {
+                            this.ytStoryVideoLoading = false;
+                            alert(data.message || 'A recuperação foi pausada para confirmação explícita de custo.');
+                            return;
+                        }
                     } catch (e) {
                         this.ytStoryVideoLoading = false;
                         const retryError = "Erro ao reiniciar: " + (e.message || e);

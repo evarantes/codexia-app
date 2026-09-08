@@ -336,6 +336,62 @@ class VideoRuntimeTelemetryTests(unittest.TestCase):
         self.assertEqual(response["status"], "failed")
         self.assertEqual(response["runtime"]["state"], "finished")
 
+    def test_deploy_interruption_with_checkpoint_becomes_safe_pause(self):
+        from app.routers import youtube
+
+        interrupted = {
+            "task_id": "task-deploy-interrupted",
+            "status": "failed",
+            "progress": 30,
+            "message": (
+                "Produção interrompida: o executor não envia sinais há 1119 segundos. "
+                "O monitor registrou a interrupção e preservou os dados."
+            ),
+            "result": {
+                "payload": {"duration": 1.55},
+                "pipeline_stage": "stage_2_voice",
+            },
+        }
+        diagnostic = {
+            "manifest_found": True,
+            "script_preserved": True,
+            "max_recoverable_checkpoint": "stage_2_voice",
+            "audio": {"found": True, "reusable": True},
+            "images": {"valid": 0, "expected": 8, "missing": 8},
+            "video_preserved": False,
+        }
+
+        def _paused(_task_id, message):
+            return {
+                **interrupted,
+                "status": "paused",
+                "message": message,
+            }
+
+        with patch.object(youtube, "get_task", return_value=interrupted), \
+             patch.object(youtube, "get_task_execution_lease", return_value=None), \
+             patch.object(youtube, "merge_task_result") as merge_result, \
+             patch.object(youtube, "mark_task_paused", side_effect=_paused) as mark_paused, \
+             patch.object(youtube, "_kick_story_video_task_queue_async") as kick_queue, \
+             patch(
+                 "app.services.production_manifest_diagnostics.build_manifest_diagnostic",
+                 return_value=diagnostic,
+             ):
+            response = youtube.get_task_status("task-deploy-interrupted")
+
+        self.assertEqual(response["status"], "paused")
+        self.assertEqual(response["runtime"]["state"], "paused")
+        self.assertIn("áudio aprovado validado para reutilização", response["message"])
+        self.assertIn("confirmação de custo obrigatória", response["message"])
+        self.assertIn("Nenhuma nova mídia paga foi gerada", response["message"])
+        recovery = merge_result.call_args.args[1]["executor_interruption_recovery"]
+        self.assertTrue(recovery["same_task"])
+        self.assertFalse(recovery["automatic_retry"])
+        self.assertFalse(recovery["paid_calls_performed"])
+        self.assertEqual(recovery["missing_image_count"], 8)
+        mark_paused.assert_called_once()
+        kick_queue.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
