@@ -63,6 +63,35 @@ def _inline_fallback_allowed() -> bool:
     return bool(sys.platform == "win32" or explicit in {"1", "true", "yes", "on"})
 
 
+def create_rq_worker_connection():
+    """Cria uma conexão Redis compatível com o BLPOP bloqueante do RQ.
+
+    A API mantém um timeout curto para não prender requisições HTTP. O worker,
+    porém, espera jobs com ``dequeue_timeout`` de 405 segundos por padrão no
+    RQ; por isso sua conexão precisa de um ``socket_timeout`` maior. Compartilhar
+    os 10 segundos da API faz o worker ocioso cair com ``TimeoutError``.
+    """
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    connect_timeout = _env_int("REDIS_CONNECT_TIMEOUT_SECONDS", 5, 2, 60)
+    socket_timeout = _env_int(
+        "RQ_WORKER_REDIS_SOCKET_TIMEOUT_SECONDS",
+        500,
+        420,
+        3600,
+    )
+    health_interval = _env_int("REDIS_HEALTH_CHECK_INTERVAL_SECONDS", 30, 5, 300)
+    worker_connection = redis.from_url(
+        redis_url,
+        socket_connect_timeout=connect_timeout,
+        socket_timeout=socket_timeout,
+        socket_keepalive=True,
+        health_check_interval=health_interval,
+        retry_on_timeout=True,
+    )
+    worker_connection.ping()
+    return worker_connection
+
+
 queue = None
 conn = None
 
