@@ -250,6 +250,11 @@ UI_FETCH_TAIL_NEW = r'''                    } finally {
                         if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao recolocar a tarefa na fila.');
                         this.ytStoryTaskId = taskId;
                         try { localStorage.setItem('ytStoryTaskId', taskId); } catch (e) {}
+                        if (data && data.recovery_confirmation_required) {
+                            await this.pollStoryTask(taskId);
+                            alert(data.message || 'A recuperação foi pausada para confirmação explícita de custo.');
+                            return;
+                        }
                         await this.fetchRecoverableVideoTasks({ silent: false });
                         await this.fetchActiveVideoTasks({ silent: false, autoOpen: false });
                         this.pollStoryTask(taskId);

@@ -1501,6 +1501,92 @@ def _start_video_runtime_monitor(task_id: str, executor_id: str):
     return stop_event, thread
 
 
+_INTERRUPTED_EXECUTOR_MESSAGE_PREFIX = "Produção interrompida: o executor não envia sinais"
+
+
+def _pause_recoverable_executor_interruption(
+    task_id: str,
+    task: Dict[str, Any],
+    *,
+    signal_age: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Converte uma interrupção de executor em pausa segura, sem executar mídia.
+
+    Deploys substituem o contêiner do worker e podem encerrar o processo RQ no
+    meio de uma produção. Isso não é uma falha do roteiro nem dos ativos. Se o
+    manifesto comprovar ao menos um checkpoint recuperável, preservamos a mesma
+    task_id e exigimos uma ação explícita do usuário antes de qualquer retomada.
+    """
+    task_obj = task if isinstance(task, dict) else {}
+    status = str(task_obj.get("status") or "").strip().lower()
+    message = str(task_obj.get("message") or "").strip()
+    if status not in {"processing", "failed"}:
+        return None
+    if status == "failed" and not message.startswith(_INTERRUPTED_EXECUTOR_MESSAGE_PREFIX):
+        return None
+
+    try:
+        from app.services.production_manifest_diagnostics import build_manifest_diagnostic
+
+        diagnostic = build_manifest_diagnostic(task_id) or {}
+    except Exception:
+        diagnostic = {}
+    if not isinstance(diagnostic, dict) or not bool(diagnostic.get("manifest_found")):
+        return None
+
+    audio = diagnostic.get("audio") if isinstance(diagnostic.get("audio"), dict) else {}
+    images = diagnostic.get("images") if isinstance(diagnostic.get("images"), dict) else {}
+    try:
+        valid_images = max(0, int(images.get("valid") or 0))
+    except Exception:
+        valid_images = 0
+    try:
+        missing_images = max(0, int(images.get("missing") or 0))
+    except Exception:
+        missing_images = 0
+    has_recoverable_checkpoint = bool(
+        diagnostic.get("script_preserved")
+        or audio.get("found")
+        or valid_images > 0
+        or diagnostic.get("video_preserved")
+    )
+    if not has_recoverable_checkpoint:
+        return None
+
+    checkpoint = str(diagnostic.get("max_recoverable_checkpoint") or "starting")
+    details: List[str] = [f"checkpoint {checkpoint} preservado"]
+    if bool(audio.get("reusable")):
+        details.append("áudio aprovado validado para reutilização")
+    if missing_images > 0:
+        details.append(
+            f"{missing_images} imagem(ns) pendente(s), com confirmação de custo obrigatória"
+        )
+    paused_message = (
+        "Produção pausada após reinício ou atualização do executor; "
+        + ", ".join(details)
+        + ". Use Retomar tarefa para revisar a recuperação. Nenhuma nova mídia paga foi gerada."
+    )
+    merge_task_result(
+        task_id,
+        {
+            "executor_interruption_recovery": {
+                "version": 1,
+                "same_task": True,
+                "automatic_retry": False,
+                "paid_calls_performed": False,
+                "resume_requires_user_action": True,
+                "checkpoint": checkpoint,
+                "audio_reusable": bool(audio.get("reusable")),
+                "missing_image_count": missing_images,
+                "signal_age_seconds": int(signal_age) if signal_age is not None else None,
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+    paused = mark_task_paused(task_id, message=paused_message)
+    return dict(paused) if isinstance(paused, dict) else None
+
+
 def _prefer_renderer_as_oom_victim(payload: Dict[str, Any], task_id: str) -> None:
     """Prioriza encerrar o renderizador, nunca a API, se o kernel ficar sem RAM."""
     if not (
@@ -6282,6 +6368,14 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     task = dict(task)
+    if (
+        str(task.get("status") or "").strip().lower() == "failed"
+        and str(task.get("message") or "").startswith(_INTERRUPTED_EXECUTOR_MESSAGE_PREFIX)
+    ):
+        recovered = _pause_recoverable_executor_interruption(task_id, task)
+        if recovered:
+            task = recovered
+            _kick_story_video_task_queue_async()
     if str(task.get("status") or "").strip().lower() == "pause_requested" and not _task_executor_is_alive(task_id):
         paused = mark_task_paused(
             task_id,
@@ -6337,21 +6431,30 @@ def get_task_status(task_id: str):
             )
         ):
             monitored = int(telemetry_obj.get("version") or 0) >= 1
-            update_task(
+            recovered = _pause_recoverable_executor_interruption(
                 task_id,
-                status="failed",
-                progress=int(task.get("progress") or 0),
-                message=(
-                    f"Produção interrompida: o executor não envia sinais há {int(signal_age)} segundos. "
-                    + (
-                        "O monitor registrou a interrupção e preservou os dados; use Reiniciar tarefa para continuar."
-                        if monitored
-                        else "A execução antiga perdeu o executor; os dados foram preservados e a tarefa pode ser reiniciada."
-                    )
-                ),
-                result=result_obj,
+                task,
+                signal_age=int(signal_age),
             )
-            task = dict(get_task(task_id) or task)
+            if recovered:
+                task = recovered
+                _kick_story_video_task_queue_async()
+            else:
+                update_task(
+                    task_id,
+                    status="failed",
+                    progress=int(task.get("progress") or 0),
+                    message=(
+                        f"Produção interrompida: o executor não envia sinais há {int(signal_age)} segundos. "
+                        + (
+                            "O monitor registrou a interrupção e preservou os dados; use Reiniciar tarefa para continuar."
+                            if monitored
+                            else "A execução antiga perdeu o executor; os dados foram preservados e a tarefa pode ser reiniciada."
+                        )
+                    ),
+                    result=result_obj,
+                )
+                task = dict(get_task(task_id) or task)
             task["runtime"] = _runtime_view_for_task(task)
     except Exception:
         task["runtime"] = {

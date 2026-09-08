@@ -119,7 +119,10 @@ def patch_index(text: str) -> str:
         text,
         """                                <span>{{ String(ytStoryTask.status || '').toLowerCase() === 'paused' ? 'Retomar tarefa' : 'Reiniciar tarefa' }}</span>""",
         """                                <span>{{ String(ytStoryTask.status || '').toLowerCase() === 'paused'
-                                    ? 'Retomar tarefa'
+                                    ? (String(ytStoryTask.message || '').toLowerCase().includes('confirmação de custo')
+                                        || String(ytStoryTask.message || '').toLowerCase().includes('confirmar esse custo')
+                                            ? 'Confirmar custo e retomar'
+                                            : 'Retomar tarefa')
                                     : (String(ytStoryTask.message || '').toLowerCase().includes('roteiro fora da tolerância editorial de duração')
                                         ? 'Continuar assim mesmo'
                                         : 'Reiniciar tarefa') }}</span>""",
