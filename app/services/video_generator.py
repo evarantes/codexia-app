@@ -3279,17 +3279,23 @@ class VideoGenerator:
             search_cursor = max(search_cursor, cap_end)
             midpoint = (cap_start + cap_end) / 2.0
 
-            scene_idx = 0
-            for idx, item_range in enumerate(scene_ranges):
-                start = int(item_range.get("start") or 0)
-                end = int(item_range.get("end") or start)
-                if midpoint >= start and midpoint <= max(start, end):
-                    scene_idx = idx
-                    break
-                if idx == len(scene_ranges) - 1 and midpoint > max(start, end):
-                    scene_idx = idx
-
             legacy_scene_idx = self._legacy_scene_index_for_time((item_start + item_end) / 2.0, legacy_scene_windows)
+            # Para áudio aprovado, a posição temporal do áudio é a única fonte
+            # confiável para distribuir blocos entre cenas. O texto visual do
+            # storyboard pode ser editorialmente diferente e não deve remapear
+            # nem reescrever a legenda.
+            if str(timeline_source or "").startswith("approved_"):
+                scene_idx = legacy_scene_idx
+            else:
+                scene_idx = 0
+                for idx, item_range in enumerate(scene_ranges):
+                    start = int(item_range.get("start") or 0)
+                    end = int(item_range.get("end") or start)
+                    if midpoint >= start and midpoint <= max(start, end):
+                        scene_idx = idx
+                        break
+                    if idx == len(scene_ranges) - 1 and midpoint > max(start, end):
+                        scene_idx = idx
             per_scene_global[scene_idx].append({
                 "block_index": block_idx,
                 "caption": caption,
@@ -5805,6 +5811,15 @@ $synth.Dispose()
                     if part
                 ).strip()
                 cta_narration_text = str(planning_meta.get("cta_text") or planning_meta.get("closing_text") or "").strip()
+
+            # Quando existe áudio aprovado, ele é a autoridade absoluta do texto.
+            # O storyboard continua servindo apenas para imagens/cenas; nunca pode
+            # substituir o texto que foi realmente enviado ao TTS aprovado.
+            if seed_audio_used and approved_seed_required and seed_audio_text:
+                final_narration_text = seed_audio_text
+                planning_meta["full_text"] = seed_audio_text
+                render_report["audio_generation"]["final_text_sent_to_tts"] = seed_audio_text
+                render_report["audio_generation"]["caption_text_authority"] = "approved_audio_text"
 
             estimated_total_duration = float(planning_meta.get("estimated_total_duration_sec") or 0.0)
             duration_range_report["estimated_full_narration_duration_sec"] = round(estimated_total_duration, 2)
