@@ -241,6 +241,7 @@ REGRAS GLOBAIS DE ROTEIRO:
 - Nunca coloque no texto narrável rótulos como "GANCHO", "CLÍMAX", "CENA", "PROMPT", JSON, instruções técnicas, marcações de câmera ou metadados.
 - Não invente versículos, referências, citações, datas, diálogos ou fatos que não estejam seguros no contexto fornecido.
 - Escreva para locução humana em português do Brasil: natural, claro, específico e agradável de ouvir em voz alta.
+- Revise gramática, concordância, acentuação e pontuação antes de entregar. Use frases com respirações naturais e grafias que deixem a pronúncia e a dicção inequívocas no TTS.
 
 TIPO RECEBIDO: {str(kind or '').strip()}
 TEMA RECEBIDO: {str(instruction or '').strip()}

@@ -20,11 +20,13 @@ from app.services.youtube_narration_gate import (
 class _FakeCommunicate:
     calls = 0
     texts = []
+    kwargs = []
 
     def __init__(self, text, voice, **kwargs):
         self.text = text
         self.voice = voice
         type(self).texts.append(text)
+        type(self).kwargs.append(kwargs)
 
     async def save(self, path):
         type(self).calls += 1
@@ -62,6 +64,7 @@ class YouTubeNarrationGateTests(unittest.TestCase):
         sys.modules["edge_tts"] = types.SimpleNamespace(Communicate=_FakeCommunicate)
         _FakeCommunicate.calls = 0
         _FakeCommunicate.texts = []
+        _FakeCommunicate.kwargs = []
         self.service._duration = lambda _path: 123.4
 
     def tearDown(self):
@@ -96,9 +99,12 @@ TEXTO NA TELA: Deus não esqueceu de você.
 """
         result = self.service.generate(text=raw, user_id=7)
         self.assertEqual(_FakeCommunicate.calls, 1)
-        expected = " ".join(canonical.split())
-        self.assertEqual(_FakeCommunicate.texts, [expected])
+        self.assertEqual(_FakeCommunicate.texts, [canonical])
+        self.assertIn("\n\n", _FakeCommunicate.texts[0])
+        self.assertEqual(_FakeCommunicate.kwargs[0]["rate"], "-5%")
+        self.assertEqual(_FakeCommunicate.kwargs[0]["pitch"], "-1Hz")
         self.assertEqual(result["spoken_text_sent_to_tts"], _FakeCommunicate.texts[0])
+        self.assertTrue(result["prosody"]["paragraph_pauses_preserved"])
         self.assertGreaterEqual(result["removed_technical_blocks"], 4)
         self.assertTrue(result["narration_contract"]["valid"])
 
