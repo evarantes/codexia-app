@@ -1142,6 +1142,21 @@ async def health():
     """Resposta rápida sem DB — para Render/Coolify e diagnóstico."""
     return {"status": "ok", **_build_metadata()}
 
+
+@app.get("/health/worker")
+def health_worker_release():
+    """Confirma que API e worker ativo executam exatamente o mesmo commit."""
+    from app.redis_client import conn as redis_connection
+    from app.services.worker_release_health import (
+        read_worker_release,
+        worker_release_health_snapshot,
+    )
+
+    return worker_release_health_snapshot(
+        app_commit=_build_metadata().get("commit"),
+        worker_payload=read_worker_release(redis_connection),
+    )
+
 @app.get("/api/status")
 def api_status():
     """Status da API (JSON) — para scripts ou checagem programática."""
