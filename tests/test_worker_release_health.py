@@ -90,7 +90,8 @@ class WorkerReleaseHealthTests(unittest.TestCase):
         worker = (root / "app/worker.py").read_text(encoding="utf-8")
         main = (root / "app/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("start_worker_release_heartbeat(conn)", worker)
+        self.assertIn("worker_conn = create_rq_worker_connection()", worker)
+        self.assertIn("start_worker_release_heartbeat(worker_conn)", worker)
         self.assertIn('@app.get("/health/worker")', main)
         self.assertIn("worker_release_health_snapshot", main)
 

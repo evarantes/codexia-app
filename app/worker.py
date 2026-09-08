@@ -6,7 +6,7 @@ sys.path.append(os.getcwd())
 
 from rq import Worker, Queue
 from dotenv import load_dotenv
-from app.redis_client import conn
+from app.redis_client import create_rq_worker_connection
 
 load_dotenv()
 
@@ -83,8 +83,10 @@ if int(getattr(video_generator_cls, "_codexia_caption_integrity_version", 0) or 
 listen = ['default']
 
 if __name__ == '__main__':
-    if not conn:
-        print("Redis connection not available. Exiting.")
+    try:
+        worker_conn = create_rq_worker_connection()
+    except Exception as exc:
+        print(f"Redis connection not available. Exiting. {type(exc).__name__}: {exc}")
         exit(1)
 
     print(
@@ -102,9 +104,9 @@ if __name__ == '__main__':
         f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         "CaptionIntegritySelfHeal=v4"
     )
-    queues = [Queue(name, connection=conn) for name in listen]
-    worker = Worker(queues, connection=conn)
+    queues = [Queue(name, connection=worker_conn) for name in listen]
+    worker = Worker(queues, connection=worker_conn)
     # Heartbeat curto e independente do job: o endpoint /health/worker consegue
     # provar que WEB e WORKER estão vivos e executando o mesmo commit.
-    start_worker_release_heartbeat(conn)
+    start_worker_release_heartbeat(worker_conn)
     worker.work()
