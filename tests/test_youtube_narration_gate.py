@@ -149,6 +149,49 @@ TEXTO NA TELA: Deus não esqueceu de você.
             )
         self.assertEqual(ctx.exception.code, "TEXT_CHANGED_AFTER_PREVIEW")
 
+    def test_approval_preserves_multisentence_cta_paragraph_without_false_change(self):
+        text = compose_canonical_narration(
+            {
+                "hook": "Imagine um amor que conhece cada detalhe dos seus dias.",
+                "development": "Essa intimidade profunda revela a relação oferecida por Jesus.",
+                "central_truth": "A verdade central é que sua presença permanece conosco.",
+                "transformation": "Essa certeza transforma a solidão em companhia constante.",
+                "application": "Hoje podemos caminhar em paz e confiar em cada passo.",
+                "climax": "Jesus está aqui agora, conduzindo nossa jornada com amor eterno.",
+                "reflection": "Reflita sobre como você percebe a presença de Jesus em sua vida.",
+            },
+            cta_text=(
+                "Se gostou, curta este vídeo e inscreva-se no canal. "
+                "Ative o sininho e compartilhe esta mensagem com quem precisa. "
+                "Deixe seu comentário sobre o que mais tocou seu coração."
+            ),
+        )
+        preview = self.service.generate(text=text, user_id=16)
+
+        approved = self.service.approve(
+            preview_id=preview["preview_id"],
+            expected_text=preview["review_script_text"],
+            user_id=16,
+            production_job_id=preview["production_job_id"],
+        )
+
+        self.assertTrue(approved["approved"])
+        self.assertEqual(approved["text_sha256"], preview["text_sha256"])
+
+        changed_text = preview["review_script_text"].replace(
+            "solidão em companhia constante",
+            "solidão em uma espera constante",
+            1,
+        )
+        with self.assertRaises(YouTubeNarrationGateError) as ctx:
+            self.service.approve(
+                preview_id=preview["preview_id"],
+                expected_text=changed_text,
+                user_id=16,
+                production_job_id=preview["production_job_id"],
+            )
+        self.assertEqual(ctx.exception.code, "TEXT_CHANGED_AFTER_PREVIEW")
+
     def test_rejects_preview_whose_stored_global_narrative_contract_is_missing(self):
         preview = self.service.generate(
             text=_canonical_script("Jesus nos ensina a perseverar"),
