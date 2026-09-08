@@ -42,6 +42,9 @@ from app.services.production_job_store import (
 
 MAX_TEXT_CHARS = 30000
 SUPPORTED_VOICES = {"pt-BR-FranciscaNeural", "pt-BR-AntonioNeural"}
+EDGE_TTS_PROVIDER = "edge_tts_ptbr_natural_v2"
+EDGE_TTS_RATE = "-5%"
+EDGE_TTS_PITCH = "-1Hz"
 
 
 class YouTubeNarrationGateError(RuntimeError):
@@ -181,9 +184,19 @@ class YouTubeNarrationGateService:
                 status_code=422,
             )
         artifact = self._artifact(canonical_input)
-        spoken = artifact.spoken_text
+        # Preserve the reviewed paragraph boundaries sent by the canonical
+        # composer. They create intentional pauses between narrative beats;
+        # the narration artifact still proves that the lexical text is exactly
+        # the same source used by captions and approval.
+        spoken = canonical_input
+        if self._artifact(spoken).text_sha256 != artifact.text_sha256:
+            raise YouTubeNarrationGateError(
+                "A versão preparada para locução divergiu do roteiro aprovado.",
+                code="SPEECH_TEXT_DIVERGED",
+                status_code=422,
+            )
         selected_voice = self._voice(voice, voice_gender)
-        preview_id = narration_fingerprint(spoken_text=spoken, voice=selected_voice, provider="edge_tts")
+        preview_id = narration_fingerprint(spoken_text=artifact.spoken_text, voice=selected_voice, provider=EDGE_TTS_PROVIDER)
         user_dir = self._user_dir(user_id)
         mp3_path = user_dir / f"{preview_id}.mp3"
         meta_path = user_dir / f"{preview_id}.json"
@@ -206,7 +219,13 @@ class YouTubeNarrationGateService:
                 raise YouTubeNarrationGateError("Edge TTS não está disponível no servidor.", code="EDGE_TTS_UNAVAILABLE", status_code=503) from exc
 
             async def _save() -> list[Dict[str, Any]]:
-                communicator = edge_tts.Communicate(spoken, selected_voice, rate="+0%", pitch="+0Hz", volume="+0%")
+                communicator = edge_tts.Communicate(
+                    spoken,
+                    selected_voice,
+                    rate=EDGE_TTS_RATE,
+                    pitch=EDGE_TTS_PITCH,
+                    volume="+0%",
+                )
                 # Preserve Edge WordBoundary events as the timing authority for
                 # captions. Caption text still comes from the approved script.
                 if not hasattr(communicator, "stream"):
@@ -256,7 +275,12 @@ class YouTubeNarrationGateService:
             "removed_technical_blocks": source_artifact.removed_technical_blocks,
             "source_kind": source_artifact.source_kind,
             "voice": selected_voice,
-            "provider": "edge_tts",
+            "provider": EDGE_TTS_PROVIDER,
+            "prosody": {
+                "rate": EDGE_TTS_RATE,
+                "pitch": EDGE_TTS_PITCH,
+                "paragraph_pauses_preserved": True,
+            },
             "audio_size_bytes": int(mp3_path.stat().st_size),
             "audio_duration_sec": self._duration(mp3_path),
             "narration_contract": narration_contract,
@@ -378,7 +402,7 @@ class YouTubeNarrationGateService:
                 "production_job_id": job_id or None,
                 "source": "youtube_narration_core_v1_approved",
                 "preview_id": safe_id,
-                "provider": "edge_tts",
+                "provider": str(meta.get("provider") or EDGE_TTS_PROVIDER),
                 "voice": meta.get("voice"),
                 "text_sha256": artifact.text_sha256,
                 "narration_core_version": NARRATION_CORE_VERSION,
