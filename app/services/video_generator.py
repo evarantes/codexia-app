@@ -2387,8 +2387,23 @@ class VideoGenerator:
         if scene_count >= 10:
             scene_floor = 4
 
+        # Vídeos curtos precisam de ritmo e velocidade compatíveis com o formato.
+        # Até 90 s, quatro imagens geradas são suficientes para cortes/zoom
+        # cinematográficos; acima disso, preservamos a progressão normal por duração.
+        short_video_limit_raw = (os.getenv("VIDEO_SHORT_MAX_AI_IMAGES") or "4").strip()
+        try:
+            short_video_limit = max(1, int(short_video_limit_raw or "4"))
+        except Exception:
+            short_video_limit = 4
+        if total_seconds <= 90.0 and short_video_limit > 0:
+            forced_breaks = min(forced_breaks, max(0, short_video_limit - 1))
+            duration_floor = min(duration_floor, short_video_limit)
+            scene_floor = min(scene_floor, short_video_limit)
+
         min_required = max(1, forced_breaks + 1, duration_floor, scene_floor)
         base_target = max(base_target, min_required)
+        if total_seconds <= 90.0 and short_video_limit > 0:
+            base_target = min(base_target, short_video_limit)
 
         if not ai_available:
             reduced_target = max(min_required, base_target - 1)
