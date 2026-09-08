@@ -3,6 +3,8 @@ import pytest
 from app.services.ptbr_narration_performance import (
     PTBR_NARRATION_PERFORMANCE_NAMESPACE,
     PTBR_NARRATION_PERFORMANCE_VERSION,
+    PTBR_PARAGRAPH_PAUSE_MS,
+    PTBR_SENTENCE_PAUSE_MS,
     PtBrNarrationPerformanceError,
     align_canonical_word_boundaries,
     build_performance_segments,
@@ -74,7 +76,10 @@ def test_breath_plan_preserves_canonical_portuguese_exactly():
     segments = build_performance_segments(review, spoken)
 
     assert " ".join(item.text for item in segments) == spoken
-    assert segments[0].pause_after_ms == 620
+    assert segments[0].text == "Você não está só."
+    assert segments[0].pause_after_ms == PTBR_SENTENCE_PAUSE_MS
+    assert segments[1].text == "Deus permanece perto de você."
+    assert segments[1].pause_after_ms == PTBR_PARAGRAPH_PAUSE_MS
     assert segments[-1].pause_after_ms == 0
     assert "Você" in segments[0].text
     assert "fé." in segments[-1].text
