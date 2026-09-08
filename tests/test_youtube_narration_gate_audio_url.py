@@ -9,7 +9,7 @@ from app.services.narration_core import (
     build_narration_artifact,
     narration_fingerprint,
 )
-from app.services.youtube_narration_gate import YouTubeNarrationGateService
+from app.services.youtube_narration_gate import EDGE_TTS_PROVIDER, YouTubeNarrationGateService
 from app.services.narrative_structure_standard import (
     audit_canonical_narration,
     compose_canonical_narration,
@@ -36,7 +36,7 @@ class YouTubeNarrationGateAudioUrlTests(unittest.TestCase):
             preview_id = narration_fingerprint(
                 spoken_text=spoken,
                 voice=voice,
-                provider="edge_tts",
+                provider=EDGE_TTS_PROVIDER,
             )
             (user_dir / f"{preview_id}.mp3").write_bytes(b"x" * 1024)
             (user_dir / f"{preview_id}.json").write_text(
@@ -45,7 +45,7 @@ class YouTubeNarrationGateAudioUrlTests(unittest.TestCase):
                         "preview_id": preview_id,
                         "text_sha256": artifact.text_sha256,
                         "voice": voice,
-                        "provider": "edge_tts",
+                        "provider": EDGE_TTS_PROVIDER,
                         "approved": False,
                         "narration_core_version": NARRATION_CORE_VERSION,
                         "narration_core_namespace": NARRATION_CORE_NAMESPACE,
