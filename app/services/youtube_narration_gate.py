@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +27,11 @@ from app.services.narration_core import (
     build_narration_artifact,
     narration_fingerprint,
     require_current_core,
+)
+from app.services.narrative_structure_standard import (
+    NARRATIVE_STRUCTURE_STANDARD_VERSION,
+    audit_canonical_narration,
+    compose_canonical_narration,
 )
 from app.services.production_job_store import (
     ProductionJobStore,
@@ -122,6 +128,33 @@ class YouTubeNarrationGateService:
         temp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, path)
 
+    def _safe_review_text(self, raw_text: Any, source_artifact: Any) -> str:
+        """Preserve safe paragraph boundaries without bypassing Narration Core.
+
+        Narration Core intentionally flattens whitespace for its spoken hash.
+        The editorial contract still needs paragraph boundaries to prove the
+        seven ordered blocks, so each original paragraph is sanitized again and
+        the combined spoken hash must remain identical to the first-pass result.
+        """
+        raw = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+        safe_parts = []
+        for part in re.split(r"\n\s*\n", raw):
+            if not str(part or "").strip():
+                continue
+            try:
+                safe_parts.append(self._artifact(part).spoken_text)
+            except YouTubeNarrationGateError:
+                # A technical-only paragraph is allowed to disappear, but the
+                # final hash comparison below prevents any narrative divergence.
+                continue
+        candidate = "\n\n".join(part for part in safe_parts if part).strip()
+        if not candidate:
+            return source_artifact.spoken_text
+        candidate_artifact = self._artifact(candidate)
+        if candidate_artifact.text_sha256 != source_artifact.text_sha256:
+            return source_artifact.spoken_text
+        return candidate
+
     def generate(
         self,
         *,
@@ -132,7 +165,22 @@ class YouTubeNarrationGateService:
         production_job_id: Any = None,
         theme: Any = "",
     ) -> Dict[str, Any]:
-        artifact = self._artifact(text)
+        # The preview is the last editable boundary. Make the complete narrated
+        # script visible here so the approved MP3, renderer and captions can all
+        # share one literal source of truth.
+        source_artifact = self._artifact(text)
+        safe_review_text = self._safe_review_text(text, source_artifact)
+        canonical_input = compose_canonical_narration({}, fallback_text=safe_review_text)
+        narration_contract = audit_canonical_narration(canonical_input)
+        if not narration_contract.get("valid"):
+            raise YouTubeNarrationGateError(
+                "O roteiro precisa conter, em blocos separados, apresentação do canal, gancho, "
+                "desenvolvimento, verdade central, transformação, aplicação, clímax, reflexão "
+                "e o CTA completo ao final.",
+                code="NARRATIVE_CONTRACT_INCOMPLETE",
+                status_code=422,
+            )
+        artifact = self._artifact(canonical_input)
         spoken = artifact.spoken_text
         selected_voice = self._voice(voice, voice_gender)
         preview_id = narration_fingerprint(spoken_text=spoken, voice=selected_voice, provider="edge_tts")
@@ -148,6 +196,7 @@ class YouTubeNarrationGateService:
             except NarrationCoreError:
                 cache_hit = False
 
+        caption_timeline = list(old_meta.get("caption_timeline") or []) if cache_hit else []
         if not cache_hit:
             mp3_path.unlink(missing_ok=True)
             meta_path.unlink(missing_ok=True)
@@ -156,12 +205,40 @@ class YouTubeNarrationGateService:
             except Exception as exc:
                 raise YouTubeNarrationGateError("Edge TTS não está disponível no servidor.", code="EDGE_TTS_UNAVAILABLE", status_code=503) from exc
 
-            async def _save() -> None:
+            async def _save() -> list[Dict[str, Any]]:
                 communicator = edge_tts.Communicate(spoken, selected_voice, rate="+0%", pitch="+0Hz", volume="+0%")
-                await communicator.save(str(mp3_path))
+                # Preserve Edge WordBoundary events as the timing authority for
+                # captions. Caption text still comes from the approved script.
+                if not hasattr(communicator, "stream"):
+                    await communicator.save(str(mp3_path))
+                    return []
+                boundaries: list[Dict[str, Any]] = []
+                with mp3_path.open("wb") as audio_file:
+                    async for chunk in communicator.stream():
+                        if not isinstance(chunk, dict):
+                            continue
+                        chunk_type = str(chunk.get("type") or "")
+                        if chunk_type == "audio":
+                            data = chunk.get("data")
+                            if isinstance(data, (bytes, bytearray)):
+                                audio_file.write(data)
+                        elif chunk_type == "WordBoundary":
+                            try:
+                                start = max(0.0, float(chunk.get("offset") or 0) / 10_000_000.0)
+                                duration = max(0.0, float(chunk.get("duration") or 0) / 10_000_000.0)
+                            except Exception:
+                                continue
+                            token = str(chunk.get("text") or "").strip()
+                            if token and duration > 0:
+                                boundaries.append({
+                                    "start": round(start, 4),
+                                    "end": round(start + duration, 4),
+                                    "word": token,
+                                })
+                return boundaries
 
             try:
-                asyncio.run(_save())
+                caption_timeline = asyncio.run(_save())
             except Exception as exc:
                 mp3_path.unlink(missing_ok=True)
                 raise YouTubeNarrationGateError(f"Falha ao gerar a narração: {str(exc)[:240]}", code="EDGE_TTS_FAILED", status_code=502) from exc
@@ -172,15 +249,19 @@ class YouTubeNarrationGateService:
         meta = {
             "preview_id": preview_id,
             "text_sha256": artifact.text_sha256,
+            "review_script_text": canonical_input,
             "spoken_text_sent_to_tts": spoken,
             "narration_core_version": NARRATION_CORE_VERSION,
             "narration_core_namespace": NARRATION_CORE_NAMESPACE,
-            "removed_technical_blocks": artifact.removed_technical_blocks,
-            "source_kind": artifact.source_kind,
+            "removed_technical_blocks": source_artifact.removed_technical_blocks,
+            "source_kind": source_artifact.source_kind,
             "voice": selected_voice,
             "provider": "edge_tts",
             "audio_size_bytes": int(mp3_path.stat().st_size),
             "audio_duration_sec": self._duration(mp3_path),
+            "narration_contract": narration_contract,
+            "caption_timeline": caption_timeline,
+            "caption_timing_source": "edge_tts_word_boundaries" if caption_timeline else "audio_alignment_fallback",
             "cache_hit": bool(cache_hit),
             "approved": bool(cache_hit and old_meta.get("approved")),
         }
@@ -214,7 +295,9 @@ class YouTubeNarrationGateService:
         production_job_id: Any = None,
     ) -> Dict[str, Any]:
         safe_id = self._safe_preview_id(preview_id)
-        artifact = self._artifact(expected_text)
+        expected_source = self._artifact(expected_text)
+        expected_canonical = compose_canonical_narration({}, fallback_text=expected_source.spoken_text)
+        artifact = self._artifact(expected_canonical)
         user_dir = self._user_dir(user_id)
         mp3_path = user_dir / f"{safe_id}.mp3"
         meta_path = user_dir / f"{safe_id}.json"
@@ -227,6 +310,18 @@ class YouTubeNarrationGateService:
             require_current_core(meta)
         except NarrationCoreError as exc:
             raise YouTubeNarrationGateError(str(exc), code="OLD_NARRATION_CORE", status_code=409) from exc
+        stored_contract = meta.get("narration_contract") if isinstance(meta.get("narration_contract"), dict) else {}
+        current_contract = audit_canonical_narration(meta.get("review_script_text") or "")
+        if (
+            stored_contract.get("standard_version") != NARRATIVE_STRUCTURE_STANDARD_VERSION
+            or stored_contract.get("valid") is not True
+            or current_contract.get("valid") is not True
+        ):
+            raise YouTubeNarrationGateError(
+                "Esta versão não atende ao roteiro global atual. Gere uma nova narração antes de aprovar.",
+                code="NARRATIVE_CONTRACT_INCOMPLETE",
+                status_code=409,
+            )
         if str(meta.get("text_sha256") or "") != artifact.text_sha256:
             raise YouTubeNarrationGateError(
                 "O texto foi alterado depois da geração do áudio. Gere e aprove uma nova narração.",

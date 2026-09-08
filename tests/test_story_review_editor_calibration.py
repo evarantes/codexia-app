@@ -31,25 +31,34 @@ class _FakeAI:
             return json.dumps(
                 {
                     "title": "Jesus: O Coração da Nossa Jornada",
-                    "text": (
-                        "Em meio ao turbilhão da vida, buscamos uma âncora, uma bússola, um porto e uma luz. "
-                        "A tempestade passa pelos mares e pelas trevas. No fim, Jesus segue perto de nós."
-                    ),
+                    "sections": {
+                        "hook": "Em meio ao turbilhão da vida, buscamos uma âncora, uma bússola, um porto e uma luz.",
+                        "development": "A tempestade passa pelos mares e pelas trevas.",
+                        "central_truth": "Jesus segue perto de nós.",
+                        "transformation": "Essa presença muda nossa direção.",
+                        "application": "Podemos caminhar com confiança hoje.",
+                        "climax": "Jesus não abandona os seus.",
+                        "reflection": "No fim, a esperança permanece.",
+                    },
                     "closing_message": "Jesus segue perto de você.",
-                    "endcard_cta_text": "Inscreva-se e acompanhe novas mensagens.",
+                    "endcard_cta_text": "Curta este vídeo, inscreva-se, ative o sininho, compartilhe e conte nos comentários o que tocou você.",
                 },
                 ensure_ascii=False,
             )
         return json.dumps(
             {
                 "title": "Quem é Jesus quando as respostas não bastam?",
-                "text": (
-                    "Há perguntas que não cabem em uma definição pronta. Quem é Jesus para nós quando as respostas fáceis deixam de funcionar? "
-                    "Conhecê-lo não é apenas lembrar uma figura da história, mas reconhecer sua presença no modo como enfrentamos a culpa, a esperança e as escolhas de cada dia. "
-                    "Por isso, a pergunta volta para o lugar certo: quem é Jesus na sua vida hoje? A resposta não precisa ser um slogan; precisa aparecer na forma como você decide caminhar com Ele."
-                ),
+                "sections": {
+                    "hook": "Há perguntas que não cabem em uma definição pronta: quem é Jesus quando as respostas fáceis deixam de funcionar?",
+                    "development": "Conhecê-lo não é apenas lembrar uma figura da história; é reconhecer sua presença diante da culpa, da esperança e das escolhas de cada dia.",
+                    "central_truth": "A fé cristã afirma que Jesus é o Filho de Deus que se aproxima, salva e chama pessoas para uma vida nova.",
+                    "transformation": "Quando essa verdade deixa de ser apenas informação, medo e culpa já não precisam conduzir todas as decisões.",
+                    "application": "Hoje, observe uma escolha concreta e pergunte se ela expressa confiança, verdade e amor ensinados por Jesus.",
+                    "climax": "Jesus não quer ocupar apenas uma resposta em nossa mente; Ele quer orientar o caminho inteiro.",
+                    "reflection": "Por isso, a pergunta volta ao lugar certo: quem é Jesus na sua vida hoje? A resposta aparece na forma como você decide caminhar com Ele.",
+                },
                 "closing_message": "Conhecer Jesus é permitir que sua presença transforme a vida de hoje.",
-                "endcard_cta_text": "Inscreva-se e acompanhe novas mensagens.",
+                "endcard_cta_text": "Curta este vídeo, inscreva-se, ative o sininho, compartilhe e conte nos comentários quem é Jesus para você.",
             },
             ensure_ascii=False,
         )

@@ -1,6 +1,8 @@
 import json
 
 from app.services.narrative_structure_standard import (
+    CHANNEL_PRESENTATION_TEXT,
+    DEFAULT_NARRATED_CTA_TEXT,
     NARRATIVE_STRUCTURE_STANDARD_VERSION,
     PROFILE_BIBLICAL_STORY,
     PROFILE_BIBLE_EXPLAINER,
@@ -8,7 +10,9 @@ from app.services.narrative_structure_standard import (
     PROFILE_DEVOTIONAL_EMOTIONAL,
     PROFILE_GENERAL_NARRATED,
     PROFILE_GUIDED_PRAYER,
+    audit_canonical_narration,
     narrative_structure_prompt,
+    compose_canonical_narration,
     select_narrative_profile,
 )
 from app.services.story_review_editor import generate_review_ready_story_text
@@ -43,6 +47,44 @@ def test_global_prompt_has_canonical_arc_and_no_fixed_duration():
     assert "nunca coloque no texto narrável rótulos" in lowered
 
 
+def test_canonical_composer_replaces_incomplete_cta_and_keeps_it_at_the_end():
+    narration = compose_canonical_narration(
+        {
+            "hook": "Uma pergunta abre a mensagem.",
+            "development": "O tema avança com clareza.",
+            "central_truth": "A verdade central é apresentada.",
+            "transformation": "Essa verdade muda a perspectiva.",
+            "application": "A aplicação chega à vida real.",
+            "climax": "O clímax entrega a ideia principal.",
+            "reflection": "A reflexão resolve a pergunta inicial.",
+        },
+        cta_text="Inscreva-se no canal.",
+    )
+
+    assert narration.startswith(CHANNEL_PRESENTATION_TEXT)
+    assert narration.endswith(DEFAULT_NARRATED_CTA_TEXT)
+    assert "\n\n" + DEFAULT_NARRATED_CTA_TEXT in narration
+    contract = audit_canonical_narration(narration)
+    assert contract["body_block_count"] == 7
+    assert contract["narrative_arc_ordered"] is True
+    assert contract["valid"] is True
+
+
+def test_contract_rejects_presentation_and_cta_without_the_seven_part_arc():
+    narration = compose_canonical_narration(
+        {},
+        fallback_text="Uma única ideia não constitui um roteiro completo.",
+    )
+
+    contract = audit_canonical_narration(narration)
+
+    assert contract["channel_presentation_separate"] is True
+    assert contract["cta_separate_at_end"] is True
+    assert contract["body_block_count"] == 1
+    assert contract["narrative_arc_ordered"] is False
+    assert contract["valid"] is False
+
+
 class DummyAIService:
     def __init__(self):
         self.prompt = ""
@@ -55,16 +97,17 @@ class DummyAIService:
         assert json_mode is True
         return json.dumps({
             "title": "Jesus no centro da existência",
-            "text": (
-                "Existe uma pergunta que muda o modo como enxergamos cada escolha: por que estamos aqui? "
-                "Quando as respostas parecem pequenas, a fé cristã aponta para uma verdade maior. "
-                "Em Jesus encontramos direção, perdão e uma esperança que não depende de circunstâncias perfeitas. "
-                "Essa verdade muda a maneira como atravessamos dias bons e difíceis. "
-                "Hoje, colocar Cristo no centro significa escolher viver com propósito, amor e confiança. "
-                "Por isso, quando a pergunta sobre o sentido da vida voltar, lembre-se de que sua existência pode ser vivida diante de Deus, com Jesus no centro."
-            ),
+            "sections": {
+                "hook": "Existe uma pergunta que muda o modo como enxergamos cada escolha: por que estamos aqui?",
+                "development": "Quando as respostas parecem pequenas, a fé cristã aponta para uma verdade maior.",
+                "central_truth": "Em Jesus encontramos direção, perdão e uma esperança que não depende de circunstâncias perfeitas.",
+                "transformation": "Essa verdade muda a maneira como atravessamos dias bons e difíceis.",
+                "application": "Hoje, colocar Cristo no centro significa escolher viver com propósito, amor e confiança.",
+                "climax": "Nossa existência encontra direção quando Jesus deixa de ser detalhe e ocupa o centro.",
+                "reflection": "Quando a pergunta sobre o sentido da vida voltar, lembre-se de que sua existência pode ser vivida diante de Deus, com Jesus no centro.",
+            },
             "closing_message": "Sua vida tem propósito quando Jesus ocupa o centro.",
-            "endcard_cta_text": "Inscreva-se e acompanhe novas mensagens.",
+            "endcard_cta_text": DEFAULT_NARRATED_CTA_TEXT,
         }, ensure_ascii=False)
 
     def generate_story_or_devotional_text(self, **kwargs):
@@ -94,6 +137,10 @@ def test_shared_editor_applies_global_standard_used_by_youtube_auto():
     assert result["narrative_standard_scope"] == "global"
     assert result["narrative_standard_entrypoint"] == "youtube_auto_and_shared_editor"
     assert result["narrative_standard"]["reference_style"] == "jesus_o_motivo_de_eu_existir_without_copying"
+    assert result["text"].startswith(CHANNEL_PRESENTATION_TEXT)
+    assert result["text"].endswith(DEFAULT_NARRATED_CTA_TEXT)
+    assert result["narration_contract"]["narrative_arc_ordered"] is True
+    assert result["narration_contract"]["valid"] is True
 
 
 def test_prayer_uses_guided_prayer_profile_in_shared_editor():

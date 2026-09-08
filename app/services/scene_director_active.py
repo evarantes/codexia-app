@@ -94,7 +94,12 @@ def _sentence_chunks(text: str, *, target_words: int = 20, hard_max_words: int =
                 if piece:
                     chunks.append(" ".join(piece).strip())
             continue
-        if current and current_words + len(words) > hard_max_words:
+        # ``target_words`` is the desired rhythm, while ``hard_max_words`` is
+        # only a safety ceiling. Using only the hard ceiling bundled several
+        # sentences into 25-30 word holds and produced too few real visual
+        # changes. A small soft margin keeps the cadence close to the target.
+        soft_max_words = min(hard_max_words, target_words + 4)
+        if current and current_words + len(words) > soft_max_words:
             flush()
         current.append(sentence)
         current_words += len(words)
@@ -277,7 +282,21 @@ def direct_scene_plan(plan: Any) -> tuple[Any, Dict[str, Any]]:
 
     directed = deepcopy(plan)
     original_scenes = _scene_list(directed)
-    scenes, expansion = _expand_scenes_for_cinematic_variety(original_scenes)
+    if bool(directed.get("logo_only_visuals")):
+        # Visual beats exist to create genuinely different images. In logo-only
+        # mode every beat intentionally resolves to the same official logo, so
+        # expanding the storyboard only multiplies MoviePy composites/captions
+        # and makes short renders needlessly slow.
+        scenes = original_scenes
+        expansion = {
+            "enabled": _enabled("ENABLE_REAL_VISUAL_BEATS", "true"),
+            "before": len(original_scenes),
+            "after": len(original_scenes),
+            "expanded": 0,
+            "skipped_reason": "logo_only_visuals",
+        }
+    else:
+        scenes, expansion = _expand_scenes_for_cinematic_variety(original_scenes)
     report["real_visual_beats"] = expansion
     report["changes_scene_count"] = len(scenes) != len(original_scenes)
 
@@ -357,8 +376,9 @@ def direct_scene_plan(plan: Any) -> tuple[Any, Dict[str, Any]]:
 
 def _spoken_ptbr(text: Any) -> str:
     value = str(text or "")
-    # A forma fonética só vai para o TTS; legenda/texto aprovado continuam "Jesus".
-    value = re.sub(r"(?i)\bjesus\b", "Jêzus", value)
+    # Esta é a camada mais interna antes do provider. Ela também precisa preservar
+    # "Jesus"; caso contrário desfaz o guard externo e acelera/distorce a palavra.
+    value = re.sub(r"(?i)\bjesus\b", "Jesus", value)
     return value
 
 

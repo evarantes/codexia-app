@@ -15,6 +15,10 @@ from typing import Optional, Callable, List, Dict, Any
 
 from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
 from app.services.media_probe import duration_sync_tolerance_seconds
+from app.services.narrative_structure_standard import (
+    CHANNEL_PRESENTATION_TEXT,
+    DEFAULT_NARRATED_CTA_TEXT,
+)
 from app.services.recovery_image_budget import RecoveryImageCallBudget
 from app.services.safe_text_layout import SafeTextLayout
 
@@ -23,7 +27,8 @@ CAPTION_SAFE_AREA_TOP_RATIO = 0.08
 CAPTION_SAFE_AREA_BOTTOM_RATIO = 0.08
 DEFAULT_SCENE_TRANSITION_SEC = 0.30
 DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.40
-DEFAULT_OPENING_SILENCE_SEC = 0.45
+# Abertura visual global: título, logo e nome do canal sem fala/legenda.
+DEFAULT_OPENING_SILENCE_SEC = 4.0
 DEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30
 DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20
 DEFAULT_CINEMATIC_END_SCREEN_SEC = 4.0
@@ -177,6 +182,77 @@ class VideoGenerator:
                 return 0.0
         except Exception:
             return 0.0
+
+    def _prepare_approved_audio_for_visual_opening(
+        self,
+        source_path: str,
+        silence_seconds: float,
+    ) -> str:
+        """Create a local render derivative with silence before approved speech.
+
+        The frozen MP3 remains untouched and is still the sole narration source.
+        This operation only delays that verified audio; it never calls TTS or
+        changes the spoken text.
+        """
+        source = os.path.abspath(str(source_path or "").strip())
+        silence = max(0.0, float(silence_seconds or 0.0))
+        if silence <= 0:
+            return source
+        if not source or not os.path.isfile(source) or os.path.getsize(source) <= 1000:
+            raise RuntimeError("MP3 aprovado indisponível para aplicar a abertura visual.")
+
+        try:
+            import shutil
+            import subprocess
+
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise RuntimeError("FFmpeg não está disponível para preparar a abertura visual.")
+            output = os.path.join(
+                self.output_dir,
+                f"approved_narration_opening_{uuid.uuid4().hex}.mp3",
+            )
+            delay_ms = max(1, int(round(silence * 1000.0)))
+            source_duration = float(self._ffprobe_duration_seconds(source) or 0.0)
+            timeout = max(120.0, min(1800.0, (source_duration * 2.0) + 60.0))
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-i", source,
+                    "-map", "0:a:0",
+                    "-af", f"adelay={delay_ms}:all=1",
+                    "-vn",
+                    "-c:a", "libmp3lame",
+                    "-b:a", "192k",
+                    output,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            if result.returncode != 0 or not os.path.isfile(output) or os.path.getsize(output) <= 1000:
+                raise RuntimeError(
+                    "FFmpeg não conseguiu aplicar a abertura silenciosa: "
+                    + str(result.stderr or "erro desconhecido")[-500:]
+                )
+            obtained = float(self._ffprobe_duration_seconds(output) or 0.0)
+            expected = source_duration + silence if source_duration > 0 else silence
+            if obtained <= 0 or (expected > 0 and obtained < expected - 0.35):
+                raise RuntimeError(
+                    f"Áudio preparado ficou curto: obtido={obtained:.2f}s esperado={expected:.2f}s."
+                )
+            return output
+        except Exception:
+            try:
+                if "output" in locals() and output and os.path.isfile(output):
+                    os.remove(output)
+            except Exception:
+                pass
+            raise
 
     def _is_ffprobe_available(self) -> bool:
         try:
@@ -1272,26 +1348,9 @@ class VideoGenerator:
         *,
         plan: Optional[Dict[str, Any]] = None,
     ) -> str:
-        plan = plan if isinstance(plan, dict) else {}
-        explicit_hook = next(
-            (
-                str(plan.get(key) or "").strip()
-                for key in ("opening_text", "opening_hook", "hook_text", "hook")
-                if str(plan.get(key) or "").strip()
-            ),
-            "",
-        )
-        if explicit_hook:
-            return self._compact_cinematic_phrase(explicit_hook, max_words=14)
-
-        title = re.sub(r"^\s*(?:estudo|epis[oó]dio)\s+\d+\s*[—–:\-]\s*", "", str(plan.get("title") or "").strip(), flags=re.IGNORECASE)
-        title_hook = self._compact_cinematic_phrase(title, max_words=10)
-        if title_hook:
-            return self._compact_cinematic_phrase(
-                f"{title_hook.rstrip('.!?')} — uma mensagem de fé para hoje.",
-                max_words=14,
-            )
-        return "Prepare o coração: há uma mensagem de fé para o seu dia."
+        # O título/gancho já aparece visualmente nos primeiros quatro segundos.
+        # A primeira fala é a apresentação fixa acordada para todo o Codexia.
+        return CHANNEL_PRESENTATION_TEXT
 
     def _default_reflection_text(self, plan: Optional[Dict[str, Any]] = None, scenes: Optional[List[Dict[str, Any]]] = None) -> str:
         plan = plan if isinstance(plan, dict) else {}
@@ -1433,11 +1492,7 @@ class VideoGenerator:
         }
 
     def _default_closing_text(self, channel_name: str) -> str:
-        safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"
-        return (
-            f"Continue conosco. Inscreva-se no canal {safe_channel} "
-            "e acompanhe as próximas mensagens de fé."
-        )
+        return DEFAULT_NARRATED_CTA_TEXT
 
     def _default_channel_slogan(self) -> str:
         return "ONDE A FÉ SE TORNA ATITUDE"
@@ -5511,13 +5566,27 @@ $synth.Dispose()
                 seed_audio_text = str(plan.get("seed_narration_text") or "").strip()
             if seed_audio_path and os.path.exists(seed_audio_path) and os.path.getsize(seed_audio_path) > 1000:
                 seed_audio_used = True
-                main_audio_path = seed_audio_path
+                approved_seed_required = bool(
+                    isinstance(plan, dict) and plan.get("approved_narration_required")
+                )
+                main_audio_path = (
+                    self._prepare_approved_audio_for_visual_opening(
+                        seed_audio_path,
+                        initial_opening_silence_sec,
+                    )
+                    if approved_seed_required
+                    else seed_audio_path
+                )
                 debug_ctx["audio_path"] = main_audio_path
                 debug_ctx["tts_provider_configured"] = "seed_reuse"
                 debug_ctx["tts_provider_used"] = "seed_reuse"
                 debug_ctx["tts_fallback_used"] = False
                 try:
                     if seed_audio_text:
+                        # The approved script, not the editorial storyboard, is
+                        # the literal text authority for captions and reports.
+                        final_narration_text = seed_audio_text
+                        planning_meta["full_text"] = seed_audio_text
                         render_report["audio_generation"]["final_text_sent_to_tts"] = seed_audio_text
                 except Exception:
                     pass
@@ -5533,6 +5602,11 @@ $synth.Dispose()
                 render_report["audio_generation"]["final_audio_duration_sec"] = round(actual_total_audio_dur, 2)
                 render_report["audio_generation"]["output_path"] = main_audio_path
                 render_report["audio_generation"]["seed_reused"] = True
+                render_report["audio_generation"]["approved_source_path"] = seed_audio_path
+                render_report["audio_generation"]["approved_source_unchanged"] = True
+                render_report["audio_generation"]["opening_silence_applied_locally_sec"] = (
+                    round(initial_opening_silence_sec, 2) if approved_seed_required else 0.0
+                )
                 max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))
                 min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= (min_requested_duration * (1.0 - range_tolerance)))
                 duration_range_report["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
@@ -5731,11 +5805,53 @@ $synth.Dispose()
             reflection_duration_sec = round(max(0.0, reflection_est * scale_ratio), 2) if reflection_est > 0 else 0.0
             body_audio_target = max(0.0, actual_total_audio_dur - title_clip_duration - voice_closing_duration - pause_before_cta_sec)
 
-            caption_timeline_details = self._build_caption_timeline_details(
-                final_narration_text,
-                actual_total_audio_dur,
-                audio_path=main_audio_path,
+            approved_word_timeline = (
+                list(plan.get("approved_caption_timeline") or [])
+                if isinstance(plan, dict) and isinstance(plan.get("approved_caption_timeline"), list)
+                else []
             )
+            caption_timeline_details: Dict[str, Any]
+            if approved_word_timeline:
+                voice_duration = max(
+                    0.1,
+                    actual_total_audio_dur - max(0.0, initial_opening_silence_sec),
+                )
+                approved_timed = self._caption_timeline_from_segments(
+                    [{"words": approved_word_timeline}],
+                    voice_duration,
+                    narration=final_narration_text,
+                )
+                shifted_approved_timed = []
+                for raw_item in approved_timed or []:
+                    item = dict(raw_item)
+                    start = float(item.get("start") or 0.0) + initial_opening_silence_sec
+                    end = float(item.get("end") or 0.0) + initial_opening_silence_sec
+                    item["start"] = round(min(actual_total_audio_dur, start), 3)
+                    item["end"] = round(min(actual_total_audio_dur, max(start, end)), 3)
+                    item["source"] = "approved_edge_tts_word_boundaries"
+                    item["text_source"] = "approved_narration"
+                    shifted_approved_timed.append(item)
+                if shifted_approved_timed:
+                    caption_timeline_details = {
+                        "timeline": shifted_approved_timed,
+                        "source": "approved_edge_tts_word_boundaries",
+                        "timing_source": str(
+                            (plan or {}).get("approved_caption_timing_source")
+                            or "edge_tts_word_boundaries"
+                        ),
+                    }
+                else:
+                    caption_timeline_details = self._build_caption_timeline_details(
+                        final_narration_text,
+                        actual_total_audio_dur,
+                        audio_path=main_audio_path,
+                    )
+            else:
+                caption_timeline_details = self._build_caption_timeline_details(
+                    final_narration_text,
+                    actual_total_audio_dur,
+                    audio_path=main_audio_path,
+                )
             full_caption_timeline = caption_timeline_details.get("timeline") or []
             caption_timeline_source = str(caption_timeline_details.get("source") or "text_fallback")
             if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and final_narration_text:
@@ -6494,7 +6610,8 @@ $synth.Dispose()
                     "has_automatic_opening": bool((planning_meta.get("opening_text") or "").strip()),
                     "has_automatic_closing": bool((planning_meta.get("closing_text") or "").strip()) or bool(silent_cinematic_tail_sec > 0),
                     "opening_hook_starts_sec": round(float(initial_opening_silence_sec or 0.0), 2),
-                    "opening_hook_starts_within_0_8_sec": bool(float(initial_opening_silence_sec or 0.0) <= 0.8),
+                    "opening_visual_only_duration_sec": round(float(initial_opening_silence_sec or 0.0), 2),
+                    "opening_visual_only_is_4s": bool(abs(float(initial_opening_silence_sec or 0.0) - 4.0) <= 0.05),
                     "endcard_duration_sec": round(float(end_clip_duration or 0.0), 2),
                     "timeline_source": caption_timeline_source,
                     "uses_official_scene_timeline": True,
@@ -6516,8 +6633,8 @@ $synth.Dispose()
                     raise Exception("Falha de validacao: abertura automatica ausente.")
                 if not sync_validation["has_automatic_closing"]:
                     raise Exception("Falha de validacao: encerramento automatico ausente.")
-                if not sync_validation["opening_hook_starts_within_0_8_sec"]:
-                    raise Exception("Falha de validacao: abertura demorou mais de 0,8s para iniciar.")
+                if not sync_validation["opening_visual_only_is_4s"]:
+                    raise Exception("Falha de validacao: a abertura visual sem fala/legenda deve durar 4 segundos.")
 
             try:
                 final_clip.get_frame(0.0)

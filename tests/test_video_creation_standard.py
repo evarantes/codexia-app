@@ -72,16 +72,17 @@ class VideoCreationStandardTests(unittest.TestCase):
         apply_standard_video_structure(plan)
         self.assertNotIn("codexia_video_standard_version", plan)
 
-    def test_cta_contract_requires_like_subscribe_bell_share(self):
+    def test_cta_contract_requires_like_subscribe_bell_share_comment(self):
         self.assertEqual(
             STANDARD_REQUIRED_CTA_SIGNALS,
-            frozenset({"like", "subscribe", "bell", "share"}),
+            frozenset({"like", "subscribe", "bell", "share", "comment"}),
         )
         folded = STANDARD_COMPLETE_CTA.lower()
         self.assertIn("curta", folded)
         self.assertIn("inscreva", folded)
         self.assertIn("sininho", folded)
         self.assertIn("compartilh", folded)
+        self.assertIn("coment", folded)
 
 
 class _DummyVideoGenerator:

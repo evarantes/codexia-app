@@ -5,7 +5,10 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.services.narrative_structure_standard import (
+    DEFAULT_NARRATED_CTA_TEXT,
     apply_narrative_standard_metadata,
+    audit_canonical_narration,
+    compose_canonical_narration,
     narrative_structure_prompt,
     select_narrative_profile,
 )
@@ -201,12 +204,20 @@ PADRÃO EDITORIAL OBRIGATÓRIO:
 13. Nunca deixe frases incompletas como "uma mensagem de..." ou "uma palavra de...".
 14. Retorne apenas JSON válido, sem markdown.
 
-FORMATO EXATO:
+FORMATO EXATO — cada campo de "sections" é narrável e deve avançar o campo anterior, sem repetir ideias:
 {{
   "title": "...",
-  "text": "narração completa em parágrafos",
+  "sections": {{
+    "hook": "gancho específico e curto",
+    "development": "desenvolvimento progressivo",
+    "central_truth": "verdade bíblica/cristã central",
+    "transformation": "mudança produzida por essa verdade",
+    "application": "aplicação pessoal concreta",
+    "climax": "clímax proporcional e memorável",
+    "reflection": "reflexão que retoma e resolve o gancho"
+  }},
   "closing_message": "reflexão final curta, até 150 caracteres",
-  "endcard_cta_text": "Inscreva-se e acompanhe novas mensagens."
+  "endcard_cta_text": "CTA falado separado com curtir, inscrição, sininho, compartilhamento e pergunta para comentários"
 }}
 """.strip()
 
@@ -267,7 +278,13 @@ def generate_review_ready_story_text(
                 continue
 
             title = _clean(parsed.get("title"))[:90]
-            text = _repair_opening(str(parsed.get("text") or ""))
+            sections = parsed.get("sections") if isinstance(parsed.get("sections"), dict) else {}
+            legacy_text = _repair_opening(str(parsed.get("text") or ""))
+            text = compose_canonical_narration(
+                sections,
+                cta_text=parsed.get("endcard_cta_text"),
+                fallback_text=legacy_text,
+            )
             if not title or not text:
                 retry_issues = ["missing_title_or_text"]
                 continue
@@ -275,13 +292,21 @@ def generate_review_ready_story_text(
             result = apply_narrative_standard_metadata({
                 "title": title,
                 "text": text,
+                "narration_sections": dict(sections),
                 "closing_message": _short_closing(parsed.get("closing_message")),
-                "endcard_cta_text": _clean(parsed.get("endcard_cta_text"))[:90] or "Inscreva-se e acompanhe novas mensagens.",
+                "endcard_cta_text": _clean(parsed.get("endcard_cta_text"))[:240],
+                "narration_contract": audit_canonical_narration(text, sections=sections),
                 "editorial_review_ready": True,
                 "editorial_source": "structured_ai" if attempt == 0 else "structured_ai_retry",
             }, profile=narrative_profile)
             issues = _editorial_quality_issues(title, text, source_instruction)
+            if not sections or any(not _clean(sections.get(key)) for key in (
+                "hook", "development", "central_truth", "transformation",
+                "application", "climax", "reflection",
+            )):
+                issues.append("missing_canonical_narration_sections")
             result["editorial_quality_issues"] = issues
+            result["editorial_review_ready"] = not bool(issues)
             best_result = result
             if not issues:
                 return result
@@ -298,15 +323,23 @@ def generate_review_ready_story_text(
         duration_min_minutes=min_m,
         duration_max_minutes=max_m,
     )
-    legacy_text = _repair_opening(str(legacy or ""))
+    legacy_text = compose_canonical_narration(
+        {},
+        fallback_text=_repair_opening(str(legacy or "")),
+    )
+    fallback_contract = audit_canonical_narration(legacy_text)
+    fallback_issues = _editorial_quality_issues(
+        _fallback_title(source_instruction, safe_kind), legacy_text, source_instruction
+    )
+    if not fallback_contract.get("valid"):
+        fallback_issues.append("invalid_canonical_narration_contract")
     return apply_narrative_standard_metadata({
         "title": _fallback_title(source_instruction, safe_kind),
         "text": legacy_text,
+        "narration_contract": fallback_contract,
         "closing_message": "Leve esta esperança com você: Deus continua presente.",
-        "endcard_cta_text": "Inscreva-se e acompanhe novas mensagens.",
-        "editorial_review_ready": True,
-        "editorial_source": "legacy_fail_open",
-        "editorial_quality_issues": _editorial_quality_issues(
-            _fallback_title(source_instruction, safe_kind), legacy_text, source_instruction
-        ),
+        "endcard_cta_text": DEFAULT_NARRATED_CTA_TEXT,
+        "editorial_review_ready": not bool(fallback_issues),
+        "editorial_source": "legacy_contract_fallback",
+        "editorial_quality_issues": fallback_issues,
     }, profile=narrative_profile)

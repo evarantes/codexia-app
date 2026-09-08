@@ -3386,6 +3386,10 @@ def _load_approved_narration_contract(
             NARRATION_CORE_NAMESPACE,
             NARRATION_CORE_VERSION,
         )
+        from app.services.narrative_structure_standard import (
+            NARRATIVE_STRUCTURE_STANDARD_VERSION,
+            audit_canonical_narration,
+        )
         from app.services.production_job_store import (
             ProductionJobStoreError,
             production_job_store,
@@ -3429,6 +3433,19 @@ def _load_approved_narration_contract(
     except Exception:
         core_version = 0
     core_namespace = str(meta.get("narration_core_namespace") or "").strip()
+    stored_narrative_contract = (
+        meta.get("narration_contract")
+        if isinstance(meta.get("narration_contract"), dict)
+        else {}
+    )
+    current_narrative_contract = audit_canonical_narration(
+        meta.get("review_script_text") or ""
+    )
+    approved_caption_timeline = (
+        list(meta.get("caption_timeline") or [])
+        if isinstance(meta.get("caption_timeline"), list)
+        else []
+    )
 
     if stored_owner_id != owner_id or stored_job_id != job_id:
         raise ApprovedNarrationJobError("A pasta de produção não pertence ao trabalho/usuário solicitado.")
@@ -3438,6 +3455,14 @@ def _load_approved_narration_contract(
         raise ApprovedNarrationJobError("O texto aprovado não corresponde ao hash registrado na pasta do trabalho.")
     if core_version != NARRATION_CORE_VERSION or core_namespace != NARRATION_CORE_NAMESPACE:
         raise ApprovedNarrationJobError("A narração foi criada por uma versão antiga do Narration Core.")
+    if (
+        stored_narrative_contract.get("standard_version") != NARRATIVE_STRUCTURE_STANDARD_VERSION
+        or stored_narrative_contract.get("valid") is not True
+        or current_narrative_contract.get("valid") is not True
+    ):
+        raise ApprovedNarrationJobError(
+            "A narração aprovada não atende ao roteiro global atual; gere e aprove uma nova versão."
+        )
 
     requested_preview_id = str(getattr(request, "approved_narration_preview_id", None) or "").strip().lower()
     requested_text_sha256 = str(getattr(request, "approved_narration_text_sha256", None) or "").strip().lower()
@@ -3483,6 +3508,9 @@ def _load_approved_narration_contract(
         "spoken_text": spoken_text,
         "narration_core_version": NARRATION_CORE_VERSION,
         "narration_core_namespace": NARRATION_CORE_NAMESPACE,
+        "narration_contract": current_narrative_contract,
+        "caption_timeline": approved_caption_timeline,
+        "caption_timing_source": str(meta.get("caption_timing_source") or "audio_alignment_fallback"),
         "reuse_audio_from": canonical_reuse,
     }
 
@@ -4040,14 +4068,26 @@ def improve_story_text(request: StoryTextImproveRequest):
     if kind not in {"story", "devotional", "prayer"}:
         kind = "story"
     instruction = (request.instruction or "").strip() or "Melhore o texto mantendo o sentido e aumentando a retenção."
-    text = ai_service.improve_story_or_devotional_text(
-        original_text=request.original_text,
-        instruction=instruction,
+    source_text = str(request.original_text or "").strip()
+    editorial_instruction = (
+        f"{instruction}\n\n"
+        "Reescreva o texto-base abaixo preservando fatos, tema e intenção, mas organize-o "
+        "rigorosamente no padrão narrativo global solicitado. Não copie rótulos estruturais para a fala.\n\n"
+        f"TEXTO-BASE PARA REVISÃO:\n{source_text}"
+    )
+    package = generate_review_ready_story_text(
+        ai_service,
+        instruction=editorial_instruction,
         kind=kind,
         duration_min_minutes=request.duration_min,
         duration_max_minutes=request.duration_max,
     )
-    return {"text": text, "kind": kind, "duration_min": request.duration_min, "duration_max": request.duration_max}
+    return {
+        **package,
+        "kind": kind,
+        "duration_min": request.duration_min,
+        "duration_max": request.duration_max,
+    }
 
 @router.post("/story/draft")
 def save_story_draft(request: StoryDraftSaveRequest, db: Session = Depends(get_db)):
@@ -7917,6 +7957,9 @@ def process_video_generation(request: VideoRequest, task_id):
                 script["approved_narration_audio_sha256"] = approved_narration_contract["audio_sha256"]
                 script["narration_core_version"] = approved_narration_contract["narration_core_version"]
                 script["narration_core_namespace"] = approved_narration_contract["narration_core_namespace"]
+                script["narration_contract"] = approved_narration_contract["narration_contract"]
+                script["approved_caption_timeline"] = approved_narration_contract["caption_timeline"]
+                script["approved_caption_timing_source"] = approved_narration_contract["caption_timing_source"]
                 script["narration_source"] = "approved_narration_core_v1_job_folder"
                 script["tts_locked"] = True
                 script["allow_tts_generation"] = False

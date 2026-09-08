@@ -173,7 +173,14 @@
       productionJobId = String(data.production_job_id);
       setJobLabel(panel);
       preview = data;
-      panel.querySelector('[data-ng-spoken]').textContent = data.spoken_text_sent_to_tts || '';
+      const canonicalText = normalizeText(data.spoken_text_sent_to_tts || '');
+      const reviewText = normalizeText(data.review_script_text || canonicalText);
+      if (!canonicalText) throw new Error('O servidor não retornou o roteiro narrável canônico.');
+      if (reviewText !== text && textarea) {
+        textarea.value = reviewText;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      panel.querySelector('[data-ng-spoken]').textContent = canonicalText;
       panel.querySelector('[data-ng-result]').hidden = false;
       panel.querySelector('[data-ng-approve]').disabled = false;
       await loadProtectedAudio(data.audio_url, panel);

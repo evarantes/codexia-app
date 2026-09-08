@@ -40,6 +40,85 @@ VIDEO_LOOP_ANCHOR = '''            last_story_scene_clip = None\n            las
 
 VIDEO_FAST_BLOCK = '''            # CODEXIA_LIGHTWEIGHT_STAGE6_RECOVERY_V1\n            # Este caminho só existe após confirmação do hash de otimização.\n            # Ele preserva roteiro, áudio, legendas e imagens, mas evita montar\n            # milhares de frames/overlays simultaneamente no MoviePy.\n            _lightweight_confirmed = bool(\n                isinstance(plan, dict)\n                and plan.get("force_render_only")\n                and plan.get("lightweight_recovery_render_confirmed")\n            )\n            if _lightweight_confirmed:\n                if not selected_image_paths:\n                    raise Exception("Render leve bloqueado: nenhuma imagem preservada válida foi encontrada.")\n                if not main_audio_path or not os.path.isfile(main_audio_path):\n                    raise Exception("Render leve bloqueado: áudio preservado não está disponível localmente.")\n\n                if progress_callback:\n                    progress_callback(88, "6/8 Recuperação confirmada — preparando render leve local...")\n\n                # Libera objetos MoviePy já abertos antes do render direto.\n                try:\n                    if main_audio_clip is not None:\n                        main_audio_clip.close()\n                        main_audio_clip = None\n                except Exception:\n                    pass\n                try:\n                    for _existing_clip in list(clips):\n                        try:\n                            _existing_clip.close()\n                        except Exception:\n                            pass\n                    clips.clear()\n                except Exception:\n                    pass\n                gc.collect()\n\n                _endcard_temp_path = ""\n                try:\n                    _endcard_frame = self._build_cinematic_endcard_frame(\n                        branding_profile,\n                        background_path=selected_image_paths[-1],\n                        size=video_size,\n                    )\n                    _endcard_temp_path = os.path.join(\n                        self.output_dir,\n                        f"recovery_endcard_{uuid.uuid4().hex}.png",\n                    )\n                    if hasattr(_endcard_frame, "save"):\n                        _endcard_frame.save(_endcard_temp_path)\n                    else:\n                        from PIL import Image as _RecoveryPILImage\n                        _RecoveryPILImage.fromarray(_endcard_frame).save(_endcard_temp_path)\n                except Exception as _endcard_error:\n                    print(f"Aviso: endcard leve usará a última imagem preservada: {_endcard_error}")\n                    _endcard_temp_path = ""\n\n                _recovery_filename = f"{uuid.uuid4()}.mp4"\n                _recovery_output_path = os.path.join(self.output_dir, _recovery_filename)\n                try:\n                    _bg_volume_raw = ""\n                    if isinstance(plan, dict) and plan.get("bg_music_volume") is not None:\n                        _bg_volume_raw = str(plan.get("bg_music_volume")).strip()\n                    if not _bg_volume_raw:\n                        _bg_volume_raw = str(os.getenv("VIDEO_BG_MUSIC_VOLUME") or "").strip()\n                    _light_bg_volume = float(_bg_volume_raw) if _bg_volume_raw else 0.025\n                except Exception:\n                    _light_bg_volume = 0.025\n                _light_bg_volume = max(0.0, min(0.20, _light_bg_volume))\n\n                _light_result = render_lightweight_recovery_video(\n                    output_path=_recovery_output_path,\n                    selected_images=selected_image_paths,\n                    audio_path=main_audio_path,\n                    captions=full_caption_timeline,\n                    official_scene_timeline=official_scene_timeline,\n                    target_duration=target_video_duration,\n                    video_size=video_size,\n                    endcard_image=_endcard_temp_path,\n                    music_dir=self.music_dir,\n                    music_mood=str((plan or {}).get("music_mood") or "drama"),\n                    music_volume=_light_bg_volume,\n                    progress_callback=progress_callback,\n                )\n                _recovery_output_path = self._ensure_playable_mp4(_recovery_output_path)\n                _obtained_light_duration = float(\n                    self._measure_rendered_video_duration_seconds(_recovery_output_path) or 0.0\n                )\n\n                try:\n                    if _endcard_temp_path and os.path.isfile(_endcard_temp_path):\n                        os.remove(_endcard_temp_path)\n                except Exception:\n                    pass\n\n                _light_report = dict(_light_result or {})\n                _light_report.update({\n                    "confirmed_by_plan_hash": True,\n                    "preserve_full_script": True,\n                    "preserve_full_narration": True,\n                    "preserve_captions": True,\n                    "paid_image_calls": 0,\n                    "paid_tts_calls": 0,\n                    "external_music_provider_calls": 0,\n                    "external_music_downloads": 0,\n                })\n                render_report["lightweight_recovery_render"] = _light_report\n                render_report.setdefault("intelligent_cost_optimization", {})\n                render_report["intelligent_cost_optimization"].update({\n                    "render_strategy_executed": "ffmpeg_lightweight_recovery_v1",\n                    "paid_image_calls": 0,\n                    "preserve_full_narration": True,\n                    "preserve_full_text": True,\n                    "preserve_captions": True,\n                })\n                render_report["narration_completed"] = True\n                render_report["story_completed"] = True\n                render_report["cta_rendered"] = bool(closing_has_narration)\n                render_report["end_screen_rendered"] = bool(end_clip_duration > 0)\n                render_report["final_video_duration_sec"] = round(_obtained_light_duration, 2)\n                render_report.setdefault("duration_plan", {})\n                render_report["duration_plan"]["obtained_duration_sec"] = round(_obtained_light_duration, 2)\n                render_report["duration_plan"]["target_video_duration_sec"] = round(float(target_video_duration or 0.0), 2)\n                render_report["video_url"] = f"{VIDEO_URL_PREFIX}/{_recovery_filename}"\n                render_report["file_path"] = _recovery_output_path\n                render_report["srt"] = {\n                    "embedded": True,\n                    "entries": len(full_caption_timeline or []),\n                    "source": str(caption_timeline_source or "unknown"),\n                }\n\n                _light_sync_tolerance = duration_sync_tolerance_seconds(float(target_video_duration or 0.0))\n                _light_delta = abs(_obtained_light_duration - float(target_video_duration or 0.0))\n                _light_sync_validation = {\n                    "audio_duration_sec": round(float(actual_total_audio_dur or 0.0), 3),\n                    "video_duration_sec": round(_obtained_light_duration, 3),\n                    "video_sync_target_sec": round(float(target_video_duration or 0.0), 3),\n                    "audio_video_diff_sec": round(_light_delta, 3),\n                    "video_sync_tolerance_sec": round(float(_light_sync_tolerance or 0.0), 3),\n                    "video_synced_with_audio": bool(_light_delta <= _light_sync_tolerance),\n                    "captions_synced_with_audio": bool(full_caption_timeline),\n                    "uses_official_scene_timeline": True,\n                    "renderer": "ffmpeg_lightweight_recovery_v1",\n                }\n                render_report["sync_validation"] = _light_sync_validation\n\n                _task_id_for_manifest = str(getattr(self, "_codexia_task_id", "") or "").strip()\n                if _task_id_for_manifest:\n                    try:\n                        from app.services.production_manifest import record_artifact as _record_recovery_artifact\n                        _record_recovery_artifact(\n                            _task_id_for_manifest,\n                            _recovery_output_path,\n                            kind="video",\n                            source="lightweight_recovery_renderer",\n                        )\n                    except Exception as _manifest_error:\n                        print(f"Aviso: não foi possível registrar MP4 leve no manifesto: {_manifest_error}")\n\n                _used_music_credit = None\n                _local_music_path = str(_light_report.get("music_path") or "").lower()\n                if _local_music_path:\n                    for _credit_key, _credit_value in self.MUSIC_CREDITS.items():\n                        if _credit_key in os.path.basename(_local_music_path):\n                            _used_music_credit = _credit_value\n                            break\n\n                return {\n                    "video_url": f"{VIDEO_URL_PREFIX}/{_recovery_filename}",\n                    "file_path": _recovery_output_path,\n                    "music_credit": _used_music_credit,\n                    "used_images": list(used_image_urls),\n                    "render_report": render_report,\n                    "sync_validation": _light_sync_validation,\n                }\n\n            last_story_scene_clip = None\n            last_story_scene_image_path = None\n\n            for i, scene in enumerate(scenes):'''
 
+# Upgrade the generated runtime block without duplicating its large source
+# literal. Recovery remains confirmation-gated; an explicitly selected
+# logo-only job with approved narration may use the same local renderer
+# automatically because it preserves the requested visual semantics.
+VIDEO_FAST_BLOCK = VIDEO_FAST_BLOCK.replace(
+    """            # Este caminho só existe após confirmação do hash de otimização.
+            # Ele preserva roteiro, áudio, legendas e imagens, mas evita montar
+            # milhares de frames/overlays simultaneamente no MoviePy.
+            _lightweight_confirmed = bool(
+                isinstance(plan, dict)
+                and plan.get("force_render_only")
+                and plan.get("lightweight_recovery_render_confirmed")
+            )
+            if _lightweight_confirmed:""",
+    """            # Recovery requires the confirmed optimization hash. Logo-only
+            # is already an explicit visual choice and may use this equivalent
+            # local renderer automatically after narration approval.
+            _recovery_lightweight_confirmed = bool(
+                isinstance(plan, dict)
+                and plan.get("force_render_only")
+                and plan.get("lightweight_recovery_render_confirmed")
+            )
+            _logo_only_fast_mode = bool(
+                isinstance(plan, dict)
+                and plan.get("logo_only_visuals")
+                and plan.get("approved_narration_required")
+            )
+            _lightweight_confirmed = bool(
+                _recovery_lightweight_confirmed or _logo_only_fast_mode
+            )
+            if _lightweight_confirmed:""",
+)
+VIDEO_FAST_BLOCK = VIDEO_FAST_BLOCK.replace(
+    '                    progress_callback(88, "6/8 Recuperação confirmada — preparando render leve local...")',
+    '''                    progress_callback(
+                        88,
+                        "6/8 Preparando render rápido com a logo oficial..."
+                        if _logo_only_fast_mode
+                        else "6/8 Recuperação confirmada — preparando render leve local...",
+                    )''',
+)
+VIDEO_FAST_BLOCK = VIDEO_FAST_BLOCK.replace(
+    """                    endcard_image=_endcard_temp_path,
+                    music_dir=self.music_dir,""",
+    """                    endcard_image=_endcard_temp_path,
+                    opening_silence_sec=initial_opening_silence_sec,
+                    logo_only_visuals=_logo_only_fast_mode,
+                    opening_title=clean_title,
+                    channel_name=str((branding_profile or {}).get("channel_name") or "Herdeiros das Promessas"),
+                    music_dir=self.music_dir,""",
+)
+VIDEO_FAST_BLOCK = VIDEO_FAST_BLOCK.replace(
+    '                    "confirmed_by_plan_hash": True,',
+    '''                    "confirmed_by_plan_hash": bool(_recovery_lightweight_confirmed),
+                    "activation_reason": (
+                        "logo_only_approved_narration"
+                        if _logo_only_fast_mode
+                        else "confirmed_stage6_recovery"
+                    ),''',
+)
+VIDEO_FAST_BLOCK = VIDEO_FAST_BLOCK.replace(
+    '                    "render_strategy_executed": "ffmpeg_lightweight_recovery_v1",',
+    '''                    "render_strategy_executed": (
+                        "ffmpeg_static_brand_v3"
+                        if _logo_only_fast_mode
+                        else "ffmpeg_lightweight_recovery_v1"
+                    ),''',
+)
+VIDEO_FAST_BLOCK = VIDEO_FAST_BLOCK.replace(
+    '                    "renderer": "ffmpeg_lightweight_recovery_v1",',
+    '''                    "renderer": str(_light_report.get("renderer") or "ffmpeg_lightweight_recovery_v1"),
+                    "opening_visual_only_sec": round(float(initial_opening_silence_sec or 0.0), 3),
+                    "captions_start_after_opening": bool(
+                        not full_caption_timeline
+                        or min(float(item.get("start") or 0.0) for item in full_caption_timeline)
+                        >= float(initial_opening_silence_sec or 0.0) - 0.05
+                    ),''',
+)
+
 UI_STRATEGY_OLD = "Estratégia: redistribuir as imagens existentes na ordem do roteiro e aumentar apenas o tempo visual quando necessário."
 UI_STRATEGY_NEW = (
     "Estratégia visual: redistribuir as imagens existentes na ordem do roteiro e aumentar apenas o tempo visual quando necessário.\\n"
@@ -115,6 +194,11 @@ def check() -> None:
         MARKER,
         "render_lightweight_recovery_video",
         'plan.get("lightweight_recovery_render_confirmed")',
+        'plan.get("logo_only_visuals")',
+        'plan.get("approved_narration_required")',
+        '"activation_reason": (',
+        'opening_silence_sec=initial_opening_silence_sec',
+        'logo_only_visuals=_logo_only_fast_mode',
         '"external_music_provider_calls": 0',
         'source="lightweight_recovery_renderer"',
     )

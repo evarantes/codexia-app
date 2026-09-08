@@ -4,11 +4,11 @@ from typing import Any, Dict, MutableMapping
 
 
 VIDEO_CREATION_STANDARD_VERSION = 1
-STANDARD_REQUIRED_CTA_SIGNALS = frozenset({"like", "subscribe", "bell", "share"})
+STANDARD_REQUIRED_CTA_SIGNALS = frozenset({"like", "subscribe", "bell", "share", "comment"})
 STANDARD_COMPLETE_CTA = (
-    "Se esta mensagem falou com você, curta este vídeo, inscreva-se no canal, "
-    "ative o sininho para receber as próximas mensagens e compartilhe este vídeo "
-    "com alguém que precisa ouvi-lo."
+    "Se esta mensagem falou com você, curta este vídeo, inscreva-se no canal "
+    "Herdeiros das Promessas, ative o sininho para receber as próximas mensagens, "
+    "compartilhe este vídeo e conte nos comentários o que mais tocou o seu coração."
 )
 
 _STANDARD_STRUCTURE = {
@@ -40,7 +40,7 @@ _STANDARD_STRUCTURE = {
     },
     "closing": {
         "reflection": True,
-        "cta": ["curtir", "inscrever-se", "ativar o sininho", "compartilhar"],
+        "cta": ["curtir", "inscrever-se", "ativar o sininho", "compartilhar", "comentar"],
         "automatic_endcard": True,
     },
 }

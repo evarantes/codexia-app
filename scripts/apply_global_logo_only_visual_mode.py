@@ -169,6 +169,118 @@ def _apply_youtube_contract() -> bool:
         text = text.replace(anchor, anchor + snippet, 1)
         changed = True
 
+    worker_plan_marker = f"{MARKER}:worker-plan"
+    if worker_plan_marker not in text:
+        anchor = '''            script = _apply_youtube_auto_editorial_intelligence(
+                guardian_db,
+                script,
+                ai_service=ai_service,
+                task_id=str(task_id),
+            )
+'''
+        if anchor not in text:
+            raise SystemExit("global logo-only: aplicação editorial do worker não encontrada")
+        snippet = f'''            # {worker_plan_marker}
+            # O Pydantic preserva a intenção no request, mas o plano editorial é
+            # um novo dicionário. Reaplique o contrato no último ponto antes do
+            # renderer para que abertura, cenas e thumbnail continuem fail-closed.
+            if bool(getattr(request, "logo_only_visuals", False)):
+                from app.services.logo_only_visual_mode import apply_logo_only_to_payload
+                if not isinstance(script, dict):
+                    raise RuntimeError("Modo usar apenas a logo exige um plano de vídeo válido.")
+                script = apply_logo_only_to_payload(
+                    {{**script, "logo_only_visuals": True}},
+                    db=guardian_db,
+                    user_id=guardian_user_id,
+                )
+'''
+        text = text.replace(anchor, anchor + snippet, 1)
+        changed = True
+
+    progress_marker = f"{MARKER}:progress-labels"
+    if progress_marker not in text:
+        anchor = '        render_output = {"filename": None}\n        def _stage_for_pct(pct: int) -> Tuple[int, str, str]:\n'
+        if anchor not in text:
+            raise SystemExit("global logo-only: mapeamento de progresso do worker não encontrado")
+        snippet = f'''        render_output = {{"filename": None}}
+        # {progress_marker}
+        _approved_audio_progress = bool(
+            isinstance(script, dict) and script.get("approved_narration_required")
+        )
+        _logo_only_progress = bool(isinstance(script, dict) and script.get("logo_only_visuals"))
+        _voice_stage_message = (
+            "2/8 Reutilizando narração aprovada..."
+            if _approved_audio_progress
+            else "2/8 Gerando narração com IA..."
+        )
+        _visual_stage_message = (
+            "3/8 Aplicando logo oficial às cenas..."
+            if _logo_only_progress
+            else "3/8 Preparando imagens e cenas..."
+        )
+        def _stage_for_pct(pct: int) -> Tuple[int, str, str]:
+'''
+        text = text.replace(anchor, snippet, 1)
+        voice_line = 'return (20 + int(pct * 0.15 / 20 + 1e-6), "2/8 Gerando narração com IA...", "stage_2_voice")'
+        if text.count(voice_line) != 1:
+            raise SystemExit("global logo-only: primeiro rótulo de narração não encontrado")
+        text = text.replace(
+            voice_line,
+            'return (20 + int(pct * 0.15 / 20 + 1e-6), _voice_stage_message, "stage_2_voice")',
+            1,
+        )
+        voice_line = 'return (20 + sub, "2/8 Gerando narração com IA...", "stage_2_voice")'
+        if text.count(voice_line) != 1:
+            raise SystemExit("global logo-only: segundo rótulo de narração não encontrado")
+        text = text.replace(
+            voice_line,
+            'return (20 + sub, _voice_stage_message, "stage_2_voice")',
+            1,
+        )
+        visual_line = 'return (35 + sub, "3/8 Preparando imagens e cenas...", "stage_3_images")'
+        if text.count(visual_line) != 1:
+            raise SystemExit("global logo-only: rótulo visual não encontrado")
+        text = text.replace(
+            visual_line,
+            'return (35 + sub, _visual_stage_message, "stage_3_images")',
+            1,
+        )
+        changed = True
+
+    worker_context_marker = f"{MARKER}:worker-provider-context"
+    if worker_context_marker not in text:
+        old = '''        video_result = video_service.create_video_from_plan(
+            script,
+            aspect_ratio=str(request.aspect_ratio or "16:9"),
+            progress_callback=progress_callback,
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+            music_file_path=(str(request.music_file_path).strip() if request.music_file_path else None),
+        )
+'''
+        new = f'''        # {worker_context_marker}
+        # Defesa final para jobs RQ: mesmo que um caminho novo do renderer tente
+        # chamar um provedor, o contexto devolve a logo antes de qualquer API paga.
+        from app.services.logo_only_visual_mode import logo_only_visual_context
+        with logo_only_visual_context(
+            bool(isinstance(script, dict) and script.get("logo_only_visuals")),
+            db=guardian_db,
+            user_id=guardian_user_id,
+            logo_path=(script.get("logo_only_logo_path") if isinstance(script, dict) else None),
+            logo_url=(script.get("logo_only_logo_url") if isinstance(script, dict) else None),
+        ):
+            video_result = video_service.create_video_from_plan(
+                script,
+                aspect_ratio=str(request.aspect_ratio or "16:9"),
+                progress_callback=progress_callback,
+                voice_style=voice_style,
+                voice_gender=voice_gender,
+                music_file_path=(str(request.music_file_path).strip() if request.music_file_path else None),
+            )
+'''
+        text = _replace_once(text, old, new, "contexto fail-closed do worker")
+        changed = True
+
     if changed:
         _write(YOUTUBE, text)
     return changed
@@ -285,7 +397,16 @@ def check() -> None:
         AI_GENERATOR: [f"{MARKER}:provider:ai_generator.py", "image_provider_override"],
         AI_ROUTER: [f"{MARKER}:provider:ai_router.py", "image_provider_override"],
         STORYBOARD: [f"{MARKER}:storyboard-image", f"{MARKER}:storyboard-batch", f"{MARKER}:thumbnail", "images_generated"],
-        YOUTUBE: ["logo_only_visuals: bool = False", f"{MARKER}:dispatch", f"{MARKER}:story-images", f"{MARKER}:canonical-hash"],
+        YOUTUBE: [
+            "logo_only_visuals: bool = False",
+            f"{MARKER}:dispatch",
+            f"{MARKER}:story-images",
+            f"{MARKER}:canonical-hash",
+            f"{MARKER}:worker-plan",
+            f"{MARKER}:progress-labels",
+            f"{MARKER}:worker-provider-context",
+            "Reutilizando narração aprovada",
+        ],
         UNIFIED: ["logo_only_visuals: bool = False", f"{MARKER}:unified-builder", f"{MARKER}:legacy-payload"],
         VIDEO_GENERATOR: [f"{MARKER}:opening", f"{MARKER}:music", f"{MARKER}:report", "ai_image_generation_disabled"],
     }
