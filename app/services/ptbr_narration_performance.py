@@ -16,6 +16,9 @@ PTBR_NARRATION_PERFORMANCE_NAMESPACE = "ptbr-natural-performance-v2"
 PTBR_EDGE_RATE = "-4%"
 PTBR_EDGE_PITCH = "+0Hz"
 PTBR_EDGE_VOLUME = "+0%"
+PTBR_SENTENCE_PAUSE_MS = 260
+PTBR_PARAGRAPH_PAUSE_MS = 520
+PTBR_CLAUSE_PAUSE_MS = 160
 
 
 class PtBrNarrationPerformanceError(RuntimeError):
@@ -54,7 +57,7 @@ def _sentence_units(paragraph: str) -> List[str]:
     return units or [paragraph]
 
 
-def _split_long_unit(unit: str, *, max_chars: int = 360, max_words: int = 55) -> List[str]:
+def _split_long_unit(unit: str, *, max_chars: int = 300, max_words: int = 46) -> List[str]:
     text = _collapse_spaces(unit)
     if not text:
         return []
@@ -83,7 +86,12 @@ def _split_long_unit(unit: str, *, max_chars: int = 360, max_words: int = 55) ->
 
 
 def build_performance_segments(review_text: Any, spoken_text: Any) -> List[PerformanceSegment]:
-    """Build breathing-sized pt-BR chunks without changing a lexical token."""
+    """Build sentence-sized pt-BR chunks without changing a lexical token.
+
+    Pauses are represented as PCM time between synthesized chunks. They never
+    become words such as ``pausa``/``respira`` and never require phonetic
+    misspellings in the approved Portuguese source.
+    """
     canonical = _collapse_spaces(spoken_text)
     if not canonical:
         return []
@@ -99,27 +107,26 @@ def build_performance_segments(review_text: Any, spoken_text: Any) -> List[Perfo
 
     segments: List[PerformanceSegment] = []
     for paragraph_index, paragraph in enumerate(paragraphs):
-        units: List[str] = []
-        for sentence in _sentence_units(paragraph):
-            units.extend(_split_long_unit(sentence))
-
-        current = ""
-        for unit in units:
-            candidate = f"{current} {unit}".strip() if current else unit
-            if current and (len(candidate) > 340 or len(candidate.split()) > 52):
-                segments.append(PerformanceSegment(current, 360, "phrase_breath"))
-                current = unit
-            else:
-                current = candidate
-        if current:
-            paragraph_pause = 620 if paragraph_index < len(paragraphs) - 1 else 0
-            segments.append(
-                PerformanceSegment(
-                    current,
-                    paragraph_pause,
-                    "paragraph_breath" if paragraph_pause else "final",
-                )
-            )
+        sentences = _sentence_units(paragraph)
+        for sentence_index, sentence in enumerate(sentences):
+            chunks = _split_long_unit(sentence)
+            for chunk_index, chunk in enumerate(chunks):
+                is_last_chunk = chunk_index == len(chunks) - 1
+                is_last_sentence = sentence_index == len(sentences) - 1
+                is_last_paragraph = paragraph_index == len(paragraphs) - 1
+                if not is_last_chunk:
+                    pause_ms = PTBR_CLAUSE_PAUSE_MS
+                    reason = "clause_breath"
+                elif not is_last_sentence:
+                    pause_ms = PTBR_SENTENCE_PAUSE_MS
+                    reason = "sentence_breath"
+                elif not is_last_paragraph:
+                    pause_ms = PTBR_PARAGRAPH_PAUSE_MS
+                    reason = "paragraph_breath"
+                else:
+                    pause_ms = 0
+                    reason = "final"
+                segments.append(PerformanceSegment(chunk, pause_ms, reason))
 
     flattened = _collapse_spaces(" ".join(item.text for item in segments))
     if flattened != canonical:
@@ -340,9 +347,15 @@ async def synthesize_edge_ptbr_performance(
                 wav_writer.writeframes(frames)
 
                 for item in local_timeline:
+                    local_start = min(segment_duration, max(0.0, float(item["start"])))
+                    local_end = min(segment_duration, max(local_start, float(item["end"])))
+                    if local_end <= local_start:
+                        raise PtBrNarrationPerformanceError(
+                            "O limite temporal de uma palavra caiu fora do áudio sintetizado."
+                        )
                     global_timeline.append({
-                        "start": round(cursor + float(item["start"]), 4),
-                        "end": round(cursor + float(item["end"]), 4),
+                        "start": round(cursor + local_start, 4),
+                        "end": round(cursor + local_end, 4),
                         "word": item["word"],
                     })
                 cursor += segment_duration
