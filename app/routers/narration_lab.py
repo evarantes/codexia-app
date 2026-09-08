@@ -11,7 +11,7 @@ from app.models import Settings, User
 from app.routers.auth import get_current_admin_user
 from app.services.narration_lab import NarrationLabError, narration_lab_service
 from app.services.production_job_store import ProductionJobStoreError, production_job_store
-from app.services.youtube_narration_gate import (
+from app.services.youtube_narration_gate_v2 import (
     YouTubeNarrationGateError,
     youtube_narration_gate_service,
 )
