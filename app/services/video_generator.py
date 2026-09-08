@@ -19,7 +19,8 @@ from app.services.narrative_structure_standard import (
     CHANNEL_PRESENTATION_TEXT,
     DEFAULT_NARRATED_CTA_TEXT,
 )
-from app.services.recovery_image_budget import RecoveryImageBudgetExceeded, RecoveryImageCallBudget
+from app.services.recovery_image_budget import RecoveryImageCallBudget
+from app.services.recovery_image_budget import RecoveryImageBudgetExceeded
 from app.services.safe_text_layout import SafeTextLayout
 
 CAPTION_SAFE_AREA_X_RATIO = 0.06
