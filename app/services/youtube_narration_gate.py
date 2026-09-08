@@ -296,7 +296,16 @@ class YouTubeNarrationGateService:
     ) -> Dict[str, Any]:
         safe_id = self._safe_preview_id(preview_id)
         expected_source = self._artifact(expected_text)
-        expected_canonical = compose_canonical_narration({}, fallback_text=expected_source.spoken_text)
+        # Use exactly the same paragraph-preserving canonicalization as
+        # ``generate``. Passing ``spoken_text`` here flattened the seven body
+        # blocks and a multi-sentence CTA into one paragraph. The composer then
+        # saw only the final sentence as the CTA, appended the default CTA and
+        # produced a different hash even when the user changed nothing.
+        expected_review_text = self._safe_review_text(expected_text, expected_source)
+        expected_canonical = compose_canonical_narration(
+            {},
+            fallback_text=expected_review_text,
+        )
         artifact = self._artifact(expected_canonical)
         user_dir = self._user_dir(user_id)
         mp3_path = user_dir / f"{safe_id}.mp3"
