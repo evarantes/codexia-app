@@ -35,6 +35,29 @@ def test_scene_expansion_preserves_all_narration_words(monkeypatch):
     assert combined.split() == original.split()
 
 
+def test_scene_director_skips_visual_beat_expansion_for_logo_only(monkeypatch):
+    monkeypatch.setenv("ENABLE_SCENE_DIRECTOR", "true")
+    monkeypatch.setenv("ENABLE_REAL_VISUAL_BEATS", "true")
+    text = " ".join(f"palavra{i}" for i in range(260))
+    plan = {
+        "logo_only_visuals": True,
+        "scenes": [{"text": text, "image_prompt": "logo oficial do canal"}],
+    }
+
+    directed, report = direct_scene_plan(plan)
+
+    assert len(directed["scenes"]) == 1
+    assert directed["scenes"][0]["text"].split() == text.split()
+    assert report["changes_scene_count"] is False
+    assert report["real_visual_beats"] == {
+        "enabled": True,
+        "before": 1,
+        "after": 1,
+        "expanded": 0,
+        "skipped_reason": "logo_only_visuals",
+    }
+
+
 def test_ptbr_guard_normalizes_language_and_jesus_pronunciation(monkeypatch):
     monkeypatch.setenv("ENABLE_PTBR_TTS_GUARD", "true")
 
@@ -56,7 +79,8 @@ def test_ptbr_guard_normalizes_language_and_jesus_pronunciation(monkeypatch):
     result = generator.generate_audio("Jesus é fiel.", lang="pt-BR")
 
     assert result["lang"] == "pt"
-    assert "Jêzus" in result["text"]
+    assert "Jesus" in result["text"]
+    assert "Jêzus" not in result["text"]
 
 
 def test_opening_logo_moves_out_of_top_center(monkeypatch):

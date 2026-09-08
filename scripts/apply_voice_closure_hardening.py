@@ -65,8 +65,8 @@ def patch_editor(text: str) -> str:
 def patch_renderer(text: str) -> str:
     text = _replace_once(
         text,
-        "DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.40\nDEFAULT_OPENING_SILENCE_SEC = 0.45\nDEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30\nDEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20",
-        "DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.10\nDEFAULT_OPENING_SILENCE_SEC = 0.45\nDEFAULT_SCENE_IMAGE_LEAD_SEC = 0.12\nDEFAULT_SCENE_CAPTION_LEAD_SEC = 0.0",
+        "DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.40\n# Abertura visual global: título, logo e nome do canal sem fala/legenda.\nDEFAULT_OPENING_SILENCE_SEC = 4.0\nDEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30\nDEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20",
+        "DEFAULT_SCENE_AUDIO_MARGIN_SEC = 0.10\n# Abertura visual global: título, logo e nome do canal sem fala/legenda.\nDEFAULT_OPENING_SILENCE_SEC = 4.0\nDEFAULT_SCENE_IMAGE_LEAD_SEC = 0.12\nDEFAULT_SCENE_CAPTION_LEAD_SEC = 0.0",
         label="renderer/tighter-caption-audio-alignment",
     )
     text = _replace_once(
@@ -96,12 +96,66 @@ def patch_renderer(text: str) -> str:
 
     old_caption_builder = '''            caption_timeline_details = self._build_caption_timeline_details(\n                final_narration_text,\n                actual_total_audio_dur,\n                audio_path=main_audio_path,\n            )'''
     new_caption_builder = '''            # A variável editorial ``final_narration_text`` pode ficar defasada\n            # depois que o TTS foi segmentado (corpo + CTA). A fonte oficial passa\n            # a ser o texto persistido no checkpoint real do áudio.\n            caption_narration_text = final_narration_text\n            canonical_text_source = "renderer.final_narration_text"\n            canonical_resolver = getattr(self, "_codexia_resolve_canonical_narration_text", None)\n            if callable(canonical_resolver):\n                try:\n                    resolved_canonical_text = str(canonical_resolver(final_narration_text) or "").strip()\n                    if resolved_canonical_text:\n                        caption_narration_text = resolved_canonical_text\n                        canonical_text_source = str(\n                            getattr(self, "_codexia_canonical_text_source", canonical_text_source)\n                            or canonical_text_source\n                        )\n                except Exception:\n                    pass\n            if isinstance(render_report.get("audio_generation"), dict):\n                render_report["audio_generation"]["final_text_sent_to_tts"] = caption_narration_text\n                render_report["audio_generation"]["canonical_text_source"] = canonical_text_source\n\n            caption_timeline_details = self._build_caption_timeline_details(\n                caption_narration_text,\n                actual_total_audio_dur,\n                audio_path=main_audio_path,\n            )'''
-    text = _replace_once(
-        text,
-        old_caption_builder,
-        new_caption_builder,
-        label="renderer/use-real-tts-text-for-caption-builder",
-    )
+    approved_timeline_anchor = '''            approved_word_timeline = (
+                list(plan.get("approved_caption_timeline") or [])'''
+    if approved_timeline_anchor in text:
+        # The supervised-narration path was added after the original hardening.
+        # Resolve the canonical TTS text before selecting Edge word timings or
+        # the local alignment fallback, then use it in every branch.
+        canonical_prelude = '''            # The persisted approved/checkpoint text is the only caption source.
+            caption_narration_text = final_narration_text
+            canonical_text_source = "renderer.final_narration_text"
+            canonical_resolver = getattr(self, "_codexia_resolve_canonical_narration_text", None)
+            if callable(canonical_resolver):
+                try:
+                    resolved_canonical_text = str(canonical_resolver(final_narration_text) or "").strip()
+                    if resolved_canonical_text:
+                        caption_narration_text = resolved_canonical_text
+                        canonical_text_source = str(
+                            getattr(self, "_codexia_canonical_text_source", canonical_text_source)
+                            or canonical_text_source
+                        )
+                except Exception:
+                    pass
+            if isinstance(render_report.get("audio_generation"), dict):
+                render_report["audio_generation"]["final_text_sent_to_tts"] = caption_narration_text
+                render_report["audio_generation"]["canonical_text_source"] = canonical_text_source
+
+'''
+        if 'canonical_resolver = getattr(self, "_codexia_resolve_canonical_narration_text", None)' not in text:
+            text = text.replace(approved_timeline_anchor, canonical_prelude + approved_timeline_anchor, 1)
+        text = text.replace("narration=final_narration_text,", "narration=caption_narration_text,")
+        text = text.replace(
+            '''                    caption_timeline_details = self._build_caption_timeline_details(
+                        final_narration_text,
+                        actual_total_audio_dur,
+                        audio_path=main_audio_path,
+                    )''',
+            '''                    caption_timeline_details = self._build_caption_timeline_details(
+                        caption_narration_text,
+                        actual_total_audio_dur,
+                        audio_path=main_audio_path,
+                    )''',
+        )
+        text = text.replace(
+            '''                caption_timeline_details = self._build_caption_timeline_details(
+                    final_narration_text,
+                    actual_total_audio_dur,
+                    audio_path=main_audio_path,
+                )''',
+            '''                caption_timeline_details = self._build_caption_timeline_details(
+                    caption_narration_text,
+                    actual_total_audio_dur,
+                    audio_path=main_audio_path,
+                )''',
+        )
+    else:
+        text = _replace_once(
+            text,
+            old_caption_builder,
+            new_caption_builder,
+            label="renderer/use-real-tts-text-for-caption-builder",
+        )
     text = _replace_once(
         text,
         '            if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and final_narration_text:\n                shifted_timeline = self._caption_timeline_from_text(\n                    final_narration_text,',

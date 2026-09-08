@@ -14,6 +14,7 @@ from app.services.intelligent_cost_optimizer import (
     validate_optimization_confirmation,
 )
 from app.services.lightweight_recovery_renderer import (
+    _build_logo_only_brand_frames,
     build_concat_text,
     build_ffmpeg_command,
     build_srt_text,
@@ -121,6 +122,25 @@ class LightweightStage6RecoveryTests(unittest.TestCase):
             self.assertEqual(concat.count("file '"), 2)
             self.assertIn("duration 2.000000", concat)
 
+    def test_srt_preserves_exact_words_and_starts_after_four_second_opening(self):
+        narration = (
+            "Seja muito bem-vindo ao canal Herdeiros das Promessas. "
+            "A fé permanece firme, mesmo quando a resposta parece distante."
+        )
+        srt = build_srt_text(
+            [{"start": 0.0, "end": 8.0, "caption": narration}],
+            max_duration=12.0,
+            opening_silence_sec=4.0,
+        )
+
+        entries = [block.splitlines() for block in srt.strip().split("\n\n")]
+        self.assertGreaterEqual(len(entries), 2)
+        self.assertTrue(entries[0][1].startswith("00:00:04,000 -->"))
+        displayed_lines = [line for entry in entries for line in entry[2:]]
+        self.assertTrue(all(len(line) <= 40 for line in displayed_lines))
+        self.assertTrue(all(len(entry[2:]) <= 2 for entry in entries))
+        self.assertEqual(" ".join(displayed_lines), narration)
+
     def test_ffmpeg_command_has_no_network_provider_and_caps_threads(self):
         with tempfile.TemporaryDirectory() as tmp:
             concat = os.path.join(tmp, "visuals.ffconcat")
@@ -191,6 +211,56 @@ class LightweightStage6RecoveryTests(unittest.TestCase):
             self.assertEqual(result["external_downloads"], 0)
             self.assertEqual(result["music_source"], "none")
             self.assertAlmostEqual(result["duration_sec"], 2.0, delta=1.0)
+
+    def test_real_logo_only_ffmpeg_smoke_uses_static_brand_frames(self):
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("ffmpeg/ffprobe indisponível")
+        with tempfile.TemporaryDirectory() as tmp:
+            logo = self._image(tmp, "logo.png", 75)
+            audio = self._wav(tmp, 6.0)
+            output = os.path.join(tmp, "logo-only.mp4")
+            timeline = [
+                {"kind": "opening", "scene_start": 0.0, "scene_end": 4.0},
+                {"kind": "story", "scene_start": 4.0, "scene_end": 5.8},
+                {"kind": "endcard", "scene_start": 5.8, "scene_end": 6.0},
+            ]
+            result = render_lightweight_recovery_video(
+                output_path=output,
+                selected_images=[logo],
+                audio_path=audio,
+                captions=[{"start": 4.0, "end": 5.8, "caption": "A esperança permanece."}],
+                official_scene_timeline=timeline,
+                target_duration=6.0,
+                video_size=(320, 180),
+                opening_silence_sec=4.0,
+                logo_only_visuals=True,
+                opening_title="O retorno triunfante",
+                channel_name="Herdeiros das Promessas",
+                music_dir=os.path.join(tmp, "sem-musica"),
+            )
+
+            self.assertTrue(os.path.isfile(output))
+            self.assertEqual(result["renderer"], "ffmpeg_static_brand_v3")
+            self.assertEqual(result["opening_visual_only_sec"], 4.0)
+            self.assertEqual(result["captions_begin_after_opening_sec"], 4.0)
+            self.assertEqual(result["fixed_logo_position"], "bottom_left_above_captions")
+            self.assertLessEqual(result["visual_segment_count"], 3)
+
+    def test_logo_only_frames_share_exact_output_dimensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logo = self._image(tmp, "logo.png", 95)
+            opening, story, endcard = _build_logo_only_brand_frames(
+                logo_path=logo,
+                output_dir=tmp,
+                video_size=(1280, 720),
+                opening_title="O retorno triunfante",
+                channel_name="Herdeiros das Promessas",
+            )
+
+            for path in (opening, story, endcard):
+                with Image.open(path) as frame:
+                    self.assertEqual(frame.size, (1280, 720))
+                    self.assertEqual(frame.mode, "RGB")
 
 
 if __name__ == "__main__":

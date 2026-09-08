@@ -17,6 +17,7 @@ from app.services.global_settings_service import (
     build_global_settings_service,
     get_or_create_latest_settings,
 )
+from app.services.narrative_structure_standard import compose_canonical_narration
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 load_dotenv()
@@ -1287,7 +1288,9 @@ class AIContentGenerator:
         self._load_config()
         if not self._has_text_provider():
             title = "História" if kind == "story" else ("Devocional" if kind == "devotional" else "Reflexão com Oração")
-            return f"{title} (Simulação - Sem Chave)\n\n{instruction}".strip()
+            return compose_canonical_narration(
+                {}, fallback_text=f"{title} (Simulação - Sem Chave)\n\n{instruction}".strip()
+            )
 
         kind_norm = (kind or "story").strip().lower()
         if kind_norm not in {"story", "devotional", "prayer"}:
@@ -1327,10 +1330,12 @@ class AIContentGenerator:
         {instruction}
 
         DIRETRIZES DE RETENÇÃO:
-        - Comece com um gancho magnético nos primeiros 30 segundos, tocando diretamente na dor/sentimento do espectador.
-        - Evite introdução longa, sem vinheta, sem apresentação do canal no início.
+        - Estrutura obrigatória, nesta ordem: gancho, desenvolvimento, verdade central, transformação, aplicação, clímax, reflexão e CTA separado.
+        - Depois da abertura visual, a locução deve começar com: "Seja muito bem-vindo ao canal Herdeiros das Promessas."
+        - Em seguida, entregue um gancho magnético nos primeiros 30 segundos, direto na dor/sentimento do espectador.
         - Inclua pelo menos 2 perguntas diretas ao longo do texto para estimular reflexão e comentários.
-        - Finalize com uma CTA clara (curtir/inscrever-se) e uma pergunta curta para comentários.
+        - Escreva cada etapa do arco em um parágrafo separado, sem usar o nome da etapa como rótulo.
+        - Finalize com uma CTA clara e separada: curtir, inscrever-se, ativar o sininho, compartilhar e comentar.
         {extra_guidance}
 
         REGRAS DE EXTENSÃO:
@@ -1356,7 +1361,8 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
-            return (self._normalize_narration_text(content) or content).strip()
+            normalized = (self._normalize_narration_text(content) or content).strip()
+            return compose_canonical_narration({}, fallback_text=normalized)
         except Exception as e:
             print(f"Erro ao gerar {safe_kind}: {e}")
             raise
@@ -1581,7 +1587,9 @@ class AIContentGenerator:
     ) -> str:
         self._load_config()
         if not self._has_text_provider():
-            return (original_text or "").strip() or "Texto (Simulação - Sem Chave)"
+            return compose_canonical_narration(
+                {}, fallback_text=(original_text or "").strip() or "Texto (Simulação - Sem Chave)"
+            )
 
         kind_norm = (kind or "story").strip().lower()
         if kind_norm not in {"story", "devotional", "prayer"}:
@@ -1620,9 +1628,12 @@ class AIContentGenerator:
         {instruction}
 
         DIRETRIZES DE RETENÇÃO:
-        - Ajuste os primeiros parágrafos para ter um gancho magnético (0-30s) direto na dor/sentimento do espectador.
+        - Preserve esta ordem obrigatória: gancho, desenvolvimento, verdade central, transformação, aplicação, clímax, reflexão e CTA separado.
+        - Depois da abertura visual, a locução deve começar com: "Seja muito bem-vindo ao canal Herdeiros das Promessas."
+        - Ajuste o início temático para ter um gancho magnético (0-30s) direto na dor/sentimento do espectador.
         - Inclua pelo menos 2 perguntas diretas ao longo do texto para estimular reflexão e comentários.
-        - Finalize com CTA clara e pergunta curta para comentários.
+        - Escreva cada etapa do arco em um parágrafo separado, sem usar o nome da etapa como rótulo.
+        - Finalize com CTA separada para curtir, inscrever-se, ativar o sininho, compartilhar e comentar.
         {extra_guidance}
 
         Duração alvo do vídeo: entre {min_m} e {max_m} minutos.
@@ -1646,10 +1657,11 @@ class AIContentGenerator:
             )
             if not content:
                 raise Exception("Resposta vazia da IA")
-            return (self._normalize_narration_text(content) or content).strip()
+            normalized = (self._normalize_narration_text(content) or content).strip()
+            return compose_canonical_narration({}, fallback_text=normalized)
         except Exception as e:
             print(f"Erro ao melhorar {safe_kind}: {e}")
-            return (original_text or "").strip()
+            return compose_canonical_narration({}, fallback_text=(original_text or "").strip())
 
     def generate_youtube_content_factory_strategy(self, idea: str, channel_name: str = "Herdeiros das Promessas") -> Dict[str, Any]:
         self._load_config()

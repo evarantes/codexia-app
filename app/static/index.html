@@ -1863,7 +1863,7 @@
 
                     <div class="mb-4">
                         <label class="block font-bold mb-2">Texto para narração</label>
-                        <textarea v-model="ytStoryContent" @input="ytStoryEditorialReviewReady = true" class="w-full border p-3 rounded" rows="10" placeholder="Cole aqui sua história/devocional, ou gere com IA acima."></textarea>
+                        <textarea v-model="ytStoryContent" @input="ytStoryEditorialReviewReady = false" class="w-full border p-3 rounded" rows="10" placeholder="Cole aqui sua história/devocional, ou gere com IA acima."></textarea>
                     </div>
 
                     <div v-if="ytStoryKind === 'prayer'" class="mb-4 bg-amber-50 border border-amber-200 rounded p-4">
@@ -8812,6 +8812,8 @@
                         const data = await res.json().catch(() => ({}));
                         if (res.ok && data.text) {
                             this.ytStoryContent = data.text;
+                            this.ytStoryTitle = String(data.title || this.ytStoryTitle || '').trim();
+                            this.ytStoryEditorialReviewReady = Boolean(data.editorial_review_ready);
                             this.ytStoryGeneratedImages = [];
                         } else {
                             alert(this.formatApiError(data.detail || data.message || data, "Erro ao melhorar texto."));

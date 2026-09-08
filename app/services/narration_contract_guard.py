@@ -12,6 +12,7 @@ from app.services.narration_core import (
     NarrationCoreError,
     build_narration_artifact,
 )
+from app.services.narrative_structure_standard import CHANNEL_PRESENTATION_TEXT
 from app.services.video_creation_standard import (
     STANDARD_COMPLETE_CTA,
     STANDARD_REQUIRED_CTA_SIGNALS,
@@ -104,6 +105,8 @@ def cta_signals(text: Any) -> set[str]:
         signals.add("bell")
     if "compartilh" in folded:
         signals.add("share")
+    if "coment" in folded:
+        signals.add("comment")
     return signals
 
 
@@ -189,6 +192,44 @@ def _pick_complete_cta(plan: Dict[str, Any], marked: List[str], fallback: Any = 
     return next((value for value in candidates if has_complete_cta(value)), DEFAULT_COMPLETE_CTA)
 
 
+def _split_approved_narration(text: Any) -> Dict[str, str]:
+    """Split presentation/body/CTA without changing the approved word stream."""
+    full = prepare_spoken_narration_text(text, label="narração aprovada")
+    presentation = prepare_spoken_narration_text(
+        CHANNEL_PRESENTATION_TEXT,
+        label="apresentação do canal",
+    )
+    remainder = full
+    opening = ""
+    if _fold(full).startswith(_fold(presentation)):
+        opening = full[:len(presentation)].strip()
+        remainder = full[len(presentation):].strip()
+
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?…])\s+", remainder)
+        if part.strip()
+    ]
+    cta = ""
+    cta_start = len(sentences)
+    for start in range(max(0, len(sentences) - 4), len(sentences)):
+        candidate = " ".join(sentences[start:]).strip()
+        if has_complete_cta(candidate):
+            cta = candidate
+            cta_start = start
+            break
+    body = " ".join(sentences[:cta_start]).strip() if sentences else remainder
+    if not body and remainder and not cta:
+        body = remainder
+    return {
+        "opening_text": opening or presentation,
+        "body_text": body,
+        "reflection_text": "",
+        "cta_text": cta,
+        "full_text": full,
+    }
+
+
 def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any]:
     """Instala uma única fronteira Narration Core v1 nas portas reais de TTS."""
     if getattr(video_generator_cls, "_codexia_narration_core_v1", False):
@@ -233,21 +274,40 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
             meta = dict(original_prepare(
                 self, safe_plan, scenes, voice_style=voice_style, voice_gender=voice_gender
             ) or {})
-            opening = prepare_spoken_narration_text(meta.get("opening_text"), label="abertura")
-            body = prepare_spoken_narration_text(meta.get("body_text"), label="corpo da narração")
-            raw_reflection = meta.get("reflection_text")
-            reflection = prepare_spoken_narration_text(raw_reflection, label="reflexão final") if raw_reflection else ""
+            if approved_required:
+                # The frozen preview is the literal authority. Never rebuild it
+                # from editorial scenes or append a second automatic CTA.
+                approved_parts = _split_approved_narration(safe_plan.get("seed_narration_text"))
+                opening = approved_parts["opening_text"]
+                body = approved_parts["body_text"]
+                reflection = approved_parts["reflection_text"]
+                cta = approved_parts["cta_text"]
+                full_text = approved_parts["full_text"]
+                if not has_complete_cta(cta):
+                    raise NarrationContractError(
+                        "Narração aprovada sem CTA completo e separado; gere uma nova prévia."
+                    )
+            else:
+                opening = prepare_spoken_narration_text(
+                    CHANNEL_PRESENTATION_TEXT,
+                    label="apresentação do canal",
+                )
+                body = prepare_spoken_narration_text(meta.get("body_text"), label="corpo da narração")
+                if _fold(body).startswith(_fold(opening)):
+                    body = body[len(opening):].strip()
+                raw_reflection = meta.get("reflection_text")
+                reflection = prepare_spoken_narration_text(raw_reflection, label="reflexão final") if raw_reflection else ""
 
-            if reflection and body.endswith(reflection):
-                body = body[:-len(reflection)].rstrip()
-                if body and not re.search(r"[.!?…][\"”’')\]]*$", body):
-                    body = body.rstrip(",;:-") + "."
-                body = validate_narration_text(body, label="corpo da narração")
+                if reflection and body.endswith(reflection):
+                    body = body[:-len(reflection)].rstrip()
+                    if body and not re.search(r"[.!?…][\"”’')\]]*$", body):
+                        body = body.rstrip(",;:-") + "."
+                    body = validate_narration_text(body, label="corpo da narração")
 
-            cta = _pick_complete_cta(safe_plan, marked_cta, meta.get("cta_text") or meta.get("closing_text"))
-            cta = validate_narration_text(cta, label="CTA final", require_complete_cta=True)
-            full_text = " ".join(part for part in [opening, body, reflection, cta] if part).strip()
-            full_text = validate_narration_text(full_text, label="narração final")
+                cta = _pick_complete_cta(safe_plan, marked_cta, meta.get("cta_text") or meta.get("closing_text"))
+                cta = validate_narration_text(cta, label="CTA final", require_complete_cta=True)
+                full_text = " ".join(part for part in [opening, body, reflection, cta] if part).strip()
+                full_text = validate_narration_text(full_text, label="narração final")
 
             meta.update({
                 "opening_text": opening,
@@ -260,6 +320,7 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                 "narration_core_namespace": NARRATION_CORE_NAMESPACE,
                 "approved_narration_required": approved_required,
                 "approved_narration_seed_valid": seed_valid,
+                "approved_narration_text_is_literal_source": bool(approved_required),
                 "video_creation_standard": dict(safe_plan.get("codexia_video_standard") or {}),
             })
             try:

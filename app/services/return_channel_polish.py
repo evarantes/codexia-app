@@ -5,6 +5,11 @@ import os
 import re
 from typing import Any, Dict, Type
 
+from app.services.video_creation_standard import (
+    STANDARD_COMPLETE_CTA,
+    STANDARD_REQUIRED_CTA_SIGNALS,
+)
+
 
 def _enabled(name: str, default: str = "true") -> bool:
     return str(os.getenv(name) or default).strip().lower() in {
@@ -42,19 +47,18 @@ def _cta_signals(text: str) -> set[str]:
         signals.add("share")
     if "curta" in folded or "like" in folded:
         signals.add("like")
+    if "coment" in folded:
+        signals.add("comment")
     return signals
 
 
 def _has_complete_channel_cta(text: str) -> bool:
     signals = _cta_signals(text)
-    return {"subscribe", "bell", "share"}.issubset(signals)
+    return STANDARD_REQUIRED_CTA_SIGNALS.issubset(signals)
 
 
 def _default_narrated_cta() -> str:
-    return (
-        "Se esta mensagem falou com você, inscreva-se no canal, ative o sininho "
-        "para receber as próximas mensagens e compartilhe este vídeo com alguém que precisa ouvi-lo."
-    )
+    return STANDARD_COMPLETE_CTA
 
 
 def _closing_visual_prompt() -> str:
@@ -88,8 +92,9 @@ def ensure_narrated_return_cta(plan: Any) -> Any:
     """Garante CTA falado como última cena real, sem duplicar o que já existe.
 
     A conclusão espiritual continua pertencendo ao Editor Narrativo. Esta camada
-    acrescenta somente o convite operacional do canal (inscrição, sininho e
-    compartilhamento) e o coloca dentro da timeline normal de narração/legenda.
+    acrescenta somente o convite operacional do canal (curtida, inscrição,
+    sininho, compartilhamento e comentário) e o coloca dentro da timeline normal
+    de narração/legenda.
     """
     if not isinstance(plan, dict):
         return plan
@@ -120,7 +125,7 @@ def ensure_narrated_return_cta(plan: Any) -> Any:
     payload["cta_text"] = ""
     payload["narrated_cta_text"] = ""
     payload["closing_text"] = ""
-    payload["endcard_cta_text"] = "INSCREVA-SE • ATIVE O SININHO • COMPARTILHE"
+    payload["endcard_cta_text"] = "CURTA • INSCREVA-SE • COMPARTILHE • COMENTE"
     payload.setdefault("end_screen_target_duration_sec", 1.2)
     payload.setdefault("pause_duration_sec", 0.0)
     return payload

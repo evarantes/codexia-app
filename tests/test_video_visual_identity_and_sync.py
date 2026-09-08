@@ -186,9 +186,11 @@ class VideoVisualIdentityAndSyncTests(unittest.TestCase):
         )
 
         self.assertEqual(narration["channel_name"], "HERDEIROS DAS PROMESSAS")
-        self.assertLessEqual(narration["intro_opening_hold_sec"], 0.8)
-        self.assertLessEqual(len(narration["opening_text"].split()), 14)
-        self.assertIn("quando o desafio aparece", narration["opening_text"].lower())
+        self.assertEqual(narration["intro_opening_hold_sec"], 4.0)
+        self.assertEqual(
+            narration["opening_text"],
+            "Seja muito bem-vindo ao canal Herdeiros das Promessas.",
+        )
         self.assertEqual(narration["end_screen_target_duration_sec"], 4.0)
 
     def test_cinematic_closing_requires_subscribe_bell_and_share_without_extra_commands(self):
@@ -206,8 +208,8 @@ class VideoVisualIdentityAndSyncTests(unittest.TestCase):
         self.assertIn("inscreva-se", closing)
         self.assertIn("ative o sininho", closing)
         self.assertIn("compartilhe", closing)
-        self.assertNotIn("curta este vídeo", closing)
-        self.assertNotIn("comente", closing)
+        self.assertIn("curta este vídeo", closing)
+        self.assertIn("comentários", closing)
 
     def test_endcard_uses_explicit_bible_reference_without_inventing_a_verse(self):
         generator = VideoGenerator()

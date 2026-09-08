@@ -23,10 +23,14 @@ class LightweightStage6RecoveryHardeningTests(unittest.TestCase):
         for token in required:
             self.assertIn(token, text)
 
-    def test_fast_path_runs_only_after_confirmed_hash_payload(self):
+    def test_fast_path_keeps_recovery_confirmed_and_accelerates_approved_logo_only(self):
         text = HARDENING.read_text(encoding="utf-8")
         self.assertIn('plan.get("force_render_only")', text)
         self.assertIn('plan.get("lightweight_recovery_render_confirmed")', text)
+        self.assertIn('plan.get("logo_only_visuals")', text)
+        self.assertIn('plan.get("approved_narration_required")', text)
+        self.assertIn('"logo_only_approved_narration"', text)
+        self.assertIn('"ffmpeg_static_brand_v3"', text)
         self.assertIn("render_lightweight_recovery_video", text)
         self.assertIn('"paid_image_calls": 0', text)
         self.assertIn('"paid_tts_calls": 0', text)

@@ -24,9 +24,11 @@ def test_return_cta_is_a_real_narrated_scene_with_all_requested_actions():
     assert len(result["scenes"]) == 3
     closing = result["scenes"][-1]
     spoken = closing["text"].lower()
+    assert "curta" in spoken
     assert "inscreva-se" in spoken
     assert "sininho" in spoken
     assert "compartilhe" in spoken
+    assert "comentários" in spoken
     assert closing["codexia_narrated_channel_cta"] is True
     assert "image_path" not in closing
     assert "no text inside the image" in closing["image_prompt"].lower()
@@ -34,7 +36,7 @@ def test_return_cta_is_a_real_narrated_scene_with_all_requested_actions():
     assert result["closing_text"] == ""
     assert result["pause_duration_sec"] == 0.0
     assert result["end_screen_target_duration_sec"] == 1.2
-    assert result["endcard_cta_text"] == "INSCREVA-SE • ATIVE O SININHO • COMPARTILHE"
+    assert result["endcard_cta_text"] == "CURTA • INSCREVA-SE • COMPARTILHE • COMENTE"
 
 
 def test_existing_complete_cta_in_scene_is_not_duplicated():
@@ -43,8 +45,8 @@ def test_existing_complete_cta_in_scene_is_not_duplicated():
             {"text": "Jesus continua sendo o centro da mensagem."},
             {
                 "text": (
-                    "Inscreva-se no canal, ative o sininho para receber as próximas mensagens "
-                    "e compartilhe este vídeo com alguém."
+                    "Curta este vídeo, inscreva-se no canal, ative o sininho para receber as próximas "
+                    "mensagens, compartilhe este vídeo e conte nos comentários o que tocou você."
                 )
             },
         ]
@@ -60,8 +62,8 @@ def test_existing_complete_cta_in_scene_is_not_duplicated():
 
 def test_complete_legacy_cta_is_moved_into_scene_before_legacy_field_is_cleared():
     legacy = (
-        "Inscreva-se no canal, ative o sininho para receber as próximas mensagens "
-        "e compartilhe este vídeo com alguém que precisa ouvi-lo."
+        "Curta este vídeo, inscreva-se no canal, ative o sininho para receber as próximas "
+        "mensagens, compartilhe este vídeo e conte nos comentários o que tocou você."
     )
     plan = {
         "scenes": [{"text": "Jesus permanece conosco e esta mensagem termina aqui."}],

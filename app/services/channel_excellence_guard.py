@@ -48,8 +48,10 @@ def prepare_spoken_text(text: Any) -> str:
     # Expressão que já apresentou pronúncia ruim no TTS.
     value = re.sub(r"(?i)(?<!muito\s)\bpelo\s+contrário\b", "muito pelo contrário", value)
 
-    # Forma fonética somente para a voz. Texto/legenda permanecem com a grafia oficial.
-    value = re.sub(r"(?i)\bjesus\b", "Jêzus", value)
+    # Preserve a grafia oficial no texto enviado ao TTS. As vozes pt-BR atuais
+    # pronunciam "Jesus" corretamente; a antiga grafia fonética "Jêzus" podia
+    # distorcer a sílaba final em alguns providers/vozes.
+    value = re.sub(r"(?i)\bjesus\b", "Jesus", value)
 
     # Nunca completa silenciosamente pontes incompletas com outro clichê.
     value = re.sub(

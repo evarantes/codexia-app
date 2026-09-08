@@ -34,8 +34,8 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
 def patch_video(text: str) -> str:
     text = _replace_once(
         text,
-        '''    def _default_closing_text(self, channel_name: str) -> str:\n        safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"\n        return (\n            f"Continue conosco. Inscreva-se no canal {safe_channel} "\n            "e acompanhe as próximas mensagens de fé."\n        )''',
-        '''    def _default_closing_text(self, channel_name: str) -> str:\n        # CODEXIA_NARRATION_CONTRACT_PROTECTED_CLOSING_V1\n        safe_channel = str(channel_name or "").strip() or "Herdeiros das Promessas"\n        return (\n            f"Se esta mensagem falou com você, inscreva-se no canal {safe_channel}, "\n            "ative o sininho para receber as próximas mensagens e compartilhe este vídeo "\n            "com alguém que precisa ouvi-lo."\n        )''',
+        '''    def _default_closing_text(self, channel_name: str) -> str:\n        return DEFAULT_NARRATED_CTA_TEXT''',
+        '''    def _default_closing_text(self, channel_name: str) -> str:\n        # CODEXIA_NARRATION_CONTRACT_PROTECTED_CLOSING_V1\n        # This shared constant includes like, subscription, bell, share and comments.\n        return DEFAULT_NARRATED_CTA_TEXT''',
         "complete protected CTA",
     )
     text = _replace_once(

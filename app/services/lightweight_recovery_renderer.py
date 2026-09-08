@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -41,6 +42,8 @@ def build_visual_segments(
     official_scene_timeline: Sequence[Dict[str, Any]],
     target_duration: float,
     endcard_image: str = "",
+    opening_image: str = "",
+    story_image: str = "",
 ) -> List[Dict[str, Any]]:
     """Build a deterministic still-image timeline for recovery-only rendering.
 
@@ -60,6 +63,12 @@ def build_visual_segments(
     endcard = os.path.abspath(str(endcard_image or "").strip()) if endcard_image else ""
     if not (endcard and os.path.isfile(endcard)):
         endcard = ""
+    opening = os.path.abspath(str(opening_image or "").strip()) if opening_image else ""
+    if not (opening and os.path.isfile(opening)):
+        opening = ""
+    story = os.path.abspath(str(story_image or "").strip()) if story_image else ""
+    if not (story and os.path.isfile(story)):
+        story = ""
 
     segments: List[Dict[str, Any]] = []
     cursor = 0.0
@@ -79,13 +88,16 @@ def build_visual_segments(
             continue
 
         if kind == "story":
-            story_idx = story_index_by_identity.get(id(item), 0)
-            image_idx = proportional_visual_index(story_idx, len(images), story_count)
-            image_path = images[image_idx]
+            if story:
+                image_path = story
+            else:
+                story_idx = story_index_by_identity.get(id(item), 0)
+                image_idx = proportional_visual_index(story_idx, len(images), story_count)
+                image_path = images[image_idx]
         elif kind == "endcard" and endcard:
             image_path = endcard
         elif kind == "opening":
-            image_path = images[0]
+            image_path = opening or images[0]
         else:
             image_path = images[-1]
 
@@ -137,25 +149,103 @@ def _srt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def build_srt_text(captions: Sequence[Dict[str, Any]], *, max_duration: float) -> str:
+def _split_caption_for_two_lines(
+    value: Any,
+    *,
+    max_chars_per_line: int = 40,
+    max_lines: int = 2,
+) -> List[str]:
+    """Split a caption without changing, dropping or cutting any word."""
+    text = re.sub(r"\s+", " ", str(value or "").replace("\x00", " ")).strip()
+    if not text:
+        return []
+    words = text.split(" ")
+    blocks: List[str] = []
+    lines: List[str] = []
+    current: List[str] = []
+
+    def flush_line() -> None:
+        nonlocal current
+        if current:
+            lines.append(" ".join(current))
+            current = []
+
+    def flush_block() -> None:
+        nonlocal lines
+        flush_line()
+        if lines:
+            blocks.append("\n".join(lines[:max_lines]))
+            lines = []
+
+    for word in words:
+        candidate = " ".join([*current, word]) if current else word
+        if current and len(candidate) > max_chars_per_line:
+            flush_line()
+            if len(lines) >= max_lines:
+                flush_block()
+        current.append(word)
+
+        # Prefer natural phrase boundaries once the block is readable. This
+        # reduces the chance of a caption changing in the middle of a thought.
+        visible_words = sum(len(line.split()) for line in lines) + len(current)
+        if re.search(r"[.!?…;:]$", word) and visible_words >= 3:
+            flush_block()
+
+    flush_block()
+    return blocks
+
+
+def build_srt_text(
+    captions: Sequence[Dict[str, Any]],
+    *,
+    max_duration: float,
+    opening_silence_sec: float = 0.0,
+) -> str:
     blocks: List[str] = []
     limit = max(0.1, float(max_duration or 0.0))
-    index = 1
-    for item in captions or []:
-        if not isinstance(item, dict):
+    prepared: List[Dict[str, Any]] = []
+    for raw in captions or []:
+        if not isinstance(raw, dict):
             continue
-        text = str(item.get("caption") or item.get("text") or "").strip()
-        text = text.replace("\r", " ").replace("\x00", "").strip()
+        text = str(raw.get("caption") or raw.get("text") or "").strip()
         if not text:
             continue
-        start = max(0.0, _safe_duration(item.get("start")))
-        end = min(limit, _safe_duration(item.get("end")))
+        start = max(0.0, _safe_duration(raw.get("start")))
+        end = _safe_duration(raw.get("end"))
+        if end > start:
+            prepared.append({"text": text, "start": start, "end": end})
+
+    desired_first = max(0.0, float(opening_silence_sec or 0.0))
+    earliest = min((item["start"] for item in prepared), default=desired_first)
+    shift = max(0.0, desired_first - earliest) if earliest < desired_first - 0.05 else 0.0
+    index = 1
+    for item in prepared:
+        text = str(item["text"]).replace("\r", " ").strip()
+        start = max(desired_first, float(item["start"]) + shift)
+        end = min(limit, float(item["end"]) + shift)
         if end <= start:
             continue
-        blocks.append(
-            f"{index}\n{_srt_timestamp(start)} --> {_srt_timestamp(end)}\n{text}\n"
-        )
-        index += 1
+        chunks = _split_caption_for_two_lines(text)
+        if not chunks:
+            continue
+        weights = [max(1, len(re.sub(r"\s+", "", chunk))) for chunk in chunks]
+        weight_total = max(1, sum(weights))
+        cursor = start
+        for chunk_index, chunk in enumerate(chunks):
+            if chunk_index == len(chunks) - 1:
+                chunk_end = end
+            else:
+                chunk_end = min(
+                    end,
+                    cursor + ((end - start) * weights[chunk_index] / weight_total),
+                )
+            if chunk_end <= cursor:
+                continue
+            blocks.append(
+                f"{index}\n{_srt_timestamp(cursor)} --> {_srt_timestamp(chunk_end)}\n{chunk}\n"
+            )
+            index += 1
+            cursor = chunk_end
     return "\n".join(blocks).strip() + ("\n" if blocks else "")
 
 
@@ -227,6 +317,161 @@ def _local_music_candidate(music_dir: str, mood: str) -> str:
     return ""
 
 
+def _build_logo_only_brand_frames(
+    *,
+    logo_path: str,
+    output_dir: str,
+    video_size: Tuple[int, int],
+    opening_title: str,
+    channel_name: str,
+) -> Tuple[str, str, str]:
+    """Build exact-size opening, story and endcard frames for logo-only video."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    width, height = int(video_size[0]), int(video_size[1])
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Dimensão inválida para os quadros de identidade visual.")
+    logo = Image.open(logo_path).convert("RGBA")
+
+    def font(size: int, *, bold: bool = False):
+        candidates = (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        )
+        for candidate in candidates:
+            try:
+                return ImageFont.truetype(candidate, max(12, int(size)))
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    def background() -> Image.Image:
+        frame = Image.new("RGB", (width, height), (15, 17, 39))
+        draw = ImageDraw.Draw(frame)
+        for y in range(height):
+            ratio = y / max(1, height - 1)
+            color = (
+                int(24 + (16 * ratio)),
+                int(25 + (10 * ratio)),
+                int(68 + (28 * ratio)),
+            )
+            draw.line((0, y, width, y), fill=color)
+        return frame
+
+    def wrap_pixels(draw: Any, value: str, selected_font: Any, max_width: int, max_lines: int) -> List[str]:
+        words = re.sub(r"\s+", " ", str(value or "")).strip().split()
+        lines: List[str] = []
+        current: List[str] = []
+        for word in words:
+            candidate = " ".join([*current, word])
+            bbox = draw.textbbox((0, 0), candidate, font=selected_font)
+            if current and (bbox[2] - bbox[0]) > max_width:
+                lines.append(" ".join(current))
+                current = [word]
+                if len(lines) >= max_lines:
+                    break
+            else:
+                current.append(word)
+        if current and len(lines) < max_lines:
+            lines.append(" ".join(current))
+        return lines[:max_lines]
+
+    opening = background()
+    opening_logo = logo.copy()
+    opening_logo.thumbnail((int(width * 0.24), int(height * 0.25)), Image.Resampling.LANCZOS)
+    opening.paste(
+        opening_logo,
+        ((width - opening_logo.width) // 2, int(height * 0.10)),
+        opening_logo,
+    )
+    opening_draw = ImageDraw.Draw(opening)
+    title_font = font(max(28, int(height * 0.064)), bold=True)
+    title_lines = wrap_pixels(opening_draw, opening_title, title_font, int(width * 0.78), 3)
+    line_height = int(getattr(title_font, "size", 36) * 1.22)
+    title_y = int(height * 0.43)
+    for line_index, line in enumerate(title_lines):
+        bbox = opening_draw.textbbox((0, 0), line, font=title_font, stroke_width=2)
+        opening_draw.text(
+            ((width - (bbox[2] - bbox[0])) / 2, title_y + line_index * line_height),
+            line,
+            font=title_font,
+            fill=(255, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0),
+        )
+    channel_font = font(max(18, int(height * 0.035)), bold=True)
+    channel = re.sub(r"\s+", " ", str(channel_name or "HERDEIROS DAS PROMESSAS")).strip().upper()
+    channel_bbox = opening_draw.textbbox((0, 0), channel, font=channel_font)
+    opening_draw.text(
+        ((width - (channel_bbox[2] - channel_bbox[0])) / 2, int(height * 0.84)),
+        channel,
+        font=channel_font,
+        fill=(218, 210, 255),
+    )
+
+    story = background()
+    story_logo = logo.copy()
+    story_logo.thumbnail((int(width * 0.18), int(height * 0.15)), Image.Resampling.LANCZOS)
+    logo_x = max(24, int(width * 0.035))
+    # The caption safe area occupies the bottom centre. Keep the fixed logo
+    # above it and in the lower-left corner so the two never overlap.
+    logo_y = max(24, height - story_logo.height - max(36, int(height * 0.25)))
+    story.paste(story_logo, (logo_x, logo_y), story_logo)
+
+    endcard = background()
+    endcard_logo = logo.copy()
+    endcard_logo.thumbnail((int(width * 0.22), int(height * 0.22)), Image.Resampling.LANCZOS)
+    endcard.paste(
+        endcard_logo,
+        ((width - endcard_logo.width) // 2, int(height * 0.12)),
+        endcard_logo,
+    )
+    endcard_draw = ImageDraw.Draw(endcard)
+    end_channel_font = font(max(21, int(height * 0.045)), bold=True)
+    end_channel_lines = wrap_pixels(
+        endcard_draw,
+        channel,
+        end_channel_font,
+        int(width * 0.82),
+        2,
+    )
+    end_channel_y = int(height * 0.47)
+    for line_index, line in enumerate(end_channel_lines):
+        bbox = endcard_draw.textbbox((0, 0), line, font=end_channel_font)
+        endcard_draw.text(
+            ((width - (bbox[2] - bbox[0])) / 2, end_channel_y + line_index * int(end_channel_font.size * 1.18)),
+            line,
+            font=end_channel_font,
+            fill=(255, 255, 255),
+        )
+    end_cta_font = font(max(15, int(height * 0.026)), bold=True)
+    end_cta_lines = wrap_pixels(
+        endcard_draw,
+        "CURTA • INSCREVA-SE • ATIVE O SININHO • COMPARTILHE • COMENTE",
+        end_cta_font,
+        int(width * 0.84),
+        2,
+    )
+    end_cta_y = int(height * 0.69)
+    for line_index, line in enumerate(end_cta_lines):
+        bbox = endcard_draw.textbbox((0, 0), line, font=end_cta_font)
+        endcard_draw.text(
+            ((width - (bbox[2] - bbox[0])) / 2, end_cta_y + line_index * int(end_cta_font.size * 1.25)),
+            line,
+            font=end_cta_font,
+            fill=(218, 210, 255),
+        )
+
+    opening_path = os.path.join(output_dir, "logo_only_opening.png")
+    story_path = os.path.join(output_dir, "logo_only_story.png")
+    endcard_path = os.path.join(output_dir, "logo_only_endcard.png")
+    opening.save(opening_path, format="PNG")
+    story.save(story_path, format="PNG")
+    endcard.save(endcard_path, format="PNG")
+    return opening_path, story_path, endcard_path
+
+
 def build_ffmpeg_command(
     *,
     concat_path: str,
@@ -244,12 +489,19 @@ def build_ffmpeg_command(
     total = max(0.1, float(target_duration or 0.0))
     safe_threads = max(1, min(2, int(threads or 1)))
     subtitle_path = _escape_subtitles_filter_path(srt_path)
+    # libass scales SRT styles from its 288px script coordinate system. Fixed
+    # style values therefore scale naturally with the output height; deriving
+    # them from ``height`` here would apply the scale twice and create giant
+    # captions on 720p/1080p videos.
+    caption_font_size = 18
+    caption_margin = 24
     video_filter = (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},fps=24,format=yuv420p,"
-        f"subtitles='{subtitle_path}':"
-        "force_style='FontName=DejaVu Sans,FontSize=28,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=36'"
+        f"subtitles='{subtitle_path}':original_size={width}x{height}:"
+        f"force_style='FontName=DejaVu Sans,FontSize={caption_font_size},PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,BackColour=&H64000000,BorderStyle=1,"
+        f"Outline=2,Shadow=1,Alignment=2,MarginV={caption_margin}'"
     )
 
     command = [
@@ -313,6 +565,10 @@ def render_lightweight_recovery_video(
     target_duration: float,
     video_size: Tuple[int, int],
     endcard_image: str = "",
+    opening_silence_sec: float = 0.0,
+    logo_only_visuals: bool = False,
+    opening_title: str = "",
+    channel_name: str = "Herdeiros das Promessas",
     music_dir: str = "app/static/music",
     music_mood: str = "drama",
     music_volume: float = 0.025,
@@ -329,13 +585,8 @@ def render_lightweight_recovery_video(
         raise RuntimeError("Áudio preservado inválido para o render leve de recuperação.")
 
     total = max(0.1, float(target_duration or 0.0))
-    segments = build_visual_segments(
-        selected_images=selected_images,
-        official_scene_timeline=official_scene_timeline,
-        target_duration=total,
-        endcard_image=endcard_image,
-    )
-    if not segments:
+    local_images = _clean_existing_paths(selected_images)
+    if not local_images:
         raise RuntimeError("Nenhuma imagem local válida disponível para o render leve de recuperação.")
 
     output_abs = os.path.abspath(output_path)
@@ -343,16 +594,52 @@ def render_lightweight_recovery_video(
     local_music = _local_music_candidate(music_dir, music_mood)
 
     if progress_callback:
-        progress_callback(90, "6/8 Render leve confirmado — preparando FFmpeg local...")
+        progress_callback(
+            90,
+            "6/8 Render rápido com a identidade do canal — preparando FFmpeg local..."
+            if logo_only_visuals
+            else "6/8 Render leve confirmado — preparando FFmpeg local...",
+        )
 
     started = time.time()
     with tempfile.TemporaryDirectory(prefix="codexia-light-recovery-", dir=os.path.dirname(output_abs) or None) as tmp:
+        opening_frame = ""
+        story_frame = ""
+        brand_endcard_frame = ""
+        if logo_only_visuals:
+            opening_frame, story_frame, brand_endcard_frame = _build_logo_only_brand_frames(
+                logo_path=local_images[0],
+                output_dir=tmp,
+                video_size=video_size,
+                opening_title=opening_title,
+                channel_name=channel_name,
+            )
+        segments = build_visual_segments(
+            # Every logo-only frame has the exact output resolution and RGB
+            # pixel format. Feeding the raw logo (often square/RGBA) into the
+            # same concat stream can corrupt frames when dimensions change.
+            selected_images=[opening_frame] if logo_only_visuals else local_images,
+            official_scene_timeline=official_scene_timeline,
+            target_duration=total,
+            endcard_image=brand_endcard_frame if logo_only_visuals else endcard_image,
+            opening_image=opening_frame,
+            story_image=story_frame,
+        )
+        if not segments:
+            raise RuntimeError("Nenhuma imagem local válida disponível para o render leve de recuperação.")
         concat_path = os.path.join(tmp, "visuals.ffconcat")
         srt_path = os.path.join(tmp, "captions.srt")
         with open(concat_path, "w", encoding="utf-8") as fh:
             fh.write(build_concat_text(segments))
+        srt_text = build_srt_text(
+            captions,
+            max_duration=total,
+            opening_silence_sec=opening_silence_sec,
+        )
+        if not srt_text.strip():
+            raise RuntimeError("Legenda canônica vazia; o render foi bloqueado.")
         with open(srt_path, "w", encoding="utf-8") as fh:
-            fh.write(build_srt_text(captions, max_duration=total))
+            fh.write(srt_text)
 
         command = build_ffmpeg_command(
             concat_path=concat_path,
@@ -373,7 +660,7 @@ def render_lightweight_recovery_video(
             text=True,
             bufsize=1,
         )
-        max_runtime = max(900.0, min(3600.0, total * 4.0))
+        max_runtime = max(180.0, min(1800.0, (total * 1.5) + 120.0))
         last_emit = 0.0
         output_tail: List[str] = []
         try:
@@ -401,6 +688,7 @@ def render_lightweight_recovery_video(
                         )
                         last_emit = now
             return_code = process.wait(timeout=30)
+            process.stdout.close()
         except Exception:
             try:
                 process.terminate()
@@ -410,6 +698,8 @@ def render_lightweight_recovery_video(
                     process.kill()
                 except Exception:
                     pass
+            if process.stdout is not None:
+                process.stdout.close()
             raise
 
     if return_code != 0:
@@ -427,21 +717,31 @@ def render_lightweight_recovery_video(
         )
 
     if progress_callback:
-        progress_callback(100, "Vídeo renderizado com sucesso pelo modo leve de recuperação.")
+        progress_callback(
+            100,
+            "Vídeo renderizado com sucesso pelo modo rápido da identidade do canal."
+            if logo_only_visuals
+            else "Vídeo renderizado com sucesso pelo modo leve de recuperação.",
+        )
 
+    render_seconds = max(0.0, time.time() - started)
     return {
         "file_path": output_abs,
         "duration_sec": round(obtained, 3),
-        "render_seconds": round(max(0.0, time.time() - started), 3),
+        "render_seconds": round(render_seconds, 3),
+        "render_realtime_factor": round(render_seconds / max(0.1, obtained), 4),
         "visual_segment_count": len(segments),
-        "caption_count": len([
-            item for item in captions or []
-            if isinstance(item, dict) and str(item.get("caption") or item.get("text") or "").strip()
-        ]),
+        "caption_count": srt_text.count(" --> "),
+        "caption_max_lines": 2,
+        "caption_max_chars_per_line": 40,
+        "captions_begin_after_opening_sec": round(max(0.0, float(opening_silence_sec or 0.0)), 3),
+        "logo_only_visuals": bool(logo_only_visuals),
+        "opening_visual_only_sec": round(max(0.0, float(opening_silence_sec or 0.0)), 3),
+        "fixed_logo_position": "bottom_left_above_captions" if logo_only_visuals else "not_applicable",
         "music_source": "local_existing_file" if local_music else "none",
         "music_path": local_music,
         "paid_provider_calls": 0,
         "external_downloads": 0,
-        "renderer": "ffmpeg_concat_subtitles_v1",
+        "renderer": "ffmpeg_static_brand_v3" if logo_only_visuals else "ffmpeg_concat_subtitles_v1",
         "motion_policy": "static_preserved_visuals_hard_cuts",
     }

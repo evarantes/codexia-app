@@ -65,10 +65,28 @@ class YouTubeProductionJobBackendContractTests(unittest.TestCase):
 
     def test_backend_reloads_canonical_job_instead_of_trusting_browser_path(self):
         from app.routers.youtube import VideoRequest, _load_approved_narration_contract
-        from app.services.narration_core import NARRATION_CORE_NAMESPACE, NARRATION_CORE_VERSION
+        from app.services.narration_core import (
+            NARRATION_CORE_NAMESPACE,
+            NARRATION_CORE_VERSION,
+            build_narration_artifact,
+        )
+        from app.services.narrative_structure_standard import (
+            audit_canonical_narration,
+            compose_canonical_narration,
+        )
 
-        spoken_text = "Jesus é o motivo de eu existir."
-        text_sha256 = hashlib.sha256(spoken_text.encode("utf-8")).hexdigest()
+        review_script_text = compose_canonical_narration({
+            "hook": "Uma pergunta sobre Jesus abre esta mensagem com propósito.",
+            "development": "O desenvolvimento mostra por que essa pergunta importa para a vida.",
+            "central_truth": "A verdade central afirma que Jesus orienta nossa existência.",
+            "transformation": "Essa verdade transforma a maneira como enxergamos cada escolha.",
+            "application": "Hoje podemos colocar essa fé em prática com uma decisão concreta.",
+            "climax": "O clímax revela que nossa vida encontra direção quando Cristo ocupa o centro.",
+            "reflection": "A reflexão retorna ao início e confirma que Jesus é o motivo de existir.",
+        })
+        spoken_artifact = build_narration_artifact(review_script_text)
+        spoken_text = spoken_artifact.spoken_text
+        text_sha256 = spoken_artifact.text_sha256
         preview_id = "a" * 32
         job_id = "YT-20260906-contract"
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,10 +123,16 @@ class YouTubeProductionJobBackendContractTests(unittest.TestCase):
                     "approved": True,
                     "text_sha256": text_sha256,
                     "spoken_text_sent_to_tts": spoken_text,
+                    "review_script_text": review_script_text,
                     "narration_core_version": NARRATION_CORE_VERSION,
                     "narration_core_namespace": NARRATION_CORE_NAMESPACE,
                     "provider": "edge_tts",
                     "voice": "pt-BR-FranciscaNeural",
+                    "narration_contract": audit_canonical_narration(review_script_text),
+                    "caption_timeline": [
+                        {"start": 0.0, "end": 0.5, "word": "Seja"},
+                    ],
+                    "caption_timing_source": "edge_tts_word_boundaries",
                 },
             }
             with patch(
@@ -124,6 +148,8 @@ class YouTubeProductionJobBackendContractTests(unittest.TestCase):
             contract["reuse_audio_from"]["output_path"],
             request.reuse_audio_from["output_path"],
         )
+        self.assertEqual(contract["caption_timing_source"], "edge_tts_word_boundaries")
+        self.assertEqual(contract["caption_timeline"][0]["word"], "Seja")
 
     def test_required_contract_fails_closed_without_job_id(self):
         from app.routers.youtube import (

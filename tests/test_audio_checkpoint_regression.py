@@ -6,6 +6,7 @@ from unittest import mock
 
 from app.services import audio_checkpoint as ac
 from app.services.narration_contract_guard import install_narration_contract_guard
+from app.services.narrative_structure_standard import compose_canonical_narration
 
 
 class _FakeAI:
@@ -66,6 +67,7 @@ class AudioCheckpointRegressionTests(unittest.TestCase):
         return FakeGenerator
 
     def _approved_plan(self, audio_path, *, text="O tempo de espera esta chegando ao fim."):
+        text = compose_canonical_narration({}, fallback_text=text)
         return {
             "seed_audio_path": audio_path,
             "seed_narration_text": text,
