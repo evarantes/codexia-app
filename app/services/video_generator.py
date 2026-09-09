@@ -1963,6 +1963,51 @@ class VideoGenerator:
                 })
         return sliced
 
+    def _sanitize_caption_timeline(
+        self,
+        timeline: List[Dict[str, Any]],
+        audio_duration: float,
+    ) -> List[Dict[str, Any]]:
+        """Normaliza a timeline final para impedir legenda fora do áudio ou repetida.
+
+        A timeline é a fonte única do overlay e do SRT. Itens são recortados ao
+        áudio real, ordenados e legendas idênticas sobrepostas são fundidas. Uma
+        repetição separada por fala real é preservada.
+        """
+        limit = max(0.0, float(audio_duration or 0.0))
+        if limit <= 0 or not isinstance(timeline, list):
+            return []
+        cleaned: List[Dict[str, Any]] = []
+        for raw in timeline:
+            if not isinstance(raw, dict):
+                continue
+            caption = re.sub(r"\s+", " ", str(raw.get("caption") or "")).strip()
+            if not caption:
+                continue
+            try:
+                start = max(0.0, min(limit, float(raw.get("start") or 0.0)))
+                end = max(0.0, min(limit, float(raw.get("end") or 0.0)))
+            except Exception:
+                continue
+            if end <= start:
+                continue
+            item = dict(raw)
+            item.update({"caption": caption, "start": round(start, 3), "end": round(end, 3)})
+            cleaned.append(item)
+        cleaned.sort(key=lambda item: (float(item["start"]), float(item["end"])))
+
+        merged: List[Dict[str, Any]] = []
+        for item in cleaned:
+            if merged:
+                previous = merged[-1]
+                same_text = self._normalize_tts_text(previous.get("caption")) == self._normalize_tts_text(item.get("caption"))
+                overlaps = float(item["start"]) <= float(previous["end"]) + 0.08
+                if same_text and overlaps:
+                    previous["end"] = round(max(float(previous["end"]), float(item["end"])), 3)
+                    continue
+            merged.append(item)
+        return merged
+
     def _caption_overlay_clips_for_window(
         self,
         timeline: List[Dict[str, Any]],
@@ -3163,16 +3208,17 @@ class VideoGenerator:
                 if isinstance(segments, list) and segments:
                     timed = self._caption_timeline_from_segments(segments, total_duration, narration=narration)
                     if timed:
-                        return {"timeline": timed, "source": "real_segments_aligned_to_narration"}
+                        return {"timeline": self._sanitize_caption_timeline(timed, total_duration), "source": "official_audio_transcript"}
                 if strict:
                     err = info.get("error") if isinstance(info, dict) else None
                     raise Exception(f"Transcrição indisponível para sincronização de legendas: {err or 'no_segments'}")
             except Exception:
                 pass
-        return {
-            "timeline": self._caption_timeline_from_text(narration, total_duration),
-            "source": "text_fallback",
-        }
+        # Com áudio disponível, não é permitido inventar tempos a partir do
+        # texto: isso produz legendas visualmente plausíveis, porém divergentes.
+        if audio_path:
+            return {"timeline": [], "source": "audio_transcript_unavailable", "error": "official_audio_transcript_required"}
+        return {"timeline": self._sanitize_caption_timeline(self._caption_timeline_from_text(narration, total_duration), total_duration), "source": "text_fallback"}
 
     def _find_scene_text_ranges_in_body(self, body_text: str, scenes: List[Dict[str, Any]]) -> List[Dict[str, int]]:
         normalized_body = self._normalize_tts_text(body_text)
