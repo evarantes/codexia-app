@@ -47,12 +47,16 @@ def build_health_snapshot(worker: Any, connection: Any) -> Dict[str, Any]:
         checks["postgres"] = {"ok": False, "error": type(exc).__name__}
 
     try:
-        # get_state() reads the worker's RQ registration and returns idle/busy.
+        # The worker key is the authoritative registration. During RQ startup
+        # get_state() can briefly be a transitional value; the key exists only
+        # while this live worker is registered and has a heartbeat TTL.
         state = str(worker.get_state() or "").lower()
+        registered = bool(connection.exists(worker.key))
         checks["rq"] = {
-            "ok": state in {"idle", "busy"},
+            "ok": registered and state not in {"", "dead", "stopped"},
             "state": state,
             "name": str(getattr(worker, "name", "")),
+            "registered": registered,
         }
     except Exception as exc:
         checks["rq"] = {"ok": False, "error": type(exc).__name__}
