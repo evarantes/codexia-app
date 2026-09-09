@@ -110,5 +110,8 @@ if __name__ == '__main__':
     # Heartbeat curto e independente do job: o endpoint /health/worker consegue
     # provar que WEB e WORKER estão vivos e executando o mesmo commit.
     start_worker_release_heartbeat(worker_conn)
+    # Registra o nascimento antes da primeira sondagem do Docker/Coolify. O
+    # método `work()` também o chama, portanto esta operação é idempotente.
+    worker.register_birth()
     start_worker_health_server(worker, worker_conn)
     worker.work()
