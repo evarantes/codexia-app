@@ -25,6 +25,7 @@ from app.services.return_channel_polish import install_return_channel_polish
 from app.services.narrative_editor import install_narrative_editor_patch
 from app.services.canonical_caption_source import install_canonical_caption_source_patch
 from app.services.worker_release_health import start_worker_release_heartbeat
+from app.services.worker_health_server import start_worker_health_server
 
 # O worker CX33 precisa persistir o MP3 assim que o TTS termina, antes de
 # qualquer crítica/validação/render posterior. A instalação é idempotente.
@@ -109,4 +110,5 @@ if __name__ == '__main__':
     # Heartbeat curto e independente do job: o endpoint /health/worker consegue
     # provar que WEB e WORKER estão vivos e executando o mesmo commit.
     start_worker_release_heartbeat(worker_conn)
+    start_worker_health_server(worker, worker_conn)
     worker.work()
