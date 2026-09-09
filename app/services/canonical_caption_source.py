@@ -265,10 +265,11 @@ def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Ty
             details = {"source": "text_fallback", "timeline": []}
 
         timeline = details.get("timeline") if isinstance(details.get("timeline"), list) else []
+        transcript_required = str(details.get("source") or "") == "audio_transcript_unavailable"
         before_text = _timeline_joined_text(timeline)
         before_normalized = _normalize_with_generator(self, before_text)
 
-        if canonical_text and before_normalized != canonical_text:
+        if canonical_text and before_normalized != canonical_text and not transcript_required:
             repaired = force_canonical_caption_timeline(
                 self,
                 canonical_text,
@@ -290,7 +291,7 @@ def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Ty
 
         # Mesmo que um normalizador futuro introduza comportamento inesperado,
         # uma divergência residual vira timeline canônica, nunca falha fatal.
-        if canonical_text and after_normalized != canonical_text:
+        if canonical_text and after_normalized != canonical_text and not transcript_required:
             final_timeline = _single_canonical_block(canonical_text, duration, 0.0)
             details = dict(details)
             details["timeline"] = final_timeline
@@ -316,6 +317,8 @@ def install_canonical_caption_source_patch(video_generator_cls: Type[Any]) -> Ty
             "builder_error": builder_error,
             "canonical_word_count": len(canonical_text.split()),
             "caption_block_count": len(final_timeline),
+            "transcript_required": transcript_required,
+            "quality_gate_blocked": bool(transcript_required and not final_timeline),
         }
         self._codexia_canonical_narration_integrity = audit
         _persist_integrity_audit(self, audit)
