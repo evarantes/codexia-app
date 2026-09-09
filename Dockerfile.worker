@@ -9,6 +9,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     python3-dev \
+    curl \
     ffmpeg \
     imagemagick \
     libsm6 \
@@ -93,7 +94,7 @@ ENV PYTHONUNBUFFERED=1
 # checks this process, Redis, PostgreSQL, and the RQ registration.
 EXPOSE 8081
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=4).read()"
+  CMD curl --fail --silent --show-error --max-time 4 http://127.0.0.1:8081/health
 
 # A mesma linhagem Alembic é obrigatória para API e worker. O runner usa
 # advisory lock no PostgreSQL para serializar startups simultâneos.
