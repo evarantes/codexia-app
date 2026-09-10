@@ -1,11 +1,12 @@
 import json
+import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services.unified_video_pipeline import UnifiedVideoPipelineService
 
 
-class LogoOnlyPreReviewValidationTests:
+class LogoOnlyPreReviewValidationTests(unittest.TestCase):
     def test_logo_only_does_not_require_storyboard_scenes(self):
         service = UnifiedVideoPipelineService()
         logo_path = "/data/media/channel-logo.png"
@@ -62,14 +63,14 @@ class LogoOnlyPreReviewValidationTests:
                 probe_http=False,
             )
 
-        assert validation.ok, validation.details
-        assert validation.checks["storyboard_valid"]
-        assert validation.details["storyboard"]["scene_count"] == 0
-        assert validation.details["storyboard"]["logo_only_visuals"] is True
-        assert validation.details["storyboard"]["scene_requirement"] == "not_required_logo_only"
-        assert validation.details["images"]["expected_min"] == 1
-        assert validation.details["images"]["validation_policy"] == "logo_only_single_asset"
-        assert validation.details["images"]["actual_found"] == 1
+        self.assertTrue(validation.ok, validation.details)
+        self.assertTrue(validation.checks["storyboard_valid"])
+        self.assertEqual(validation.details["storyboard"]["scene_count"], 0)
+        self.assertIs(validation.details["storyboard"]["logo_only_visuals"], True)
+        self.assertEqual(validation.details["storyboard"]["scene_requirement"], "not_required_logo_only")
+        self.assertEqual(validation.details["images"]["expected_min"], 1)
+        self.assertEqual(validation.details["images"]["validation_policy"], "logo_only_single_asset")
+        self.assertEqual(validation.details["images"]["actual_found"], 1)
 
     def test_normal_render_still_requires_storyboard_scenes(self):
         service = UnifiedVideoPipelineService()
@@ -123,12 +124,10 @@ class LogoOnlyPreReviewValidationTests:
                 probe_http=False,
             )
 
-        assert not validation.ok
-        assert validation.first_failed == "storyboard_valid"
-        assert validation.details["storyboard"]["logo_only_visuals"] is False
+        self.assertFalse(validation.ok)
+        self.assertEqual(validation.first_failed, "storyboard_valid")
+        self.assertIs(validation.details["storyboard"]["logo_only_visuals"], False)
 
 
 if __name__ == "__main__":
-    import unittest
-
     unittest.main()
