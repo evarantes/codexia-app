@@ -119,6 +119,7 @@ class UnifiedVideoRequest(BaseModel):
     seeded_script: Optional[Dict[str, Any]] = None
     selected_images: Optional[List[str]] = None
     reuse_audio_from: Optional[Dict[str, Any]] = None
+    logo_only_visuals: bool = False
     request_hash: Optional[str] = Field(None, description="Hash canônico (se omitido é calculado aqui).")
     legacy_payload: Optional[Dict[str, Any]] = Field(
         None, description="Payload bruto do módulo de origem para compatibilidade (não participa do request_hash)."
@@ -322,6 +323,38 @@ def _safe_bool(v: Any) -> bool:
     except Exception:
         return False
 
+
+def _is_logo_only_visuals(*candidates: Any) -> bool:
+    """Return whether an explicit request/result enables logo-only rendering.
+
+    The browser sends logo_only_visuals on the request and the worker keeps
+    the flag in the rendered script/report. Validation must honor that same
+    source-owned intent: the official logo is the sole visual asset, so a
+    storyboard scene list is not required. Unrelated payloads remain fail-closed.
+    """
+    truthy = {"1", "true", "yes", "on"}
+
+    def _enabled(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value or "").strip().lower() in truthy
+
+    def _walk(value: Any, depth: int = 0) -> bool:
+        if depth > 3 or not isinstance(value, dict):
+            return False
+        if _enabled(value.get("logo_only_visuals")):
+            return True
+        # Keep compatibility with the persisted task envelope/report without
+        # treating arbitrary text or titles as an opt-in signal.
+        for key in ("payload", "request", "video_request", "script", "render_report", "visual_plan"):
+            nested = value.get(key)
+            if isinstance(nested, dict) and _walk(nested, depth + 1):
+                return True
+        return False
+
+    return any(_walk(candidate) for candidate in candidates)
 
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
@@ -871,9 +904,14 @@ class UnifiedVideoPipelineService:
         scenes = storyboard_obj.get("scenes") if isinstance(storyboard_obj, dict) else None
         if not isinstance(scenes, list):
             scenes = script_obj.get("scenes") if isinstance(script_obj, dict) else None
-        scenes_ok = isinstance(scenes, list) and len(scenes) >= 1
+        logo_only_visuals = _is_logo_only_visuals(task_result, script_obj, uv)
+        scenes_ok = logo_only_visuals or (isinstance(scenes, list) and len(scenes) >= 1)
         checks["storyboard_valid"] = bool(scenes_ok)
-        details["storyboard"] = {"scene_count": len(scenes) if isinstance(scenes, list) else 0}
+        details["storyboard"] = {
+            "scene_count": len(scenes) if isinstance(scenes, list) else 0,
+            "logo_only_visuals": bool(logo_only_visuals),
+            "scene_requirement": "not_required_logo_only" if logo_only_visuals else "required",
+        }
 
         # 3. quantidade mínima de imagens
         #
@@ -885,11 +923,11 @@ class UnifiedVideoPipelineService:
         # ``youtube_series`` validamos contra esse plano; se o relatório não
         # existir, mantemos o mínimo solicitado original. Os demais módulos,
         # especialmente História/Devocional, não mudam de comportamento.
-        requested_min_images = max(1, min(int(uv.image_count or 1), 256))
+        requested_min_images = 1 if logo_only_visuals else max(1, min(int(uv.image_count or 1), 256))
         min_images = requested_min_images
         render_planned_min_images: Optional[int] = None
-        image_count_policy = "requested_image_count"
-        if str(getattr(uv, "source_module", "") or "").strip().lower() == "youtube_series":
+        image_count_policy = "logo_only_single_asset" if logo_only_visuals else "requested_image_count"
+        if not logo_only_visuals and str(getattr(uv, "source_module", "") or "").strip().lower() == "youtube_series":
             persisted_result = _json_loads(getattr(uv, "result_json", None))
             persisted_result = persisted_result if isinstance(persisted_result, dict) else {}
             render_report = (
@@ -1290,6 +1328,36 @@ class UnifiedVideoPipelineService:
                 for it in v:
                     if isinstance(it, str) and it:
                         paths.append(it)
+        # Logo-only jobs persist the canonical logo under one of these fields;
+        # include it as the single physical visual even when no scene list exists.
+        if isinstance(task_result, dict):
+            for k in (
+                "logo_only_logo_path",
+                "logo_path",
+                "channel_logo_path",
+                "official_channel_logo_path",
+            ):
+                value = task_result.get(k)
+                if isinstance(value, str) and value.strip():
+                    paths.append(value.strip())
+            for container_key in ("script", "render_report"):
+                container = task_result.get(container_key)
+                if not isinstance(container, dict):
+                    continue
+                for k in (
+                    "logo_only_logo_path",
+                    "logo_path",
+                    "channel_logo_path",
+                    "official_channel_logo_path",
+                ):
+                    value = container.get(k)
+                    if isinstance(value, str) and value.strip():
+                        paths.append(value.strip())
+                visual_plan = container.get("visual_plan")
+                if isinstance(visual_plan, dict):
+                    value = visual_plan.get("logo_only_logo_path")
+                    if isinstance(value, str) and value.strip():
+                        paths.append(value.strip())
         # storyboard scenes
         if isinstance(storyboard_obj, dict):
             scenes = storyboard_obj.get("scenes")
