@@ -243,7 +243,14 @@ UI_FETCH_TAIL_NEW = r'''                    } finally {
                     const status = String((item && item.status) || '').toLowerCase();
                     const progress = Number((item && item.progress) || 0);
                     const seconds = Number(item && item.estimated_remaining_seconds);
+                    const lastSignal = Number(item && item.last_signal_seconds);
+                    if (status === 'processing' && Number.isFinite(lastSignal) && lastSignal > 300) return 'Sem previsão — produção sem sinais';
                     if (Number.isFinite(seconds) && seconds > 0) return '~' + this.formatGuardianDuration(Math.ceil(seconds));
+                    const elapsed = Number(item && item.elapsed_seconds);
+                    if (status === 'processing' && progress >= 5 && Number.isFinite(elapsed) && elapsed > 10) {
+                        const fallback = Math.round((elapsed / Math.max(1, Math.min(100, progress))) * Math.max(0, 100 - progress));
+                        if (fallback > 0) return '~' + this.formatGuardianDuration(Math.min(24 * 60 * 60, fallback));
+                    }
                     if (status === 'pending') return 'Aguardando início';
                     if (status === 'processing' && progress < 100) return 'Calculando...';
                     return '';
