@@ -9,6 +9,7 @@ INDEX = ROOT / "app/static/index.html"
 
 MARKER_BACKEND = "CODEXIA_RECOVERABLE_ARCHIVE_QUEUE_V1"
 MARKER_UI = "CODEXIA_RECOVERABLE_ARCHIVE_UI_V1"
+MARKER_ETA = "CODEXIA_QUEUE_ETA_V1"
 
 
 class PatchError(RuntimeError):
@@ -238,6 +239,15 @@ UI_FETCH_TAIL_NEW = r'''                    } finally {
                     const status = String((item && item.status) || '').toLowerCase();
                     return status === 'cancelled' ? 'Arquivado' : (status === 'failed' ? 'Falhou' : status || 'Desconhecido');
                 },
+                estimatedRemainingLabel(item) {
+                    const status = String((item && item.status) || '').toLowerCase();
+                    const progress = Number((item && item.progress) || 0);
+                    const seconds = Number(item && item.estimated_remaining_seconds);
+                    if (Number.isFinite(seconds) && seconds > 0) return '~' + this.formatGuardianDuration(Math.ceil(seconds));
+                    if (status === 'pending') return 'Aguardando início';
+                    if (status === 'processing' && progress < 100) return 'Calculando...';
+                    return '';
+                },
                 recoverableStatusCount(status) {
                     const target = String(status || '').toLowerCase();
                     return (Array.isArray(this.ytRecoverableTasks) ? this.ytRecoverableTasks : [])
@@ -326,6 +336,32 @@ UI_FETCH_TAIL_NEW = r'''                    } finally {
 
 UI_CARD_ANCHOR = r'''                            <div class="flex-1">
                                 <label class="block font-bold mb-2">Shorts (História/Devocional)</label>'''
+
+QUEUE_ETA_OLD = r'''        "last_signal_seconds": runtime.get("last_signal_seconds"),
+    }
+
+def _active_video_task_blocker_item'''
+QUEUE_ETA_NEW = r'''        "last_signal_seconds": runtime.get("last_signal_seconds"),
+        # CODEXIA_QUEUE_ETA_V1 — estimativa conservadora baseada no ritmo real.
+        "estimated_remaining_seconds": _estimate_task_remaining_seconds(
+            progress=int(row.progress or 0),
+            elapsed_seconds=elapsed_seconds,
+            status=status,
+        ),
+    }
+
+def _estimate_task_remaining_seconds(*, progress: int, elapsed_seconds: Optional[int], status: str) -> Optional[int]:
+    if str(status or "").lower() != "processing" or elapsed_seconds is None or progress < 5 or progress >= 100:
+        return None
+    rate = float(elapsed_seconds) / float(max(1, min(100, progress)))
+    remaining = int(round(rate * max(0, 100 - progress)))
+    return max(1, min(24 * 60 * 60, remaining))
+
+def _active_video_task_blocker_item'''
+
+ACTIVE_QUEUE_TIME_OLD = r'''                                            <span v-if="item.elapsed_seconds !== null && item.elapsed_seconds !== undefined"> • {{ formatGuardianDuration(item.elapsed_seconds) }}</span>'''
+ACTIVE_QUEUE_TIME_NEW = r'''                                            <span v-if="item.elapsed_seconds !== null && item.elapsed_seconds !== undefined"> • Tempo: {{ formatGuardianDuration(item.elapsed_seconds) }}</span>
+                                            <span v-if="estimatedRemainingLabel(item)"> • <strong>Restante: {{ estimatedRemainingLabel(item) }}</strong></span>'''
 UI_CARD_INSERT = r'''                            <div class="mt-4 mb-4 bg-amber-50 border border-amber-200 rounded p-4">
                                 <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
                                     <div>
@@ -410,6 +446,7 @@ def apply() -> None:
     youtube = _replace_once(youtube, CANCEL_ALL_OLD, CANCEL_ALL_NEW, "cancel_all preserves failures")
     youtube = _replace_once(youtube, CANCEL_MESSAGE_OLD, CANCEL_MESSAGE_NEW, "cancel_all message")
     youtube = _replace_once(youtube, RETRY_OLD, RETRY_NEW, "retry cancelled archive guard")
+    youtube = _replace_once(youtube, QUEUE_ETA_OLD, QUEUE_ETA_NEW, "queue remaining-time estimate")
     YOUTUBE.write_text(youtube, encoding="utf-8")
 
     index = INDEX.read_text(encoding="utf-8")
@@ -418,6 +455,7 @@ def apply() -> None:
     index = _insert_before_once(index, UI_CARD_ANCHOR, UI_CARD_INSERT, "recoverable UI card")
     index = _replace_once(index, CANCEL_CONFIRM_OLD, CANCEL_CONFIRM_NEW, "safe cancel confirmation")
     index = _replace_once(index, CANCEL_ALERT_OLD, CANCEL_ALERT_NEW, "safe cancel result")
+    index = _replace_once(index, ACTIVE_QUEUE_TIME_OLD, ACTIVE_QUEUE_TIME_NEW, "queue remaining-time UI")
     INDEX.write_text(index, encoding="utf-8")
 
 
@@ -444,9 +482,12 @@ def check() -> None:
         'restoreRecoverableTask' in index,
         'Descartar recuperação' in index,
         'Falhas antigas NÃO serão descartadas' in index,
+        'estimatedRemainingLabel' in index,
     )
     if not all(ui_checks):
         raise PatchError("contrato UI do histórico recuperável não aplicado")
+    if MARKER_ETA not in youtube:
+        raise PatchError("estimativa de tempo restante não aplicada")
 
 
 def main() -> None:
