@@ -53,6 +53,8 @@ RUN python scripts/apply_consolidated_hardening.py --apply && \
     python scripts/apply_voice_closure_hardening.py --check && \
     python scripts/apply_caption_integrity_self_heal.py --apply && \
     python scripts/apply_caption_integrity_self_heal.py --check && \
+    python scripts/apply_audio_timed_global_captions.py --apply && \
+    python scripts/apply_audio_timed_global_captions.py --check && \
     python scripts/apply_final_visual_quality_gate_self_heal.py --apply && \
     python scripts/apply_final_visual_quality_gate_self_heal.py --check && \
     python scripts/apply_recovery_checkpoint_hardening.py --apply && \

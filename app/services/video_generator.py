@@ -3164,8 +3164,10 @@ class VideoGenerator:
             flush_words()
 
         if timeline:
-            timeline[0]["start"] = 0.0
-            timeline[-1]["end"] = total_duration
+            # CODEXIA_AUDIO_TIMED_GLOBAL_CAPTIONS_V1
+            # Não estique o primeiro/último bloco até os limites do arquivo:
+            # o áudio pode conter silêncio de abertura ou de endcard. Os
+            # timestamps reais das palavras são a autoridade da legenda.
             return self._realign_caption_timeline_to_narration(timeline, narration)
 
         approx: List[Dict[str, Any]] = []
@@ -3202,9 +3204,8 @@ class VideoGenerator:
                 remaining_words -= unit_words
                 remaining_duration = max(0.0, seg_end - unit_end)
                 local_cursor = unit_end
-        if approx:
-            approx[0]["start"] = 0.0
-            approx[-1]["end"] = total_duration
+        # Preserve the segment timestamps as returned by the audio
+        # transcriber; do not turn trailing silence into a subtitle.
         return self._realign_caption_timeline_to_narration(approx, narration)
 
     def _build_caption_timeline(self, narration: str, duration: float, audio_path: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -5944,6 +5945,12 @@ $synth.Dispose()
                     item["text_source"] = "approved_narration"
                     shifted_approved_timed.append(item)
                 if shifted_approved_timed:
+                    # Approved Edge-TTS boundaries may contain encoder padding.
+                    # Normalize once, while keeping the last spoken word end.
+                    shifted_approved_timed = self._sanitize_caption_timeline(
+                        shifted_approved_timed,
+                        actual_total_audio_dur,
+                    )
                     caption_timeline_details = {
                         "timeline": shifted_approved_timed,
                         "source": "approved_edge_tts_word_boundaries",
@@ -6134,15 +6141,13 @@ $synth.Dispose()
             )
             if title_overlay is not None:
                 opening_overlays.append(title_overlay)
-            opening_caption_overlays = self._caption_overlay_clips_for_window(
-                full_caption_timeline,
-                0.0,
-                opening_visual_duration,
-                video_size,
-            )
-            opening_overlays.extend(opening_caption_overlays)
-            render_report["visual_plan"]["opening_caption_suppressed"] = False
-            render_report["visual_plan"]["opening_caption_blocks"] = len(opening_caption_overlays)
+            # CODEXIA_AUDIO_TIMED_GLOBAL_CAPTIONS_V1
+            # Captions are composited once after all scenes are concatenated.
+            # Never attach a second local copy to the opening clip.
+            opening_caption_overlays = []
+            render_report["visual_plan"]["opening_caption_suppressed"] = True
+            render_report["visual_plan"]["opening_caption_blocks"] = 0
+            render_report["visual_plan"]["caption_render_mode"] = "global_audio_timeline"
             render_report["visual_plan"]["opening_background_source"] = (
                 opening_visual.get("source") if isinstance(opening_visual, dict) else "fallback_background"
             )
@@ -6394,17 +6399,12 @@ $synth.Dispose()
                 if i < len(story_timeline_entries):
                     story_timeline_entries[i]["image"] = bg_image_path
 
+                # CODEXIA_AUDIO_TIMED_GLOBAL_CAPTIONS_V1
+                # Keep caption_blocks in the official timeline for diagnostics,
+                # but do not render a local copy. Local scene coordinates drift
+                # whenever visual pacing stretches or reuses a scene.
                 scene_caption_timeline = list(scene_timeline_entry.get("caption_blocks") or [])
-                expanded_scene_timeline = []
-                for item in scene_caption_timeline:
-                    expanded_scene_timeline.extend(
-                        self._expand_caption_item_for_overlay(
-                            item,
-                            size=video_size,
-                            max_lines=2,
-                            reserved_bottom_ratio=CAPTION_SAFE_AREA_BOTTOM_RATIO,
-                        )
-                    )
+                expanded_scene_timeline: List[Dict[str, Any]] = []
                 visual_beats = self._plan_cinematic_visual_beats(
                     scene_dur,
                     max_hold_sec=cinematic_visual_hold_sec,
@@ -6587,18 +6587,14 @@ $synth.Dispose()
                 )
                 closing_audio_start = float((closing_timeline_entry or {}).get("audio_start") or 0.0)
                 closing_audio_end = float((closing_timeline_entry or {}).get("audio_end") or closing_audio_start)
-                closing_caption_overlays = self._caption_overlay_clips_for_window(
-                    full_caption_timeline,
-                    closing_audio_start,
-                    closing_audio_end,
-                    video_size,
-                )
-                if closing_caption_overlays:
-                    clip_cta = CompositeVideoClip([clip_cta] + closing_caption_overlays, size=video_size)
+                # CODEXIA_AUDIO_TIMED_GLOBAL_CAPTIONS_V1
+                # The CTA is covered by the same global audio timeline as every
+                # other word; a local CTA copy would create duplicate subtitles.
+                closing_caption_overlays = []
                 clips.append(clip_cta)
                 render_report["cta_rendered"] = True
                 render_report["visual_plan"]["cta_visual_mode"] = "cinematic_background_bridge"
-                render_report["visual_plan"]["closing_caption_blocks"] = len(closing_caption_overlays)
+                render_report["visual_plan"]["closing_caption_blocks"] = 0
 
             img_end = self._build_cinematic_endcard_frame(
                 branding_profile,
@@ -6672,6 +6668,42 @@ $synth.Dispose()
                 final_clip = concatenate_videoclips(clips, method="compose")
             self._assert_clip_not_none(final_clip, "final_clip_after_concat")
 
+            # CODEXIA_AUDIO_TIMED_GLOBAL_CAPTIONS_V1
+            # Render one subtitle layer in final-video coordinates. This keeps
+            # every caption tied to the official audio timestamps regardless of
+            # scene reuse, visual beats, fades, or CTA placement. The window is
+            # bounded by both the audio and the already-concatenated video, so a
+            # caption can never extend the video or leak into the silent endcard.
+            try:
+                concatenated_duration = float(getattr(final_clip, "duration", 0) or 0.0)
+            except Exception:
+                concatenated_duration = 0.0
+            global_caption_overlays = []
+            caption_overlay_window_end = min(
+                max(0.0, float(actual_total_audio_dur or 0.0)),
+                max(0.0, concatenated_duration),
+            )
+            if caption_overlay_window_end > 0.0:
+                global_caption_overlays = self._caption_overlay_clips_for_window(
+                    full_caption_timeline,
+                    0.0,
+                    caption_overlay_window_end,
+                    video_size,
+                )
+            if global_caption_overlays:
+                final_clip = CompositeVideoClip(
+                    [final_clip] + global_caption_overlays,
+                    size=video_size,
+                )
+                if concatenated_duration > 0.0:
+                    final_clip = self._set_clip_duration(final_clip, concatenated_duration)
+            render_report["visual_plan"]["caption_render_mode"] = "global_audio_timeline"
+            render_report["visual_plan"]["global_caption_overlay_count"] = len(global_caption_overlays)
+            render_report["visual_plan"]["global_caption_window_end_sec"] = round(
+                caption_overlay_window_end,
+                3,
+            )
+
             try:
                 final_dur = float(getattr(final_clip, "duration", 0) or 0)
             except Exception:
@@ -6723,12 +6755,26 @@ $synth.Dispose()
                         caption_duration = 0.0
                 video_sync_target = float(target_video_duration or actual_total_audio_dur)
                 audio_video_diff = abs(final_dur - video_sync_target)
-                audio_caption_diff = abs(caption_duration - actual_total_audio_dur)
+                # CODEXIA_AUDIO_TIMED_GLOBAL_CAPTIONS_V1
+                # A transcrição termina na última palavra falada e o arquivo
+                # pode ter silêncio de padding. Só um excesso de legenda é
+                # erro; silêncio depois da última palavra é permitido.
+                caption_overflow_sec = max(
+                    0.0,
+                    float(caption_duration or 0.0) - float(actual_total_audio_dur or 0.0),
+                )
+                trailing_audio_silence_sec = max(
+                    0.0,
+                    float(actual_total_audio_dur or 0.0) - float(caption_duration or 0.0),
+                )
+                audio_caption_diff = caption_overflow_sec
                 video_sync_tolerance = duration_sync_tolerance_seconds(video_sync_target)
                 sync_validation = {
                     "planned_text_duration_sec": round(float(estimated_total_duration or 0.0), 2),
                     "audio_duration_sec": round(float(actual_total_audio_dur or 0.0), 2),
                     "captions_duration_sec": round(float(caption_duration or 0.0), 2),
+                    "spoken_audio_end_sec": round(float(caption_duration or 0.0), 2),
+                    "audio_trailing_silence_sec": round(float(trailing_audio_silence_sec or 0.0), 2),
                     "video_duration_sec": round(float(final_dur or 0.0), 2),
                     "video_sync_target_sec": round(float(video_sync_target or 0.0), 2),
                     "audio_caption_diff_sec": round(audio_caption_diff, 2),
