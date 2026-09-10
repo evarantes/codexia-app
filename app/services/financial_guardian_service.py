@@ -686,6 +686,7 @@ class FinancialGuardianService:
                     "selected_images": selected_images,
                     "estimated_savings": estimated_savings,
                 },
+                best_effort=True,
             )
         return updated
 
