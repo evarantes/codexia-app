@@ -23,6 +23,43 @@ from app.services.financial_guardian_service import (  # noqa: E402
 )
 
 
+class _FakeResult:
+    def mappings(self):
+        return self
+
+    def first(self):
+        return None
+
+
+class _FlakyDatabase:
+    def __init__(self, failures_before_success=0):
+        self.failures_before_success = failures_before_success
+        self.execute_calls = 0
+        self.invalidate_calls = 0
+
+    def execute(self, _statement, _params):
+        self.execute_calls += 1
+        if self.execute_calls <= self.failures_before_success:
+            raise OperationalError(
+                "INSERT INTO codexia_asset_generation_cache",
+                {},
+                RuntimeError("server closed the connection unexpectedly"),
+            )
+        return _FakeResult()
+
+    def rollback(self):
+        return None
+
+    def invalidate(self):
+        self.invalidate_calls += 1
+
+    def close(self):
+        return None
+
+    def commit(self):
+        return None
+
+
 class FinancialGuardianServiceTests(unittest.TestCase):
     def test_budget_guard_allows_when_within_limits(self):
         decision = evaluate_budget_guard(
@@ -103,6 +140,64 @@ class FinancialGuardianServiceTests(unittest.TestCase):
 
         self.assertEqual(key_a, key_b)
         self.assertNotEqual(key_a, key_c)
+
+    def test_image_cache_reconnects_without_repeating_generation(self):
+        with tempfile.TemporaryDirectory(prefix="financial-cache-manifest-") as tmp:
+            image_path = Path(tmp) / "scene-1.png"
+            image_path.write_bytes(b"generated-image")
+            plan = {"scenes": [{"image_prompt": "A safe harbor", "text": "A safe harbor."}]}
+            context = FinancialContext(
+                source_type="youtube_auto",
+                context_id="task-1",
+                user_id=7,
+                metadata={"job_id": 1},
+            )
+            db = _FlakyDatabase(failures_before_success=1)
+            with patch.object(financial_guardian_module, "_MANIFEST_DIR", Path(tmp) / "manifest"), patch.object(
+                financial_guardian_module, "_schema_ready", True
+            ):
+                result = FinancialGuardianService().cache_images_from_context_result(
+                    db,
+                    context=context,
+                    plan=plan,
+                    image_paths=[str(image_path)],
+                )
+
+            self.assertEqual(result["stored_assets"], 1)
+            self.assertEqual(result["manifest_assets"], 1)
+            self.assertEqual(result["db_stored_assets"], 1)
+            self.assertFalse(result["persistence_degraded"])
+            self.assertEqual(db.invalidate_calls, 1)
+
+    def test_image_cache_keeps_manifest_when_database_stays_down(self):
+        with tempfile.TemporaryDirectory(prefix="financial-cache-manifest-") as tmp:
+            image_path = Path(tmp) / "scene-1.png"
+            image_path.write_bytes(b"generated-image")
+            plan = {"scenes": [{"image_prompt": "A safe harbor", "text": "A safe harbor."}]}
+            context = FinancialContext(
+                source_type="youtube_auto",
+                context_id="task-2",
+                user_id=7,
+                metadata={"job_id": 2},
+            )
+            db = _FlakyDatabase(failures_before_success=99)
+            manifest_dir = Path(tmp) / "manifest"
+            with patch.object(financial_guardian_module, "_MANIFEST_DIR", manifest_dir), patch.object(
+                financial_guardian_module, "_schema_ready", True
+            ):
+                result = FinancialGuardianService().cache_images_from_context_result(
+                    db,
+                    context=context,
+                    plan=plan,
+                    image_paths=[str(image_path)],
+                )
+
+            self.assertEqual(result["stored_assets"], 1)
+            self.assertEqual(result["manifest_assets"], 1)
+            self.assertEqual(result["db_stored_assets"], 0)
+            self.assertTrue(result["persistence_degraded"])
+            self.assertTrue((manifest_dir / "image_cache_manifest.json").exists())
+
 
     def test_no_paid_mode_skips_premium_tts_providers(self):
         previous_disable = os.environ.get("CODEXIA_DISABLE_PAID_AI")
