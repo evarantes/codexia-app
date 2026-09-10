@@ -2,6 +2,9 @@ import os
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+
+from sqlalchemy.exc import OperationalError
 
 
 os.environ.setdefault("APP_ENV", "development")
@@ -16,7 +19,10 @@ from app.models import Settings  # noqa: E402
 Base.metadata.create_all(engine)
 
 from app.services.ai_generator import AIContentGenerator  # noqa: E402
+import app.services.financial_guardian_service as financial_guardian_module  # noqa: E402
+from app.services.financial_guardian import FinancialContext  # noqa: E402
 from app.services.financial_guardian_service import (  # noqa: E402
+    FinancialGuardianService,
     build_image_cache_key,
     evaluate_budget_guard,
     evaluate_recovery_loop,
