@@ -201,6 +201,10 @@ UI_STATE_NEW = r'''                    ytQueueFactoryBusy: false,
                     ytRecoverableTasksLastLoadAt: 0,
                     ytRecoverableTasks: [],
                     ytRecoverableActionId: null,
+                    ytRecoverableSearch: '',
+                    ytRecoverableFilter: 'all',
+                    ytRecoverablePage: 1,
+                    ytRecoverablePageSize: 8,
                     ytStoryTaskPollFails: {},'''
 
 UI_FETCH_TAIL_OLD = r'''                    } finally {
@@ -229,6 +233,42 @@ UI_FETCH_TAIL_NEW = r'''                    } finally {
                     } finally {
                         if (!silent) this.ytRecoverableTasksLoading = false;
                     }
+                },
+                recoverableStatusLabel(item) {
+                    const status = String((item && item.status) || '').toLowerCase();
+                    return status === 'cancelled' ? 'Arquivado' : (status === 'failed' ? 'Falhou' : status || 'Desconhecido');
+                },
+                recoverableStatusCount(status) {
+                    const target = String(status || '').toLowerCase();
+                    return (Array.isArray(this.ytRecoverableTasks) ? this.ytRecoverableTasks : [])
+                        .filter(item => String((item && item.status) || '').toLowerCase() === target).length;
+                },
+                filteredRecoverableTasks() {
+                    const query = String(this.ytRecoverableSearch || '').trim().toLowerCase();
+                    const filter = String(this.ytRecoverableFilter || 'all').toLowerCase();
+                    return (Array.isArray(this.ytRecoverableTasks) ? this.ytRecoverableTasks : []).filter((item) => {
+                        const status = String((item && item.status) || '').toLowerCase();
+                        if (filter !== 'all' && status !== filter) return false;
+                        if (!query) return true;
+                        const haystack = [item.title, item.status, item.message, item.recommendation, item.checkpoint, item.task_id]
+                            .map(value => String(value || '').toLowerCase()).join(' ');
+                        return haystack.includes(query);
+                    });
+                },
+                recoverablePageCount() {
+                    const size = Math.max(1, Number(this.ytRecoverablePageSize || 8));
+                    return Math.max(1, Math.ceil(this.filteredRecoverableTasks().length / size));
+                },
+                visibleRecoverableTasks() {
+                    const size = Math.max(1, Number(this.ytRecoverablePageSize || 8));
+                    const pages = this.recoverablePageCount();
+                    const page = Math.min(Math.max(1, Number(this.ytRecoverablePage || 1)), pages);
+                    const start = (page - 1) * size;
+                    return this.filteredRecoverableTasks().slice(start, start + size);
+                },
+                setRecoverablePage(page) {
+                    const target = Math.min(Math.max(1, Number(page || 1)), this.recoverablePageCount());
+                    this.ytRecoverablePage = target;
                 },
                 async openRecoverableTask(item) {
                     const taskId = String((item && item.task_id) || '').trim();
@@ -297,14 +337,32 @@ UI_CARD_INSERT = r'''                            <div class="mt-4 mb-4 bg-amber-
                                         <span>{{ ytRecoverableTasksLoading ? 'Atualizando...' : 'Atualizar histórico' }}</span>
                                     </button>
                                 </div>
+                                <div v-if="ytRecoverableTasks.length" class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 text-xs">
+                                    <div class="bg-white border border-amber-200 rounded p-2"><div class="text-gray-500">Total</div><div class="font-bold text-lg text-gray-900">{{ ytRecoverableTasks.length }}</div></div>
+                                    <div class="bg-white border border-amber-200 rounded p-2"><div class="text-gray-500">Falhas</div><div class="font-bold text-lg text-red-700">{{ recoverableStatusCount('failed') }}</div></div>
+                                    <div class="bg-white border border-amber-200 rounded p-2"><div class="text-gray-500">Arquivados</div><div class="font-bold text-lg text-blue-700">{{ recoverableStatusCount('cancelled') }}</div></div>
+                                    <div class="bg-white border border-amber-200 rounded p-2"><div class="text-gray-500">Exibindo</div><div class="font-bold text-lg text-gray-900">{{ filteredRecoverableTasks().length }}</div></div>
+                                </div>
+                                <div v-if="ytRecoverableTasks.length" class="flex flex-col md:flex-row gap-2 mb-3">
+                                    <div class="relative flex-1">
+                                        <i class="fas fa-search absolute left-3 top-3 text-gray-400 text-sm"></i>
+                                        <input v-model="ytRecoverableSearch" @input="ytRecoverablePage = 1" type="search" placeholder="Buscar por título, mensagem ou ID..." class="w-full pl-9 pr-3 py-2 rounded border border-amber-200 bg-white text-sm">
+                                    </div>
+                                    <select v-model="ytRecoverableFilter" @change="ytRecoverablePage = 1" class="rounded border border-amber-200 bg-white px-3 py-2 text-sm">
+                                        <option value="all">Todos os status</option>
+                                        <option value="failed">Falhas</option>
+                                        <option value="cancelled">Arquivados</option>
+                                    </select>
+                                </div>
                                 <div v-if="ytRecoverableTasksLoading && !ytRecoverableTasks.length" class="text-sm text-amber-800">Carregando trabalhos preservados...</div>
                                 <div v-else-if="!ytRecoverableTasks.length" class="text-sm text-gray-600 italic">Nenhum trabalho recuperável armazenado no momento.</div>
-                                <div v-else class="space-y-3">
-                                    <div v-for="item in ytRecoverableTasks" :key="'recoverable-'+item.task_id" class="bg-white border border-amber-200 rounded p-3">
+                                <div v-else-if="!filteredRecoverableTasks().length" class="text-sm text-gray-600 italic bg-white border border-amber-200 rounded p-4">Nenhum trabalho corresponde à busca ou ao filtro selecionado.</div>
+                                <div v-else class="space-y-2">
+                                    <div v-for="item in visibleRecoverableTasks()" :key="'recoverable-'+item.task_id" class="bg-white border border-amber-200 rounded p-3">
                                         <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
                                             <div class="min-w-0 flex-1">
                                                 <div class="font-semibold text-gray-900 truncate">{{ item.title || 'Produção sem título' }}</div>
-                                                <div class="text-xs text-gray-600 mt-1">{{ String(item.status || '').toUpperCase() }} • {{ Number(item.progress || 0) }}% • {{ item.checkpoint || 'starting' }}</div>
+                                                <div class="text-xs text-gray-600 mt-1"><span class="font-semibold">{{ recoverableStatusLabel(item) }}</span> • {{ Number(item.progress || 0) }}% • {{ item.checkpoint || 'starting' }}</div>
                                                 <div class="text-xs text-gray-500 mt-1 line-clamp-2">{{ item.message || item.recommendation || 'Sem detalhe registrado.' }}</div>
                                                 <div class="flex flex-wrap gap-2 mt-2 text-xs">
                                                     <span class="px-2 py-1 rounded" :class="item.script_preserved ? 'bg-green-50 text-green-800' : 'bg-gray-100 text-gray-600'">Roteiro {{ item.script_preserved ? '✓' : '—' }}</span>
@@ -319,6 +377,13 @@ UI_CARD_INSERT = r'''                            <div class="mt-4 mb-4 bg-amber-
                                                 <button @click="discardRecoverableTask(item)" :disabled="Boolean(ytRecoverableActionId)" class="px-3 py-2 rounded border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 text-sm disabled:opacity-50"><i class="fas fa-box-archive mr-1"></i>Descartar recuperação</button>
                                             </div>
                                         </div>
+                                    </div>
+                                </div>
+                                <div v-if="filteredRecoverableTasks().length" class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mt-3 pt-3 border-t border-amber-200 text-sm text-gray-700">
+                                    <span>Página {{ Math.min(Math.max(1, Number(ytRecoverablePage || 1)), recoverablePageCount()) }} de {{ recoverablePageCount() }} • {{ filteredRecoverableTasks().length }} trabalho(s)</span>
+                                    <div class="flex gap-2">
+                                        <button @click="setRecoverablePage(Number(ytRecoverablePage || 1) - 1)" :disabled="Number(ytRecoverablePage || 1) <= 1" class="px-3 py-1 rounded border border-amber-300 bg-white hover:bg-amber-100 disabled:opacity-40"><i class="fas fa-chevron-left mr-1"></i>Anterior</button>
+                                        <button @click="setRecoverablePage(Number(ytRecoverablePage || 1) + 1)" :disabled="Number(ytRecoverablePage || 1) >= recoverablePageCount()" class="px-3 py-1 rounded border border-amber-300 bg-white hover:bg-amber-100 disabled:opacity-40">Próxima<i class="fas fa-chevron-right ml-1"></i></button>
                                     </div>
                                 </div>
                             </div>
