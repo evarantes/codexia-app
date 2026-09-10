@@ -342,8 +342,10 @@ def _is_logo_only_visuals(*candidates: Any) -> bool:
         return str(value or "").strip().lower() in truthy
 
     def _walk(value: Any, depth: int = 0) -> bool:
-        if depth > 3 or not isinstance(value, dict):
+        if depth > 3:
             return False
+        if not isinstance(value, dict):
+            return _enabled(getattr(value, "logo_only_visuals", None))
         if _enabled(value.get("logo_only_visuals")):
             return True
         # Keep compatibility with the persisted task envelope/report without
