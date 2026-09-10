@@ -1,12 +1,14 @@
 import hashlib
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.services.financial_guardian.adapters import (
@@ -21,6 +23,7 @@ _CACHE_TABLE = "codexia_asset_generation_cache"
 _MANIFEST_DIR = Path(__file__).resolve().parents[2] / "artifacts" / "financial_guardian"
 _schema_ready = False
 _schema_lock = threading.Lock()
+_LOG = logging.getLogger(__name__)
 _AUDIT_EXTRA_COLUMNS = {
     "source_type": "VARCHAR(64)",
     "context_id": "VARCHAR(128)",
@@ -32,6 +35,32 @@ _CACHE_EXTRA_COLUMNS = {
     "context_id": "VARCHAR(128)",
     "scope_key": "VARCHAR(128)",
 }
+
+
+def _is_recoverable_database_error(exc: BaseException) -> bool:
+    """Return True when SQLAlchemy reports a broken/stale database connection."""
+    return isinstance(exc, OperationalError) or (
+        isinstance(exc, DBAPIError) and bool(getattr(exc, "connection_invalidated", False))
+    )
+
+
+def _reset_db_session(db: Session) -> None:
+    """Drop a failed transaction/connection so the next statement can reconnect."""
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    try:
+        db.invalidate()
+    except Exception:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _database_error_summary(operation: str, exc: BaseException) -> str:
+    return f"{operation}: {type(exc).__name__}: {str(exc)[:240]}"
 
 
 def _utcnow() -> datetime:
@@ -388,6 +417,31 @@ class FinancialGuardianService:
             return adapter.cost_snapshot(db, user_id=user_id, day_start=day_start, month_start=month_start)
         return {"spent_today": 0.0, "spent_month": 0.0}
 
+    def _execute_with_connection_recovery(
+        self,
+        db: Session,
+        statement: Any,
+        params: Dict[str, Any],
+        *,
+        operation: str,
+        attempts: int = 2,
+    ) -> Tuple[Optional[Any], Optional[str]]:
+        """Execute a cache statement and reconnect once when PostgreSQL drops a connection."""
+        max_attempts = max(1, int(attempts or 1))
+        last_error: Optional[str] = None
+        for attempt in range(max_attempts):
+            try:
+                return db.execute(statement, params), None
+            except Exception as exc:
+                if not _is_recoverable_database_error(exc):
+                    raise
+                last_error = _database_error_summary(operation, exc)
+                _reset_db_session(db)
+                if attempt + 1 >= max_attempts:
+                    _LOG.warning("Financial Guardian cache persistence skipped after reconnect: %s", last_error)
+                    return None, last_error
+        return None, last_error or f"{operation}: database operation did not complete"
+
     def record_context_event(
         self,
         db: Session,
@@ -399,8 +453,15 @@ class FinancialGuardianService:
         estimated_cost: Optional[float] = None,
         actual_cost: Optional[float] = None,
         details: Optional[Dict[str, Any]] = None,
+        best_effort: bool = False,
     ) -> Dict[str, Any]:
-        self.ensure_schema(db)
+        try:
+            self.ensure_schema(db)
+        except Exception as exc:
+            if not best_effort or not _is_recoverable_database_error(exc):
+                raise
+            _LOG.warning("Financial Guardian schema persistence degraded: %s", _database_error_summary("ensure_schema", exc))
+            _reset_db_session(db)
         now = _utcnow()
         normalized = _normalize_context(context)
         effective_estimated = normalized.estimated_cost if estimated_cost is None else _safe_float(estimated_cost, 0.0)
@@ -420,17 +481,23 @@ class FinancialGuardianService:
             "details_json": _json_dumps(details or {}),
             "created_at": now,
         }
-        db.execute(text(
-            f"""
-            INSERT INTO {_AUDIT_TABLE} (
-                user_id, job_id, source_type, context_id, scope_key, event_type, stage, severity,
-                estimated_cost, actual_cost, context_json, details_json, created_at
-            ) VALUES (
-                :user_id, :job_id, :source_type, :context_id, :scope_key, :event_type, :stage, :severity,
-                :estimated_cost, :actual_cost, :context_json, :details_json, :created_at
-            )
-            """
-        ), payload)
+        try:
+            db.execute(text(
+                f"""
+                INSERT INTO {_AUDIT_TABLE} (
+                    user_id, job_id, source_type, context_id, scope_key, event_type, stage, severity,
+                    estimated_cost, actual_cost, context_json, details_json, created_at
+                ) VALUES (
+                    :user_id, :job_id, :source_type, :context_id, :scope_key, :event_type, :stage, :severity,
+                    :estimated_cost, :actual_cost, :context_json, :details_json, :created_at
+                )
+                """
+            ), payload)
+        except Exception as exc:
+            if not best_effort or not _is_recoverable_database_error(exc):
+                raise
+            _LOG.warning("Financial Guardian event persistence degraded: %s", _database_error_summary("record_context_event", exc))
+            _reset_db_session(db)
         return {
             "event_type": payload["event_type"],
             "stage": payload["stage"],
@@ -530,17 +597,23 @@ class FinancialGuardianService:
                 image_prompt=str(scene.get("image_prompt") or ""),
                 scene_text=str(scene.get("text") or ""),
             )
-            row = db.execute(text(
-                f"""
-                SELECT id, file_path, hit_count, meta_json
-                FROM {_CACHE_TABLE}
-                WHERE scope_key = :scope_key
-                  AND asset_kind = 'image'
-                  AND cache_key = :cache_key
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """
-            ), {"scope_key": normalized.scope_key, "cache_key": cache_key}).mappings().first()
+            cache_lookup_result, _cache_lookup_error = self._execute_with_connection_recovery(
+                db,
+                text(
+                    f"""
+                    SELECT id, file_path, hit_count, meta_json
+                    FROM {_CACHE_TABLE}
+                    WHERE scope_key = :scope_key
+                      AND asset_kind = 'image'
+                      AND cache_key = :cache_key
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"scope_key": normalized.scope_key, "cache_key": cache_key},
+                operation="cache lookup",
+            )
+            row = cache_lookup_result.mappings().first() if cache_lookup_result is not None else None
             row_id = row.get("id") if row else None
             file_path = str((row or {}).get("file_path") or "").strip()
             meta = _json_loads((row or {}).get("meta_json"), {})
@@ -562,20 +635,25 @@ class FinancialGuardianService:
             hit_count += 1
             if row_id is not None:
                 now = _utcnow()
-                db.execute(text(
-                    f"""
-                    UPDATE {_CACHE_TABLE}
-                    SET hit_count = :hit_count,
-                        last_used_at = :last_used_at,
-                        updated_at = :updated_at
-                    WHERE id = :id
-                    """
-                ), {
-                    "id": row_id,
-                    "hit_count": hit_count,
-                    "last_used_at": now,
-                    "updated_at": now,
-                })
+                self._execute_with_connection_recovery(
+                    db,
+                    text(
+                        f"""
+                        UPDATE {_CACHE_TABLE}
+                        SET hit_count = :hit_count,
+                            last_used_at = :last_used_at,
+                            updated_at = :updated_at
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": row_id,
+                        "hit_count": hit_count,
+                        "last_used_at": now,
+                        "updated_at": now,
+                    },
+                    operation="cache hit update",
+                )
             hits.append(
                 {
                     "scene_number": idx + 1,
@@ -608,6 +686,7 @@ class FinancialGuardianService:
                     "selected_images": selected_images,
                     "estimated_savings": estimated_savings,
                 },
+                best_effort=True,
             )
         return updated
 
@@ -626,12 +705,46 @@ class FinancialGuardianService:
         plan: Dict[str, Any],
         image_paths: List[str],
     ) -> Dict[str, Any]:
-        self.ensure_schema(db)
         normalized = _normalize_context(context)
         scenes = plan.get("scenes") if isinstance(plan.get("scenes"), list) else []
-        stored = 0
+        manifest_assets = 0
+        db_stored_assets = 0
         cache_keys: List[str] = []
+        persistence_errors: List[str] = []
+        schema_available = True
+
+        # The manifest is written before the database row on purpose: it is the
+        # durable recovery source if PostgreSQL restarts during cache accounting.
+        try:
+            self.ensure_schema(db)
+        except Exception as exc:
+            if not _is_recoverable_database_error(exc):
+                raise
+            schema_available = False
+            persistence_errors.append(_database_error_summary("ensure_schema", exc))
+            _LOG.warning("Financial Guardian will continue from the file manifest: %s", persistence_errors[-1])
+            _reset_db_session(db)
+
         now = _utcnow()
+        insert_statement = text(
+            f"""
+            INSERT INTO {_CACHE_TABLE} (
+                user_id, job_id, source_type, context_id, scope_key, asset_kind, cache_key, file_hash, file_path,
+                hit_count, last_used_at, created_at, updated_at, meta_json
+            )
+            SELECT
+                :user_id, :job_id, :source_type, :context_id, :scope_key, 'image', :cache_key, :file_hash, :file_path,
+                :hit_count, :last_used_at, :created_at, :updated_at, :meta_json
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM {_CACHE_TABLE}
+                WHERE scope_key = :scope_key
+                  AND asset_kind = 'image'
+                  AND cache_key = :cache_key
+                  AND file_hash = :file_hash
+            )
+            """
+        )
 
         for idx, file_path in enumerate(image_paths):
             if idx >= len(scenes) or not os.path.exists(file_path):
@@ -658,34 +771,46 @@ class FinancialGuardianService:
                 file_path=file_path,
                 meta=meta,
             )
-            db.execute(text(
-                f"""
-                INSERT INTO {_CACHE_TABLE} (
-                    user_id, job_id, source_type, context_id, scope_key, asset_kind, cache_key, file_hash, file_path,
-                    hit_count, last_used_at, created_at, updated_at, meta_json
-                ) VALUES (
-                    :user_id, :job_id, :source_type, :context_id, :scope_key, 'image', :cache_key, :file_hash, :file_path,
-                    :hit_count, :last_used_at, :created_at, :updated_at, :meta_json
-                )
-                """
-            ), {
-                "user_id": normalized.user_id,
-                "job_id": _safe_int(normalized.metadata.get("job_id"), 0) or None,
-                "source_type": normalized.source_type,
-                "context_id": normalized.context_id or None,
-                "scope_key": normalized.scope_key,
-                "cache_key": cache_key,
-                "file_hash": file_hash,
-                "file_path": file_path,
-                "hit_count": 0,
-                "last_used_at": now,
-                "created_at": now,
-                "updated_at": now,
-                "meta_json": _json_dumps(meta),
-            })
-            stored += 1
+            manifest_assets += 1
             cache_keys.append(cache_key)
+            if not schema_available:
+                continue
 
+            _, db_error = self._execute_with_connection_recovery(
+                db,
+                insert_statement,
+                {
+                    "user_id": normalized.user_id,
+                    "job_id": _safe_int(normalized.metadata.get("job_id"), 0) or None,
+                    "source_type": normalized.source_type,
+                    "context_id": normalized.context_id or None,
+                    "scope_key": normalized.scope_key,
+                    "cache_key": cache_key,
+                    "file_hash": file_hash,
+                    "file_path": file_path,
+                    "hit_count": 0,
+                    "last_used_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                    "meta_json": _json_dumps(meta),
+                },
+                operation=f"cache insert {cache_key[:12]}",
+            )
+            if db_error:
+                persistence_errors.append(db_error)
+                schema_available = False
+                continue
+            db_stored_assets += 1
+
+        event_details: Dict[str, Any] = {
+            "stored_assets": manifest_assets,
+            "manifest_assets": manifest_assets,
+            "db_stored_assets": db_stored_assets,
+            "cache_keys": cache_keys,
+            "persistence_degraded": bool(persistence_errors),
+        }
+        if persistence_errors:
+            event_details["persistence_errors"] = persistence_errors[:3]
         self.record_context_event(
             db,
             context=normalized,
@@ -693,9 +818,10 @@ class FinancialGuardianService:
             stage="images_generated",
             estimated_cost=normalized.estimated_cost,
             actual_cost=normalized.actual_cost,
-            details={"stored_assets": stored, "cache_keys": cache_keys},
+            details=event_details,
+            best_effort=True,
         )
-        return {"stored_assets": stored, "cache_keys": cache_keys}
+        return event_details
 
     def cache_images_from_result(self, db: Session, *, job: Any, plan: Dict[str, Any], image_paths: List[str]) -> Dict[str, Any]:
         return self.cache_images_from_context_result(
