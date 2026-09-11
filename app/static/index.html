@@ -6402,7 +6402,10 @@
                     try {
                         const unpack = (value) => {
                             if (value == null) return '';
-                            if (typeof value === 'string') return value.trim();
+                            if (typeof value === 'string') {
+                                const text = value.trim();
+                                return text === '[object Object]' ? '' : text;
+                            }
                             if (typeof value === 'number' || typeof value === 'boolean') return String(value);
                             if (Array.isArray(value)) {
                                 return value.map(unpack).filter(Boolean).join(' | ').trim();
@@ -6539,7 +6542,7 @@
                             throw new Error('Não foi possível identificar a atividade que ocupa o servidor.');
                         }
                         const data = await res.json().catch(() => ({}));
-                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao solicitar pausa.');
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao solicitar pausa.'));
                         if (taskId && String(this.ytStoryTaskId || '') === taskId) {
                             const status = String(data.status || 'pause_requested').toLowerCase();
                             this.ytStoryTask = {
@@ -6558,7 +6561,7 @@
                         try { this.fetchProductionQueue(); } catch (e) {}
                         alert(data.message || 'Pausa solicitada. A próxima tarefa avançará após a etapa atual liberar o servidor.');
                     } catch (e) {
-                        alert(e.message || String(e));
+                        alert(this.formatApiError(e && e.message ? e.message : e, 'Falha ao solicitar pausa.'));
                     } finally {
                         this.ytQueueActionId = null;
                     }
@@ -6580,7 +6583,7 @@
                             throw new Error('Não foi possível identificar a produção pausada.');
                         }
                         const data = await res.json().catch(() => ({}));
-                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao retomar a produção.');
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao retomar a produção.'));
                         if (taskId) {
                             this.ytStoryTaskId = taskId;
                             this.ytStoryVideoLoading = true;
@@ -6591,7 +6594,7 @@
                         try { this.fetchProductionQueue(); } catch (e) {}
                         alert(data.message || 'Produção retomada e recolocada na fila.');
                     } catch (e) {
-                        alert(e.message || String(e));
+                        alert(this.formatApiError(e && e.message ? e.message : e, 'Falha ao retomar a produção.'));
                     } finally {
                         this.ytQueueActionId = null;
                     }
@@ -6615,7 +6618,7 @@
                             throw new Error('Não foi possível identificar a atividade que ocupa o servidor.');
                         }
                         const data = await res.json().catch(() => ({}));
-                        if (!res.ok) throw new Error(data.detail || data.message || 'Falha ao cancelar tarefa da fila.');
+                        if (!res.ok) throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao cancelar tarefa da fila.'));
                         if (String(this.ytStoryTaskId || '') === taskId) {
                             this.ytStoryTask = { status: 'cancelled', progress: (this.ytStoryTask && this.ytStoryTask.progress) ? this.ytStoryTask.progress : 0, message: 'Cancelado.' };
                             this.ytStoryTaskId = null;
@@ -6624,7 +6627,7 @@
                         await this.fetchActiveVideoTasks();
                         try { this.fetchProductionQueue(); } catch (e) {}
                     } catch (e) {
-                        alert(e.message || String(e));
+                        alert(this.formatApiError(e && e.message ? e.message : e, 'Falha ao cancelar tarefa da fila.'));
                     } finally {
                         this.ytQueueActionId = null;
                     }
@@ -9001,11 +9004,11 @@
                         const res = await this.authFetch(url);
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
-                            throw new Error(data.detail || data.message || "Falha ao diagnosticar.");
+                            throw new Error(this.formatApiError(data.detail || data.message || data, "Falha ao diagnosticar."));
                         }
                         this.ytStoryAssistReport = data;
                     } catch (e) {
-                        alert("Erro ao diagnosticar: " + (e.message || e));
+                        alert("Erro ao diagnosticar: " + this.formatApiError(e && e.message ? e.message : e, "Falha ao diagnosticar."));
                     } finally {
                         this.ytStoryAssistLoading = false;
                     }
@@ -9020,7 +9023,7 @@
                         const res = await this.authFetch(`/youtube/task/${encodeURIComponent(taskId)}/retry`, { method: 'POST' });
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
-                            throw new Error(data.detail || data.message || "Falha ao reiniciar.");
+                            throw new Error(this.formatApiError(data.detail || data.message || data, "Falha ao reiniciar."));
                         }
                         this.ytStoryAssistReport = null;
                         this.ytStoryTaskPollFails = this.ytStoryTaskPollFails || {};
@@ -9033,7 +9036,7 @@
                         }
                     } catch (e) {
                         this.ytStoryVideoLoading = false;
-                        const retryError = "Erro ao reiniciar: " + (e.message || e);
+                        const retryError = "Erro ao reiniciar: " + this.formatApiError(e && e.message ? e.message : e, "Falha ao reiniciar.");
                         this.ytStoryTask = {
                             status: 'failed',
                             progress: Number((this.ytStoryTask && this.ytStoryTask.progress) || 0),
