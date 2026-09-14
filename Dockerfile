@@ -37,6 +37,9 @@ COPY . .
 # Codexia V2 keeps the focused shell at app/static/index.html. The hardening
 # runner temporarily mounts app/static/legacy/index.html at that path so all
 # existing legacy patch contracts remain valid, then restores the V2 shell.
+# Compatibility contract executed transitively by run_build_hardening.py:
+# apply_duration_seconds_support.py --apply
+# apply_duration_seconds_support.py --check
 RUN python scripts/run_build_hardening.py --profile api && \
     python -m compileall -q app scripts && \
     python scripts/codexia_v2_legacy_ui_bridge.py check
