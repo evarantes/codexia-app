@@ -20,6 +20,13 @@ class CinematicDirectorTests(unittest.TestCase):
         self.assertAlmostEqual(profile["target_motion_ratio"], 0.10)
         self.assertLessEqual(profile["default_budget_brl"], 45.0)
 
+    def test_current_sonnet_5_pricing_is_used_by_guard(self):
+        with patch.dict(os.environ, {}, clear=True):
+            cost = CinematicDirector._estimate_cost_usd(
+                {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+            )
+        self.assertAlmostEqual(cost, 12.0)
+
     def test_normalize_plan_forces_tier_c_to_still_and_caps_motion(self):
         plan = {
             "scenes": [
