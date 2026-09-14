@@ -90,6 +90,12 @@ class CinematicVideoProvider:
         output = data.get("output") or []
         return {"provider": "runway", "job_id": job_id, "status": data.get("status"), "output_url": output[0] if output else None, "raw": data}
 
+    @staticmethod
+    def _veo_duration_value(duration: int) -> str:
+        """Clamp Codexia scene duration to the values accepted by Veo 3.1."""
+        value = int(duration or 8)
+        return "8" if value >= 8 else "6" if value >= 6 else "4"
+
     def submit_veo(self, *, prompt: str, image_base64: Optional[str] = None, image_mime: str = "image/png", duration: int = 8, premium: bool = False, aspect_ratio: str = "16:9") -> Dict[str, Any]:
         key = self._gemini_key()
         if not key:
@@ -98,16 +104,17 @@ class CinematicVideoProvider:
         instance: Dict[str, Any] = {"prompt": str(prompt or "")[:4000]}
         if image_base64:
             instance["image"] = {"inlineData": {"mimeType": image_mime, "data": image_base64}}
-        duration_value = "8" if int(duration) >= 8 else "6" if int(duration) >= 6 else "4"
-        body = {
-            "instances": [instance],
-            "parameters": {
-                "numberOfVideos": 1,
-                "durationSeconds": duration_value,
-                "aspectRatio": "9:16" if aspect_ratio == "9:16" else "16:9",
-                "resolution": "720p",
-            },
+
+        # Gemini/Veo 3.1 generates exactly one video per request. The old Codexia
+        # adapter sent numberOfVideos=1, but current Veo 3.1 rejects that field
+        # with HTTP 400 INVALID_ARGUMENT. Keep only parameters documented for the
+        # normal text/image-to-video request contract.
+        parameters: Dict[str, Any] = {
+            "durationSeconds": self._veo_duration_value(duration),
+            "aspectRatio": "9:16" if aspect_ratio == "9:16" else "16:9",
+            "resolution": "720p",
         }
+        body = {"instances": [instance], "parameters": parameters}
         response = requests.post(
             f"{self.GEMINI_BASE}/models/{model}:predictLongRunning",
             headers={"x-goog-api-key": key, "Content-Type": "application/json"},
@@ -117,7 +124,10 @@ class CinematicVideoProvider:
         if not response.ok:
             raise CinematicProviderError(f"Veo HTTP {response.status_code}: {response.text[:500]}")
         data = response.json()
-        return {"provider": "veo", "job_id": data.get("name"), "status": "PENDING", "model": model, "raw": data}
+        operation_name = str(data.get("name") or "").strip()
+        if not operation_name:
+            raise CinematicProviderError("Veo aceitou a requisição, mas não retornou o identificador da operação.")
+        return {"provider": "veo", "job_id": operation_name, "status": "PENDING", "model": model, "raw": data}
 
     def poll_veo(self, job_id: str) -> Dict[str, Any]:
         key = self._gemini_key()
@@ -128,6 +138,10 @@ class CinematicVideoProvider:
             raise CinematicProviderError(f"Veo status HTTP {response.status_code}: {response.text[:500]}")
         data = response.json()
         done = bool(data.get("done"))
+        if done and data.get("error"):
+            err = data.get("error") or {}
+            message = str(err.get("message") or err)[:700]
+            return {"provider": "veo", "job_id": job_id, "status": "FAILED", "output_url": None, "error": message, "raw": data}
         video_uri = None
         if done:
             try:
