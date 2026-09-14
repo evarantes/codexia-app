@@ -34,68 +34,12 @@ RUN python -m playwright install --with-deps chromium
 COPY . .
 
 # Apply deterministic hardening before any runtime validation/startup.
-# Narration parsing itself is source-owned by app/services/narration_core.py.
-# Build hardening may install the renderer/worker adapter and preserve assets,
-# but must never rewrite the canonical narration parser/gate with legacy layers.
-RUN python scripts/apply_consolidated_hardening.py --apply && \
-    python scripts/apply_consolidated_hardening.py --check && \
-    python scripts/apply_duration_confirmation_hardening.py --apply && \
-    python scripts/apply_duration_confirmation_hardening.py --check && \
-    python scripts/apply_duration_seconds_support.py --apply && \
-    python scripts/apply_duration_seconds_support.py --check && \
-    python scripts/apply_openai_quality_cost_hardening.py --apply && \
-    python scripts/apply_openai_quality_cost_hardening.py --check && \
-    python scripts/apply_video_cost_backend_hardening.py --apply && \
-    python scripts/apply_video_cost_backend_hardening.py --check && \
-    python scripts/apply_video_cost_ui_hardening.py --apply && \
-    python scripts/apply_video_cost_ui_hardening.py --check && \
-    python scripts/apply_voice_closure_hardening.py --apply && \
-    python scripts/apply_voice_closure_hardening.py --check && \
-    python scripts/apply_caption_integrity_self_heal.py --apply && \
-    python scripts/apply_caption_integrity_self_heal.py --check && \
-    python scripts/apply_audio_timed_global_captions.py --apply && \
-    python scripts/apply_audio_timed_global_captions.py --check && \
-    python scripts/apply_final_visual_quality_gate_self_heal.py --apply && \
-    python scripts/apply_final_visual_quality_gate_self_heal.py --check && \
-    python scripts/apply_recovery_checkpoint_hardening.py --apply && \
-    python scripts/apply_recovery_checkpoint_hardening.py --check && \
-    python scripts/apply_final_render_recovery.py --apply && \
-    python scripts/apply_final_render_recovery.py --check && \
-    python scripts/apply_final_render_recovery_compat.py --apply && \
-    python scripts/apply_final_render_recovery_compat.py --check && \
-    python scripts/apply_final_render_recovery_scope.py --apply && \
-    python scripts/apply_final_render_recovery_scope.py --check && \
-    python scripts/apply_production_manifest_hardening.py --apply && \
-    python scripts/apply_production_manifest_hardening.py --check && \
-    python scripts/apply_narration_contract_hardening.py --apply && \
-    python scripts/apply_narration_contract_hardening.py --check && \
-    python scripts/apply_manifest_diagnostics_hardening.py --apply && \
-    python scripts/apply_manifest_diagnostics_hardening.py --check && \
-    python scripts/apply_manifest_asset_recovery_hardening.py --apply && \
-    python scripts/apply_manifest_asset_recovery_hardening.py --check && \
-    python scripts/apply_adaptive_render_threads_hardening.py --apply && \
-    python scripts/apply_adaptive_render_threads_hardening.py --check && \
-    python scripts/apply_recovery_render_stall_hardening.py --apply && \
-    python scripts/apply_recovery_render_stall_hardening.py --check && \
-    python scripts/apply_recovery_render_stall_compat.py --apply && \
-    python scripts/apply_recovery_render_stall_compat.py --check && \
-    python scripts/apply_render_watchdog_false_positive_fix.py --apply && \
-    python scripts/apply_render_watchdog_false_positive_fix.py --check && \
-    python scripts/apply_recoverable_archive_queue_hardening.py --apply && \
-    python scripts/apply_recoverable_archive_queue_hardening.py --check && \
-    python scripts/apply_recoverable_archive_queue_compat.py --apply && \
-    python scripts/apply_recoverable_archive_queue_compat.py --check && \
-    python scripts/apply_final_quality_postrender_hardening.py --apply && \
-    python scripts/apply_final_quality_postrender_hardening.py --check && \
-    python scripts/apply_ready_video_asset_repair_v2.py --apply && \
-    python scripts/apply_ready_video_asset_repair_v2.py --check && \
-    python scripts/apply_ready_video_asset_repair_v3.py --apply && \
-    python scripts/apply_ready_video_asset_repair_v3.py --check && \
-    python scripts/apply_youtube_narration_gate.py --apply && \
-    python scripts/apply_youtube_narration_gate.py --check && \
-    python scripts/apply_global_logo_only_visual_mode.py --apply && \
-    python scripts/apply_global_logo_only_visual_mode.py --check && \
-    python -m compileall -q app scripts
+# Codexia V2 keeps the focused shell at app/static/index.html. The hardening
+# runner temporarily mounts app/static/legacy/index.html at that path so all
+# existing legacy patch contracts remain valid, then restores the V2 shell.
+RUN python scripts/run_build_hardening.py --profile api && \
+    python -m compileall -q app scripts && \
+    python scripts/codexia_v2_legacy_ui_bridge.py check
 
 # Create directory for static files if not exists
 RUN mkdir -p app/static/videos app/static/covers app/static/icons && \
