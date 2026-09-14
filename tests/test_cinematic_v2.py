@@ -1,9 +1,9 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.services.cinematic_compositor import CinematicCompositor
-from app.services.cinematic_director import CinematicDirector
+from app.services.cinematic_director import CinematicDirector, CinematicDirectorError
 from app.services.cinematic_video_provider import CinematicVideoProvider
 
 
@@ -26,6 +26,61 @@ class CinematicDirectorTests(unittest.TestCase):
                 {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
             )
         self.assertAlmostEqual(cost, 12.0)
+
+    def test_anthropic_director_disables_default_thinking_and_has_output_headroom(self):
+        response = Mock()
+        response.ok = True
+        response.json.return_value = {
+            "content": [
+                {"type": "thinking", "thinking": "summary"},
+                {"type": "text", "text": "{}"},
+            ],
+            "usage": {"input_tokens": 100, "output_tokens": 200},
+            "stop_reason": "end_turn",
+        }
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "app.services.cinematic_director.requests.post", return_value=response
+        ) as post:
+            text, usage = CinematicDirector()._call_anthropic("key", "system", "prompt")
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["thinking"], {"type": "disabled"})
+        self.assertEqual(body["output_config"], {"effort": "medium"})
+        self.assertGreaterEqual(body["max_tokens"], 32000)
+        self.assertEqual(text, "{}")
+        self.assertEqual(usage["output_tokens"], 200)
+
+    def test_anthropic_empty_text_reports_stop_reason_instead_of_generic_empty_error(self):
+        response = Mock()
+        response.ok = True
+        response.json.return_value = {
+            "content": [{"type": "thinking", "thinking": "too long"}],
+            "usage": {"input_tokens": 100, "output_tokens": 36000},
+            "stop_reason": "max_tokens",
+        }
+        with patch("app.services.cinematic_director.requests.post", return_value=response):
+            with self.assertRaises(CinematicDirectorError) as ctx:
+                CinematicDirector()._call_anthropic("key", "system", "prompt")
+        self.assertIn("max_tokens", str(ctx.exception))
+        self.assertNotIn("resposta vazia", str(ctx.exception).lower())
+
+    def test_openrouter_accepts_typed_content_parts(self):
+        response = Mock()
+        response.ok = True
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {"content": [{"type": "text", "text": "{}"}]},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+        }
+        with patch("app.services.cinematic_director.requests.post", return_value=response) as post:
+            text, _usage = CinematicDirector()._call_openrouter("key", "system", "prompt")
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual(body["reasoning"]["effort"], "low")
+        self.assertEqual(text, "{}")
 
     def test_normalize_plan_forces_tier_c_to_still_and_caps_motion(self):
         plan = {

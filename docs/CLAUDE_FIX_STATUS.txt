@@ -1,0 +1,1 @@
+Claude empty-response hardening implemented. Ready for pull request CI.
