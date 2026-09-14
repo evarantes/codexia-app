@@ -32,6 +32,9 @@ COPY . .
 # Narration Core v1: API and worker share the exact same source-owned parser.
 # The worker uses the same V2/legacy UI bridge so any historical hardening
 # script that touches app/static/index.html cannot overwrite the focused shell.
+# Compatibility contract executed transitively by run_build_hardening.py:
+# apply_duration_seconds_support.py --apply
+# apply_duration_seconds_support.py --check
 RUN python scripts/run_build_hardening.py --profile worker && \
     python -m compileall -q app scripts && \
     python scripts/codexia_v2_legacy_ui_bridge.py check
