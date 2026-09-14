@@ -61,7 +61,8 @@ class CinematicVideoProvider:
         if image_uri:
             body["promptImage"] = image_uri
         elif model == "gen4_turbo":
-            # Gen-4 Turbo is image-to-video only; use Gen-4.5 when no reference exists.
+            # Gen-4 Turbo requires an image. Gen-4.5 supports text-to-video
+            # through the same image_to_video endpoint when promptImage is omitted.
             body["model"] = self._env("RUNWAY_PREMIUM_MODEL") or "gen4.5"
         response = requests.post(
             f"{self.RUNWAY_BASE}/image_to_video",
@@ -76,6 +77,8 @@ class CinematicVideoProvider:
 
     def poll_runway(self, job_id: str) -> Dict[str, Any]:
         key = self._env("RUNWAYML_API_SECRET", "RUNWAY_API_KEY")
+        if not key:
+            raise CinematicProviderError("Runway não configurado.")
         response = requests.get(
             f"{self.RUNWAY_BASE}/tasks/{job_id}",
             headers={"Authorization": f"Bearer {key}", "X-Runway-Version": "2024-11-06"},
@@ -95,11 +98,12 @@ class CinematicVideoProvider:
         instance: Dict[str, Any] = {"prompt": str(prompt or "")[:4000]}
         if image_base64:
             instance["image"] = {"inlineData": {"mimeType": image_mime, "data": image_base64}}
+        duration_value = "8" if int(duration) >= 8 else "6" if int(duration) >= 6 else "4"
         body = {
             "instances": [instance],
             "parameters": {
                 "numberOfVideos": 1,
-                "durationSeconds": 8 if int(duration) >= 8 else 6 if int(duration) >= 6 else 4,
+                "durationSeconds": duration_value,
                 "aspectRatio": "9:16" if aspect_ratio == "9:16" else "16:9",
                 "resolution": "720p",
             },
@@ -117,6 +121,8 @@ class CinematicVideoProvider:
 
     def poll_veo(self, job_id: str) -> Dict[str, Any]:
         key = self._gemini_key()
+        if not key:
+            raise CinematicProviderError("Veo não configurado.")
         response = requests.get(f"{self.GEMINI_BASE}/{job_id.lstrip('/')}", headers={"x-goog-api-key": key}, timeout=45)
         if not response.ok:
             raise CinematicProviderError(f"Veo status HTTP {response.status_code}: {response.text[:500]}")
@@ -165,6 +171,8 @@ class CinematicVideoProvider:
 
     def poll_kling(self, *, job_id: str, status_url: Optional[str] = None, response_url: Optional[str] = None, model_path: Optional[str] = None) -> Dict[str, Any]:
         key = self._env("FAL_KEY")
+        if not key:
+            raise CinematicProviderError("Kling não configurado.")
         model = model_path or "fal-ai/kling-video/v3/standard/image-to-video"
         status_endpoint = status_url or f"{self.FAL_BASE}/{model}/requests/{job_id}/status"
         status_resp = requests.get(status_endpoint, headers={"Authorization": f"Key {key}"}, timeout=45)
@@ -182,14 +190,34 @@ class CinematicVideoProvider:
         video = result.get("video") or {}
         return {"provider": "kling", "job_id": job_id, "status": "SUCCEEDED", "output_url": video.get("url"), "raw": result}
 
+    def _fallback_text_to_video_provider(self) -> Optional[str]:
+        """Choose a provider that can start from text when no reference still exists."""
+        if self._gemini_key():
+            return "veo"
+        if self._env("RUNWAYML_API_SECRET", "RUNWAY_API_KEY"):
+            return "runway"
+        return None
+
     def submit(self, *, provider: str, prompt: str, image_uri: Optional[str] = None, image_base64: Optional[str] = None, duration: int = 5, premium: bool = False, aspect_ratio: str = "16:9") -> Dict[str, Any]:
         provider = str(provider or "runway").strip().lower()
+        requested_provider = provider
+        # Kling v3 image-to-video requires a public first frame. When a pilot is
+        # requested before a still exists, fail over to a text-to-video provider
+        # instead of presenting a dead button to the user.
+        if provider == "kling" and (not image_uri or str(image_uri).startswith("data:")):
+            provider = self._fallback_text_to_video_provider() or "kling"
         if provider == "runway":
-            return self.submit_runway(prompt=prompt, image_uri=image_uri, duration=duration, premium=premium, ratio="720:1280" if aspect_ratio == "9:16" else "1280:720")
-        if provider == "veo":
-            return self.submit_veo(prompt=prompt, image_base64=image_base64, duration=duration, premium=premium, aspect_ratio=aspect_ratio)
-        if provider == "kling":
-            if not image_uri or image_uri.startswith("data:"):
-                raise CinematicProviderError("Kling/fal requer uma URL pública da imagem inicial.")
-            return self.submit_kling(prompt=prompt, start_image_url=image_uri, duration=duration, premium=premium)
-        raise CinematicProviderError(f"Provedor de vídeo não suportado: {provider}")
+            result = self.submit_runway(prompt=prompt, image_uri=image_uri, duration=duration, premium=premium, ratio="720:1280" if aspect_ratio == "9:16" else "1280:720")
+        elif provider == "veo":
+            result = self.submit_veo(prompt=prompt, image_base64=image_base64, duration=duration, premium=premium, aspect_ratio=aspect_ratio)
+        elif provider == "kling":
+            if not image_uri or str(image_uri).startswith("data:"):
+                raise CinematicProviderError("Kling/fal requer uma URL pública da imagem inicial e não há Veo/Runway configurado para fallback.")
+            result = self.submit_kling(prompt=prompt, start_image_url=image_uri, duration=duration, premium=premium)
+        else:
+            raise CinematicProviderError(f"Provedor de vídeo não suportado: {provider}")
+        if requested_provider != provider:
+            result["requested_provider"] = requested_provider
+            result["fallback_provider"] = provider
+            result["fallback_reason"] = "O provedor solicitado exige imagem inicial; foi usado um provedor texto-para-vídeo configurado."
+        return result
