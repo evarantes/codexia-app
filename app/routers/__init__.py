@@ -4,6 +4,7 @@ Codexia V2 keeps the existing YouTube router as the canonical production entry
 and mounts the new cinematic control plane below /youtube/cinematic without
 changing the large legacy router.
 """
+from . import pydantic_compat as _pydantic_compat  # noqa: F401
 from . import youtube as youtube
 from .cinematic_campaign import router as _cinematic_router
 
