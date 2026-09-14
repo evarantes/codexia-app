@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -124,6 +125,220 @@ def _derived(c: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _usd_brl() -> float:
+    try:
+        return max(0.01, float(os.getenv("CODEXIA_USD_BRL") or "5.12"))
+    except Exception:
+        return 5.12
+
+
+def _estimate_components(
+    *,
+    content_type: str,
+    duration_minutes: int,
+    motion_seconds: int,
+    premium_motion_seconds: int,
+    estimated_images: int,
+    voice: str = "elevenlabs",
+) -> Dict[str, float]:
+    image_usd = 0.02 * max(1, int(estimated_images))
+    total_motion = max(0, int(motion_seconds))
+    premium_seconds = max(0, min(total_motion, int(premium_motion_seconds)))
+    economy_seconds = max(0, total_motion - premium_seconds)
+    motion_usd = economy_seconds * 0.05 + premium_seconds * 0.11
+    voice_usd = (max(1, int(duration_minutes)) * 0.10) if voice == "elevenlabs" else 0.0
+    claude_usd = 0.35 if str(content_type or "story").lower() == "story" else 0.22
+    subtotal_usd = image_usd + motion_usd + voice_usd + claude_usd
+    reserve_usd = subtotal_usd * 0.15
+    return {
+        "claude": claude_usd,
+        "images": image_usd,
+        "motion": motion_usd,
+        "voice": voice_usd,
+        "recovery_reserve": reserve_usd,
+        "total_usd": subtotal_usd + reserve_usd,
+    }
+
+
+def _rebalance_plan_to_budget(
+    plan: Dict[str, Any],
+    *,
+    content_type: str,
+    duration_minutes: int,
+    budget_brl: float,
+) -> Dict[str, Any]:
+    """Keep cinematic movement while demoting premium scenes until cost fits.
+
+    Strategy: preserve as much total motion as possible, then spend premium motion
+    only on the highest-value A scenes. We target 95% of the requested ceiling so
+    small provider/currency variance does not turn an R$85 plan into R$86 at run time.
+    """
+    scenes = plan.get("scenes") if isinstance(plan.get("scenes"), list) else []
+    clean: List[Dict[str, Any]] = [scene for scene in scenes if isinstance(scene, dict)]
+    if not clean:
+        plan["budget_guard"] = {
+            "enabled": True,
+            "budget_limit_brl": round(float(budget_brl or 0), 2),
+            "estimated_brl": 0.0,
+            "budget_respected": True,
+            "rebalanced": False,
+        }
+        return plan
+
+    budget_limit = max(1.0, float(budget_brl or 1.0))
+    safe_budget = budget_limit * 0.95
+    fx = _usd_brl()
+    reserve_factor = 1.15
+    image_usd = 0.02 * len(clean)
+    voice_usd = max(1, int(duration_minutes)) * 0.10
+    claude_usd = 0.35 if str(content_type or "story").lower() == "story" else 0.22
+    fixed_usd = image_usd + voice_usd + claude_usd
+    pre_reserve_budget_usd = safe_budget / fx / reserve_factor
+    motion_budget_usd = max(0.0, pre_reserve_budget_usd - fixed_usd)
+
+    rebalanced = False
+    original_premium = sum(
+        max(0, int(scene.get("generative_video_seconds") or 0))
+        for scene in clean
+        if str(scene.get("tier") or "").upper() == "A"
+    )
+
+    # First guarantee that even all-economy motion fits. If not, trim B scenes
+    # before touching hook/climax A scenes.
+    total_motion = sum(max(0, int(scene.get("generative_video_seconds") or 0)) for scene in clean)
+    max_economy_seconds = max(0, int(math.floor(motion_budget_usd / 0.05)))
+    excess = max(0, total_motion - max_economy_seconds)
+    if excess:
+        def trim_rank(scene: Dict[str, Any]) -> tuple[int, int]:
+            tier = str(scene.get("tier") or "C").upper()
+            purpose = str(scene.get("purpose") or "story").lower()
+            if tier == "B":
+                priority = 0
+            elif tier == "A" and purpose not in {"hook", "climax"}:
+                priority = 1
+            elif tier == "A" and purpose == "hook":
+                priority = 2
+            else:
+                priority = 3
+            return priority, -int(scene.get("index") or 0)
+
+        for scene in sorted(clean, key=trim_rank):
+            if excess <= 0:
+                break
+            current = max(0, int(scene.get("generative_video_seconds") or 0))
+            if current <= 0:
+                continue
+            cut = min(current, excess)
+            scene["generative_video_seconds"] = current - cut
+            excess -= cut
+            rebalanced = True
+
+    total_motion = sum(max(0, int(scene.get("generative_video_seconds") or 0)) for scene in clean)
+    economy_floor_usd = total_motion * 0.05
+    premium_extra_budget = max(0.0, motion_budget_usd - economy_floor_usd)
+    premium_cap_seconds = max(0, int(math.floor(premium_extra_budget / 0.06)))
+
+    # Keep premium only on the strongest moments. Whole scenes stay premium or
+    # are demoted, so a single generated clip never changes provider mid-scene.
+    def premium_rank(scene: Dict[str, Any]) -> tuple[int, int]:
+        purpose = str(scene.get("purpose") or "story").lower()
+        order = {
+            "climax": 0,
+            "hook": 1,
+            "tension": 2,
+            "story": 3,
+            "application": 4,
+            "prayer": 5,
+            "cta": 6,
+        }
+        return order.get(purpose, 3), int(scene.get("index") or 0)
+
+    premium_used = 0
+    for scene in sorted(
+        [s for s in clean if str(s.get("tier") or "").upper() == "A"],
+        key=premium_rank,
+    ):
+        seconds = max(0, int(scene.get("generative_video_seconds") or 0))
+        if seconds <= 0:
+            scene["tier"] = "B"
+            scene["recommended_provider"] = "runway"
+            rebalanced = True
+            continue
+        if premium_used + seconds <= premium_cap_seconds:
+            premium_used += seconds
+            if str(scene.get("recommended_provider") or "").lower() not in {"kling", "veo"}:
+                scene["recommended_provider"] = "veo"
+            continue
+        scene["tier"] = "B"
+        scene["recommended_provider"] = "runway"
+        rebalanced = True
+
+    premium_seconds = sum(
+        max(0, int(scene.get("generative_video_seconds") or 0))
+        for scene in clean
+        if str(scene.get("tier") or "").upper() == "A"
+    )
+    total_motion = sum(max(0, int(scene.get("generative_video_seconds") or 0)) for scene in clean)
+    components = _estimate_components(
+        content_type=content_type,
+        duration_minutes=duration_minutes,
+        motion_seconds=total_motion,
+        premium_motion_seconds=premium_seconds,
+        estimated_images=len(clean),
+        voice="elevenlabs",
+    )
+    estimated_brl = components["total_usd"] * fx
+
+    # Rounding whole premium scenes can still leave us a few centavos above the
+    # ceiling. If that ever happens, demote remaining premium scenes until safe.
+    if estimated_brl > budget_limit:
+        premium_scenes = sorted(
+            [s for s in clean if str(s.get("tier") or "").upper() == "A"],
+            key=premium_rank,
+            reverse=True,
+        )
+        for scene in premium_scenes:
+            scene["tier"] = "B"
+            scene["recommended_provider"] = "runway"
+            rebalanced = True
+            premium_seconds = sum(
+                max(0, int(s.get("generative_video_seconds") or 0))
+                for s in clean
+                if str(s.get("tier") or "").upper() == "A"
+            )
+            components = _estimate_components(
+                content_type=content_type,
+                duration_minutes=duration_minutes,
+                motion_seconds=total_motion,
+                premium_motion_seconds=premium_seconds,
+                estimated_images=len(clean),
+                voice="elevenlabs",
+            )
+            estimated_brl = components["total_usd"] * fx
+            if estimated_brl <= budget_limit:
+                break
+
+    plan["scenes"] = clean
+    plan["motion_planned_seconds"] = total_motion
+    checks = plan.get("quality_checks") if isinstance(plan.get("quality_checks"), dict) else {}
+    checks["budget_respected"] = estimated_brl <= budget_limit
+    plan["quality_checks"] = checks
+    plan["budget_guard"] = {
+        "enabled": True,
+        "budget_limit_brl": round(budget_limit, 2),
+        "safe_target_brl": round(safe_budget, 2),
+        "estimated_brl": round(estimated_brl, 2),
+        "budget_respected": estimated_brl <= budget_limit,
+        "rebalanced": rebalanced,
+        "original_premium_motion_seconds": int(original_premium),
+        "premium_motion_seconds": int(premium_seconds),
+        "economy_motion_seconds": int(max(0, total_motion - premium_seconds)),
+        "total_motion_seconds": int(total_motion),
+        "headroom_brl": round(max(0.0, budget_limit - estimated_brl), 2),
+    }
+    return plan
+
+
 class CampaignUpdate(BaseModel):
     budget_brl: Optional[float] = Field(None, ge=0, le=100000)
     spent_brl: Optional[float] = Field(None, ge=0, le=100000)
@@ -228,9 +443,15 @@ def director_plan(
             duration_minutes=body.duration_minutes,
             budget_brl=body.budget_brl,
         )
-        usd_brl = float(os.getenv("CODEXIA_USD_BRL") or "5.12")
+        plan = _rebalance_plan_to_budget(
+            result.plan,
+            content_type=body.content_type,
+            duration_minutes=body.duration_minutes,
+            budget_brl=body.budget_brl,
+        )
+        usd_brl = _usd_brl()
         return {
-            "plan": result.plan,
+            "plan": plan,
             "director": {
                 "provider": result.provider,
                 "model": result.model,
@@ -245,26 +466,26 @@ def director_plan(
 
 @router.post("/estimate")
 def estimate_cost(body: EstimateRequest):
-    usd_brl = float(os.getenv("CODEXIA_USD_BRL") or "5.12")
-    image_usd = 0.02 * int(body.estimated_images)
-    motion_seconds = max(0, int(body.motion_seconds) - int(body.premium_motion_seconds))
-    premium_seconds = min(int(body.motion_seconds), int(body.premium_motion_seconds))
-    motion_usd = motion_seconds * 0.05 + premium_seconds * 0.11
-    voice_usd = (int(body.duration_minutes) * 0.10) if body.voice == "elevenlabs" else 0.0
-    claude_usd = 0.35 if body.content_type == "story" else 0.22
-    reserve_usd = (image_usd + motion_usd + voice_usd + claude_usd) * 0.15
-    total_usd = image_usd + motion_usd + voice_usd + claude_usd + reserve_usd
+    usd_brl = _usd_brl()
+    components = _estimate_components(
+        content_type=body.content_type,
+        duration_minutes=body.duration_minutes,
+        motion_seconds=body.motion_seconds,
+        premium_motion_seconds=body.premium_motion_seconds,
+        estimated_images=body.estimated_images,
+        voice=body.voice,
+    )
     return {
         "currency_rate_usd_brl": usd_brl,
         "components_usd": {
-            "claude": round(claude_usd, 2),
-            "images": round(image_usd, 2),
-            "motion": round(motion_usd, 2),
-            "voice": round(voice_usd, 2),
-            "recovery_reserve": round(reserve_usd, 2),
+            "claude": round(components["claude"], 2),
+            "images": round(components["images"], 2),
+            "motion": round(components["motion"], 2),
+            "voice": round(components["voice"], 2),
+            "recovery_reserve": round(components["recovery_reserve"], 2),
         },
-        "total_usd": round(total_usd, 2),
-        "total_brl": round(total_usd * usd_brl, 2),
+        "total_usd": round(components["total_usd"], 2),
+        "total_brl": round(components["total_usd"] * usd_brl, 2),
         "note": "Estimativa prévia. O custo real deve ser registrado pelas respostas de cada provedor antes de novas regenerações.",
     }
 
