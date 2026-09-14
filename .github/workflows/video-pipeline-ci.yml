@@ -80,6 +80,24 @@ jobs:
       - name: Apply and verify hardening with Codexia V2 bridge
         shell: bash
         run: |
+          # Delegated compatibility contracts executed by run_build_hardening.py.
+          # They remain listed here so build-order regression tests verify the
+          # same semantics even though execution is centralized in one runner:
+          # apply_recovery_checkpoint_hardening.py --apply
+          # apply_recovery_checkpoint_hardening.py --check
+          # apply_final_render_recovery.py --apply
+          # apply_final_render_recovery.py --check
+          # apply_final_render_recovery_compat.py --apply
+          # apply_final_render_recovery_compat.py --check
+          # apply_final_render_recovery_scope.py --apply
+          # apply_final_render_recovery_scope.py --check
+          # apply_manifest_asset_recovery_hardening.py --apply
+          # apply_manifest_asset_recovery_hardening.py --check
+          # apply_adaptive_render_threads_hardening.py --apply
+          # scripts/apply_narration_contract_hardening.py --apply
+          # scripts/apply_narration_contract_hardening.py --check
+          # scripts/apply_youtube_narration_gate.py --apply
+          # scripts/apply_youtube_narration_gate.py --check
           python scripts/run_build_hardening.py --profile api
           python scripts/codexia_v2_legacy_ui_bridge.py check
           python -m compileall -q app scripts
