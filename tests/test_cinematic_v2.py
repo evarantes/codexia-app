@@ -2,6 +2,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
+from app.routers.cinematic_campaign import _estimate_components, _rebalance_plan_to_budget
 from app.services.cinematic_compositor import CinematicCompositor
 from app.services.cinematic_director import CinematicDirector, CinematicDirectorError
 from app.services.cinematic_video_provider import CinematicVideoProvider
@@ -101,6 +102,81 @@ class CinematicDirectorTests(unittest.TestCase):
         self.assertEqual(normalized["scenes"][1]["tier"], "C")
         self.assertEqual(normalized["scenes"][1]["generative_video_seconds"], 0)
         self.assertEqual(normalized["scenes"][1]["recommended_provider"], "still")
+
+    def test_budget_guard_demotes_premium_motion_and_stays_under_ceiling(self):
+        scenes = []
+        for index in range(1, 13):
+            scenes.append(
+                {
+                    "index": index,
+                    "tier": "A",
+                    "purpose": "climax" if index in {10, 11} else "story",
+                    "recommended_provider": "kling",
+                    "generative_video_seconds": 14,
+                }
+            )
+        for index in range(13, 31):
+            scenes.append(
+                {
+                    "index": index,
+                    "tier": "C",
+                    "purpose": "story",
+                    "recommended_provider": "still",
+                    "generative_video_seconds": 0,
+                }
+            )
+        plan = {"scenes": scenes, "quality_checks": {}}
+        with patch.dict(os.environ, {"CODEXIA_USD_BRL": "5.12"}, clear=False):
+            guarded = _rebalance_plan_to_budget(
+                plan,
+                content_type="story",
+                duration_minutes=10,
+                budget_brl=85,
+            )
+        guard = guarded["budget_guard"]
+        self.assertTrue(guard["budget_respected"])
+        self.assertLessEqual(guard["estimated_brl"], 85.0)
+        self.assertLess(guard["premium_motion_seconds"], guard["original_premium_motion_seconds"])
+        self.assertGreater(guard["economy_motion_seconds"], 0)
+        self.assertTrue(guard["rebalanced"])
+        self.assertTrue(guarded["quality_checks"]["budget_respected"])
+
+    def test_budget_guard_preserves_total_motion_when_economy_floor_fits(self):
+        plan = {
+            "scenes": [
+                {
+                    "index": i,
+                    "tier": "A" if i <= 8 else "B",
+                    "purpose": "climax" if i == 8 else "story",
+                    "recommended_provider": "kling" if i <= 8 else "runway",
+                    "generative_video_seconds": 12,
+                }
+                for i in range(1, 15)
+            ]
+        }
+        original_motion = sum(s["generative_video_seconds"] for s in plan["scenes"])
+        with patch.dict(os.environ, {"CODEXIA_USD_BRL": "5.12"}, clear=False):
+            guarded = _rebalance_plan_to_budget(
+                plan,
+                content_type="story",
+                duration_minutes=10,
+                budget_brl=85,
+            )
+        self.assertEqual(guarded["budget_guard"]["total_motion_seconds"], original_motion)
+        self.assertLessEqual(guarded["budget_guard"]["estimated_brl"], 85.0)
+
+    def test_estimate_components_matches_mixed_motion_rates(self):
+        components = _estimate_components(
+            content_type="story",
+            duration_minutes=10,
+            motion_seconds=168,
+            premium_motion_seconds=56,
+            estimated_images=30,
+            voice="elevenlabs",
+        )
+        expected_motion = (112 * 0.05) + (56 * 0.11)
+        self.assertAlmostEqual(components["motion"], expected_motion, places=6)
+        self.assertGreater(components["recovery_reserve"], 0)
 
 
 class CinematicCompositorTests(unittest.TestCase):
