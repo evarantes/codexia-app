@@ -78,14 +78,30 @@ jobs:
           python -m pip install --quiet -r requirements.txt
 
       - name: Apply and verify hardening with Codexia V2 bridge
+        shell: bash
         run: |
           python scripts/run_build_hardening.py --profile api
           python scripts/codexia_v2_legacy_ui_bridge.py check
           python -m compileall -q app scripts
           # The canonical narration files are source-owned. No hardening step may rewrite them.
           git diff --exit-code -- app/services/narration_core.py app/services/youtube_narration_gate.py app/services/narration_contract_guard.py app/static/youtube_narration_gate.js
+
+          # Historical UI contracts still validate the archived full interface.
+          # Mount it only for those tests, then restore the focused V2 shell.
+          python scripts/codexia_v2_legacy_ui_bridge.py enter
+          set +e
           python -m unittest tests.test_narration_core_v1 -q
+          narration_status=$?
           python -m unittest tests.test_duration_seconds_support -q
+          duration_status=$?
+          set -e
+          python scripts/codexia_v2_legacy_ui_bridge.py exit
+          python scripts/codexia_v2_legacy_ui_bridge.py check
+          if [ "$narration_status" -ne 0 ] || [ "$duration_status" -ne 0 ]; then
+            exit 1
+          fi
+
+          # New architecture contracts are checked with the V2 shell active.
           python -m unittest tests.test_cinematic_v2 -q
 
       - name: Apply canonical Alembic migration on PostgreSQL
@@ -106,9 +122,16 @@ jobs:
           DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-ci.sqlite3
         shell: bash
         run: |
+          # The pre-V2 regression suite owns contracts for the historical UI.
+          # Run it against the archived UI and always restore V2 before exiting.
+          python scripts/codexia_v2_legacy_ui_bridge.py enter
           set +e
           python -m unittest discover -s tests -q > /tmp/codexia-unittest.log 2>&1
           test_status=$?
+          set -e
+          python scripts/codexia_v2_legacy_ui_bridge.py exit
+          python scripts/codexia_v2_legacy_ui_bridge.py check
+
           if [ "$test_status" -ne 0 ]; then
             echo "===== UNIT TEST FAILURES ====="
             tail -n 180 /tmp/codexia-unittest.log
