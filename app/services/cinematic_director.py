@@ -44,6 +44,46 @@ class CinematicDirector:
     def _secret(settings: Optional[Settings], attr: str, env: str) -> str:
         return str(getattr(settings, attr, None) or os.getenv(env) or "").strip()
 
+    @staticmethod
+    def _max_output_tokens() -> int:
+        # Sonnet 5 enables adaptive thinking by default and uses a newer tokenizer.
+        # The director produces a long JSON document, so keep enough headroom even
+        # though we explicitly disable thinking for this deterministic task.
+        try:
+            value = int(os.getenv("CLAUDE_DIRECTOR_MAX_TOKENS") or "36000")
+        except Exception:
+            value = 36000
+        return max(8000, min(64000, value))
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str:
+        """Normalize provider content shapes into plain text.
+
+        Anthropic returns a list of typed content blocks. OpenRouter normally
+        returns a string for chat/completions but can also surface typed parts.
+        """
+        if isinstance(content, str):
+            return content.strip()
+        if not isinstance(content, list):
+            return ""
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                if block.strip():
+                    parts.append(block.strip())
+                continue
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            if block_type not in {"text", "output_text", "message"}:
+                continue
+            value = block.get("text")
+            if value is None:
+                value = block.get("content")
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+        return "\n".join(parts).strip()
+
     def status(self) -> Dict[str, Any]:
         anthropic = bool(self._secret(self.settings, "anthropic_api_key", "ANTHROPIC_API_KEY"))
         openrouter = bool(self._secret(self.settings, "openrouter_api_key", "OPENROUTER_API_KEY"))
@@ -192,7 +232,14 @@ Estrutura JSON obrigatória (preencha tudo e não inclua campos fora dela):
     def _call_anthropic(self, api_key: str, system: str, prompt: str) -> Tuple[str, Dict[str, Any]]:
         body = {
             "model": self.model,
-            "max_tokens": 18000,
+            "max_tokens": self._max_output_tokens(),
+            # Sonnet 5 turns adaptive thinking on when this field is omitted.
+            # For our long deterministic JSON payload that can consume the entire
+            # output budget before a text block is emitted, producing the exact
+            # "resposta vazia" seen in production. Disable it here and spend the
+            # tokens on the actual script/scene plan instead.
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "medium"},
             "system": system,
             "messages": [{"role": "user", "content": prompt}],
         }
@@ -204,14 +251,26 @@ Estrutura JSON obrigatória (preencha tudo e não inclua campos fora dela):
                 "content-type": "application/json",
             },
             json=body,
-            timeout=180,
+            timeout=240,
         )
         if not response.ok:
             raise CinematicDirectorError(f"Anthropic respondeu HTTP {response.status_code}: {response.text[:500]}")
         data = response.json()
         blocks = data.get("content") or []
-        text = "\n".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+        text = self._content_to_text(blocks)
         usage = data.get("usage") or {}
+        if not text:
+            stop_reason = str(data.get("stop_reason") or "desconhecido")
+            block_types = [str(b.get("type") or "") for b in blocks if isinstance(b, dict)]
+            if stop_reason == "max_tokens":
+                raise CinematicDirectorError(
+                    "Claude atingiu o limite de saída antes de entregar o plano. "
+                    f"stop_reason=max_tokens; blocos={block_types or ['nenhum']}."
+                )
+            raise CinematicDirectorError(
+                "Claude respondeu sem bloco de texto. "
+                f"stop_reason={stop_reason}; blocos={block_types or ['nenhum']}."
+            )
         return text, usage
 
     def _call_openrouter(self, api_key: str, system: str, prompt: str) -> Tuple[str, Dict[str, Any]]:
@@ -229,16 +288,27 @@ Estrutura JSON obrigatória (preencha tudo e não inclua campos fora dela):
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt},
                 ],
-                "max_tokens": 18000,
+                "max_tokens": self._max_output_tokens(),
+                "reasoning": {"effort": "low", "exclude": True},
+                "response_format": {"type": "json_object"},
             },
-            timeout=180,
+            timeout=240,
         )
         if not response.ok:
             raise CinematicDirectorError(f"OpenRouter respondeu HTTP {response.status_code}: {response.text[:500]}")
         data = response.json()
         choices = data.get("choices") or []
-        text = str(((choices[0] if choices else {}).get("message") or {}).get("content") or "")
+        choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = choice.get("message") if isinstance(choice, dict) else {}
+        message = message if isinstance(message, dict) else {}
+        text = self._content_to_text(message.get("content"))
         usage = data.get("usage") or {}
+        if not text:
+            finish_reason = str(choice.get("finish_reason") or "desconhecido")
+            raise CinematicDirectorError(
+                "OpenRouter/Claude respondeu sem conteúdo de texto. "
+                f"finish_reason={finish_reason}."
+            )
         return text, usage
 
     @staticmethod
