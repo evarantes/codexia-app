@@ -37,9 +37,26 @@ COPY . .
 # Codexia V2 keeps the focused shell at app/static/index.html. The hardening
 # runner temporarily mounts app/static/legacy/index.html at that path so all
 # existing legacy patch contracts remain valid, then restores the V2 shell.
-# Compatibility contract executed transitively by run_build_hardening.py:
+#
+# Delegated build-contract order (executed by scripts/run_build_hardening.py):
 # apply_duration_seconds_support.py --apply
 # apply_duration_seconds_support.py --check
+# apply_recovery_checkpoint_hardening.py --apply
+# apply_recovery_checkpoint_hardening.py --check
+# apply_final_render_recovery.py --apply
+# apply_final_render_recovery.py --check
+# apply_final_render_recovery_compat.py --apply
+# apply_final_render_recovery_compat.py --check
+# apply_final_render_recovery_scope.py --apply
+# apply_final_render_recovery_scope.py --check
+# apply_manifest_asset_recovery_hardening.py --apply
+# apply_manifest_asset_recovery_hardening.py --check
+# apply_adaptive_render_threads_hardening.py --apply
+# scripts/apply_narration_contract_hardening.py --apply
+# scripts/apply_narration_contract_hardening.py --check
+# scripts/apply_youtube_narration_gate.py --apply
+# scripts/apply_youtube_narration_gate.py --check
+# narration_core.py is the source-owned narration core used after these adapters.
 RUN python scripts/run_build_hardening.py --profile api && \
     python -m compileall -q app scripts && \
     python scripts/codexia_v2_legacy_ui_bridge.py check
