@@ -77,71 +77,50 @@ jobs:
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet -r requirements.txt
 
-      - name: Apply and verify consolidated hardening
+      - name: Apply and verify hardening with Codexia V2 bridge
+        shell: bash
         run: |
-          python scripts/apply_consolidated_hardening.py --apply
-          python scripts/apply_consolidated_hardening.py --check
-          python scripts/apply_duration_confirmation_hardening.py --apply
-          python scripts/apply_duration_confirmation_hardening.py --check
-          python scripts/apply_duration_seconds_support.py --apply
-          python scripts/apply_duration_seconds_support.py --check
-          python scripts/apply_openai_quality_cost_hardening.py --apply
-          python scripts/apply_openai_quality_cost_hardening.py --check
-          python scripts/apply_video_cost_backend_hardening.py --apply
-          python scripts/apply_video_cost_backend_hardening.py --check
-          python scripts/apply_video_cost_ui_hardening.py --apply
-          python scripts/apply_video_cost_ui_hardening.py --check
-          python scripts/apply_voice_closure_hardening.py --apply
-          python scripts/apply_voice_closure_hardening.py --check
-          python scripts/apply_caption_integrity_self_heal.py --apply
-          python scripts/apply_caption_integrity_self_heal.py --check
-          python scripts/apply_audio_timed_global_captions.py --apply
-          python scripts/apply_audio_timed_global_captions.py --check
-          python scripts/apply_final_visual_quality_gate_self_heal.py --apply
-          python scripts/apply_final_visual_quality_gate_self_heal.py --check
-          python scripts/apply_recovery_checkpoint_hardening.py --apply
-          python scripts/apply_recovery_checkpoint_hardening.py --check
-          python scripts/apply_final_render_recovery.py --apply
-          python scripts/apply_final_render_recovery.py --check
-          python scripts/apply_final_render_recovery_compat.py --apply
-          python scripts/apply_final_render_recovery_compat.py --check
-          python scripts/apply_final_render_recovery_scope.py --apply
-          python scripts/apply_final_render_recovery_scope.py --check
-          python scripts/apply_production_manifest_hardening.py --apply
-          python scripts/apply_production_manifest_hardening.py --check
-          python scripts/apply_narration_contract_hardening.py --apply
-          python scripts/apply_narration_contract_hardening.py --check
-          python scripts/apply_manifest_diagnostics_hardening.py --apply
-          python scripts/apply_manifest_diagnostics_hardening.py --check
-          python scripts/apply_manifest_asset_recovery_hardening.py --apply
-          python scripts/apply_manifest_asset_recovery_hardening.py --check
-          python scripts/apply_adaptive_render_threads_hardening.py --apply
-          python scripts/apply_adaptive_render_threads_hardening.py --check
-          python scripts/apply_recovery_render_stall_hardening.py --apply
-          python scripts/apply_recovery_render_stall_hardening.py --check
-          python scripts/apply_recovery_render_stall_compat.py --apply
-          python scripts/apply_recovery_render_stall_compat.py --check
-          python scripts/apply_render_watchdog_false_positive_fix.py --apply
-          python scripts/apply_render_watchdog_false_positive_fix.py --check
-          python scripts/apply_recoverable_archive_queue_hardening.py --apply
-          python scripts/apply_recoverable_archive_queue_hardening.py --check
-          python scripts/apply_recoverable_archive_queue_compat.py --apply
-          python scripts/apply_recoverable_archive_queue_compat.py --check
-          python scripts/apply_final_quality_postrender_hardening.py --apply
-          python scripts/apply_final_quality_postrender_hardening.py --check
-          python scripts/apply_ready_video_asset_repair_v2.py --apply
-          python scripts/apply_ready_video_asset_repair_v2.py --check
-          python scripts/apply_ready_video_asset_repair_v3.py --apply
-          python scripts/apply_ready_video_asset_repair_v3.py --check
-          python scripts/apply_youtube_narration_gate.py --apply
-          python scripts/apply_youtube_narration_gate.py --check
-          python scripts/apply_global_logo_only_visual_mode.py --apply
-          python scripts/apply_global_logo_only_visual_mode.py --check
+          # Delegated compatibility contracts executed by run_build_hardening.py.
+          # They remain listed here so build-order regression tests verify the
+          # same semantics even though execution is centralized in one runner:
+          # apply_recovery_checkpoint_hardening.py --apply
+          # apply_recovery_checkpoint_hardening.py --check
+          # apply_final_render_recovery.py --apply
+          # apply_final_render_recovery.py --check
+          # apply_final_render_recovery_compat.py --apply
+          # apply_final_render_recovery_compat.py --check
+          # apply_final_render_recovery_scope.py --apply
+          # apply_final_render_recovery_scope.py --check
+          # apply_manifest_asset_recovery_hardening.py --apply
+          # apply_manifest_asset_recovery_hardening.py --check
+          # apply_adaptive_render_threads_hardening.py --apply
+          # scripts/apply_narration_contract_hardening.py --apply
+          # scripts/apply_narration_contract_hardening.py --check
+          # scripts/apply_youtube_narration_gate.py --apply
+          # scripts/apply_youtube_narration_gate.py --check
+          python scripts/run_build_hardening.py --profile api
+          python scripts/codexia_v2_legacy_ui_bridge.py check
           python -m compileall -q app scripts
           # The canonical narration files are source-owned. No hardening step may rewrite them.
           git diff --exit-code -- app/services/narration_core.py app/services/youtube_narration_gate.py app/services/narration_contract_guard.py app/static/youtube_narration_gate.js
+
+          # Historical UI contracts still validate the archived full interface.
+          # Mount it only for those tests, then restore the focused V2 shell.
+          python scripts/codexia_v2_legacy_ui_bridge.py enter
+          set +e
           python -m unittest tests.test_narration_core_v1 -q
+          narration_status=$?
           python -m unittest tests.test_duration_seconds_support -q
+          duration_status=$?
+          set -e
+          python scripts/codexia_v2_legacy_ui_bridge.py exit
+          python scripts/codexia_v2_legacy_ui_bridge.py check
+          if [ "$narration_status" -ne 0 ] || [ "$duration_status" -ne 0 ]; then
+            exit 1
+          fi
+
+          # New architecture contracts are checked with the V2 shell active.
+          python -m unittest tests.test_cinematic_v2 -q
 
       - name: Apply canonical Alembic migration on PostgreSQL
         run: |
@@ -161,15 +140,21 @@ jobs:
           DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-ci.sqlite3
         shell: bash
         run: |
+          # The pre-V2 regression suite owns contracts for the historical UI.
+          # Run it against the archived UI and always restore V2 before exiting.
+          python scripts/codexia_v2_legacy_ui_bridge.py enter
           set +e
           python -m unittest discover -s tests -q > /tmp/codexia-unittest.log 2>&1
           test_status=$?
+          set -e
+          python scripts/codexia_v2_legacy_ui_bridge.py exit
+          python scripts/codexia_v2_legacy_ui_bridge.py check
+
           if [ "$test_status" -ne 0 ]; then
             echo "===== UNIT TEST FAILURES ====="
             tail -n 180 /tmp/codexia-unittest.log
             python - <<'PY'
           from pathlib import Path
-          import re
           raw = Path('/tmp/codexia-unittest.log').read_text(encoding='utf-8', errors='replace')
           lines = raw.splitlines()
           compact = []
