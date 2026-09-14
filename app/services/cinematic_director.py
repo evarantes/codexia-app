@@ -243,10 +243,20 @@ Estrutura JSON obrigatória (preencha tudo e não inclua campos fora dela):
 
     @staticmethod
     def _estimate_cost_usd(usage: Dict[str, Any]) -> float:
-        # Claude Sonnet 5 list pricing: $3 / MTok input, $15 / MTok output.
+        # Claude Sonnet 5 current list pricing: $2 / MTok input, $10 / MTok output.
+        # Environment overrides let us update the guard without a code release if
+        # the provider changes pricing again.
+        try:
+            input_per_mtok = float(os.getenv("CLAUDE_SONNET5_INPUT_USD_PER_MTOK") or "2")
+        except Exception:
+            input_per_mtok = 2.0
+        try:
+            output_per_mtok = float(os.getenv("CLAUDE_SONNET5_OUTPUT_USD_PER_MTOK") or "10")
+        except Exception:
+            output_per_mtok = 10.0
         inp = float(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
         out = float(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
-        return (inp / 1_000_000.0) * 3.0 + (out / 1_000_000.0) * 15.0
+        return (inp / 1_000_000.0) * input_per_mtok + (out / 1_000_000.0) * output_per_mtok
 
     @staticmethod
     def _normalize_plan(plan: Dict[str, Any], *, content_type: str, duration_minutes: int, budget_brl: float) -> Dict[str, Any]:
