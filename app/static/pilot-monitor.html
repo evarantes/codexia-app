@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codexia — Piloto Cinematográfico</title>
+<style>
+:root{--bg:#f5f7fb;--card:#fff;--line:#e4e8f0;--text:#182132;--muted:#687386;--violet:#4b43d7;--ok:#13795b;--bad:#b42318}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:Inter,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;color:var(--text)}
+main{max-width:900px;margin:0 auto;padding:24px}.brand{font-size:22px;font-weight:800;color:#292775;margin-bottom:20px}.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:20px;box-shadow:0 8px 28px #1821320d}.field{display:grid;gap:7px}.field label{font-size:12px;font-weight:800;color:var(--muted)}input{width:100%;padding:12px;border:1px solid #d8ddea;border-radius:10px;font:inherit}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}button,a.btn{border:0;border-radius:10px;padding:11px 14px;font-weight:800;cursor:pointer;text-decoration:none}.primary{background:var(--violet);color:#fff}.ghost{background:#edf0f7;color:#303b54}.notice{margin-top:16px;padding:14px;border-radius:12px;background:#eef4ff;color:#304a80}.ok{background:#eaf8f3;color:#176248}.bad{background:#fdeeee;color:#962a24}video{width:100%;border-radius:14px;background:#000;margin-top:14px}.meta{font-size:12px;color:var(--muted);word-break:break-all;margin-top:9px}.spinner{display:inline-block;width:14px;height:14px;border:2px solid #50628a55;border-top-color:#50628a;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body><main>
+<div class="brand">▣ Codexia · Piloto Cinematográfico</div>
+<div class="card">
+<h2 style="margin-top:0">Acompanhar clipe Veo</h2>
+<p style="color:var(--muted)">Esta tela consulta a operação já enviada; consultar não cria uma nova geração nem uma nova cobrança.</p>
+<div class="field"><label>Job / Operation ID</label><input id="job" placeholder="models/veo-3.1-fast-generate-preview/operations/..."></div>
+<div class="actions"><button id="watch" class="primary">Acompanhar</button><a class="btn ghost" href="/">Voltar ao Codexia</a></div>
+<div id="status" class="notice" style="display:none"></div>
+<div id="preview"></div>
+</div>
+</main>
+<script>
+const token=localStorage.getItem('access_token'); if(!token) location.href='/login.html';
+const $=s=>document.querySelector(s); const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const api=async(url,opt={})=>{const h={...(opt.headers||{}),Authorization:`Bearer ${token}`};if(opt.body)h['Content-Type']='application/json';const r=await fetch(url,{...opt,headers:h});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);return d};
+function setStatus(html,kind=''){const el=$('#status');el.style.display='block';el.className='notice '+kind;el.innerHTML=html}
+async function monitor(job){job=(job||'').trim();if(!job)return alert('Informe o Job/Operation ID.');$('#job').value=job;localStorage.setItem('codexia_last_veo_job',job);$('#watch').disabled=true;$('#preview').innerHTML='';let attempts=0;try{while(attempts++<90){setStatus(`<span class="spinner"></span> Veo processando… consulta ${attempts}. Você pode deixar esta página aberta.`, '');const d=await api('/youtube/cinematic/scene/poll',{method:'POST',body:JSON.stringify({provider:'veo',job_id:job})});if(d.status==='SUCCEEDED'&&d.output_url){setStatus('✅ Clipe concluído e salvo no Codexia. Agora podemos avaliar a qualidade sem gerar outro clipe.','ok');$('#preview').innerHTML=`<video controls playsinline preload="metadata" src="${d.output_url}"></video><div class="actions"><a class="btn primary" href="${d.output_url}" target="_blank" rel="noopener">Abrir vídeo</a></div><div class="meta">${d.filename||''}</div>`;return}if(d.status==='FAILED'){setStatus(`❌ O Veo concluiu com erro: ${String(d.error||'erro desconhecido')}`,'bad');return}await sleep(10000)}setStatus('A geração ainda não terminou. Clique em Acompanhar para continuar consultando.','')}catch(e){setStatus(`Falha ao consultar: ${e.message}. Clique em Acompanhar para retomar; isso não gera outro vídeo.`,'bad')}finally{$('#watch').disabled=false}}
+$('#watch').onclick=()=>monitor($('#job').value);
+const params=new URLSearchParams(location.search);const initial=params.get('job')||localStorage.getItem('codexia_last_veo_job')||'';if(initial){$('#job').value=initial;monitor(initial)}
+</script></body></html>
