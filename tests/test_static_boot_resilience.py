@@ -15,6 +15,10 @@ VUE_PAGES = (
     STATIC / "pages" / "humor-factory" / "index.html",
     STATIC / "pages" / "narration-lab" / "index.html",
 )
+STANDALONE_PAGES = (
+    STATIC / "pilot-monitor.html",
+)
+BOOT_PAGES = VUE_PAGES + STANDALONE_PAGES
 AUTH_PAGES = {
     STATIC / "login.html",
     STATIC / "reset-password.html",
@@ -70,7 +74,7 @@ class StaticBootResilienceTests(unittest.TestCase):
     def test_every_static_html_entrypoint_is_covered_by_boot_contract(self):
         discovered = set(STATIC.rglob("*.html"))
         self.assertEqual(
-            set(VUE_PAGES),
+            set(BOOT_PAGES),
             discovered,
             "Toda nova página HTML estática deve entrar explicitamente no contrato de boot visual.",
         )
@@ -81,6 +85,19 @@ class StaticBootResilienceTests(unittest.TestCase):
                 html = page.read_text(encoding="utf-8")
                 self.assertIn('/static/vendor/vue.global.prod.js', html)
                 self.assertNotIn('unpkg.com/vue', html)
+
+    def test_standalone_pages_have_self_contained_boot_contract(self):
+        for page in STANDALONE_PAGES:
+            with self.subTest(page=page.relative_to(ROOT)):
+                html = page.read_text(encoding="utf-8")
+                self.assertIn("<style>", html)
+                self.assertIn("<script>", html)
+                self.assertNotIn("https://cdn.tailwindcss.com", html)
+                self.assertNotIn("unpkg.com/vue", html)
+                self.assertNotIn("/static/vendor/vue.global.prod.js", html)
+                self.assertNotIn('rel="stylesheet"', html)
+                self.assertIn("/youtube/cinematic/scene/poll", html)
+                self.assertIn("access_token", html)
 
     def test_external_visual_assets_have_safe_boot_contract(self):
         for page in VUE_PAGES:
