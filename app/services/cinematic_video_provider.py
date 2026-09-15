@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any, Dict, Optional
 
 import requests
 
+from app.config import VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX
 from app.models import Settings
 
 
@@ -17,6 +19,8 @@ class CinematicVideoProvider:
 
     These methods only submit/poll. They never spend credits on GET/status calls.
     Generation is triggered only from explicit production/scene endpoints.
+    Completed Veo videos are copied to Codexia's persistent video volume so the
+    browser can preview them and the hybrid compositor can reuse the exact clip.
     """
 
     RUNWAY_BASE = "https://api.dev.runwayml.com/v1"
@@ -61,8 +65,6 @@ class CinematicVideoProvider:
         if image_uri:
             body["promptImage"] = image_uri
         elif model == "gen4_turbo":
-            # Gen-4 Turbo requires an image. Gen-4.5 supports text-to-video
-            # through the same image_to_video endpoint when promptImage is omitted.
             body["model"] = self._env("RUNWAY_PREMIUM_MODEL") or "gen4.5"
         response = requests.post(
             f"{self.RUNWAY_BASE}/image_to_video",
@@ -92,12 +94,7 @@ class CinematicVideoProvider:
 
     @staticmethod
     def _veo_duration_value(duration: int) -> int:
-        """Clamp Codexia scene duration to numeric values accepted by Veo 3.1.
-
-        Gemini validates JSON types strictly here. Sending "8" as a string is
-        rejected with HTTP 400 INVALID_ARGUMENT; durationSeconds must be a JSON
-        number such as 4, 6 or 8.
-        """
+        """Clamp Codexia scene duration to numeric values accepted by Veo 3.1."""
         value = int(duration or 8)
         return 8 if value >= 8 else 6 if value >= 6 else 4
 
@@ -109,9 +106,6 @@ class CinematicVideoProvider:
         instance: Dict[str, Any] = {"prompt": str(prompt or "")[:4000]}
         if image_base64:
             instance["image"] = {"inlineData": {"mimeType": image_mime, "data": image_base64}}
-
-        # Gemini/Veo generates exactly one video per request in this adapter.
-        # Keep durationSeconds numeric: the API rejects a quoted JSON string.
         parameters: Dict[str, Any] = {
             "durationSeconds": self._veo_duration_value(duration),
             "aspectRatio": "9:16" if aspect_ratio == "9:16" else "16:9",
@@ -131,6 +125,52 @@ class CinematicVideoProvider:
         if not operation_name:
             raise CinematicProviderError("Veo aceitou a requisição, mas não retornou o identificador da operação.")
         return {"provider": "veo", "job_id": operation_name, "status": "PENDING", "model": model, "raw": data}
+
+    @staticmethod
+    def _veo_local_names(job_id: str) -> tuple[str, str, str]:
+        digest = hashlib.sha256(str(job_id or "").encode("utf-8")).hexdigest()[:20]
+        filename = f"veo_pilot_{digest}.mp4"
+        return filename, os.path.join(VIDEO_OUTPUT_DIR, filename), f"{VIDEO_URL_PREFIX}/{filename}"
+
+    def _persist_veo_video(self, *, job_id: str, video_uri: str, api_key: str) -> Dict[str, str]:
+        filename, final_path, local_url = self._veo_local_names(job_id)
+        try:
+            if os.path.isfile(final_path) and os.path.getsize(final_path) > 32 * 1024:
+                return {"filename": filename, "file_path": final_path, "video_url": local_url}
+        except Exception:
+            pass
+        os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+        temp_path = final_path + ".part"
+        total = 0
+        try:
+            with requests.get(
+                str(video_uri),
+                headers={"x-goog-api-key": api_key},
+                stream=True,
+                allow_redirects=True,
+                timeout=(20, 240),
+            ) as response:
+                if not response.ok:
+                    raise CinematicProviderError(f"Veo download HTTP {response.status_code}: {response.text[:400]}")
+                with open(temp_path, "wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > 300 * 1024 * 1024:
+                            raise CinematicProviderError("O clipe Veo excedeu o limite de segurança de 300 MB.")
+                        handle.write(chunk)
+            if total < 32 * 1024:
+                raise CinematicProviderError("O Veo concluiu, mas o arquivo recebido está vazio ou incompleto.")
+            os.replace(temp_path, final_path)
+        except Exception:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
+            raise
+        return {"filename": filename, "file_path": final_path, "video_url": local_url}
 
     def poll_veo(self, job_id: str) -> Dict[str, Any]:
         key = self._gemini_key()
@@ -154,7 +194,21 @@ class CinematicVideoProvider:
                     video_uri = data["response"]["generatedVideos"][0]["video"]["uri"]
                 except Exception:
                     video_uri = None
-        return {"provider": "veo", "job_id": job_id, "status": "SUCCEEDED" if done and video_uri else "FAILED" if done else "PENDING", "output_url": video_uri, "raw": data}
+        if not done:
+            return {"provider": "veo", "job_id": job_id, "status": "PENDING", "output_url": None, "raw": data}
+        if not video_uri:
+            return {"provider": "veo", "job_id": job_id, "status": "FAILED", "output_url": None, "error": "Veo terminou sem retornar URI de vídeo.", "raw": data}
+        persisted = self._persist_veo_video(job_id=job_id, video_uri=video_uri, api_key=key)
+        return {
+            "provider": "veo",
+            "job_id": job_id,
+            "status": "SUCCEEDED",
+            "output_url": persisted["video_url"],
+            "file_path": persisted["file_path"],
+            "filename": persisted["filename"],
+            "remote_output_url": video_uri,
+            "raw": data,
+        }
 
     def submit_kling(self, *, prompt: str, start_image_url: str, duration: int = 5, premium: bool = True) -> Dict[str, Any]:
         key = self._env("FAL_KEY")
@@ -208,7 +262,6 @@ class CinematicVideoProvider:
         return {"provider": "kling", "job_id": job_id, "status": "SUCCEEDED", "output_url": video.get("url"), "raw": result}
 
     def _fallback_text_to_video_provider(self) -> Optional[str]:
-        """Choose a provider that can start from text when no reference still exists."""
         if self._gemini_key():
             return "veo"
         if self._env("RUNWAYML_API_SECRET", "RUNWAY_API_KEY"):
@@ -218,9 +271,6 @@ class CinematicVideoProvider:
     def submit(self, *, provider: str, prompt: str, image_uri: Optional[str] = None, image_base64: Optional[str] = None, duration: int = 5, premium: bool = False, aspect_ratio: str = "16:9") -> Dict[str, Any]:
         provider = str(provider or "runway").strip().lower()
         requested_provider = provider
-        # Kling v3 image-to-video requires a public first frame. When a pilot is
-        # requested before a still exists, fail over to a text-to-video provider
-        # instead of presenting a dead button to the user.
         if provider == "kling" and (not image_uri or str(image_uri).startswith("data:")):
             provider = self._fallback_text_to_video_provider() or "kling"
         if provider == "runway":
