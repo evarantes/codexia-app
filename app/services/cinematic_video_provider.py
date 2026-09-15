@@ -91,10 +91,15 @@ class CinematicVideoProvider:
         return {"provider": "runway", "job_id": job_id, "status": data.get("status"), "output_url": output[0] if output else None, "raw": data}
 
     @staticmethod
-    def _veo_duration_value(duration: int) -> str:
-        """Clamp Codexia scene duration to the values accepted by Veo 3.1."""
+    def _veo_duration_value(duration: int) -> int:
+        """Clamp Codexia scene duration to numeric values accepted by Veo 3.1.
+
+        Gemini validates JSON types strictly here. Sending "8" as a string is
+        rejected with HTTP 400 INVALID_ARGUMENT; durationSeconds must be a JSON
+        number such as 4, 6 or 8.
+        """
         value = int(duration or 8)
-        return "8" if value >= 8 else "6" if value >= 6 else "4"
+        return 8 if value >= 8 else 6 if value >= 6 else 4
 
     def submit_veo(self, *, prompt: str, image_base64: Optional[str] = None, image_mime: str = "image/png", duration: int = 8, premium: bool = False, aspect_ratio: str = "16:9") -> Dict[str, Any]:
         key = self._gemini_key()
@@ -105,10 +110,8 @@ class CinematicVideoProvider:
         if image_base64:
             instance["image"] = {"inlineData": {"mimeType": image_mime, "data": image_base64}}
 
-        # Gemini/Veo 3.1 generates exactly one video per request. The old Codexia
-        # adapter sent numberOfVideos=1, but current Veo 3.1 rejects that field
-        # with HTTP 400 INVALID_ARGUMENT. Keep only parameters documented for the
-        # normal text/image-to-video request contract.
+        # Gemini/Veo generates exactly one video per request in this adapter.
+        # Keep durationSeconds numeric: the API rejects a quoted JSON string.
         parameters: Dict[str, Any] = {
             "durationSeconds": self._veo_duration_value(duration),
             "aspectRatio": "9:16" if aspect_ratio == "9:16" else "16:9",
