@@ -30,7 +30,8 @@ class CinematicVeoContractTests(unittest.TestCase):
         payload = kwargs["json"]
         self.assertEqual(payload["instances"][0]["prompt"], "Cinematic valley at dawn")
         self.assertNotIn("numberOfVideos", payload["parameters"])
-        self.assertEqual(payload["parameters"]["durationSeconds"], "8")
+        self.assertEqual(payload["parameters"]["durationSeconds"], 8)
+        self.assertIsInstance(payload["parameters"]["durationSeconds"], int)
         self.assertEqual(payload["parameters"]["aspectRatio"], "16:9")
         self.assertEqual(payload["parameters"]["resolution"], "720p")
 
@@ -59,7 +60,8 @@ class CinematicVeoContractTests(unittest.TestCase):
             payload["instances"][0]["image"],
             {"inlineData": {"mimeType": "image/png", "data": "ZmFrZS1pbWFnZQ=="}},
         )
-        self.assertEqual(payload["parameters"]["durationSeconds"], "4")
+        self.assertEqual(payload["parameters"]["durationSeconds"], 4)
+        self.assertIsInstance(payload["parameters"]["durationSeconds"], int)
         self.assertEqual(payload["parameters"]["aspectRatio"], "9:16")
         self.assertNotIn("numberOfVideos", payload["parameters"])
 
