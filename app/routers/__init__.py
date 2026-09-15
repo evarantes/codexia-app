@@ -9,6 +9,7 @@ from . import youtube as youtube
 from . import cinematic_campaign as _cinematic_campaign
 from .cinematic_budget_optimizer import wrap_budget_guard
 from .cinematic_compose import router as _cinematic_compose_router
+from app.services.cinematic_ui_patch import install_cinematic_async_ui
 
 # The first guard guarantees we never exceed the user's ceiling. The quality
 # wrapper then uses safe unused headroom to restore economical movement when
@@ -19,6 +20,15 @@ _cinematic_campaign._rebalance_plan_to_budget = wrap_budget_guard(
 )
 _cinematic_router = _cinematic_campaign.router
 
+# Import after the budget wrapper so background director jobs use the same
+# guarded/rebalanced function as the synchronous compatibility endpoint.
+from .cinematic_director_async import router as _cinematic_director_async_router  # noqa: E402
+
 # Safe to execute once per process: package __init__ is cached by Python.
 youtube.router.include_router(_cinematic_router)
 youtube.router.include_router(_cinematic_compose_router)
+youtube.router.include_router(_cinematic_director_async_router)
+
+# The V2 shell is a single HTML file. Inject the small resilient controller at
+# startup instead of rewriting the whole shell; the operation is idempotent.
+install_cinematic_async_ui()
