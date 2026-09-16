@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from app.services.cinematic_director_job_store import DirectorJobStore
-from app.services.cinematic_ui_patch import SCRIPT_TAG, install_cinematic_async_ui
+from app.services.cinematic_ui_patch import PROJECT_SCRIPT_TAG, SCRIPT_TAG, install_cinematic_async_ui
 
 
 class DirectorJobStoreTests(unittest.TestCase):
@@ -59,6 +59,17 @@ class CinematicAsyncUiTests(unittest.TestCase):
             self.assertFalse(install_cinematic_async_ui(index))
             html = index.read_text(encoding="utf-8")
             self.assertEqual(html.count(SCRIPT_TAG), 1)
+            self.assertEqual(html.count(PROJECT_SCRIPT_TAG), 1)
+
+    def test_ui_patch_replaces_stale_project_controller_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index = Path(tmp) / "index.html"
+            stale = '<script src="/static/cinematic_project_state.js?v=old-state"></script>'
+            index.write_text(f"<html><body>{stale}</body></html>", encoding="utf-8")
+            self.assertTrue(install_cinematic_async_ui(index))
+            html = index.read_text(encoding="utf-8")
+            self.assertNotIn(stale, html)
+            self.assertEqual(html.count(PROJECT_SCRIPT_TAG), 1)
 
     def test_async_controller_persists_job_before_post_and_polls(self):
         script = Path("app/static/cinematic_async_director.js").read_text(encoding="utf-8")
@@ -66,6 +77,15 @@ class CinematicAsyncUiTests(unittest.TestCase):
         self.assertIn("/youtube/cinematic/director/jobs", script)
         self.assertIn("Retomar direção", script)
         self.assertIn("sem nova cobrança", script)
+
+    def test_project_controller_requires_and_reuses_rejection_notes(self):
+        script = Path("app/static/cinematic_project_state.js").read_text(encoding="utf-8")
+        self.assertIn("pilot-correction", script)
+        self.assertIn("correction_notes", script)
+        self.assertIn("rejection_history", script)
+        self.assertIn("CORREÇÕES OBRIGATÓRIAS DA ÚLTIMA REPROVAÇÃO", script)
+        self.assertIn("não introduzir como personagem reconhecível", script)
+        self.assertIn("Estas observações ficam salvas no projeto", script)
 
     def test_async_router_exposes_submit_and_status_endpoints(self):
         source = Path("app/routers/cinematic_director_async.py").read_text(encoding="utf-8")
