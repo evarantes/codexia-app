@@ -6,6 +6,8 @@ from typing import Optional
 
 
 ASYNC_SCRIPT_TAG = '<script src="/static/cinematic_async_director.js?v=20260914-async1"></script>'
+# Backwards-compatible name used by the existing regression test.
+SCRIPT_TAG = ASYNC_SCRIPT_TAG
 PROJECT_SCRIPT_TAG = '<script src="/static/cinematic_project_state.js?v=20260915-state1"></script>'
 
 
