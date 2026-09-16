@@ -26,11 +26,13 @@ def install_cinematic_async_ui(index_path: Optional[str | Path] = None) -> bool:
             return False
         changed = False
 
-        # A new controller version must replace the old cache-busted tag rather
-        # than coexist with it; two controllers would duplicate click handlers.
-        cleaned = _PROJECT_SCRIPT_RE.sub("", html)
-        if cleaned != html:
-            html = cleaned
+        # Keep the current tag untouched for true idempotence. Only remove
+        # stale versions so the page never loads two project controllers.
+        matches = list(_PROJECT_SCRIPT_RE.finditer(html))
+        stale_tags = [m.group(0) for m in matches if PROJECT_SCRIPT_TAG not in m.group(0)]
+        if stale_tags:
+            for stale in stale_tags:
+                html = html.replace(stale, "")
             changed = True
 
         for tag in (ASYNC_SCRIPT_TAG, PROJECT_SCRIPT_TAG):
