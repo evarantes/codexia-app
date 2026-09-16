@@ -42,6 +42,11 @@
     return holder;
   }
 
+  function pilotSuccessHtml(index, outputUrl, approved = false) {
+    const status = approved ? '✅ Clipe aprovado e armazenado.' : '✅ Piloto concluído e armazenado.';
+    return `${status}<video controls playsinline preload="metadata" style="width:100%;margin-top:10px;border-radius:12px;background:#000" src="${esc(outputUrl)}"></video><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${approved ? '' : `<button class="btn btn-primary approve-pilot" data-i="${index}">Aprovar clipe</button>`}<button class="btn btn-ghost reject-pilot" data-i="${index}">Descartar e gerar outro</button><a class="btn btn-ghost" href="${esc(outputUrl)}" target="_blank" rel="noopener" style="text-decoration:none">Abrir vídeo</a></div>`;
+  }
+
   function combinedPrompt(scene) {
     const chars = (currentPlan?.character_bible || []).map(c => `${c.name || ''}: ${c.fixed_visual_description || ''}; roupa: ${c.wardrobe || ''}; idade: ${c.age || ''}`).filter(Boolean).join(' | ');
     return [
@@ -70,7 +75,7 @@
         if (d.status === 'SUCCEEDED' && d.output_url) {
           await saveScene(index, { status: 'SUCCEEDED', output_url: d.output_url, filename: d.filename || '' });
           holder.className = 'pilot-state notice ok';
-          holder.innerHTML = `✅ Piloto concluído e armazenado.<video controls playsinline preload="metadata" style="width:100%;margin-top:10px;border-radius:12px;background:#000" src="${esc(d.output_url)}"></video><div style="margin-top:8px"><button class="btn btn-primary approve-pilot" data-i="${index}">Aprovar clipe</button> <a class="btn btn-ghost" href="${esc(d.output_url)}" target="_blank" rel="noopener" style="text-decoration:none">Abrir vídeo</a></div>`;
+          holder.innerHTML = pilotSuccessHtml(index, d.output_url, false);
           return;
         }
         if (d.status === 'FAILED') {
@@ -88,7 +93,7 @@
     const s = (currentPlan?.scenes || []).find(x => Number(x.index) === Number(index));
     if (!s) return;
     const existing = project?.scenes?.[String(index)];
-    if (existing?.job_id && existing.status !== 'FAILED') { void monitorScene(index, existing); return; }
+    if (existing?.job_id && !['FAILED','REJECTED'].includes(String(existing.status || '').toUpperCase())) { void monitorScene(index, existing); return; }
     const available = statusData?.providers || {};
     let provider = s.recommended_provider;
     if (provider === 'kling' && !available.kling?.configured) provider = available.veo?.configured ? 'veo' : 'runway';
@@ -132,7 +137,9 @@
       }
       Object.entries(project.scenes || {}).forEach(([idx, st]) => {
         if (st.output_url && st.status === 'SUCCEEDED') {
-          const h = sceneHolder(Number(idx)); if (h) { h.className='pilot-state notice ok'; h.innerHTML=`✅ Piloto armazenado.<video controls playsinline preload="metadata" style="width:100%;margin-top:10px;border-radius:12px;background:#000" src="${esc(st.output_url)}"></video>`; }
+          const h = sceneHolder(Number(idx)); if (h) { h.className='pilot-state notice ok'; h.innerHTML=pilotSuccessHtml(Number(idx), st.output_url, Boolean(st.approved)); }
+        } else if (st.status === 'REJECTED') {
+          const h = sceneHolder(Number(idx)); if (h) { h.className='pilot-state notice warn'; h.textContent='Piloto descartado. O arquivo antigo continua arquivado; toque em “Gerar clipe piloto” para criar uma nova versão com o prompt corrigido.'; }
         } else if (st.job_id && st.status !== 'FAILED') void monitorScene(Number(idx), st);
       });
       const box = document.getElementById('directorAsyncStatus'); if (box) { box.style.display='block'; box.className='notice ok'; box.textContent='Projeto recuperado do servidor. Roteiro, cenas e Jobs estão armazenados; atualizar a página não exige refazer a direção.'; }
@@ -148,7 +155,6 @@
     }
   };
 
-  // Replace estimate action so the value itself is also durable.
   const estimateBtn = document.getElementById('estimateBtn');
   if (estimateBtn) estimateBtn.onclick = async () => {
     if (!currentPlan) return;
@@ -164,7 +170,17 @@
     const p = ev.target.closest?.('.pilot');
     if (p) { ev.preventDefault(); ev.stopImmediatePropagation(); void persistentPilot(Number(p.dataset.i)); return; }
     const a = ev.target.closest?.('.approve-pilot');
-    if (a) { ev.preventDefault(); ev.stopImmediatePropagation(); const i=Number(a.dataset.i); void saveScene(i,{approved:true}).then(()=>{ const h=sceneHolder(i); if(h){h.className='pilot-state notice ok'; h.prepend(document.createTextNode('✅ Clipe aprovado e mantido no projeto. '));}}); }
+    if (a) {
+      ev.preventDefault(); ev.stopImmediatePropagation(); const i=Number(a.dataset.i);
+      void saveScene(i,{approved:true,status:'SUCCEEDED'}).then(()=>{ const st=project?.scenes?.[String(i)]; const h=sceneHolder(i); if(h && st?.output_url){h.className='pilot-state notice ok';h.innerHTML=pilotSuccessHtml(i,st.output_url,true);} });
+      return;
+    }
+    const r = ev.target.closest?.('.reject-pilot');
+    if (r) {
+      ev.preventDefault(); ev.stopImmediatePropagation(); const i=Number(r.dataset.i);
+      if (!confirm('Descartar este piloto como versão ativa? O MP4 antigo continuará arquivado. Depois você poderá gerar uma nova versão e haverá nova cobrança do provedor.')) return;
+      void saveScene(i,{approved:false,status:'REJECTED'}).then(()=>{ const h=sceneHolder(i); if(h){h.className='pilot-state notice warn';h.textContent='Piloto descartado. O arquivo anterior foi preservado. Agora toque em “Gerar clipe piloto” para criar uma nova versão com o prompt completo.';} });
+    }
   }, true);
 
   setTimeout(() => { void restore(); }, 500);
