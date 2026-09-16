@@ -57,6 +57,31 @@ class DirectorJobStore:
                 return None
             return data if isinstance(data, dict) else None
 
+    def latest_completed(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Return the most recently updated completed job for one user.
+
+        This lets the production UI recover an already-paid Claude plan after a
+        refresh even if the browser never managed to persist its own local state.
+        """
+        prefix = f"u{max(0, int(user_id or 0))}-"
+        newest: Optional[Dict[str, Any]] = None
+        newest_stamp = ""
+        with self._lock:
+            for path in self.root.glob(f"{prefix}*.json"):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(data, dict) or str(data.get("status") or "") != "completed":
+                    continue
+                if not isinstance(data.get("result"), dict):
+                    continue
+                stamp = str(data.get("updated_at") or data.get("created_at") or "")
+                if newest is None or stamp > newest_stamp:
+                    newest = data
+                    newest_stamp = stamp
+        return newest
+
     def _write(self, user_id: int, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         path = self._path(user_id, job_id)
         tmp = path.with_suffix(".tmp")
