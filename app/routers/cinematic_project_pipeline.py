@@ -73,6 +73,10 @@ def submit_project_scene(
         "premium": bool(body.premium),
         "approved": False,
         "error": None,
+        # A deliberate regeneration replaces the active output for this scene,
+        # while the old MP4 remains safely stored in the video volume.
+        "output_url": None,
+        "filename": None,
     })
     return result
 
