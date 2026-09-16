@@ -29,6 +29,41 @@ class CinematicProjectPersistenceTests(unittest.TestCase):
             self.assertEqual(final["scenes"]["1"]["status"], "SUCCEEDED")
             self.assertEqual(final["scenes"]["1"]["output_url"], "/videos/pilot.mp4")
 
+    def test_scene_rejection_notes_and_history_survive_reopen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"
+            store = CinematicProjectStore(root=root)
+            store.write(9, {
+                "theme": "Davi e Golias",
+                "plan": {"theme": "Davi e Golias", "scenes": [{"index": 1}]},
+            })
+            history = [{
+                "correction_notes": "Não mostrar Davi nesta cena.",
+                "output_url": "/videos/old-pilot.mp4",
+                "job_id": "veo-old-job",
+            }]
+            store.update_scene(9, 1, {
+                "status": "REJECTED",
+                "approved": False,
+                "correction_notes": "Não mostrar Davi nesta cena.",
+                "rejection_history": history,
+            })
+
+            reopened = CinematicProjectStore(root=root).read(9)
+            self.assertIsNotNone(reopened)
+            scene = reopened["scenes"]["1"]
+            self.assertEqual(scene["status"], "REJECTED")
+            self.assertEqual(scene["correction_notes"], "Não mostrar Davi nesta cena.")
+            self.assertEqual(scene["rejection_history"][0]["output_url"], "/videos/old-pilot.mp4")
+
+            # A new provider job may replace active output/job fields without
+            # erasing the correction instruction or the version history.
+            store.update_scene(9, 1, {"status": "PENDING", "job_id": "veo-new-job", "output_url": None})
+            regenerated = CinematicProjectStore(root=root).read(9)["scenes"]["1"]
+            self.assertEqual(regenerated["correction_notes"], "Não mostrar Davi nesta cena.")
+            self.assertEqual(regenerated["rejection_history"][0]["job_id"], "veo-old-job")
+            self.assertEqual(regenerated["job_id"], "veo-new-job")
+
     def test_latest_completed_director_job_can_recover_paid_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "director"
