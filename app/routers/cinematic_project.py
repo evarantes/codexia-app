@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from app.models import User
@@ -41,8 +41,8 @@ class SceneStateSave(BaseModel):
     error: Optional[str] = Field(None, max_length=2000)
 
 
-def _recover_from_latest_director(user_id: int) -> Optional[Dict[str, Any]]:
-    latest = _director_jobs.latest_completed(user_id)
+def _recover_from_latest_director(user_id: int, slot: str) -> Optional[Dict[str, Any]]:
+    latest = _director_jobs.latest_completed(user_id, content_type=slot)
     if not latest:
         return None
     result = latest.get("result") if isinstance(latest.get("result"), dict) else {}
@@ -54,7 +54,7 @@ def _recover_from_latest_director(user_id: int) -> Optional[Dict[str, Any]]:
         user_id,
         {
             "theme": request.get("theme") or plan.get("theme") or "",
-            "content_type": request.get("content_type") or plan.get("content_type") or "story",
+            "content_type": request.get("content_type") or plan.get("content_type") or slot,
             "duration_minutes": request.get("duration_minutes") or plan.get("duration_minutes") or 10,
             "budget_brl": request.get("budget_brl") or plan.get("budget_limit_brl") or 90,
             "plan": plan,
@@ -62,46 +62,51 @@ def _recover_from_latest_director(user_id: int) -> Optional[Dict[str, Any]]:
             "status": "directed",
             "recovered_from_director_job": latest.get("job_id"),
         },
+        slot=slot,
     )
 
 
 @router.get("/project/active")
 def get_active_project(
+    slot: str = Query("story", pattern="^(story|devotional|short)$"),
     current_user: Optional[User] = Depends(get_current_admin_user),
 ):
     uid = _user_id(current_user)
-    project = _projects.read(uid)
+    project = _projects.read(uid, slot)
     recovered = False
     if project is None:
-        project = _recover_from_latest_director(uid)
+        project = _recover_from_latest_director(uid, slot)
         recovered = project is not None
-    return {"project": project, "recovered": recovered}
+    return {"project": project, "recovered": recovered, "slot": slot}
 
 
 @router.put("/project/active")
 def save_active_project(
     body: ActiveProjectSave,
+    slot: str = Query("story", pattern="^(story|devotional|short)$"),
     current_user: Optional[User] = Depends(get_current_admin_user),
 ):
     uid = _user_id(current_user)
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
-    return {"project": _projects.write(uid, payload)}
+    return {"project": _projects.write(uid, payload, slot=slot), "slot": slot}
 
 
 @router.put("/project/active/scenes/{scene_index}")
 def save_scene_state(
     scene_index: int,
     body: SceneStateSave,
+    slot: str = Query("story", pattern="^(story|devotional|short)$"),
     current_user: Optional[User] = Depends(get_current_admin_user),
 ):
     uid = _user_id(current_user)
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
-    return {"project": _projects.update_scene(uid, scene_index, payload)}
+    return {"project": _projects.update_scene(uid, scene_index, payload, slot=slot), "slot": slot}
 
 
 @router.delete("/project/active")
 def clear_active_project(
+    slot: str = Query("story", pattern="^(story|devotional|short)$"),
     current_user: Optional[User] = Depends(get_current_admin_user),
 ):
     uid = _user_id(current_user)
-    return {"cleared": _projects.clear(uid)}
+    return {"cleared": _projects.clear(uid, slot=slot), "slot": slot}
