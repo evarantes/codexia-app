@@ -17,12 +17,7 @@ def _utcnow() -> str:
 
 
 class DirectorJobStore:
-    """Small durable JSON store for long-running cinematic director requests.
-
-    The browser generates the request/job id before submitting. Repeating the
-    same id is idempotent, so a mobile connection loss cannot accidentally bill
-    Claude twice. Files live on the persistent /data volume in production.
-    """
+    """Small durable JSON store for long-running cinematic director requests."""
 
     def __init__(self, root: Optional[str | Path] = None):
         if root is None:
@@ -57,12 +52,9 @@ class DirectorJobStore:
                 return None
             return data if isinstance(data, dict) else None
 
-    def latest_completed(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Return the most recently updated completed job for one user.
-
-        This lets the production UI recover an already-paid Claude plan after a
-        refresh even if the browser never managed to persist its own local state.
-        """
+    def latest_completed(self, user_id: int, content_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return the newest completed job, optionally for one content type."""
+        expected = str(content_type or "").strip().lower()
         prefix = f"u{max(0, int(user_id or 0))}-"
         newest: Optional[Dict[str, Any]] = None
         newest_stamp = ""
@@ -76,6 +68,13 @@ class DirectorJobStore:
                     continue
                 if not isinstance(data.get("result"), dict):
                     continue
+                if expected:
+                    request = data.get("request") if isinstance(data.get("request"), dict) else {}
+                    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+                    plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+                    actual = str(request.get("content_type") or plan.get("content_type") or "story").strip().lower()
+                    if actual != expected:
+                        continue
                 stamp = str(data.get("updated_at") or data.get("created_at") or "")
                 if newest is None or stamp > newest_stamp:
                     newest = data
@@ -89,12 +88,7 @@ class DirectorJobStore:
         os.replace(tmp, path)
         return payload
 
-    def create_if_absent(
-        self,
-        user_id: int,
-        job_id: str,
-        request_payload: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], bool]:
+    def create_if_absent(self, user_id: int, job_id: str, request_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
         safe = self.validate_job_id(job_id)
         with self._lock:
             existing = self.read(user_id, safe)
