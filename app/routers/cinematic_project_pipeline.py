@@ -27,6 +27,7 @@ class ProjectSceneSubmit(BaseModel):
     duration_seconds: int = Field(5, ge=3, le=15)
     premium: bool = False
     aspect_ratio: str = Field("16:9", pattern="^(16:9|9:16)$")
+    project_slot: str = Field("story", pattern="^(story|devotional|short)$")
 
 
 class ProjectScenePoll(BaseModel):
@@ -36,6 +37,7 @@ class ProjectScenePoll(BaseModel):
     status_url: Optional[str] = None
     response_url: Optional[str] = None
     model_path: Optional[str] = None
+    project_slot: str = Field("story", pattern="^(story|devotional|short)$")
 
 
 @router.post("/project/scene/submit")
@@ -73,12 +75,10 @@ def submit_project_scene(
         "premium": bool(body.premium),
         "approved": False,
         "error": None,
-        # A deliberate regeneration replaces the active output for this scene,
-        # while the old MP4 remains safely stored in the video volume.
         "output_url": None,
         "filename": None,
-    })
-    return result
+    }, slot=body.project_slot)
+    return {**result, "project_slot": body.project_slot}
 
 
 @router.post("/project/scene/poll")
@@ -102,7 +102,7 @@ def poll_project_scene(
                 model_path=body.model_path,
             )
     except CinematicProviderError as exc:
-        _projects.update_scene(uid, body.scene_index, {"status": "FAILED", "error": str(exc)})
+        _projects.update_scene(uid, body.scene_index, {"status": "FAILED", "error": str(exc)}, slot=body.project_slot)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     update = {
@@ -113,5 +113,5 @@ def poll_project_scene(
         "filename": result.get("filename"),
         "error": result.get("error"),
     }
-    _projects.update_scene(uid, body.scene_index, {k: v for k, v in update.items() if v is not None})
-    return result
+    _projects.update_scene(uid, body.scene_index, {k: v for k, v in update.items() if v is not None}, slot=body.project_slot)
+    return {**result, "project_slot": body.project_slot}
