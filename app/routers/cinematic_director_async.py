@@ -16,7 +16,9 @@ from app.routers.cinematic_campaign import (
     _usd_brl,
     _user_id,
 )
-from app.services.cinematic_director import CinematicDirector, CinematicDirectorError
+from app.services.cinematic_director import CinematicDirectorError
+from app.services.cinematic_contract_director import ContractAwareCinematicDirector
+from app.services.cinematic_duration_contract import enforce_director_duration_contract
 from app.services.cinematic_director_job_store import DirectorJobStore
 from app.services.cinematic_project_store import CinematicProjectStore
 
@@ -58,13 +60,35 @@ def _public_job(job: Dict[str, Any], *, reused: bool = False) -> Dict[str, Any]:
 def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None:
     key = _active_key(user_id, job_id)
     try:
-        _store.update(user_id, job_id, status="running", stage="calling_claude", progress=15, message="Claude está criando roteiro, gancho, cenas e direção visual.")
+        _store.update(
+            user_id,
+            job_id,
+            status="running",
+            stage="calling_claude",
+            progress=15,
+            message="Claude está criando roteiro, gancho, cenas e direção visual.",
+        )
         db: Optional[Session] = None
         try:
             db = SessionLocal()
             settings = _settings(db, user_id)
-            result = CinematicDirector(settings).build_plan(
+            director = ContractAwareCinematicDirector(settings)
+            result = director.build_plan(
                 theme=str(request_payload.get("theme") or ""),
+                content_type=str(request_payload.get("content_type") or "story"),
+                duration_minutes=int(request_payload.get("duration_minutes") or 10),
+                budget_brl=float(request_payload.get("budget_brl") or 90.0),
+            )
+            _store.update(
+                user_id,
+                job_id,
+                stage="validating_duration",
+                progress=65,
+                message="Claude está conferindo o contrato de duração e corrigindo o roteiro se necessário.",
+            )
+            result = enforce_director_duration_contract(
+                director,
+                result,
                 content_type=str(request_payload.get("content_type") or "story"),
                 duration_minutes=int(request_payload.get("duration_minutes") or 10),
                 budget_brl=float(request_payload.get("budget_brl") or 90.0),
@@ -76,7 +100,13 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
                 except Exception:
                     pass
 
-        _store.update(user_id, job_id, stage="optimizing_budget", progress=85, message="Direção recebida. Ajustando cenas A/B/C ao teto de custo.")
+        _store.update(
+            user_id,
+            job_id,
+            stage="optimizing_budget",
+            progress=85,
+            message="Duração validada. Ajustando cenas A/B/C ao teto de custo.",
+        )
         plan = _rebalance_plan_to_budget(
             result.plan,
             content_type=str(request_payload.get("content_type") or "story"),
@@ -92,23 +122,55 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
             "estimated_cost_brl": round(result.estimated_cost_usd * usd_brl, 2),
         }
         response = {"plan": plan, "director": director_meta}
-        _store.update(user_id, job_id, status="completed", stage="completed", progress=100, message="Direção concluída e pronta para revisão.", result=response, error=None)
+        contract = plan.get("duration_contract") if isinstance(plan.get("duration_contract"), dict) else {}
+        _store.update(
+            user_id,
+            job_id,
+            status="completed",
+            stage="completed",
+            progress=100,
+            message=(
+                f"Direção concluída com duração validada: {contract.get('estimated_seconds', 0)}s previstos "
+                f"para {contract.get('target_seconds', 0)}s contratados."
+            ),
+            result=response,
+            error=None,
+        )
         # Server-side persistence is deliberate: the browser may be closed before
         # it receives the completed response, but the paid plan must never be lost.
-        _projects.write(user_id, {
-            "theme": request_payload.get("theme"),
-            "content_type": request_payload.get("content_type"),
-            "duration_minutes": request_payload.get("duration_minutes"),
-            "budget_brl": request_payload.get("budget_brl"),
-            "plan": plan,
-            "director": director_meta,
-            "director_job_id": job_id,
-            "status": "directed",
-        })
+        _projects.write(
+            user_id,
+            {
+                "theme": request_payload.get("theme"),
+                "content_type": request_payload.get("content_type"),
+                "duration_minutes": request_payload.get("duration_minutes"),
+                "budget_brl": request_payload.get("budget_brl"),
+                "plan": plan,
+                "director": director_meta,
+                "director_job_id": job_id,
+                "status": "directed",
+            },
+        )
     except CinematicDirectorError as exc:
-        _store.update(user_id, job_id, status="failed", stage="failed", progress=100, message="Claude não conseguiu concluir a direção.", error=str(exc))
+        _store.update(
+            user_id,
+            job_id,
+            status="failed",
+            stage="failed",
+            progress=100,
+            message="Claude não conseguiu fechar a direção dentro do contrato de produção.",
+            error=str(exc),
+        )
     except Exception as exc:
-        _store.update(user_id, job_id, status="failed", stage="failed", progress=100, message="A direção falhou no servidor.", error=f"{type(exc).__name__}: {exc}")
+        _store.update(
+            user_id,
+            job_id,
+            status="failed",
+            stage="failed",
+            progress=100,
+            message="A direção falhou no servidor.",
+            error=f"{type(exc).__name__}: {exc}",
+        )
     finally:
         with _active_lock:
             _active_jobs.discard(key)
@@ -120,7 +182,12 @@ def _launch_once(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> 
         if key in _active_jobs:
             return False
         _active_jobs.add(key)
-    thread = threading.Thread(target=_run_job, args=(user_id, job_id, dict(request_payload)), daemon=True, name=f"codexia-director-{job_id[:18]}")
+    thread = threading.Thread(
+        target=_run_job,
+        args=(user_id, job_id, dict(request_payload)),
+        daemon=True,
+        name=f"codexia-director-{job_id[:18]}",
+    )
     thread.start()
     return True
 
@@ -137,7 +204,12 @@ def create_director_job(
         job_id = _store.validate_job_id(body.request_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    request_payload = {"theme": body.theme, "content_type": body.content_type, "duration_minutes": body.duration_minutes, "budget_brl": body.budget_brl}
+    request_payload = {
+        "theme": body.theme,
+        "content_type": body.content_type,
+        "duration_minutes": body.duration_minutes,
+        "budget_brl": body.budget_brl,
+    }
     try:
         job, created = _store.create_if_absent(uid, job_id, request_payload)
         if created:
