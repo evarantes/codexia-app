@@ -16,7 +16,8 @@ from app.routers.cinematic_campaign import (
     _usd_brl,
     _user_id,
 )
-from app.services.cinematic_director import CinematicDirector, CinematicDirectorError
+from app.services.cinematic_director import CinematicDirectorError
+from app.services.cinematic_contract_director import ContractAwareCinematicDirector
 from app.services.cinematic_duration_contract import enforce_director_duration_contract
 from app.services.cinematic_director_job_store import DirectorJobStore
 from app.services.cinematic_project_store import CinematicProjectStore
@@ -71,7 +72,7 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
         try:
             db = SessionLocal()
             settings = _settings(db, user_id)
-            director = CinematicDirector(settings)
+            director = ContractAwareCinematicDirector(settings)
             result = director.build_plan(
                 theme=str(request_payload.get("theme") or ""),
                 content_type=str(request_payload.get("content_type") or "story"),
