@@ -11,7 +11,9 @@ ASYNC_SCRIPT_TAG = '<script src="/static/cinematic_async_director.js?v=20260914-
 SCRIPT_TAG = ASYNC_SCRIPT_TAG
 PROJECT_SCRIPT_TAG = '<script src="/static/cinematic_project_state.js?v=20260916-state4"></script>'
 MOBILE_NAV_SCRIPT_TAG = '<script src="/static/mobile_nav.js?v=20260916-mobile1"></script>'
+PROJECT_GUARD_SCRIPT_TAG = '<script src="/static/project_slot_guard.js?v=20260916-guard1"></script>'
 _PROJECT_SCRIPT_RE = re.compile(r'<script src="/static/cinematic_project_state\.js\?v=[^"]+"></script>\s*')
+_PROJECT_GUARD_RE = re.compile(r'<script src="/static/project_slot_guard\.js\?v=[^"]+"></script>\s*')
 
 
 def install_cinematic_async_ui(index_path: Optional[str | Path] = None) -> bool:
@@ -35,7 +37,15 @@ def install_cinematic_async_ui(index_path: Optional[str | Path] = None) -> bool:
                 html = cleaned
                 changed = True
 
-        for tag in (ASYNC_SCRIPT_TAG, PROJECT_SCRIPT_TAG, MOBILE_NAV_SCRIPT_TAG):
+        guard_tags = _PROJECT_GUARD_RE.findall(html)
+        normalized_guard = [x.strip() for x in guard_tags]
+        if normalized_guard != [PROJECT_GUARD_SCRIPT_TAG]:
+            cleaned = _PROJECT_GUARD_RE.sub("", html)
+            if cleaned != html:
+                html = cleaned
+                changed = True
+
+        for tag in (ASYNC_SCRIPT_TAG, PROJECT_SCRIPT_TAG, MOBILE_NAV_SCRIPT_TAG, PROJECT_GUARD_SCRIPT_TAG):
             if tag not in html:
                 html = html.replace("</body>", f"{tag}\n</body>", 1)
                 changed = True

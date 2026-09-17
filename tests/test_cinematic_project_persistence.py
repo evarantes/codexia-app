@@ -47,6 +47,20 @@ class CinematicProjectPersistenceTests(unittest.TestCase):
             self.assertEqual(story["project_slot"], "story")
             self.assertEqual(devotional["project_slot"], "devotional")
 
+    def test_implicit_background_write_uses_content_type_slot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"
+            store = CinematicProjectStore(root=root)
+            store.write(12, {"theme": "Davi e Golias", "content_type": "story"}, slot="story")
+
+            # Background director historically called write() without slot=. A
+            # devotional must not overwrite the legacy story file in that case.
+            saved = store.write(12, {"theme": "Mente não consegue parar", "content_type": "devotional"})
+
+            self.assertEqual(saved["project_slot"], "devotional")
+            self.assertEqual(store.read(12, "story")["theme"], "Davi e Golias")
+            self.assertEqual(store.read(12, "devotional")["theme"], "Mente não consegue parar")
+
     def test_latest_completed_director_job_can_recover_paid_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "director"
@@ -70,6 +84,13 @@ class CinematicProjectPersistenceTests(unittest.TestCase):
         self.assertIn("slot=${encodeURIComponent(activeSlot)}", script)
         self.assertIn("project_slot:activeSlot", script)
         self.assertIn("O projeto de Davi e Golias continua salvo", script)
+
+    def test_frontend_guard_blocks_cross_project_render(self):
+        script = Path("app/static/project_slot_guard.js").read_text(encoding="utf-8")
+        self.assertIn("guardedRenderPlan", script)
+        self.assertIn("planSlot !== formSlot", script)
+        self.assertIn("codexia_active_director_job_v1", script)
+        self.assertIn("Novo devocional selecionado", script)
 
 
 if __name__ == "__main__":

@@ -53,7 +53,13 @@ class CinematicProjectStore:
             return data if isinstance(data, dict) else None
 
     def write(self, user_id: int, payload: Dict[str, Any], slot: str = "story") -> Dict[str, Any]:
-        safe_slot = _slot(slot)
+        payload = dict(payload or {})
+        # Some background producers predate project slots and call write() without
+        # passing a slot explicitly. Never let a devotional/short fall back into
+        # the legacy story file merely because the caller omitted that argument.
+        requested_slot = _slot(slot)
+        payload_slot = _slot(payload.get("content_type")) if payload.get("content_type") else None
+        safe_slot = payload_slot if requested_slot == "story" and payload_slot in {"devotional", "short"} else requested_slot
         with self._lock:
             current = self.read(user_id, safe_slot) or {
                 "version": 2,
@@ -63,7 +69,7 @@ class CinematicProjectStore:
                 "created_at": _utcnow(),
                 "scenes": {},
             }
-            for key, value in dict(payload or {}).items():
+            for key, value in payload.items():
                 if key in {"user_id", "project_id", "project_slot", "created_at", "version"}:
                     continue
                 current[key] = value
