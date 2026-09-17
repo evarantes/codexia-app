@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from app.services.cinematic_director_job_store import DirectorJobStore
-from app.services.cinematic_ui_patch import SCRIPT_TAG, install_cinematic_async_ui
+from app.services.cinematic_ui_patch import MOBILE_NAV_SCRIPT_TAG, SCRIPT_TAG, install_cinematic_async_ui
 
 
 class DirectorJobStoreTests(unittest.TestCase):
@@ -59,6 +59,16 @@ class CinematicAsyncUiTests(unittest.TestCase):
             self.assertFalse(install_cinematic_async_ui(index))
             html = index.read_text(encoding="utf-8")
             self.assertEqual(html.count(SCRIPT_TAG), 1)
+            self.assertEqual(html.count(MOBILE_NAV_SCRIPT_TAG), 1)
+
+    def test_mobile_navigation_controller_has_accessible_drawer(self):
+        script = Path("app/static/mobile_nav.js").read_text(encoding="utf-8")
+        self.assertIn("mobile-nav-toggle", script)
+        self.assertIn("mobile-nav-open", script)
+        self.assertIn("Abrir menu", script)
+        self.assertIn("Fechar menu", script)
+        self.assertIn("max-width:700px", script)
+        self.assertIn("event.target.closest('button[data-page],a')", script)
 
     def test_async_controller_persists_job_before_post_and_polls(self):
         script = Path("app/static/cinematic_async_director.js").read_text(encoding="utf-8")
