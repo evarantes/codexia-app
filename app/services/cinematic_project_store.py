@@ -12,13 +12,17 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class CinematicProjectStore:
-    """Durable per-user store for the active cinematic production.
+def _slot(value: str | None) -> str:
+    value = str(value or "story").strip().lower()
+    return value if value in {"story", "devotional", "short"} else "story"
 
-    The Codexia production shell is intentionally lightweight. This store keeps
-    the expensive/recoverable state (Claude plan, estimate, provider jobs and
-    approved pilot URLs) on the persistent /data volume so browser refreshes,
-    phone changes and short network losses do not force a paid regeneration.
+
+class CinematicProjectStore:
+    """Durable per-user store with isolated production slots.
+
+    `story` keeps the legacy active-project filename for backwards compatibility.
+    Devotionals and Shorts use their own files so one production cannot overwrite
+    or visually bleed into another while both are being worked on in parallel.
     """
 
     def __init__(self, root: Optional[str | Path] = None):
@@ -32,11 +36,13 @@ class CinematicProjectStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
-    def _path(self, user_id: int) -> Path:
-        return self.root / f"u{max(0, int(user_id or 0))}-active.json"
+    def _path(self, user_id: int, slot: str = "story") -> Path:
+        safe_slot = _slot(slot)
+        suffix = "active" if safe_slot == "story" else safe_slot
+        return self.root / f"u{max(0, int(user_id or 0))}-{suffix}.json"
 
-    def read(self, user_id: int) -> Optional[Dict[str, Any]]:
-        path = self._path(user_id)
+    def read(self, user_id: int, slot: str = "story") -> Optional[Dict[str, Any]]:
+        path = self._path(user_id, slot)
         with self._lock:
             if not path.exists():
                 return None
@@ -46,36 +52,46 @@ class CinematicProjectStore:
                 return None
             return data if isinstance(data, dict) else None
 
-    def write(self, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def write(self, user_id: int, payload: Dict[str, Any], slot: str = "story") -> Dict[str, Any]:
+        safe_slot = _slot(slot)
         with self._lock:
-            current = self.read(user_id) or {
-                "version": 1,
+            current = self.read(user_id, safe_slot) or {
+                "version": 2,
                 "user_id": int(user_id or 0),
-                "project_id": "active",
+                "project_id": safe_slot,
+                "project_slot": safe_slot,
                 "created_at": _utcnow(),
                 "scenes": {},
             }
             for key, value in dict(payload or {}).items():
-                if key in {"user_id", "project_id", "created_at", "version"}:
+                if key in {"user_id", "project_id", "project_slot", "created_at", "version"}:
                     continue
                 current[key] = value
-            current["version"] = 1
+            current["version"] = 2
             current["user_id"] = int(user_id or 0)
-            current["project_id"] = "active"
+            current["project_id"] = safe_slot
+            current["project_slot"] = safe_slot
             current.setdefault("created_at", _utcnow())
             if not isinstance(current.get("scenes"), dict):
                 current["scenes"] = {}
             current["updated_at"] = _utcnow()
-            path = self._path(user_id)
+            path = self._path(user_id, safe_slot)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(tmp, path)
             return current
 
-    def update_scene(self, user_id: int, scene_index: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_scene(
+        self,
+        user_id: int,
+        scene_index: int,
+        payload: Dict[str, Any],
+        slot: str = "story",
+    ) -> Dict[str, Any]:
+        safe_slot = _slot(slot)
         index = max(1, int(scene_index))
         with self._lock:
-            current = self.read(user_id) or self.write(user_id, {})
+            current = self.read(user_id, safe_slot) or self.write(user_id, {}, safe_slot)
             scenes = current.get("scenes") if isinstance(current.get("scenes"), dict) else {}
             key = str(index)
             scene = scenes.get(key) if isinstance(scenes.get(key), dict) else {}
@@ -84,10 +100,10 @@ class CinematicProjectStore:
             scene["updated_at"] = _utcnow()
             scenes[key] = scene
             current["scenes"] = scenes
-            return self.write(user_id, current)
+            return self.write(user_id, current, safe_slot)
 
-    def clear(self, user_id: int) -> bool:
-        path = self._path(user_id)
+    def clear(self, user_id: int, slot: str = "story") -> bool:
+        path = self._path(user_id, slot)
         with self._lock:
             existed = path.exists()
             path.unlink(missing_ok=True)
