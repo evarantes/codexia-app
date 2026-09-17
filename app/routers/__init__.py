@@ -10,6 +10,7 @@ from . import cinematic_campaign as _cinematic_campaign
 from .cinematic_budget_optimizer import wrap_budget_guard
 from .cinematic_compose import router as _cinematic_compose_router
 from app.services.cinematic_ui_patch import install_cinematic_async_ui
+from app.services.director_editorial_lock import install_director_editorial_lock
 
 _cinematic_campaign._rebalance_plan_to_budget = wrap_budget_guard(
     _cinematic_campaign._rebalance_plan_to_budget,
@@ -30,6 +31,10 @@ youtube.router.include_router(_cinematic_director_async_router)
 youtube.router.include_router(_cinematic_project_router)
 youtube.router.include_router(_cinematic_project_pipeline_router)
 youtube.router.include_router(_cinematic_queue_router)
+
+# Director-approved narration must remain immutable during downstream editorial
+# stages, while technical guards continue to run normally.
+install_director_editorial_lock()
 
 # Inject resilient frontend controllers idempotently at startup.
 install_cinematic_async_ui()
