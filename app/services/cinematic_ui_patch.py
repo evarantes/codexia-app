@@ -9,10 +9,11 @@ ASYNC_SCRIPT_TAG = '<script src="/static/cinematic_async_director.js?v=20260914-
 # Backwards-compatible name used by the existing regression test.
 SCRIPT_TAG = ASYNC_SCRIPT_TAG
 PROJECT_SCRIPT_TAG = '<script src="/static/cinematic_project_state.js?v=20260915-state2"></script>'
+MOBILE_NAV_SCRIPT_TAG = '<script src="/static/mobile_nav.js?v=20260916-mobile1"></script>'
 
 
 def install_cinematic_async_ui(index_path: Optional[str | Path] = None) -> bool:
-    """Inject resilient cinematic controllers without rewriting the V2 shell."""
+    """Inject resilient cinematic/mobile controllers without rewriting the V2 shell."""
     if index_path is None:
         index_path = Path(__file__).resolve().parents[1] / "static" / "index.html"
     path = Path(index_path)
@@ -23,7 +24,7 @@ def install_cinematic_async_ui(index_path: Optional[str | Path] = None) -> bool:
         if "</body>" not in html:
             return False
         changed = False
-        for tag in (ASYNC_SCRIPT_TAG, PROJECT_SCRIPT_TAG):
+        for tag in (ASYNC_SCRIPT_TAG, PROJECT_SCRIPT_TAG, MOBILE_NAV_SCRIPT_TAG):
             if tag not in html:
                 html = html.replace("</body>", f"{tag}\n</body>", 1)
                 changed = True
