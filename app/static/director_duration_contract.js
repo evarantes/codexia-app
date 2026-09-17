@@ -2,10 +2,58 @@
   const sendButton = document.getElementById('baseProductionBtn');
   if (!sendButton) return;
 
+  const PENDING_LIBRARY_KEY = 'codexia_v2_pending_library_tasks_v1';
+
   const moneySafe = value => {
     try { return Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
     catch (_) { return String(value || 0); }
   };
+
+  function pendingRegistrations() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PENDING_LIBRARY_KEY) || '[]');
+      return Array.isArray(parsed) ? parsed.filter(item => item && item.task_id) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function savePendingRegistrations(items) {
+    try {
+      if (!items.length) localStorage.removeItem(PENDING_LIBRARY_KEY);
+      else localStorage.setItem(PENDING_LIBRARY_KEY, JSON.stringify(items.slice(-20)));
+    } catch (_) {}
+  }
+
+  function rememberPendingRegistration(item) {
+    const items = pendingRegistrations().filter(existing => existing.task_id !== item.task_id);
+    items.push(item);
+    savePendingRegistrations(items);
+  }
+
+  async function registerLibraryTask(item) {
+    if (!item || !item.task_id) return false;
+    await authFetch('/youtube/cinematic/library/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        task_id: item.task_id,
+        title: item.title || undefined,
+        project_slot: item.project_slot || 'story',
+        duration_minutes: item.duration_minutes || undefined,
+      }),
+    });
+    const remaining = pendingRegistrations().filter(existing => existing.task_id !== item.task_id);
+    savePendingRegistrations(remaining);
+    return true;
+  }
+
+  async function flushPendingRegistrations() {
+    const pending = pendingRegistrations();
+    if (!pending.length) return;
+    for (const item of pending) {
+      try { await registerLibraryTask(item); } catch (_) { /* retry on the next page load */ }
+    }
+  }
 
   function contractBox() {
     let box = document.getElementById('directorDurationContract');
@@ -92,6 +140,9 @@
       const firstTitle = Array.isArray(currentPlan.title_options) && currentPlan.title_options.length
         ? String(currentPlan.title_options[0] || '').trim()
         : '';
+      const projectSlot = currentPlan.content_type === 'devotional'
+        ? 'devotional'
+        : currentPlan.content_type === 'short' ? 'short' : 'story';
       const data = await authFetch('/youtube/generate_video', {
         method: 'POST',
         body: JSON.stringify({
@@ -99,7 +150,7 @@
           duration: targetMinutes,
           auto_upload: false,
           mode: 'story',
-          kind: currentPlan.content_type === 'devotional' ? 'devotional' : 'story',
+          kind: projectSlot === 'devotional' ? 'devotional' : 'story',
           story_content: currentPlan.full_script,
           image_mode: 'multiple',
           aspect_ratio: '16:9',
@@ -108,7 +159,29 @@
           editorial_review_ready: true,
         }),
       });
-      alert(`Produção enviada com contrato de duração validado. ${data.task_id ? `Tarefa: ${data.task_id}` : 'Acompanhe em Fila & Custos.'}`);
+
+      let librarySynced = true;
+      if (data.task_id) {
+        const registration = {
+          task_id: String(data.task_id),
+          title: firstTitle || currentPlan.theme || '',
+          project_slot: projectSlot,
+          duration_minutes: targetMinutes,
+        };
+        rememberPendingRegistration(registration);
+        try {
+          await registerLibraryTask(registration);
+        } catch (_) {
+          librarySynced = false;
+          // The production is already safe in the canonical pipeline. Keep a
+          // durable browser-side reminder and retry registration automatically.
+        }
+      }
+
+      alert(
+        `Produção enviada com contrato de duração validado. ${data.task_id ? `Tarefa: ${data.task_id}` : ''}`
+        + (librarySynced ? '\n\nO projeto já foi adicionado à biblioteca do Codexia V2.' : '\n\nA produção foi enviada, mas a biblioteca ainda está sincronizando. O Codexia tentará novamente automaticamente.')
+      );
       try {
         const queueButton = document.querySelector('[data-page="queue"]');
         if (queueButton) queueButton.click();
@@ -126,4 +199,8 @@
   try {
     if (typeof currentPlan !== 'undefined' && currentPlan) renderDurationContract(currentPlan);
   } catch (_) {}
+
+  // Recover a task that was created successfully but whose registration response
+  // was lost during a browser/network interruption. Registration is idempotent.
+  setTimeout(() => { void flushPendingRegistrations(); }, 800);
 })();
