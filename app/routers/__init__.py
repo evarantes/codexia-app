@@ -22,12 +22,14 @@ _cinematic_router = _cinematic_campaign.router
 from .cinematic_director_async import router as _cinematic_director_async_router  # noqa: E402
 from .cinematic_project import router as _cinematic_project_router  # noqa: E402
 from .cinematic_project_pipeline import router as _cinematic_project_pipeline_router  # noqa: E402
+from .cinematic_queue import router as _cinematic_queue_router  # noqa: E402
 
 youtube.router.include_router(_cinematic_router)
 youtube.router.include_router(_cinematic_compose_router)
 youtube.router.include_router(_cinematic_director_async_router)
 youtube.router.include_router(_cinematic_project_router)
 youtube.router.include_router(_cinematic_project_pipeline_router)
+youtube.router.include_router(_cinematic_queue_router)
 
 # Inject resilient frontend controllers idempotently at startup.
 install_cinematic_async_ui()
