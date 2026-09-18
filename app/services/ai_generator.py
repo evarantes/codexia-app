@@ -3389,9 +3389,9 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not audio_path or not os.path.exists(audio_path):
             return {"segments": None, "error": "file_not_found"}
         info = self.ai_router.transcribe_audio(
-            user_id=None,
-            task_id=None,
-            video_id=None,
+            user_id=getattr(self, "ai_user_id", None),
+            task_id=getattr(self, "ai_task_id", None),
+            video_id=getattr(self, "ai_video_id", None),
             audio_path=audio_path,
             language=language,
         )

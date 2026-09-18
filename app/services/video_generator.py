@@ -1530,6 +1530,7 @@ class VideoGenerator:
         pause_duration_sec: float = 1.25,
         initial_silence_duration_sec: float = 0.0,
         status_callback: Optional[Callable[[str], None]] = None,
+        premium_voice_required: bool = False,
     ) -> Dict[str, Any]:
         try:
             from moviepy.editor import AudioFileClip, concatenate_audioclips, AudioClip
@@ -1542,6 +1543,7 @@ class VideoGenerator:
             voice_gender=voice_gender,
             status_callback=status_callback,
             segment_label="narração principal",
+            premium_voice_required=premium_voice_required,
         )
         if not main_audio_path or not os.path.exists(main_audio_path):
             raise Exception("Falha ao gerar o audio principal da narracao.")
@@ -1566,6 +1568,7 @@ class VideoGenerator:
                     voice_gender=voice_gender,
                     status_callback=status_callback,
                     segment_label="encerramento",
+                    premium_voice_required=premium_voice_required,
                 )
                 if not cta_audio_path or not os.path.exists(cta_audio_path):
                     raise Exception("Falha ao gerar o audio do CTA.")
@@ -3730,6 +3733,7 @@ class VideoGenerator:
         voice_gender=None,
         status_callback: Optional[Callable[[str], None]] = None,
         segment_label: str = "narração",
+        premium_voice_required: bool = False,
     ):
         """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
         if not text or not text.strip(): 
@@ -3751,6 +3755,8 @@ class VideoGenerator:
             "ffprobe_available": self._is_ffprobe_available(),
             "requested_voice_style": style,
             "requested_voice_gender": gender,
+            "premium_voice_required": bool(premium_voice_required),
+            "fallback_blocked": False,
             "input_char_count": len(clean_text),
             "input_word_count": len(re.findall(r"\w+", clean_text, flags=re.UNICODE)),
             "attempts": [],
@@ -3758,7 +3764,13 @@ class VideoGenerator:
         self._last_tts_debug = tts_debug
 
         cache_fingerprint = hashlib.sha256(
-            "\n".join([clean_text, str(lang or ""), style, gender]).encode("utf-8")
+            "\n".join([
+                clean_text,
+                str(lang or ""),
+                style,
+                gender,
+                "premium_required" if premium_voice_required else "fallback_allowed",
+            ]).encode("utf-8")
         ).hexdigest()[:32]
         cache_path = os.path.join(self.output_dir, f"tts_cache_{cache_fingerprint}.mp3")
 
@@ -3957,6 +3969,7 @@ class VideoGenerator:
                             voice=openai_voice,
                             voice_settings=voice_settings,
                             activity_callback=status_callback,
+                            allow_provider_fallback=not bool(premium_voice_required),
                         )
                     if isinstance(premium_debug, dict):
                         for key, value in premium_debug.items():
@@ -4011,6 +4024,24 @@ class VideoGenerator:
             except Exception as e:
                 _record_attempt("premium_pipeline", "failed", str(e))
                 print(f"TTS premium falhou, tentando fallback: {e}")
+
+        if premium_voice_required:
+            tts_debug["fallback_blocked"] = True
+            tts_debug["fallback_used"] = False
+            tts_debug["error_summary"] = (
+                str(tts_debug.get("error_summary") or "").strip()
+                or "O provedor premium configurado não conseguiu gerar a narração."
+            )
+            self._last_tts_debug = tts_debug
+            if status_callback:
+                status_callback(
+                    f"Gerando {segment_label} — voz premium indisponível; fallback gratuito bloqueado."
+                )
+            raise RuntimeError(
+                "Voz premium obrigatória indisponível. "
+                + self._summarize_tts_failure(tts_debug)
+                + " Fallback Edge TTS/gTTS bloqueado pelo contrato do Codexia V2."
+            )
 
         # 3. Edge TTS (Qualidade Natural Gratuita - Microsoft)
         if style not in ["robotic", "robotica", "robótica"]:
@@ -4994,6 +5025,9 @@ $synth.Dispose()
         fallback_bg_path = None
         use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "").strip().lower() in {"1", "true", "yes", "on"}
         kind_norm = str(plan.get("kind") or "").strip().lower() if isinstance(plan, dict) else ""
+        premium_voice_required = bool(
+            isinstance(plan, dict) and plan.get("premium_voice_required")
+        )
         allow_image_reuse = bool(plan.get("allow_image_reuse")) if isinstance(plan, dict) else False
         prefer_peaceful_music = bool(plan.get("prefer_peaceful_music")) if isinstance(plan, dict) else False
         video_bg_path = None
@@ -5728,6 +5762,7 @@ $synth.Dispose()
                     pause_duration_sec=pause_before_cta_sec,
                     initial_silence_duration_sec=initial_opening_silence_sec,
                     status_callback=_tts_status,
+                    premium_voice_required=premium_voice_required,
                 )
                 main_audio_path = segmented_audio.get("audio_path")
                 tts_debug = dict(self._last_tts_debug or {})

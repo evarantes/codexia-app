@@ -1809,6 +1809,29 @@ class AIRouter:
             input_hash = _sha256_bytes(audio_bytes)
             provider = str(policy.primary_provider or "").strip().lower() or "groq"
             model_id = _normalize_model_id(policy.primary_model) or "whisper-large-v3"
+
+            # Timestamped captions are a hard quality gate. Resolve a usable
+            # configured transcription provider before creating the cache key
+            # instead of failing simply because the policy points to Groq while
+            # only OpenAI is configured (or vice-versa).
+            groq_key = str(
+                getattr(settings, "groq_api_key", "")
+                or os.getenv("GROQ_API_KEY")
+                or ""
+            ).strip()
+            openai_key = str(
+                getattr(settings, "openai_api_key", "")
+                or os.getenv("OPENAI_API_KEY")
+                or ""
+            ).strip()
+            if provider == "groq" and not groq_key:
+                if openai_key and self._openai_capability_allowed(settings, AICapability.TRANSCRIPTION):
+                    provider = "openai"
+                    model_id = "whisper-1"
+            elif provider == "openai" and not openai_key and groq_key:
+                provider = "groq"
+                model_id = "whisper-large-v3"
+
             cache_key = self._cache_key(provider=provider, model=model_id, capability=AICapability.TRANSCRIPTION, input_hash=input_hash)
             operation_id = self._operation_id(scope_type="youtube_task" if task_id else "global", scope_id=task_id, cache_key=cache_key)
 
