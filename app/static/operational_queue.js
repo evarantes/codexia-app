@@ -80,6 +80,62 @@
     return `<div class="card metric" style="padding:14px 16px"><div class="label">${esc(label)}</div><div class="value" style="font-size:22px;margin:2px 0">${esc(value)}</div>${hint ? `<div class="sub">${esc(hint)}</div>` : ''}</div>`;
   }
 
+  function ensureQueueStyles() {
+    if (document.getElementById('operationalQueueMobileScrollStyles')) return;
+    const style = document.createElement('style');
+    style.id = 'operationalQueueMobileScrollStyles';
+    style.textContent = `
+      #operationalQueueList { min-width: 0; }
+      .oq-project-scroll {
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: auto;
+        scrollbar-color: var(--blue) #e7eaf2;
+      }
+      .oq-project-scroll::-webkit-scrollbar { height: 10px; }
+      .oq-project-scroll::-webkit-scrollbar-track {
+        background: #e7eaf2;
+        border-radius: 999px;
+      }
+      .oq-project-scroll::-webkit-scrollbar-thumb {
+        background: linear-gradient(90deg, var(--blue), var(--violet));
+        border: 2px solid #e7eaf2;
+        border-radius: 999px;
+      }
+      .oq-project-row {
+        display: grid;
+        grid-template-columns: minmax(260px, 1fr) minmax(150px, .45fr) minmax(260px, auto);
+        gap: 16px;
+        align-items: center;
+      }
+      .oq-mobile-scroll-hint { display: none; }
+      @media (max-width: 700px) {
+        .oq-project-scroll {
+          overflow-x: scroll;
+          padding: 12px 14px 9px;
+          scroll-behavior: smooth;
+          scrollbar-gutter: stable;
+          touch-action: pan-x pan-y;
+        }
+        .oq-project-row { min-width: 760px; }
+        .oq-mobile-scroll-hint {
+          display: block;
+          position: sticky;
+          left: 0;
+          width: max-content;
+          margin: 0 0 8px;
+          color: var(--muted);
+          font-size: 11px;
+          font-weight: 700;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
   function ensureModal() {
     let modal = document.getElementById('v2ProjectModal');
     if (modal) return modal;
@@ -114,6 +170,7 @@
   function ensurePanel() {
     const page = document.getElementById('page-queue');
     if (!page) return null;
+    ensureQueueStyles();
 
     const oldLink = page.querySelector('a[href="/static/legacy/index.html"]');
     if (oldLink) {
@@ -220,8 +277,9 @@
       task.updated_at ? `Atualizado ${dateText(task.updated_at)}` : '',
     ].filter(Boolean).join(' · ');
     return `
-      <div data-task-id="${esc(task.id)}" style="padding:15px 16px;border-bottom:1px solid var(--line)">
-        <div style="display:grid;grid-template-columns:minmax(260px,1fr) minmax(150px,.45fr) minmax(260px,auto);gap:16px;align-items:center">
+      <div class="oq-project-scroll" data-task-id="${esc(task.id)}" style="border-bottom:1px solid var(--line)" tabindex="0" aria-label="Projeto ${esc(task.title || 'Produção')}. Deslize horizontalmente para ver progresso e comandos.">
+        <div class="oq-mobile-scroll-hint">Deslize para o lado para ver progresso e comandos →</div>
+        <div class="oq-project-row">
           <div style="min-width:0">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
               <div style="font-size:15px;font-weight:850;word-break:break-word">${esc(task.title || 'Produção')}</div>
