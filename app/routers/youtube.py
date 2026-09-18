@@ -3425,6 +3425,10 @@ class VideoRequest(BaseModel):
     override_tags: Optional[List[str]] = None
     voice_style: Optional[str] = None
     voice_gender: Optional[str] = None
+    # Quando true, o pipeline pode usar apenas o provedor premium configurado.
+    # Edge/gTTS/SAPI ficam proibidos e a tarefa falha antes das imagens caso a
+    # voz premium não esteja disponível.
+    premium_voice_required: bool = False
     image_mode: Optional[str] = None  # auto | single | multiple
     aspect_ratio: Optional[str] = "16:9"
     idempotency_key: Optional[str] = None
@@ -8156,6 +8160,13 @@ def process_video_generation(request: VideoRequest, task_id):
             heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
             _raise_if_cancelled()
             
+        if isinstance(script, dict):
+            script["premium_voice_required"] = bool(
+                getattr(request, "premium_voice_required", False)
+            )
+            if script["premium_voice_required"]:
+                script["tts_fallback_policy"] = "premium_required"
+
         video_result = video_service.create_video_from_plan(
             script,
             aspect_ratio=str(request.aspect_ratio or "16:9"),
