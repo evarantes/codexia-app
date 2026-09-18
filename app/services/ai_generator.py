@@ -3398,6 +3398,10 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not isinstance(info, dict):
             return {"segments": None, "error": "invalid_response"}
         if info.get("error"):
+            try:
+                print(f"[caption-transcription] task={getattr(self, 'ai_task_id', None)} error={info.get('error')}")
+            except Exception:
+                pass
             return {"segments": None, "error": info.get("error")}
         segments = info.get("segments")
         if not isinstance(segments, list):
