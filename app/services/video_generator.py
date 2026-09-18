@@ -3232,12 +3232,37 @@ class VideoGenerator:
                 if strict:
                     err = info.get("error") if isinstance(info, dict) else None
                     raise Exception(f"Transcrição indisponível para sincronização de legendas: {err or 'no_segments'}")
-            except Exception:
-                pass
-        # Com áudio disponível, não é permitido inventar tempos a partir do
-        # texto: isso produz legendas visualmente plausíveis, porém divergentes.
+            except Exception as exc:
+                # Preserve the real transcription failure for observability.
+                transcription_error = str(exc)[:500]
+            else:
+                transcription_error = None
+
+        # Recovery path: when the official audio transcription is temporarily
+        # unavailable, do not abort the whole production at 20%. Build a
+        # deterministic text timeline over the measured audio duration, then
+        # keep the source explicit so the quality gate/report can flag it.
+        #
+        # This avoids re-generating paid media and lets the project continue;
+        # the timeline can later be replaced by an official transcript on a
+        # subsequent pass if desired.
         if audio_path:
-            return {"timeline": [], "source": "audio_transcript_unavailable", "error": "official_audio_transcript_required"}
+            fallback = self._sanitize_caption_timeline(
+                self._caption_timeline_from_text(narration, total_duration),
+                total_duration,
+            )
+            if fallback:
+                return {
+                    "timeline": fallback,
+                    "source": "text_fallback_from_measured_audio",
+                    "timing_source": "measured_audio_duration",
+                    "error": transcription_error or "official_audio_transcript_unavailable",
+                }
+            return {
+                "timeline": [],
+                "source": "audio_transcript_unavailable",
+                "error": transcription_error or "official_audio_transcript_required",
+            }
         return {"timeline": self._sanitize_caption_timeline(self._caption_timeline_from_text(narration, total_duration), total_duration), "source": "text_fallback"}
 
     def _find_scene_text_ranges_in_body(self, body_text: str, scenes: List[Dict[str, Any]]) -> List[Dict[str, int]]:
@@ -6008,7 +6033,12 @@ $synth.Dispose()
                 )
             full_caption_timeline = caption_timeline_details.get("timeline") or []
             caption_timeline_source = str(caption_timeline_details.get("source") or "text_fallback")
-            if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and final_narration_text:
+            render_report["caption_timeline"] = {
+                "source": caption_timeline_source,
+                "timing_source": str(caption_timeline_details.get("timing_source") or ""),
+                "error": str(caption_timeline_details.get("error") or ""),
+            }
+            if caption_timeline_source in {"text_fallback", "text_fallback_from_measured_audio"} and initial_opening_silence_sec > 0 and final_narration_text:
                 shifted_timeline = self._caption_timeline_from_text(
                     final_narration_text,
                     max(0.1, actual_total_audio_dur - initial_opening_silence_sec),
