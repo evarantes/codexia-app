@@ -158,8 +158,8 @@ def patch_renderer(text: str) -> str:
         )
     text = _replace_once(
         text,
-        '            if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and final_narration_text:\n                shifted_timeline = self._caption_timeline_from_text(\n                    final_narration_text,',
-        '            if caption_timeline_source == "text_fallback" and initial_opening_silence_sec > 0 and caption_narration_text:\n                shifted_timeline = self._caption_timeline_from_text(\n                    caption_narration_text,',
+        '            if caption_timeline_source in {"text_fallback", "text_fallback_from_measured_audio"} and initial_opening_silence_sec > 0 and final_narration_text:\n                shifted_timeline = self._caption_timeline_from_text(\n                    final_narration_text,',
+        '            if caption_timeline_source in {"text_fallback", "text_fallback_from_measured_audio"} and initial_opening_silence_sec > 0 and caption_narration_text:\n                shifted_timeline = self._caption_timeline_from_text(\n                    caption_narration_text,',
         label="renderer/use-real-tts-text-for-shifted-fallback",
     )
     text = _replace_once(
