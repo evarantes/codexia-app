@@ -31,7 +31,7 @@ class IntelligentCostOptimizationHardeningTests(unittest.TestCase):
     def test_retry_validates_exact_get_plan_before_transient_retry_flags(self):
         text = HARDENING.read_text(encoding="utf-8")
         self.assertIn(
-            '_intelligent_retry_visual_materials(task_id, saved_payload)',
+            '_intelligent_retry_visual_materials(task_id)',
             text,
         )
         self.assertNotIn(
