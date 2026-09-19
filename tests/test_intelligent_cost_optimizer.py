@@ -61,6 +61,8 @@ class IntelligentCostOptimizerTests(unittest.TestCase):
             script={"scenes": [{"text": "Cena"}]},
             audio_path="/data/media/audio/old.mp3",
             image_unit_cost_usd=0.04,
+            audio_unit_cost_usd_per_minute=0.012,
+            usd_brl=5.20,
         )
         self.assertTrue(plan["quality_completion_required"])
         self.assertTrue(plan["requires_confirmation"])
@@ -70,6 +72,14 @@ class IntelligentCostOptimizerTests(unittest.TestCase):
         self.assertEqual(plan["paid_image_calls"], 12)
         self.assertEqual(plan["estimated_new_image_calls"], 12)
         self.assertAlmostEqual(plan["estimated_new_image_cost_usd"], 0.48, places=6)
+        self.assertEqual(plan["estimated_new_image_cost_brl"], 2.50)
+        self.assertAlmostEqual(plan["estimated_new_audio_cost_usd"], 0.12, places=6)
+        self.assertEqual(plan["estimated_new_audio_cost_brl"], 0.62)
+        self.assertAlmostEqual(plan["estimated_total_additional_cost_usd"], 0.60, places=6)
+        self.assertEqual(plan["estimated_total_additional_cost_brl"], 3.12)
+        self.assertEqual(plan["max_new_image_calls"], 12)
+        self.assertTrue(plan["cost_confirmation"]["paid_image_call_cap_is_hard"])
+        self.assertTrue(plan["cost_confirmation"]["monetary_values_are_estimates"])
         self.assertAlmostEqual(plan["estimated_savings_usd"], 0.32, places=6)
         self.assertTrue(validate_optimization_confirmation(plan, plan["plan_hash"]))
 
@@ -88,6 +98,28 @@ class IntelligentCostOptimizerTests(unittest.TestCase):
         self.assertNotEqual(ten["plan_hash"], eleven["plan_hash"])
         self.assertEqual(ten["target_visual_count"], 20)
         self.assertEqual(eleven["target_visual_count"], 22)
+
+    def test_strict_plan_hash_changes_when_pricing_changes(self):
+        base = dict(
+            task_id="task-v2-cost",
+            title="Devocional",
+            duration_minutes=10,
+            requested_target_visual_count=8,
+            valid_image_paths=[f"/data/media/images/img-{idx:02d}.png" for idx in range(8)],
+            script={"scenes": [{"text": "Cena"}]},
+            audio_path="/data/media/audio/old.mp3",
+            image_unit_cost_usd=0.04,
+            audio_unit_cost_usd_per_minute=0.012,
+            usd_brl=5.20,
+        )
+        original = build_visual_quality_completion_plan(**base)
+        changed = build_visual_quality_completion_plan(
+            **{**base, "image_unit_cost_usd": 0.05}
+        )
+        self.assertNotEqual(original["plan_hash"], changed["plan_hash"])
+        self.assertFalse(
+            validate_optimization_confirmation(changed, original["plan_hash"])
+        )
 
     def test_confirmation_hash_must_match_exact_plan(self):
         plan = self._plan()
