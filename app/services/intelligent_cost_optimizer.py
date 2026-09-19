@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 from typing import Any, Dict, Iterable, List
 
 
@@ -18,6 +19,112 @@ def _clean_paths(values: Iterable[Any]) -> List[str]:
 def _stable_hash(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def minimum_visual_count_for_duration(
+    duration_minutes: Any,
+    *,
+    max_average_image_seconds: float = 30.0,
+    scenes_per_minute: float = 2.0,
+) -> int:
+    """Return the minimum visual density required by the V2 quality contract.
+
+    Two independent limits are enforced: no visual should need to carry more
+    than the configured average hold time, and the current cinematic target is
+    roughly two scenes per minute. The stricter result wins.
+    """
+    try:
+        minutes = max(0.0, float(duration_minutes or 0.0))
+    except (TypeError, ValueError):
+        minutes = 0.0
+    if minutes <= 0.0:
+        return 0
+
+    try:
+        hold_seconds = max(1.0, float(max_average_image_seconds or 30.0))
+    except (TypeError, ValueError):
+        hold_seconds = 30.0
+    try:
+        density = max(0.1, float(scenes_per_minute or 2.0))
+    except (TypeError, ValueError):
+        density = 2.0
+
+    by_hold = int(math.ceil((minutes * 60.0) / hold_seconds))
+    by_density = int(math.ceil(minutes * density))
+    return max(1, by_hold, by_density)
+
+
+def build_visual_quality_completion_plan(
+    *,
+    task_id: str,
+    title: str,
+    duration_minutes: Any,
+    requested_target_visual_count: int,
+    valid_image_paths: Iterable[Any],
+    script: Dict[str, Any],
+    audio_path: str,
+    image_unit_cost_usd: float = 0.0,
+) -> Dict[str, Any]:
+    """Plan a strict V2 correction that reuses paid assets and buys only gaps."""
+    images = _clean_paths(valid_image_paths)
+    try:
+        requested = max(0, int(requested_target_visual_count or 0))
+    except (TypeError, ValueError):
+        requested = 0
+    quality_floor = minimum_visual_count_for_duration(duration_minutes)
+    target = max(requested, quality_floor)
+    existing = len(images)
+    missing = max(0, target - existing)
+    script_obj = dict(script or {}) if isinstance(script, dict) else {}
+    audio = str(audio_path or "").strip()
+    unit = max(0.0, float(image_unit_cost_usd or 0.0))
+    try:
+        minutes = max(0.0, float(duration_minutes or 0.0))
+    except (TypeError, ValueError):
+        minutes = 0.0
+
+    canonical = {
+        "version": 3,
+        "task_id": str(task_id or "").strip(),
+        "strategy": "quality_completion_preserve_then_generate_v1",
+        "strict_visual_quality_required": True,
+        "duration_minutes": minutes,
+        "target_visual_count": target,
+        "quality_floor_visual_count": quality_floor,
+        "valid_image_paths": images,
+        "script_sha256": _stable_hash(script_obj),
+        "audio_path": audio,
+        "preserve_full_script": True,
+        "preserve_existing_images": True,
+        "regenerate_narration": True,
+        "paid_image_calls": missing,
+        "auto_publish": False,
+    }
+    plan_hash = _stable_hash(canonical)
+
+    return {
+        **canonical,
+        "title": str(title or "").strip(),
+        "valid_image_count": existing,
+        "missing_visual_count": missing,
+        "quality_completion_required": True,
+        "optimization_required": False,
+        "requires_confirmation": True,
+        "estimated_image_calls_avoided": existing,
+        "estimated_new_image_calls": missing,
+        "estimated_savings_usd": round(unit * existing, 6) if unit > 0 else None,
+        "estimated_new_image_cost_usd": round(unit * missing, 6) if unit > 0 else None,
+        "quality_policy": {
+            "reuse_existing_images_once_before_generation": True,
+            "generate_only_missing_visuals": True,
+            "max_average_image_seconds": 30.0,
+            "minimum_scenes_per_minute": 2.0,
+            "never_shorten_narration": True,
+            "never_remove_script_text": True,
+            "require_audio_timed_captions": True,
+        },
+        "plan_hash": plan_hash,
+    }
 
 
 def proportional_visual_index(group_index: int, image_count: int, group_count: int) -> int:

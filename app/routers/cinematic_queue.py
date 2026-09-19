@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models import UnifiedVideo, UnifiedVideoStatus, User, VideoTask
 from app.routers.auth import get_current_admin_user
 from app.services.cinematic_library_store import CinematicLibraryStore
+from app.services.intelligent_cost_optimizer import minimum_visual_count_for_duration
 from app.services.task_manager import update_task
 from app.services.unified_video_pipeline import unified_video_pipeline
 from app.services.youtube_service import YouTubeService
@@ -480,6 +481,45 @@ def reject_v2_project(
 
     result = _result_obj(row)
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+
+    # A reprovação do Diretor pode manter uma meta visual antiga no payload
+    # (ex.: 8 imagens de um render de 5 min). Recalcule a meta a partir da
+    # duração contratada antes de oferecer qualquer retry de economia.
+    try:
+        duration_minutes = int(
+            getattr(unified, "duration_minutes", 0)
+            or (entry or {}).get("duration_minutes")
+            or payload.get("duration")
+            or 0
+        )
+    except Exception:
+        duration_minutes = 0
+    duration_minutes = max(0, duration_minutes)
+    quality_floor = minimum_visual_count_for_duration(duration_minutes)
+
+    recovery_budget = (
+        dict(payload.get("recovery_image_budget"))
+        if isinstance(payload.get("recovery_image_budget"), dict)
+        else {}
+    )
+    try:
+        previous_visual_target = max(
+            int(payload.get("expected_image_count") or 0),
+            int(recovery_budget.get("expected_image_count") or 0),
+        )
+    except Exception:
+        previous_visual_target = 0
+    strict_visual_target = max(previous_visual_target, quality_floor)
+
+    if strict_visual_target > 0:
+        recovery_budget["expected_image_count"] = strict_visual_target
+        recovery_budget["quality_recalculated"] = True
+        payload["recovery_image_budget"] = recovery_budget
+        payload["expected_image_count"] = strict_visual_target
+        payload["strict_visual_target_count"] = strict_visual_target
+    if duration_minutes > 0:
+        payload["duration"] = duration_minutes
+
     payload.update({
         "review_feedback": notes,
         "force_regenerate": True,
@@ -488,6 +528,7 @@ def reject_v2_project(
         "editorial_reviewed": False,
         "editorial_review_ready": False,
         "director_quality_required": True,
+        "strict_visual_quality_required": True,
     })
     result["payload"] = payload
     result["review"] = review

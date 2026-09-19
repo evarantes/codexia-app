@@ -7864,7 +7864,34 @@ def process_video_generation(request: VideoRequest, task_id):
             else:
                 topic = request.topic or "Motivação Genérica"
                 script = ai_service.generate_motivational_script(topic, requested_minutes)
-            
+
+        # V2 corrections regenerate the script/narration but can still preserve
+        # already-paid images. Carry the confirmed partial-image budget into the
+        # freshly generated script instead of falling back to the short old script.
+        if isinstance(script, dict) and bool(getattr(request, "repair_mode", False)):
+            preserved_images = getattr(request, "selected_images", None)
+            if isinstance(preserved_images, list):
+                script["selected_images"] = [
+                    str(item).strip()
+                    for item in preserved_images
+                    if isinstance(item, str) and str(item).strip()
+                ]
+            script["repair_complete_visuals"] = bool(
+                getattr(request, "repair_complete_visuals", True)
+            )
+            repair_budget = getattr(request, "repair_image_budget", None)
+            if isinstance(repair_budget, dict) and bool(repair_budget.get("enabled")):
+                script["_partial_image_recovery"] = dict(repair_budget)
+                script["expected_image_count"] = int(
+                    repair_budget.get("expected_image_count") or 0
+                )
+        if isinstance(script, dict) and str(getattr(request, "review_feedback", "") or "").strip():
+            script["review_feedback"] = str(
+                getattr(request, "review_feedback", "") or ""
+            ).strip()[:2000]
+        if isinstance(script, dict) and bool(getattr(request, "director_quality_required", False)):
+            script["director_quality_required"] = True
+
         print("Roteiro gerado/estruturado.")
         _raise_if_cancelled()
 
