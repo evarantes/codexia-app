@@ -94,6 +94,12 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("reconcileActiveProjects", script)
         self.assertIn("/youtube/task/${encodeURIComponent(task.id)}", script)
         self.assertIn("converted to a recoverable pause", script)
+        self.assertIn("function apiErrorText(payload", script)
+        self.assertIn("value.msg", script)
+        self.assertIn("value.reason", script)
+        self.assertIn("text === '[object Object]' ? '' : text", script)
+        self.assertIn("throw new Error(apiErrorText(data", script)
+        self.assertNotIn("throw new Error(data.detail || data.message", script)
         self.assertNotIn("queue?limit=50", script)
 
     def test_v2_handoff_registers_only_new_ui_tasks_in_library(self):
@@ -105,7 +111,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20260919-reconcile1", patch)
+        self.assertIn("operational_queue.js?v=20260919-readable-errors1", patch)
         self.assertIn("director_duration_contract.js?v=20260917-duration2", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
