@@ -1072,8 +1072,13 @@ class CinematicQualityService:
         pronunciation_score = min(100, pronunciation_score + min(4, self._safe_int(pronunciation.get("replacement_count"), 0)))
         pronunciation_score = max(45, pronunciation_score - (len(audio_critic.get("issues") or []) * 2))
 
+        real_audio_caption_sources = {
+            "official_audio_transcript",
+            "approved_edge_tts_word_boundaries",
+            "local_audio_activity_alignment",
+        }
         caption_score = 72
-        if captions_match_official and caption_timeline_source == "official_audio_transcript":
+        if captions_match_official and caption_timeline_source in real_audio_caption_sources:
             caption_score = 100
         elif captions_match_official:
             caption_score = 94
@@ -1081,7 +1086,7 @@ class CinematicQualityService:
             caption_score = max(40, min(96, int(round(transcript_similarity * 96))))
         if not sync.get("captions_synced_with_audio"):
             caption_score = max(35, caption_score - 18)
-        if caption_timeline_source != "official_audio_transcript":
+        if caption_timeline_source not in real_audio_caption_sources:
             caption_score = max(35, caption_score - 14)
 
         sync_score = 72
@@ -1091,7 +1096,7 @@ class CinematicQualityService:
         canonical_sync_verified = bool(
             sync.get("captions_synced_with_audio")
             and sync.get("video_synced_with_audio")
-            and caption_timeline_source == "official_audio_transcript"
+            and caption_timeline_source in real_audio_caption_sources
         )
         if canonical_sync_verified:
             sync_score = 100

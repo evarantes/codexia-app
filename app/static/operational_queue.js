@@ -547,6 +547,14 @@
   async function confirmedRetryUrl(id) {
     const encodedId = encodeURIComponent(id);
     const plan = await api(`/youtube/task/${encodedId}/retry-plan`);
+    if (plan?.quality_correction_required) {
+      const message = String(plan.message ||
+        'Esta produção foi reprovada na revisão e será refeita para cumprir duração, variedade visual e sincronização das legendas.');
+      const costNote = '\n\nA correção poderá gerar uma nova narração e novas imagens. Os ativos defeituosos não serão reutilizados à força.';
+      return confirm(`${message}${costNote}\n\nDeseja iniciar a correção de qualidade?`)
+        ? `/youtube/task/${encodedId}/retry`
+        : '';
+    }
     if (!plan?.requires_confirmation) {
       return confirm('Deseja reiniciar/retomar esta produção?')
         ? `/youtube/task/${encodedId}/retry`

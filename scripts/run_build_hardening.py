@@ -40,6 +40,7 @@ API_SCRIPTS = [
     "apply_ready_video_asset_repair_v3.py",
     "apply_youtube_narration_gate.py",
     "apply_global_logo_only_visual_mode.py",
+    "apply_review_quality_retry_hardening.py",
 ]
 
 WORKER_SCRIPTS = [
@@ -69,6 +70,7 @@ WORKER_SCRIPTS = [
     "apply_ready_video_asset_repair_v3.py",
     "apply_youtube_narration_gate.py",
     "apply_global_logo_only_visual_mode.py",
+    "apply_review_quality_retry_hardening.py",
 ]
 
 
