@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,9 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.config import UNIFIED_VIDEO_URL_PREFIX, absolute_path_for_video
 from app.database import get_db
-from app.models import User, VideoTask
+from app.models import UnifiedVideo, UnifiedVideoStatus, User, VideoTask
 from app.routers.auth import get_current_admin_user
 from app.services.cinematic_library_store import CinematicLibraryStore
+from app.services.task_manager import update_task
+from app.services.unified_video_pipeline import unified_video_pipeline
+from app.services.youtube_service import YouTubeService
 
 
 router = APIRouter(prefix="/cinematic", tags=["Codexia Cinematic Queue"])
@@ -30,6 +33,14 @@ class LibraryRegisterRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=180)
     project_slot: str = Field("story", pattern="^(story|devotional|short)$")
     duration_minutes: Optional[int] = Field(None, ge=1, le=180)
+
+
+class ReviewDecisionRequest(BaseModel):
+    notes: Optional[str] = Field(None, max_length=2000)
+
+
+class PublishRequest(BaseModel):
+    visibility: str = Field("unlisted", pattern="^(private|unlisted|public)$")
 
 
 def _uid(current_user: Optional[User]) -> int:
@@ -214,6 +225,12 @@ def _task_to_public(
     ).strip().lower()
     url = _video_url(result)
     ready_for_watch = status in _READY_STATUSES and bool(url)
+    youtube_url = ""
+    for view in _nested_dicts(result):
+        candidate = str(view.get("youtube_url") or "").strip()
+        if candidate:
+            youtube_url = candidate
+            break
 
     return {
         "id": str(getattr(row, "id", "") or ""),
@@ -237,6 +254,10 @@ def _task_to_public(
         "can_pause": status in {"pending", "processing"},
         "can_cancel": status in {"pending", "processing", "pause_requested", "paused"},
         "can_delete": status not in _ACTIVE_STATUSES,
+        "can_approve": status == "awaiting_review",
+        "can_reject": status == "awaiting_review",
+        "can_publish": status == "approved",
+        "youtube_url": youtube_url or None,
     }
 
 
@@ -254,6 +275,22 @@ def _registered_owned_task(db: Session, task_id: str, uid: int) -> tuple[VideoTa
     if not entry:
         raise HTTPException(status_code=404, detail="Este projeto não pertence à biblioteca do Codexia V2.")
     return _row_for_owned_task(db, task_id, uid), entry
+
+
+def _unified_for_task(db: Session, task_id: str) -> UnifiedVideo:
+    unified = db.query(UnifiedVideo).filter(UnifiedVideo.task_id == str(task_id)).first()
+    if not unified:
+        raise HTTPException(status_code=409, detail="O registro unificado desta produção não foi encontrado.")
+    return unified
+
+
+def _review_record(*, decision: str, notes: str, user_id: int) -> Dict[str, Any]:
+    return {
+        "decision": decision,
+        "notes": notes,
+        "reviewed_by": int(user_id or 0) or None,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.post("/library/register")
@@ -368,6 +405,171 @@ def get_v2_project_details(
     uid = _uid(current_user)
     row, entry = _registered_owned_task(db, task_id, uid)
     return {"project": _task_to_public(row, entry)}
+
+
+@router.post("/queue/{task_id}/approve")
+def approve_v2_project(
+    task_id: str,
+    body: ReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_admin_user),
+):
+    uid = _uid(current_user)
+    row, entry = _registered_owned_task(db, task_id, uid)
+    status = str(getattr(row, "status", "") or "").strip().lower()
+    if status != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Somente um projeto aguardando revisão pode ser aprovado.")
+
+    validation = unified_video_pipeline().validate_before_awaiting_review(
+        db,
+        task_id,
+        probe_local_paths=True,
+        probe_http=False,
+    )
+    if not validation.ok:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "director_quality_validation_failed",
+                "message": "O Claude Diretor bloqueou a aprovação porque o vídeo não cumpre o contrato de qualidade.",
+                "first_failed": validation.first_failed,
+                "checks": validation.checks,
+                "details": validation.details,
+            },
+        )
+
+    notes = str(body.notes or "").strip()
+    review = _review_record(decision="approved", notes=notes, user_id=uid)
+    unified = _unified_for_task(db, task_id)
+    unified.status = UnifiedVideoStatus.APPROVED
+    unified.approved_at = datetime.utcnow()
+    unified.review_feedback_json = json.dumps(review, ensure_ascii=False)
+
+    result = _result_obj(row)
+    result["review"] = review
+    row.status = "approved"
+    row.progress = 100
+    row.message = "Vídeo aprovado na revisão. Pronto para publicar no YouTube."
+    row.result_json = json.dumps(result, ensure_ascii=False)
+    db.commit()
+    update_task(task_id, status="approved", progress=100, message=row.message, result=result)
+    return {"approved": True, "project": _task_to_public(row, entry)}
+
+
+@router.post("/queue/{task_id}/reject")
+def reject_v2_project(
+    task_id: str,
+    body: ReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_admin_user),
+):
+    uid = _uid(current_user)
+    row, entry = _registered_owned_task(db, task_id, uid)
+    status = str(getattr(row, "status", "") or "").strip().lower()
+    if status != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Somente um projeto aguardando revisão pode ser reprovado.")
+    notes = str(body.notes or "").strip()
+    if not notes:
+        raise HTTPException(status_code=422, detail="Descreva o que precisa ser corrigido antes de reprovar.")
+
+    review = _review_record(decision="rejected", notes=notes, user_id=uid)
+    unified = _unified_for_task(db, task_id)
+    unified.status = UnifiedVideoStatus.FAILED
+    unified.last_error = f"Reprovado na revisão: {notes}"[:1000]
+    unified.review_feedback_json = json.dumps(review, ensure_ascii=False)
+
+    result = _result_obj(row)
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    payload.update({
+        "review_feedback": notes,
+        "force_regenerate": True,
+        "force_reuse_assets": False,
+        "force_render_only": False,
+        "editorial_reviewed": False,
+        "editorial_review_ready": False,
+        "director_quality_required": True,
+    })
+    result["payload"] = payload
+    result["review"] = review
+    row.status = "failed"
+    row.progress = 100
+    row.message = f"Reprovado na revisão: {notes}"[:1000]
+    row.result_json = json.dumps(result, ensure_ascii=False)
+    db.commit()
+    update_task(task_id, status="failed", progress=100, message=row.message, result=result)
+    return {"rejected": True, "project": _task_to_public(row, entry)}
+
+
+@router.post("/queue/{task_id}/publish")
+def publish_v2_project(
+    task_id: str,
+    body: PublishRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_admin_user),
+):
+    uid = _uid(current_user)
+    row, entry = _registered_owned_task(db, task_id, uid)
+    status = str(getattr(row, "status", "") or "").strip().lower()
+    if status != "approved":
+        raise HTTPException(status_code=409, detail="Aprove o vídeo antes de publicá-lo no YouTube.")
+
+    unified = _unified_for_task(db, task_id)
+    try:
+        script = json.loads(unified.script_json or "{}") if unified.script_json else {}
+    except Exception:
+        script = {}
+    if not isinstance(script, dict):
+        script = {}
+    result = _result_obj(row)
+    title = str(script.get("title") or _title(row, result, _payload(result), entry)).strip()[:100]
+    description = str(script.get("description") or "Vídeo produzido por Codexia.").strip()
+    tags = script.get("tags") if isinstance(script.get("tags"), list) else []
+
+    youtube = YouTubeService()
+
+    def upload(video_path: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        response = youtube.upload_video(
+            video_path,
+            title=str(metadata.get("title") or title),
+            description=str(metadata.get("description") or description),
+            tags=metadata.get("tags") if isinstance(metadata.get("tags"), list) else tags,
+            thumbnail_path=str(unified.cover_path) if unified.cover_path else None,
+            privacy_status=str(metadata.get("visibility") or body.visibility),
+        )
+        return response if isinstance(response, dict) else {"error": "Resposta inválida do YouTube."}
+
+    published = unified_video_pipeline().publish_if_ready(
+        db,
+        task_id,
+        upload_callable=upload,
+        upload_metadata={
+            "title": title,
+            "description": description,
+            "tags": tags,
+            "visibility": body.visibility,
+        },
+        visibility_override=body.visibility,
+    )
+    if not published.get("ok"):
+        raise HTTPException(status_code=502, detail=published.get("error") or "Não foi possível publicar no YouTube.")
+
+    result.update({
+        "youtube_video_id": published.get("youtube_video_id"),
+        "youtube_url": published.get("youtube_url"),
+        "published_at": datetime.now(timezone.utc).isoformat(),
+    })
+    row.status = "published"
+    row.progress = 100
+    row.message = "Vídeo publicado no YouTube com sucesso."
+    row.result_json = json.dumps(result, ensure_ascii=False)
+    db.commit()
+    update_task(task_id, status="published", progress=100, message=row.message, result=result)
+    return {
+        "published": True,
+        "youtube_video_id": published.get("youtube_video_id"),
+        "youtube_url": published.get("youtube_url"),
+        "project": _task_to_public(row, entry),
+    }
 
 
 @router.delete("/queue/{task_id}")

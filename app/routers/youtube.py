@@ -3437,6 +3437,8 @@ class VideoRequest(BaseModel):
     force_render_only: bool = False
     editorial_reviewed: bool = False
     editorial_review_ready: bool = False
+    director_quality_required: bool = False
+    review_feedback: Optional[str] = None
 
 
 class ApprovedNarrationJobError(RuntimeError):
@@ -7855,6 +7857,10 @@ def process_video_generation(request: VideoRequest, task_id):
                 if isinstance(script, dict) and bool(getattr(request, 'editorial_reviewed', False)):
                     script['editorial_reviewed'] = True
                     script['editorial_review_ready'] = bool(getattr(request, 'editorial_review_ready', False))
+                if isinstance(script, dict) and str(getattr(request, 'review_feedback', '') or '').strip():
+                    script['review_feedback'] = str(getattr(request, 'review_feedback', '') or '').strip()[:2000]
+                if isinstance(script, dict) and bool(getattr(request, 'director_quality_required', False)):
+                    script['director_quality_required'] = True
             else:
                 topic = request.topic or "Motivação Genérica"
                 script = ai_service.generate_motivational_script(topic, requested_minutes)
@@ -7871,10 +7877,10 @@ def process_video_generation(request: VideoRequest, task_id):
                 m = max(1, m)
                 try:
                     spm_raw = (os.getenv("YOUTUBE_SCENES_PER_MINUTE") or "").strip()
-                    spm = float(spm_raw) if spm_raw else 1.35
+                    spm = float(spm_raw) if spm_raw else 2.0
                 except Exception:
-                    spm = 1.35
-                spm = max(0.8, min(2.4, spm))
+                    spm = 2.0
+                spm = max(1.0, min(3.0, spm))
                 try:
                     min_raw = (os.getenv("YOUTUBE_SCENES_MIN") or "").strip()
                     min_scenes = int(min_raw) if min_raw else 8
@@ -7882,11 +7888,11 @@ def process_video_generation(request: VideoRequest, task_id):
                     min_scenes = 8
                 try:
                     max_raw = (os.getenv("YOUTUBE_SCENES_MAX") or "").strip()
-                    max_scenes = int(max_raw) if max_raw else 15
+                    max_scenes = int(max_raw) if max_raw else 30
                 except Exception:
                     max_scenes = 15
                 min_scenes = max(4, min(15, min_scenes))
-                max_scenes = max(min_scenes, min(18, max_scenes))
+                max_scenes = max(min_scenes, min(40, max_scenes))
                 return max(min_scenes, min(max_scenes, int(round(m * spm))))
 
             def _compact_scenes(raw: Any, target_count: int) -> List[Dict[str, Any]]:
@@ -7987,11 +7993,12 @@ def process_video_generation(request: VideoRequest, task_id):
                 pass
 
             try:
+                target_scene_count = _target_scene_count(requested_minutes)
                 script = ai_service.build_cinematic_engine_v2_plan(
                     script,
-                    target_scene_count=_target_scene_count(requested_minutes),
-                    min_scene_count=8,
-                    max_scene_count=15,
+                    target_scene_count=target_scene_count,
+                    min_scene_count=target_scene_count,
+                    max_scene_count=target_scene_count,
                 )
             except Exception as e:
                 print(f"Aviso: Codexia Cinematic Engine V2 nao conseguiu enriquecer o storyboard: {e}")

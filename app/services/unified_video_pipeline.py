@@ -876,6 +876,12 @@ class UnifiedVideoPipelineService:
             )
         task = get_task(str(uv.task_id)) if uv.task_id else None
         task_result = task.get("result") if isinstance(task, dict) and isinstance(task.get("result"), dict) else {}
+        task_payload = task_result.get("payload") if isinstance(task_result.get("payload"), dict) else {}
+        director_quality_required = bool(
+            task_payload.get("director_quality_required")
+            or task_payload.get("editorial_reviewed")
+            or task_payload.get("editorial_review_ready")
+        )
         script_obj = _json_loads(uv.script_json) if isinstance(uv.script_json, str) else None
         if not isinstance(script_obj, dict):
             script_obj = task_result.get("script") if isinstance(task_result.get("script"), dict) else None
@@ -989,12 +995,76 @@ class UnifiedVideoPipelineService:
         checks["ffprobe_has_video_stream"] = bool(has_video_stream)
         checks["ffprobe_has_audio_stream"] = bool(has_audio_stream)
         checks["duration_valid"] = bool(video_duration >= 1.0)
+        requested_duration = max(0.0, float(getattr(uv, "duration_minutes", 0) or 0) * 60.0)
+        duration_delta = abs(video_duration - requested_duration) if requested_duration > 0 else 0.0
+        duration_tolerance = max(5.0, requested_duration * 0.05) if requested_duration > 0 else 0.0
+        duration_matches_request = bool(
+            not director_quality_required
+            or requested_duration <= 0
+            or (video_duration >= 1.0 and duration_delta <= duration_tolerance)
+        )
+        checks["duration_matches_request"] = duration_matches_request
+
+        render_report = task_result.get("render_report") if isinstance(task_result.get("render_report"), dict) else {}
+        visual_plan = render_report.get("visual_plan") if isinstance(render_report.get("visual_plan"), dict) else {}
+        sync_validation = render_report.get("sync_validation") if isinstance(render_report.get("sync_validation"), dict) else {}
+        reused_images = _safe_int(visual_plan.get("reused_image_count"), 0)
+        average_image_duration = _safe_float(visual_plan.get("average_image_duration_sec"), 0.0)
+        visual_metrics_present = bool(
+            "reused_image_count" in visual_plan
+            and "average_image_duration_sec" in visual_plan
+        )
+        visual_variety_ok = bool(
+            not director_quality_required
+            or (
+                visual_metrics_present
+                and
+                reused_images == 0
+                and 0.0 < average_image_duration <= 30.0
+            )
+        )
+        checks["visual_variety_valid"] = visual_variety_ok
+
+        caption_timeline = render_report.get("caption_timeline") if isinstance(render_report.get("caption_timeline"), dict) else {}
+        caption_source = str(
+            sync_validation.get("timeline_source")
+            or caption_timeline.get("source")
+            or ""
+        ).strip()
+        captions_synced = sync_validation.get("captions_synced_with_audio")
+        if captions_synced is None:
+            captions_synced = sync_validation.get("captions_ok")
+        caption_sync_ok = bool(
+            not director_quality_required
+            or (
+                captions_synced is True
+                and caption_source == "official_audio_transcript"
+            )
+        )
+        checks["caption_sync_valid"] = caption_sync_ok
         details["mp4"] = {
             "path": video_candidate,
             "abs_path": abs_video,
             "size_bytes": int(video_size),
             "streams": {"video": bool(has_video_stream), "audio": bool(has_audio_stream)},
             "duration_seconds": float(video_duration),
+            "requested_duration_seconds": float(requested_duration),
+            "duration_difference_seconds": round(float(video_duration - requested_duration), 3) if requested_duration > 0 else 0.0,
+            "duration_tolerance_seconds": round(float(duration_tolerance), 3),
+        }
+        details["director_quality"] = {
+            "required": director_quality_required,
+            "visual_variety": {
+                "reused_image_count": reused_images,
+                "average_image_duration_seconds": average_image_duration,
+                "maximum_average_image_duration_seconds": 30.0,
+                "metrics_present": visual_metrics_present,
+            },
+            "caption_sync": {
+                "timeline_source": caption_source,
+                "captions_synced_with_audio": captions_synced,
+                "required_timeline_source": "official_audio_transcript",
+            },
         }
         # Sincroniza tamanhos/durações do banco para auditabilidade.
         if probe_local_paths:
@@ -1036,6 +1106,9 @@ class UnifiedVideoPipelineService:
             "ffprobe_has_video_stream",
             "ffprobe_has_audio_stream",
             "duration_valid",
+            "duration_matches_request",
+            "visual_variety_valid",
+            "caption_sync_valid",
             "http_200_or_206",
         ] if not checks.get(k)), None)
         ok = first_failed is None and all(checks.values())
@@ -1117,7 +1190,7 @@ class UnifiedVideoPipelineService:
                 "youtube_url": uv.youtube_url,
                 "message": "Upload único já realizado — pulando segundo upload.",
             }
-        if str(uv.status) not in {UnifiedVideoStatus.APPROVED, UnifiedVideoStatus.PUBLISHED, UnifiedVideoStatus.AWAITING_REVIEW}:
+        if str(uv.status) not in {UnifiedVideoStatus.APPROVED, UnifiedVideoStatus.PUBLISHED}:
             return {
                 "ok": False,
                 "code": "not_approved",
@@ -1138,17 +1211,33 @@ class UnifiedVideoPipelineService:
             self.transition_status(
                 db,
                 str(uv.task_id or uv.idempotency_key),
-                status=UnifiedVideoStatus.FAILED,
-                message=f"Upload falhou: {type(exc).__name__}: {str(exc)[:300]}",
-                merge_result={"publish_error": {"type": type(exc).__name__, "message": str(exc)[:300]}},
+                status=UnifiedVideoStatus.APPROVED,
+                progress=100,
+                message="Vídeo aprovado; publicação no YouTube pendente. A produção foi preservada.",
+                merge_result={
+                    "publish_pending": True,
+                    "production_preserved": True,
+                    "publish_error": {"type": type(exc).__name__, "message": str(exc)[:300]},
+                },
             )
-            return {"ok": False, "code": "exception", "error": f"{type(exc).__name__}: {str(exc)[:300]}", "youtube_video_id": None}
-        yid = str((out or {}).get("youtube_video_id") or (out or {}).get("video_id") or "").strip()
+            return {
+                "ok": False,
+                "code": "publication_pending",
+                "production_preserved": True,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "youtube_video_id": None,
+            }
+        yid = str(
+            (out or {}).get("youtube_video_id")
+            or (out or {}).get("video_id")
+            or (out or {}).get("id")
+            or ""
+        ).strip()
         if not yid:
             self.transition_status(
                 db,
                 str(uv.task_id or uv.idempotency_key),
-                status=UnifiedVideoStatus.AWAITING_REVIEW if bool(uv.review_required) else UnifiedVideoStatus.APPROVED,
+                status=UnifiedVideoStatus.APPROVED,
                 message="Upload não retornou YouTube Video ID. Verifique credenciais/permissões.",
                 merge_result={"publish_result": out},
             )

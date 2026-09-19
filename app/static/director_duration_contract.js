@@ -157,6 +157,7 @@
           override_title: firstTitle || undefined,
           editorial_reviewed: true,
           editorial_review_ready: true,
+          director_quality_required: true,
           // Codexia V2 premium productions must never silently degrade to
           // Edge/gTTS. If the configured premium provider is unavailable the
           // task stops before paid visual generation and explains the cause.

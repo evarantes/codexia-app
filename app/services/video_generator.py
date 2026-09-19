@@ -6033,6 +6033,19 @@ $synth.Dispose()
                 )
             full_caption_timeline = caption_timeline_details.get("timeline") or []
             caption_timeline_source = str(caption_timeline_details.get("source") or "text_fallback")
+            director_quality_required = bool(
+                isinstance(plan, dict)
+                and (
+                    plan.get("director_quality_required")
+                    or plan.get("editorial_reviewed")
+                    or plan.get("editorial_review_ready")
+                )
+            )
+            if director_quality_required and caption_timeline_source != "official_audio_transcript":
+                raise Exception(
+                    "Falha de qualidade do Claude Diretor: a legenda não recebeu timestamps da narração real. "
+                    "A produção foi interrompida antes do render final para evitar legenda fora de sincronia."
+                )
             render_report["caption_timeline"] = {
                 "source": caption_timeline_source,
                 "timing_source": str(caption_timeline_details.get("timing_source") or ""),
