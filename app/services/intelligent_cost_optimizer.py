@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 from typing import Any, Dict, Iterable, List
 
 
@@ -64,8 +65,15 @@ def build_visual_quality_completion_plan(
     script: Dict[str, Any],
     audio_path: str,
     image_unit_cost_usd: float = 0.0,
+    audio_unit_cost_usd_per_minute: float | None = None,
+    usd_brl: float | None = None,
 ) -> Dict[str, Any]:
-    """Plan a strict V2 correction that reuses paid assets and buys only gaps."""
+    """Plan a strict V2 correction with explicit cost confirmation.
+
+    The plan reuses every valid paid image before authorizing new image calls,
+    binds the displayed cost assumptions into the confirmation hash, and keeps
+    the paid-image call count as a hard execution ceiling.
+    """
     images = _clean_paths(valid_image_paths)
     try:
         requested = max(0, int(requested_target_visual_count or 0))
@@ -77,16 +85,53 @@ def build_visual_quality_completion_plan(
     missing = max(0, target - existing)
     script_obj = dict(script or {}) if isinstance(script, dict) else {}
     audio = str(audio_path or "").strip()
-    unit = max(0.0, float(image_unit_cost_usd or 0.0))
+
+    try:
+        image_unit = max(0.0, float(image_unit_cost_usd or 0.0))
+    except (TypeError, ValueError):
+        image_unit = 0.0
+
+    if audio_unit_cost_usd_per_minute is None:
+        try:
+            audio_unit = max(
+                0.0,
+                float(os.getenv("YOUTUBE_AUTO_TTS_MINUTE_COST_UNIT") or "0.0120"),
+            )
+        except Exception:
+            audio_unit = 0.0120
+    else:
+        try:
+            audio_unit = max(0.0, float(audio_unit_cost_usd_per_minute or 0.0))
+        except (TypeError, ValueError):
+            audio_unit = 0.0
+
+    if usd_brl is None:
+        try:
+            fx = max(0.01, float(os.getenv("CODEXIA_USD_BRL") or "5.20"))
+        except Exception:
+            fx = 5.20
+    else:
+        try:
+            fx = max(0.01, float(usd_brl or 0.0))
+        except (TypeError, ValueError):
+            fx = 5.20
+
     try:
         minutes = max(0.0, float(duration_minutes or 0.0))
     except (TypeError, ValueError):
         minutes = 0.0
 
+    image_cost_usd = round(image_unit * missing, 6)
+    image_cost_brl = round(image_cost_usd * fx, 2)
+    audio_cost_usd = round(audio_unit * minutes, 6)
+    audio_cost_brl = round(audio_cost_usd * fx, 2)
+    total_cost_usd = round(image_cost_usd + audio_cost_usd, 6)
+    total_cost_brl = round(total_cost_usd * fx, 2)
+
     canonical = {
-        "version": 3,
+        "version": 4,
         "task_id": str(task_id or "").strip(),
-        "strategy": "quality_completion_preserve_then_generate_v1",
+        "strategy": "quality_completion_preserve_then_generate_v2",
         "strict_visual_quality_required": True,
         "duration_minutes": minutes,
         "target_visual_count": target,
@@ -98,6 +143,16 @@ def build_visual_quality_completion_plan(
         "preserve_existing_images": True,
         "regenerate_narration": True,
         "paid_image_calls": missing,
+        "max_new_image_calls": missing,
+        "image_unit_cost_usd": round(image_unit, 6),
+        "audio_unit_cost_usd_per_minute": round(audio_unit, 6),
+        "usd_brl": round(fx, 6),
+        "estimated_new_image_cost_usd": image_cost_usd,
+        "estimated_new_image_cost_brl": image_cost_brl,
+        "estimated_new_audio_cost_usd": audio_cost_usd,
+        "estimated_new_audio_cost_brl": audio_cost_brl,
+        "estimated_total_additional_cost_usd": total_cost_usd,
+        "estimated_total_additional_cost_brl": total_cost_brl,
         "auto_publish": False,
     }
     plan_hash = _stable_hash(canonical)
@@ -112,8 +167,24 @@ def build_visual_quality_completion_plan(
         "requires_confirmation": True,
         "estimated_image_calls_avoided": existing,
         "estimated_new_image_calls": missing,
-        "estimated_savings_usd": round(unit * existing, 6) if unit > 0 else None,
-        "estimated_new_image_cost_usd": round(unit * missing, 6) if unit > 0 else None,
+        "estimated_savings_usd": round(image_unit * existing, 6) if image_unit > 0 else None,
+        "estimated_savings_brl": round(image_unit * existing * fx, 2) if image_unit > 0 else None,
+        "audio_provider_policy": "premium_configured_then_free_fallback",
+        "cost_confirmation": {
+            "currency_reference": "USD",
+            "usd_brl": round(fx, 6),
+            "image_unit_cost_usd": round(image_unit, 6),
+            "audio_unit_cost_usd_per_minute": round(audio_unit, 6),
+            "max_new_image_calls": missing,
+            "estimated_image_cost_usd": image_cost_usd,
+            "estimated_image_cost_brl": image_cost_brl,
+            "estimated_audio_cost_usd": audio_cost_usd,
+            "estimated_audio_cost_brl": audio_cost_brl,
+            "estimated_total_cost_usd": total_cost_usd,
+            "estimated_total_cost_brl": total_cost_brl,
+            "paid_image_call_cap_is_hard": True,
+            "monetary_values_are_estimates": True,
+        },
         "quality_policy": {
             "reuse_existing_images_once_before_generation": True,
             "generate_only_missing_visuals": True,
@@ -122,6 +193,7 @@ def build_visual_quality_completion_plan(
             "never_shorten_narration": True,
             "never_remove_script_text": True,
             "require_audio_timed_captions": True,
+            "hard_cap_new_image_calls": missing,
         },
         "plan_hash": plan_hash,
     }
