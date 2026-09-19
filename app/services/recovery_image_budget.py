@@ -51,11 +51,15 @@ def resolve_recovery_image_budget(plan: Any) -> Dict[str, Any]:
     expected = _non_negative_int(partial.get("expected_image_count"))
     existing = _non_negative_int(partial.get("existing_image_count"))
     declared_missing = _non_negative_int(partial.get("missing_image_count"))
+    declared_cap = _non_negative_int(
+        partial.get("max_new_image_calls"),
+        default=declared_missing,
+    )
     if expected <= 0:
         expected = existing + declared_missing
 
     remaining_slots = max(0, expected - min(existing, expected))
-    allowed = min(declared_missing, remaining_slots)
+    allowed = min(declared_missing, declared_cap, remaining_slots)
     declared_cost_usd = _non_negative_float(partial.get("estimated_image_cost_usd"))
     declared_cost_brl = _non_negative_float(partial.get("estimated_image_cost_brl"))
     allowed_ratio = (float(allowed) / float(declared_missing)) if declared_missing > 0 else 0.0
