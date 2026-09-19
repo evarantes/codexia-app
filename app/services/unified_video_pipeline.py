@@ -1212,10 +1212,21 @@ class UnifiedVideoPipelineService:
                 db,
                 str(uv.task_id or uv.idempotency_key),
                 status=UnifiedVideoStatus.APPROVED,
-                message=f"Upload falhou; o vídeo permanece aprovado para nova tentativa: {type(exc).__name__}: {str(exc)[:300]}",
-                merge_result={"publish_error": {"type": type(exc).__name__, "message": str(exc)[:300]}},
+                progress=100,
+                message="Vídeo aprovado; publicação no YouTube pendente. A produção foi preservada.",
+                merge_result={
+                    "publish_pending": True,
+                    "production_preserved": True,
+                    "publish_error": {"type": type(exc).__name__, "message": str(exc)[:300]},
+                },
             )
-            return {"ok": False, "code": "exception", "error": f"{type(exc).__name__}: {str(exc)[:300]}", "youtube_video_id": None}
+            return {
+                "ok": False,
+                "code": "publication_pending",
+                "production_preserved": True,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "youtube_video_id": None,
+            }
         yid = str(
             (out or {}).get("youtube_video_id")
             or (out or {}).get("video_id")
