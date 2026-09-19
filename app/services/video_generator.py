@@ -34,6 +34,11 @@ DEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30
 DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20
 DEFAULT_CINEMATIC_END_SCREEN_SEC = 4.0
 DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC = 7.0
+REAL_AUDIO_CAPTION_TIMELINE_SOURCES = {
+    "official_audio_transcript",
+    "approved_edge_tts_word_boundaries",
+    "local_audio_activity_alignment",
+}
 
 
 def _bounded_timeout_seconds(env_name: str, default: int) -> int:
@@ -3216,10 +3221,141 @@ class VideoGenerator:
         timeline = details.get("timeline") if isinstance(details, dict) else None
         return timeline if isinstance(timeline, list) else []
 
+    def _caption_timeline_from_audio_activity(
+        self,
+        narration: str,
+        duration: float,
+        audio_path: Optional[str],
+    ) -> Dict[str, Any]:
+        """Align caption blocks to speech intervals detected in the real audio.
+
+        This is the local, no-network recovery for a temporarily unavailable
+        transcription provider. Unlike the old proportional fallback, it uses
+        FFmpeg's silence detector to anchor caption transitions to real speech
+        activity and pauses in the produced narration.
+        """
+        total_duration = max(0.0, float(duration or 0.0))
+        source_path = os.path.abspath(str(audio_path or "").strip())
+        if total_duration <= 0.1 or not source_path or not os.path.isfile(source_path):
+            return {"timeline": [], "error": "audio_activity_input_unavailable"}
+
+        units = self._split_caption_units(narration, max_words=8, max_chars=54)
+        if not units:
+            return {"timeline": [], "error": "audio_activity_text_unavailable"}
+
+        try:
+            import shutil
+            import subprocess
+
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                return {"timeline": [], "error": "ffmpeg_unavailable_for_audio_activity"}
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-nostdin",
+                    "-i", source_path,
+                    "-af", "silencedetect=noise=-38dB:d=0.18",
+                    "-f", "null",
+                    "-",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=max(45.0, min(900.0, total_duration * 1.5 + 30.0)),
+                check=False,
+            )
+        except Exception as exc:
+            return {"timeline": [], "error": f"audio_activity_detection_failed:{str(exc)[:180]}"}
+
+        diagnostic = "\n".join([str(result.stderr or ""), str(result.stdout or "")])
+        events: List[tuple] = []
+        for match in re.finditer(r"silence_(start|end):\s*([0-9]+(?:\.[0-9]+)?)", diagnostic):
+            try:
+                events.append((str(match.group(1)), float(match.group(2))))
+            except Exception:
+                continue
+
+        silences: List[tuple] = []
+        open_start: Optional[float] = None
+        for event, raw_value in events:
+            value = max(0.0, min(total_duration, raw_value))
+            if event == "start":
+                if open_start is None:
+                    open_start = value
+            elif open_start is not None:
+                if value > open_start:
+                    silences.append((open_start, value))
+                open_start = None
+        if open_start is not None and total_duration > open_start:
+            silences.append((open_start, total_duration))
+
+        speech: List[tuple] = []
+        cursor = 0.0
+        for silence_start, silence_end in sorted(silences):
+            if silence_start > cursor + 0.04:
+                speech.append((cursor, silence_start))
+            cursor = max(cursor, silence_end)
+        if cursor < total_duration - 0.04:
+            speech.append((cursor, total_duration))
+        speech = [(start, end) for start, end in speech if end - start >= 0.06]
+
+        # A usable local alignment must contain actual acoustic boundaries.
+        # With no detected pause it would be equivalent to the rejected legacy
+        # text-duration approximation, so fail closed and expose the cause.
+        if not silences or not speech:
+            return {
+                "timeline": [],
+                "error": "audio_activity_boundaries_unavailable",
+                "silence_count": len(silences),
+            }
+
+        active_duration = sum(end - start for start, end in speech)
+        if active_duration <= 0.1:
+            return {"timeline": [], "error": "audio_activity_duration_invalid"}
+
+        def audio_time_at(active_offset: float) -> float:
+            remaining = max(0.0, min(active_duration, float(active_offset or 0.0)))
+            for start, end in speech:
+                span = end - start
+                if remaining <= span:
+                    return start + remaining
+                remaining -= span
+            return speech[-1][1]
+
+        weights = [max(1, len(str(unit).split())) for unit in units]
+        total_weight = float(sum(weights) or len(units))
+        cumulative = 0.0
+        timeline: List[Dict[str, Any]] = []
+        for index, unit in enumerate(units):
+            start_active = active_duration * (cumulative / total_weight)
+            cumulative += float(weights[index])
+            end_active = active_duration * (cumulative / total_weight)
+            start = audio_time_at(start_active)
+            end = audio_time_at(end_active)
+            if end <= start:
+                end = min(total_duration, start + 0.08)
+            if end > start:
+                timeline.append({
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "caption": str(unit).strip(),
+                    "source": "local_audio_activity_alignment",
+                })
+
+        return {
+            "timeline": self._sanitize_caption_timeline(timeline, total_duration),
+            "source": "local_audio_activity_alignment",
+            "timing_source": "ffmpeg_silencedetect_real_audio",
+            "silence_count": len(silences),
+            "speech_interval_count": len(speech),
+        }
+
     def _build_caption_timeline_details(self, narration: str, duration: float, audio_path: Optional[str] = None) -> Dict[str, Any]:
         total_duration = float(duration or 0.0)
         if total_duration <= 0:
             return {"timeline": [], "source": "empty"}
+        transcription_error = None
         if audio_path and self.ai_service and hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
             try:
                 strict = str(os.getenv("CAPTION_SYNC_STRICT") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -3247,6 +3383,16 @@ class VideoGenerator:
         # the timeline can later be replaced by an official transcript on a
         # subsequent pass if desired.
         if audio_path:
+            activity_aligned = self._caption_timeline_from_audio_activity(
+                narration,
+                total_duration,
+                audio_path,
+            )
+            if isinstance(activity_aligned, dict) and activity_aligned.get("timeline"):
+                activity_aligned["transcription_error"] = (
+                    transcription_error or "official_audio_transcript_unavailable"
+                )
+                return activity_aligned
             fallback = self._sanitize_caption_timeline(
                 self._caption_timeline_from_text(narration, total_duration),
                 total_duration,
@@ -6041,10 +6187,12 @@ $synth.Dispose()
                     or plan.get("editorial_review_ready")
                 )
             )
-            if director_quality_required and caption_timeline_source != "official_audio_transcript":
+            if director_quality_required and caption_timeline_source not in REAL_AUDIO_CAPTION_TIMELINE_SOURCES:
                 raise Exception(
                     "Falha de qualidade do Claude Diretor: a legenda não recebeu timestamps da narração real. "
-                    "A produção foi interrompida antes do render final para evitar legenda fora de sincronia."
+                    "A produção foi interrompida antes do render final para evitar legenda fora de sincronia. "
+                    f"Fonte recebida: {caption_timeline_source or 'ausente'}; "
+                    f"detalhe: {str(caption_timeline_details.get('error') or caption_timeline_details.get('transcription_error') or 'sem timestamps')[:220]}."
                 )
             render_report["caption_timeline"] = {
                 "source": caption_timeline_source,

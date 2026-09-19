@@ -1034,11 +1034,16 @@ class UnifiedVideoPipelineService:
         captions_synced = sync_validation.get("captions_synced_with_audio")
         if captions_synced is None:
             captions_synced = sync_validation.get("captions_ok")
+        real_audio_caption_sources = {
+            "official_audio_transcript",
+            "approved_edge_tts_word_boundaries",
+            "local_audio_activity_alignment",
+        }
         caption_sync_ok = bool(
             not director_quality_required
             or (
                 captions_synced is True
-                and caption_source == "official_audio_transcript"
+                and caption_source in real_audio_caption_sources
             )
         )
         checks["caption_sync_valid"] = caption_sync_ok
@@ -1063,7 +1068,7 @@ class UnifiedVideoPipelineService:
             "caption_sync": {
                 "timeline_source": caption_source,
                 "captions_synced_with_audio": captions_synced,
-                "required_timeline_source": "official_audio_transcript",
+                "accepted_timeline_sources": sorted(real_audio_caption_sources),
             },
         }
         # Sincroniza tamanhos/durações do banco para auditabilidade.

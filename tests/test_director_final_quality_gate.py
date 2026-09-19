@@ -94,3 +94,10 @@ def test_director_gate_accepts_requested_duration_unique_visuals_and_audio_times
     assert validation.checks["duration_matches_request"] is True
     assert validation.checks["visual_variety_valid"] is True
     assert validation.checks["caption_sync_valid"] is True
+
+
+def test_director_gate_accepts_word_boundaries_and_local_real_audio_alignment():
+    for source in ("approved_edge_tts_word_boundaries", "local_audio_activity_alignment"):
+        validation = _validate(600.0, _task_result(caption_source=source))
+        assert validation.ok is True, (source, validation.details)
+        assert validation.checks["caption_sync_valid"] is True
