@@ -590,6 +590,7 @@ class CinematicQualityService:
             "cta_text": self._compact_text(payload.get("cta_text")),
             "channel_name": self._compact_text(payload.get("channel_name")),
             "title": self._compact_text(payload.get("title")),
+            "review_feedback": self._compact_text(payload.get("review_feedback")),
         }
         if not sanitized["scene_texts"]:
             return self._fallback_narration_critic_report(sanitized)
@@ -601,6 +602,7 @@ class CinematicQualityService:
         prompt = (
             "Analise este pacote de narração em português do Brasil para um vídeo bíblico. "
             "Você é a IA Crítica e NÃO corrige nada. Apenas encontra defeitos.\n"
+            "Se houver review_feedback, trate cada observação humana como requisito obrigatório da correção.\n"
             "Procure por: erros ortográficos, erros gramaticais, frases artificiais, repetições, "
             "baixa naturalidade, problemas de pronúncia, risco teológico, clareza fraca, "
             "continuidade ruim e impacto emocional baixo.\n"
@@ -732,6 +734,7 @@ class CinematicQualityService:
             "cta_text": self._compact_text(payload.get("cta_text")),
             "channel_name": self._compact_text(payload.get("channel_name")),
             "title": self._compact_text(payload.get("title")),
+            "review_feedback": self._compact_text(payload.get("review_feedback")),
         }
         if not sanitized["scene_texts"]:
             return self._fallback_editor_report(sanitized, critic_report)
@@ -745,6 +748,7 @@ class CinematicQualityService:
             "Você é a IA Editora de um pipeline cinematográfico bíblico.\n"
             "Receberá o roteiro e o relatório da IA Crítica.\n"
             "Corrija SOMENTE os problemas apontados. Não altere partes aprovadas. "
+            "Aplique também todas as exigências descritas em review_feedback. "
             "Mantenha o mesmo número de itens em scene_texts.\n"
             "Retorne JSON neste formato:\n"
             "{\n"

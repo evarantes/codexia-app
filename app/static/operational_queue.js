@@ -291,6 +291,18 @@
     if (task.can_watch && task.video_url) {
       items.push(`<button type="button" class="btn btn-primary oq-watch" data-id="${esc(task.id)}">▶ Assistir</button>`);
     }
+    if (task.can_approve) {
+      items.push(`<button type="button" class="btn btn-primary oq-review" data-action="approve" data-id="${esc(task.id)}">✓ Aprovar</button>`);
+    }
+    if (task.can_reject) {
+      items.push(`<button type="button" class="btn btn-danger oq-review" data-action="reject" data-id="${esc(task.id)}">Solicitar correção</button>`);
+    }
+    if (task.can_publish) {
+      items.push(`<button type="button" class="btn btn-primary oq-publish" data-id="${esc(task.id)}">Publicar no YouTube</button>`);
+    }
+    if (task.youtube_url) {
+      items.push(`<a class="btn btn-primary" href="${esc(task.youtube_url)}" target="_blank" rel="noopener" style="text-decoration:none">Abrir no YouTube</a>`);
+    }
     if (task.can_retry) {
       items.push(`<button type="button" class="btn btn-ghost oq-action" data-action="retry" data-id="${esc(task.id)}">${task.status === 'paused' ? 'Retomar' : 'Reiniciar'}</button>`);
     }
@@ -460,7 +472,8 @@
           <div class="card" style="box-shadow:none"><div class="label">ID técnico</div><div style="font-size:11px;word-break:break-all;margin-top:5px">${esc(task.id || '')}</div></div>
         </div>
         ${task.message ? `<div style="margin-top:15px"><b>Última informação</b><div style="color:#536079;margin-top:5px;line-height:1.5">${esc(task.message)}</div></div>` : ''}
-        ${failure}`;
+        ${failure}
+        <div style="margin-top:18px">${projectActions(task)}</div>`;
     } catch (error) {
       title.textContent = 'Não foi possível abrir o projeto';
       body.innerHTML = `<div class="notice warn">${esc(error.message)}</div>`;
@@ -541,6 +554,65 @@
     }
   }
 
+  async function reviewProject(action, id, button) {
+    let notes = '';
+    if (action === 'reject') {
+      notes = prompt('Descreva o que o Claude Diretor deve corrigir antes de uma nova produção:') || '';
+      if (!notes.trim()) return;
+    } else if (!confirm('Aprovar este vídeo para publicação? O Codexia fará uma última validação de duração, variedade visual e sincronização.')) {
+      return;
+    }
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = action === 'approve' ? 'Validando…' : 'Registrando…';
+    try {
+      await api(`/youtube/cinematic/queue/${encodeURIComponent(id)}/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({ notes: notes.trim() || undefined }),
+      });
+      await loadQueue(false);
+      const modal = document.getElementById('v2ProjectModal');
+      if (modal && !modal.classList.contains('hidden')) await openProject(id, false);
+      alert(action === 'approve'
+        ? 'Vídeo aprovado. O botão “Publicar no YouTube” já está disponível.'
+        : 'Reprovação registrada. As observações foram anexadas ao projeto para a próxima correção.');
+    } catch (error) {
+      alert(error.message);
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function publishProject(id, button) {
+    const answer = (prompt('Visibilidade no YouTube: public, unlisted ou private', 'unlisted') || '').trim().toLowerCase();
+    if (!answer) return;
+    if (!['public', 'unlisted', 'private'].includes(answer)) {
+      alert('Use public, unlisted ou private.');
+      return;
+    }
+    if (!confirm(`Publicar agora no canal do YouTube com visibilidade “${answer}”?`)) return;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Publicando…';
+    try {
+      const data = await api(`/youtube/cinematic/queue/${encodeURIComponent(id)}/publish`, {
+        method: 'POST',
+        body: JSON.stringify({ visibility: answer }),
+      });
+      await loadQueue(false);
+      if (data.youtube_url) {
+        alert(`Publicado com sucesso.\n\n${data.youtube_url}`);
+        window.open(data.youtube_url, '_blank', 'noopener');
+      } else {
+        alert('Publicado com sucesso no YouTube.');
+      }
+    } catch (error) {
+      alert(error.message);
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
   document.addEventListener('click', event => {
     const nav = event.target.closest?.('[data-page="queue"]');
     if (nav) setTimeout(() => void loadQueue(false), 80);
@@ -564,6 +636,18 @@
       const id = action.dataset.id;
       const kind = action.dataset.action;
       if (id && kind) void runAction(kind, id, action);
+      return;
+    }
+
+    const review = event.target.closest?.('.oq-review');
+    if (review?.dataset.id && review?.dataset.action) {
+      void reviewProject(review.dataset.action, review.dataset.id, review);
+      return;
+    }
+
+    const publish = event.target.closest?.('.oq-publish');
+    if (publish?.dataset.id) {
+      void publishProject(publish.dataset.id, publish);
       return;
     }
 

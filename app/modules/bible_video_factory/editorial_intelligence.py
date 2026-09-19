@@ -356,6 +356,7 @@ class EditorialIntelligenceService:
         payload = {
             "title": _normalize_text(updated_plan.get("title")),
             "scene_texts": scene_texts,
+            "review_feedback": _normalize_text(updated_plan.get("review_feedback")),
         }
         started_at = perf_counter()
         attempts: List[Dict[str, Any]] = []

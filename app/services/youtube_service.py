@@ -887,7 +887,16 @@ class YouTubeService:
         except Exception as e:
             return {"error": str(e), "status": "failed"}
 
-    def upload_video(self, file_path, title, description, tags=None, category_id="27", thumbnail_path: Optional[str] = None):  # 27 = Education
+    def upload_video(
+        self,
+        file_path,
+        title,
+        description,
+        tags=None,
+        category_id="27",
+        thumbnail_path: Optional[str] = None,
+        privacy_status: str = "unlisted",
+    ):  # 27 = Education
         """Faz upload de um vídeo para o YouTube (opcional: seta thumbnail)."""
         if tags is None:
             tags = []
@@ -897,6 +906,9 @@ class YouTubeService:
             return {"error": reason, "status": "not_connected"}
             
         try:
+            normalized_privacy = str(privacy_status or "unlisted").strip().lower()
+            if normalized_privacy not in {"private", "unlisted", "public"}:
+                normalized_privacy = "unlisted"
             body = {
                 'snippet': {
                     'title': title,
@@ -905,7 +917,7 @@ class YouTubeService:
                     'categoryId': category_id
                 },
                 'status': {
-                    'privacyStatus': 'unlisted',
+                    'privacyStatus': normalized_privacy,
                     'selfDeclaredMadeForKids': False,
                 }
             }

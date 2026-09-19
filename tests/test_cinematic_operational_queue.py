@@ -46,6 +46,9 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertTrue(item["can_watch"])
         self.assertEqual(item["video_url"], "/media/videos/task-123.mp4")
         self.assertTrue(item["can_delete"])
+        self.assertTrue(item["can_approve"])
+        self.assertTrue(item["can_reject"])
+        self.assertFalse(item["can_publish"])
 
     def test_status_buckets_are_professional_filters(self):
         self.assertEqual(_bucket("processing"), "active")
@@ -104,7 +107,19 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("/retry-plan", script)
         self.assertIn("optimization_plan_hash", script)
         self.assertIn("Novas chamadas pagas de imagem: 0", script)
+        self.assertIn("✓ Aprovar", script)
+        self.assertIn("Solicitar correção", script)
+        self.assertIn("Publicar no YouTube", script)
+        self.assertIn("reviewProject", script)
+        self.assertIn("publishProject", script)
+        self.assertIn("/publish`,", script)
         self.assertNotIn("queue?limit=50", script)
+
+        router = Path("app/routers/cinematic_queue.py").read_text(encoding="utf-8")
+        self.assertIn('@router.post("/queue/{task_id}/approve")', router)
+        self.assertIn('@router.post("/queue/{task_id}/reject")', router)
+        self.assertIn('@router.post("/queue/{task_id}/publish")', router)
+        self.assertIn("director_quality_validation_failed", router)
 
     def test_v2_handoff_registers_only_new_ui_tasks_in_library(self):
         script = Path("app/static/director_duration_contract.js").read_text(encoding="utf-8")
@@ -112,11 +127,12 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("codexia_v2_pending_library_tasks_v1", script)
         self.assertIn("project_slot", script)
         self.assertIn("registerLibraryTask", script)
+        self.assertIn("director_quality_required: true", script)
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20260919-confirm-plan1", patch)
-        self.assertIn("director_duration_contract.js?v=20260917-duration2", patch)
+        self.assertIn("operational_queue.js?v=20260919-review-quality1", patch)
+        self.assertIn("director_duration_contract.js?v=20260919-quality3", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
 
