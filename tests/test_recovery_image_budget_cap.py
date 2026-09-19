@@ -22,6 +22,7 @@ def _recovery_plan(*, expected: int = 10, existing: int = 0, missing: int = 10):
             "expected_image_count": expected,
             "existing_image_count": existing,
             "missing_image_count": missing,
+            "max_new_image_calls": missing,
             "estimated_image_cost_usd": 0.62,
             "estimated_image_cost_brl": 3.22,
             "plan_hash": "confirmed-plan",
@@ -53,6 +54,13 @@ class RecoveryImageBudgetCapTests(unittest.TestCase):
         self.assertEqual(state["remaining_new_image_calls"], 3)
         self.assertAlmostEqual(state["confirmed_max_image_cost_usd"], 0.206667, places=6)
         self.assertEqual(state["confirmed_max_image_cost_brl"], 1.07)
+
+    def test_explicit_cap_is_stricter_than_declared_missing(self):
+        plan = _recovery_plan(expected=10, existing=2, missing=8)
+        plan["_partial_image_recovery"]["max_new_image_calls"] = 3
+        state = resolve_recovery_image_budget(plan)
+        self.assertEqual(state["allowed_new_image_calls"], 3)
+        self.assertEqual(state["remaining_new_image_calls"], 3)
 
     def test_provider_is_never_called_after_confirmed_ten_image_limit(self):
         statuses = []
