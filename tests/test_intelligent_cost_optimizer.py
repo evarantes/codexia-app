@@ -2,6 +2,8 @@ import unittest
 
 from app.services.intelligent_cost_optimizer import (
     build_sparse_visual_optimization_plan,
+    build_visual_quality_completion_plan,
+    minimum_visual_count_for_duration,
     proportional_visual_index,
     validate_optimization_confirmation,
 )
@@ -44,6 +46,48 @@ class IntelligentCostOptimizerTests(unittest.TestCase):
         self.assertTrue(plan["quality_policy"]["never_shorten_narration"])
         self.assertTrue(plan["quality_policy"]["never_remove_script_text"])
         self.assertTrue(plan["quality_policy"]["never_generate_paid_images"])
+
+    def test_ten_minute_quality_floor_requires_twenty_visuals(self):
+        self.assertEqual(minimum_visual_count_for_duration(10), 20)
+        self.assertEqual(minimum_visual_count_for_duration(5), 10)
+
+    def test_strict_quality_plan_reuses_eight_and_generates_only_twelve(self):
+        plan = build_visual_quality_completion_plan(
+            task_id="task-v2-review",
+            title="Devocional",
+            duration_minutes=10,
+            requested_target_visual_count=8,
+            valid_image_paths=[f"/data/media/images/img-{idx:02d}.png" for idx in range(8)],
+            script={"scenes": [{"text": "Cena"}]},
+            audio_path="/data/media/audio/old.mp3",
+            image_unit_cost_usd=0.04,
+        )
+        self.assertTrue(plan["quality_completion_required"])
+        self.assertTrue(plan["requires_confirmation"])
+        self.assertEqual(plan["target_visual_count"], 20)
+        self.assertEqual(plan["valid_image_count"], 8)
+        self.assertEqual(plan["missing_visual_count"], 12)
+        self.assertEqual(plan["paid_image_calls"], 12)
+        self.assertEqual(plan["estimated_new_image_calls"], 12)
+        self.assertAlmostEqual(plan["estimated_new_image_cost_usd"], 0.48, places=6)
+        self.assertAlmostEqual(plan["estimated_savings_usd"], 0.32, places=6)
+        self.assertTrue(validate_optimization_confirmation(plan, plan["plan_hash"]))
+
+    def test_strict_quality_plan_hash_changes_when_duration_changes(self):
+        base = dict(
+            task_id="task-v2-review",
+            title="Devocional",
+            requested_target_visual_count=8,
+            valid_image_paths=[f"/data/media/images/img-{idx:02d}.png" for idx in range(8)],
+            script={"scenes": [{"text": "Cena"}]},
+            audio_path="/data/media/audio/old.mp3",
+            image_unit_cost_usd=0.04,
+        )
+        ten = build_visual_quality_completion_plan(duration_minutes=10, **base)
+        eleven = build_visual_quality_completion_plan(duration_minutes=11, **base)
+        self.assertNotEqual(ten["plan_hash"], eleven["plan_hash"])
+        self.assertEqual(ten["target_visual_count"], 20)
+        self.assertEqual(eleven["target_visual_count"], 22)
 
     def test_confirmation_hash_must_match_exact_plan(self):
         plan = self._plan()
