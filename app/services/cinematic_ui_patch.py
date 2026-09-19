@@ -12,7 +12,7 @@ SCRIPT_TAG = ASYNC_SCRIPT_TAG
 PROJECT_SCRIPT_TAG = '<script src="/static/cinematic_project_state.js?v=20260916-state4"></script>'
 MOBILE_NAV_SCRIPT_TAG = '<script src="/static/mobile_nav.js?v=20260916-mobile1"></script>'
 PROJECT_GUARD_SCRIPT_TAG = '<script src="/static/project_slot_guard.js?v=20260916-guard1"></script>'
-OPERATIONAL_QUEUE_SCRIPT_TAG = '<script src="/static/operational_queue.js?v=20260918-mobile-scroll1"></script>'
+OPERATIONAL_QUEUE_SCRIPT_TAG = '<script src="/static/operational_queue.js?v=20260919-reconcile1"></script>'
 DURATION_CONTRACT_SCRIPT_TAG = '<script src="/static/director_duration_contract.js?v=20260917-duration2"></script>'
 _PROJECT_SCRIPT_RE = re.compile(r'<script src="/static/cinematic_project_state\.js\?v=[^"]+"></script>\s*')
 _PROJECT_GUARD_RE = re.compile(r'<script src="/static/project_slot_guard\.js\?v=[^"]+"></script>\s*')
