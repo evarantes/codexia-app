@@ -107,6 +107,9 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("/retry-plan", script)
         self.assertIn("optimization_plan_hash", script)
         self.assertIn("Novas chamadas pagas de imagem: 0", script)
+        self.assertIn("CORREÇÃO DE QUALIDADE VISUAL", script)
+        self.assertIn("Nova meta visual", script)
+        self.assertIn("Novas imagens necessárias", script)
         self.assertIn("✓ Aprovar", script)
         self.assertIn("Solicitar correção", script)
         self.assertIn("Publicar no YouTube", script)
@@ -120,6 +123,9 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn('@router.post("/queue/{task_id}/reject")', router)
         self.assertIn('@router.post("/queue/{task_id}/publish")', router)
         self.assertIn("director_quality_validation_failed", router)
+        self.assertIn("minimum_visual_count_for_duration", router)
+        self.assertIn('"strict_visual_quality_required": True', router)
+        self.assertIn('"strict_visual_target_count"', router)
 
     def test_v2_handoff_registers_only_new_ui_tasks_in_library(self):
         script = Path("app/static/director_duration_contract.js").read_text(encoding="utf-8")
@@ -131,7 +137,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20260919-review-quality1", patch)
+        self.assertIn("operational_queue.js?v=20260919-visual-recalc1", patch)
         self.assertIn("director_duration_contract.js?v=20260919-quality3", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
