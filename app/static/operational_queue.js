@@ -319,6 +319,34 @@
       </div>`;
   }
 
+  async function reconcileActiveProjects(tasks) {
+    const active = (Array.isArray(tasks) ? tasks : []).filter(task =>
+      ['pending', 'processing', 'pause_requested'].includes(String(task?.status || '').toLowerCase())
+    );
+    if (!active.length) return false;
+
+    let changed = false;
+    await Promise.all(active.map(async task => {
+      try {
+        // The canonical status endpoint owns runtime-heartbeat reconciliation.
+        // Reading it is side-effect free for healthy jobs; an abandoned worker
+        // is converted to a recoverable pause with all completed assets kept.
+        const canonical = await api(`/youtube/task/${encodeURIComponent(task.id)}`);
+        const canonicalStatus = String(canonical?.status || '').toLowerCase();
+        if (
+          canonicalStatus && canonicalStatus !== String(task.status || '').toLowerCase()
+          || Number(canonical?.progress || 0) !== Number(task.progress || 0)
+          || String(canonical?.message || '') !== String(task.message || '')
+        ) {
+          changed = true;
+        }
+      } catch (error) {
+        console.warn('V2 runtime reconciliation:', task?.id, error);
+      }
+    }));
+    return changed;
+  }
+
   function queueUrl() {
     const params = new URLSearchParams({
       page: String(state.page),
@@ -339,7 +367,12 @@
     const btn = panel.querySelector('#refreshOperationalQueue');
     if (showBusy && btn) { btn.disabled = true; btn.textContent = 'Atualizando…'; }
     try {
-      const data = await api(queueUrl());
+      let data = await api(queueUrl());
+      let tasks = Array.isArray(data.tasks) ? data.tasks : [];
+      if (await reconcileActiveProjects(tasks)) {
+        data = await api(queueUrl());
+        tasks = Array.isArray(data.tasks) ? data.tasks : [];
+      }
       const counts = data.counts || {};
       summary.innerHTML = [
         summaryCard('Total V2', counts.all || 0, 'somente sistema novo'),
@@ -347,7 +380,6 @@
         summaryCard('Prontos / revisão', counts.ready || 0),
         summaryCard('Falhas / cancelados', Number(counts.failed || 0) + Number(counts.cancelled || 0)),
       ].join('');
-      const tasks = Array.isArray(data.tasks) ? data.tasks : [];
       list.innerHTML = tasks.length ? tasks.map(projectRow).join('') : emptyState();
       pager.innerHTML = pagination(data.pagination || {});
       state.page = Number(data.pagination?.page || 1);
