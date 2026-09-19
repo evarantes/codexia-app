@@ -28,6 +28,17 @@ class IntelligentCostOptimizationHardeningTests(unittest.TestCase):
         for token in required:
             self.assertIn(token, text)
 
+    def test_retry_validates_exact_get_plan_before_transient_retry_flags(self):
+        text = HARDENING.read_text(encoding="utf-8")
+        self.assertIn(
+            '_intelligent_retry_visual_materials(task_id)',
+            text,
+        )
+        self.assertNotIn(
+            '_intelligent_retry_visual_materials(task_id, payload)\\n        if bool(optimization_plan.get("requires_confirmation"))',
+            text,
+        )
+
     def test_worker_falls_back_to_confirmed_request_assets(self):
         text = HARDENING.read_text(encoding="utf-8")
         self.assertIn('request_seed_script = getattr(request, "seeded_script", None)', text)
