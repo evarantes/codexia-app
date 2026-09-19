@@ -20,6 +20,10 @@ class IntelligentCostOptimizationHardeningTests(unittest.TestCase):
             "Narração completa será preservada",
             "Nenhum texto será cortado",
             "Novas chamadas pagas de imagem: 0",
+            "CODEXIA_V2_CORRECTION_COST_CONFIRMATION_V1",
+            "image_profile_for_mode",
+            'payload["confirmed_cost_ceiling"]',
+            '"estimated_image_cost_brl": float(optimization_plan.get("estimated_new_image_cost_brl") or 0.0)',
         )
         for token in required:
             self.assertIn(token, text)

@@ -122,6 +122,48 @@ HELPER_BLOCK = r'''def _intelligent_retry_visual_materials(task_id: str, payload
             except Exception:
                 unit_cost = 0.0
 
+        # CODEXIA_V2_CORRECTION_COST_CONFIRMATION_V1
+        settings_row = None
+        try:
+            settings_row = db.query(Settings).order_by(Settings.id.desc()).first()
+        except Exception:
+            settings_row = None
+        if unit_cost <= 0 and settings_row is not None:
+            try:
+                unit_cost = max(0.0, float(getattr(settings_row, "image_cost_unit", 0.0) or 0.0))
+            except Exception:
+                unit_cost = 0.0
+        if unit_cost <= 0:
+            try:
+                from app.services.video_cost_estimator import image_profile_for_mode
+                cost_mode = str(
+                    payload.get("cost_mode")
+                    or payload.get("quality_mode")
+                    or payload.get("generation_mode")
+                    or "balanced"
+                ).strip().lower()
+                unit_cost = max(
+                    0.0,
+                    float(image_profile_for_mode(cost_mode).get("image_unit_cost_usd") or 0.0),
+                )
+            except Exception:
+                unit_cost = 0.05
+
+        try:
+            audio_unit_cost = float(
+                payload.get("voice_cost_unit")
+                or (getattr(settings_row, "voice_cost_unit", 0.0) if settings_row is not None else 0.0)
+                or os.getenv("YOUTUBE_AUTO_TTS_MINUTE_COST_UNIT")
+                or 0.0120
+            )
+        except Exception:
+            audio_unit_cost = 0.0120
+        audio_unit_cost = max(0.0, audio_unit_cost)
+        try:
+            usd_brl = max(0.01, float(os.getenv("CODEXIA_USD_BRL") or "5.20"))
+        except Exception:
+            usd_brl = 5.20
+
         title = str(payload.get("override_title") or payload.get("topic") or "").strip()
         strict_quality = bool(
             payload.get("strict_visual_quality_required")
@@ -150,6 +192,8 @@ HELPER_BLOCK = r'''def _intelligent_retry_visual_materials(task_id: str, payload
                 script=seed_script,
                 audio_path=audio_path,
                 image_unit_cost_usd=unit_cost,
+                audio_unit_cost_usd_per_minute=audio_unit_cost,
+                usd_brl=usd_brl,
             )
         else:
             plan = build_sparse_visual_optimization_plan(
@@ -192,7 +236,7 @@ def retry_task(
 ):'''
 
 RETRY_PLAN_ANCHOR = '''        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]'''
-RETRY_PLAN_NEW = '''        # CODEXIA_INTELLIGENT_COST_OPTIMIZATION_V1\n        # Antes de aceitar qualquer estratégia de recuperação, recalcule o plano\n        # com o estado persistido e exija confirmação do plano exato. Correções\n        # do Claude Diretor não podem reduzir a densidade visual para economizar.\n        optimization_plan, optimization_materials = _intelligent_retry_visual_materials(task_id, payload)\n        if bool(optimization_plan.get("requires_confirmation")):\n            strict_completion = bool(optimization_plan.get("quality_completion_required"))\n            if not validate_optimization_confirmation(optimization_plan, optimization_plan_hash):\n                confirmation_message = (\n                    "O Claude Diretor recalculou a meta visual e precisa da sua confirmação para reaproveitar os ativos válidos e gerar somente as imagens que faltam."\n                    if strict_completion\n                    else "O Codexia encontrou uma alternativa sem novas imagens pagas e precisa da sua confirmação."\n                )\n                raise HTTPException(\n                    status_code=409,\n                    detail={\n                        "code": "visual_quality_confirmation_required" if strict_completion else "optimization_confirmation_required",\n                        "message": confirmation_message,\n                        "optimization_plan": _public_intelligent_optimization_plan(optimization_plan),\n                    },\n                )\n\n            valid_images = list(optimization_materials.get("valid_images") or [])\n            if strict_completion:\n                target_count = max(0, int(optimization_plan.get("target_visual_count") or 0))\n                missing_count = max(0, int(optimization_plan.get("missing_visual_count") or 0))\n                image_budget = {\n                    "enabled": True,\n                    "expected_image_count": target_count,\n                    "existing_image_count": len(valid_images),\n                    "missing_image_count": missing_count,\n                    "estimated_image_cost_usd": float(optimization_plan.get("estimated_new_image_cost_usd") or 0.0),\n                    "estimated_image_cost_brl": 0.0,\n                    "plan_hash": str(optimization_plan.get("plan_hash") or ""),\n                }\n                payload.pop("seeded_script", None)\n                payload["selected_images"] = valid_images\n                payload.pop("reuse_audio_from", None)\n                payload["force_regenerate"] = True\n                payload["force_reuse_assets"] = False\n                payload["force_render_only"] = False\n                payload["repair_mode"] = True\n                payload["repair_regenerate_audio"] = True\n                payload["repair_exclude_video"] = True\n                payload["repair_complete_visuals"] = True\n                payload["repair_image_budget"] = image_budget\n                payload["expected_image_count"] = target_count\n                payload["strict_visual_target_count"] = target_count\n                payload["auto_upload"] = False\n                payload["intelligent_visual_optimization"] = _public_intelligent_optimization_plan(optimization_plan)\n                for key in ("seed_audio_path", "audio_path", "final_audio_path", "video_path", "final_video_path", "output_video_path"):\n                    payload.pop(key, None)\n            else:\n                payload["seeded_script"] = dict(optimization_materials.get("script") or {})\n                payload["selected_images"] = list(optimization_materials.get("valid_images") or [])\n                payload["reuse_audio_from"] = dict(optimization_materials.get("audio_info") or {})\n                payload["force_reuse_assets"] = True\n                payload["force_render_only"] = True\n                payload["intelligent_visual_optimization"] = _public_intelligent_optimization_plan(optimization_plan)\n            payload.pop("_recovery_block_paid_regeneration", None)\n            payload.pop("_recovery_missing_assets", None)\n\n        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]'''
+RETRY_PLAN_NEW = '''        # CODEXIA_INTELLIGENT_COST_OPTIMIZATION_V1\n        # Antes de aceitar qualquer estratégia de recuperação, recalcule o plano\n        # com o estado persistido e exija confirmação do plano exato. Correções\n        # do Claude Diretor não podem reduzir a densidade visual para economizar.\n        optimization_plan, optimization_materials = _intelligent_retry_visual_materials(task_id, payload)\n        if bool(optimization_plan.get("requires_confirmation")):\n            strict_completion = bool(optimization_plan.get("quality_completion_required"))\n            if not validate_optimization_confirmation(optimization_plan, optimization_plan_hash):\n                confirmation_message = (\n                    "O Claude Diretor recalculou a meta visual e precisa da sua confirmação para reaproveitar os ativos válidos e gerar somente as imagens que faltam."\n                    if strict_completion\n                    else "O Codexia encontrou uma alternativa sem novas imagens pagas e precisa da sua confirmação."\n                )\n                raise HTTPException(\n                    status_code=409,\n                    detail={\n                        "code": "visual_quality_confirmation_required" if strict_completion else "optimization_confirmation_required",\n                        "message": confirmation_message,\n                        "optimization_plan": _public_intelligent_optimization_plan(optimization_plan),\n                    },\n                )\n\n            valid_images = list(optimization_materials.get("valid_images") or [])\n            if strict_completion:\n                target_count = max(0, int(optimization_plan.get("target_visual_count") or 0))\n                missing_count = max(0, int(optimization_plan.get("missing_visual_count") or 0))\n                image_budget = {\n                    "enabled": True,\n                    "expected_image_count": target_count,\n                    "existing_image_count": len(valid_images),\n                    "missing_image_count": missing_count,\n                    "max_new_image_calls": missing_count,\n                    "estimated_image_cost_usd": float(optimization_plan.get("estimated_new_image_cost_usd") or 0.0),\n                    "estimated_image_cost_brl": float(optimization_plan.get("estimated_new_image_cost_brl") or 0.0),\n                    "plan_hash": str(optimization_plan.get("plan_hash") or ""),\n                }\n                payload.pop("seeded_script", None)\n                payload["selected_images"] = valid_images\n                payload.pop("reuse_audio_from", None)\n                payload["force_regenerate"] = True\n                payload["force_reuse_assets"] = False\n                payload["force_render_only"] = False\n                payload["repair_mode"] = True\n                payload["repair_regenerate_audio"] = True\n                payload["repair_exclude_video"] = True\n                payload["repair_complete_visuals"] = True\n                payload["repair_image_budget"] = image_budget\n                payload["confirmed_cost_ceiling"] = dict(optimization_plan.get("cost_confirmation") or {})\n                payload["expected_image_count"] = target_count\n                payload["strict_visual_target_count"] = target_count\n                payload["auto_upload"] = False\n                payload["intelligent_visual_optimization"] = _public_intelligent_optimization_plan(optimization_plan)\n                for key in ("seed_audio_path", "audio_path", "final_audio_path", "video_path", "final_video_path", "output_video_path"):\n                    payload.pop(key, None)\n            else:\n                payload["seeded_script"] = dict(optimization_materials.get("script") or {})\n                payload["selected_images"] = list(optimization_materials.get("valid_images") or [])\n                payload["reuse_audio_from"] = dict(optimization_materials.get("audio_info") or {})\n                payload["force_reuse_assets"] = True\n                payload["force_render_only"] = True\n                payload["intelligent_visual_optimization"] = _public_intelligent_optimization_plan(optimization_plan)\n            payload.pop("_recovery_block_paid_regeneration", None)\n            payload.pop("_recovery_missing_assets", None)\n\n        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]'''
 
 WORKER_SEED_ANCHOR = '''                seed_script_ok = _is_valid_seed_script(seed_script)\n                seed_audio_ok = _file_ok(seed_audio_path)\n                seed_images_ok = _selected_images_ok(seed_selected_images)'''
 WORKER_SEED_NEW = '''                # CODEXIA_INTELLIGENT_COST_OPTIMIZATION_V1\n                # Em render-only o payload confirmado é uma fonte legítima de\n                # ativos. result_json pode ser anterior ao último checkpoint.\n                request_seed_script = getattr(request, "seeded_script", None)\n                if isinstance(request_seed_script, dict) and not _is_valid_seed_script(seed_script):\n                    seed_script = dict(request_seed_script)\n\n                request_selected_images = getattr(request, "selected_images", None)\n                if not seed_selected_images and isinstance(request_selected_images, list):\n                    seed_selected_images = [\n                        str(x).strip()\n                        for x in request_selected_images\n                        if isinstance(x, str) and str(x).strip()\n                    ]\n                if isinstance(seed_script, dict) and seed_selected_images:\n                    seed_script = dict(seed_script)\n                    seed_script["selected_images"] = list(seed_selected_images)\n\n                if not seed_audio_path:\n                    request_reuse_audio = getattr(request, "reuse_audio_from", None)\n                    if isinstance(request_reuse_audio, dict):\n                        seed_audio_path = str(\n                            request_reuse_audio.get("output_path")\n                            or request_reuse_audio.get("final_audio_path")\n                            or request_reuse_audio.get("audio_path")\n                            or ""\n                        ).strip()\n                        if not seed_narration_text:\n                            seed_narration_text = str(\n                                request_reuse_audio.get("final_text_sent_to_tts")\n                                or request_reuse_audio.get("narration_text")\n                                or ""\n                            ).strip()\n\n                seed_script_ok = _is_valid_seed_script(seed_script)\n                seed_audio_ok = _file_ok(seed_audio_path)\n                seed_images_ok = _selected_images_ok(seed_selected_images)'''
@@ -278,6 +322,8 @@ def check() -> None:
         'payload["force_render_only"] = True',
         'payload["repair_complete_visuals"] = True',
         'payload["repair_image_budget"] = image_budget',
+        'payload["confirmed_cost_ceiling"]',
+        '"estimated_image_cost_brl": float(optimization_plan.get("estimated_new_image_cost_brl") or 0.0)',
         'visual_quality_confirmation_required',
         'payload["intelligent_visual_optimization"]',
         "request_selected_images = getattr(request, \"selected_images\", None)",

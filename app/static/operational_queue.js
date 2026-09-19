@@ -488,26 +488,45 @@
     const strict = Boolean(plan?.quality_completion_required);
 
     if (strict) {
-      const newCalls = Number(plan?.estimated_new_image_calls ?? missing ?? 0);
-      const newCost = Number(plan?.estimated_new_image_cost_usd || 0);
-      const costText = newCost > 0
-        ? `\nCusto estimado das novas imagens: US$ ${newCost.toFixed(4)}.`
-        : '';
+      const newCalls = Number(plan?.max_new_image_calls ?? plan?.estimated_new_image_calls ?? missing ?? 0);
+      const imageUsd = Number(plan?.estimated_new_image_cost_usd || 0);
+      const imageBrl = Number(plan?.estimated_new_image_cost_brl || 0);
+      const audioUsd = Number(plan?.estimated_new_audio_cost_usd || 0);
+      const audioBrl = Number(plan?.estimated_new_audio_cost_brl || 0);
+      const totalUsd = Number(plan?.estimated_total_additional_cost_usd || (imageUsd + audioUsd));
+      const totalBrl = Number(plan?.estimated_total_additional_cost_brl || (imageBrl + audioBrl));
+      const imageUnit = Number(plan?.image_unit_cost_usd || 0);
+      const audioUnit = Number(plan?.audio_unit_cost_usd_per_minute || 0);
+      const fx = Number(plan?.usd_brl || 0);
       const duration = Number(plan?.duration_minutes || 0);
       const durationText = duration > 0 ? ` para ${duration.toFixed(0)} minuto(s)` : '';
+      const pricingReference = fx > 0
+        ? `\nReferência de conversão usada: US$ 1 = R$ ${fx.toFixed(2)}.`
+        : '';
+
       return `CORREÇÃO DE QUALIDADE VISUAL\n\n` +
         `O Claude Diretor recalculou a quantidade mínima de visuais${durationText}.\n\n` +
         `Imagens válidas que serão reaproveitadas: ${valid}\n` +
         `Nova meta visual: ${target}\n` +
         `Novas imagens necessárias: ${newCalls}\n\n` +
+        `CUSTO PREVENTIVO ANTES DE AUTORIZAR:\n` +
+        `• Novas imagens: US$ ${imageUsd.toFixed(4)} / aprox. R$ ${imageBrl.toFixed(2)}` +
+        (imageUnit > 0 ? ` (US$ ${imageUnit.toFixed(4)} por imagem)` : '') + `\n` +
+        `• Nova narração: US$ ${audioUsd.toFixed(4)} / aprox. R$ ${audioBrl.toFixed(2)}` +
+        (audioUnit > 0 ? ` (referência US$ ${audioUnit.toFixed(4)}/min)` : '') + `\n` +
+        `• Custo adicional máximo estimado desta correção: US$ ${totalUsd.toFixed(4)} / aprox. R$ ${totalBrl.toFixed(2)}` +
+        pricingReference + `\n\n` +
+        `LIMITE RÍGIDO:\n` +
+        `• Máximo de ${newCalls} novas chamadas pagas de imagem.\n` +
+        `• Se o limite for atingido, nenhuma imagem paga adicional poderá ser solicitada, inclusive em retry.\n\n` +
         `GARANTIAS:\n` +
         `• As imagens já pagas e válidas serão preservadas.\n` +
         `• Serão geradas somente as imagens que faltarem.\n` +
         `• A narração será refeita para respeitar a duração solicitada.\n` +
         `• A legenda continuará usando os tempos da narração real.\n` +
-        `• O vídeo só poderá ser aprovado depois do Quality Gate.` +
-        costText + `\n\n` +
-        `Deseja aplicar esta correção e retomar a produção?`;
+        `• Os valores monetários são estimativas preventivas baseadas nas unidades configuradas.\n` +
+        `• O vídeo só poderá ser aprovado depois do Quality Gate.\n\n` +
+        `Deseja autorizar este limite de custo e retomar a produção?`;
     }
 
     const savedCalls = Number(plan?.estimated_image_calls_avoided || missing || 0);

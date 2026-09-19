@@ -110,6 +110,10 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("CORREÇÃO DE QUALIDADE VISUAL", script)
         self.assertIn("Nova meta visual", script)
         self.assertIn("Novas imagens necessárias", script)
+        self.assertIn("CUSTO PREVENTIVO ANTES DE AUTORIZAR", script)
+        self.assertIn("Custo adicional máximo estimado desta correção", script)
+        self.assertIn("Máximo de ${newCalls} novas chamadas pagas de imagem", script)
+        self.assertIn("inclusive em retry", script)
         self.assertIn("✓ Aprovar", script)
         self.assertIn("Solicitar correção", script)
         self.assertIn("Publicar no YouTube", script)
@@ -137,7 +141,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20260919-visual-recalc1", patch)
+        self.assertIn("operational_queue.js?v=20260919-cost-cap1", patch)
         self.assertIn("director_duration_contract.js?v=20260919-quality3", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
