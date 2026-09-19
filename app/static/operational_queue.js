@@ -47,6 +47,42 @@
     canceled: ['#f2f3f5', '#5e6573'],
   };
 
+  function apiErrorText(payload, fallback = 'Não foi possível concluir a operação.') {
+    const seen = new WeakSet();
+    const unpack = value => {
+      if (value == null) return '';
+      if (typeof value === 'string') {
+        const text = value.trim();
+        return text === '[object Object]' ? '' : text;
+      }
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+      if (Array.isArray(value)) return value.map(unpack).filter(Boolean).join(' | ');
+      if (typeof value === 'object') {
+        if (seen.has(value)) return '';
+        seen.add(value);
+        const preferred = [
+          value.message,
+          value.msg,
+          value.detail,
+          value.error,
+          value.reason,
+          value.title,
+          value.exception,
+          value.body,
+        ].map(unpack).filter(Boolean);
+        if (preferred.length) return [...new Set(preferred)].join(' | ');
+        try { return JSON.stringify(value); } catch (_) { return ''; }
+      }
+      return String(value || '').trim();
+    };
+
+    try {
+      return unpack(payload) || fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   async function api(url, options = {}) {
     const headers = { ...(options.headers || {}), Authorization: `Bearer ${token}` };
     if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
@@ -58,7 +94,9 @@
       location.href = '/static/login.html';
       throw new Error('Sessão expirada.');
     }
-    if (!response.ok) throw new Error(data.detail || data.message || `HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(apiErrorText(data, `Falha na comunicação com o servidor (HTTP ${response.status}).`));
+    }
     return data;
   }
 
