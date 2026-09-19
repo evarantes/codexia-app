@@ -100,6 +100,10 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("text === '[object Object]' ? '' : text", script)
         self.assertIn("throw new Error(apiErrorText(data", script)
         self.assertNotIn("throw new Error(data.detail || data.message", script)
+        self.assertIn("confirmedRetryUrl", script)
+        self.assertIn("/retry-plan", script)
+        self.assertIn("optimization_plan_hash", script)
+        self.assertIn("Novas chamadas pagas de imagem: 0", script)
         self.assertNotIn("queue?limit=50", script)
 
     def test_v2_handoff_registers_only_new_ui_tasks_in_library(self):
@@ -111,7 +115,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20260919-readable-errors1", patch)
+        self.assertIn("operational_queue.js?v=20260919-confirm-plan1", patch)
         self.assertIn("director_duration_contract.js?v=20260917-duration2", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)

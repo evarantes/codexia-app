@@ -467,14 +467,57 @@
     }
   }
 
+  function optimizationConfirmationText(plan) {
+    const valid = Number(plan?.valid_image_count || 0);
+    const target = Number(plan?.target_visual_count || 0);
+    const missing = Number(plan?.missing_visual_count || 0);
+    const savedCalls = Number(plan?.estimated_image_calls_avoided || missing || 0);
+    const savings = Number(plan?.estimated_savings_usd || 0);
+    const savingsText = savings > 0 ? `\nEconomia estimada: US$ ${savings.toFixed(4)}.` : '';
+    return `OTIMIZAÇÃO INTELIGENTE DE CUSTO\n\n` +
+      `O Codexia pode concluir este vídeo sem gerar novas imagens pagas.\n\n` +
+      `Imagens válidas disponíveis: ${valid}\n` +
+      `Meta visual original: ${target}\n` +
+      `Imagens que deixarão de ser compradas: ${savedCalls}\n\n` +
+      `GARANTIAS:\n` +
+      `• A narração completa será preservada.\n` +
+      `• Nenhum texto será cortado.\n` +
+      `• A mensagem e a ordem narrativa serão preservadas.\n` +
+      `• Novas chamadas pagas de imagem: 0.` + savingsText + `\n\n` +
+      `Deseja aplicar esta otimização e retomar a produção?`;
+  }
+
+  async function confirmedRetryUrl(id) {
+    const encodedId = encodeURIComponent(id);
+    const plan = await api(`/youtube/task/${encodedId}/retry-plan`);
+    if (!plan?.requires_confirmation) {
+      return confirm('Deseja reiniciar/retomar esta produção?')
+        ? `/youtube/task/${encodedId}/retry`
+        : '';
+    }
+    if (!confirm(optimizationConfirmationText(plan))) return '';
+    const planHash = String(plan.plan_hash || '').trim();
+    if (!planHash) throw new Error('O plano de economia não recebeu uma assinatura válida. Atualize a fila e tente novamente.');
+    return `/youtube/task/${encodedId}/retry?optimization_plan_hash=${encodeURIComponent(planHash)}`;
+  }
+
   async function runAction(action, id, button) {
     const text = action === 'retry' ? 'reiniciar/retomar' : action === 'pause' ? 'pausar' : 'cancelar';
-    if (!confirm(`Deseja ${text} esta produção?`)) return;
+    if (action !== 'retry' && !confirm(`Deseja ${text} esta produção?`)) return;
     const original = button.textContent;
     button.disabled = true;
-    button.textContent = 'Aguarde…';
+    button.textContent = action === 'retry' ? 'Verificando…' : 'Aguarde…';
     try {
-      await api(`/youtube/task/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+      const url = action === 'retry'
+        ? await confirmedRetryUrl(id)
+        : `/youtube/task/${encodeURIComponent(id)}/${action}`;
+      if (!url) {
+        button.disabled = false;
+        button.textContent = original;
+        return;
+      }
+      button.textContent = 'Aguarde…';
+      await api(url, { method: 'POST' });
       await loadQueue(false);
     } catch (error) {
       alert(error.message);
