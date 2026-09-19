@@ -94,6 +94,12 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("reconcileActiveProjects", script)
         self.assertIn("/youtube/task/${encodeURIComponent(task.id)}", script)
         self.assertIn("converted to a recoverable pause", script)
+        self.assertIn("function apiErrorText(payload", script)
+        self.assertIn("value.msg", script)
+        self.assertIn("value.reason", script)
+        self.assertIn("text === '[object Object]' ? '' : text", script)
+        self.assertIn("throw new Error(apiErrorText(data", script)
+        self.assertNotIn("throw new Error(data.detail || data.message", script)
         self.assertNotIn("queue?limit=50", script)
 
     def test_v2_handoff_registers_only_new_ui_tasks_in_library(self):
