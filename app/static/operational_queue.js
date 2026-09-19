@@ -484,8 +484,33 @@
     const valid = Number(plan?.valid_image_count || 0);
     const target = Number(plan?.target_visual_count || 0);
     const missing = Number(plan?.missing_visual_count || 0);
-    const savedCalls = Number(plan?.estimated_image_calls_avoided || missing || 0);
     const savings = Number(plan?.estimated_savings_usd || 0);
+    const strict = Boolean(plan?.quality_completion_required);
+
+    if (strict) {
+      const newCalls = Number(plan?.estimated_new_image_calls ?? missing ?? 0);
+      const newCost = Number(plan?.estimated_new_image_cost_usd || 0);
+      const costText = newCost > 0
+        ? `\nCusto estimado das novas imagens: US$ ${newCost.toFixed(4)}.`
+        : '';
+      const duration = Number(plan?.duration_minutes || 0);
+      const durationText = duration > 0 ? ` para ${duration.toFixed(0)} minuto(s)` : '';
+      return `CORREÇÃO DE QUALIDADE VISUAL\n\n` +
+        `O Claude Diretor recalculou a quantidade mínima de visuais${durationText}.\n\n` +
+        `Imagens válidas que serão reaproveitadas: ${valid}\n` +
+        `Nova meta visual: ${target}\n` +
+        `Novas imagens necessárias: ${newCalls}\n\n` +
+        `GARANTIAS:\n` +
+        `• As imagens já pagas e válidas serão preservadas.\n` +
+        `• Serão geradas somente as imagens que faltarem.\n` +
+        `• A narração será refeita para respeitar a duração solicitada.\n` +
+        `• A legenda continuará usando os tempos da narração real.\n` +
+        `• O vídeo só poderá ser aprovado depois do Quality Gate.` +
+        costText + `\n\n` +
+        `Deseja aplicar esta correção e retomar a produção?`;
+    }
+
+    const savedCalls = Number(plan?.estimated_image_calls_avoided || missing || 0);
     const savingsText = savings > 0 ? `\nEconomia estimada: US$ ${savings.toFixed(4)}.` : '';
     return `OTIMIZAÇÃO INTELIGENTE DE CUSTO\n\n` +
       `O Codexia pode concluir este vídeo sem gerar novas imagens pagas.\n\n` +
