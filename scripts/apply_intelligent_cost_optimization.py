@@ -26,11 +26,11 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
 
 
 YOUTUBE_IMPORT_ANCHOR = '''from app.services.global_settings_service import get_latest_settings, serialize_official_factory_settings\n'''
-YOUTUBE_IMPORT_NEW = '''from app.services.global_settings_service import get_latest_settings, serialize_official_factory_settings\nfrom app.services.intelligent_cost_optimizer import (\n    build_sparse_visual_optimization_plan,\n    validate_optimization_confirmation,\n)\n'''
+YOUTUBE_IMPORT_NEW = '''from app.services.global_settings_service import get_latest_settings, serialize_official_factory_settings\nfrom app.services.intelligent_cost_optimizer import (\n    build_sparse_visual_optimization_plan,\n    build_visual_quality_completion_plan,\n    validate_optimization_confirmation,\n)\n'''
 
 HELPER_ANCHOR = '''@router.post("/task/{task_id}/retry")\ndef retry_task(task_id: str, _admin=Depends(get_current_admin_user)):'''
 HELPER_BLOCK = r'''def _intelligent_retry_visual_materials(task_id: str, payload_override: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Build a read-only zero-cost visual optimization proposal from local assets."""
+    """Build a read-only retry proposal from local assets and the V2 quality contract."""
     db = SessionLocal()
     try:
         row = db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
