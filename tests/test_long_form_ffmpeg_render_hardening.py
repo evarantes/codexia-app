@@ -24,7 +24,7 @@ class LongFormFfmpegRenderHardeningTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("output_queue.get(timeout=1.0)", source)
-        self.assertIn("if now - started > max_runtime", source)
+        self.assertIn("if now - process_started > max_runtime", source)
         self.assertIn("process.poll()", source)
         self.assertNotIn("for raw_line in process.stdout", source)
 
