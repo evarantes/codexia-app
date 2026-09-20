@@ -1553,6 +1553,10 @@ class VideoGenerator:
         if not main_audio_path or not os.path.exists(main_audio_path):
             raise Exception("Falha ao gerar o audio principal da narracao.")
 
+        # Preserve provider-native timing before a second generate_audio call
+        # replaces ``_last_tts_debug`` with the CTA diagnostics.
+        main_tts_debug = dict(getattr(self, "_last_tts_debug", {}) or {})
+
         main_audio_clip = AudioFileClip(main_audio_path)
         cta_audio_path = None
         cta_audio_clip = None
@@ -1560,6 +1564,7 @@ class VideoGenerator:
         initial_silence_clip = None
         combined_clip = None
         combined_audio_path = main_audio_path
+        cta_tts_debug: Dict[str, Any] = {}
         pause_duration_sec = max(0.0, float(pause_duration_sec or 0.0))
         initial_silence_duration_sec = max(0.0, float(initial_silence_duration_sec or 0.0))
         try:
@@ -1577,6 +1582,7 @@ class VideoGenerator:
                 )
                 if not cta_audio_path or not os.path.exists(cta_audio_path):
                     raise Exception("Falha ao gerar o audio do CTA.")
+                cta_tts_debug = dict(getattr(self, "_last_tts_debug", {}) or {})
                 cta_audio_clip = AudioFileClip(cta_audio_path)
                 sequence = []
                 if initial_silence_clip is not None:
@@ -1608,14 +1614,60 @@ class VideoGenerator:
                     logger=None,
                 )
 
+            main_duration = float(getattr(main_audio_clip, "duration", 0.0) or 0.0)
+            cta_duration = float(getattr(cta_audio_clip, "duration", 0.0) or 0.0) if cta_audio_clip is not None else 0.0
+            exact_timeline: List[Dict[str, Any]] = []
+
+            def _append_exact_timeline(debug: Dict[str, Any], offset: float) -> None:
+                if debug.get("caption_alignment_exact") is not True:
+                    return
+                for raw in debug.get("caption_timeline") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        start = max(0.0, float(raw.get("start") or 0.0)) + offset
+                        end = max(start, float(raw.get("end") or start)) + offset
+                    except (TypeError, ValueError):
+                        continue
+                    word = str(raw.get("word") or raw.get("text") or "").strip()
+                    if word and end > start:
+                        exact_timeline.append({"start": round(start, 4), "end": round(end, 4), "word": word})
+
+            _append_exact_timeline(main_tts_debug, initial_silence_duration_sec)
+            if cta_audio_clip is not None:
+                _append_exact_timeline(
+                    cta_tts_debug,
+                    initial_silence_duration_sec + main_duration + pause_duration_sec,
+                )
+
+            combined_debug = dict(cta_tts_debug or main_tts_debug)
+            combined_debug["fallback_used"] = bool(
+                main_tts_debug.get("fallback_used") or cta_tts_debug.get("fallback_used")
+            )
+            combined_debug["caption_timeline"] = exact_timeline
+            combined_debug["caption_alignment_exact"] = bool(
+                exact_timeline
+                and main_tts_debug.get("caption_alignment_exact") is True
+                and (not cta_text or cta_tts_debug.get("caption_alignment_exact") is True)
+            )
+            combined_debug["caption_timing_source"] = "edge_tts_exact_ptbr_fallback"
+            self._last_tts_debug = combined_debug
+
             return {
                 "audio_path": combined_audio_path,
                 "main_audio_path": main_audio_path,
                 "cta_audio_path": cta_audio_path,
-                "main_duration_sec": round(float(getattr(main_audio_clip, "duration", 0.0) or 0.0), 2),
-                "cta_duration_sec": round(float(getattr(cta_audio_clip, "duration", 0.0) or 0.0), 2) if cta_audio_clip is not None else 0.0,
+                "main_duration_sec": round(main_duration, 2),
+                "cta_duration_sec": round(cta_duration, 2),
                 "initial_silence_duration_sec": round(initial_silence_duration_sec, 2),
                 "pause_duration_sec": round(pause_duration_sec, 2),
+                "caption_timeline": exact_timeline,
+                "caption_alignment_exact": bool(
+                    exact_timeline
+                    and main_tts_debug.get("caption_alignment_exact") is True
+                    and (not cta_text or cta_tts_debug.get("caption_alignment_exact") is True)
+                ),
+                "caption_timing_source": "edge_tts_exact_ptbr_fallback",
             }
         finally:
             for clip in [combined_clip, initial_silence_clip, silence_clip, cta_audio_clip, main_audio_clip]:
@@ -4386,7 +4438,6 @@ class VideoGenerator:
                 status_callback(f"Gerando {segment_label} — preparando fallback gratuito Edge TTS...")
             try:
                 print("Tentando Edge TTS...")
-                import edge_tts
                 import asyncio
                 import threading
                 
@@ -4395,31 +4446,35 @@ class VideoGenerator:
                         voice = "pt-BR-AntonioNeural"
                     else:
                         voice = "pt-BR-FranciscaNeural"
-                    lang_tag = "pt-BR"
                 else:
                     if gender == "male":
                         voice = "en-US-ChristopherNeural"
                     else:
                         voice = "en-US-JennyNeural"
-                    lang_tag = "en-US"
 
                 path = os.path.join(self.output_dir, f"tts_edge_tmp_{uuid.uuid4().hex}.mp3")
-                rate, pitch, volume = _infer_edge_prosody(clean_text, is_male=(gender == "male"), style_tag=style)
-                edge_timeout = _bounded_timeout_seconds("NARRATION_EDGE_TTS_TIMEOUT_SECONDS", 90)
+                edge_timeout = max(
+                    _bounded_timeout_seconds("NARRATION_EDGE_TTS_TIMEOUT_SECONDS", 180),
+                    min(900, max(180, int(len(clean_text) * 0.08))),
+                )
                 edge_error: Dict[str, Any] = {}
 
+                edge_performance: Dict[str, Any] = {}
+
                 async def _run_edge_tts():
-                    # A biblioteca edge-tts recebe texto puro e aplica a
-                    # prosódia pelos argumentos próprios. Enviar SSML como
-                    # texto pode fazê-la narrar marcação/código.
-                    communicate = edge_tts.Communicate(
-                        clean_text,
-                        voice,
-                        rate=rate,
-                        pitch=pitch,
-                        volume=volume,
+                    # Long narrations are synthesized in sentence-sized plain
+                    # text chunks. Besides avoiding provider truncation, this
+                    # returns exact boundaries even when ASR is unavailable.
+                    from pathlib import Path
+                    from app.services.ptbr_narration_performance import synthesize_edge_ptbr_performance
+
+                    performance = await synthesize_edge_ptbr_performance(
+                        spoken_text=clean_text,
+                        review_text=clean_text,
+                        voice=voice,
+                        output_path=Path(path),
                     )
-                    await asyncio.wait_for(communicate.save(path), timeout=edge_timeout)
+                    edge_performance.update(performance or {})
 
                 def _edge_worker():
                     try:
@@ -4494,6 +4549,14 @@ class VideoGenerator:
                     tts_debug["edge_tts_estimated_duration_sec"] = round(float(estimated_dur or 0.0), 2) if used_estimated_duration else 0.0
                     tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
                     tts_debug["output_path"] = path
+                    tts_debug["caption_timeline"] = list(edge_performance.get("caption_timeline") or [])
+                    tts_debug["caption_alignment_exact"] = bool(
+                        edge_performance.get("caption_alignment_exact") is True
+                        and tts_debug["caption_timeline"]
+                    )
+                    tts_debug["caption_timing_source"] = "edge_tts_exact_ptbr_fallback"
+                    tts_debug["narration_performance_version"] = edge_performance.get("performance_version")
+                    tts_debug["narration_performance_namespace"] = edge_performance.get("performance_namespace")
                     print(f"Edge TTS sucesso: {path} ({dur:.2f}s)")
                     return path
                 else:
@@ -6129,6 +6192,9 @@ $synth.Dispose()
                     "main_duration_sec": segmented_audio.get("main_duration_sec"),
                     "cta_duration_sec": segmented_audio.get("cta_duration_sec"),
                 }
+                tts_debug["caption_timeline"] = list(segmented_audio.get("caption_timeline") or [])
+                tts_debug["caption_alignment_exact"] = bool(segmented_audio.get("caption_alignment_exact"))
+                tts_debug["caption_timing_source"] = segmented_audio.get("caption_timing_source")
                 render_report["audio_generation"] = tts_debug
                 debug_ctx["audio_path"] = main_audio_path
                 debug_ctx["title_audio_path"] = segmented_audio.get("main_audio_path")
@@ -6423,6 +6489,14 @@ $synth.Dispose()
                 if isinstance(plan, dict) and isinstance(plan.get("approved_caption_timeline"), list)
                 else []
             )
+            if not approved_word_timeline:
+                audio_generation_details = (
+                    render_report.get("audio_generation")
+                    if isinstance(render_report.get("audio_generation"), dict)
+                    else {}
+                )
+                if audio_generation_details.get("caption_alignment_exact") is True:
+                    approved_word_timeline = list(audio_generation_details.get("caption_timeline") or [])
             caption_timeline_details: Dict[str, Any]
             if approved_word_timeline:
                 voice_duration = max(
@@ -6456,6 +6530,7 @@ $synth.Dispose()
                         "source": "approved_edge_tts_word_boundaries",
                         "timing_source": str(
                             (plan or {}).get("approved_caption_timing_source")
+                            or (render_report.get("audio_generation") or {}).get("caption_timing_source")
                             or "edge_tts_word_boundaries"
                         ),
                     }

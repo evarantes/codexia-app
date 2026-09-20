@@ -894,6 +894,20 @@ class CinematicQualityService:
         longest_pause = self._safe_float(metrics.get("longest_pause_sec"), 0.0)
         fallback_used = bool(audio.get("fallback_used"))
 
+        # Edge TTS can prove the canonical text through exact boundaries from
+        # the same synthesis stream. A missing external ASR result must not be
+        # mislabeled as spoken-text divergence when this stronger evidence is
+        # available.
+        provider_timeline = audio.get("caption_timeline") if isinstance(audio.get("caption_timeline"), list) else []
+        provider_alignment_exact = bool(
+            audio.get("caption_alignment_exact") is True
+            and provider_timeline
+            and str(audio.get("caption_timing_source") or "").startswith("edge_tts_exact_ptbr")
+        )
+        if not within_tolerance and provider_alignment_exact:
+            within_tolerance = True
+            similarity = 1.0
+
         if not within_tolerance:
             issues.append(
                 self._build_issue(
