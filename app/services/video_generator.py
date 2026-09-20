@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 98121)
-Total output lines: 7814
-
 import os
 import uuid
 import requests
@@ -3092,7 +3089,2405 @@ class VideoGenerator:
                 round(base + (extra_budget * (stretch_weight / total_stretch)), 2)
                 for base, stretch_weight in zip(baseline_scene_durations, stretch_weights)
             ]
-            rounding_gap = round(target_bo…28121 tokens truncated…sinstance(scene, dict):
+            rounding_gap = round(target_body_duration - sum(allocated), 2)
+            if allocated and abs(rounding_gap) >= 0.01:
+                allocated[-1] = round(max(baseline_scene_durations[-1], allocated[-1] + rounding_gap), 2)
+
+        return {
+            "requested_duration_sec": float(requested_total_duration or 0.0),
+            "target_body_duration_sec": round(target_body_duration, 2),
+            "allocated_scene_durations": allocated,
+            "baseline_body_duration_sec": round(baseline_body_duration, 2),
+        }
+
+    def _split_caption_units(self, text: str, max_words: int = 8, max_chars: int = 54) -> List[str]:
+        cleaned = self._normalize_tts_text(text)
+        if not cleaned:
+            return []
+        units: List[str] = []
+
+        def flush_piece(piece: str):
+            words = [w for w in str(piece or "").split() if w]
+            if not words:
+                return
+            current_words: List[str] = []
+            for word in words:
+                candidate = " ".join(current_words + [word]).strip()
+                if current_words and (len(current_words) + 1 > max_words or len(candidate) > max_chars):
+                    units.append(" ".join(current_words).strip())
+                    current_words = [word]
+                else:
+                    current_words.append(word)
+            if current_words:
+                units.append(" ".join(current_words).strip())
+
+        sentence_parts = [
+            part.strip()
+            for part in re.findall(r'[^.!?…\n]+(?:[.!?…]+["”’\']?|$)', cleaned)
+            if str(part or "").strip()
+        ]
+        if not sentence_parts:
+            sentence_parts = [cleaned]
+
+        normalized_pieces: List[str] = []
+        for sentence in sentence_parts:
+            soft_parts = [part.strip() for part in re.split(r"(?<=[,;:])\s+", sentence) if part and part.strip()]
+            normalized_pieces.extend(soft_parts or [sentence.strip()])
+
+        current = ""
+        current_words = 0
+        for piece in normalized_pieces:
+            piece_words = len(piece.split())
+            if piece_words <= max_words and len(piece) <= max_chars:
+                if (
+                    current
+                    and current_words + piece_words <= max_words
+                    and len(f"{current} {piece}".strip()) <= max_chars
+                    and not re.search(r"[.!?…]$", current)
+                ):
+                    current = f"{current} {piece}".strip()
+                    current_words += piece_words
+                else:
+                    if current:
+                        units.append(current.strip())
+                    current = piece
+                    current_words = piece_words
+                continue
+
+            if current:
+                units.append(current.strip())
+                current = ""
+                current_words = 0
+            flush_piece(piece)
+
+        if current.strip():
+            units.append(current.strip())
+
+        units = [unit.strip() for unit in units if unit and unit.strip()]
+        return units
+
+    def _join_caption_tokens(self, tokens: List[str]) -> str:
+        caption = ""
+        for raw in tokens:
+            token = str(raw or "").strip()
+            if not token:
+                continue
+            if not caption:
+                caption = token
+                continue
+            if re.match(r"^[,.;:!?…)\]\}%]+$", token):
+                caption += token
+            elif re.match(r"^['\"“”‘’`]+$", token):
+                caption += token
+            elif caption.endswith(("(", "[", "{", "“", '"', "‘", "'")):
+                caption += token
+            else:
+                caption += f" {token}"
+        return caption.strip()
+
+    def _caption_timeline_from_text(self, narration: str, duration: float) -> List[Dict[str, Any]]:
+        total_duration = float(duration or 0.0)
+        if total_duration <= 0:
+            return []
+        chunks = self._split_caption_units(narration, max_words=8, max_chars=54)
+        if not chunks:
+            return []
+
+        total_words = sum(max(1, len(c.split())) for c in chunks)
+        cursor = 0.0
+        timeline: List[Dict[str, Any]] = []
+        remaining_words = total_words
+        remaining_duration = total_duration
+        for idx, chunk in enumerate(chunks):
+            chunk_words = max(1, len(chunk.split()))
+            if idx == len(chunks) - 1:
+                end = total_duration
+            else:
+                proportional = remaining_duration * (chunk_words / max(1, remaining_words))
+                seg_dur = max(0.9, min(4.2, proportional))
+                end = min(total_duration, cursor + seg_dur)
+            if end <= cursor:
+                continue
+            timeline.append({"start": cursor, "end": end, "caption": chunk})
+            remaining_words -= chunk_words
+            remaining_duration = max(0.0, total_duration - end)
+            cursor = end
+        if timeline:
+            timeline[0]["start"] = 0.0
+            timeline[-1]["end"] = total_duration
+        return timeline
+
+    def _realign_caption_timeline_to_narration(
+        self,
+        timeline: List[Dict[str, Any]],
+        narration: str,
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(timeline, list) or not timeline:
+            return timeline
+        normalized_narration = self._normalize_tts_text(narration)
+        narration_tokens = [token for token in normalized_narration.split() if token]
+        if not narration_tokens:
+            return timeline
+
+        target_counts = [
+            max(1, len(str(item.get("caption") or "").strip().split()))
+            for item in timeline
+        ]
+        total_target = max(1, sum(target_counts))
+        remaining_tokens = len(narration_tokens)
+        remaining_target = total_target
+        token_cursor = 0
+        aligned: List[Dict[str, Any]] = []
+
+        for idx, item in enumerate(timeline):
+            blocks_left = len(timeline) - idx
+            minimum_reserved = max(0, blocks_left - 1)
+            if idx == len(timeline) - 1:
+                take_count = remaining_tokens
+            else:
+                proportional = int(round(remaining_tokens * (target_counts[idx] / max(1, remaining_target))))
+                take_count = max(1, min(remaining_tokens - minimum_reserved, proportional))
+            if take_count <= 0:
+                take_count = max(1, remaining_tokens)
+            caption_tokens = narration_tokens[token_cursor:token_cursor + take_count]
+            if not caption_tokens and remaining_tokens > 0:
+                caption_tokens = narration_tokens[token_cursor:token_cursor + 1]
+            token_cursor += len(caption_tokens)
+            remaining_tokens = max(0, len(narration_tokens) - token_cursor)
+            remaining_target = max(0, remaining_target - target_counts[idx])
+            aligned_item = dict(item)
+            aligned_item["caption"] = " ".join(caption_tokens).strip()
+            aligned.append(aligned_item)
+
+        if aligned and token_cursor < len(narration_tokens):
+            tail = " ".join(narration_tokens[token_cursor:]).strip()
+            if tail:
+                last_caption = str(aligned[-1].get("caption") or "").strip()
+                aligned[-1]["caption"] = f"{last_caption} {tail}".strip() if last_caption else tail
+
+        aligned = [item for item in aligned if str(item.get("caption") or "").strip()]
+        return aligned or timeline
+
+    def _caption_timeline_from_segments(self, segments: List[Dict[str, Any]], duration: float, narration: str = "") -> List[Dict[str, Any]]:
+        total_duration = float(duration or 0.0)
+        if total_duration <= 0 or not isinstance(segments, list):
+            return []
+
+        words: List[Dict[str, Any]] = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            seg_words = seg.get("words")
+            if isinstance(seg_words, list) and seg_words:
+                for item in seg_words:
+                    if not isinstance(item, dict):
+                        continue
+                    token = str(item.get("word") or item.get("text") or "").strip()
+                    if not token:
+                        continue
+                    try:
+                        ws = max(0.0, float(item.get("start")))
+                        we = min(total_duration, float(item.get("end")))
+                    except Exception:
+                        continue
+                    if we <= ws:
+                        continue
+                    words.append({"start": ws, "end": we, "word": token})
+
+        timeline: List[Dict[str, Any]] = []
+        if words:
+            current: List[Dict[str, Any]] = []
+
+            def flush_words():
+                nonlocal current, timeline
+                if not current:
+                    return
+                caption = self._join_caption_tokens([str(w.get("word") or "").strip() for w in current])
+                if not caption:
+                    current = []
+                    return
+                start = float(current[0].get("start") or 0.0)
+                end = float(current[-1].get("end") or start)
+                if end > start:
+                    timeline.append({"start": start, "end": end, "caption": caption})
+                current = []
+
+            for word in words:
+                token = str(word.get("word") or "").strip()
+                current.append(word)
+                caption = self._join_caption_tokens([str(w.get("word") or "").strip() for w in current])
+                dur = float(current[-1].get("end") or 0.0) - float(current[0].get("start") or 0.0)
+                hard_break = bool(re.search(r"[.!?…]$", token))
+                soft_break = bool(re.search(r"[,;:]$", token))
+                if (
+                    len(current) >= 6
+                    or len(caption) >= 42
+                    or dur >= 2.4
+                    or hard_break
+                    or (soft_break and dur >= 1.2)
+                ):
+                    flush_words()
+            flush_words()
+
+        if timeline:
+            # CODEXIA_AUDIO_TIMED_GLOBAL_CAPTIONS_V1
+            # Não estique o primeiro/último bloco até os limites do arquivo:
+            # o áudio pode conter silêncio de abertura ou de endcard. Os
+            # timestamps reais das palavras são a autoridade da legenda.
+            return self._realign_caption_timeline_to_narration(timeline, narration)
+
+        approx: List[Dict[str, Any]] = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            text = str(seg.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                seg_start = max(0.0, float(seg.get("start")))
+                seg_end = min(total_duration, float(seg.get("end")))
+            except Exception:
+                continue
+            if seg_end <= seg_start:
+                continue
+            units = self._split_caption_units(text, max_words=8, max_chars=54)
+            if not units:
+                continue
+            seg_duration = seg_end - seg_start
+            total_words = sum(max(1, len(u.split())) for u in units)
+            local_cursor = seg_start
+            remaining_words = total_words
+            remaining_duration = seg_duration
+            for idx, unit in enumerate(units):
+                unit_words = max(1, len(unit.split()))
+                if idx == len(units) - 1:
+                    unit_end = seg_end
+                else:
+                    unit_dur = remaining_duration * (unit_words / max(1, remaining_words))
+                    unit_end = min(seg_end, local_cursor + max(0.6, unit_dur))
+                if unit_end > local_cursor:
+                    approx.append({"start": local_cursor, "end": unit_end, "caption": unit})
+                remaining_words -= unit_words
+                remaining_duration = max(0.0, seg_end - unit_end)
+                local_cursor = unit_end
+        # Preserve the segment timestamps as returned by the audio
+        # transcriber; do not turn trailing silence into a subtitle.
+        return self._realign_caption_timeline_to_narration(approx, narration)
+
+    def _build_caption_timeline(self, narration: str, duration: float, audio_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        details = self._build_caption_timeline_details(narration, duration, audio_path=audio_path)
+        timeline = details.get("timeline") if isinstance(details, dict) else None
+        return timeline if isinstance(timeline, list) else []
+
+    def _caption_timeline_from_audio_activity(
+        self,
+        narration: str,
+        duration: float,
+        audio_path: Optional[str],
+    ) -> Dict[str, Any]:
+        """Align caption blocks to speech intervals detected in the real audio.
+
+        This is the local, no-network recovery for a temporarily unavailable
+        transcription provider. Unlike the old proportional fallback, it uses
+        FFmpeg's silence detector to anchor caption transitions to real speech
+        activity and pauses in the produced narration.
+        """
+        total_duration = max(0.0, float(duration or 0.0))
+        source_path = os.path.abspath(str(audio_path or "").strip())
+        if total_duration <= 0.1 or not source_path or not os.path.isfile(source_path):
+            return {"timeline": [], "error": "audio_activity_input_unavailable"}
+
+        units = self._split_caption_units(narration, max_words=8, max_chars=54)
+        if not units:
+            return {"timeline": [], "error": "audio_activity_text_unavailable"}
+
+        try:
+            import shutil
+            import subprocess
+
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                return {"timeline": [], "error": "ffmpeg_unavailable_for_audio_activity"}
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-nostdin",
+                    "-i", source_path,
+                    "-af", "silencedetect=noise=-38dB:d=0.18",
+                    "-f", "null",
+                    "-",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=max(45.0, min(900.0, total_duration * 1.5 + 30.0)),
+                check=False,
+            )
+        except Exception as exc:
+            return {"timeline": [], "error": f"audio_activity_detection_failed:{str(exc)[:180]}"}
+
+        diagnostic = "\n".join([str(result.stderr or ""), str(result.stdout or "")])
+        events: List[tuple] = []
+        for match in re.finditer(r"silence_(start|end):\s*([0-9]+(?:\.[0-9]+)?)", diagnostic):
+            try:
+                events.append((str(match.group(1)), float(match.group(2))))
+            except Exception:
+                continue
+
+        silences: List[tuple] = []
+        open_start: Optional[float] = None
+        for event, raw_value in events:
+            value = max(0.0, min(total_duration, raw_value))
+            if event == "start":
+                if open_start is None:
+                    open_start = value
+            elif open_start is not None:
+                if value > open_start:
+                    silences.append((open_start, value))
+                open_start = None
+        if open_start is not None and total_duration > open_start:
+            silences.append((open_start, total_duration))
+
+        speech: List[tuple] = []
+        cursor = 0.0
+        for silence_start, silence_end in sorted(silences):
+            if silence_start > cursor + 0.04:
+                speech.append((cursor, silence_start))
+            cursor = max(cursor, silence_end)
+        if cursor < total_duration - 0.04:
+            speech.append((cursor, total_duration))
+        speech = [(start, end) for start, end in speech if end - start >= 0.06]
+
+        # A usable local alignment must contain actual acoustic boundaries.
+        # With no detected pause it would be equivalent to the rejected legacy
+        # text-duration approximation, so fail closed and expose the cause.
+        if not silences or not speech:
+            return {
+                "timeline": [],
+                "error": "audio_activity_boundaries_unavailable",
+                "silence_count": len(silences),
+            }
+
+        active_duration = sum(end - start for start, end in speech)
+        if active_duration <= 0.1:
+            return {"timeline": [], "error": "audio_activity_duration_invalid"}
+
+        def audio_time_at(active_offset: float) -> float:
+            remaining = max(0.0, min(active_duration, float(active_offset or 0.0)))
+            for start, end in speech:
+                span = end - start
+                if remaining <= span:
+                    return start + remaining
+                remaining -= span
+            return speech[-1][1]
+
+        weights = [max(1, len(str(unit).split())) for unit in units]
+        total_weight = float(sum(weights) or len(units))
+        cumulative = 0.0
+        timeline: List[Dict[str, Any]] = []
+        for index, unit in enumerate(units):
+            start_active = active_duration * (cumulative / total_weight)
+            cumulative += float(weights[index])
+            end_active = active_duration * (cumulative / total_weight)
+            start = audio_time_at(start_active)
+            end = audio_time_at(end_active)
+            if end <= start:
+                end = min(total_duration, start + 0.08)
+            if end > start:
+                timeline.append({
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "caption": str(unit).strip(),
+                    "source": "local_audio_activity_alignment",
+                })
+
+        return {
+            "timeline": self._sanitize_caption_timeline(timeline, total_duration),
+            "source": "local_audio_activity_alignment",
+            "timing_source": "ffmpeg_silencedetect_real_audio",
+            "silence_count": len(silences),
+            "speech_interval_count": len(speech),
+        }
+
+    def _build_caption_timeline_details(self, narration: str, duration: float, audio_path: Optional[str] = None) -> Dict[str, Any]:
+        total_duration = float(duration or 0.0)
+        if total_duration <= 0:
+            return {"timeline": [], "source": "empty"}
+        transcription_error = None
+        if audio_path and self.ai_service and hasattr(self.ai_service, "transcribe_audio_segments_detailed"):
+            try:
+                strict = str(os.getenv("CAPTION_SYNC_STRICT") or "").strip().lower() in {"1", "true", "yes", "on"}
+                info = self.ai_service.transcribe_audio_segments_detailed(audio_path, language="pt")
+                segments = info.get("segments") if isinstance(info, dict) else None
+                if isinstance(segments, list) and segments:
+                    timed = self._caption_timeline_from_segments(segments, total_duration, narration=narration)
+                    if timed:
+                        return {"timeline": self._sanitize_caption_timeline(timed, total_duration), "source": "official_audio_transcript"}
+                if strict:
+                    err = info.get("error") if isinstance(info, dict) else None
+                    raise Exception(f"Transcrição indisponível para sincronização de legendas: {err or 'no_segments'}")
+            except Exception as exc:
+                # Preserve the real transcription failure for observability.
+                transcription_error = str(exc)[:500]
+            else:
+                transcription_error = None
+
+        # Recovery path: when the official audio transcription is temporarily
+        # unavailable, do not abort the whole production at 20%. Build a
+        # deterministic text timeline over the measured audio duration, then
+        # keep the source explicit so the quality gate/report can flag it.
+        #
+        # This avoids re-generating paid media and lets the project continue;
+        # the timeline can later be replaced by an official transcript on a
+        # subsequent pass if desired.
+        if audio_path:
+            activity_aligned = self._caption_timeline_from_audio_activity(
+                narration,
+                total_duration,
+                audio_path,
+            )
+            if isinstance(activity_aligned, dict) and activity_aligned.get("timeline"):
+                activity_aligned["transcription_error"] = (
+                    transcription_error or "official_audio_transcript_unavailable"
+                )
+                return activity_aligned
+            fallback = self._sanitize_caption_timeline(
+                self._caption_timeline_from_text(narration, total_duration),
+                total_duration,
+            )
+            if fallback:
+                return {
+                    "timeline": fallback,
+                    "source": "text_fallback_from_measured_audio",
+                    "timing_source": "measured_audio_duration",
+                    "error": transcription_error or "official_audio_transcript_unavailable",
+                }
+            return {
+                "timeline": [],
+                "source": "audio_transcript_unavailable",
+                "error": transcription_error or "official_audio_transcript_required",
+            }
+        return {"timeline": self._sanitize_caption_timeline(self._caption_timeline_from_text(narration, total_duration), total_duration), "source": "text_fallback"}
+
+    def _find_scene_text_ranges_in_body(self, body_text: str, scenes: List[Dict[str, Any]]) -> List[Dict[str, int]]:
+        normalized_body = self._normalize_tts_text(body_text)
+        ranges: List[Dict[str, int]] = []
+        cursor = 0
+        for scene in scenes or []:
+            scene_text = self._normalize_tts_text((scene or {}).get("_tts_text") or (scene or {}).get("text") or "")
+            if not scene_text:
+                ranges.append({"start": cursor, "end": cursor})
+                continue
+            found = normalized_body.find(scene_text, cursor)
+            if found < 0:
+                found = normalized_body.find(scene_text)
+            if found < 0:
+                start = cursor
+                end = cursor + len(scene_text)
+            else:
+                start = found
+                end = found + len(scene_text)
+            ranges.append({"start": start, "end": end})
+            cursor = max(cursor, end)
+        return ranges
+
+    def _find_caption_position_in_body(self, body_text: str, caption_text: str, search_cursor: int = 0) -> Dict[str, int]:
+        normalized_body = self._normalize_tts_text(body_text)
+        normalized_caption = self._normalize_tts_text(caption_text)
+        if not normalized_body or not normalized_caption:
+            return {"start": max(0, int(search_cursor or 0)), "end": max(0, int(search_cursor or 0))}
+        found = normalized_body.find(normalized_caption, max(0, int(search_cursor or 0)))
+        if found < 0 and search_cursor:
+            found = normalized_body.find(normalized_caption, max(0, int(search_cursor or 0)) - 80)
+        if found < 0:
+            found = normalized_body.find(normalized_caption)
+        if found < 0:
+            found = max(0, min(len(normalized_body), int(search_cursor or 0)))
+        return {"start": found, "end": min(len(normalized_body), found + len(normalized_caption))}
+
+    def _legacy_scene_index_for_time(self, moment_sec: float, legacy_windows: List[Dict[str, float]]) -> int:
+        try:
+            moment = float(moment_sec or 0.0)
+        except Exception:
+            moment = 0.0
+        for idx, window in enumerate(legacy_windows or []):
+            start = float(window.get("start") or 0.0)
+            end = float(window.get("end") or 0.0)
+            if moment >= start and moment < end:
+                return idx
+        if legacy_windows:
+            return max(0, len(legacy_windows) - 1)
+        return 0
+
+    def _build_scene_caption_sync_map(
+        self,
+        full_timeline: List[Dict[str, Any]],
+        scenes: List[Dict[str, Any]],
+        planning_meta: Dict[str, Any],
+        legacy_scene_windows: List[Dict[str, float]],
+        title_duration: float,
+        end_duration: float,
+        actual_total_audio_dur: float,
+        timeline_source: str = "text_fallback",
+    ) -> Dict[str, Any]:
+        scene_count = len(scenes or [])
+        empty_result = {
+            "timeline_source": timeline_source,
+            "scene_timelines": [[] for _ in range(scene_count)],
+            "scene_required_durations": [0.0 for _ in range(scene_count)],
+            "block_sync_report": {
+                "total_blocks": 0,
+                "largest_delay_estimated_sec": 0.0,
+                "largest_advance_estimated_sec": 0.0,
+                "blocks_with_risk_of_drift": 0,
+                "risky_block_indices": [],
+            },
+        }
+        if not isinstance(full_timeline, list) or not full_timeline or scene_count <= 0:
+            return empty_result
+
+        body_text = self._normalize_tts_text((planning_meta or {}).get("body_text") or "")
+        if not body_text:
+            return empty_result
+
+        body_start = max(0.0, float(title_duration or 0.0))
+        body_end = max(body_start, float(actual_total_audio_dur or 0.0) - max(0.0, float(end_duration or 0.0)))
+        scene_ranges = self._find_scene_text_ranges_in_body(body_text, scenes)
+        per_scene_global: List[List[Dict[str, Any]]] = [[] for _ in range(scene_count)]
+        search_cursor = 0
+
+        for block_idx, item in enumerate(full_timeline):
+            try:
+                item_start = float(item.get("start") or 0.0)
+                item_end = float(item.get("end") or 0.0)
+            except Exception:
+                continue
+            if item_end <= body_start or item_start >= body_end:
+                continue
+            caption = str(item.get("caption") or "").strip()
+            if not caption:
+                continue
+
+            position = self._find_caption_position_in_body(body_text, caption, search_cursor=search_cursor)
+            cap_start = int(position.get("start") or 0)
+            cap_end = int(position.get("end") or cap_start)
+            search_cursor = max(search_cursor, cap_end)
+            midpoint = (cap_start + cap_end) / 2.0
+
+            legacy_scene_idx = self._legacy_scene_index_for_time((item_start + item_end) / 2.0, legacy_scene_windows)
+            # Para áudio aprovado, a posição temporal do áudio é a única fonte
+            # confiável para distribuir blocos entre cenas. O texto visual do
+            # storyboard pode ser editorialmente diferente e não deve remapear
+            # nem reescrever a legenda.
+            if str(timeline_source or "").startswith("approved_"):
+                scene_idx = legacy_scene_idx
+            else:
+                scene_idx = 0
+                for idx, item_range in enumerate(scene_ranges):
+                    start = int(item_range.get("start") or 0)
+                    end = int(item_range.get("end") or start)
+                    if midpoint >= start and midpoint <= max(start, end):
+                        scene_idx = idx
+                        break
+                    if idx == len(scene_ranges) - 1 and midpoint > max(start, end):
+                        scene_idx = idx
+            per_scene_global[scene_idx].append({
+                "block_index": block_idx,
+                "caption": caption,
+                "global_start": max(body_start, item_start),
+                "global_end": min(body_end, item_end),
+                "legacy_scene_index": legacy_scene_idx,
+                "assigned_scene_index": scene_idx,
+            })
+
+        scene_timelines: List[List[Dict[str, Any]]] = [[] for _ in range(scene_count)]
+        scene_required_durations: List[float] = []
+        largest_delay = 0.0
+        largest_advance = 0.0
+        risky_blocks: List[int] = []
+
+        for idx in range(scene_count):
+            items = per_scene_global[idx]
+            legacy_start = float((legacy_scene_windows[idx] if idx < len(legacy_scene_windows) else {}).get("start") or body_start)
+            if not items:
+                scene_required_durations.append(0.0)
+                continue
+            actual_scene_start = min(float(item.get("global_start") or body_start) for item in items)
+            local_items: List[Dict[str, Any]] = []
+            for item in items:
+                global_start = float(item.get("global_start") or actual_scene_start)
+                global_end = float(item.get("global_end") or global_start)
+                local_start = max(0.0, global_start - actual_scene_start)
+                local_end = max(local_start, global_end - actual_scene_start)
+                drift_estimated = round(actual_scene_start - legacy_start, 3)
+                if drift_estimated > 0:
+                    largest_delay = max(largest_delay, drift_estimated)
+                elif drift_estimated < 0:
+                    largest_advance = max(largest_advance, abs(drift_estimated))
+                is_risky = bool(abs(drift_estimated) >= 0.25 or int(item.get("legacy_scene_index") or 0) != idx)
+                if is_risky:
+                    risky_blocks.append(int(item.get("block_index") or 0))
+                local_items.append({
+                    "block_index": int(item.get("block_index") or 0),
+                    "caption": str(item.get("caption") or "").strip(),
+                    "start": round(local_start, 3),
+                    "end": round(local_end, 3),
+                    "global_start": round(global_start, 3),
+                    "global_end": round(global_end, 3),
+                    "estimated_drift_sec": drift_estimated,
+                    "risk_of_drift": is_risky,
+                })
+            scene_timelines[idx] = local_items
+            scene_required_durations.append(round(max(float(item.get("end") or 0.0) for item in local_items), 3))
+
+        return {
+            "timeline_source": timeline_source,
+            "scene_timelines": scene_timelines,
+            "scene_required_durations": scene_required_durations,
+            "block_sync_report": {
+                "total_blocks": sum(len(items) for items in scene_timelines),
+                "largest_delay_estimated_sec": round(largest_delay, 3),
+                "largest_advance_estimated_sec": round(largest_advance, 3),
+                "blocks_with_risk_of_drift": len(risky_blocks),
+                "risky_block_indices": sorted(set(risky_blocks)),
+            },
+        }
+
+    def _build_official_scene_timeline(
+        self,
+        *,
+        scenes: List[Dict[str, Any]],
+        scene_caption_sync: Dict[str, Any],
+        planned_scene_durations: List[float],
+        opening_text: str,
+        opening_image: str,
+        title_duration: float,
+        initial_opening_silence_sec: float,
+        cta_text: str,
+        closing_image: str,
+        pause_before_cta_sec: float,
+        cta_duration: float,
+        end_duration: float,
+        timeline_source: str,
+        transition_name: str = "fade",
+    ) -> List[Dict[str, Any]]:
+        scene_count = len(scenes or [])
+        sync_timelines = scene_caption_sync.get("scene_timelines") or []
+        official_timeline: List[Dict[str, Any]] = []
+        title_duration = max(0.0, float(title_duration or 0.0))
+        initial_opening_silence_sec = max(0.0, float(initial_opening_silence_sec or 0.0))
+        pause_before_cta_sec = max(0.0, float(pause_before_cta_sec or 0.0))
+        cta_duration = max(0.0, float(cta_duration or 0.0))
+        end_duration = max(0.0, float(end_duration or 0.0))
+        if title_duration > 0:
+            opening_audio_start = min(title_duration, initial_opening_silence_sec) if str(opening_text or "").strip() else 0.0
+            opening_audio_end = title_duration if str(opening_text or "").strip() else opening_audio_start
+            opening_caption_start = opening_audio_start if str(opening_text or "").strip() else 0.0
+            opening_caption_end = opening_audio_end if str(opening_text or "").strip() else opening_caption_start
+            official_timeline.append({
+                "scene": 0,
+                "kind": "opening",
+                "text": self._normalize_tts_text(opening_text or ""),
+                "audio_start": round(opening_audio_start, 3),
+                "audio_end": round(opening_audio_end, 3),
+                "scene_start": 0.0,
+                "scene_end": round(title_duration, 3),
+                "caption_start": round(opening_caption_start, 3),
+                "caption_end": round(opening_caption_end, 3),
+                "image": opening_image or "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": False,
+                "caption_blocks": [],
+            })
+        previous_scene_end = title_duration
+
+        for idx in range(scene_count):
+            scene = scenes[idx] if idx < len(scenes) and isinstance(scenes[idx], dict) else {}
+            clean_text = self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "")
+            sync_items = list(sync_timelines[idx] or []) if idx < len(sync_timelines) else []
+            planned_audio_duration = float(planned_scene_durations[idx]) if idx < len(planned_scene_durations) else float(scene.get("_estimated_narration_sec") or 0.0)
+
+            if sync_items:
+                raw_audio_start = min(float(item.get("global_start") or 0.0) for item in sync_items)
+                raw_audio_end = max(float(item.get("global_end") or 0.0) for item in sync_items)
+                scene_start = previous_scene_end
+                audio_start = max(scene_start, raw_audio_start)
+                audio_end = max(audio_start, raw_audio_end)
+                caption_start = audio_start
+                caption_end = audio_end
+                scene_end = audio_end
+                shift_sec = 0.0
+            else:
+                audio_start = previous_scene_end + DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC
+                audio_end = audio_start + max(0.0, planned_audio_duration)
+                minimum_audio_start = previous_scene_end + DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC
+                shift_sec = 0.0
+                audio_start = max(previous_scene_end, float(audio_start or 0.0))
+                if audio_start < minimum_audio_start:
+                    shift_sec = minimum_audio_start - audio_start
+                    audio_start += shift_sec
+                    audio_end += shift_sec
+                audio_end = max(audio_start, float(audio_end or 0.0))
+                scene_start = max(previous_scene_end, audio_start - (DEFAULT_SCENE_IMAGE_LEAD_SEC + DEFAULT_SCENE_CAPTION_LEAD_SEC))
+                caption_start = max(scene_start + DEFAULT_SCENE_IMAGE_LEAD_SEC, audio_start - DEFAULT_SCENE_CAPTION_LEAD_SEC)
+                caption_end = max(caption_start, audio_end)
+                scene_end = max(audio_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC, caption_end + DEFAULT_SCENE_AUDIO_MARGIN_SEC)
+
+            caption_blocks: List[Dict[str, Any]] = []
+            if sync_items:
+                for block_index, item in enumerate(sync_items):
+                    block_start = max(scene_start, float(item.get("global_start") or audio_start))
+                    block_end = max(block_start, float(item.get("global_end") or audio_end))
+                    caption_blocks.append({
+                        "block_index": int(item.get("block_index") or block_index),
+                        "caption": str(item.get("caption") or clean_text).strip(),
+                        "start": round(max(0.0, block_start - scene_start), 3),
+                        "end": round(max(0.0, block_end - scene_start), 3),
+                        "global_start": round(block_start, 3),
+                        "global_end": round(block_end, 3),
+                        "source": "audio_timeline",
+                    })
+            elif clean_text:
+                caption_blocks.append({
+                    "block_index": 0,
+                    "caption": clean_text,
+                    "start": round(max(0.0, caption_start - scene_start), 3),
+                    "end": round(max(0.0, caption_end - scene_start), 3),
+                    "global_start": round(caption_start, 3),
+                    "global_end": round(caption_end, 3),
+                    "source": "scene_text_fallback",
+                })
+
+            entry = {
+                "scene": idx + 1,
+                "kind": "story",
+                "text": clean_text,
+                "audio_start": round(audio_start, 3),
+                "audio_end": round(audio_end, 3),
+                "scene_start": round(scene_start, 3),
+                "scene_end": round(scene_end, 3),
+                "caption_start": round(caption_start, 3),
+                "caption_end": round(caption_end, 3),
+                "image": "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": bool(sync_items and timeline_source != "text_fallback"),
+                "synthetic_timeline_shift_sec": round(shift_sec, 3),
+                "caption_blocks": caption_blocks,
+            }
+            official_timeline.append(entry)
+            previous_scene_end = float(entry["scene_end"])
+
+        if pause_before_cta_sec > 0 or cta_duration > 0:
+            cta_audio_start = previous_scene_end + pause_before_cta_sec
+            cta_audio_end = cta_audio_start + cta_duration
+            cta_scene_end = cta_audio_end + (DEFAULT_SCENE_AUDIO_MARGIN_SEC if cta_duration > 0 else 0.0)
+            official_timeline.append({
+                "scene": scene_count + 1,
+                "kind": "closing",
+                "text": self._normalize_tts_text(cta_text or ""),
+                "audio_start": round(cta_audio_start, 3),
+                "audio_end": round(cta_audio_end, 3),
+                "scene_start": round(previous_scene_end, 3),
+                "scene_end": round(cta_scene_end, 3),
+                "caption_start": round(cta_audio_start, 3),
+                "caption_end": round(cta_audio_end, 3),
+                "image": closing_image or "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": False,
+                "caption_blocks": [{
+                    "block_index": 0,
+                    "caption": self._normalize_tts_text(cta_text or ""),
+                    "start": round(max(0.0, cta_audio_start - previous_scene_end), 3),
+                    "end": round(max(0.0, cta_audio_end - previous_scene_end), 3),
+                    "global_start": round(cta_audio_start, 3),
+                    "global_end": round(cta_audio_end, 3),
+                    "source": "cta_timeline",
+                }] if str(cta_text or "").strip() and cta_duration > 0 else [],
+            })
+            previous_scene_end = cta_scene_end
+
+        if end_duration > 0:
+            official_timeline.append({
+                "scene": scene_count + 2,
+                "kind": "endcard",
+                "text": "",
+                "audio_start": round(previous_scene_end, 3),
+                "audio_end": round(previous_scene_end, 3),
+                "scene_start": round(previous_scene_end, 3),
+                "scene_end": round(previous_scene_end + end_duration, 3),
+                "caption_start": round(previous_scene_end, 3),
+                "caption_end": round(previous_scene_end, 3),
+                "image": closing_image or "",
+                "transition": transition_name,
+                "timeline_source": timeline_source,
+                "uses_real_audio_timing": False,
+                "caption_blocks": [],
+            })
+
+        return official_timeline
+
+    def review_plan(self, plan: dict):
+        if not isinstance(plan, dict):
+            return plan
+        scenes = plan.get("scenes") or []
+        if not isinstance(scenes, list) or not scenes:
+            return plan
+        notes = []
+        for i, s in enumerate(scenes):
+            if not isinstance(s, dict):
+                continue
+            txt = (s.get("text") or "").strip()
+            clean = self._clean_text(txt)
+            cap = (s.get("caption") or s.get("on_screen_text") or "").strip()
+            if not cap:
+                cap = clean if len(clean) <= 220 else self._make_caption(clean)
+                s["caption"] = cap
+                notes.append(f"caption_auto:cena_{i+1}")
+            elif len(cap) > 220:
+                s["caption"] = self._make_caption(cap)
+                notes.append(f"caption_trunc:cena_{i+1}")
+        plan["scenes"] = scenes
+        if notes:
+            plan["review_notes"] = notes
+        return plan
+
+    def _clean_text(self, text):
+        """Limpa o texto de metadados, instruções de roteiro e markdown"""
+        if not text: return ""
+        
+        # 1. Remove Markdown Bold (**text**) -> text (keep content, remove markers)
+        text = text.replace("**", "")
+
+        raw = (text or "").strip()
+        if "```" in raw:
+            t = raw
+            if "```json" in t:
+                try:
+                    t = t.split("```json", 1)[1]
+                except Exception:
+                    t = t
+            try:
+                t = t.split("```", 1)[1] if t.strip().startswith("```") else t
+            except Exception:
+                t = t
+            try:
+                t = t.rsplit("```", 1)[0]
+            except Exception:
+                t = t
+            raw = t.strip() or raw
+
+        if raw.startswith("{") or raw.startswith("["):
+            try:
+                import json
+
+                data = json.loads(raw)
+
+                def pick_str(d: dict, keys: list):
+                    for k in keys:
+                        v = d.get(k)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+                    return None
+
+                parts = []
+                if isinstance(data, dict):
+                    title = pick_str(data, ["title", "titulo"])
+                    if title:
+                        parts.append(title)
+                    sections = data.get("sections")
+                    if isinstance(sections, list):
+                        for s in sections:
+                            if isinstance(s, dict):
+                                seg = pick_str(s, ["content", "text", "narration", "narration_text"])
+                                if seg:
+                                    parts.append(seg)
+                    scenes = data.get("scenes")
+                    if isinstance(scenes, list):
+                        for s in scenes:
+                            if isinstance(s, dict):
+                                seg = pick_str(s, ["text", "narration", "narration_text", "content"])
+                                if seg:
+                                    parts.append(seg)
+                    script_full = pick_str(data, ["script_full", "script", "content", "text", "narration_text", "narration"])
+                    if script_full:
+                        parts.append(script_full)
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, str) and item.strip():
+                            parts.append(item.strip())
+                        elif isinstance(item, dict):
+                            seg = pick_str(item, ["content", "text", "narration", "narration_text"])
+                            if seg:
+                                parts.append(seg)
+
+                extracted = "\n\n".join([p for p in parts if isinstance(p, str) and p.strip()]).strip()
+                if extracted:
+                    text = extracted
+            except Exception:
+                pass
+        
+        # 2. Remove Script Prefixes
+        # "Narrador:", "Cena 1:", "Imagem:"
+        text = re.sub(r'^(Narrador|Narrator|Cena|Scene|Imagem|Visual)(\s+\d+)?\s*[:.-]\s*', '', text, flags=re.IGNORECASE)
+        
+        # 3. Remove Instructions in Brackets [Visual: ...] or [Sound: ...]
+        text = re.sub(r'\[.*?\]', '', text)
+        
+        # 4. Remove Instructions in Parentheses that look like metadata
+        # Removes (Music: ...), (Visual: ...), (Tone: ...)
+        text = re.sub(r'\((Music|Visual|Sound|Tone|Credit|Source).*?\)', '', text, flags=re.IGNORECASE)
+        
+        # 5. Remove explicit credits lines
+        text = re.sub(r'^Music:.*$', '', text, flags=re.MULTILINE|re.IGNORECASE)
+        text = re.sub(r'^Credits:.*$', '', text, flags=re.MULTILINE|re.IGNORECASE)
+
+        return text.strip()
+
+    def _clean_title(self, title: str) -> str:
+        t = (title or "").strip()
+        if not t:
+            return "Música"
+        t = re.sub(r"\s*[-–—|:]\s*$", "", t).strip()
+        t = re.sub(r"(\s*[-–—|:]?\s*E\.?MA\.?\s*)$", "", t, flags=re.IGNORECASE).strip()
+        return t or "Música"
+
+    def generate_audio(
+        self,
+        text,
+        lang='pt',
+        voice_style=None,
+        voice_gender=None,
+        status_callback: Optional[Callable[[str], None]] = None,
+        segment_label: str = "narração",
+        premium_voice_required: bool = False,
+    ):
+        """Gera arquivo de áudio usando OpenAI (Human-like), Edge-TTS (Natural Free) ou gTTS (Fallback)"""
+        if not text or not text.strip(): 
+            print("Aviso: Texto vazio para generate_audio")
+            return None
+        
+        # Limpeza de segurança para evitar leitura de metadados
+        clean_text = self._normalize_tts_text(text)
+        if not clean_text: 
+            print("Aviso: Texto ficou vazio após limpeza em generate_audio")
+            return None
+
+        style = (voice_style or "human").lower()
+        gender = (voice_gender or "female").lower()
+        tts_debug: Dict[str, Any] = {
+            "configured_provider": None,
+            "provider_used": None,
+            "fallback_used": False,
+            "ffprobe_available": self._is_ffprobe_available(),
+            "requested_voice_style": style,
+            "requested_voice_gender": gender,
+            "premium_voice_required": bool(premium_voice_required),
+            "fallback_blocked": False,
+            "input_char_count": len(clean_text),
+            "input_word_count": len(re.findall(r"\w+", clean_text, flags=re.UNICODE)),
+            "attempts": [],
+        }
+        self._last_tts_debug = tts_debug
+
+        cache_fingerprint = hashlib.sha256(
+            "\n".join([
+                clean_text,
+                str(lang or ""),
+                style,
+                gender,
+                "premium_required" if premium_voice_required else "fallback_allowed",
+            ]).encode("utf-8")
+        ).hexdigest()[:32]
+        cache_path = os.path.join(self.output_dir, f"tts_cache_{cache_fingerprint}.mp3")
+
+        def _valid_audio(path: str, minimum_size: int = 500) -> tuple:
+            if not path or not os.path.exists(path):
+                return False, 0.0
+            # A IA Crítica pode rejeitar um áudio depois de ele ter sido salvo
+            # no cache. O sidecar impede a reutilização infinita desse arquivo.
+            if os.path.isfile(f"{path}.codexia-rejected"):
+                return False, 0.0
+            try:
+                if int(os.path.getsize(path) or 0) <= minimum_size:
+                    return False, 0.0
+                duration = float(self._ffprobe_duration_seconds(path) or 0.0)
+                return duration > 0.2, duration
+            except Exception:
+                return False, 0.0
+
+        cached_ok, cached_duration = _valid_audio(cache_path)
+        if cached_ok:
+            tts_debug.update({
+                "provider_used": "preserved_tts_cache",
+                "fallback_used": False,
+                "cache_hit": True,
+                "final_audio_duration_sec": round(cached_duration, 2),
+                "output_path": cache_path,
+            })
+            tts_debug["attempts"] = [{
+                "provider": "preserved_tts_cache",
+                "status": "success",
+                "reason": "Áudio idêntico já estava preservado; nenhuma chamada de provedor foi repetida.",
+            }]
+            if status_callback:
+                status_callback(f"Gerando {segment_label} — reutilizando áudio preservado...")
+            return cache_path
+
+        def _record_attempt(provider: str, status: str, reason: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
+            item: Dict[str, Any] = {"provider": provider, "status": status}
+            if reason:
+                item["reason"] = str(reason)[:500]
+            if details:
+                item["details"] = details
+            tts_debug.setdefault("attempts", []).append(item)
+        
+        print(f"Gerando áudio para: '{clean_text[:30]}...' (Style: {style}, Gender: {gender})")
+        
+        openai_voice = None
+        if self.ai_service and hasattr(self.ai_service, "select_tts_voice_hint"):
+            try:
+                openai_voice = self.ai_service.select_tts_voice_hint(
+                    voice_style=style,
+                    voice_gender=gender,
+                )
+            except Exception:
+                openai_voice = None
+        if not openai_voice:
+            openai_voice = "onyx"
+            if style in ["my_voice", "myvoice", "minha_voz", "minhavoz"]:
+                openai_voice = "my_voice"
+            elif style in ["human", "humana"] or style.startswith("human"):
+                openai_voice = "onyx" if gender == "male" else "nova"
+            elif style in ["soft", "soft_prayer", "soft-relaxing", "suave", "suave_relaxante"]:
+                openai_voice = "echo" if gender == "male" else "nova"
+            elif style in ["child", "infantil"]:
+                openai_voice = "echo" if gender == "male" else "shimmer"
+            elif style in ["angelic", "angelical"]:
+                openai_voice = "fable"
+            elif style in ["robotic", "robotica", "robótica"]:
+                openai_voice = None
+        tts_debug["requested_voice_hint"] = openai_voice
+
+        def _infer_voice_settings(txt: str, is_male: bool, style_tag: str) -> dict:
+            t = (txt or "").lower()
+            excls = t.count("!")
+            qmarks = t.count("?")
+            stress_words = [
+                "meu deus", "pelo amor", "socorro", "urgente", "não acredito", "nao acredito",
+                "absurdo", "tá doido", "ta doido", "sério", "serio", "para", "pare",
+                "calma", "relaxa", "mentira", "que isso", "que é isso", "não", "nao",
+            ]
+            drama_hits = sum(1 for w in stress_words if w in t)
+            excited = excls >= 2 or "!!" in (txt or "") or "??" in (txt or "")
+            skeptical = qmarks >= 1 and ("como" in t or "por quê" in t or "porque" in t)
+            tag = (style_tag or "").lower()
+            base_style = 0.16
+            base_stability = 0.74
+            if excited or drama_hits >= 2:
+                base_style = 0.24
+                base_stability = 0.64
+            elif drama_hits >= 1 or skeptical:
+                base_style = 0.20
+                base_stability = 0.68
+            if "calma" in t or "relaxa" in t:
+                base_style = 0.10
+                base_stability = 0.84
+            if any(k in tag for k in ["soft", "suave", "relax", "prayer", "oração", "oracao", "meditat"]):
+                base_style = 0.09
+                base_stability = 0.88
+            if "young" in tag or "jovem" in tag:
+                base_style = min(0.30, base_style + 0.04)
+            if "mature" in tag or "madura" in tag or "indign" in tag or "angel" in tag:
+                base_stability = min(0.88, base_stability + 0.06)
+                base_style = max(0.08, min(base_style, 0.18))
+            if not is_male:
+                base_style = min(0.28, base_style + 0.02)
+            return {
+                "stability": float(max(0.55, min(0.90, base_stability))),
+                "similarity_boost": 0.9,
+                "style": float(max(0.08, min(0.32, base_style))),
+                "use_speaker_boost": True,
+            }
+
+        def _infer_edge_prosody(txt: str, is_male: bool, style_tag: str) -> tuple:
+            t = (txt or "").lower()
+            excls = t.count("!")
+            qmarks = t.count("?")
+            drama = any(k in t for k in ["meu deus", "pelo amor", "socorro", "absurdo", "não acredito", "nao acredito"])
+            calm = any(k in t for k in ["calma", "relaxa", "devagar"])
+            tag = (style_tag or "").lower()
+            rate = "+0%"
+            pitch = "+0Hz"
+            if calm:
+                rate = "-4%"
+                pitch = "-2Hz" if is_male else "-1Hz"
+            elif drama or excls >= 2:
+                rate = "+6%"
+                pitch = "+2Hz" if not is_male else "+1Hz"
+            elif qmarks >= 1:
+                rate = "+3%"
+                pitch = "+1Hz"
+            if "young" in tag or "jovem" in tag:
+                rate = "+4%" if rate == "+0%" else rate
+                pitch = "+2Hz" if not is_male else "+1Hz"
+            if "mature" in tag or "madura" in tag:
+                rate = "-2%" if rate == "+0%" else rate
+                pitch = "-2Hz" if is_male else "-1Hz"
+            if any(k in tag for k in ["soft", "suave", "relax", "prayer", "oração", "oracao", "meditat"]):
+                rate = "-10%"
+                pitch = "-2Hz" if is_male else "-1Hz"
+            volume = "+0%"
+            if calm:
+                volume = "-4%"
+            elif drama or excls >= 2:
+                volume = "+4%"
+            elif qmarks >= 1:
+                volume = "+2%"
+            if any(k in tag for k in ["soft", "suave", "relax", "prayer", "oração", "oracao", "meditat"]):
+                volume = "-6%"
+            return rate, pitch, volume
+
+        def _edge_ssml(txt: str, voice_name: str, rate: str, pitch: str, volume: str, lang_tag: str) -> str:
+            import html
+            t = (txt or "").strip()
+            if not t:
+                t = "..."
+            t = t.replace("...", "…")
+            parts = re.split(r"([,.;:!?…]+)", t)
+            out = []
+            for p in parts:
+                if not p:
+                    continue
+                if re.fullmatch(r"[,.;:!?…]+", p):
+                    out.append(html.escape(p))
+                    ms = 120 if "," in p else 220
+                    if "…" in p:
+                        ms = 520
+                    elif "!" in p:
+                        ms = 320
+                    elif "?" in p:
+                        ms = 280
+                    elif any(ch in p for ch in ".;:"):
+                        ms = 240
+                    out.append(f'<break time="{ms}ms"/>')
+                else:
+                    out.append(html.escape(p))
+            body = "".join(out)
+            return (
+                f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang_tag}">'
+                f'<voice name="{voice_name}">'
+                f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{body}</prosody>'
+                f"</voice></speak>"
+            )
+
+        # 1. ElevenLabs/OpenAI TTS (ai_service tenta ElevenLabs primeiro, depois OpenAI)
+        # Importante: não depende de OPENAI_API_KEY para usar ElevenLabs.
+        if openai_voice and self.ai_service and hasattr(self.ai_service, "generate_audio"):
+            if status_callback:
+                status_callback(f"Gerando {segment_label} — iniciando provedor de voz...")
+            try:
+                print(f"Tentando TTS premium ({openai_voice})...")
+                voice_settings = _infer_voice_settings(clean_text, is_male=(gender == "male"), style_tag=style)
+                audio_content = None
+                if hasattr(self.ai_service, "generate_audio_with_diagnostics"):
+                    with _narration_activity_pulse(
+                        status_callback,
+                        f"Gerando {segment_label} — aguardando provedor de voz...",
+                    ):
+                        premium_debug = self.ai_service.generate_audio_with_diagnostics(
+                            clean_text,
+                            voice=openai_voice,
+                            voice_settings=voice_settings,
+                            activity_callback=status_callback,
+                            allow_provider_fallback=not bool(premium_voice_required),
+                        )
+                    if isinstance(premium_debug, dict):
+                        for key, value in premium_debug.items():
+                            if key not in {"attempts", "audio_content"}:
+                                tts_debug[key] = value
+                        for attempt in premium_debug.get("attempts") or []:
+                            if isinstance(attempt, dict):
+                                tts_debug.setdefault("attempts", []).append(dict(attempt))
+                        audio_content = premium_debug.get("audio_content")
+                else:
+                    with _narration_activity_pulse(
+                        status_callback,
+                        f"Gerando {segment_label} — aguardando provedor de voz...",
+                    ):
+                        audio_content = self.ai_service.generate_audio(
+                            clean_text,
+                            voice=openai_voice,
+                            voice_settings=voice_settings,
+                        )
+                    if audio_content:
+                        tts_debug["provider_used"] = "premium_unknown"
+                        _record_attempt("premium_unknown", "success", "Audio gerado via ai_service sem diagnostico detalhado.")
+                if audio_content:
+                    path = os.path.join(self.output_dir, f"tts_tmp_{uuid.uuid4().hex}.mp3")
+                    with open(path, "wb") as f:
+                        f.write(audio_content)
+                    dur = 0.0
+                    try:
+                        dur = float(self._ffprobe_duration_seconds(path) or 0)
+                    except Exception:
+                        dur = 0.0
+                    if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
+                        os.replace(path, cache_path)
+                        path = cache_path
+                        try:
+                            os.remove(f"{cache_path}.codexia-rejected")
+                        except FileNotFoundError:
+                            pass
+                        tts_debug["provider_used"] = tts_debug.get("provider_used") or "premium_unknown"
+                        tts_debug["cache_hit"] = False
+                        tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                        tts_debug["output_path"] = path
+                        print(f"TTS premium sucesso: {path} ({dur:.2f}s)")
+                        return path
+                    _record_attempt(
+                        str(tts_debug.get("provider_used") or "premium_unknown"),
+                        "failed",
+                        "Provider retornou bytes, mas o arquivo salvo ficou invalido.",
+                        {"duration_sec": round(float(dur or 0.0), 2)},
+                    )
+                    try:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                _record_attempt("premium_pipeline", "failed", str(e))
+                print(f"TTS premium falhou, tentando fallback: {e}")
+
+        if premium_voice_required:
+            tts_debug["fallback_blocked"] = True
+            tts_debug["fallback_used"] = False
+            tts_debug["error_summary"] = (
+                str(tts_debug.get("error_summary") or "").strip()
+                or "O provedor premium configurado não conseguiu gerar a narração."
+            )
+            self._last_tts_debug = tts_debug
+            if status_callback:
+                status_callback(
+                    f"Gerando {segment_label} — voz premium indisponível; fallback gratuito bloqueado."
+                )
+            raise RuntimeError(
+                "Voz premium obrigatória indisponível. "
+                + self._summarize_tts_failure(tts_debug)
+                + " Fallback Edge TTS/gTTS bloqueado pelo contrato do Codexia V2."
+            )
+
+        # 3. Edge TTS (Qualidade Natural Gratuita - Microsoft)
+        if style not in ["robotic", "robotica", "robótica"]:
+            if status_callback:
+                status_callback(f"Gerando {segment_label} — preparando fallback gratuito Edge TTS...")
+            try:
+                print("Tentando Edge TTS...")
+                import edge_tts
+                import asyncio
+                import threading
+                
+                if lang == 'pt':
+                    if gender == "male":
+                        voice = "pt-BR-AntonioNeural"
+                    else:
+                        voice = "pt-BR-FranciscaNeural"
+                    lang_tag = "pt-BR"
+                else:
+                    if gender == "male":
+                        voice = "en-US-ChristopherNeural"
+                    else:
+                        voice = "en-US-JennyNeural"
+                    lang_tag = "en-US"
+
+                path = os.path.join(self.output_dir, f"tts_edge_tmp_{uuid.uuid4().hex}.mp3")
+                rate, pitch, volume = _infer_edge_prosody(clean_text, is_male=(gender == "male"), style_tag=style)
+                edge_timeout = _bounded_timeout_seconds("NARRATION_EDGE_TTS_TIMEOUT_SECONDS", 90)
+                edge_error: Dict[str, Any] = {}
+
+                async def _run_edge_tts():
+                    # A biblioteca edge-tts recebe texto puro e aplica a
+                    # prosódia pelos argumentos próprios. Enviar SSML como
+                    # texto pode fazê-la narrar marcação/código.
+                    communicate = edge_tts.Communicate(
+                        clean_text,
+                        voice,
+                        rate=rate,
+                        pitch=pitch,
+                        volume=volume,
+                    )
+                    await asyncio.wait_for(communicate.save(path), timeout=edge_timeout)
+
+                def _edge_worker():
+                    try:
+                        asyncio.run(_run_edge_tts())
+                    except Exception as exc:
+                        edge_error["error"] = exc
+
+                with _narration_activity_pulse(
+                    status_callback,
+                    f"Gerando {segment_label} — fallback gratuito Edge TTS...",
+                ):
+                    t = threading.Thread(target=_edge_worker, name="edge-tts", daemon=True)
+                    t.start()
+                    t.join(timeout=edge_timeout + 5)
+                if t.is_alive():
+                    raise TimeoutError(f"Edge TTS excedeu {edge_timeout}s")
+                if edge_error.get("error"):
+                    raise edge_error["error"]
+
+                ffprobe_available = bool(tts_debug.get("ffprobe_available"))
+                file_size = 0
+                if os.path.exists(path):
+                    try:
+                        file_size = int(os.path.getsize(path) or 0)
+                    except Exception:
+                        file_size = 0
+                dur = 0.0
+                try:
+                    dur = float(self._ffprobe_duration_seconds(path) or 0)
+                except Exception:
+                    dur = 0.0
+                estimated_dur = 0.0
+                used_estimated_duration = False
+                if file_size > 500 and dur <= 0.2 and not ffprobe_available:
+                    estimated_dur = float(
+                        self._estimate_text_duration_with_voice(
+                            clean_text,
+                            voice_style=style,
+                            voice_gender=gender,
+                        ) or 0.0
+                    )
+                    if estimated_dur > 0.2:
+                        used_estimated_duration = True
+                        dur = estimated_dur
+
+                if os.path.exists(path) and file_size > 500 and dur > 0.2:
+                    os.replace(path, cache_path)
+                    path = cache_path
+                    try:
+                        os.remove(f"{cache_path}.codexia-rejected")
+                    except FileNotFoundError:
+                        pass
+                    _record_attempt(
+                        "edge_tts",
+                        "success",
+                        "Fallback Edge TTS gerou audio valido.",
+                        {
+                            "duration_sec": round(float(dur or 0.0), 2),
+                            "duration_source": "estimated_from_text" if used_estimated_duration else "ffprobe",
+                            "measured_duration_sec": round(float(self._ffprobe_duration_seconds(path) or 0.0), 2) if ffprobe_available else 0.0,
+                            "estimated_duration_sec": round(float(estimated_dur or 0.0), 2) if used_estimated_duration else 0.0,
+                            "ffprobe_available": ffprobe_available,
+                            "file_size_bytes": file_size,
+                        },
+                    )
+                    tts_debug["provider_used"] = "edge_tts"
+                    tts_debug["fallback_used"] = True
+                    tts_debug["cache_hit"] = False
+                    tts_debug["edge_tts_file_size_bytes"] = file_size
+                    tts_debug["edge_tts_duration_source"] = "estimated_from_text" if used_estimated_duration else "ffprobe"
+                    tts_debug["edge_tts_measured_duration_sec"] = round(float(self._ffprobe_duration_seconds(path) or 0.0), 2) if ffprobe_available else 0.0
+                    tts_debug["edge_tts_estimated_duration_sec"] = round(float(estimated_dur or 0.0), 2) if used_estimated_duration else 0.0
+                    tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                    tts_debug["output_path"] = path
+                    print(f"Edge TTS sucesso: {path} ({dur:.2f}s)")
+                    return path
+                else:
+                    _record_attempt(
+                        "edge_tts",
+                        "failed",
+                        "Arquivo gerado invalido ou vazio.",
+                        {
+                            "duration_sec": round(float(dur or 0.0), 2),
+                            "duration_source": "estimated_from_text" if used_estimated_duration else "ffprobe",
+                            "estimated_duration_sec": round(float(estimated_dur or 0.0), 2),
+                            "ffprobe_available": ffprobe_available,
+                            "file_size_bytes": file_size,
+                        },
+                    )
+                    print(f"Edge TTS gerou arquivo vazio ou falhou (Size check failed). Path: {path}")
+            except Exception as e:
+                 _record_attempt("edge_tts", "failed", str(e))
+                 print(f"Edge TTS falhou: {e}")
+                 try:
+                     if "path" in locals() and str(path).startswith(str(self.output_dir)) and os.path.exists(path) and path != cache_path:
+                         os.remove(path)
+                 except Exception:
+                     pass
+
+        # 4. Fallback offline no Windows via System.Speech
+        if os.name == "nt":
+            try:
+                import base64
+                import subprocess
+
+                print("Tentando Fallback Windows SAPI...")
+                filename = f"{uuid.uuid4()}.wav"
+                path = os.path.join(self.output_dir, filename)
+                path_ps = path.replace("'", "''")
+                text_ps = clean_text.replace("'", "''")
+                desired_gender = "Male" if gender == "male" else "Female"
+                culture_prefix = "pt" if lang == "pt" else "en"
+                script = f"""
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$voice = $synth.GetInstalledVoices() |
+    ForEach-Object {{ $_.VoiceInfo }} |
+    Where-Object {{ $_.Culture.Name -like '{culture_prefix}*' -and $_.Gender.ToString() -eq '{desired_gender}' }} |
+    Select-Object -First 1
+if (-not $voice) {{
+    $voice = $synth.GetInstalledVoices() | ForEach-Object {{ $_.VoiceInfo }} | Select-Object -First 1
+}}
+if ($voice) {{
+    $synth.SelectVoice($voice.Name)
+}}
+$synth.Rate = 0
+$synth.Volume = 100
+$synth.SetOutputToWaveFile('{path_ps}')
+$synth.Speak('{text_ps}')
+$synth.Dispose()
+"""
+                encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+                proc = subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    raise Exception((proc.stderr or proc.stdout or "System.Speech retornou erro").strip())
+
+                dur = 0.0
+                try:
+                    dur = float(self._ffprobe_duration_seconds(path) or 0)
+                except Exception:
+                    dur = 0.0
+                if dur <= 0.2:
+                    dur = float(
+                        self._estimate_text_duration_with_voice(
+                            clean_text,
+                            voice_style=style,
+                            voice_gender=gender,
+                        ) or 0.0
+                    )
+                if os.path.exists(path) and os.path.getsize(path) > 1000 and dur > 0.2:
+                    _record_attempt("windows_sapi", "success", "Fallback offline local gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                    tts_debug["provider_used"] = "windows_sapi"
+                    tts_debug["fallback_used"] = True
+                    tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                    tts_debug["output_path"] = path
+                    print(f"Windows SAPI sucesso: {path} ({dur:.2f}s)")
+                    return path
+                _record_attempt("windows_sapi", "failed", "Arquivo WAV invalido ou vazio.", {"duration_sec": round(float(dur or 0.0), 2)})
+            except Exception as e:
+                _record_attempt("windows_sapi", "failed", str(e))
+                print(f"Windows SAPI falhou: {e}")
+
+        # 4. Fallback gTTS (Robótico)
+        if status_callback:
+            status_callback(f"Gerando {segment_label} — preparando fallback gratuito gTTS...")
+        try:
+            from gtts import gTTS
+            print("Tentando Fallback gTTS (Robótico)...")
+            tts = gTTS(text=clean_text, lang=lang)
+            path = os.path.join(self.output_dir, f"tts_gtts_tmp_{uuid.uuid4().hex}.mp3")
+            gtts_timeout = _bounded_timeout_seconds("NARRATION_GTTS_TIMEOUT_SECONDS", 90)
+            gtts_error: Dict[str, Any] = {}
+
+            def _gtts_worker():
+                try:
+                    tts.save(path)
+                except Exception as exc:
+                    gtts_error["error"] = exc
+
+            with _narration_activity_pulse(
+                status_callback,
+                f"Gerando {segment_label} — fallback gratuito gTTS...",
+            ):
+                t = threading.Thread(target=_gtts_worker, name="gtts", daemon=True)
+                t.start()
+                t.join(timeout=gtts_timeout)
+            if t.is_alive():
+                raise TimeoutError(f"gTTS excedeu {gtts_timeout}s")
+            if gtts_error.get("error"):
+                raise gtts_error["error"]
+            
+            # Verificação de segurança
+            dur = 0.0
+            try:
+                dur = float(self._ffprobe_duration_seconds(path) or 0)
+            except Exception:
+                dur = 0.0
+            if os.path.exists(path) and os.path.getsize(path) > 100 and dur > 0.2:
+                os.replace(path, cache_path)
+                path = cache_path
+                try:
+                    os.remove(f"{cache_path}.codexia-rejected")
+                except FileNotFoundError:
+                    pass
+                _record_attempt("gtts", "success", "Fallback gTTS gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                tts_debug["provider_used"] = "gtts"
+                tts_debug["fallback_used"] = True
+                tts_debug["cache_hit"] = False
+                tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
+                tts_debug["output_path"] = path
+                print(f"gTTS sucesso: {path} ({dur:.2f}s)")
+                return path
+            else:
+                 _record_attempt("gtts", "failed", "Arquivo gerado vazio ou invalido.", {"duration_sec": round(float(dur or 0.0), 2)})
+                 tts_debug["error_summary"] = self._summarize_tts_failure(tts_debug)
+                 print("gTTS gerou arquivo vazio.")
+                 return None
+        except Exception as e:
+            _record_attempt("gtts", "failed", str(e))
+            tts_debug["error_summary"] = self._summarize_tts_failure(tts_debug)
+            print(f"Erro no TTS Final (gTTS): {e}")
+            try:
+                if "path" in locals() and os.path.exists(path) and path != cache_path:
+                    os.remove(path)
+            except Exception:
+                pass
+            return None
+
+    def download_image(self, url, retries=3, timeout=20):
+        import time
+        try:
+            import imghdr
+        except ImportError:
+            imghdr = None
+        
+        for attempt in range(retries):
+            try:
+                print(f"Baixando imagem de: {url[:50]}... (Tentativa {attempt+1}/{retries}, timeout={timeout}s)")
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                }
+                response = requests.get(url, headers=headers, stream=True, timeout=timeout)
+                
+                if response.status_code == 200:
+                    filename = f"genimg_{uuid.uuid4().hex}.png"
+                    filepath = os.path.join(self.generated_dir, filename)
+                    
+                    with open(filepath, 'wb') as f:
+                        for chunk in response.iter_content(4096):
+                            f.write(chunk)
+                
+                    # Verificação de tamanho
+                    file_size = os.path.getsize(filepath)
+                    if file_size < 1000: # 1KB mínimo
+                        print(f"AVISO: Imagem muito pequena ({file_size} bytes). Ignorando.")
+                        try: os.remove(filepath)
+                        except: pass
+                        continue
+                        
+                    # Verificação de tipo de arquivo (Header)
+                    try:
+                        img_type = None
+                        if imghdr:
+                            img_type = imghdr.what(filepath)
+                            
+                        if not img_type and not filepath.lower().endswith('.svg'):
+                            # Tenta abrir com PIL para confirmar
+                            from PIL import Image
+                            try:
+                                with Image.open(filepath) as img:
+                                    img.verify()
+                            except:
+                                print(f"AVISO: Arquivo baixado não é imagem válida. Ignorando.")
+                                try: os.remove(filepath)
+                                except: pass
+                                continue
+                    except:
+                        pass
+                    
+                    return filepath
+                elif response.status_code in [502, 503, 504, 429]:
+                    print(f"Erro temporário ({response.status_code}). Retentando em 2s...")
+                    time.sleep(2)
+                    continue
+                else:
+                    print(f"Falha ao baixar imagem. Status: {response.status_code}")
+                    # Se for 403/404, não adianta tentar muito
+                    if response.status_code in [403, 404]:
+                        break
+            except Exception as e:
+                print(f"Erro ao baixar imagem: {e}")
+                time.sleep(1)
+        
+        return None
+
+    def _generate_fallback_background(self, size):
+        """Gera um fundo gradiente/texturizado localmente quando tudo falha"""
+        try:
+            from PIL import Image, ImageDraw
+            import random
+            
+            width, height = size
+            # Cria imagem base
+            img = Image.new('RGB', (width, height), color=(20, 20, 20))
+            draw = ImageDraw.Draw(img)
+            
+            # Cores com contraste e luminosidade média para evitar aspecto de tela preta.
+            color_top = (random.randint(90, 150), random.randint(90, 160), random.randint(120, 210))
+            color_bottom = (random.randint(30, 90), random.randint(30, 90), random.randint(60, 130))
+            
+            # Desenha gradiente vertical (linha por linha para simplicidade sem numpy)
+            # Para performance em 1080p, desenhamos em baixa resolução e redimensionamos
+            small_h = 256
+            small_w = int(width * (small_h / height))
+            small_img = Image.new('RGB', (small_w, small_h))
+            small_draw = ImageDraw.Draw(small_img)
+            
+            for y in range(small_h):
+                ratio = y / small_h
+                r = int(color_top[0] + (color_bottom[0] - color_top[0]) * ratio)
+                g = int(color_top[1] + (color_bottom[1] - color_top[1]) * ratio)
+                b = int(color_top[2] + (color_bottom[2] - color_top[2]) * ratio)
+                small_draw.line([(0, y), (small_w, y)], fill=(r, g, b))
+            
+            # Redimensiona para tamanho final com suavização
+            img = small_img.resize((width, height), Image.BICUBIC)
+            
+            filename = f"genbg_{uuid.uuid4().hex}.png"
+            filepath = os.path.join(self.generated_dir, filename)
+            img.save(filepath)
+            return filepath
+        except Exception as e:
+            print(f"Erro ao gerar fundo local: {e}")
+            return None
+
+    def _generate_local_background(self, text_fallback="", aspect_ratio="9:16"):
+        """Compat shim: gera um fundo local simples quando a IA de imagem falha."""
+        try:
+            ratio = str(aspect_ratio or "9:16").strip()
+            size = (1280, 720) if ratio == "16:9" else (720, 1280)
+            return self._generate_fallback_background(size)
+        except Exception as e:
+            print(f"Erro ao gerar background local compatível: {e}")
+            return None
+
+    def _ensure_image_for_scene(
+        self,
+        prompt,
+        text_fallback,
+        aspect_ratio="9:16",
+        status_callback=None,
+        max_rounds=2,
+        allow_non_ai_fallback=False,
+        paid_call_guard=None,
+    ):
+        """
+        Gera imagem por IA usando OpenAI e retorna o motivo exato quando falha.
+        """
+
+        def notify(msg):
+            if status_callback:
+                try:
+                    status_callback(msg)
+                except Exception:
+                    pass
+
+        if not prompt and text_fallback:
+            prompt = f"Photorealistic cinematic photography representing this narration: {text_fallback[:220]}"
+
+        base_prompt = (prompt or "").strip()
+        if not base_prompt:
+            raise Exception("Sem prompt de imagem válido para esta cena.")
+        norm_bp = (base_prompt or "").strip().lower()
+        strict_worship = any(k in norm_bp for k in ["christian", "worship", "gospel", "louvor", "jesus", "cristo", "cruz", "calvario", "golgota"])
+        combined_identity_text = f"{base_prompt} {text_fallback or ''}".strip()
+        has_jesus = bool(
+            re.search(
+                r"(?<!\w)(?:jesus(?:\s+christ)?|cristo|christ)(?!\w)",
+                self._fold_text_for_matching(combined_identity_text),
+            )
+        )
+        parts = [
+            f"{base_prompt}. ",
+            "Biblical cinematic realism, elegant composition, natural light, family-friendly, visually coherent with the narration. ",
+        ]
+        if strict_worship:
+            parts.append("Respectful gospel atmosphere. ")
+        if has_jesus:
+            parts.append(
+                "Identity lock for Jesus Christ: whenever Jesus is explicitly present, portray the same adult Middle Eastern Jewish man from first-century Judea, with clearly masculine presentation, shoulder-length dark brown hair, a natural full beard, a simple cream tunic, and a brown mantle; never gender-swap Jesus or portray Jesus as a woman. "
+            )
+        parts += [
+            "Character identity lock: keep each person's face, age, presentation, hair, wardrobe, and facial-hair pattern internally coherent and distinct from every other character. ",
+            "Do not accidentally copy a moustache or beard from a male character onto a female character, and do not merge facial traits between people. ",
+            "Prefer medium or wide shot, realistic humans, natural anatomy, subtle emotion, professional color palette. ",
+            "Avoid extreme facial close-up. No text, watermark or logo. ",
+            "Negative prompt: horror, gore, occult, demons, skulls, cemetery, dystopian, sci-fi, robots, distorted anatomy, extra limbs, uncanny faces, gender-swapped Jesus, female Jesus, inconsistent character identity, moustache or beard copied onto a female character, mixed facial identity traits.",
+        ]
+        final_prompt = "".join(parts)
+        self._last_image_prompt_debug = {
+            "jesus_identity_lock_applied": has_jesus,
+            "character_identity_lock_applied": True,
+            "female_facial_hair_transfer_blocked": True,
+            "final_prompt_length": len(final_prompt),
+        }
+        if not self.ai_service:
+            raise Exception("AI Service não inicializado para geração de imagem.")
+
+        # Uma solicitação paga por cena. O retry é sempre explícito e reutiliza
+        # a mesma tarefa; não deixamos chamadas em threads continuarem depois de
+        # timeout, pois isso poderia gerar uma imagem cobrada e disparar outra.
+        _ = max_rounds  # compatibilidade com chamadas antigas; retries automáticos foram removidos.
+        try:
+            budget_state = paid_call_guard() if callable(paid_call_guard) else {}
+            budget_suffix = ""
+            if isinstance(budget_state, dict) and bool(budget_state.get("enabled")):
+                budget_suffix = (
+                    " Limite confirmado: imagem paga "
+                    f"{int(budget_state.get('used_new_image_calls') or 0)}/"
+                    f"{int(budget_state.get('allowed_new_image_calls') or 0)}."
+                )
+            notify("Gerando imagem com OpenAI (uma chamada protegida contra duplicação)..." + budget_suffix)
+            url = self.ai_service.generate_image(
+                final_prompt,
+                aspect_ratio=aspect_ratio,
+                providers=["openai_direct"],
+                status_callback=notify,
+            )
+            path = self._resolve_input_image_path(url) if url else None
+            if path and os.path.exists(path) and os.path.getsize(path) >= 1000:
+                return path
+            raise Exception("A OpenAI não retornou uma imagem utilizável.")
+        except Exception:
+            if allow_non_ai_fallback:
+                notify("A imagem por IA falhou. Usando fundo local autorizado para concluir sem nova cobrança...")
+                bg = self._generate_local_background(text_fallback=text_fallback, aspect_ratio=aspect_ratio)
+                if bg and os.path.exists(bg) and os.path.getsize(bg) > 1000:
+                    return bg
+            raise
+
+    def _set_clip_duration(self, clip, duration):
+        """Compatível com MoviePy 1.x (set_duration) e 2.x (with_duration)."""
+        if hasattr(clip, "with_duration"):
+            return clip.with_duration(duration)
+        return clip.set_duration(duration)
+
+    def _set_clip_start(self, clip, start):
+        """Compatível com MoviePy 1.x (set_start) e 2.x (with_start)."""
+        if hasattr(clip, "with_start"):
+            return clip.with_start(start)
+        return clip.set_start(start)
+
+    def _set_clip_audio(self, clip, audio_clip):
+        """Compatível com MoviePy 1.x (set_audio) e 2.x (with_audio)."""
+        if hasattr(clip, "with_audio"):
+            return clip.with_audio(audio_clip)
+        return clip.set_audio(audio_clip)
+
+    def _assert_clip_not_none(self, clip, label: str, meta: Optional[dict] = None):
+        if clip is None:
+            extra = ""
+            try:
+                if meta:
+                    extra = f" | meta={str(meta)[:600]}"
+            except Exception:
+                extra = ""
+            raise Exception(f"Clip None detectado: {label}{extra}")
+
+    def _clip_from_rgba(self, rgba_arr, duration, *, crop_transparent: bool = False):
+        try:
+            from moviepy.editor import ImageClip
+        except Exception:
+            from moviepy import ImageClip
+        position = None
+        if crop_transparent:
+            try:
+                alpha_source = rgba_arr[:, :, 3]
+                ys, xs = alpha_source.nonzero()
+                if len(xs) and len(ys):
+                    padding = 4
+                    x0 = max(0, int(xs.min()) - padding)
+                    x1 = min(int(rgba_arr.shape[1]), int(xs.max()) + padding + 1)
+                    y0 = max(0, int(ys.min()) - padding)
+                    y1 = min(int(rgba_arr.shape[0]), int(ys.max()) + padding + 1)
+                    rgba_arr = rgba_arr[y0:y1, x0:x1]
+                    position = (x0, y0)
+            except Exception:
+                position = None
+        rgb = rgba_arr[:, :, :3]
+        alpha = (rgba_arr[:, :, 3].astype("float32") / 255.0)
+        base = ImageClip(rgb)
+        mask = None
+        try:
+            mask = ImageClip(alpha, ismask=True)
+        except Exception:
+            try:
+                mask = ImageClip(alpha)
+            except Exception:
+                mask = None
+        if mask is not None:
+            if hasattr(base, "with_mask"):
+                base = base.with_mask(mask)
+            else:
+                base = base.set_mask(mask)
+        base = self._set_clip_duration(base, duration)
+        if position is not None:
+            base = self._clip_with_position(base, position)
+        if mask is not None:
+            try:
+                mask = self._set_clip_duration(mask, duration)
+            except Exception:
+                pass
+        return base
+
+    def _subclip(self, clip, start_t, end_t):
+        """Compatível com MoviePy 1.x/2.x e seus limites de ponto flutuante.
+
+        O MoviePy aplica o mesmo ``end_t`` ao vídeo, áudio e máscara. Depois de
+        concatenações, esses objetos podem terminar com diferenças inferiores
+        a um frame e o MoviePy rejeita o corte mesmo exibindo durações iguais
+        com duas casas decimais. Limitamos somente diferenças marginais; uma
+        divergência real continua sendo levantada pela própria biblioteca.
+        """
+        self._last_subclip_clamp_debug = None
+        try:
+            requested_value = float(end_t) if end_t is not None else None
+        except (TypeError, ValueError):
+            requested_value = None
+
+        if requested_value is not None:
+            component_durations = []
+            for name, component in (
+                ("clip", clip),
+                ("audio", getattr(clip, "audio", None)),
+                ("mask", getattr(clip, "mask", None)),
+            ):
+                try:
+                    duration = float(getattr(component, "duration", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    duration = 0.0
+                if duration > 0:
+                    component_durations.append((name, duration))
+
+            if component_durations:
+                limiting_component, available_end = min(
+                    component_durations,
+                    key=lambda item: item[1],
+                )
+                overshoot = requested_value - available_end
+                if 0.0 < overshoot <= 0.02:
+                    end_t = available_end
+                    self._last_subclip_clamp_debug = {
+                        "requested_end_sec": requested_value,
+                        "clamped_end_sec": available_end,
+                        "overshoot_sec": overshoot,
+                        "limiting_component": limiting_component,
+                    }
+
+        if hasattr(clip, "subclip"):
+            return clip.subclip(start_t, end_t)
+        if hasattr(clip, "subclipped"):
+            return clip.subclipped(start_t, end_t)
+        raise AttributeError("Objeto de clip sem subclip/subclipped")
+
+    def _synchronize_video_clip_duration(self, clip, target_duration: float):
+        """Fit a MoviePy clip to the final audio timeline without black frames.
+
+        Trims excess video or freezes the last valid frame when the visual
+        timeline is short.  The final explicit duration assignment avoids
+        MoviePy/container rounding from failing the pre-render validation.
+        """
+
+        self._assert_clip_not_none(clip, "duration_sync_input")
+        target = float(target_duration or 0.0)
+        current = float(getattr(clip, "duration", 0.0) or 0.0)
+        if target <= 0 or current <= 0:
+            raise Exception(
+                f"Duracao invalida no ajuste final: video={current:.3f}s alvo={target:.3f}s."
+            )
+
+        original_audio = getattr(clip, "audio", None)
+        action = "already_aligned"
+        adjusted = clip
+        delta_before = current - target
+
+        if current > target + 0.001:
+            adjusted = self._subclip(clip, 0, target)
+            action = "trim_video"
+        elif current < target - 0.001:
+            extra = target - current
+            hold = self._freeze_last_frame_clip(clip, extra)
+            if hold is None:
+                raise Exception(
+                    f"Nao foi possivel prolongar o ultimo frame por {extra:.3f}s."
+                )
+            try:
+                from moviepy.editor import concatenate_videoclips
+            except ImportError:
+                from moviepy import concatenate_videoclips
+            adjusted = concatenate_videoclips([clip, hold], method="compose")
+            action = "freeze_last_frame"
+
+        if original_audio is not None:
+            adjusted = self._set_clip_audio(adjusted, original_audio)
+        adjusted = self._set_clip_duration(adjusted, target)
+        obtained = float(getattr(adjusted, "duration", 0.0) or 0.0)
+        if abs(obtained - target) > 0.02:
+            raise Exception(
+                f"Ajuste final nao convergiu: video={obtained:.3f}s alvo={target:.3f}s."
+            )
+        return adjusted, {
+            "action": action,
+            "duration_before_sec": round(current, 3),
+            "target_duration_sec": round(target, 3),
+            "duration_after_sec": round(obtained, 3),
+            "delta_before_sec": round(delta_before, 3),
+            "delta_after_sec": round(obtained - target, 3),
+        }
+
+    def _apply_ken_burns(self, clip, size, zoom_factor=1.15):
+        """
+        Aplica efeito suave de zoom (Ken Burns) em um ImageClip.
+        """
+        try:
+            w, h = size
+            # Função de transformação para zoom
+            def resize_func(t):
+                # Zoom linear de 1.0 até zoom_factor ao longo da duração do clip
+                current_zoom = 1 + (zoom_factor - 1) * (t / clip.duration)
+                return current_zoom
+
+            # Aplica o resize animado e centraliza
+            # Nota: Isso pode ser custoso para processar. Se der timeout, simplificar.
+            # Alternativa mais leve: Apenas um crop variável se a imagem for maior que o vídeo
+            zoomed = clip.resized(resize_func) if hasattr(clip, "resized") else clip.resize(resize_func)
+            if hasattr(zoomed, "with_position"):
+                return zoomed.with_position('center')
+            return zoomed.set_position('center')
+        except Exception as e:
+            print(f"Erro ao aplicar Ken Burns: {e}")
+            return clip
+
+    def _clip_resize(self, clip, resize_value):
+        if hasattr(clip, "resized"):
+            return clip.resized(resize_value)
+        return clip.resize(resize_value)
+
+    def _clip_with_position(self, clip, position):
+        if hasattr(clip, "with_position"):
+            return clip.with_position(position)
+        return clip.set_position(position)
+
+    def _motion_plan_for_scene(self, scene_idx: int, total_scenes: int, reuse_count: int = 0, reused_visual: bool = False) -> Dict[str, Any]:
+        if reused_visual:
+            variants = [
+                "push_in", "push_out", "slow_zoom", "pan_left", "pan_right", "tilt_up", "tilt_down",
+                "drift", "parallax", "orbit_leve", "camera_breathing", "dolly_out",
+                "leve_handheld", "slow_rotation", "depth_movement", "foreground_parallax",
+                "rack_focus_digital",
+            ]
+        else:
+            variants = [
+                "push_in", "slow_zoom", "push_out", "pan_left", "pan_right",
+                "tilt_up", "dolly_in", "drift", "depth_movement",
+            ]
+        effect_name = variants[(scene_idx + reuse_count) % len(variants)]
+        zoom_factor = 1.06 + (((scene_idx + reuse_count) % 4) * 0.02)
+        if reused_visual:
+            zoom_factor = min(1.16, zoom_factor + 0.02)
+        return {
+            "name": effect_name,
+            "zoom_factor": zoom_factor,
+            "reused_visual": bool(reused_visual),
+            "scene_number": int(scene_idx) + 1,
+            "total_scenes": int(total_scenes),
+        }
+
+    def _plan_cinematic_visual_beats(
+        self,
+        duration_sec: float,
+        *,
+        max_hold_sec: float = DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC,
+    ) -> List[Dict[str, Any]]:
+        """Divide uma cena longa em cortes digitais sem gerar novas imagens.
+
+        Os cortes usam a mesma imagem com enquadramentos e movimentos diferentes.
+        Assim, a timeline oficial de áudio permanece intacta e não há nova chamada
+        a provedores pagos apenas para melhorar o ritmo visual.
+        """
+
+        duration = max(0.0, float(duration_sec or 0.0))
+        if duration <= 0:
+            return []
+        max_hold = max(3.0, float(max_hold_sec or DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC))
+        beat_count = max(1, int(math.ceil(duration / max_hold)))
+        beat_duration = duration / beat_count
+        beats: List[Dict[str, Any]] = []
+        cursor = 0.0
+        for beat_index in range(beat_count):
+            end = duration if beat_index == beat_count - 1 else min(duration, cursor + beat_duration)
+            beats.append({
+                "index": beat_index,
+                "start": round(cursor, 6),
+                "end": round(end, 6),
+                "duration": round(max(0.0, end - cursor), 6),
+            })
+            cursor = end
+        return beats
+
+    def _memory_safe_visual_hold_seconds(self, duration_sec: float) -> float:
+        """Limita a quantidade de composições simultâneas em vídeos longos.
+
+        O movimento cinematográfico continua em cada trecho; somente evitamos
+        manter dezenas de matrizes 720p extras em memória até o encode final.
+        """
+        duration = max(0.0, float(duration_sec or 0.0))
+        if duration < 5 * 60:
+            return DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC
+        try:
+            max_beats = int((os.getenv("VIDEO_LONG_MAX_VISUAL_BEATS") or "36").strip() or "36")
+        except Exception:
+            max_beats = 36
+        max_beats = max(24, min(72, max_beats))
+        return round(max(DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC, duration / max_beats), 3)
+
+    def _motion_plan_override_from_scene(self, scene: Dict[str, Any], default_plan: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        if not isinstance(scene, dict):
+            return default_plan
+        base = dict(default_plan or {})
+        raw_hint = " ".join(
+            str(value or "").strip()
+            for value in [
+                scene.get("motion_effect"),
+                scene.get("camera_movement"),
+                (scene.get("scene_card") or {}).get("camera_framing") if isinstance(scene.get("scene_card"), dict) else "",
+            ]
+            if str(value or "").strip()
+        ).lower()
+        if not raw_hint:
+            return default_plan
+
+        effect_name = ""
+        if any(term in raw_hint for term in ["push_in", "zoom in", "slow_zoom", "close-up", "close up"]):
+            effect_name = "push_in"
+        elif any(term in raw_hint for term in ["push_out", "zoom out", "dolly_out", "pull back"]):
+            effect_name = "dolly_out"
+        elif any(term in raw_hint for term in ["dolly_in", "reveal in"]):
+            effect_name = "dolly_in"
+        elif any(term in raw_hint for term in ["parallax", "depth", "crowd", "layered"]):
+            effect_name = "parallax"
+        elif any(term in raw_hint for term in ["pan left", "pan_left"]):
+            effect_name = "pan_left"
+        elif any(term in raw_hint for term in ["pan right", "pan_right"]):
+            effect_name = "pan_right"
+        elif any(term in raw_hint for term in ["tilt up", "tilt_up"]):
+            effect_name = "tilt_up"
+        elif any(term in raw_hint for term in ["tilt down", "tilt_down"]):
+            effect_name = "tilt_down"
+        elif any(term in raw_hint for term in ["handheld", "hand held"]):
+            effect_name = "leve_handheld"
+        elif any(term in raw_hint for term in ["drift", "float"]):
+            effect_name = "drift"
+        elif any(term in raw_hint for term in ["slow zoom", "zoom"]):
+            effect_name = "slow_zoom"
+
+        if not effect_name:
+            return default_plan
+        base["name"] = effect_name
+        base["requested_by_scene"] = True
+        if effect_name in {"push_in", "slow_zoom", "dolly_in"}:
+            base["zoom_factor"] = max(float(base.get("zoom_factor") or 1.08), 1.10)
+        elif effect_name in {"dolly_out", "push_out"}:
+            base["zoom_factor"] = max(float(base.get("zoom_factor") or 1.08), 1.08)
+        return base
+
+    def _apply_motion_effect(self, clip, size, motion_plan: Optional[Dict[str, Any]] = None):
+        plan = motion_plan or {}
+        effect_name = str(plan.get("name") or "zoom_in").strip().lower()
+        zoom_factor = float(plan.get("zoom_factor") or 1.10)
+        if effect_name in {"zoom_in", "push_in", "dolly_in", "slow_zoom"}:
+            return self._apply_ken_burns(clip, size, zoom_factor=zoom_factor)
+        try:
+            try:
+                from moviepy.editor import CompositeVideoClip
+            except ImportError:
+                from moviepy import CompositeVideoClip
+
+            width, height = size
+            duration = max(0.1, float(getattr(clip, "duration", 0) or 0.1))
+
+            def _progress(t: float) -> float:
+                try:
+                    return max(0.0, min(1.0, float(t) / duration))
+                except Exception:
+                    return 0.0
+
+            if effect_name in {"zoom_out", "dolly_out", "push_out"}:
+                start_zoom = max(1.08, zoom_factor + 0.05)
+                end_zoom = max(1.0, zoom_factor - 0.04)
+
+                def _resize_func(t: float):
+                    p = _progress(t)
+                    return start_zoom - ((start_zoom - end_zoom) * p)
+
+                zoomed = self._clip_resize(clip, _resize_func)
+                return self._clip_with_position(zoomed, "center")
+
+            resized = self._clip_resize(clip, zoom_factor)
+            extra_x = max(0.0, float(getattr(resized, "w", width) or width) - float(width))
+            extra_y = max(0.0, float(getattr(resized, "h", height) or height) - float(height))
+
+            def _position(t: float):
+                p = _progress(t)
+                if effect_name == "pan_left":
+                    return (-extra_x * p, -extra_y / 2.0)
+                if effect_name == "pan_right":
+                    return (-extra_x * (1.0 - p), -extra_y / 2.0)
+                if effect_name == "tilt_up":
+                    return (-extra_x / 2.0, -extra_y * p)
+                if effect_name == "tilt_down":
+                    return (-extra_x / 2.0, -extra_y * (1.0 - p))
+                if effect_name in {"parallax_soft", "parallax"}:
+                    return (-extra_x * (0.2 + (0.6 * p)), -extra_y * (0.15 + (0.3 * (1.0 - p))))
+                if effect_name == "drift_diag":
+                    return (-extra_x * (0.15 + (0.55 * p)), -extra_y * (0.15 + (0.45 * p)))
+                if effect_name in {"slow_drift", "drift"}:
+                    return (-extra_x * (0.1 + (0.35 * p)), -extra_y * 0.35)
+                if effect_name == "camera_breathing":
+                    breathe = math.sin(p * math.pi * 2.0) * 0.08
+                    return (-extra_x * (0.45 + breathe), -extra_y * (0.45 - breathe))
+                if effect_name in {"orbit_soft", "orbit_leve", "slow_rotation"}:
+                    orbit = math.sin(p * math.pi) * 0.28
+                    return (-extra_x * (0.3 + orbit), -extra_y * (0.25 + (0.2 * (1.0 - p))))
+                if effect_name == "leve_handheld":
+                    shake_x = math.sin(p * math.pi * 3.0) * 0.05
+                    shake_y = math.cos(p * math.pi * 2.0) * 0.03
+                    return (-extra_x * (0.45 + shake_x), -extra_y * (0.45 + shake_y))
+                if effect_name == "depth_movement":
+                    depth = math.sin(p * math.pi) * 0.12
+                    return (-extra_x * (0.18 + (0.52 * p)), -extra_y * (0.28 + depth))
+                if effect_name == "foreground_parallax":
+                    return (-extra_x * (0.05 + (0.75 * p)), -extra_y * (0.25 + (0.2 * p)))
+                if effect_name == "rack_focus_digital":
+                    wobble = math.sin(p * math.pi * 1.5) * 0.1
+                    return (-extra_x * (0.4 + wobble), -extra_y * 0.4)
+                return ("center", "center")
+
+            moved = self._clip_with_position(resized, _position)
+            composed = CompositeVideoClip([moved], size=size)
+            return self._set_clip_duration(composed, duration)
+        except Exception:
+            return self._apply_ken_burns(clip, size, zoom_factor=zoom_factor)
+
+    def _freeze_last_frame_clip(self, clip, duration):
+        """Repete o ultimo frame valido para evitar padding preto quando o audio passa do video."""
+        if clip is None:
+            return None
+        try:
+            extra = float(duration or 0)
+        except Exception:
+            extra = 0
+        if extra <= 0:
+            return None
+        try:
+            try:
+                from moviepy.editor import ImageClip
+            except Exception:
+                from moviepy import ImageClip
+            clip_duration = float(getattr(clip, "duration", 0) or 0)
+            if clip_duration <= 0:
+                return None
+            frame_t = max(0.0, clip_duration - 0.05)
+            frame = clip.get_frame(frame_t)
+            hold = ImageClip(frame)
+            return self._set_clip_duration(hold, extra)
+        except Exception as e:
+            print(f"Aviso: nao foi possivel congelar o ultimo frame: {e}")
+            return None
+
+    def _resolve_input_image_path(self, value: str) -> str:
+        v = (value or "").strip()
+        if not v:
+            return ""
+        v = v.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip()
+        if not v:
+            return ""
+
+        if v.startswith("/static/"):
+            rel = v.replace("/static/", "", 1).lstrip("/")
+            candidate = os.path.join("app", "static", rel)
+            if os.path.exists(candidate):
+                return candidate
+
+        if v.startswith("/generated_assets/"):
+            rel = v.replace("/generated_assets/", "", 1).lstrip("/")
+            candidate = os.path.join("generated_assets", rel)
+            if os.path.exists(candidate):
+                return candidate
+
+        if v.startswith("static/"):
+            candidate = os.path.join("app", v)
+            if os.path.exists(candidate):
+                return candidate
+
+        if v.startswith("app/static/"):
+            candidate = v
+            if os.path.exists(candidate):
+                return candidate
+
+        if os.path.isabs(v) and os.path.exists(v):
+            return v
+
+        if v.startswith("http://") or v.startswith("https://"):
+            try:
+                path = self.download_image(v, retries=1)
+                if path and os.path.exists(path) and os.path.getsize(path) > 1000:
+                    return path
+            except Exception:
+                return ""
+
+        candidate = os.path.join("app", "static", v.lstrip("/"))
+        if os.path.exists(candidate):
+            return candidate
+        return ""
+
+    def create_video_from_plan(self, plan, cover_image_path=None, aspect_ratio="9:16", progress_callback=None, voice_style=None, voice_gender=None, music_file_path=None):
+        """Gera vídeo complexo com áudio e cenas a partir do plano da IA"""
+        # Lazy imports: moviepy 1.x usa .editor, moviepy 2.x exporta direto de moviepy
+        try:
+            from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips, AudioClip
+        except ImportError:
+            from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, CompositeVideoClip, CompositeAudioClip, concatenate_audioclips, AudioClip
+        import numpy as np
+
+        if progress_callback:
+            progress_callback(0, "Iniciando composição do vídeo...")
+            
+        clips = []
+        final_clip = None
+        bg_music = None
+        cinematic_visual_hold_sec = DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC
+        allow_non_ai_fallback_raw = os.getenv("ALLOW_NON_AI_IMAGE_FALLBACK")
+        allow_non_ai_fallback = str(allow_non_ai_fallback_raw or "").strip().lower() in {"1", "true", "yes", "on"}
+        image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
+        recovery_image_budget = RecoveryImageCallBudget(plan)
+        paid_image_call_guard = recovery_image_budget.consume if recovery_image_budget.enabled else None
+        image_cache = {}
+        cached_temp_paths = set()
+        fallback_bg_path = None
+        use_single_bg = (os.getenv("VIDEO_SINGLE_BG") or "").strip().lower() in {"1", "true", "yes", "on"}
+        kind_norm = str(plan.get("kind") or "").strip().lower() if isinstance(plan, dict) else ""
+        premium_voice_required = bool(
+            isinstance(plan, dict) and plan.get("premium_voice_required")
+        )
+        allow_image_reuse = bool(plan.get("allow_image_reuse")) if isinstance(plan, dict) else False
+        prefer_peaceful_music = bool(plan.get("prefer_peaceful_music")) if isinstance(plan, dict) else False
+        video_bg_path = None
+        video_bg_paths = []
+        video_bg_frame = None
+        used_image_urls = []
+        used_image_url_set = set()
+
+        def _track_image_path(p: str):
+            try:
+                if not p or not isinstance(p, str):
+                    return
+                # CODEXIA_IMMEDIATE_IMAGE_MANIFEST_V1
+                task_id = str(getattr(self, "_codexia_task_id", "") or "").strip()
+                if task_id and os.path.isfile(p):
+                    try:
+                        from app.services.production_manifest import record_artifact
+                        record_artifact(task_id, p, kind="image", source="renderer_immediate")
+                    except Exception:
+                        pass
+                pp = os.path.abspath(p)
+                static_root = os.path.abspath(os.path.join("app", "static"))
+                if not pp.startswith(static_root):
+                    return
+                rel = pp[len(static_root):].lstrip(os.sep).replace(os.sep, "/")
+                if not rel:
+                    return
+                url = f"/static/{rel}"
+                if url not in used_image_url_set:
+                    used_image_url_set.add(url)
+                    used_image_urls.append(url)
+            except Exception:
+                return
+        
+        debug_ctx = {
+            "stage": "init",
+            "scene_index": None,
+            "scene_count": None,
+            "bg_image_path": None,
+            "audio_path": None,
+            "title_audio_path": None,
+            "end_audio_path": None,
+            "cover_image_path": cover_image_path,
+            "aspect_ratio": aspect_ratio,
+            "video_size": None,
+        }
+        render_report: Dict[str, Any] = {
+            "original_script": {"title": None, "scenes": []},
+            "narration_for_tts": [],
+            "narration_plan": {},
+            "audio_generation": {},
+            "sync_validation": {},
+            "text_integrity": {},
+            "utf8_audit": {},
+            "branding": {},
+            "visual_plan": {},
+            "scene_visuals": [],
+            "effects_applied": [],
+        }
+        try:
+            title = plan.get('title', 'Vídeo Sem Título')
+            render_report["original_script"]["title"] = title
+            try:
+                plan = self.review_plan(plan)
+            except Exception:
+                pass
+            cinematic_v2_meta = plan.get("cinematic_engine_v2") if isinstance(plan, dict) and isinstance(plan.get("cinematic_engine_v2"), dict) else {}
+            branding_profile = self._resolve_channel_branding(plan if isinstance(plan, dict) else {})
+            render_report["branding"] = dict(branding_profile)
+            force_single_bg = bool(plan.get("single_bg")) or str(plan.get("image_mode") or "").strip().lower() == "single"
+            if force_single_bg:
+                use_single_bg = True
+            raw_scenes = plan.get('scenes', [])
+            
+            # Validação extra: Se 'scenes' não for lista, tenta corrigir ou usa lista vazia
+            if not isinstance(raw_scenes, list):
+                print(f"ALERTA: 'scenes' não é lista. Tipo: {type(raw_scenes)}. Valor: {raw_scenes}")
+                if isinstance(raw_scenes, str):
+                    # Pode ser que a IA retornou uma string única como cena
+                    raw_scenes = [{"text": raw_scenes, "image_prompt": ""}]
+                else:
+                    raw_scenes = []
+
+            def _scene_prompt_for_fragment(base_prompt: str, fragment_text: str) -> str:
+                frag = self._compact_narrative_moment(fragment_text, max_chars=100)
+                bp = self._clean_image_prompt_seed(base_prompt, max_chars=150)
+                if bp and frag:
+                    return f"{bp}. Momento: {frag}"
+                if bp:
+                    return bp
+                if frag:
+                    return f"Personagem e ambiente coerentes. Momento: {frag}"
+                return "Personagem e ambiente coerentes. Estilo cinematografico natural."
+
+            def _materialize_scenes(raw_list):
+                scenes_local = []
+                if music_file_path:
+                    return raw_list if isinstance(raw_list, list) else []
+                if not isinstance(raw_list, list):
+                    return []
+                for scene in raw_list:
+                    scene_text = ""
+                    scene_prompt = ""
+
+                    if isinstance(scene, str):
+                        scene_text = scene
+                    elif isinstance(scene, dict):
                         scene_payload = dict(scene)
                         scene_text = scene.get('text', '')
                         scene_prompt = scene.get('image_prompt', '')
