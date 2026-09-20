@@ -330,6 +330,10 @@ def _build_checkpoint(generator: Any, segmented: Dict[str, Any], kwargs: Dict[st
         "final_text_sent_to_tts": full_text,
         "final_text_sha256": _text_sha256(full_text),
         "source_plan_fingerprint": getattr(generator, "_codexia_source_plan_fingerprint", None),
+        "narration_core_version": debug.get("narration_core_version"),
+        "narration_core_namespace": debug.get("narration_core_namespace"),
+        "tts_plain_text_only": bool(debug.get("tts_plain_text_only")),
+        "spoken_text_sha256": debug.get("spoken_text_sha256"),
         "validation_status": "pending",
     }
     return checkpoint
@@ -453,6 +457,10 @@ def _validate_seed_before_reuse(generator: Any, plan: Any) -> Dict[str, Any]:
     checkpoint = _checkpoint_from_task(task_id) if task_id else {}
     cp_path = str(checkpoint.get("output_path") or checkpoint.get("final_audio_path") or "").strip()
     reason = None
+    try:
+        checkpoint_core_version = int(checkpoint.get("narration_core_version") or 0)
+    except (TypeError, ValueError):
+        checkpoint_core_version = 0
 
     validation_status = str(checkpoint.get("validation_status") or "").strip().lower()
     checkpoint_rejected = bool(
@@ -471,6 +479,16 @@ def _validate_seed_before_reuse(generator: Any, plan: Any) -> Dict[str, Any]:
         reason = "seed_file_missing_or_empty"
     elif checkpoint.get("audio_sha256") and _file_sha256(seed_path) != checkpoint.get("audio_sha256"):
         reason = "seed_hash_changed"
+    elif (
+        checkpoint_core_version != NARRATION_CORE_VERSION
+        or str(checkpoint.get("narration_core_namespace") or "").strip() != NARRATION_CORE_NAMESPACE
+        or checkpoint.get("tts_plain_text_only") is not True
+    ):
+        # MP3s antigos não provam que JSON/SSML/metadados foram removidos antes
+        # do provider. Eles não podem atravessar uma nova tentativa por cache.
+        reason = "legacy_audio_without_spoken_text_contract"
+        _mark_checkpoint_audio_rejected(checkpoint, reason)
+        _mark_audio_rejected(seed_path, reason)
     else:
         expected_text = str(checkpoint.get("final_text_sent_to_tts") or plan.get("seed_narration_text") or "").strip()
         current_plan_text = _plan_narration_text(plan)
