@@ -1847,6 +1847,131 @@ class VideoGenerator:
             "attempted": True,
         }
 
+    def _expand_body_text_to_fit(
+        self,
+        body_text: str,
+        scenes: List[Dict[str, Any]],
+        target_min_sec: float,
+        voice_style: Optional[str] = None,
+        voice_gender: Optional[str] = None,
+        kind: Optional[str] = None,
+        review_feedback: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Expand a short narration before TTS without padding or repetition."""
+        clean_body = self._normalize_tts_text(body_text)
+        scene_texts = [
+            self._normalize_tts_text(scene.get("_tts_text") or scene.get("text") or "")
+            for scene in scenes
+        ]
+        if not clean_body:
+            return {
+                "body_text": "",
+                "scene_texts": ["" for _ in scenes],
+                "used_ai": False,
+                "attempted": False,
+                "reason": "empty_body",
+            }
+
+        estimated_now = self._estimate_text_duration_with_voice(
+            clean_body,
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+        )
+        if target_min_sec <= 0 or estimated_now >= target_min_sec:
+            return {
+                "body_text": clean_body,
+                "scene_texts": scene_texts,
+                "used_ai": False,
+                "attempted": False,
+                "reason": "already_long_enough",
+            }
+
+        if not self.ai_service or not hasattr(self.ai_service, "_generate_text"):
+            return {
+                "body_text": clean_body,
+                "scene_texts": scene_texts,
+                "used_ai": False,
+                "attempted": True,
+                "reason": "ai_unavailable",
+            }
+
+        wpm = self._estimate_voice_words_per_minute(
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+        )
+        current_words = self._count_words(clean_body)
+        target_words = max(
+            current_words + max(80, int(current_words * 0.18)),
+            int(__import__("math").ceil((float(target_min_sec) / 60.0) * wpm)),
+        )
+        target_words = max(120, min(2600, target_words))
+        min_words = max(current_words + 40, int(target_words * 0.96))
+        max_words = max(min_words + 40, int(target_words * 1.05))
+        safe_kind = str(kind or "story").strip().lower() or "story"
+        feedback = self._normalize_tts_text(review_feedback or "")
+        feedback_instruction = (
+            f"\nExigencias da revisao humana que devem ser cumpridas: {feedback[:1800]}"
+            if feedback
+            else ""
+        )
+        prompt = (
+            f"Reescreva e amplie o texto abaixo para narracao de um video no formato {safe_kind}. "
+            f"Entregue entre {min_words} e {max_words} palavras, com progressao natural e conteudo relevante. "
+            "Preserve a mensagem, os fatos, os personagens e a ordem narrativa. Aprofunde contexto, significado, "
+            "aplicacao pratica e reflexao apenas quando forem coerentes com o texto. Nao repita frases ou ideias, "
+            "nao use enchimento, nao invente fatos, nao adicione saudacao, CTA, titulos, listas ou markdown. "
+            "Retorne somente a narracao final em portugues."
+            f"{feedback_instruction}\n\nTEXTO ORIGINAL:\n{clean_body[:18000]}"
+        )
+        try:
+            ai_result = self.ai_service._generate_text(
+                prompt,
+                system_prompt=(
+                    "Voce e um diretor e editor de narracao para YouTube. "
+                    "A duracao solicitada e um requisito; amplie com substancia, sem repeticao."
+                ),
+                temperature=0.45,
+                json_mode=False,
+            )
+        except Exception as exc:
+            return {
+                "body_text": clean_body,
+                "scene_texts": scene_texts,
+                "used_ai": False,
+                "attempted": True,
+                "reason": f"ai_error:{type(exc).__name__}",
+            }
+
+        expanded = self._normalize_tts_text(ai_result)
+        expanded_words = self._count_words(expanded)
+        expanded_estimate = self._estimate_text_duration_with_voice(
+            expanded,
+            voice_style=voice_style,
+            voice_gender=voice_gender,
+        )
+        minimum_growth = current_words + max(40, int(current_words * 0.10))
+        if not expanded or expanded_words < minimum_growth or expanded_estimate <= estimated_now:
+            return {
+                "body_text": clean_body,
+                "scene_texts": scene_texts,
+                "used_ai": False,
+                "attempted": True,
+                "reason": "ai_did_not_expand_enough",
+                "requested_words": target_words,
+                "returned_words": expanded_words,
+            }
+
+        return {
+            "body_text": expanded,
+            "scene_texts": self._redistribute_body_text_to_scenes(expanded, scenes),
+            "used_ai": True,
+            "attempted": True,
+            "reason": "expanded",
+            "requested_words": target_words,
+            "returned_words": expanded_words,
+            "estimated_duration_sec": round(expanded_estimate, 2),
+        }
+
     def prepare_final_narration_text(self, plan: Optional[Dict[str, Any]], scenes: List[Dict[str, Any]], voice_style: Optional[str] = None, voice_gender: Optional[str] = None) -> Dict[str, Any]:
         plan = plan if isinstance(plan, dict) else {}
         kind = str(plan.get("kind") or "story").strip().lower() or "story"
@@ -1863,16 +1988,21 @@ class VideoGenerator:
         duration_range = self._resolve_requested_duration_range_sec(plan)
         max_total_sec = float(duration_range.get("max_sec") or 0.0)
         min_total_sec = float(duration_range.get("min_sec") or 0.0)
+        target_total_sec = float(duration_range.get("target_sec") or 0.0)
 
         planning_attempts: List[Dict[str, Any]] = []
         planning_max_total_sec = float(max_total_sec) * 0.96 if max_total_sec > 0 else 0.0
+        planning_min_total_sec = max(
+            float(min_total_sec) * 0.97 if min_total_sec > 0 else 0.0,
+            float(target_total_sec) * 0.98 if target_total_sec > 0 else 0.0,
+        )
         opening_est = self._estimate_text_duration_with_voice(opening_text, voice_style=voice_style, voice_gender=voice_gender)
         closing_est = self._estimate_text_duration_with_voice(closing_text, voice_style=voice_style, voice_gender=voice_gender)
         reflection_est = self._estimate_text_duration_with_voice(reflection_text, voice_style=voice_style, voice_gender=voice_gender)
         story_est = self._estimate_text_duration_with_voice(story_text, voice_style=voice_style, voice_gender=voice_gender)
         scene_texts = list(cleaned_scene_texts)
 
-        for attempt in range(3):
+        for attempt in range(4):
             body_est = self._estimate_text_duration_with_voice(body_text, voice_style=voice_style, voice_gender=voice_gender)
             total_est = intro_opening_hold_sec + opening_est + body_est + closing_est + pause_duration_sec
             planning_attempts.append({
@@ -1882,6 +2012,34 @@ class VideoGenerator:
                 "within_requested_range": bool((not min_total_sec or total_est >= min_total_sec) and (not max_total_sec or total_est <= max_total_sec)),
                 "within_planning_budget": bool((not min_total_sec or total_est >= min_total_sec) and (not planning_max_total_sec or total_est <= planning_max_total_sec)),
             })
+            if planning_min_total_sec > 0 and total_est < planning_min_total_sec:
+                target_body_min_sec = max(
+                    8.0,
+                    planning_min_total_sec
+                    - intro_opening_hold_sec
+                    - opening_est
+                    - closing_est
+                    - pause_duration_sec,
+                )
+                expanded = self._expand_body_text_to_fit(
+                    body_text,
+                    scenes,
+                    target_min_sec=target_body_min_sec,
+                    voice_style=voice_style,
+                    voice_gender=voice_gender,
+                    kind=kind,
+                    review_feedback=str(plan.get("review_feedback") or ""),
+                )
+                new_body_text = self._normalize_tts_text(expanded.get("body_text") or "")
+                if not expanded.get("used_ai") or not new_body_text or new_body_text == body_text:
+                    planning_attempts[-1]["duration_action"] = str(expanded.get("reason") or "expansion_failed")
+                    break
+                body_text = new_body_text
+                scene_texts = [self._normalize_tts_text(text) for text in (expanded.get("scene_texts") or [])]
+                if len(scene_texts) != len(scenes):
+                    scene_texts = self._redistribute_body_text_to_scenes(body_text, scenes)
+                planning_attempts[-1]["duration_action"] = "expanded_short_narration"
+                continue
             if not planning_max_total_sec or total_est <= planning_max_total_sec:
                 break
             target_body_max_sec = max(8.0, planning_max_total_sec - opening_est - closing_est)
@@ -5997,18 +6155,130 @@ $synth.Dispose()
                     duration_range_report["decision"] = "within_requested_range"
                     duration_range_report["decision_reason"] = "Narracao completa ficou dentro da faixa solicitada."
                     break
-                if not max_ok and narration_attempt >= 3:
+                if not min_ok:
+                    duration_range_report["attempted_replanning_after_real_audio"] = True
+                    if narration_attempt >= 3:
+                        raise Exception(
+                            "Falha de qualidade do Claude Diretor: a narracao permaneceu menor que a duracao solicitada "
+                            f"apos as correcoes automaticas ({actual_total_audio_dur:.0f}s de audio para uma meta de "
+                            f"{target_requested_duration or min_requested_duration:.0f}s). O video nao foi renderizado."
+                        )
+
+                    current_body_text = str(planning_meta.get("body_text") or "").strip()
+                    current_opening = str(planning_meta.get("opening_text") or "").strip()
+                    current_closing = str(planning_meta.get("closing_text") or "").strip()
+                    opening_duration_est = self._estimate_text_duration_with_voice(
+                        current_opening,
+                        voice_style=voice_style,
+                        voice_gender=voice_gender,
+                    )
+                    closing_duration_est = self._estimate_text_duration_with_voice(
+                        current_closing,
+                        voice_style=voice_style,
+                        voice_gender=voice_gender,
+                    )
+                    desired_audio_min = max(
+                        min_requested_duration * 0.97 if min_requested_duration > 0 else 0.0,
+                        target_requested_duration * 0.98 if target_requested_duration > 0 else 0.0,
+                    )
+                    target_body_min_sec = max(
+                        8.0,
+                        desired_audio_min
+                        - initial_opening_silence_sec
+                        - opening_duration_est
+                        - closing_duration_est
+                        - pause_before_cta_sec,
+                    )
+                    expanded = self._expand_body_text_to_fit(
+                        current_body_text,
+                        scenes,
+                        target_min_sec=target_body_min_sec,
+                        voice_style=voice_style,
+                        voice_gender=voice_gender,
+                        kind=plan.get("kind") if isinstance(plan, dict) else None,
+                        review_feedback=(
+                            str(plan.get("review_feedback") or "")
+                            if isinstance(plan, dict)
+                            else ""
+                        ),
+                    )
+                    new_body_text = self._normalize_tts_text(expanded.get("body_text") or "")
+                    if not expanded.get("used_ai") or not new_body_text or new_body_text == current_body_text:
+                        raise Exception(
+                            "Falha de qualidade do Claude Diretor: o roteiro nao tinha conteudo suficiente para a duracao "
+                            "solicitada e a expansao editorial automatica nao conseguiu corrigi-lo. "
+                            f"Motivo: {str(expanded.get('reason') or 'expansion_failed')}. O video nao foi renderizado."
+                        )
+
+                    planning_meta["body_text"] = new_body_text
+                    scene_texts = expanded.get("scene_texts") or self._redistribute_body_text_to_scenes(new_body_text, scenes)
+                    planning_meta["scene_texts"] = scene_texts
+                    planning_meta["body_duration_est_sec"] = round(
+                        self._estimate_text_duration_with_voice(
+                            new_body_text,
+                            voice_style=voice_style,
+                            voice_gender=voice_gender,
+                        ),
+                        2,
+                    )
+                    replanned_full_text = " ".join([current_opening, new_body_text, current_closing]).strip()
+                    planning_meta["word_count"] = self._count_words(replanned_full_text)
+                    planning_meta["char_count"] = len(replanned_full_text)
+                    planning_meta["estimated_total_duration_sec"] = round(
+                        float(planning_meta.get("intro_opening_hold_sec") or 0.0)
+                        + float(planning_meta.get("opening_duration_est_sec") or opening_duration_est)
+                        + float(planning_meta.get("body_duration_est_sec") or 0.0)
+                        + float(planning_meta.get("closing_duration_est_sec") or closing_duration_est)
+                        + float(planning_meta.get("pause_duration_sec") or 0.0),
+                        2,
+                    )
+                    planning_meta["full_text"] = replanned_full_text
+                    render_report["audio_generation"]["replanned_text_sent_to_tts"] = replanned_full_text
+                    planning_meta.setdefault("planning_attempts", []).append({
+                        "attempt": len(planning_meta.get("planning_attempts") or []) + 1,
+                        "body_word_count": self._count_words(new_body_text),
+                        "estimated_total_duration_sec": planning_meta.get("estimated_total_duration_sec"),
+                        "replanned_after_real_audio": True,
+                        "duration_action": "expanded_short_real_audio",
+                        "actual_audio_duration_sec": round(actual_total_audio_dur, 2),
+                        "target_body_min_sec": round(target_body_min_sec, 2),
+                    })
+                    for idx, scene in enumerate(scenes):
+                        if idx < len(scene_texts):
+                            scene["_tts_text"] = self._normalize_tts_text(
+                                scene_texts[idx] or scene.get("_tts_text") or scene.get("text") or ""
+                            )
+                            scene["_estimated_narration_sec"] = self._estimate_text_duration_with_voice(
+                                scene["_tts_text"],
+                                voice_style=voice_style,
+                                voice_gender=voice_gender,
+                            )
+                        if idx < len(render_report["narration_for_tts"]):
+                            render_report["narration_for_tts"][idx]["clean_text"] = scene.get("_tts_text") or ""
+                            render_report["narration_for_tts"][idx]["estimated_duration_sec"] = round(
+                                float(scene.get("_estimated_narration_sec") or 0.0),
+                                2,
+                            )
+                    planning_meta["scene_estimated_durations_sec"] = [
+                        round(float(scene.get("_estimated_narration_sec") or 0.0), 2)
+                        for scene in scenes
+                    ]
+                    render_report["narration_plan"] = planning_meta
+                    final_narration_text = replanned_full_text
+                    main_story_narration_text = " ".join(
+                        part
+                        for part in [current_opening, new_body_text]
+                        if part
+                    ).strip()
+                    cta_narration_text = current_closing
+                    continue
+
+                if narration_attempt >= 3:
                     duration_range_report["kept_complete_narration"] = True
                     duration_range_report["decision"] = "keep_complete_narration_outside_range"
                     duration_range_report["decision_reason"] = "Duracao final excedeu a faixa de referencia, mas a narracao foi mantida completa para nao cortar o audio."
                     break
-                if not max_ok:
-                    duration_range_report["attempted_replanning_after_real_audio"] = True
-                else:
-                    duration_range_report["kept_complete_narration"] = True
-                    duration_range_report["decision"] = "keep_complete_narration_below_range"
-                    duration_range_report["decision_reason"] = "Duracao final ficou abaixo da faixa de referencia, mas a narracao foi mantida completa e a timeline segue o audio real."
-                    break
+                duration_range_report["attempted_replanning_after_real_audio"] = True
 
                 current_body_text = str(planning_meta.get("body_text") or "").strip()
                 current_opening = str(planning_meta.get("opening_text") or "").strip()

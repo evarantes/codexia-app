@@ -8529,11 +8529,37 @@ def process_video_generation(request: VideoRequest, task_id):
                             _pipeline_status_target = "failed"
                             _pipeline_final_status = "failed"
                             failed_check = str(_pipeline_validation.first_failed or "unknown")
-                            _pipeline_final_message = (
-                                "Validação pré-revisão falhou: "
-                                f"{failed_check} — detalhes: {_json_dump_short(_pipeline_validation.details)}. "
-                                "Corrija a etapa correspondente e gere novamente."
-                            )
+                            if failed_check == "duration_matches_request":
+                                _duration_details = (
+                                    (_pipeline_validation.details or {}).get("mp4")
+                                    if isinstance(_pipeline_validation.details, dict)
+                                    else {}
+                                ) or {}
+                                _obtained_sec = max(0, int(round(float(_duration_details.get("duration_seconds") or 0))))
+                                _requested_sec = max(0, int(round(float(_duration_details.get("requested_duration_seconds") or 0))))
+                                _obtained_label = f"{_obtained_sec // 60}:{_obtained_sec % 60:02d}"
+                                _requested_label = f"{_requested_sec // 60}:{_requested_sec % 60:02d}"
+                                _pipeline_final_message = (
+                                    "O Claude Diretor bloqueou o vídeo porque a duração ficou em "
+                                    f"{_obtained_label}, mas o pedido foi de {_requested_label}. "
+                                    "O arquivo não foi liberado para revisão. Reinicie para o roteiro e a narração "
+                                    "serem corrigidos antes de um novo render."
+                                )
+                            elif failed_check == "visual_variety_valid":
+                                _pipeline_final_message = (
+                                    "O Claude Diretor bloqueou o vídeo por repetição excessiva de imagens. "
+                                    "Reinicie para corrigir a variedade visual antes de um novo render."
+                                )
+                            elif failed_check == "caption_sync_valid":
+                                _pipeline_final_message = (
+                                    "O Claude Diretor bloqueou o vídeo porque não conseguiu comprovar a sincronização "
+                                    "das legendas com o áudio real. Reinicie para refazer essa etapa."
+                                )
+                            else:
+                                _pipeline_final_message = (
+                                    "O Claude Diretor bloqueou o vídeo antes da revisão porque uma verificação de qualidade "
+                                    f"não foi atendida ({failed_check}). Reinicie para corrigir a etapa correspondente."
+                                )
                             final_payload["unified_pipeline"] = {
                                 "validation_checks": _pipeline_validation.checks,
                                 "validation_first_failed": failed_check,
