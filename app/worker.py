@@ -12,6 +12,7 @@ load_dotenv()
 
 from app.database import DATABASE_DISPLAY
 from app.services.audio_checkpoint import install_audio_checkpoint_patch
+from app.services.narration_contract_guard import install_narration_contract_guard
 from app.services.visual_quality_shadow import install_visual_quality_shadow_patch
 from app.services.visual_quality_guard import install_visual_quality_guard_patch
 from app.services.visual_quality_rollout import apply_visual_quality_observe_rollout
@@ -74,12 +75,22 @@ install_narrative_editor_patch(video_generator_cls)
 # e recuperação vêm sempre do texto final realmente vinculado ao TTS.
 install_canonical_caption_source_patch(video_generator_cls)
 
+# CODEXIA_NARRATION_CONTRACT_WORKER_V1
+# Instalada como camada externa e final no processo que realmente chama os
+# providers. Assim JSON, SSML e instruções técnicas são bloqueados mesmo que
+# algum patch interno altere o texto antes do TTS.
+install_narration_contract_guard(video_generator_cls)
+
 # Contrato de startup: é melhor o worker recusar iniciar do que consumir TTS e
 # imagens com uma versão que volte a derrubar a produção por divergência textual.
 if not callable(getattr(video_generator_cls, "_codexia_force_canonical_caption_timeline", None)):
     raise RuntimeError("CaptionIntegritySelfHeal ausente: worker recusou iniciar.")
 if int(getattr(video_generator_cls, "_codexia_caption_integrity_version", 0) or 0) < 4:
     raise RuntimeError("CaptionIntegritySelfHeal desatualizado: esperado v4.")
+if not bool(getattr(video_generator_cls, "_codexia_narration_core_v1", False)):
+    raise RuntimeError("NarrationCore ausente: worker recusou iniciar para não narrar códigos.")
+if not bool(getattr(video_generator_cls, "_codexia_narration_contract_guard_v1", False)):
+    raise RuntimeError("NarrationContractGuard ausente: worker recusou iniciar para não narrar metadados.")
 
 listen = ['default']
 
@@ -103,7 +114,8 @@ if __name__ == '__main__':
         f"FinalCinematicPolish={str(os.getenv('ENABLE_FINAL_CINEMATIC_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"ReturnChannelPolish={str(os.getenv('ENABLE_RETURN_CHANNEL_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
-        "CaptionIntegritySelfHeal=v4"
+        "CaptionIntegritySelfHeal=v4 | "
+        "NarrationCore=v1 | NarrationContractGuard=active"
     )
     queues = [Queue(name, connection=worker_conn) for name in listen]
     worker = Worker(queues, connection=worker_conn)
