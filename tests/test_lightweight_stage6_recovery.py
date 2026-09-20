@@ -16,6 +16,7 @@ from app.services.intelligent_cost_optimizer import (
 )
 from app.services.lightweight_recovery_renderer import (
     _build_logo_only_brand_frames,
+    _bounded_recovery_size,
     _normalize_visual_segments,
     _run_ffmpeg_command,
     build_concat_text,
@@ -163,6 +164,8 @@ class LightweightStage6RecoveryTests(unittest.TestCase):
             )
             joined = " ".join(command)
             self.assertIn("-threads 2", joined)
+            self.assertIn("fps=2", joined)
+            self.assertIn("-filter_threads 1", joined)
             self.assertIn("subtitles=", joined)
             self.assertNotIn("http://", joined)
             self.assertNotIn("https://", joined)
@@ -287,6 +290,11 @@ class LightweightStage6RecoveryTests(unittest.TestCase):
                 with Image.open(item["image_path"]) as frame:
                     self.assertEqual(frame.size, (320, 180))
                     self.assertEqual(frame.mode, "RGB")
+
+    def test_recovery_size_caps_full_hd_at_720p_equivalent(self):
+        self.assertEqual(_bounded_recovery_size((1920, 1080)), (1280, 720))
+        self.assertEqual(_bounded_recovery_size((1080, 1920)), (720, 1280))
+        self.assertEqual(_bounded_recovery_size((640, 360)), (640, 360))
 
     def test_ffmpeg_runner_keeps_the_real_error_separate_from_progress(self):
         return_code, output, diagnostics = _run_ffmpeg_command(
