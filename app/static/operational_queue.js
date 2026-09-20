@@ -114,6 +114,68 @@
     return `<span style="display:inline-flex;padding:5px 9px;border-radius:999px;background:${bg};color:${fg};font-size:11px;font-weight:800;white-space:nowrap">${esc(labels[status] || status || 'Desconhecido')}</span>`;
   }
 
+  function durationText(seconds) {
+    const total = Math.max(0, Math.round(Number(seconds || 0)));
+    if (!total) return '—';
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hours) return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function artifactChecklist(task) {
+    const checklist = task?.artifact_checklist || {};
+    const items = Array.isArray(checklist.items) ? checklist.items : [];
+    if (!items.length) return '';
+    const states = {
+      ok: { icon: '✓', bg: '#e9f8f1', fg: '#14704f', label: 'OK' },
+      partial: { icon: '!', bg: '#fff7df', fg: '#8a6100', label: 'Verificar' },
+      failed: { icon: '×', bg: '#feeceb', fg: '#a22820', label: 'Falhou' },
+      missing: { icon: '×', bg: '#feeceb', fg: '#a22820', label: 'Ausente' },
+      pending: { icon: '…', bg: '#eef1f8', fg: '#526079', label: 'Pendente' },
+    };
+    const detail = item => {
+      if (item.key === 'images') return item.summary || `${Number(item.actual || 0)}/${item.expected || '?'}`;
+      if (item.key === 'narration' || item.key === 'captions') {
+        const duration = item.duration_sec ? durationText(item.duration_sec) : 'sem duração';
+        const target = item.target_sec ? ` / meta ${durationText(item.target_sec)}` : '';
+        const entries = item.key === 'captions' && item.entries ? ` · ${Number(item.entries)} blocos` : '';
+        return `${duration}${target}${entries}${item.preserved ? ' · preservado para reutilização' : ''}`;
+      }
+      if (item.key === 'narration_caption_sync') {
+        const delta = Number(item.duration_difference_sec || 0).toFixed(1).replace('.', ',');
+        const text = item.text_matches ? 'texto confere' : 'texto não confere';
+        const timing = item.timing_source_verified ? 'tempos da narração real' : 'tempos não comprovados';
+        return `${item.summary || ''} · diferença ${delta}s · ${text} · ${timing}`;
+      }
+      return item.summary || '—';
+    };
+    const rows = items.map(item => {
+      const state = states[item.status] || states.pending;
+      return `<div class="oq-artifact-row">
+        <span aria-hidden="true" style="display:grid;place-items:center;width:28px;height:28px;border-radius:999px;background:${state.bg};color:${state.fg};font-weight:900">${state.icon}</span>
+        <b>${esc(item.label || item.key || 'Ativo')}</b>
+        <span class="oq-artifact-detail" style="color:#536079;line-height:1.35">${esc(detail(item))}</span>
+        <span style="color:${state.fg};font-size:11px;font-weight:850;white-space:nowrap">${esc(state.label)}</span>
+      </div>`;
+    }).join('');
+    const reusable = Number(checklist.reusable_count || 0);
+    const reusableTotal = Number(checklist.reusable_total || 0);
+    const director = checklist.director_validation || {};
+    const verdict = director.verdict
+      ? `<div class="notice" style="margin-top:12px"><b>Verificação do Claude Diretor:</b> ${esc(director.verdict)}</div>`
+      : '';
+    return `<section style="margin-top:18px" aria-label="Ativos da produção">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
+        <div><b style="font-size:17px">Ativos da produção</b><div style="color:var(--muted);font-size:12px;margin-top:3px">O que foi concluído, validado e preservado para a correção.</div></div>
+        <span style="font-size:12px;color:#536079;font-weight:750">${reusable}/${reusableTotal || 4} ativos reutilizáveis</span>
+      </div>
+      <div class="card" style="box-shadow:none;margin-top:10px;padding:2px 14px">${rows}</div>
+      ${verdict}
+    </section>`;
+  }
+
   function summaryCard(label, value, hint = '') {
     return `<div class="card metric" style="padding:14px 16px"><div class="label">${esc(label)}</div><div class="value" style="font-size:22px;margin:2px 0">${esc(value)}</div>${hint ? `<div class="sub">${esc(hint)}</div>` : ''}</div>`;
   }
@@ -149,6 +211,14 @@
         gap: 16px;
         align-items: center;
       }
+      .oq-artifact-row {
+        display: grid;
+        grid-template-columns: 34px minmax(100px,.55fr) minmax(160px,1.45fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--line);
+      }
       .oq-mobile-scroll-hint { display: none; }
       @media (max-width: 700px) {
         .oq-project-scroll {
@@ -159,6 +229,8 @@
           touch-action: pan-x pan-y;
         }
         .oq-project-row { min-width: 760px; }
+        .oq-artifact-row { grid-template-columns: 34px minmax(0,1fr) auto; }
+        .oq-artifact-detail { grid-column: 2 / 4; padding-bottom: 3px; }
         .oq-mobile-scroll-hint {
           display: block;
           position: sticky;
@@ -326,6 +398,8 @@
       task.duration_minutes ? `${task.duration_minutes} min` : '',
       task.updated_at ? `Atualizado ${dateText(task.updated_at)}` : '',
     ].filter(Boolean).join(' · ');
+    const preserved = Number(task?.artifact_checklist?.reusable_count || 0);
+    const preservedTotal = Number(task?.artifact_checklist?.reusable_total || 0);
     return `
       <div class="oq-project-scroll" data-task-id="${esc(task.id)}" style="border-bottom:1px solid var(--line)" tabindex="0" aria-label="Projeto ${esc(task.title || 'Produção')}. Deslize horizontalmente para ver progresso e comandos.">
         <div class="oq-mobile-scroll-hint">Deslize para o lado para ver progresso e comandos →</div>
@@ -337,6 +411,7 @@
             </div>
             <div style="margin-top:4px;color:var(--muted);font-size:12px">${esc(meta)}</div>
             ${task.message ? `<div style="margin-top:5px;color:#536079;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(task.message)}">${esc(task.message)}</div>` : ''}
+            ${preservedTotal ? `<div style="margin-top:5px;color:#3152c8;font-size:11px;font-weight:750">Ativos preservados: ${preserved}/${preservedTotal}</div>` : ''}
           </div>
           <div>
             <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted)"><span>Progresso</span><b style="color:var(--text)">${progress}%</b></div>
@@ -471,6 +546,7 @@
           <div class="card" style="box-shadow:none"><div class="label">Tipo</div><div style="font-weight:750;margin-top:4px">${esc(task.kind || '—')}</div></div>
           <div class="card" style="box-shadow:none"><div class="label">ID técnico</div><div style="font-size:11px;word-break:break-all;margin-top:5px">${esc(task.id || '')}</div></div>
         </div>
+        ${artifactChecklist(task)}
         ${task.message ? `<div style="margin-top:15px"><b>Última informação</b><div style="color:#536079;margin-top:5px;line-height:1.5">${esc(task.message)}</div></div>` : ''}
         ${failure}
         <div style="margin-top:18px">${projectActions(task)}</div>`;

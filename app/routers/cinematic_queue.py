@@ -15,6 +15,8 @@ from app.models import UnifiedVideo, UnifiedVideoStatus, User, VideoTask
 from app.routers.auth import get_current_admin_user
 from app.services.cinematic_library_store import CinematicLibraryStore
 from app.services.intelligent_cost_optimizer import minimum_visual_count_for_duration
+from app.services.production_manifest import build_recovery_plan
+from app.services.production_manifest_diagnostics import build_manifest_diagnostic
 from app.services.task_manager import update_task
 from app.services.unified_video_pipeline import unified_video_pipeline
 from app.services.youtube_service import YouTubeService
@@ -180,6 +182,260 @@ def _bucket(status: str) -> str:
     return "other"
 
 
+def _seconds(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _integer(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _artifact_checklist(
+    row: VideoTask,
+    result: Dict[str, Any],
+    payload: Dict[str, Any],
+    *,
+    duration_minutes: Optional[int],
+    video_url: str,
+) -> Dict[str, Any]:
+    """Expose a concise, recovery-aware inventory for the V2 project modal."""
+    task_id = str(getattr(row, "id", "") or "")
+    persisted = result.get("artifact_checklist") if isinstance(result.get("artifact_checklist"), dict) else {}
+    try:
+        diagnostic = build_manifest_diagnostic(task_id)
+    except Exception:
+        diagnostic = {}
+    try:
+        recovery = build_recovery_plan(task_id)
+    except Exception:
+        recovery = {}
+
+    target_sec = _seconds(persisted.get("target_duration_sec"))
+    if target_sec <= 0 and duration_minutes:
+        target_sec = float(duration_minutes) * 60.0
+
+    persisted_images = persisted.get("images") if isinstance(persisted.get("images"), dict) else {}
+    diagnosed_images = diagnostic.get("images") if isinstance(diagnostic.get("images"), dict) else {}
+    image_actual = max(
+        _integer(persisted_images.get("actual")),
+        _integer(diagnosed_images.get("valid")),
+        _integer(recovery.get("valid_image_count")),
+    )
+    image_expected = max(
+        _integer(persisted_images.get("expected")),
+        _integer(diagnosed_images.get("expected")),
+        _integer(recovery.get("expected_image_count")),
+    )
+    if image_expected <= 0:
+        requested = payload.get("image_count") or payload.get("expected_image_count")
+        try:
+            image_expected = max(0, int(requested or 0))
+        except Exception:
+            image_expected = 0
+    images_ok = bool(image_expected > 0 and image_actual >= image_expected)
+
+    persisted_audio = persisted.get("narration") if isinstance(persisted.get("narration"), dict) else {}
+    audio_duration = max(
+        _seconds(persisted_audio.get("duration_sec")),
+        _seconds(recovery.get("audio_duration_sec")),
+        _seconds((result.get("recovery_checkpoint") or {}).get("audio_duration_sec") if isinstance(result.get("recovery_checkpoint"), dict) else 0),
+    )
+    audio_found = bool(audio_duration > 0 or recovery.get("audio_found"))
+    audio_reusable = bool(
+        persisted_audio.get("preserved")
+        or recovery.get("audio_reusable")
+        or (diagnostic.get("audio") or {}).get("reusable")
+    )
+    audio_target = _seconds(persisted_audio.get("target_sec")) or target_sec
+    audio_tolerance = max(5.0, audio_target * 0.05) if audio_target > 0 else 5.0
+    audio_ok = bool(
+        audio_found
+        and audio_reusable
+        and (
+            audio_target <= 0
+            or abs(audio_duration - audio_target) <= audio_tolerance
+            or (0.90 * audio_target) <= audio_duration <= audio_target
+        )
+    )
+
+    persisted_captions = persisted.get("captions") if isinstance(persisted.get("captions"), dict) else {}
+    caption_checkpoint = result.get("caption_checkpoint") if isinstance(result.get("caption_checkpoint"), dict) else {}
+    render_report = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
+    sync = render_report.get("sync_validation") if isinstance(render_report.get("sync_validation"), dict) else {}
+    srt = render_report.get("srt") if isinstance(render_report.get("srt"), dict) else {}
+    caption_duration = max(
+        _seconds(persisted_captions.get("duration_sec")),
+        _seconds(caption_checkpoint.get("duration_sec")),
+        _seconds(sync.get("captions_duration_sec")),
+        _seconds(sync.get("spoken_audio_end_sec")),
+    )
+    caption_entries = max(
+        _integer(persisted_captions.get("entries")),
+        _integer(caption_checkpoint.get("entries")),
+        _integer(srt.get("entries")),
+    )
+    caption_source = str(
+        persisted_captions.get("source")
+        or caption_checkpoint.get("source")
+        or sync.get("timeline_source")
+        or srt.get("source")
+        or ""
+    ).strip()
+    caption_target = _seconds(persisted_captions.get("target_sec")) or audio_duration
+    caption_ok = bool(
+        caption_entries > 0
+        and caption_duration > 0
+        and (
+            caption_target <= 0
+            or abs(caption_duration - caption_target) <= max(1.0, caption_target * 0.02)
+        )
+    )
+
+    persisted_compatibility = (
+        persisted.get("narration_caption_compatibility")
+        if isinstance(persisted.get("narration_caption_compatibility"), dict)
+        else {}
+    )
+    text_integrity = render_report.get("text_integrity") if isinstance(render_report.get("text_integrity"), dict) else {}
+    utf8_audit = render_report.get("utf8_audit") if isinstance(render_report.get("utf8_audit"), dict) else {}
+    trusted_timing_sources = {
+        "official_audio_transcript",
+        "approved_edge_tts_word_boundaries",
+        "local_audio_activity_alignment",
+    }
+    timing_source = str(
+        persisted_compatibility.get("timing_source")
+        or caption_source
+        or sync.get("caption_timeline_source")
+        or sync.get("timeline_source")
+        or ""
+    ).strip()
+    timing_source_verified = bool(
+        persisted_compatibility.get("timing_source_verified")
+        if "timing_source_verified" in persisted_compatibility
+        else timing_source in trusted_timing_sources
+    )
+    text_matches_raw = persisted_compatibility.get("text_matches")
+    if text_matches_raw is None:
+        text_matches_raw = text_integrity.get("captions_match_narration_source")
+    if text_matches_raw is None:
+        text_matches_raw = utf8_audit.get("texts_identical_after_whitespace_normalization")
+    text_matches = bool(text_matches_raw)
+    sync_delta = _seconds(persisted_compatibility.get("duration_difference_sec"))
+    if sync_delta <= 0 and audio_duration > 0 and caption_duration > 0:
+        sync_delta = abs(audio_duration - caption_duration)
+    sync_tolerance = (
+        _seconds(persisted_compatibility.get("tolerance_sec"))
+        or max(1.0, audio_duration * 0.02)
+    )
+    narration_caption_compatible = bool(
+        audio_found
+        and caption_entries > 0
+        and text_matches
+        and timing_source_verified
+        and sync_delta <= sync_tolerance
+    )
+    director_verdict = str(
+        persisted_compatibility.get("director_verdict")
+        or (
+            "Narração e legenda compatíveis"
+            if narration_caption_compatible
+            else "Narração e legenda precisam de correção"
+        )
+    )
+
+    status = str(getattr(row, "status", "") or "").strip().lower()
+    render_ok = bool(video_url and status in _READY_STATUSES)
+    persisted_script = persisted.get("script") if isinstance(persisted.get("script"), dict) else {}
+    script_ok = bool(
+        persisted_script.get("preserved")
+        or diagnostic.get("script_preserved")
+        or recovery.get("script_ok")
+        or result.get("script")
+    )
+    items = [
+        {
+            "key": "script",
+            "label": "Roteiro",
+            "status": "ok" if script_ok else "missing",
+            "summary": "Preservado" if script_ok else "Não encontrado",
+            "preserved": script_ok,
+        },
+        {
+            "key": "images",
+            "label": "Imagens",
+            "status": "ok" if images_ok else ("partial" if image_actual else "missing"),
+            "summary": f"{image_actual}/{image_expected or '?'}",
+            "actual": image_actual,
+            "expected": image_expected or None,
+            "preserved": image_actual > 0,
+        },
+        {
+            "key": "narration",
+            "label": "Narração",
+            "status": "ok" if audio_ok else ("partial" if audio_found else "missing"),
+            "summary": "Áudio preservado" if audio_reusable else ("Áudio encontrado" if audio_found else "Não encontrado"),
+            "duration_sec": round(audio_duration, 3) if audio_duration > 0 else None,
+            "target_sec": round(audio_target, 3) if audio_target > 0 else None,
+            "preserved": audio_reusable,
+        },
+        {
+            "key": "captions",
+            "label": "Legendas",
+            "status": "ok" if caption_ok else ("partial" if caption_entries else "missing"),
+            "summary": f"{caption_entries} bloco(s)" if caption_entries else "Não preservadas",
+            "duration_sec": round(caption_duration, 3) if caption_duration > 0 else None,
+            "target_sec": round(caption_target, 3) if caption_target > 0 else None,
+            "entries": caption_entries,
+            "source": caption_source or None,
+            "preserved": bool(persisted_captions.get("preserved") or caption_checkpoint),
+        },
+        {
+            "key": "narration_caption_sync",
+            "label": "Narração ↔ legenda",
+            "status": "ok" if narration_caption_compatible else ("partial" if audio_found and caption_entries else "missing"),
+            "summary": director_verdict,
+            "duration_difference_sec": round(sync_delta, 3),
+            "tolerance_sec": round(sync_tolerance, 3),
+            "text_matches": text_matches,
+            "timing_source_verified": timing_source_verified,
+            "timing_source": timing_source or None,
+            "director_validated": True,
+        },
+        {
+            "key": "render",
+            "label": "Vídeo final",
+            "status": "ok" if render_ok else ("failed" if status == "failed" else "pending"),
+            "summary": "Pronto para revisão" if render_ok else ("Render falhou; ativos anteriores preservados" if status == "failed" else "Pendente"),
+            "preserved": render_ok,
+        },
+    ]
+    reusable_assets = [item for item in items if item.get("key") in {"script", "images", "narration", "captions"}]
+    reusable = sum(1 for item in reusable_assets if item.get("preserved"))
+    return {
+        "target_duration_sec": round(target_sec, 3) if target_sec > 0 else None,
+        "items": items,
+        "reusable_count": reusable,
+        "reusable_total": len(reusable_assets),
+        "director_validation": {
+            "narration_caption_compatible": narration_caption_compatible,
+            "verdict": director_verdict,
+            "text_matches": text_matches,
+            "timing_source_verified": timing_source_verified,
+            "duration_difference_sec": round(sync_delta, 3),
+            "tolerance_sec": round(sync_tolerance, 3),
+        },
+        "recovery_checkpoint": str(diagnostic.get("max_recoverable_checkpoint") or "starting"),
+        "recovery_action": str(diagnostic.get("planned_action") or recovery.get("action") or "blocked"),
+    }
+
+
 def _task_to_public(
     row: VideoTask,
     library_entry: Optional[Dict[str, Any]] = None,
@@ -233,6 +489,14 @@ def _task_to_public(
             youtube_url = candidate
             break
 
+    checklist = _artifact_checklist(
+        row,
+        result,
+        payload,
+        duration_minutes=duration,
+        video_url=url,
+    )
+
     return {
         "id": str(getattr(row, "id", "") or ""),
         "title": _title(row, result, payload, entry),
@@ -259,6 +523,7 @@ def _task_to_public(
         "can_reject": status == "awaiting_review",
         "can_publish": status == "approved",
         "youtube_url": youtube_url or None,
+        "artifact_checklist": checklist,
     }
 
 

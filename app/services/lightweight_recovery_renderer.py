@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -574,7 +576,7 @@ def render_lightweight_recovery_video(
     music_volume: float = 0.025,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    """Render recovery-only media using local assets and FFmpeg.
+    """Render local media using existing assets and a bounded FFmpeg process.
 
     No AI/music provider and no download are called here. Images, narration,
     captions and optional music must already exist on disk.
@@ -598,7 +600,7 @@ def render_lightweight_recovery_video(
             90,
             "6/8 Render rápido com a identidade do canal — preparando FFmpeg local..."
             if logo_only_visuals
-            else "6/8 Render leve confirmado — preparando FFmpeg local...",
+            else "6/8 Preparando render FFmpeg local...",
         )
 
     started = time.time()
@@ -663,17 +665,45 @@ def render_lightweight_recovery_video(
         max_runtime = max(180.0, min(1800.0, (total * 1.5) + 120.0))
         last_emit = 0.0
         output_tail: List[str] = []
+        output_queue: "queue.Queue[Optional[str]]" = queue.Queue()
+
+        def _read_process_output() -> None:
+            try:
+                if process.stdout is not None:
+                    for process_line in process.stdout:
+                        output_queue.put(process_line)
+            finally:
+                output_queue.put(None)
+
+        output_reader = threading.Thread(
+            target=_read_process_output,
+            name="codexia-ffmpeg-progress-reader",
+            daemon=True,
+        )
+        output_reader.start()
         try:
-            assert process.stdout is not None
-            for raw_line in process.stdout:
+            stream_closed = False
+            while not stream_closed:
+                now = time.time()
+                if now - started > max_runtime:
+                    process.terminate()
+                    raise RuntimeError(
+                        f"Render FFmpeg interrompido após {int(max_runtime)}s sem concluir. "
+                        "Os ativos locais foram preservados para nova tentativa."
+                    )
+                try:
+                    raw_line = output_queue.get(timeout=1.0)
+                except queue.Empty:
+                    if process.poll() is not None:
+                        stream_closed = True
+                    continue
+                if raw_line is None:
+                    stream_closed = True
+                    continue
                 line = (raw_line or "").strip()
                 if line:
                     output_tail.append(line)
                     output_tail = output_tail[-40:]
-                now = time.time()
-                if now - started > max_runtime:
-                    process.terminate()
-                    raise RuntimeError(f"Render leve excedeu o limite seguro de {int(max_runtime)}s.")
                 if line.startswith("out_time_ms="):
                     try:
                         elapsed_media = float(line.split("=", 1)[1]) / 1_000_000.0
@@ -684,11 +714,13 @@ def render_lightweight_recovery_video(
                         pct = 90 + int(ratio * 9.0)
                         progress_callback(
                             min(99, pct),
-                            f"6/8 Render leve FFmpeg — {elapsed_media:.0f}s/{total:.0f}s codificados...",
+                            f"6/8 Render FFmpeg — {elapsed_media:.0f}s/{total:.0f}s codificados...",
                         )
                         last_emit = now
             return_code = process.wait(timeout=30)
-            process.stdout.close()
+            output_reader.join(timeout=2.0)
+            if process.stdout is not None:
+                process.stdout.close()
         except Exception:
             try:
                 process.terminate()
@@ -721,7 +753,7 @@ def render_lightweight_recovery_video(
             100,
             "Vídeo renderizado com sucesso pelo modo rápido da identidade do canal."
             if logo_only_visuals
-            else "Vídeo renderizado com sucesso pelo modo leve de recuperação.",
+            else "Vídeo renderizado com sucesso pelo FFmpeg local.",
         )
 
     render_seconds = max(0.0, time.time() - started)

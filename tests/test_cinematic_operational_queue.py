@@ -3,8 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from app.routers.cinematic_queue import _bucket, _task_to_public
+from app.routers.cinematic_queue import _artifact_checklist, _bucket, _task_to_public
 from app.services.cinematic_library_store import CinematicLibraryStore
 
 
@@ -49,6 +50,8 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertTrue(item["can_approve"])
         self.assertTrue(item["can_reject"])
         self.assertFalse(item["can_publish"])
+        self.assertIn("artifact_checklist", item)
+        self.assertIn("director_validation", item["artifact_checklist"])
 
     def test_status_buckets_are_professional_filters(self):
         self.assertEqual(_bucket("processing"), "active")
@@ -57,6 +60,67 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertEqual(_bucket("published"), "ready")
         self.assertEqual(_bucket("failed"), "failed")
         self.assertEqual(_bucket("cancelled"), "cancelled")
+
+    @patch("app.routers.cinematic_queue.build_recovery_plan", return_value={})
+    @patch("app.routers.cinematic_queue.build_manifest_diagnostic", return_value={})
+    def test_artifact_checklist_reports_reusable_assets_and_director_compatibility(self, _diagnostic, _recovery):
+        row = SimpleNamespace(id="task-assets", status="failed")
+        result = {
+            "artifact_checklist": {
+                "target_duration_sec": 600,
+                "script": {"complete": True, "preserved": True},
+                "images": {"actual": 42, "expected": 42, "preserved": True},
+                "narration": {"duration_sec": 598.5, "target_sec": 600, "preserved": True},
+                "captions": {
+                    "duration_sec": 598.2,
+                    "target_sec": 598.5,
+                    "entries": 96,
+                    "source": "approved_edge_tts_word_boundaries",
+                    "preserved": True,
+                },
+                "narration_caption_compatibility": {
+                    "compatible": True,
+                    "text_matches": True,
+                    "timing_source_verified": True,
+                    "timing_source": "approved_edge_tts_word_boundaries",
+                    "duration_difference_sec": 0.3,
+                    "tolerance_sec": 11.97,
+                    "director_verdict": "Narração e legenda compatíveis",
+                },
+            }
+        }
+        checklist = _artifact_checklist(
+            row,
+            result,
+            {},
+            duration_minutes=10,
+            video_url="",
+        )
+        by_key = {item["key"]: item for item in checklist["items"]}
+        self.assertEqual(by_key["images"]["summary"], "42/42")
+        self.assertEqual(by_key["narration"]["status"], "ok")
+        self.assertEqual(by_key["captions"]["status"], "ok")
+        self.assertEqual(by_key["narration_caption_sync"]["status"], "ok")
+        self.assertEqual(by_key["render"]["status"], "failed")
+        self.assertEqual(checklist["reusable_count"], 4)
+        self.assertTrue(checklist["director_validation"]["narration_caption_compatible"])
+
+        incompatible = json.loads(json.dumps(result))
+        incompatible["artifact_checklist"]["narration_caption_compatibility"].update({
+            "compatible": False,
+            "text_matches": False,
+            "director_verdict": "Narração e legenda precisam de correção",
+        })
+        rejected = _artifact_checklist(
+            row,
+            incompatible,
+            {},
+            duration_minutes=10,
+            video_url="",
+        )
+        rejected_by_key = {item["key"]: item for item in rejected["items"]}
+        self.assertEqual(rejected_by_key["narration_caption_sync"]["status"], "partial")
+        self.assertFalse(rejected["director_validation"]["narration_caption_compatible"])
 
     def test_library_store_is_explicit_v2_membership_and_soft_delete(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,6 +183,12 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("Publicar no YouTube", script)
         self.assertIn("reviewProject", script)
         self.assertIn("publishProject", script)
+        self.assertIn("Ativos da produção", script)
+        self.assertIn("Ativos preservados", script)
+        self.assertIn("Verificação do Claude Diretor", script)
+        self.assertIn("Narração ↔ legenda", Path("app/routers/cinematic_queue.py").read_text(encoding="utf-8"))
+        self.assertIn("texto confere", script)
+        self.assertIn("tempos da narração real", script)
         self.assertIn("/publish`,", script)
         self.assertNotIn("queue?limit=50", script)
 
@@ -141,7 +211,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20260919-review-quality3", patch)
+        self.assertIn("operational_queue.js?v=20260920-artifact-checklist1", patch)
         self.assertIn("director_duration_contract.js?v=20260919-quality3", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
