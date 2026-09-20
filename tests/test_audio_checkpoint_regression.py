@@ -192,6 +192,9 @@ class AudioCheckpointRegressionTests(unittest.TestCase):
             "output_path": audio_path,
             "audio_sha256": ac._file_sha256(audio_path),
             "final_text_sent_to_tts": expected_text,
+            "narration_core_version": ac.NARRATION_CORE_VERSION,
+            "narration_core_namespace": ac.NARRATION_CORE_NAMESPACE,
+            "tts_plain_text_only": True,
         }
 
         class FakeGenerator:
