@@ -15,6 +15,7 @@ from app.services.intelligent_cost_optimizer import (
 )
 from app.services.lightweight_recovery_renderer import (
     _build_logo_only_brand_frames,
+    _normalize_visual_segments,
     build_concat_text,
     build_ffmpeg_command,
     build_srt_text,
@@ -260,6 +261,29 @@ class LightweightStage6RecoveryTests(unittest.TestCase):
             for path in (opening, story, endcard):
                 with Image.open(path) as frame:
                     self.assertEqual(frame.size, (1280, 720))
+                    self.assertEqual(frame.mode, "RGB")
+
+    def test_preserved_images_are_normalized_before_concat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            landscape = self._image(tmp, "landscape.png", 40)
+            portrait = os.path.join(tmp, "portrait.png")
+            Image.new("RGBA", (90, 240), (120, 30, 200, 160)).save(portrait)
+            normalized = _normalize_visual_segments(
+                [
+                    {"image_path": landscape, "duration": 1.0, "kind": "story"},
+                    {"image_path": portrait, "duration": 1.0, "kind": "story"},
+                    {"image_path": landscape, "duration": 1.0, "kind": "story"},
+                ],
+                output_dir=tmp,
+                video_size=(320, 180),
+            )
+
+            self.assertEqual(len(normalized), 3)
+            self.assertEqual(normalized[0]["image_path"], normalized[2]["image_path"])
+            self.assertNotEqual(normalized[0]["image_path"], normalized[1]["image_path"])
+            for item in normalized:
+                with Image.open(item["image_path"]) as frame:
+                    self.assertEqual(frame.size, (320, 180))
                     self.assertEqual(frame.mode, "RGB")
 
 
