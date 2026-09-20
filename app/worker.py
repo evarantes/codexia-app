@@ -12,7 +12,6 @@ load_dotenv()
 
 from app.database import DATABASE_DISPLAY
 from app.services.audio_checkpoint import install_audio_checkpoint_patch
-from app.services.narration_contract_guard import install_narration_contract_guard
 from app.services.visual_quality_shadow import install_visual_quality_shadow_patch
 from app.services.visual_quality_guard import install_visual_quality_guard_patch
 from app.services.visual_quality_rollout import apply_visual_quality_observe_rollout
@@ -25,6 +24,7 @@ from app.services.final_cinematic_polish import install_final_cinematic_polish
 from app.services.return_channel_polish import install_return_channel_polish
 from app.services.narrative_editor import install_narrative_editor_patch
 from app.services.canonical_caption_source import install_canonical_caption_source_patch
+from app.services.narration_contract_guard import install_narration_contract_guard
 from app.services.worker_release_health import start_worker_release_heartbeat
 from app.services.worker_health_server import start_worker_health_server
 
@@ -71,14 +71,14 @@ install_return_channel_polish(video_generator_cls)
 # Se a IA editorial falhar, preserva o plano e continua (fail-open).
 install_narrative_editor_patch(video_generator_cls)
 
+# Instalada como camada externa e final no processo que realmente chama os
+# providers. Assim JSON, SSML e instruções técnicas são bloqueados mesmo que
+# algum patch interno altere o texto antes do TTS.
 # Última camada textual do renderer: a transcrição fornece timestamps; conteúdo
 # e recuperação vêm sempre do texto final realmente vinculado ao TTS.
 install_canonical_caption_source_patch(video_generator_cls)
 
 # CODEXIA_NARRATION_CONTRACT_WORKER_V1
-# Instalada como camada externa e final no processo que realmente chama os
-# providers. Assim JSON, SSML e instruções técnicas são bloqueados mesmo que
-# algum patch interno altere o texto antes do TTS.
 install_narration_contract_guard(video_generator_cls)
 
 # Contrato de startup: é melhor o worker recusar iniciar do que consumir TTS e
@@ -87,10 +87,10 @@ if not callable(getattr(video_generator_cls, "_codexia_force_canonical_caption_t
     raise RuntimeError("CaptionIntegritySelfHeal ausente: worker recusou iniciar.")
 if int(getattr(video_generator_cls, "_codexia_caption_integrity_version", 0) or 0) < 4:
     raise RuntimeError("CaptionIntegritySelfHeal desatualizado: esperado v4.")
+if not bool(getattr(video_generator_cls, "_codexia_narration_contract_guard_v1", False)):
+    raise RuntimeError("NarrationContractGuard ausente: worker recusou iniciar.")
 if not bool(getattr(video_generator_cls, "_codexia_narration_core_v1", False)):
     raise RuntimeError("NarrationCore ausente: worker recusou iniciar para não narrar códigos.")
-if not bool(getattr(video_generator_cls, "_codexia_narration_contract_guard_v1", False)):
-    raise RuntimeError("NarrationContractGuard ausente: worker recusou iniciar para não narrar metadados.")
 
 listen = ['default']
 
