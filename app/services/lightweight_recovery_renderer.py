@@ -271,6 +271,54 @@ def build_concat_text(segments: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _normalize_visual_segments(
+    segments: Sequence[Dict[str, Any]],
+    *,
+    output_dir: str,
+    video_size: Tuple[int, int],
+) -> List[Dict[str, Any]]:
+    """Decode preserved images once and give FFmpeg one stable RGB format.
+
+    The concat demuxer may expose a new width, pixel format or rotation when it
+    advances to the next user image.  Long renders then fail after their first
+    encoded frame even though every source file is individually valid.  A tiny
+    normalized JPEG per distinct asset avoids filter reinitialisation and also
+    fails early with a useful asset error instead of an opaque FFmpeg exit.
+    """
+    from PIL import Image, ImageOps
+
+    width, height = int(video_size[0]), int(video_size[1])
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Dimensão inválida para normalizar as imagens preservadas.")
+
+    normalized_by_source: Dict[str, str] = {}
+    normalized: List[Dict[str, Any]] = []
+    for item in segments or []:
+        source = os.path.abspath(str(item.get("image_path") or "").strip())
+        if not source:
+            continue
+        target = normalized_by_source.get(source)
+        if not target:
+            target = os.path.join(output_dir, f"visual_{len(normalized_by_source):03d}.jpg")
+            try:
+                with Image.open(source) as opened:
+                    frame = ImageOps.exif_transpose(opened).convert("RGB")
+                    frame = ImageOps.fit(
+                        frame,
+                        (width, height),
+                        method=Image.Resampling.LANCZOS,
+                        centering=(0.5, 0.5),
+                    )
+                    frame.save(target, format="JPEG", quality=90, subsampling=0)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Imagem preservada inválida para o render: {os.path.basename(source)} ({exc})."
+                ) from exc
+            normalized_by_source[source] = target
+        normalized.append({**dict(item), "image_path": target})
+    return normalized
+
+
 def _escape_subtitles_filter_path(path: str) -> str:
     value = os.path.abspath(path).replace("\\", "/")
     return value.replace(":", "\\:").replace("'", "\\'")
@@ -557,6 +605,105 @@ def build_ffmpeg_command(
     return command
 
 
+def _run_ffmpeg_command(
+    command: Sequence[str],
+    *,
+    target_duration: float,
+    progress_callback: ProgressCallback = None,
+) -> Tuple[int, List[str], List[str]]:
+    """Run FFmpeg without blocking on a quiet pipe and retain real errors."""
+    process = subprocess.Popen(
+        list(command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    total = max(0.1, float(target_duration or 0.0))
+    max_runtime = max(180.0, min(1800.0, (total * 1.5) + 120.0))
+    process_started = time.time()
+    last_emit = 0.0
+    output_tail: List[str] = []
+    diagnostic_tail: List[str] = []
+    output_queue: "queue.Queue[Optional[str]]" = queue.Queue()
+    progress_keys = (
+        "bitrate=", "drop_frames=", "dup_frames=", "encoder=", "fps=",
+        "frame=", "out_time=", "out_time_ms=", "out_time_us=", "progress=",
+        "stream_", "total_size=",
+    )
+
+    def _read_process_output() -> None:
+        try:
+            if process.stdout is not None:
+                for process_line in process.stdout:
+                    output_queue.put(process_line)
+        finally:
+            output_queue.put(None)
+
+    output_reader = threading.Thread(
+        target=_read_process_output,
+        name="codexia-ffmpeg-progress-reader",
+        daemon=True,
+    )
+    output_reader.start()
+    try:
+        stream_closed = False
+        while not stream_closed:
+            now = time.time()
+            if now - process_started > max_runtime:
+                process.terminate()
+                raise RuntimeError(
+                    f"Render FFmpeg interrompido após {int(max_runtime)}s sem concluir. "
+                    "Os ativos locais foram preservados para nova tentativa."
+                )
+            try:
+                raw_line = output_queue.get(timeout=1.0)
+            except queue.Empty:
+                if process.poll() is not None:
+                    stream_closed = True
+                continue
+            if raw_line is None:
+                stream_closed = True
+                continue
+            line = (raw_line or "").strip()
+            if line:
+                output_tail.append(line)
+                output_tail = output_tail[-80:]
+                if not line.startswith(progress_keys):
+                    diagnostic_tail.append(line)
+                    diagnostic_tail = diagnostic_tail[-30:]
+            if line.startswith("out_time_ms="):
+                try:
+                    elapsed_media = float(line.split("=", 1)[1]) / 1_000_000.0
+                except Exception:
+                    elapsed_media = 0.0
+                if progress_callback and now - last_emit >= 1.5:
+                    ratio = max(0.0, min(1.0, elapsed_media / total))
+                    pct = 90 + int(ratio * 9.0)
+                    progress_callback(
+                        min(99, pct),
+                        f"6/8 Render FFmpeg — {elapsed_media:.0f}s/{total:.0f}s codificados...",
+                    )
+                    last_emit = now
+        return_code = process.wait(timeout=30)
+        output_reader.join(timeout=2.0)
+        if process.stdout is not None:
+            process.stdout.close()
+        return return_code, output_tail, diagnostic_tail
+    except Exception:
+        try:
+            process.terminate()
+            process.wait(timeout=10)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        if process.stdout is not None:
+            process.stdout.close()
+        raise
+
+
 def render_lightweight_recovery_video(
     *,
     output_path: str,
@@ -629,6 +776,11 @@ def render_lightweight_recovery_video(
         )
         if not segments:
             raise RuntimeError("Nenhuma imagem local válida disponível para o render leve de recuperação.")
+        segments = _normalize_visual_segments(
+            segments,
+            output_dir=tmp,
+            video_size=video_size,
+        )
         concat_path = os.path.join(tmp, "visuals.ffconcat")
         srt_path = os.path.join(tmp, "captions.srt")
         with open(concat_path, "w", encoding="utf-8") as fh:
@@ -643,100 +795,49 @@ def render_lightweight_recovery_video(
         with open(srt_path, "w", encoding="utf-8") as fh:
             fh.write(srt_text)
 
-        command = build_ffmpeg_command(
-            concat_path=concat_path,
-            srt_path=srt_path,
-            audio_path=audio_path,
-            output_path=output_abs,
+        def _command(music_path: str) -> List[str]:
+            return build_ffmpeg_command(
+                concat_path=concat_path,
+                srt_path=srt_path,
+                audio_path=audio_path,
+                output_path=output_abs,
+                target_duration=total,
+                video_size=video_size,
+                local_music_path=music_path,
+                music_volume=music_volume,
+                threads=2,
+            )
+
+        return_code, output_tail, diagnostic_tail = _run_ffmpeg_command(
+            _command(local_music),
             target_duration=total,
-            video_size=video_size,
-            local_music_path=local_music,
-            music_volume=music_volume,
-            threads=2,
+            progress_callback=progress_callback,
         )
-
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        max_runtime = max(180.0, min(1800.0, (total * 1.5) + 120.0))
-        last_emit = 0.0
-        output_tail: List[str] = []
-        output_queue: "queue.Queue[Optional[str]]" = queue.Queue()
-
-        def _read_process_output() -> None:
+        # Background music is optional. A truncated local MP3 must never waste
+        # preserved narration/images or block the final video.
+        if return_code != 0 and local_music:
+            if progress_callback:
+                progress_callback(90, "6/8 Música local inválida — repetindo o render sem trilha...")
             try:
-                if process.stdout is not None:
-                    for process_line in process.stdout:
-                        output_queue.put(process_line)
-            finally:
-                output_queue.put(None)
-
-        output_reader = threading.Thread(
-            target=_read_process_output,
-            name="codexia-ffmpeg-progress-reader",
-            daemon=True,
-        )
-        output_reader.start()
-        try:
-            stream_closed = False
-            while not stream_closed:
-                now = time.time()
-                if now - started > max_runtime:
-                    process.terminate()
-                    raise RuntimeError(
-                        f"Render FFmpeg interrompido após {int(max_runtime)}s sem concluir. "
-                        "Os ativos locais foram preservados para nova tentativa."
-                    )
-                try:
-                    raw_line = output_queue.get(timeout=1.0)
-                except queue.Empty:
-                    if process.poll() is not None:
-                        stream_closed = True
-                    continue
-                if raw_line is None:
-                    stream_closed = True
-                    continue
-                line = (raw_line or "").strip()
-                if line:
-                    output_tail.append(line)
-                    output_tail = output_tail[-40:]
-                if line.startswith("out_time_ms="):
-                    try:
-                        elapsed_media = float(line.split("=", 1)[1]) / 1_000_000.0
-                    except Exception:
-                        elapsed_media = 0.0
-                    if progress_callback and now - last_emit >= 1.5:
-                        ratio = max(0.0, min(1.0, elapsed_media / total))
-                        pct = 90 + int(ratio * 9.0)
-                        progress_callback(
-                            min(99, pct),
-                            f"6/8 Render FFmpeg — {elapsed_media:.0f}s/{total:.0f}s codificados...",
-                        )
-                        last_emit = now
-            return_code = process.wait(timeout=30)
-            output_reader.join(timeout=2.0)
-            if process.stdout is not None:
-                process.stdout.close()
-        except Exception:
-            try:
-                process.terminate()
-                process.wait(timeout=10)
+                if os.path.isfile(output_abs):
+                    os.remove(output_abs)
             except Exception:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
-            if process.stdout is not None:
-                process.stdout.close()
-            raise
+                pass
+            return_code, retry_tail, retry_diagnostics = _run_ffmpeg_command(
+                _command(""),
+                target_duration=total,
+                progress_callback=progress_callback,
+            )
+            output_tail.extend(retry_tail)
+            diagnostic_tail.extend(retry_diagnostics)
+            if return_code == 0:
+                local_music = ""
 
     if return_code != 0:
+        useful_tail = diagnostic_tail[-10:] or output_tail[-10:]
         raise RuntimeError(
-            "FFmpeg falhou no render leve de recuperação. " + " | ".join(output_tail[-8:])
+            f"FFmpeg falhou no render leve de recuperação (código {return_code}). "
+            + " | ".join(useful_tail)
         )
     if not os.path.isfile(output_abs) or os.path.getsize(output_abs) < 50 * 1024:
         raise RuntimeError("Render leve terminou sem produzir um MP4 utilizável.")
