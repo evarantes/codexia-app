@@ -906,14 +906,22 @@ class CinematicQualityService:
                 )
             )
         if fallback_used:
+            # Quando voz premium não foi exigida, Edge-TTS é uma recuperação
+            # permitida. O fallback só bloqueia se a transcrição também não
+            # comprovar o roteiro; caso contrário fica como alerta de revisão.
+            fallback_severity = "high" if not within_tolerance else "medium"
             issues.append(
                 self._build_issue(
                     category="pronunciation",
                     problem="A geração de áudio caiu em provider de fallback.",
                     justification="Fallback costuma reduzir estabilidade de pronúncia, entonação e naturalidade.",
-                    suggestion="Tentar novamente o TTS premium antes de seguir para o render.",
+                    suggestion=(
+                        "Regenerar o áudio e validar novamente a transcrição antes do render."
+                        if not within_tolerance
+                        else "Registrar o fallback para revisão de naturalidade, mantendo o texto validado."
+                    ),
                     stage="pronunciation_tts_render",
-                    severity="high",
+                    severity=fallback_severity,
                 )
             )
         if words_per_minute and (words_per_minute < 112 or words_per_minute > 182):
