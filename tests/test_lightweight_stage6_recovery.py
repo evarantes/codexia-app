@@ -301,6 +301,7 @@ class LightweightStage6RecoveryTests(unittest.TestCase):
         self.assertEqual(return_code, 3)
         self.assertIn("out_time_ms=83333", output)
         self.assertEqual(diagnostics, ["decoder: invalid local music"])
+        self.assertNotIn("out_time_ms=83333", diagnostics)
 
 
 if __name__ == "__main__":
