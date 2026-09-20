@@ -21,6 +21,10 @@ class AudioCheckpointRegressionTests(unittest.TestCase):
         with open(path, "wb") as fh:
             fh.write(payload)
         self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        self.addCleanup(
+            lambda: os.path.exists(ac._rejection_marker_path(path))
+            and os.remove(ac._rejection_marker_path(path))
+        )
         return path
 
     def _fake_generator_class(self, audio_path, *, fail_after_audio=False):
@@ -109,7 +113,38 @@ class AudioCheckpointRegressionTests(unittest.TestCase):
         self.assertIn("quota unavailable", generated["fallback_reason"])
         self.assertFalse(generated_meta.get("failed", False))
         self.assertEqual(failed["validation_status"], "rejected")
+        self.assertFalse(failed["reusable"])
+        self.assertTrue(failed["rejection_marker_created"])
+        self.assertTrue(os.path.isfile(ac._rejection_marker_path(audio_path)))
         self.assertTrue(failed_meta.get("failed"))
+
+    def test_rejected_checkpoint_invalidates_seed_and_cache_for_retry(self):
+        audio_path = self._audio_file(b"rejected-audio" * 300)
+        checkpoint = {
+            "output_path": audio_path,
+            "audio_sha256": ac._file_sha256(audio_path),
+            "final_text_sent_to_tts": "Texto correto que deveria ter sido narrado.",
+            "validation_status": "rejected",
+            "validation_error": "A transcrição divergiu do texto aprovado.",
+            "reusable": False,
+        }
+        plan = {
+            "seed_audio_path": audio_path,
+            "seed_narration_text": checkpoint["final_text_sent_to_tts"],
+            "force_render_only": True,
+            "scenes": [{"text": checkpoint["final_text_sent_to_tts"]}],
+        }
+
+        with mock.patch.object(ac, "_checkpoint_from_task", return_value=checkpoint), \
+             mock.patch("app.services.task_manager.merge_task_result", return_value={}):
+            result = ac._validate_seed_before_reuse(mock.Mock(ai_service=_FakeAI()), plan)
+
+        self.assertFalse(result["compatible"])
+        self.assertEqual(result["reason"], "checkpoint_rejected")
+        self.assertNotIn("seed_audio_path", plan)
+        self.assertFalse(plan["force_render_only"])
+        self.assertTrue(plan["force_reuse_assets"])
+        self.assertTrue(os.path.isfile(ac._rejection_marker_path(audio_path)))
 
     def test_orphan_or_changed_seed_is_not_reused(self):
         audio_path = self._audio_file(b"same-file" * 300)

@@ -60,6 +60,34 @@ def _file_metadata(path: str) -> Dict[str, Any]:
     }
 
 
+def _rejection_marker_path(path: Any) -> str:
+    value = str(path or "").strip()
+    return f"{value}.codexia-rejected" if value else ""
+
+
+def _mark_audio_rejected(path: Any, reason: Any) -> bool:
+    """Prevent a critic-rejected TTS cache from being selected on retry."""
+    marker = _rejection_marker_path(path)
+    if not marker:
+        return False
+    try:
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(str(reason or "audio_rejected_by_quality_gate")[:2000])
+        return True
+    except Exception:
+        return False
+
+
+def _mark_checkpoint_audio_rejected(checkpoint: Any, reason: Any) -> int:
+    data = checkpoint if isinstance(checkpoint, dict) else {}
+    paths = {
+        str(data.get(key) or "").strip()
+        for key in ("output_path", "final_audio_path", "audio_path", "main_audio_path", "cta_audio_path")
+        if str(data.get(key) or "").strip()
+    }
+    return sum(1 for path in paths if _mark_audio_rejected(path, reason))
+
+
 def _task_id_from_generator(generator: Any) -> Optional[str]:
     ai_service = getattr(generator, "ai_service", None)
     task_id = getattr(ai_service, "ai_task_id", None) if ai_service is not None else None
@@ -426,7 +454,16 @@ def _validate_seed_before_reuse(generator: Any, plan: Any) -> Dict[str, Any]:
     cp_path = str(checkpoint.get("output_path") or checkpoint.get("final_audio_path") or "").strip()
     reason = None
 
-    if not checkpoint:
+    validation_status = str(checkpoint.get("validation_status") or "").strip().lower()
+    checkpoint_rejected = bool(
+        validation_status in {"rejected", "invalid", "failed_quality_gate"}
+        or checkpoint.get("reusable") is False
+    )
+    if checkpoint_rejected:
+        reason = f"checkpoint_{validation_status or 'not_reusable'}"
+        _mark_checkpoint_audio_rejected(checkpoint, checkpoint.get("validation_error") or reason)
+        _mark_audio_rejected(seed_path, checkpoint.get("validation_error") or reason)
+    elif not checkpoint:
         reason = "checkpoint_missing_for_task"
     elif not cp_path or os.path.abspath(cp_path) != os.path.abspath(seed_path):
         reason = "seed_not_linked_to_current_task"
@@ -513,6 +550,15 @@ def install_audio_checkpoint_patch(video_generator_cls: Optional[Type[Any]] = No
         return segmented
 
     def create_with_checkpoint(self: Any, plan: Any, *args: Any, **kwargs: Any):
+        task_id = _task_id_from_generator(self)
+        existing_checkpoint = _checkpoint_from_task(task_id) if task_id else {}
+        if isinstance(existing_checkpoint, dict) and str(
+            existing_checkpoint.get("validation_status") or ""
+        ).strip().lower() in {"rejected", "invalid", "failed_quality_gate"}:
+            _mark_checkpoint_audio_rejected(
+                existing_checkpoint,
+                existing_checkpoint.get("validation_error") or "audio_rejected_by_quality_gate",
+            )
         if isinstance(plan, dict):
             source_text = _plan_narration_text(plan)
             self._codexia_source_plan_fingerprint = _text_sha256(source_text) if source_text else None
@@ -541,6 +587,13 @@ def install_audio_checkpoint_patch(video_generator_cls: Optional[Type[Any]] = No
                 checkpoint["validation_status"] = "rejected" if audio_rejection else "preserved_after_failure"
                 checkpoint["validation_error"] = message[:1200]
                 checkpoint["validation_failed_at"] = _utc_iso()
+                if audio_rejection:
+                    checkpoint["reusable"] = False
+                    checkpoint["rejection_marker_count"] = _mark_checkpoint_audio_rejected(
+                        checkpoint,
+                        message,
+                    )
+                    checkpoint["rejection_marker_created"] = bool(checkpoint["rejection_marker_count"])
                 _persist_checkpoint(self, checkpoint, failed=True, failure_message=message)
                 if audio_rejection:
                     raise RuntimeError(f"{message} | Diagnóstico TTS: {_diagnostic_suffix(checkpoint)}") from exc

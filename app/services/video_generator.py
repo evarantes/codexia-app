@@ -4106,6 +4106,10 @@ class VideoGenerator:
         def _valid_audio(path: str, minimum_size: int = 500) -> tuple:
             if not path or not os.path.exists(path):
                 return False, 0.0
+            # A IA Crítica pode rejeitar um áudio depois de ele ter sido salvo
+            # no cache. O sidecar impede a reutilização infinita desse arquivo.
+            if os.path.isfile(f"{path}.codexia-rejected"):
+                return False, 0.0
             try:
                 if int(os.path.getsize(path) or 0) <= minimum_size:
                     return False, 0.0
@@ -4333,6 +4337,10 @@ class VideoGenerator:
                     if os.path.exists(path) and os.path.getsize(path) > 500 and dur > 0.2:
                         os.replace(path, cache_path)
                         path = cache_path
+                        try:
+                            os.remove(f"{cache_path}.codexia-rejected")
+                        except FileNotFoundError:
+                            pass
                         tts_debug["provider_used"] = tts_debug.get("provider_used") or "premium_unknown"
                         tts_debug["cache_hit"] = False
                         tts_debug["final_audio_duration_sec"] = round(float(dur or 0.0), 2)
@@ -4397,12 +4405,20 @@ class VideoGenerator:
 
                 path = os.path.join(self.output_dir, f"tts_edge_tmp_{uuid.uuid4().hex}.mp3")
                 rate, pitch, volume = _infer_edge_prosody(clean_text, is_male=(gender == "male"), style_tag=style)
-                ssml = _edge_ssml(clean_text, voice_name=voice, rate=rate, pitch=pitch, volume=volume, lang_tag=lang_tag)
                 edge_timeout = _bounded_timeout_seconds("NARRATION_EDGE_TTS_TIMEOUT_SECONDS", 90)
                 edge_error: Dict[str, Any] = {}
 
                 async def _run_edge_tts():
-                    communicate = edge_tts.Communicate(ssml, voice)
+                    # A biblioteca edge-tts recebe texto puro e aplica a
+                    # prosódia pelos argumentos próprios. Enviar SSML como
+                    # texto pode fazê-la narrar marcação/código.
+                    communicate = edge_tts.Communicate(
+                        clean_text,
+                        voice,
+                        rate=rate,
+                        pitch=pitch,
+                        volume=volume,
+                    )
                     await asyncio.wait_for(communicate.save(path), timeout=edge_timeout)
 
                 def _edge_worker():
@@ -4452,6 +4468,10 @@ class VideoGenerator:
                 if os.path.exists(path) and file_size > 500 and dur > 0.2:
                     os.replace(path, cache_path)
                     path = cache_path
+                    try:
+                        os.remove(f"{cache_path}.codexia-rejected")
+                    except FileNotFoundError:
+                        pass
                     _record_attempt(
                         "edge_tts",
                         "success",
@@ -4606,6 +4626,10 @@ $synth.Dispose()
             if os.path.exists(path) and os.path.getsize(path) > 100 and dur > 0.2:
                 os.replace(path, cache_path)
                 path = cache_path
+                try:
+                    os.remove(f"{cache_path}.codexia-rejected")
+                except FileNotFoundError:
+                    pass
                 _record_attempt("gtts", "success", "Fallback gTTS gerou audio valido.", {"duration_sec": round(float(dur or 0.0), 2)})
                 tts_debug["provider_used"] = "gtts"
                 tts_debug["fallback_used"] = True
