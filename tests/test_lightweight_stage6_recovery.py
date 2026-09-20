@@ -2,6 +2,7 @@ import math
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import unittest
 import wave
@@ -16,6 +17,7 @@ from app.services.intelligent_cost_optimizer import (
 from app.services.lightweight_recovery_renderer import (
     _build_logo_only_brand_frames,
     _normalize_visual_segments,
+    _run_ffmpeg_command,
     build_concat_text,
     build_ffmpeg_command,
     build_srt_text,
@@ -285,6 +287,21 @@ class LightweightStage6RecoveryTests(unittest.TestCase):
                 with Image.open(item["image_path"]) as frame:
                     self.assertEqual(frame.size, (320, 180))
                     self.assertEqual(frame.mode, "RGB")
+
+    def test_ffmpeg_runner_keeps_the_real_error_separate_from_progress(self):
+        return_code, output, diagnostics = _run_ffmpeg_command(
+            [
+                sys.executable,
+                "-c",
+                "print('out_time_ms=83333'); print('decoder: invalid local music'); raise SystemExit(3)",
+            ],
+            target_duration=10.0,
+        )
+
+        self.assertEqual(return_code, 3)
+        self.assertIn("out_time_ms=83333", output)
+        self.assertEqual(diagnostics, ["decoder: invalid local music"])
+        self.assertNotIn("out_time_ms=83333", diagnostics)
 
 
 if __name__ == "__main__":
