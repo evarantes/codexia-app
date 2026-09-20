@@ -372,6 +372,10 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                     "Áudio aprovado obrigatório: novo TTS bloqueado. O renderer deve reutilizar o MP3 aprovado."
                 )
             clean = prepare_spoken_narration_text(text, label="texto enviado ao TTS")
+            output = original_generate_audio(self, clean, *args, **kwargs)
+            # O provider recria _last_tts_debug durante a chamada. Grave o
+            # contrato depois dela para que o checkpoint prove que o MP3 foi
+            # produzido pela fronteira segura, e não por uma versão antiga.
             try:
                 debug = dict(getattr(self, "_last_tts_debug", {}) or {})
                 debug.update({
@@ -379,11 +383,11 @@ def install_narration_contract_guard(video_generator_cls: Type[Any]) -> Type[Any
                     "narration_core_namespace": NARRATION_CORE_NAMESPACE,
                     "tts_plain_text_only": True,
                     "remaining_structural_issues": structural_issues(clean),
+                    "spoken_text_sha256": build_narration_artifact(clean).text_sha256,
                 })
                 self._last_tts_debug = debug
             except Exception:
                 pass
-            output = original_generate_audio(self, clean, *args, **kwargs)
             task_id = str(getattr(self, "_codexia_task_id", "") or "").strip()
             if task_id and output and isinstance(output, str) and os.path.isfile(output):
                 try:
