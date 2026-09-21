@@ -3541,6 +3541,8 @@ class VideoRequest(BaseModel):
     # descartava a meta 20/20 antes de o worker receber o pedido.
     repair_mode: bool = False
     repair_complete_visuals: bool = False
+    repair_regenerate_audio: bool = False
+    repair_exclude_video: bool = False
     repair_image_budget: Optional[Dict[str, Any]] = None
     expected_image_count: Optional[int] = None
     strict_visual_target_count: Optional[int] = None
