@@ -5435,6 +5435,7 @@ $synth.Dispose()
         allow_non_ai_fallback = str(allow_non_ai_fallback_raw or "").strip().lower() in {"1", "true", "yes", "on"}
         image_max_rounds = int((os.getenv("IMAGE_MAX_ROUNDS") or "2").strip() or "2")
         recovery_image_budget = RecoveryImageCallBudget(plan)
+        partial_image_recovery = recovery_image_budget.enabled
         paid_image_call_guard = recovery_image_budget.consume if recovery_image_budget.enabled else None
         image_cache = {}
         cached_temp_paths = set()
@@ -5779,7 +5780,10 @@ $synth.Dispose()
                 plan if isinstance(plan, dict) else None,
                 ai_available=bool(self.ai_service),
                 use_single_bg=bool(use_single_bg),
-                selected_image_count=len(selected_image_paths),
+                # Numa recuperação parcial, as imagens selecionadas são apenas
+                # o conjunto preservado, não a meta final. O orçamento assinado
+                # acima define quantos grupos visuais devem existir.
+                selected_image_count=(0 if partial_image_recovery else len(selected_image_paths)),
             )
             for group in visual_group_plan.get("groups") or []:
                 group["prompt"] = self._compose_visual_prompt_for_group(scenes, group.get("scene_indexes") or [], continuity_anchor)
@@ -6875,7 +6879,10 @@ $synth.Dispose()
                 visual_group = group_lookup.get(visual_group_id, {})
                 scene_decision = scene_decision_lookup.get(i, {})
                 selected_image_index = None
-                if selected_image_paths:
+                if selected_image_paths and (
+                    not partial_image_recovery
+                    or visual_group_id < len(selected_image_paths)
+                ):
                     bg_image_path = self._selected_image_for_visual_group(
                         selected_image_paths,
                         visual_group_id,

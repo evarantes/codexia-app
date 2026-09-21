@@ -931,7 +931,20 @@ class UnifiedVideoPipelineService:
         # ``youtube_series`` validamos contra esse plano; se o relatório não
         # existir, mantemos o mínimo solicitado original. Os demais módulos,
         # especialmente História/Devocional, não mudam de comportamento.
-        requested_min_images = 1 if logo_only_visuals else max(1, min(int(uv.image_count or 1), 256))
+        contract_expected_images = 0
+        for candidate in (
+            task_payload.get("strict_visual_target_count"),
+            task_payload.get("expected_image_count"),
+            (task_payload.get("repair_image_budget") or {}).get("expected_image_count")
+            if isinstance(task_payload.get("repair_image_budget"), dict)
+            else 0,
+        ):
+            contract_expected_images = max(contract_expected_images, _safe_int(candidate, 0))
+        requested_min_images = (
+            1
+            if logo_only_visuals
+            else max(1, min(max(int(uv.image_count or 1), contract_expected_images), 256))
+        )
         min_images = requested_min_images
         render_planned_min_images: Optional[int] = None
         image_count_policy = "logo_only_single_asset" if logo_only_visuals else "requested_image_count"
@@ -1358,15 +1371,18 @@ class UnifiedVideoPipelineService:
                             break
             if paths:
                 uv.images_json = _json_dumps({"paths": paths})
-        # vídeo
-        for k in ("video_url", "video_path", "file_path"):
-            v = result.get(k)
-            if v and not uv.video_path:
-                # Preferimos path absoluto para probe, mas se vier URL pode ser reconstruído depois.
-                if k == "file_path" or k == "video_path":
-                    uv.video_path = str(v)
-                elif k == "video_url":
-                    uv.video_url = str(v)
+        # Um retry pode produzir outro MP4 para a mesma tarefa. O resultado
+        # atual deve substituir o caminho antigo; do contrário o Claude Diretor
+        # mede novamente o vídeo anterior (por exemplo, 5:15) e reprova o novo.
+        current_video_path = result.get("file_path") or result.get("video_path")
+        if current_video_path:
+            normalized_video_path = str(current_video_path)
+            if normalized_video_path != str(uv.video_path or ""):
+                uv.video_size_bytes = None
+                uv.video_duration_seconds = None
+            uv.video_path = normalized_video_path
+        if result.get("video_url"):
+            uv.video_url = str(result.get("video_url"))
         # youtube
         if result.get("youtube_video_id") and not uv.youtube_video_id:
             uv.youtube_video_id = str(result["youtube_video_id"])[:64]
