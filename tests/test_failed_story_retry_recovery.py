@@ -153,6 +153,103 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertEqual(merged["render_report"], prior["render_report"])
         self.assertTrue(merged["payload"]["force_reuse_assets"])
 
+    def test_strict_ten_minute_retry_never_treats_eight_images_as_render_only(self):
+        images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
+        row = SimpleNamespace(
+            id="task-visual-floor",
+            message="O Claude Diretor bloqueou o vídeo (image_count_minimum).",
+            result_json=json.dumps({
+                "script": {
+                    "scenes": [{"text": "Cena válida."}],
+                    "selected_images": images,
+                    "expected_image_count": 8,
+                },
+                "render_report": {
+                    "audio_generation": {"output_path": "/data/media/audio/valid.mp3"},
+                    "visual_plan": {"requested_image_count": 8},
+                },
+            }),
+        )
+        fake_db = Mock()
+        fake_db.query.return_value.filter.return_value.first.return_value = row
+        payload = {
+            "mode": "story",
+            "kind": "devotional",
+            "duration": 10,
+            "strict_visual_quality_required": True,
+            "director_quality_required": True,
+            "expected_image_count": 8,
+        }
+        with (
+            patch("app.routers.youtube.SessionLocal", return_value=fake_db),
+            patch("app.routers.youtube._selected_images_ok", return_value=True),
+            patch("app.routers.youtube._file_ok", return_value=True),
+            patch(
+                "app.services.production_manifest.build_recovery_plan",
+                return_value={
+                    "expected_image_count": 8,
+                    "existing_image_paths": images,
+                    "audio_path": "/data/media/audio/valid.mp3",
+                },
+            ),
+        ):
+            prepared = _maybe_enable_render_only_flags(dict(payload), "task-visual-floor")
+
+        self.assertFalse(prepared["force_render_only"])
+        self.assertTrue(prepared["repair_mode"])
+        self.assertEqual(prepared["expected_image_count"], 20)
+        self.assertEqual(prepared["strict_visual_target_count"], 20)
+        self.assertEqual(prepared["repair_image_budget"]["existing_image_count"], 8)
+        self.assertEqual(prepared["repair_image_budget"]["missing_image_count"], 12)
+        self.assertEqual(prepared["repair_image_budget"]["max_new_image_calls"], 12)
+
+    def test_partial_visual_retry_regenerates_audio_when_local_file_is_missing(self):
+        images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
+        row = SimpleNamespace(
+            id="task-audio-missing",
+            message="Recuperação (render-only) bloqueada: roteiro=OK, imagens=OK (8), áudio=FALTA.",
+            result_json=json.dumps({
+                "script": {
+                    "scenes": [{"text": "Cena válida."}],
+                    "selected_images": images,
+                },
+                "render_report": {
+                    "audio_generation": {"output_path": "/data/media/audio/missing.mp3"},
+                    "visual_plan": {"requested_image_count": 8},
+                },
+            }),
+        )
+        fake_db = Mock()
+        fake_db.query.return_value.filter.return_value.first.return_value = row
+        payload = {
+            "mode": "story",
+            "kind": "devotional",
+            "duration": 10,
+            "strict_visual_quality_required": True,
+            "director_quality_required": True,
+            "expected_image_count": 8,
+        }
+        with (
+            patch("app.routers.youtube.SessionLocal", return_value=fake_db),
+            patch("app.routers.youtube._selected_images_ok", return_value=True),
+            patch("app.routers.youtube._file_ok", return_value=False),
+            patch(
+                "app.services.production_manifest.build_recovery_plan",
+                return_value={
+                    "expected_image_count": 8,
+                    "existing_image_paths": images,
+                    "audio_path": "/data/media/audio/missing.mp3",
+                },
+            ),
+        ):
+            prepared = _maybe_enable_render_only_flags(dict(payload), "task-audio-missing")
+
+        self.assertFalse(prepared["force_render_only"])
+        self.assertTrue(prepared["repair_mode"])
+        self.assertTrue(prepared["repair_regenerate_audio"])
+        self.assertNotIn("reuse_audio_from", prepared)
+        self.assertEqual(prepared["repair_image_budget"]["missing_image_count"], 12)
+
     def test_retry_uses_canonical_dispatch_and_not_raw_legacy_thread(self):
         source = inspect.getsource(retry_task)
         self.assertIn("_dispatch_video_generation_task(payload, task_id)", source)
