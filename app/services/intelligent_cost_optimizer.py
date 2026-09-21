@@ -67,6 +67,7 @@ def build_visual_quality_completion_plan(
     image_unit_cost_usd: float = 0.0,
     audio_unit_cost_usd_per_minute: float | None = None,
     usd_brl: float | None = None,
+    regenerate_narration: bool = True,
 ) -> Dict[str, Any]:
     """Plan a strict V2 correction with explicit cost confirmation.
 
@@ -121,15 +122,20 @@ def build_visual_quality_completion_plan(
     except (TypeError, ValueError):
         minutes = 0.0
 
+    # Em falhas exclusivamente visuais (ex.: image_count_minimum), uma narração
+    # já validada não deve ser cobrada nem regenerada. Se o áudio não existir,
+    # a reconstrução continua obrigatória mesmo quando o chamador pediu reuso.
+    should_regenerate_narration = bool(regenerate_narration or not audio)
+
     image_cost_usd = round(image_unit * missing, 6)
     image_cost_brl = round(image_cost_usd * fx, 2)
-    audio_cost_usd = round(audio_unit * minutes, 6)
+    audio_cost_usd = round(audio_unit * minutes, 6) if should_regenerate_narration else 0.0
     audio_cost_brl = round(audio_cost_usd * fx, 2)
     total_cost_usd = round(image_cost_usd + audio_cost_usd, 6)
     total_cost_brl = round(total_cost_usd * fx, 2)
 
     canonical = {
-        "version": 4,
+        "version": 5,
         "task_id": str(task_id or "").strip(),
         "strategy": "quality_completion_preserve_then_generate_v2",
         "strict_visual_quality_required": True,
@@ -141,7 +147,8 @@ def build_visual_quality_completion_plan(
         "audio_path": audio,
         "preserve_full_script": True,
         "preserve_existing_images": True,
-        "regenerate_narration": True,
+        "preserve_full_narration": bool(audio) and not should_regenerate_narration,
+        "regenerate_narration": should_regenerate_narration,
         "paid_image_calls": missing,
         "max_new_image_calls": missing,
         "image_unit_cost_usd": round(image_unit, 6),
@@ -169,7 +176,11 @@ def build_visual_quality_completion_plan(
         "estimated_new_image_calls": missing,
         "estimated_savings_usd": round(image_unit * existing, 6) if image_unit > 0 else None,
         "estimated_savings_brl": round(image_unit * existing * fx, 2) if image_unit > 0 else None,
-        "audio_provider_policy": "premium_configured_then_free_fallback",
+        "audio_provider_policy": (
+            "premium_configured_then_free_fallback"
+            if should_regenerate_narration
+            else "reuse_valid_existing_audio"
+        ),
         "cost_confirmation": {
             "currency_reference": "USD",
             "usd_brl": round(fx, 6),
@@ -191,6 +202,7 @@ def build_visual_quality_completion_plan(
             "max_average_image_seconds": 30.0,
             "minimum_scenes_per_minute": 2.0,
             "never_shorten_narration": True,
+            "preserve_existing_narration_when_valid": not should_regenerate_narration,
             "never_remove_script_text": True,
             "require_audio_timed_captions": True,
             "hard_cap_new_image_calls": missing,

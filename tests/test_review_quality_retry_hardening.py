@@ -15,3 +15,6 @@ def test_review_quality_retry_hardening_is_in_build_and_clears_rejected_assets()
     assert '"selected_images",' in hardening
     assert '"reuse_audio_from",' in hardening
     assert "final_render_recovery = None" in hardening
+    assert 'message.startswith("reprovado na revisão:")' in hardening
+    assert '_is_review_quality_retry_payload(payload, getattr(row, "message", ""))' in hardening
+    assert '_is_review_quality_retry_payload(payload, (task or {}).get("message"))' in hardening
