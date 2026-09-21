@@ -144,10 +144,7 @@ SEED_AUDIO_GUARD = '''
                 if (
                     isinstance(seed_script, dict)
                     and bool(seed_script.get("repair_complete_visuals"))
-                    and bool(
-                        seed_script.get("repair_regenerate_audio")
-                        or getattr(request, "repair_regenerate_audio", False)
-                    )
+                    and bool(getattr(request, "repair_regenerate_audio", False))
                 ):
                     seed_audio_ok = False
 '''
