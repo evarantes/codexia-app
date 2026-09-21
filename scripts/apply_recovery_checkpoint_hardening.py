@@ -319,10 +319,47 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 if isinstance(unified_obj.get("_unified_recovery_meta"), dict)
                 else 0
             ) or 5
+        # O checkpoint antigo pode carregar apenas a meta do render anterior
+        # (ex.: 8 imagens), enquanto o contrato atual de 10 min exige 20.
+        # Nunca transforme esse estado incompleto em render-only.
+        expected_images = 0
+        for candidate in (
+            payload.get("strict_visual_target_count"),
+            payload.get("expected_image_count"),
+            (seed_script or {}).get("expected_image_count") if isinstance(seed_script, dict) else 0,
+            ((payload.get("repair_image_budget") or {}).get("expected_image_count")
+             if isinstance(payload.get("repair_image_budget"), dict) else 0),
+        ):
+            try:
+                expected_images = max(expected_images, int(candidate or 0))
+            except Exception:
+                continue
+
+        strict_visual_retry = bool(
+            payload.get("strict_visual_quality_required")
+            or payload.get("director_quality_required")
+            or payload.get("repair_complete_visuals")
+            or (seed_script or {}).get("director_quality_required")
+            or (seed_script or {}).get("repair_complete_visuals")
+            or isinstance((seed_script or {}).get("_partial_image_recovery"), dict)
+            or "image_count_minimum" in str(getattr(row, "message", "") or "").lower()
+        )
+        if strict_visual_retry:
+            try:
+                from app.services.intelligent_cost_optimizer import minimum_visual_count_for_duration
+                expected_images = max(
+                    expected_images,
+                    int(minimum_visual_count_for_duration(target_minutes) or 0),
+                )
+            except Exception:
+                pass
+
         audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
+        missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
+        images_complete = bool(images_ok and missing_image_count == 0)
         audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
-        render_only = bool(script_ok and images_ok and audio_ok)
+        render_only = bool(script_ok and images_complete and audio_ok)
 
         if script_ok and isinstance(seed_script, dict):
             seed_script = dict(seed_script)
@@ -351,7 +388,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         missing: List[str] = []
         if not script_ok:
             missing.append("roteiro")
-        if not images_ok:
+        if not images_complete:
             missing.append("imagens")
         if not audio_ok:
             missing.append("áudio")
@@ -367,6 +404,10 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             "script_ok": bool(script_ok),
             "script_source": script_source or None,
             "valid_image_count": len(valid_images),
+            "expected_image_count": int(expected_images or 0),
+            "missing_image_count": int(missing_image_count or 0),
+            "images_complete": bool(images_complete),
+            "strict_visual_retry": bool(strict_visual_retry),
             "visual_source_counts": visual_source_counts,
             "audio_ok": bool(audio_ok),
             "audio_source": audio_source or None,
@@ -425,6 +466,8 @@ def check() -> None:
         'payload["selected_images"] = list(valid_images)',
         'payload["reuse_audio_from"] = dict(audio_generation)',
         'payload["force_render_only"] = bool(render_only)',
+        '"missing_image_count": int(missing_image_count or 0)',
+        '"strict_visual_retry": bool(strict_visual_retry)',
         'payload["_recovery_block_paid_regeneration"] = True',
         'db.query(UnifiedVideo)',
         'paid_stage_regeneration_blocked',
