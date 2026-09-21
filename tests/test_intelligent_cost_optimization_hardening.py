@@ -46,6 +46,9 @@ class IntelligentCostOptimizationHardeningTests(unittest.TestCase):
         self.assertIn('request_reuse_audio = getattr(request, "reuse_audio_from", None)', text)
         self.assertIn('payload["force_render_only"] = True', text)
         self.assertIn('payload["selected_images"] = list(optimization_materials.get("valid_images") or [])', text)
+        self.assertIn('image_only_quality_failure', text)
+        self.assertIn('regenerate_narration=not image_only_quality_failure', text)
+        self.assertIn('payload["repair_regenerate_audio"] = regenerate_narration', text)
 
     def test_render_policy_is_zero_paid_media_and_full_content(self):
         text = HARDENING.read_text(encoding="utf-8")
