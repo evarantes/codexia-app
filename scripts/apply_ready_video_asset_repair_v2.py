@@ -138,9 +138,17 @@ RAW_REPAIR_GUARD = '''
 
 SEED_AUDIO_GUARD = '''
                 # CODEXIA_READY_VIDEO_ASSET_REPAIR_V2
-                # O áudio antigo pode ser tecnicamente válido, mas conter
-                # metadados falados. O roteiro de reparo é a fonte autoritativa.
-                if isinstance(seed_script, dict) and bool(seed_script.get("repair_complete_visuals")):
+                # Reparos editoriais podem exigir nova narração, mas uma falha
+                # exclusivamente visual não deve invalidar um áudio já aprovado.
+                # A intenção precisa viajar explicitamente no roteiro/payload.
+                if (
+                    isinstance(seed_script, dict)
+                    and bool(seed_script.get("repair_complete_visuals"))
+                    and bool(
+                        seed_script.get("repair_regenerate_audio")
+                        or getattr(request, "repair_regenerate_audio", False)
+                    )
+                ):
                     seed_audio_ok = False
 '''
 
