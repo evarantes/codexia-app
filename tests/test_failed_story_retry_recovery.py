@@ -172,7 +172,13 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
             }),
         )
         fake_db = Mock()
-        fake_db.query.return_value.filter.return_value.first.return_value = row
+        task_query = Mock()
+        task_query.filter.return_value.first.return_value = row
+        unified_query = Mock()
+        unified_query.filter.return_value.first.return_value = None
+        fake_db.query.side_effect = lambda model: (
+            unified_query if getattr(model, "__name__", "") == "UnifiedVideo" else task_query
+        )
         payload = {
             "mode": "story",
             "kind": "devotional",
@@ -221,7 +227,13 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
             }),
         )
         fake_db = Mock()
-        fake_db.query.return_value.filter.return_value.first.return_value = row
+        task_query = Mock()
+        task_query.filter.return_value.first.return_value = row
+        unified_query = Mock()
+        unified_query.filter.return_value.first.return_value = None
+        fake_db.query.side_effect = lambda model: (
+            unified_query if getattr(model, "__name__", "") == "UnifiedVideo" else task_query
+        )
         payload = {
             "mode": "story",
             "kind": "devotional",
