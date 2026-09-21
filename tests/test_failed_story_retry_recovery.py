@@ -173,9 +173,13 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         )
         fake_db = Mock()
         task_query = Mock()
-        task_query.filter.return_value.first.return_value = row
+        task_query.filter.return_value = task_query
+        task_query.order_by.return_value = task_query
+        task_query.first.return_value = row
         unified_query = Mock()
-        unified_query.filter.return_value.first.return_value = None
+        unified_query.filter.return_value = unified_query
+        unified_query.order_by.return_value = unified_query
+        unified_query.first.return_value = None
         fake_db.query.side_effect = lambda model: (
             unified_query if getattr(model, "__name__", "") == "UnifiedVideo" else task_query
         )
@@ -228,9 +232,13 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         )
         fake_db = Mock()
         task_query = Mock()
-        task_query.filter.return_value.first.return_value = row
+        task_query.filter.return_value = task_query
+        task_query.order_by.return_value = task_query
+        task_query.first.return_value = row
         unified_query = Mock()
-        unified_query.filter.return_value.first.return_value = None
+        unified_query.filter.return_value = unified_query
+        unified_query.order_by.return_value = unified_query
+        unified_query.first.return_value = None
         fake_db.query.side_effect = lambda model: (
             unified_query if getattr(model, "__name__", "") == "UnifiedVideo" else task_query
         )
