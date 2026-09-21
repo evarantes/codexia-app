@@ -576,6 +576,7 @@
       const fx = Number(plan?.usd_brl || 0);
       const duration = Number(plan?.duration_minutes || 0);
       const durationText = duration > 0 ? ` para ${duration.toFixed(0)} minuto(s)` : '';
+      const regenerateNarration = plan?.regenerate_narration !== false;
       const pricingReference = fx > 0
         ? `\nReferência de conversão usada: US$ 1 = R$ ${fx.toFixed(2)}.`
         : '';
@@ -588,8 +589,10 @@
         `CUSTO PREVENTIVO ANTES DE AUTORIZAR:\n` +
         `• Novas imagens: US$ ${imageUsd.toFixed(4)} / aprox. R$ ${imageBrl.toFixed(2)}` +
         (imageUnit > 0 ? ` (US$ ${imageUnit.toFixed(4)} por imagem)` : '') + `\n` +
-        `• Nova narração: US$ ${audioUsd.toFixed(4)} / aprox. R$ ${audioBrl.toFixed(2)}` +
-        (audioUnit > 0 ? ` (referência US$ ${audioUnit.toFixed(4)}/min)` : '') + `\n` +
+        (regenerateNarration
+          ? `• Nova narração: US$ ${audioUsd.toFixed(4)} / aprox. R$ ${audioBrl.toFixed(2)}` +
+            (audioUnit > 0 ? ` (referência US$ ${audioUnit.toFixed(4)}/min)` : '')
+          : `• Narração: preservada (sem nova chamada de voz)`) + `\n` +
         `• Custo adicional máximo estimado desta correção: US$ ${totalUsd.toFixed(4)} / aprox. R$ ${totalBrl.toFixed(2)}` +
         pricingReference + `\n\n` +
         `LIMITE RÍGIDO:\n` +
@@ -598,7 +601,9 @@
         `GARANTIAS:\n` +
         `• As imagens já pagas e válidas serão preservadas.\n` +
         `• Serão geradas somente as imagens que faltarem.\n` +
-        `• A narração será refeita para respeitar a duração solicitada.\n` +
+        (regenerateNarration
+          ? `• A narração será refeita para respeitar a duração solicitada.\n`
+          : `• A narração já validada e seus tempos serão preservados.\n`) +
         `• A legenda continuará usando os tempos da narração real.\n` +
         `• Os valores monetários são estimativas preventivas baseadas nas unidades configuradas.\n` +
         `• O vídeo só poderá ser aprovado depois do Quality Gate.\n\n` +
