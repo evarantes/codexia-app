@@ -1204,17 +1204,38 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 continue
         selected_images = list(dict.fromkeys(selected_images))
         actual_images = len(selected_images)
+
+        # O alvo salvo em payload/manifest pode pertencer ao render antigo
+        # (ex.: 8 imagens de um vídeo de 5 min). Em correção de qualidade,
+        # recalcule o piso pela duração contratada antes de decidir render-only.
+        strict_visual_retry = bool(
+            payload.get("strict_visual_quality_required")
+            or payload.get("director_quality_required")
+            or payload.get("repair_complete_visuals")
+            or "image_count_minimum" in str(getattr(row, "message", "") or "").lower()
+        )
+        if strict_visual_retry:
+            try:
+                from app.services.intelligent_cost_optimizer import minimum_visual_count_for_duration
+                expected_images = max(
+                    expected_images,
+                    int(minimum_visual_count_for_duration(_video_payload_duration_minutes(payload)) or 0),
+                )
+            except Exception:
+                pass
+
         missing_images = max(0, expected_images - actual_images)
 
         script_ok = _is_valid_seed_script(seed_script)
         images_ok = _selected_images_ok(selected_images)
         audio_ok = _file_ok(audio_path)
-        if script_ok and images_ok and audio_ok and missing_images == 0:
+        if script_ok and images_ok and audio_ok and missing_images == 0 and not strict_visual_retry:
             payload["force_render_only"] = True
-        elif script_ok and images_ok and audio_ok and expected_images > actual_images:
-            # Recuperação parcial: preserve roteiro, narração e imagens válidas,
-            # gere somente a diferença até a meta e aplique um teto rígido às
-            # chamadas pagas. Nunca trate 8 imagens válidas como se fossem 20.
+        elif script_ok and images_ok and expected_images > actual_images:
+            # Recuperação parcial: preserve roteiro e imagens válidas, gere
+            # somente a diferença até a meta e aplique um teto rígido às
+            # chamadas pagas. O áudio é reaproveitado apenas se estiver
+            # acessível neste nó; caso contrário o worker o regenera.
             budget = {
                 "enabled": True,
                 "existing_image_count": actual_images,
@@ -1232,22 +1253,26 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             payload.update({
                 "seeded_script": seeded,
                 "selected_images": list(selected_images),
-                "reuse_audio_from": {
-                    "output_path": audio_path,
-                    "final_audio_path": audio_path,
-                    "audio_path": audio_path,
-                    "source": "preserved_retry",
-                },
                 "force_render_only": False,
                 "force_reuse_assets": True,
                 "force_regenerate": False,
                 "repair_mode": True,
                 "repair_complete_visuals": True,
+                "repair_regenerate_audio": not audio_ok,
                 "repair_image_budget": budget,
                 "expected_image_count": expected_images,
                 "strict_visual_target_count": expected_images,
                 "director_quality_required": True,
             })
+            if audio_ok:
+                payload["reuse_audio_from"] = {
+                    "output_path": audio_path,
+                    "final_audio_path": audio_path,
+                    "audio_path": audio_path,
+                    "source": "preserved_retry",
+                }
+            else:
+                payload.pop("reuse_audio_from", None)
     finally:
         db.close()
     return payload
