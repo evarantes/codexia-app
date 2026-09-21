@@ -13,10 +13,17 @@ class PatchError(RuntimeError):
     pass
 
 
-PAYLOAD_HELPERS = '''def _is_review_quality_retry_payload(payload: Any) -> bool:
+PAYLOAD_HELPERS = '''def _is_review_quality_retry_payload(payload: Any, current_message: Any = "") -> bool:
     value = payload if isinstance(payload, dict) else {}
+    # review_feedback permanece no payload depois que uma correção humana já foi
+    # executada. Só trate como nova reprovação humana quando o estado ATUAL da
+    # tarefa ainda for "Reprovado na revisão: ...". Falhas posteriores do
+    # Quality Gate (ex.: image_count_minimum) devem seguir a recuperação seletiva.
+    message = str(current_message or "").strip().lower()
+    current_human_rejection = message.startswith("reprovado na revisão:")
     return bool(
-        value.get("director_quality_required")
+        current_human_rejection
+        and value.get("director_quality_required")
         and value.get("force_regenerate")
         and str(value.get("review_feedback") or "").strip()
     )
@@ -69,7 +76,7 @@ QUALITY_PLAN_REPLACEMENT = '''        if isinstance(payload_override, dict):
         # Human review outranks the zero-cost recovery optimizer. Reusing the
         # rejected narration/images would make the requested correction
         # impossible and could falsely promise quality with zero new assets.
-        if _is_review_quality_retry_payload(payload):
+        if _is_review_quality_retry_payload(payload, getattr(row, "message", "")):
             return {
                 "requires_confirmation": False,
                 "optimization_required": False,
@@ -89,7 +96,7 @@ PROMOTE_ANCHOR = '''        final_render_recovery = _recovery_try_promote_final_
         if isinstance(final_render_recovery, dict) and final_render_recovery.get("blocked"):
             raise HTTPException(status_code=409, detail=str(final_render_recovery.get("message") or "Recuperação bloqueada."))'''
 
-PROMOTE_REPLACEMENT = '''        quality_correction_retry = _is_review_quality_retry_payload(payload)
+PROMOTE_REPLACEMENT = '''        quality_correction_retry = _is_review_quality_retry_payload(payload, (task or {}).get("message"))
         if quality_correction_retry:
             payload = _prepare_review_quality_retry_payload(payload)
             final_render_recovery = None
