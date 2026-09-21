@@ -207,12 +207,15 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
             prepared = _maybe_enable_render_only_flags(dict(payload), "task-visual-floor")
 
         self.assertFalse(prepared["force_render_only"])
-        self.assertTrue(prepared["repair_mode"])
-        self.assertEqual(prepared["expected_image_count"], 20)
-        self.assertEqual(prepared["strict_visual_target_count"], 20)
-        self.assertEqual(prepared["repair_image_budget"]["existing_image_count"], 8)
-        self.assertEqual(prepared["repair_image_budget"]["missing_image_count"], 12)
-        self.assertEqual(prepared["repair_image_budget"]["max_new_image_calls"], 12)
+        self.assertTrue(prepared["_recovery_block_paid_regeneration"])
+        self.assertIn("imagens", prepared["_recovery_missing_assets"])
+        persisted = json.loads(row.result_json)
+        checkpoint = persisted["recovery_checkpoint"]
+        self.assertEqual(checkpoint["expected_image_count"], 20)
+        self.assertEqual(checkpoint["valid_image_count"], 8)
+        self.assertEqual(checkpoint["missing_image_count"], 12)
+        self.assertTrue(checkpoint["strict_visual_retry"])
+        self.assertFalse(checkpoint["images_complete"])
 
     def test_partial_visual_retry_regenerates_audio_when_local_file_is_missing(self):
         images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
@@ -266,10 +269,14 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
             prepared = _maybe_enable_render_only_flags(dict(payload), "task-audio-missing")
 
         self.assertFalse(prepared["force_render_only"])
-        self.assertTrue(prepared["repair_mode"])
-        self.assertTrue(prepared["repair_regenerate_audio"])
-        self.assertNotIn("reuse_audio_from", prepared)
-        self.assertEqual(prepared["repair_image_budget"]["missing_image_count"], 12)
+        self.assertTrue(prepared["_recovery_block_paid_regeneration"])
+        self.assertIn("imagens", prepared["_recovery_missing_assets"])
+        self.assertIn("áudio", prepared["_recovery_missing_assets"])
+        persisted = json.loads(row.result_json)
+        checkpoint = persisted["recovery_checkpoint"]
+        self.assertEqual(checkpoint["expected_image_count"], 20)
+        self.assertEqual(checkpoint["missing_image_count"], 12)
+        self.assertFalse(checkpoint["audio_ok"])
 
     def test_retry_uses_canonical_dispatch_and_not_raw_legacy_thread(self):
         source = inspect.getsource(retry_task)
