@@ -1212,6 +1212,9 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             payload.get("strict_visual_quality_required")
             or payload.get("director_quality_required")
             or payload.get("repair_complete_visuals")
+            or (seed_script or {}).get("director_quality_required")
+            or (seed_script or {}).get("repair_complete_visuals")
+            or isinstance((seed_script or {}).get("_partial_image_recovery"), dict)
             or "image_count_minimum" in str(getattr(row, "message", "") or "").lower()
         )
         if strict_visual_retry:
