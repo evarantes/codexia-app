@@ -89,8 +89,10 @@ NEW_FAILURE = '''                recovery_details = ""
 
 OLD_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
+        missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
+        images_complete = bool(images_ok and missing_image_count == 0)
         audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
-        render_only = bool(script_ok and images_ok and audio_ok)'''
+        render_only = bool(script_ok and images_complete and audio_ok)'''
 
 NEW_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
         # CODEXIA_MANIFEST_CHECKPOINT_TRUST_V1
@@ -117,7 +119,12 @@ NEW_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery
                     audio_duration = float(manifest_checkpoint_plan.get("audio_duration_sec") or 0.0)
                     audio_source = "production_manifest"
 
+        # Preserve the strict duration-derived visual target established by
+        # recovery_checkpoint_hardening. Manifest path repair may add valid
+        # images, but it must never collapse 8/20 into a render-only retry.
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
+        missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
+        images_complete = bool(images_ok and missing_image_count == 0)
         audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
         manifest_action = str(manifest_checkpoint_plan.get("action") or "") if isinstance(manifest_checkpoint_plan, dict) else ""
         if manifest_action in {"rebuild_untrusted_audio", "rebuild_missing_audio", "rebuild_audio_and_missing_images"}:
@@ -126,7 +133,7 @@ NEW_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery
             audio_source = ""
             audio_ok = False
             payload.pop("reuse_audio_from", None)
-        render_only = bool(script_ok and images_ok and audio_ok)'''
+        render_only = bool(script_ok and images_complete and audio_ok)'''
 
 
 def patch_video(text: str) -> str:
@@ -187,6 +194,8 @@ def check() -> None:
         "manifest_checkpoint_plan = build_recovery_plan(task_id, payload_override=payload)",
         'manifest_checkpoint_plan.get("audio_reusable")',
         'payload.pop("reuse_audio_from", None)',
+        'images_complete = bool(images_ok and missing_image_count == 0)',
+        'render_only = bool(script_ok and images_complete and audio_ok)',
         '"rebuild_untrusted_audio"',
     )
     youtube_missing = [token for token in youtube_required if token not in youtube]
