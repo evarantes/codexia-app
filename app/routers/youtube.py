@@ -1127,14 +1127,14 @@ def _selected_images_ok(urls: List[str], *, min_bytes: int = 1000) -> bool:
     except Exception:
         absolute_path_for_static = None
     checked = 0
-    for url in urls:
+    for url in dict.fromkeys(urls):
         if not url:
             continue
         checked += 1
-        if checked > 6:
-            break
         try:
-            if absolute_path_for_static:
+            if os.path.isabs(str(url)):
+                p = str(url)
+            elif absolute_path_for_static:
                 p = absolute_path_for_static(url)
             else:
                 p = ""
@@ -1142,14 +1142,12 @@ def _selected_images_ok(urls: List[str], *, min_bytes: int = 1000) -> bool:
             p = ""
         if not (p and os.path.exists(p) and os.path.getsize(p) >= int(min_bytes or 1)):
             return False
-    return True
+    return checked > 0
 
 def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
     payload.setdefault("force_reuse_assets", True)
-    if bool(payload.get("force_render_only")):
-        return payload
     db = SessionLocal()
     try:
         row = db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
@@ -1175,11 +1173,81 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 for x in seed_script.get("selected_images")
                 if isinstance(x, str) and str(x).strip()
             ]
+        recovery_plan: Dict[str, Any] = {}
+        try:
+            from app.services.production_manifest import build_recovery_plan
+            recovery_plan = build_recovery_plan(str(task_id), payload_override=payload)
+        except Exception:
+            recovery_plan = {}
+        if not audio_path:
+            audio_path = str(recovery_plan.get("audio_path") or "").strip()
+
+        preserved_images = [
+            str(item).strip()
+            for item in (recovery_plan.get("existing_image_paths") or [])
+            if str(item or "").strip()
+        ]
+        if preserved_images:
+            selected_images = preserved_images
+
+        expected_images = 0
+        for candidate in (
+            recovery_plan.get("expected_image_count"),
+            payload.get("strict_visual_target_count"),
+            payload.get("expected_image_count"),
+            (seed_script or {}).get("expected_image_count"),
+            (seed_render_report.get("visual_plan") or {}).get("requested_image_count"),
+        ):
+            try:
+                expected_images = max(expected_images, int(candidate or 0))
+            except (TypeError, ValueError):
+                continue
+        selected_images = list(dict.fromkeys(selected_images))
+        actual_images = len(selected_images)
+        missing_images = max(0, expected_images - actual_images)
+
         script_ok = _is_valid_seed_script(seed_script)
         images_ok = _selected_images_ok(selected_images)
         audio_ok = _file_ok(audio_path)
-        if script_ok and images_ok and audio_ok:
+        if script_ok and images_ok and audio_ok and missing_images == 0:
             payload["force_render_only"] = True
+        elif script_ok and images_ok and audio_ok and expected_images > actual_images:
+            # Recuperação parcial: preserve roteiro, narração e imagens válidas,
+            # gere somente a diferença até a meta e aplique um teto rígido às
+            # chamadas pagas. Nunca trate 8 imagens válidas como se fossem 20.
+            budget = {
+                "enabled": True,
+                "existing_image_count": actual_images,
+                "expected_image_count": expected_images,
+                "missing_image_count": missing_images,
+                "max_new_image_calls": missing_images,
+                "estimated_image_cost_usd": float(recovery_plan.get("estimated_image_cost_usd") or 0.0),
+                "estimated_image_cost_brl": float(recovery_plan.get("estimated_image_cost_brl") or 0.0),
+                "plan_hash": str(recovery_plan.get("plan_hash") or f"task:{task_id}:{actual_images}:{expected_images}"),
+            }
+            seeded = dict(seed_script or {})
+            seeded["selected_images"] = list(selected_images)
+            seeded["_partial_image_recovery"] = dict(budget)
+            seeded["expected_image_count"] = expected_images
+            payload.update({
+                "seeded_script": seeded,
+                "selected_images": list(selected_images),
+                "reuse_audio_from": {
+                    "output_path": audio_path,
+                    "final_audio_path": audio_path,
+                    "audio_path": audio_path,
+                    "source": "preserved_retry",
+                },
+                "force_render_only": False,
+                "force_reuse_assets": True,
+                "force_regenerate": False,
+                "repair_mode": True,
+                "repair_complete_visuals": True,
+                "repair_image_budget": budget,
+                "expected_image_count": expected_images,
+                "strict_visual_target_count": expected_images,
+                "director_quality_required": True,
+            })
     finally:
         db.close()
     return payload
@@ -3439,6 +3507,13 @@ class VideoRequest(BaseModel):
     editorial_review_ready: bool = False
     director_quality_required: bool = False
     review_feedback: Optional[str] = None
+    # Contrato explícito de recuperação parcial. Sem estes campos o Pydantic
+    # descartava a meta 20/20 antes de o worker receber o pedido.
+    repair_mode: bool = False
+    repair_complete_visuals: bool = False
+    repair_image_budget: Optional[Dict[str, Any]] = None
+    expected_image_count: Optional[int] = None
+    strict_visual_target_count: Optional[int] = None
 
 
 class ApprovedNarrationJobError(RuntimeError):
