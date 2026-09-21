@@ -83,6 +83,29 @@ class IntelligentCostOptimizerTests(unittest.TestCase):
         self.assertAlmostEqual(plan["estimated_savings_usd"], 0.32, places=6)
         self.assertTrue(validate_optimization_confirmation(plan, plan["plan_hash"]))
 
+    def test_image_only_quality_plan_preserves_valid_narration_and_zeroes_audio_cost(self):
+        plan = build_visual_quality_completion_plan(
+            task_id="task-v2-image-only",
+            title="Devocional",
+            duration_minutes=10,
+            requested_target_visual_count=20,
+            valid_image_paths=[f"/data/media/images/img-{idx:02d}.png" for idx in range(8)],
+            script={"scenes": [{"text": "Cena"}]},
+            audio_path="/data/media/audio/validated.mp3",
+            image_unit_cost_usd=0.04,
+            audio_unit_cost_usd_per_minute=0.012,
+            usd_brl=5.20,
+            regenerate_narration=False,
+        )
+        self.assertFalse(plan["regenerate_narration"])
+        self.assertTrue(plan["preserve_full_narration"])
+        self.assertEqual(plan["estimated_new_audio_cost_usd"], 0.0)
+        self.assertEqual(plan["estimated_new_audio_cost_brl"], 0.0)
+        self.assertEqual(plan["estimated_total_additional_cost_usd"], 0.48)
+        self.assertEqual(plan["estimated_total_additional_cost_brl"], 2.50)
+        self.assertEqual(plan["audio_provider_policy"], "reuse_valid_existing_audio")
+        self.assertTrue(plan["quality_policy"]["preserve_existing_narration_when_valid"])
+
     def test_strict_quality_plan_hash_changes_when_duration_changes(self):
         base = dict(
             task_id="task-v2-review",
