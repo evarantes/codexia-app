@@ -17,6 +17,21 @@ from app.services.intelligent_cost_optimizer import proportional_visual_index
 ProgressCallback = Optional[Callable[[int, str], None]]
 
 
+def _bounded_recovery_size(video_size: Tuple[int, int]) -> Tuple[int, int]:
+    """Cap recovery renders at 720p-equivalent while preserving orientation."""
+    width, height = int(video_size[0]), int(video_size[1])
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Dimensão inválida para o render leve de recuperação.")
+    max_pixels = 1280 * 720
+    pixels = width * height
+    if pixels <= max_pixels:
+        return width - (width % 2), height - (height % 2)
+    scale = (max_pixels / float(pixels)) ** 0.5
+    bounded_width = max(2, int(width * scale))
+    bounded_height = max(2, int(height * scale))
+    return bounded_width - (bounded_width % 2), bounded_height - (bounded_height % 2)
+
+
 def _clean_existing_paths(values: Iterable[Any]) -> List[str]:
     paths: List[str] = []
     for value in values or []:
@@ -533,11 +548,13 @@ def build_ffmpeg_command(
     local_music_path: str = "",
     music_volume: float = 0.025,
     threads: int = 2,
+    output_fps: int = 2,
 ) -> List[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     width, height = int(video_size[0]), int(video_size[1])
     total = max(0.1, float(target_duration or 0.0))
     safe_threads = max(1, min(2, int(threads or 1)))
+    safe_fps = max(1, min(6, int(output_fps or 2)))
     subtitle_path = _escape_subtitles_filter_path(srt_path)
     # libass scales SRT styles from its 288px script coordinate system. Fixed
     # style values therefore scale naturally with the output height; deriving
@@ -547,7 +564,7 @@ def build_ffmpeg_command(
     caption_margin = 24
     video_filter = (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},fps=24,format=yuv420p,"
+        f"crop={width}:{height},fps={safe_fps},format=yuv420p,"
         f"subtitles='{subtitle_path}':original_size={width}x{height}:"
         f"force_style='FontName=DejaVu Sans,FontSize={caption_font_size},PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,BackColour=&H64000000,BorderStyle=1,"
@@ -586,12 +603,15 @@ def build_ffmpeg_command(
 
     command += [
         "-filter_complex", ";".join(filter_parts),
+        "-filter_threads", "1",
+        "-filter_complex_threads", "1",
         "-map", "[v]",
         "-map", audio_map,
         "-t", f"{total:.3f}",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-tune", "stillimage",
+        "-g", str(max(2, safe_fps * 10)),
         "-b:v", "1800k",
         "-threads", str(safe_threads),
         "-c:a", "aac",
@@ -734,6 +754,7 @@ def render_lightweight_recovery_video(
         raise RuntimeError("Áudio preservado inválido para o render leve de recuperação.")
 
     total = max(0.1, float(target_duration or 0.0))
+    render_size = _bounded_recovery_size(video_size)
     local_images = _clean_existing_paths(selected_images)
     if not local_images:
         raise RuntimeError("Nenhuma imagem local válida disponível para o render leve de recuperação.")
@@ -759,7 +780,7 @@ def render_lightweight_recovery_video(
             opening_frame, story_frame, brand_endcard_frame = _build_logo_only_brand_frames(
                 logo_path=local_images[0],
                 output_dir=tmp,
-                video_size=video_size,
+                video_size=render_size,
                 opening_title=opening_title,
                 channel_name=channel_name,
             )
@@ -779,7 +800,7 @@ def render_lightweight_recovery_video(
         segments = _normalize_visual_segments(
             segments,
             output_dir=tmp,
-            video_size=video_size,
+            video_size=render_size,
         )
         concat_path = os.path.join(tmp, "visuals.ffconcat")
         srt_path = os.path.join(tmp, "captions.srt")
@@ -802,10 +823,11 @@ def render_lightweight_recovery_video(
                 audio_path=audio_path,
                 output_path=output_abs,
                 target_duration=total,
-                video_size=video_size,
+                video_size=render_size,
                 local_music_path=music_path,
                 music_volume=music_volume,
                 threads=2,
+                output_fps=2,
             )
 
         return_code, output_tail, diagnostic_tail = _run_ffmpeg_command(
@@ -863,6 +885,8 @@ def render_lightweight_recovery_video(
         "duration_sec": round(obtained, 3),
         "render_seconds": round(render_seconds, 3),
         "render_realtime_factor": round(render_seconds / max(0.1, obtained), 4),
+        "output_size": [int(render_size[0]), int(render_size[1])],
+        "output_fps": 2,
         "visual_segment_count": len(segments),
         "caption_count": srt_text.count(" --> "),
         "caption_max_lines": 2,
