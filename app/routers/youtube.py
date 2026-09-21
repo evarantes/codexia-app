@@ -1253,6 +1253,8 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             seeded["selected_images"] = list(selected_images)
             seeded["_partial_image_recovery"] = dict(budget)
             seeded["expected_image_count"] = expected_images
+            seeded["repair_complete_visuals"] = True
+            seeded["repair_regenerate_audio"] = not audio_ok
             payload.update({
                 "seeded_script": seeded,
                 "selected_images": list(selected_images),
