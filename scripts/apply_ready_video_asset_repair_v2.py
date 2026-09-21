@@ -73,6 +73,15 @@ def _patch_visual_selected_guard(text: str) -> str:
     if partial_old in text:
         return text.replace(partial_old, partial_new, 1)
 
+    # Compatibilidade com o formato equivalente já aplicado diretamente no
+    # gerador pela correção de recuperação 8/20 -> 20/20.
+    partial_old_current = '''                if selected_image_paths and (
+                    not partial_image_recovery
+                    or visual_group_id < len(selected_image_paths)
+                ):'''
+    if partial_old_current in text:
+        return text.replace(partial_old_current, partial_new, 1)
+
     marker = "                selected_image_index = None\n"
     start = text.find(marker)
     if start < 0:
