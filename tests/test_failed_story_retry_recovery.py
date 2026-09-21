@@ -11,6 +11,7 @@ from app.routers.youtube import (
     _apply_youtube_auto_editorial_intelligence,
     _dispatch_task_result,
     _load_latest_recoverable_story_video_task,
+    _maybe_enable_render_only_flags,
     cancel_all_tasks,
     discard_failed_task,
     retry_task,
