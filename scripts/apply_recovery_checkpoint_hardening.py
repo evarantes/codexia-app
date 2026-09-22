@@ -355,6 +355,20 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 pass
 
         audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
+        # A PR #202 pode ter persistido a narração validada no próprio payload
+        # (reuse_audio_from) depois da última falha. Esse checkpoint precisa
+        # participar do inventário; caso contrário o retry enxerga "áudio=FALTA"
+        # mesmo com a narração de 9:46 já preservada.
+        if not audio_path and isinstance(payload.get("reuse_audio_from"), dict):
+            payload_audio = dict(payload.get("reuse_audio_from") or {})
+            payload_audio_path, payload_audio_duration, _ = _recovery_choose_audio(
+                [{"audio_checkpoint": payload_audio, "audio_generation": payload_audio}],
+                target_minutes,
+            )
+            if payload_audio_path:
+                audio_path = payload_audio_path
+                audio_duration = payload_audio_duration
+                audio_source = "retry_payload"
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
         missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
         images_complete = bool(images_ok and missing_image_count == 0)
@@ -399,8 +413,8 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         recovery = result_obj.get("recovery_checkpoint") if isinstance(result_obj.get("recovery_checkpoint"), dict) else {}
         recovery = dict(recovery)
         recovery.update({
-            "version": 3,
-            "strategy": "highest_valid_checkpoint_v3",
+            "version": 4,
+            "strategy": "highest_valid_checkpoint_v4",
             "script_ok": bool(script_ok),
             "script_source": script_source or None,
             "valid_image_count": len(valid_images),
@@ -461,7 +475,7 @@ def check() -> None:
     text = TARGET.read_text(encoding="utf-8")
     required = (
         START,
-        '"strategy": "highest_valid_checkpoint_v3"',
+        '"strategy": "highest_valid_checkpoint_v4"',
         'payload["seeded_script"] = seed_script',
         'payload["selected_images"] = list(valid_images)',
         'payload["reuse_audio_from"] = dict(audio_generation)',
