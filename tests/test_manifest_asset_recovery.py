@@ -23,7 +23,7 @@ class ManifestAssetRecoveryHardeningTests(unittest.TestCase):
     def test_retry_checkpoint_rejects_legacy_audio_before_dispatch(self):
         source = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
         marker = source.index("CODEXIA_MANIFEST_CHECKPOINT_TRUST_V1")
-        block_end = source.index("render_only = bool(script_ok and images_ok and audio_ok)", marker)
+        block_end = source.index("render_only = bool(script_ok and images_complete and audio_ok)", marker)
         block = source[marker:block_end]
 
         self.assertIn("build_recovery_plan(task_id, payload_override=payload)", block)
