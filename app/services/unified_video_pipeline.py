@@ -233,7 +233,29 @@ def build_unified_video_request(
         image_count = int(raw.get("image_count") or (8 if str(raw.get("image_mode") or "").lower() == "multiple" else 1))
     except Exception:
         image_count = 8
-    image_count = max(1, min(64, image_count))
+
+    # A qualidade visual estrita é calculada pela duração, mas o pedido legado
+    # ainda pode carregar o default histórico de 8 imagens. Quando o chamador
+    # já assinou uma meta visual (Quality Gate / recuperação), essa meta precisa
+    # chegar ao registro canônico e à validação, não apenas ao payload auxiliar.
+    contract_image_count = 0
+    for key in ("strict_visual_target_count", "expected_image_count"):
+        try:
+            contract_image_count = max(contract_image_count, int(raw.get(key) or 0))
+        except (TypeError, ValueError):
+            continue
+    repair_budget = raw.get("repair_image_budget")
+    if isinstance(repair_budget, dict):
+        try:
+            contract_image_count = max(
+                contract_image_count,
+                int(repair_budget.get("expected_image_count") or 0),
+            )
+        except (TypeError, ValueError):
+            pass
+    image_count = max(1, min(64, image_count, 64))
+    if contract_image_count > image_count:
+        image_count = min(64, contract_image_count)
 
     tags = raw.get("override_tags")
     override_tags = [str(item) for item in tags if item is not None] if isinstance(tags, list) else None
