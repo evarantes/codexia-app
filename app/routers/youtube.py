@@ -1342,6 +1342,56 @@ def _video_payload_duration_minutes(payload: Dict[str, Any]) -> int:
     return 5
 
 
+def _apply_director_visual_target(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Materialize the duration-derived visual floor before the first render.
+
+    The first attempt must use the same target that the Quality Gate will later
+    validate. Otherwise a normal 8-image request can produce an 8/20 failure
+    and force an avoidable paid recovery.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    quality_required = bool(
+        payload.get("director_quality_required")
+        or payload.get("strict_visual_quality_required")
+        or payload.get("repair_complete_visuals")
+        or payload.get("repair_mode")
+    )
+    if not quality_required:
+        return payload
+
+    try:
+        from app.services.intelligent_cost_optimizer import minimum_visual_count_for_duration
+        duration_floor = int(
+            minimum_visual_count_for_duration(
+                _video_payload_duration_minutes(payload)
+            ) or 0
+        )
+    except Exception:
+        duration_floor = 0
+
+    requested_target = 0
+    for candidate in (
+        payload.get("strict_visual_target_count"),
+        payload.get("expected_image_count"),
+        (payload.get("repair_image_budget") or {}).get("expected_image_count")
+        if isinstance(payload.get("repair_image_budget"), dict)
+        else 0,
+    ):
+        try:
+            requested_target = max(requested_target, int(candidate or 0))
+        except (TypeError, ValueError):
+            continue
+
+    target = max(duration_floor, requested_target)
+    if target > 0:
+        target = min(64, target)
+        payload["expected_image_count"] = target
+        payload["strict_visual_target_count"] = target
+        payload["strict_visual_quality_required"] = True
+    return payload
+
+
 def _requires_isolated_video_process(payload: Dict[str, Any], task_id: Optional[str] = None) -> bool:
     """Mantém renderizações pesadas fora do processo web principal."""
     if _is_youtube_series_payload(payload, task_id):
@@ -3536,6 +3586,7 @@ class VideoRequest(BaseModel):
     editorial_reviewed: bool = False
     editorial_review_ready: bool = False
     director_quality_required: bool = False
+    strict_visual_quality_required: bool = False
     review_feedback: Optional[str] = None
     # Contrato explícito de recuperação parcial. Sem estes campos o Pydantic
     # descartava a meta 20/20 antes de o worker receber o pedido.
@@ -6322,6 +6373,11 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
             payload = request.dict()
     user_id = int(getattr(current_user, "id", None) or 0) or None
 
+    # O alvo visual estrito precisa ser definido antes do hash/idempotência e
+    # antes de o UnifiedVideo ser criado; assim o primeiro render já usa a meta
+    # que o Quality Gate irá validar.
+    payload = _apply_director_visual_target(payload)
+
     # O frontend não é fonte de verdade para caminho de arquivo. Antes de
     # dedupe/fila (e portanto antes de qualquer imagem), recarregamos a pasta
     # identificada por production_job_id e substituímos reuse_audio_from pela
@@ -8116,8 +8172,26 @@ def process_video_generation(request: VideoRequest, task_id):
             except Exception:
                 pass
 
+            visual_target_count = 0
+            for candidate in (
+                getattr(request, "strict_visual_target_count", None),
+                getattr(request, "expected_image_count", None),
+                (getattr(request, "repair_image_budget", None) or {}).get("expected_image_count")
+                if isinstance(getattr(request, "repair_image_budget", None), dict)
+                else 0,
+            ):
+                try:
+                    visual_target_count = max(visual_target_count, int(candidate or 0))
+                except (TypeError, ValueError):
+                    continue
+            if visual_target_count > 0:
+                script["expected_image_count"] = min(64, visual_target_count)
+                script["strict_visual_target_count"] = min(64, visual_target_count)
+
             try:
                 target = _target_scene_count(requested_minutes)
+                if visual_target_count > target:
+                    target = min(64, visual_target_count)
                 script["disable_scene_text_split"] = True
                 raw_scenes = script.get("scenes")
                 compacted = _compact_scenes(raw_scenes, target)
