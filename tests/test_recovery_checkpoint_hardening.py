@@ -57,14 +57,16 @@ class RecoveryCheckpointHardeningTests(unittest.TestCase):
             ],
         )
 
-    def test_runtime_build_applies_checkpoint_v3_and_blocks_silent_paid_retry(self):
+    def test_runtime_build_applies_checkpoint_v4_and_blocks_silent_paid_retry(self):
         router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
         self.assertIn("CODEXIA_RECOVERY_CHECKPOINT_V3_START", router)
         self.assertNotIn("CODEXIA_RECOVERY_CHECKPOINT_V2_START", router)
-        self.assertIn('"strategy": "highest_valid_checkpoint_v3"', router)
+        self.assertIn('"strategy": "highest_valid_checkpoint_v4"', router)
         self.assertIn('payload["seeded_script"] = seed_script', router)
         self.assertIn('payload["selected_images"] = list(valid_images)', router)
         self.assertIn('payload["reuse_audio_from"] = dict(audio_generation)', router)
+        self.assertIn('audio_source = "retry_payload"', router)
+        self.assertIn('isinstance(payload.get("reuse_audio_from"), dict)', router)
         self.assertIn('payload["force_render_only"] = bool(render_only)', router)
         self.assertIn('payload["_recovery_block_paid_regeneration"] = True', router)
         self.assertIn("db.query(UnifiedVideo)", router)
