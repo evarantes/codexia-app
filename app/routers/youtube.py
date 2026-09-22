@@ -8202,6 +8202,8 @@ def process_video_generation(request: VideoRequest, task_id):
 
             try:
                 target_scene_count = _target_scene_count(requested_minutes)
+                if visual_target_count > target_scene_count:
+                    target_scene_count = min(64, visual_target_count)
                 script = ai_service.build_cinematic_engine_v2_plan(
                     script,
                     target_scene_count=target_scene_count,
