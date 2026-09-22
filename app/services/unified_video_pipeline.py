@@ -233,6 +233,7 @@ def build_unified_video_request(
         image_count = int(raw.get("image_count") or (8 if str(raw.get("image_mode") or "").lower() == "multiple" else 1))
     except Exception:
         image_count = 8
+    image_count = max(1, min(64, image_count))
 
     # A qualidade visual estrita é calculada pela duração, mas o pedido legado
     # ainda pode carregar o default histórico de 8 imagens. Quando o chamador
@@ -253,7 +254,6 @@ def build_unified_video_request(
             )
         except (TypeError, ValueError):
             pass
-    image_count = max(1, min(64, image_count, 64))
     if contract_image_count > image_count:
         image_count = min(64, contract_image_count)
 
