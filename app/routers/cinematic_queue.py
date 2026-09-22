@@ -341,6 +341,15 @@ def _artifact_checklist(
         and timing_source_verified
         and sync_delta <= sync_tolerance
     )
+    task_message_lower = str(getattr(row, "message", "") or "").lower()
+    quality_gate_blocked = bool(
+        "image_count_minimum" in task_message_lower
+        or (
+            not video_url
+            and image_actual > 0
+            and image_expected > image_actual
+        )
+    )
     director_verdict = str(
         persisted_compatibility.get("director_verdict")
         or (
@@ -412,7 +421,15 @@ def _artifact_checklist(
             "key": "render",
             "label": "Vídeo final",
             "status": "ok" if render_ok else ("failed" if status == "failed" else "pending"),
-            "summary": "Pronto para revisão" if render_ok else ("Render falhou; ativos anteriores preservados" if status == "failed" else "Pendente"),
+            "summary": (
+                "Pronto para revisão"
+                if render_ok
+                else (
+                    "Quality Gate bloqueou antes da revisão; ativos anteriores preservados"
+                    if quality_gate_blocked
+                    else ("Render falhou; ativos anteriores preservados" if status == "failed" else "Pendente")
+                )
+            ),
             "preserved": render_ok,
         },
     ]
