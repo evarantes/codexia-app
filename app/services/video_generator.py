@@ -2601,6 +2601,23 @@ class VideoGenerator:
         if recovery_budget.enabled:
             target = int(recovery_budget.target_image_count or 0)
             return max(1, min(scene_count, target))
+
+        # A produção dirigida pelo Quality Gate pode trazer imagens
+        # reaproveitadas, mas elas não podem reduzir a meta visual contratada
+        # (por exemplo, transformar 20 imagens exigidas em 8 selecionadas).
+        strict_target = 0
+        if isinstance(plan, dict):
+            for key in ("strict_visual_target_count", "expected_image_count"):
+                try:
+                    strict_target = max(strict_target, int(plan.get(key) or 0))
+                except (TypeError, ValueError):
+                    continue
+        if strict_target > 0:
+            return max(
+                1,
+                min(scene_count, max(strict_target, int(selected_image_count or 0))),
+            )
+
         if selected_image_count > 0:
             return min(scene_count, selected_image_count)
         if use_single_bg:
