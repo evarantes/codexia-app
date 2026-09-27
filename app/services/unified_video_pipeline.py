@@ -41,7 +41,7 @@ from app.config import (
     absolute_path_for_video,
 )
 from app.database import SessionLocal
-from app.models import UnifiedVideo, UnifiedVideoStatus, User
+from app.models import UnifiedVideo, UnifiedVideoStatus, User, VideoTask
 from app.services.task_manager import (
     acquire_distributed_lock,
     acquire_task_execution_lease,
@@ -594,6 +594,67 @@ class UnifiedVideoPipelineService:
                 pass
             pass
 
+    def _ensure_claimed_task_visible(
+        self,
+        db,
+        *,
+        task_id: str,
+        claimed: Dict[str, Any],
+        request: UnifiedVideoRequest,
+        initial_result: Optional[Dict[str, Any]],
+        user_id: Optional[int],
+    ) -> VideoTask:
+        """Guarantee that the FK target exists in the submit session.
+
+        ``claim_video_task`` normally commits the task in its own session.
+        A stale dedupe row, a mixed app/worker release, or a connection
+        boundary during a deploy can nevertheless return a task id whose row
+        is not visible to the session that is about to insert ``UnifiedVideo``.
+        In that situation PostgreSQL correctly rejects the FK, but the user
+        loses the submit before the approved script can be stored.
+
+        Re-checking here makes the ordering explicit and repairs only the
+        missing task row with the same id.  The savepoint keeps a concurrent
+        insert from aborting the caller's transaction.
+        """
+        tid = str(task_id or "").strip()
+        if not tid:
+            raise ValueError("UnifiedVideoPipeline recebeu task_id vazio.")
+
+        task = db.query(VideoTask).filter(VideoTask.id == tid).first()
+        if task is not None:
+            return task
+
+        claimed_task = claimed.get("task") if isinstance(claimed, dict) else None
+        claimed_task = claimed_task if isinstance(claimed_task, dict) else {}
+        result_obj = claimed_task.get("result")
+        if not isinstance(result_obj, dict):
+            result_obj = dict(initial_result or {})
+            result_obj.setdefault("payload", _jsonable_payload_for_legacy(request))
+            result_obj.setdefault("idempotency_key", str(request.idempotency_key))
+            result_obj.setdefault("request_hash", str(request.request_hash or ""))
+
+        repaired = VideoTask(
+            id=tid,
+            user_id=claimed_task.get("user_id") or user_id,
+            status=str(claimed_task.get("status") or "pending"),
+            progress=int(claimed_task.get("progress") or 0),
+            message=str(claimed_task.get("message") or "Aguardando início..."),
+            result_json=_json_dumps(result_obj),
+        )
+        try:
+            # Do not rollback the whole request if another connection inserted
+            # the row between the SELECT and this INSERT.
+            with db.begin_nested():
+                db.add(repaired)
+                db.flush()
+            return repaired
+        except Exception:
+            existing = db.query(VideoTask).filter(VideoTask.id == tid).first()
+            if existing is not None:
+                return existing
+            raise
+
     # ------------------------------------------------------------------
     # Entrada 1: submit ou reaproveita (idempotência).
     # ------------------------------------------------------------------
@@ -655,6 +716,18 @@ class UnifiedVideoPipelineService:
         created_new = bool(claimed.get("created_new_task"))
         reused_existing = bool(claimed.get("reused_existing_task"))
         reused_completed = bool(claimed.get("reused_completed_task"))
+
+        # The UnifiedVideo FK must be validated before we build the central
+        # row. This also repairs a legacy/partial claim without discarding the
+        # approved script that is about to be persisted.
+        self._ensure_claimed_task_visible(
+            db,
+            task_id=task_id,
+            claimed=claimed,
+            request=request,
+            initial_result=initial_result,
+            user_id=user_id,
+        )
 
         # 2. Cria/atualiza a linha central UnifiedVideo.
         uv: Optional[UnifiedVideo] = (
