@@ -621,7 +621,19 @@ class UnifiedVideoPipelineService:
         if not tid:
             raise ValueError("UnifiedVideoPipeline recebeu task_id vazio.")
 
-        task = db.query(VideoTask).filter(VideoTask.id == tid).first()
+        # A sessão pode chegar aqui depois de uma consulta opcional/legada que
+        # falhou. No PostgreSQL, qualquer SELECT seguinte recebe
+        # ``InFailedSqlTransaction`` até que o rollback seja feito. Recuperar
+        # neste limite evita mascarar a causa original e mantém o submit
+        # idempotente.
+        try:
+            task = db.query(VideoTask).filter(VideoTask.id == tid).first()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            task = db.query(VideoTask).filter(VideoTask.id == tid).first()
         if task is not None:
             return task
 
@@ -694,6 +706,17 @@ class UnifiedVideoPipelineService:
         legacy_initial_result: Optional[Dict[str, Any]] = None,
         user: Optional[User] = None,
     ) -> UnifiedPipelineResult:
+        # Todas as rotas passam por este limite canônico. Uma rota pode ter
+        # executado uma leitura de compatibilidade antes do submit; se ela
+        # falhou, o PostgreSQL mantém a sessão abortada até rollback. Só
+        # desfazemos a sessão quando o SQLAlchemy a marcou como inativa: um
+        # rollback incondicional também poderia descartar alterações normais
+        # ainda pendentes do roteiro aprovado.
+        try:
+            if getattr(db, "is_active", True) is False:
+                db.rollback()
+        except Exception:
+            pass
         self.ensure_schema(db)
 
         if not request.request_hash:
