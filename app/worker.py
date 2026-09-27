@@ -22,6 +22,7 @@ from app.services.channel_excellence_guard import apply_channel_excellence_rollo
 from app.services.final_video_presentation_guard import install_final_video_presentation_guard
 from app.services.final_cinematic_polish import install_final_cinematic_polish
 from app.services.return_channel_polish import install_return_channel_polish
+from app.services.fabrica_pipeline import install_fabrica_pipeline_patch
 from app.services.narrative_editor import install_narrative_editor_patch
 from app.services.canonical_caption_source import install_canonical_caption_source_patch
 from app.services.narration_contract_guard import install_narration_contract_guard
@@ -66,6 +67,11 @@ install_final_cinematic_polish(video_generator_cls)
 # Editor Narrativo para receber o plano já revisado quando a camada externa chama
 # o renderer interno; assim voz, legenda e imagem compartilham a mesma timeline.
 install_return_channel_polish(video_generator_cls)
+
+# Contrato portado da Fábrica de Vídeos: separa direção de câmera da fala,
+# fixa a bíblia visual dos personagens e mantém o movimento local econômico
+# como fallback para cenas baseadas em imagem.
+install_fabrica_pipeline_patch(video_generator_cls)
 
 # Editor Narrativo fica como camada externa: revisa título/texto primeiro.
 # Se a IA editorial falhar, preserva o plano e continua (fail-open).
@@ -114,6 +120,7 @@ if __name__ == '__main__':
         f"FinalCinematicPolish={str(os.getenv('ENABLE_FINAL_CINEMATIC_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"ReturnChannelPolish={str(os.getenv('ENABLE_RETURN_CHANNEL_POLISH') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
         f"NarrativeEditor={str(os.getenv('ENABLE_NARRATIVE_EDITOR') or 'true').lower() not in {'0','false','no','off','nao','não'}} | "
+        "FabricaPipeline=active | "
         "CaptionIntegritySelfHeal=v4 | "
         "NarrationCore=v1 | NarrationContractGuard=active"
     )

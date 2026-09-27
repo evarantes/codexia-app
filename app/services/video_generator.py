@@ -7451,18 +7451,56 @@ $synth.Dispose()
             fallback_music_mood = (plan.get("music_mood_fallback") or music_mood) if isinstance(plan, dict) else music_mood
             music_path = None
             used_music_credit = None
-            
+            music_provider_used = "none"
+            music_generation_error = ""
+
+            # Preferência portável da Fábrica: quando Eleven Music está
+            # configurado, gera uma trilha instrumental própria e adequada ao
+            # episódio. Se o provedor premium não estiver disponível, o fluxo
+            # continua para o gerador já existente e, por fim, para a biblioteca
+            # local — a trilha nunca deve derrubar uma produção de vídeo.
+            try:
+                from app.services.fabrica_pipeline import generate_eleven_music_track
+
+                music_plan = dict(plan) if isinstance(plan, dict) else {}
+                configured_elevenlabs_key = str(
+                    getattr(self.ai_service, "elevenlabs_key", "")
+                    or getattr(self.ai_service, "elevenlabs_api_key", "")
+                    or ""
+                ).strip() if self.ai_service else ""
+                if configured_elevenlabs_key:
+                    # The settings-backed AI service is the source of truth in
+                    # Codexia; do not expose the key in the render report.
+                    music_plan["elevenlabs_api_key"] = configured_elevenlabs_key
+                generated_music = generate_eleven_music_track(
+                    music_plan,
+                    self.output_dir,
+                    target_video_duration,
+                    progress_callback=progress_callback,
+                )
+                if isinstance(generated_music, dict) and os.path.exists(str(generated_music.get("path") or "")):
+                    music_path = str(generated_music.get("path"))
+                    music_provider_used = str(generated_music.get("provider") or "Eleven Music")
+                    render_report["visual_plan"]["background_music_cached"] = bool(generated_music.get("cached"))
+                    render_report["visual_plan"]["background_music_prompt"] = str(generated_music.get("prompt") or "")[:1000]
+            except Exception as exc:
+                music_generation_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+
             # Tenta gerar música exclusiva com IA
-            if self.ai_service:
+            if not music_path and self.ai_service:
                 print(f"Gerando música exclusiva para mood: {music_mood}...")
                 music_brief = music_prompt or f"{music_mood} style, inspired by {title}"
-                music_content = self.ai_service.generate_music(music_brief)
-                if music_content:
-                    filename = f"music_{uuid.uuid4()}.wav" 
-                    generated_music_path = os.path.join(self.output_dir, filename)
-                    with open(generated_music_path, "wb") as f:
-                        f.write(music_content)
-                    music_path = generated_music_path
+                try:
+                    music_content = self.ai_service.generate_music(music_brief)
+                    if music_content:
+                        filename = f"music_{uuid.uuid4()}.wav"
+                        generated_music_path = os.path.join(self.output_dir, filename)
+                        with open(generated_music_path, "wb") as f:
+                            f.write(music_content)
+                        music_path = generated_music_path
+                        music_provider_used = "AIContentGenerator MusicGen"
+                except Exception as exc:
+                    music_generation_error = f"{type(exc).__name__}: {str(exc)[:240]}"
             
             # Se falhou ou não tem IA, usa biblioteca local
             if not music_path or not os.path.exists(music_path):
@@ -7470,12 +7508,14 @@ $synth.Dispose()
                  local_path = os.path.join("app/static/music", f"{fallback_music_mood}.mp3")
                  if os.path.exists(local_path):
                      music_path = local_path
+                     music_provider_used = "biblioteca_local"
                  else:
                      try:
                          import glob
                          mp3_files = glob.glob("app/static/music/*.mp3")
                          if mp3_files:
                              music_path = mp3_files[0]
+                             music_provider_used = "biblioteca_local_generica"
                              print(f"Usando música fallback genérica: {music_path}")
                      except Exception as e:
                          print(f"Erro ao procurar fallback de música: {e}")
@@ -7522,6 +7562,12 @@ $synth.Dispose()
                         
                     final_clip = final_clip.with_audio(final_audio)
                     render_report["visual_plan"]["background_music_fade_out"] = True
+                    render_report["visual_plan"]["background_music_provider"] = music_provider_used or "unknown"
+                    render_report["visual_plan"]["background_music_generated"] = bool(
+                        music_provider_used and music_provider_used not in {"biblioteca_local", "biblioteca_local_generica"}
+                    )
+                    if music_generation_error:
+                        render_report["visual_plan"]["background_music_generation_error"] = music_generation_error
                 except Exception as e:
                     print(f"Erro ao adicionar música de fundo: {e}")
 
