@@ -804,6 +804,40 @@ def _db_to_dict(row: VideoTask, aux_meta: Optional[Dict[str, Any]] = None) -> Di
         out.update(aux_meta)
     return out
 
+
+def _insert_video_task_row(
+    db,
+    *,
+    user_id: Optional[int],
+    task_id: str,
+    initial_status: str,
+    progress: int,
+    message: str,
+    result: Any,
+) -> VideoTask:
+    """Insere uma VideoTask na sessão fornecida e valida a gravação.
+
+    O pipeline unificado precisa criar ``video_tasks`` e ``unified_videos`` na
+    mesma operação de submissão. Usar uma segunda sessão aqui permitia que um
+    erro de ``create_task`` fosse engolido e que o chamador continuasse com um
+    UUID que nunca existiu no PostgreSQL, produzindo uma violação de FK
+    posterior.
+    ``flush`` força o banco a validar a linha antes de qualquer referência a
+    ela ser gravada.
+    """
+    row = VideoTask(
+        id=str(task_id),
+        user_id=user_id,
+        status=initial_status,
+        progress=int(progress or 0),
+        message=message,
+        result_json=_json_dumps(result),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def create_task(
     user_id: Optional[int] = None,
     *,
@@ -815,14 +849,6 @@ def create_task(
 ):
     _ensure_task_support_tables()
     task_id = str(task_id or uuid.uuid4())
-    initial = {
-        "task_id": task_id,
-        "status": initial_status,
-        "progress": int(progress or 0),
-        "message": message,
-        "result": result,
-        "created_at": _utcnow().isoformat(),
-    }
     db = SessionLocal()
     try:
         existing = db.query(VideoTask).filter(VideoTask.id == task_id).first()
@@ -831,22 +857,27 @@ def create_task(
             video_tasks[task_id] = current
             _redis_set(task_id, current)
             return task_id
-        row = VideoTask(
-            id=task_id,
+        row = _insert_video_task_row(
+            db,
             user_id=user_id,
-            status=initial_status,
-            progress=int(progress or 0),
+            task_id=task_id,
+            initial_status=initial_status,
+            progress=progress,
             message=message,
-            result_json=_json_dumps(result),
+            result=result,
         )
-        db.add(row)
         db.commit()
+        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
     except Exception:
         db.rollback()
+        # Nunca devolva um task_id que não foi persistido. Em produção isso
+        # evita que uma falha real apareça depois como erro de FK em
+        # ``unified_videos`` e preserva a causa original para diagnóstico.
+        raise
     finally:
         db.close()
-    video_tasks[task_id] = initial
-    _redis_set(task_id, initial)
+    video_tasks[task_id] = current
+    _redis_set(task_id, current)
     return task_id
 
 def update_task(task_id, status=None, progress=None, message=None, result=None):
@@ -1176,8 +1207,15 @@ def claim_video_task(
             task_payload["payload"] = payload
             task_payload["idempotency_key"] = key
             task_payload["request_hash"] = req_hash
-            task_id = create_task(
+            # A tarefa canônica precisa nascer nesta operação de submissão,
+            # antes de ser referenciada pelo UnifiedVideo. Antes,
+            # create_task() usava outra sessão e engolia falhas, retornando um
+            # UUID sem linha correspondente.
+            task_id = str(uuid.uuid4())
+            task_row = _insert_video_task_row(
+                db,
                 user_id=user_id,
+                task_id=task_id,
                 initial_status="pending",
                 progress=0,
                 message="Aguardando início...",
@@ -1195,13 +1233,9 @@ def claim_video_task(
                 completed_at=None,
             )
             db.commit()
-            current = get_task(task_id) or {
-                "task_id": task_id,
-                "status": "pending",
-                "progress": 0,
-                "message": "Aguardando início...",
-                "result": task_payload,
-            }
+            current = _db_to_dict(task_row, aux_meta=_task_aux_meta(db, task_id))
+            video_tasks[task_id] = current
+            _redis_set(task_id, current)
             return {
                 "task_id": task_id,
                 "created_new_task": True,
