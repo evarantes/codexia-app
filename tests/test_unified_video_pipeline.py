@@ -23,7 +23,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session as _SASession
 
 from app.database import Base
-from app.models import UnifiedVideo, UnifiedVideoStatus
+from app.models import UnifiedVideo, UnifiedVideoStatus, VideoTask
 
 # --- ANTES de qualquer teste: garantir engine GLOBAL (SessionLocal) tem todas as tabelas de task_manager ---
 import app.services.task_manager as _tm_bootstrap
@@ -463,6 +463,9 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
 
         rows = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == "test:one-click:1").all()
         self.assertEqual(len(rows), 1, f"Esperava 1 UnifiedVideo, encontrei {len(rows)}")
+        task = self.db.query(VideoTask).filter(VideoTask.id == str(r1.task_id)).one_or_none()
+        self.assertIsNotNone(task, "UnifiedVideo não pode apontar para uma tarefa não persistida")
+        self.assertEqual(str(rows[0].task_id), str(task.id))
 
     # ------------------------------------------------------------------ #
     # 2. Dois cliques com mesma idempotency_key => 1 tarefa (não duplica) #
