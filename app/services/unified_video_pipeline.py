@@ -708,12 +708,13 @@ class UnifiedVideoPipelineService:
     ) -> UnifiedPipelineResult:
         # Todas as rotas passam por este limite canônico. Uma rota pode ter
         # executado uma leitura de compatibilidade antes do submit; se ela
-        # falhou, o PostgreSQL mantém a sessão abortada até rollback. O
-        # roteiro aprovado está no request/projeto persistido, portanto limpar
-        # a sessão aqui é seguro e impede que a falha antiga seja apresentada
-        # como erro de FK/SELECT no pipeline.
+        # falhou, o PostgreSQL mantém a sessão abortada até rollback. Só
+        # desfazemos a sessão quando o SQLAlchemy a marcou como inativa: um
+        # rollback incondicional também poderia descartar alterações normais
+        # ainda pendentes do roteiro aprovado.
         try:
-            db.rollback()
+            if getattr(db, "is_active", True) is False:
+                db.rollback()
         except Exception:
             pass
         self.ensure_schema(db)
