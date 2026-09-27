@@ -503,6 +503,51 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         self.assertEqual(str(result.task_id), ghost_id)
         self.assertEqual(str(uv.task_id), ghost_id)
 
+    def test_01c_retries_task_lookup_after_aborted_session(self):
+        """O lookup recupera a sessão abortada sem tocar no estado global."""
+        pipe = self._pipeline()
+        expected = object()
+
+        class _Query:
+            def __init__(self):
+                self.calls = 0
+
+            def filter(self, *_args, **_kwargs):
+                return self
+
+            def first(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("simulated InFailedSqlTransaction")
+                return expected
+
+        class _AbortedSession:
+            is_active = False
+
+            def __init__(self):
+                self.query_obj = _Query()
+                self.rollbacks = 0
+
+            def query(self, *_args, **_kwargs):
+                return self.query_obj
+
+            def rollback(self):
+                self.rollbacks += 1
+
+        db = _AbortedSession()
+        result = pipe._ensure_claimed_task_visible(
+            db,
+            task_id="task-after-abort",
+            claimed={},
+            request=None,
+            initial_result=None,
+            user_id=None,
+        )
+
+        self.assertIs(result, expected)
+        self.assertEqual(db.rollbacks, 1)
+        self.assertEqual(db.query_obj.calls, 2)
+
     # ------------------------------------------------------------------ #
     # 2. Dois cliques com mesma idempotency_key => 1 tarefa (não duplica) #
     # ------------------------------------------------------------------ #
