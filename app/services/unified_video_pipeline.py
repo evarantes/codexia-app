@@ -588,6 +588,10 @@ class UnifiedVideoPipelineService:
                     db.commit()
         except Exception:
             # Em produção o Alembic cria a tabela; deixamos passar para não quebrar startup.
+            try:
+                db.rollback()
+            except Exception:
+                pass
             pass
 
     # ------------------------------------------------------------------
@@ -658,6 +662,8 @@ class UnifiedVideoPipelineService:
         )
         uv_created_now = False
         if uv is None:
+            seeded_script = request.seeded_script if isinstance(request.seeded_script, dict) else None
+            seeded_scenes = seeded_script.get("scenes") if isinstance(seeded_script, dict) else None
             uv = UnifiedVideo(
                 idempotency_key=str(request.idempotency_key).strip(),
                 task_id=task_id,
@@ -680,7 +686,12 @@ class UnifiedVideoPipelineService:
                 image_provider=str(request.image_provider)[:64] or "configured",
                 voice_provider=str(request.voice_provider)[:64] or "configured",
                 voice_model=request.voice_id,
-                result_json=_json_dumps({"request": request.model_dump(mode="python")}),
+                script_json=_json_dumps(seeded_script),
+                storyboard_json=_json_dumps({"scenes": seeded_scenes}) if isinstance(seeded_scenes, list) else None,
+                result_json=_json_dumps({
+                    "request": request.model_dump(mode="python"),
+                    "approved_script_snapshot": seeded_script,
+                }),
             )
             db.add(uv)
             uv_created_now = True
@@ -705,6 +716,13 @@ class UnifiedVideoPipelineService:
             uv.voice_provider = str(request.voice_provider)[:64] or uv.voice_provider
             if request.voice_id:
                 uv.voice_model = request.voice_id
+            if request.script_text:
+                uv.script_text = request.script_text
+            if isinstance(request.seeded_script, dict):
+                uv.script_json = _json_dumps(request.seeded_script)
+                scenes = request.seeded_script.get("scenes")
+                if isinstance(scenes, list):
+                    uv.storyboard_json = _json_dumps({"scenes": scenes})
             # Uma task nova após descarte/falha deve reabrir a linha canônica.
             # Preservamos artefatos e custos para auditoria, mas não carregamos
             # o estado terminal da tentativa antiga para a nova execução.
@@ -719,6 +737,15 @@ class UnifiedVideoPipelineService:
                 uv.last_error = None
         try:
             db.flush()
+        except Exception:
+            db.rollback()
+            raise
+
+        # Commit the canonical row before optional telemetry/kick work. If a
+        # queue-count query fails, it must not poison or erase the stored
+        # approved script and task relationship.
+        try:
+            db.commit()
         except Exception:
             db.rollback()
             raise
@@ -745,12 +772,6 @@ class UnifiedVideoPipelineService:
                     message=errors[0],
                     errors=errors,
                 )
-
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
 
         # 5. Popula resultado reaproveitado (já tem vídeo / upload) para o cliente imediatamente.
         t = get_task(task_id) or {}
@@ -1317,6 +1338,10 @@ class UnifiedVideoPipelineService:
             processing = any(str(r["status"] or "").lower() == "processing" for r in rows if str(r["id"]) != str(task_id))
             return int(position or 0), bool(processing)
         except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             return 0, False
 
     def _find_any(self, db, idempotency_key_or_task_id: str) -> Optional[UnifiedVideo]:

@@ -46,12 +46,15 @@
   }
 
   async function saveProject(extra = {}) {
+    const planSnapshot = typeof currentPlan !== 'undefined' && currentPlan ? currentPlan : null;
+    const derivedScript = String(extra.script_text || planSnapshot?.full_script || '').trim();
     const payload = {
       theme: document.getElementById('theme')?.value || project?.theme || '',
       content_type: document.getElementById('contentType')?.value || project?.content_type || activeSlot,
       duration_minutes: Number(document.getElementById('duration')?.value || project?.duration_minutes || 10),
       budget_brl: Number(document.getElementById('videoBudget')?.value || project?.budget_brl || 85),
-      ...(typeof currentPlan !== 'undefined' && currentPlan ? { plan: currentPlan } : {}),
+      ...(planSnapshot ? { plan: planSnapshot } : {}),
+      ...(derivedScript ? { script_text: derivedScript } : {}),
       ...extra,
     };
     const d = await api(slotUrl('/youtube/cinematic/project/active'), { method: 'PUT', body: JSON.stringify(payload) });
@@ -230,6 +233,13 @@
 
   document.getElementById('contentType')?.addEventListener('change', ev => { void switchSlot(ev.target.value, { restoreSaved:true }); });
   window.CodexiaProjectSlots = { get:() => activeSlot, switchTo:(slot, restoreSaved=true) => switchSlot(slot,{restoreSaved}) };
+  // Other controllers (especially the handoff controller) must be able to
+  // await persistence before spending credits on the canonical pipeline.
+  window.CodexiaProjectState = {
+    get: () => project,
+    slot: () => activeSlot,
+    save: (extra = {}) => saveProject(extra),
+  };
 
   setTimeout(() => { void restore(activeSlot); }, 500);
 })();

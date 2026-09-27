@@ -123,21 +123,8 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
         }
         response = {"plan": plan, "director": director_meta}
         contract = plan.get("duration_contract") if isinstance(plan.get("duration_contract"), dict) else {}
-        _store.update(
-            user_id,
-            job_id,
-            status="completed",
-            stage="completed",
-            progress=100,
-            message=(
-                f"Direção concluída com duração validada: {contract.get('estimated_seconds', 0)}s previstos "
-                f"para {contract.get('target_seconds', 0)}s contratados."
-            ),
-            result=response,
-            error=None,
-        )
-        # Server-side persistence is deliberate: the browser may be closed before
-        # it receives the completed response, but the paid plan must never be lost.
+        # Persist before reporting completion so the plan is recoverable even
+        # when the browser loses the final polling response.
         _projects.write(
             user_id,
             {
@@ -150,6 +137,20 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
                 "director_job_id": job_id,
                 "status": "directed",
             },
+            slot=str(request_payload.get("content_type") or "story"),
+        )
+        _store.update(
+            user_id,
+            job_id,
+            status="completed",
+            stage="completed",
+            progress=100,
+            message=(
+                f"Direção concluída com duração validada: {contract.get('estimated_seconds', 0)}s previstos "
+                f"para {contract.get('target_seconds', 0)}s contratados."
+            ),
+            result=response,
+            error=None,
         )
     except CinematicDirectorError as exc:
         _store.update(

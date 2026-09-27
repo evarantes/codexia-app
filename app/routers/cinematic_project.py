@@ -25,6 +25,11 @@ class ActiveProjectSave(BaseModel):
     plan: Optional[Dict[str, Any]] = None
     director: Optional[Dict[str, Any]] = None
     estimate: Optional[Dict[str, Any]] = None
+    script_text: Optional[str] = Field(None, max_length=120000)
+    script_sha256: Optional[str] = Field(None, max_length=128)
+    script_word_count: Optional[int] = Field(None, ge=0)
+    script_status: Optional[str] = Field(None, max_length=64)
+    last_pipeline_error: Optional[str] = Field(None, max_length=2000)
     base_task_id: Optional[str] = Field(None, max_length=160)
     status: Optional[str] = Field(None, max_length=80)
 
