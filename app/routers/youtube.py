@@ -502,14 +502,20 @@ def _find_reusable_completed_task_by_content(
         window_hours = 48
     threshold = datetime.utcnow() - timedelta(hours=window_hours)
     excluded_stripped = str(excluded_task_id or "").strip()
-    rows = (
-        db.query(VideoTask)
-        .filter(VideoTask.status == "completed")
-        .filter(VideoTask.created_at >= threshold)
-        .order_by(VideoTask.created_at.desc(), VideoTask.id.desc())
-        .limit(500)
-        .all()
-    )
+    try:
+        rows = (
+            db.query(VideoTask)
+            .filter(VideoTask.status == "completed")
+            .filter(VideoTask.created_at >= threshold)
+            .order_by(VideoTask.created_at.desc(), VideoTask.id.desc())
+            .limit(500)
+            .all()
+        )
+    except Exception:
+        # Esta consulta é apenas uma otimização de reaproveitamento. Ela não
+        # pode deixar a sessão PostgreSQL abortada para o claim canônico.
+        db.rollback()
+        raise
     for row in rows:
         if excluded_stripped and str(row.id) == excluded_stripped:
             continue
@@ -6456,6 +6462,13 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
                     "pipeline": "content_reuse",
                 }
         except Exception:
+            # O pré-check é opcional. Se uma consulta de compatibilidade
+            # falhar no PostgreSQL, a sessão fica abortada até rollback; sem
+            # isso o claim canônico falha depois com InFailedSqlTransaction.
+            try:
+                db.rollback()
+            except Exception:
+                pass
             pass
 
     # ====== Pipeline canônico obrigatório ======

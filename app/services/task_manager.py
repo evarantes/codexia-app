@@ -1125,7 +1125,11 @@ def claim_video_task(
                         task = None
                     elif user_id is not None and existing_user_id is None:
                         task.user_id = int(user_id)
-                        db.commit()
+                        # Deixe a alteração na transação do claim. Um commit
+                        # intermediário que falhe pode deixar a sessão
+                        # abortada e mascarar a causa na próxima leitura do
+                        # registro de deduplicação.
+                        db.flush()
                 if task:
                     status_norm = str(task.status or "").strip().lower()
                     dedupe_exp = _parse_dt(dedupe.get("expires_at"))
@@ -1137,6 +1141,7 @@ def claim_video_task(
                         )
                     )
                     if not force_regenerate and status_norm in {"pending", "processing"}:
+                        db.commit()
                         current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
@@ -1150,6 +1155,7 @@ def claim_video_task(
                             "task": current,
                         }
                     if not force_regenerate and status_norm == "completed" and within_window:
+                        db.commit()
                         current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
@@ -1172,7 +1178,7 @@ def claim_video_task(
                         task = None
                     elif existing_user_id is None:
                         task.user_id = int(user_id)
-                        db.commit()
+                        db.flush()
                 if task and (force_regenerate is False):
                     status_norm = str(task.status or "").strip().lower()
                     if status_norm and status_norm not in {"pending", "processing", "completed"}:
