@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models import Settings, User
 from app.routers.auth import get_current_admin_user
 from app.services.cinematic_director import CinematicDirector, CinematicDirectorError
+from app.services.cinematic_project_store import CinematicProjectStore
 from app.services.cinematic_video_provider import CinematicProviderError, CinematicVideoProvider
 
 
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/cinematic", tags=["Codexia Cinematic"])
 
 _STORE_ROOT = Path("/data/codexia/cinematic") if os.path.isdir("/data") else Path(".codexia/cinematic")
 _STORE_ROOT.mkdir(parents=True, exist_ok=True)
+_PROJECTS = CinematicProjectStore()
 
 
 def _user_id(current_user: Optional[User]) -> int:
@@ -450,15 +452,32 @@ def director_plan(
             budget_brl=body.budget_brl,
         )
         usd_brl = _usd_brl()
+        director_meta = {
+            "provider": result.provider,
+            "model": result.model,
+            "usage": result.usage,
+            "estimated_cost_usd": round(result.estimated_cost_usd, 4),
+            "estimated_cost_brl": round(result.estimated_cost_usd * usd_brl, 2),
+        }
+        # A direção síncrona também precisa ser recuperável. O navegador pode
+        # fechar imediatamente depois da resposta; não depender do JavaScript
+        # para ser a única camada de persistência do roteiro pago.
+        _PROJECTS.write(
+            uid,
+            {
+                "theme": body.theme,
+                "content_type": body.content_type,
+                "duration_minutes": body.duration_minutes,
+                "budget_brl": body.budget_brl,
+                "plan": plan,
+                "director": director_meta,
+                "status": "directed",
+            },
+            slot=body.content_type,
+        )
         return {
             "plan": plan,
-            "director": {
-                "provider": result.provider,
-                "model": result.model,
-                "usage": result.usage,
-                "estimated_cost_usd": round(result.estimated_cost_usd, 4),
-                "estimated_cost_brl": round(result.estimated_cost_usd * usd_brl, 2),
-            },
+            "director": director_meta,
         }
     except CinematicDirectorError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

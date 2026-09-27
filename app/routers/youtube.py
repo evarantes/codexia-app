@@ -6489,6 +6489,14 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
     if unified_req is None:
         raise HTTPException(status_code=422, detail="Payload inválido para o UnifiedVideoPipeline canônico.")
     try:
+        # The content-reuse probe is optional and the route may have passed
+        # through a legacy settings/narration read. Start the canonical submit
+        # at a clean transaction boundary so a previous failed statement can
+        # never reach claim_video_task as InFailedSqlTransaction.
+        try:
+            db.rollback()
+        except Exception:
+            pass
         kick_cb = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
         base_result = {
             "payload": payload,

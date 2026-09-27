@@ -208,11 +208,13 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertIn("project_slot", script)
         self.assertIn("registerLibraryTask", script)
         self.assertIn("director_quality_required: true", script)
+        self.assertIn("seeded_script: currentPlan", script)
+        self.assertIn("approved_for_pipeline", script)
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
         self.assertIn("operational_queue.js?v=20260920-artifact-checklist1", patch)
-        self.assertIn("director_duration_contract.js?v=20260919-quality3", patch)
+        self.assertIn("director_duration_contract.js?v=20260927-quality4", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
 

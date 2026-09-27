@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import threading
 from datetime import datetime, timezone
@@ -60,6 +61,42 @@ class CinematicProjectStore:
         requested_slot = _slot(slot)
         payload_slot = _slot(payload.get("content_type")) if payload.get("content_type") else None
         safe_slot = payload_slot if requested_slot == "story" and payload_slot in {"devotional", "short"} else requested_slot
+
+        # O roteiro aprovado precisa sobreviver ao fechamento do navegador, a
+        # uma falha do pipeline e a um novo deploy. O plano continua sendo a
+        # fonte completa (cenas, personagens e contrato), mas também mantemos
+        # um snapshot textual explícito para recuperação e auditoria.
+        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else None
+        script_text = str(payload.get("script_text") or "").strip()
+        if not script_text and plan:
+            script_text = str(plan.get("full_script") or "").strip()
+            if not script_text:
+                scenes = plan.get("scenes") if isinstance(plan.get("scenes"), list) else []
+                script_text = "\n\n".join(
+                    str(scene.get("narration") or scene.get("text") or "").strip()
+                    for scene in scenes
+                    if isinstance(scene, dict) and str(scene.get("narration") or scene.get("text") or "").strip()
+                ).strip()
+        if script_text:
+            payload["script_text"] = script_text
+            payload["script_word_count"] = len(script_text.split())
+            payload["script_sha256"] = hashlib.sha256(script_text.encode("utf-8")).hexdigest()
+            payload["script_saved_at"] = _utcnow()
+            payload.setdefault("script_status", "generated")
+            if str(payload.get("status") or "").strip().lower() in {
+                "approved_for_pipeline",
+                "submitted_to_pipeline",
+            }:
+                payload["script_status"] = "approved"
+
+        project_status = str(payload.get("status") or "").strip().lower()
+        if project_status in {"directed", "approved_for_pipeline", "submitted_to_pipeline"}:
+            # A new plan or a new handoff supersedes any error/task marker from
+            # an older attempt in the same project slot.
+            payload["last_pipeline_error"] = None
+        if project_status == "directed":
+            payload["base_task_id"] = None
+
         with self._lock:
             current = self.read(user_id, safe_slot) or {
                 "version": 2,

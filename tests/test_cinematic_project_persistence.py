@@ -29,6 +29,27 @@ class CinematicProjectPersistenceTests(unittest.TestCase):
             self.assertEqual(final["scenes"]["1"]["status"], "SUCCEEDED")
             self.assertEqual(final["scenes"]["1"]["output_url"], "/videos/pilot.mp4")
 
+    def test_approved_plan_keeps_recoverable_script_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"
+            store = CinematicProjectStore(root=root)
+            saved = store.write(14, {
+                "content_type": "story",
+                "status": "approved_for_pipeline",
+                "plan": {
+                    "theme": "Davi e Golias",
+                    "full_script": "Davi confiou em Deus e enfrentou o gigante.",
+                    "scenes": [{"index": 1, "narration": "Davi confiou em Deus."}],
+                },
+            })
+
+            reopened = CinematicProjectStore(root=root).read(14)
+            self.assertEqual(saved["script_text"], "Davi confiou em Deus e enfrentou o gigante.")
+            self.assertEqual(reopened["script_text"], saved["script_text"])
+            self.assertEqual(reopened["script_word_count"], 8)
+            self.assertEqual(reopened["script_status"], "approved")
+            self.assertEqual(len(reopened["script_sha256"]), 64)
+
     def test_story_and_devotional_are_isolated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "projects"
@@ -84,6 +105,7 @@ class CinematicProjectPersistenceTests(unittest.TestCase):
         self.assertIn("slot=${encodeURIComponent(activeSlot)}", script)
         self.assertIn("project_slot:activeSlot", script)
         self.assertIn("O projeto de Davi e Golias continua salvo", script)
+        self.assertIn("window.CodexiaProjectState", script)
 
     def test_frontend_guard_blocks_cross_project_render(self):
         script = Path("app/static/project_slot_guard.js").read_text(encoding="utf-8")

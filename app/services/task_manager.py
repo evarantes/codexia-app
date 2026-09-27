@@ -326,27 +326,52 @@ def release_distributed_lock(lock_info: Optional[Dict[str, Any]]):
 
 
 def _fetch_dedupe_row(db, idempotency_key: str) -> Optional[Dict[str, Any]]:
-    row = db.execute(text(
+    statement = text(
         f"""
         SELECT idempotency_key, request_hash, task_id, status, request_payload_json,
                result_json, created_at, updated_at, expires_at, completed_at
         FROM {_TASK_DEDUPE_TABLE}
         WHERE idempotency_key = :idempotency_key
         """
-    ), {"idempotency_key": idempotency_key}).mappings().first()
-    return dict(row) if row else None
+    )
+    for attempt in range(2):
+        try:
+            row = db.execute(statement, {"idempotency_key": idempotency_key}).mappings().first()
+            return dict(row) if row else None
+        except Exception:
+            # A failed statement poisons a PostgreSQL transaction. Clear it
+            # before one retry; otherwise the next SELECT reports only
+            # InFailedSqlTransaction and hides the original failure.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt:
+                raise
+    return None
 
 
 def _fetch_dedupe_row_by_task_id(db, task_id: str) -> Optional[Dict[str, Any]]:
-    row = db.execute(text(
+    statement = text(
         f"""
         SELECT idempotency_key, request_hash, task_id, status, request_payload_json,
                result_json, created_at, updated_at, expires_at, completed_at
         FROM {_TASK_DEDUPE_TABLE}
         WHERE task_id = :task_id
         """
-    ), {"task_id": task_id}).mappings().first()
-    return dict(row) if row else None
+    )
+    for attempt in range(2):
+        try:
+            row = db.execute(statement, {"task_id": task_id}).mappings().first()
+            return dict(row) if row else None
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt:
+                raise
+    return None
 
 
 def _task_result_payload_from_row(row: VideoTask) -> Dict[str, Any]:
@@ -388,7 +413,7 @@ def _find_equivalent_task_by_content_fingerprint(
 
 
 def _fetch_lease_row(db, task_id: str) -> Optional[Dict[str, Any]]:
-    row = db.execute(text(
+    statement = text(
         f"""
         SELECT task_id, executor_id, attempt_number, created_at, updated_at,
                started_at, heartbeat_at,
@@ -397,8 +422,19 @@ def _fetch_lease_row(db, task_id: str) -> Optional[Dict[str, Any]]:
         FROM {_TASK_LEASE_TABLE}
         WHERE task_id = :task_id
         """
-    ), {"task_id": task_id}).mappings().first()
-    return dict(row) if row else None
+    )
+    for attempt in range(2):
+        try:
+            row = db.execute(statement, {"task_id": task_id}).mappings().first()
+            return dict(row) if row else None
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt:
+                raise
+    return None
 
 
 def _upsert_dedupe_row(
@@ -1066,6 +1102,10 @@ def get_task(task_id):
             _redis_set(task_id, current)
             return current
     except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         pass
     finally:
         db.close()
@@ -1090,6 +1130,10 @@ def get_task_by_idempotency_key(idempotency_key: str) -> Optional[Dict[str, Any]
         _redis_set(task.id, current)
         return current
     except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         return None
     finally:
         db.close()
@@ -1114,6 +1158,10 @@ def claim_video_task(
     try:
         db = SessionLocal()
         try:
+            # SessionLocal normally starts clean, but an earlier request on a
+            # reused connection may have left a failed transaction marker.
+            # Rollback is idempotent and makes the dedupe read retryable.
+            db.rollback()
             now = _utcnow()
             dedupe = _fetch_dedupe_row(db, key)
             if dedupe and dedupe.get("task_id"):

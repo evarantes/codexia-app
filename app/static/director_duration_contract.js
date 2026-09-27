@@ -143,6 +143,21 @@
       const projectSlot = currentPlan.content_type === 'devotional'
         ? 'devotional'
         : currentPlan.content_type === 'short' ? 'short' : 'story';
+
+      // This is a hard handoff boundary: the approved script is persisted on
+      // the server before the first pipeline request. If persistence fails, do
+      // not create a paid task that cannot be recovered from the project view.
+      const projectState = globalThis.CodexiaProjectState;
+      if (!projectState || typeof projectState.save !== 'function') {
+        throw new Error('Não foi possível ativar o armazenamento do roteiro. Atualize a página e tente novamente.');
+      }
+      await projectState.save({
+        plan: currentPlan,
+        script_text: String(currentPlan.full_script || ''),
+        script_status: 'approved',
+        last_pipeline_error: null,
+        status: 'approved_for_pipeline',
+      });
       const data = await authFetch('/youtube/generate_video', {
         method: 'POST',
         body: JSON.stringify({
@@ -152,6 +167,7 @@
           mode: 'story',
           kind: projectSlot === 'devotional' ? 'devotional' : 'story',
           story_content: currentPlan.full_script,
+          seeded_script: currentPlan,
           image_mode: 'multiple',
           aspect_ratio: '16:9',
           override_title: firstTitle || undefined,
@@ -181,6 +197,18 @@
           // The production is already safe in the canonical pipeline. Keep a
           // durable browser-side reminder and retry registration automatically.
         }
+        try {
+          await projectState.save({
+            base_task_id: String(data.task_id),
+            script_status: 'approved',
+            status: 'submitted_to_pipeline',
+            last_pipeline_error: null,
+          });
+        } catch (_) {
+          // The approved snapshot was already persisted before submit. A
+          // library/project status sync can be retried without duplicating the
+          // generation.
+        }
       }
 
       alert(
@@ -192,6 +220,16 @@
         if (queueButton) queueButton.click();
       } catch (_) {}
     } catch (error) {
+      try {
+        const projectState = globalThis.CodexiaProjectState;
+        if (projectState && typeof projectState.save === 'function') {
+          await projectState.save({
+            script_status: 'approved',
+            status: 'pipeline_error',
+            last_pipeline_error: String(error && error.message ? error.message : error).slice(0, 2000),
+          });
+        }
+      } catch (_) {}
       alert(error && error.message ? error.message : 'Falha ao enviar a produção.');
     } finally {
       sendButton.disabled = false;
