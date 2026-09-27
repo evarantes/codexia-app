@@ -9,6 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from unittest.mock import patch
 
 # ANTES de importar app.database: forçar SQLite de desenvolvimento para não tentar conectar PostgreSQL
 # task_manager usa SessionLocal do app.database global; com isso ele também usará SQLite temporário.
@@ -466,6 +467,41 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         task = self.db.query(VideoTask).filter(VideoTask.id == str(r1.task_id)).one_or_none()
         self.assertIsNotNone(task, "UnifiedVideo não pode apontar para uma tarefa não persistida")
         self.assertEqual(str(rows[0].task_id), str(task.id))
+
+    def test_01b_repairs_missing_claimed_task_before_fk_insert(self):
+        """Um claim fantasma nunca pode abortar o armazenamento do roteiro."""
+        import app.services.unified_video_pipeline as _uvp
+
+        pipe = self._pipeline()
+        req = self._minimal_request(
+            ik=f"test:ghost-claim:{uuid.uuid4().hex}",
+            module="story",
+            sid="story:ghost-claim",
+        )
+        ghost_id = str(uuid.uuid4())
+        claimed = {
+            "task_id": ghost_id,
+            "created_new_task": True,
+            "reused_existing_task": False,
+            "reused_completed_task": False,
+            "task": {
+                "task_id": ghost_id,
+                "status": "pending",
+                "progress": 0,
+                "message": "Aguardando início...",
+                "result": {"payload": {"topic": req.topic}},
+            },
+        }
+
+        with patch.object(_uvp, "claim_video_task", return_value=claimed):
+            result = pipe.submit_or_reuse(self.db, request=req)
+
+        task = self.db.query(VideoTask).filter(VideoTask.id == ghost_id).one_or_none()
+        uv = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == req.idempotency_key).one_or_none()
+        self.assertIsNotNone(task, "O claim retornou task_id, mas a linha não foi reparada antes da FK")
+        self.assertIsNotNone(uv, "O roteiro não foi armazenado após reparar o task_id")
+        self.assertEqual(str(result.task_id), ghost_id)
+        self.assertEqual(str(uv.task_id), ghost_id)
 
     # ------------------------------------------------------------------ #
     # 2. Dois cliques com mesma idempotency_key => 1 tarefa (não duplica) #
