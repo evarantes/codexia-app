@@ -1188,6 +1188,7 @@ class UnifiedVideoPipelineService:
                 else UnifiedVideoStatus.APPROVED
             )
             uv.status = new_status
+            uv.last_error = None
             uv.progress = 100
             uv.last_message = (
                 "Validação concluída — aguardando revisão."
@@ -1354,14 +1355,17 @@ class UnifiedVideoPipelineService:
                 or audio_gen.get("output_path")
                 or audio_gen.get("audio_path")
             )
-            if audio_path and not uv.audio_path:
+            if audio_path:
+                if str(audio_path) != uv.audio_path:
+                    uv.audio_duration_seconds = None
+                    uv.audio_size_bytes = None
                 uv.audio_path = str(audio_path)
             audio_duration = (
                 audio_gen.get("duration_seconds")
                 or audio_gen.get("final_audio_duration_sec")
                 or audio_gen.get("audio_duration_sec")
             )
-            if audio_duration and not uv.audio_duration_seconds:
+            if audio_duration:
                 uv.audio_duration_seconds = _safe_float(audio_duration)
             provider = audio_gen.get("provider") or audio_gen.get("provider_used") or audio_gen.get("configured_provider")
             if provider:
@@ -1394,17 +1398,15 @@ class UnifiedVideoPipelineService:
             if paths:
                 uv.images_json = _json_dumps({"paths": paths})
         # Um retry pode produzir outro MP4 para a mesma tarefa. O resultado
-        # atual deve substituir o caminho antigo; do contrário o Claude Diretor
-        # mede novamente o vídeo anterior (por exemplo, 5:15) e reprova o novo.
-        current_video_path = result.get("file_path") or result.get("video_path")
-        if current_video_path:
-            normalized_video_path = str(current_video_path)
-            if normalized_video_path != str(uv.video_path or ""):
-                uv.video_size_bytes = None
-                uv.video_duration_seconds = None
-            uv.video_path = normalized_video_path
-        if result.get("video_url"):
-            uv.video_url = str(result.get("video_url"))
+        # atual deve substituir o caminho antigo; do contrário a validação
+        # pode medir novamente o vídeo anterior e reprovar o novo.
+        video_candidate = self._task_video_path(result)
+        if video_candidate:
+            uv.video_path = str(video_candidate)
+            uv.video_url = str(result["video_url"]) if result.get("video_url") else None
+            # Even a render overwriting the same path needs a fresh probe.
+            uv.video_size_bytes = None
+            uv.video_duration_seconds = None
         # youtube
         if result.get("youtube_video_id") and not uv.youtube_video_id:
             uv.youtube_video_id = str(result["youtube_video_id"])[:64]
