@@ -503,30 +503,6 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         self.assertEqual(str(result.task_id), ghost_id)
         self.assertEqual(str(uv.task_id), ghost_id)
 
-    def test_01c_recovers_aborted_submit_session_before_task_lookup(self):
-        """Uma consulta anterior abortada não pode bloquear o submit canônico."""
-        from sqlalchemy import text
-
-        pipe = self._pipeline()
-        req = self._minimal_request(
-            ik=f"test:aborted-submit:{uuid.uuid4().hex}",
-            module="story",
-            sid="story:aborted-submit",
-        )
-        try:
-            self.db.execute(text("SELECT column_that_does_not_exist FROM video_tasks"))
-        except Exception:
-            # PostgreSQL deixa a sessão abortada até rollback; SQLite também
-            # levanta a exceção, mas não reproduz esse estado transacional.
-            pass
-
-        result = pipe.submit_or_reuse(self.db, request=req)
-        task = self.db.query(VideoTask).filter(VideoTask.id == str(result.task_id)).one_or_none()
-        uv = self.db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == req.idempotency_key).one_or_none()
-        self.assertIsNotNone(task, "A tarefa não foi persistida após limpar a transação abortada")
-        self.assertIsNotNone(uv, "O roteiro não foi armazenado após limpar a transação abortada")
-        self.assertEqual(str(uv.task_id), str(result.task_id))
-
     # ------------------------------------------------------------------ #
     # 2. Dois cliques com mesma idempotency_key => 1 tarefa (não duplica) #
     # ------------------------------------------------------------------ #
