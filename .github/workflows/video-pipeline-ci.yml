@@ -133,6 +133,13 @@ jobs:
           PREFLIGHT_STARTUP_TIMEOUT_SEC: "35"
         run: python scripts/preflight_validate.py
 
+      - name: Isolate canonical awaiting-review scheduler regression
+        env:
+          APP_ENV: development
+          ENABLE_SQLITE_DEV: "true"
+          DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-isolated.sqlite3
+        run: python -m unittest tests.test_youtube_series_service.YouTubeSeriesServiceTests.test_scheduler_maps_canonical_awaiting_review_task_to_series_review_status -q
+
       - name: Run complete test suite
         env:
           APP_ENV: development
