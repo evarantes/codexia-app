@@ -665,7 +665,10 @@ class UnifiedVideoPipelineService:
             result_obj.setdefault("idempotency_key", str(request.idempotency_key))
             result_obj.setdefault("request_hash", str(request.request_hash or ""))
 
-        repair_db = SessionLocal()
+        # Derive the new session from the caller's bind.  This keeps isolated
+        # test databases and any explicitly configured worker bind aligned
+        # while still giving the repair a completely clean transaction.
+        repair_db = Session(bind=db.get_bind())
         try:
             repair_db.rollback()
             existing = load_video_task_row(repair_db, tid)
