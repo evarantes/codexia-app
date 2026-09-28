@@ -386,16 +386,20 @@ def load_video_task_row(db, task_id: str) -> Optional[VideoTask]:
     normalized_id = str(task_id or "").strip()
     if not normalized_id:
         return None
+    recovered_session = False
     for attempt in range(2):
         try:
-            if getattr(db, "is_active", True) is False:
+            if attempt == 0 and getattr(db, "is_active", True) is False:
                 db.rollback()
+                recovered_session = True
             return db.query(VideoTask).filter(VideoTask.id == normalized_id).first()
         except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
+            if not recovered_session:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                recovered_session = True
             if attempt:
                 raise
     return None
