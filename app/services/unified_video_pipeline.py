@@ -797,6 +797,7 @@ class UnifiedVideoPipelineService:
             force_regenerate=bool(request.force_regenerate),
             user_id=user_id,
             initial_result=initial_result,
+            db=db,
         )
         task_id = str(claimed.get("task_id"))
         created_new = bool(claimed.get("created_new_task"))
