@@ -630,8 +630,11 @@ class UnifiedVideoPipelineService:
         loses the submit before the approved script can be stored.
 
         Re-checking here makes the ordering explicit and repairs only the
-        missing task row with the same id.  The savepoint keeps a concurrent
-        insert from aborting the caller's transaction.
+        missing task row with the same id.  The repair deliberately uses a
+        clean session instead of a savepoint in the caller's session.  If the
+        caller already contains a PostgreSQL statement error, closing a
+        savepoint can itself fail with ``RELEASE SAVEPOINT`` and hide the
+        original problem.
         """
         tid = str(task_id or "").strip()
         if not tid:
@@ -646,6 +649,13 @@ class UnifiedVideoPipelineService:
         if task is not None:
             return task
 
+        # End the read transaction before a second connection tries to repair
+        # the row.  This also releases a stale PostgreSQL snapshot/lock.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
         claimed_task = claimed.get("task") if isinstance(claimed, dict) else None
         claimed_task = claimed_task if isinstance(claimed_task, dict) else {}
         result_obj = claimed_task.get("result")
@@ -655,29 +665,48 @@ class UnifiedVideoPipelineService:
             result_obj.setdefault("idempotency_key", str(request.idempotency_key))
             result_obj.setdefault("request_hash", str(request.request_hash or ""))
 
-        repaired = VideoTask(
-            id=tid,
-            user_id=claimed_task.get("user_id") or user_id,
-            status=str(claimed_task.get("status") or "pending"),
-            progress=int(claimed_task.get("progress") or 0),
-            message=str(claimed_task.get("message") or "Aguardando início..."),
-            result_json=_json_dumps(result_obj),
-        )
+        repair_db = SessionLocal()
         try:
-            # Do not rollback the whole request if another connection inserted
-            # the row between the SELECT and this INSERT.
-            with db.begin_nested():
-                db.add(repaired)
-                db.flush()
-            return repaired
+            repair_db.rollback()
+            existing = load_video_task_row(repair_db, tid)
+            if existing is None:
+                repaired = VideoTask(
+                    id=tid,
+                    user_id=claimed_task.get("user_id") or user_id,
+                    status=str(claimed_task.get("status") or "pending"),
+                    progress=int(claimed_task.get("progress") or 0),
+                    message=str(claimed_task.get("message") or "Aguardando início..."),
+                    result_json=_json_dumps(result_obj),
+                )
+                repair_db.add(repaired)
+                try:
+                    repair_db.commit()
+                except Exception:
+                    # Another submit may have repaired the same task between
+                    # the read and insert.  Re-read after a full rollback;
+                    # never leave a failed transaction around the submit.
+                    repair_db.rollback()
+                    existing = load_video_task_row(repair_db, tid)
+                    if existing is None:
+                        raise
+            task = existing or load_video_task_row(repair_db, tid)
+        finally:
+            repair_db.close()
+
+        # The caller's session started its read before the repair commit.
+        # Reset it and confirm the FK target is visible before inserting the
+        # UnifiedVideo row.
+        try:
+            db.rollback()
         except Exception:
-            # The savepoint normally contains the conflict. If the driver
-            # still reports an aborted transaction, the helper clears it
-            # before checking whether the concurrent row won the race.
-            existing = load_video_task_row(db, tid)
-            if existing is not None:
-                return existing
-            raise
+            pass
+        task = load_video_task_row(db, tid)
+        if task is None:
+            raise RuntimeError(
+                "UnifiedVideoPipeline não conseguiu confirmar a tarefa "
+                f"{tid} antes de gravar o roteiro."
+            )
+        return task
 
     # ------------------------------------------------------------------
     # Entrada 1: submit ou reaproveita (idempotência).
