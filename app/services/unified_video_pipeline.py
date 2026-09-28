@@ -798,6 +798,11 @@ class UnifiedVideoPipelineService:
             user_id=user_id,
         )
 
+        # The task row is the FK target of UnifiedVideo. Keep this explicit
+        # flush at the submit boundary so a repaired or newly claimed task is
+        # materialized in PostgreSQL before the central row is constructed.
+        db.flush()
+
         # 2. Cria/atualiza a linha central UnifiedVideo.
         uv: Optional[UnifiedVideo] = (
             db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == str(request.idempotency_key).strip()).first()
