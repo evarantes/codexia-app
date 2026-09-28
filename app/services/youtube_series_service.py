@@ -1133,6 +1133,12 @@ class YouTubeSeriesService:
             user = db.query(User).filter(User.id == int(series.user_id)).first()
             if not user:
                 continue
+            # Não emende a produção do episódio seguinte no mesmo ciclo em
+            # que o anterior acabou de chegar à revisão. Além de evitar uma
+            # cascata de submits, isso dá ao painel uma fronteira estável:
+            # a próxima rodada continua a série depois que o operador puder
+            # revisar o episódio atual.
+            review_transitioned_this_cycle = False
             episodes = (
                 db.query(SeriesEpisode)
                 .filter(SeriesEpisode.series_id == int(series.id))
@@ -1184,6 +1190,7 @@ class YouTubeSeriesService:
                     elif task_status in {"completed", "awaiting_review", "approved"} and status in {"in_production", "awaiting_production", "planned", "in_correction"}:
                         before = str(episode.status)
                         episode.status = "awaiting_review"
+                        review_transitioned_this_cycle = True
                         synced += 1
                         _audit_event(
                             db,
@@ -1239,6 +1246,7 @@ class YouTubeSeriesService:
                     and status in {"planned", "awaiting_production", "in_correction"}
                     and current >= episode.production_datetime
                     and not episode.task_id
+                    and not review_transitioned_this_cycle
                 )
                 previous_episodes = [ep for ep in episodes if int(ep.episode_number or 0) < int(episode.episode_number or 0)]
                 previous_generation_pending = any(
