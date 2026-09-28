@@ -326,83 +326,27 @@ def release_distributed_lock(lock_info: Optional[Dict[str, Any]]):
 
 
 def _fetch_dedupe_row(db, idempotency_key: str) -> Optional[Dict[str, Any]]:
-    statement = text(
+    row = db.execute(text(
         f"""
         SELECT idempotency_key, request_hash, task_id, status, request_payload_json,
                result_json, created_at, updated_at, expires_at, completed_at
         FROM {_TASK_DEDUPE_TABLE}
         WHERE idempotency_key = :idempotency_key
         """
-    )
-    for attempt in range(2):
-        try:
-            row = db.execute(statement, {"idempotency_key": idempotency_key}).mappings().first()
-            return dict(row) if row else None
-        except Exception:
-            # A failed statement poisons a PostgreSQL transaction. Clear it
-            # before one retry; otherwise the next SELECT reports only
-            # InFailedSqlTransaction and hides the original failure.
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            if attempt:
-                raise
-    return None
+    ), {"idempotency_key": idempotency_key}).mappings().first()
+    return dict(row) if row else None
 
 
 def _fetch_dedupe_row_by_task_id(db, task_id: str) -> Optional[Dict[str, Any]]:
-    statement = text(
+    row = db.execute(text(
         f"""
         SELECT idempotency_key, request_hash, task_id, status, request_payload_json,
                result_json, created_at, updated_at, expires_at, completed_at
         FROM {_TASK_DEDUPE_TABLE}
         WHERE task_id = :task_id
         """
-    )
-    for attempt in range(2):
-        try:
-            row = db.execute(statement, {"task_id": task_id}).mappings().first()
-            return dict(row) if row else None
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            if attempt:
-                raise
-    return None
-
-
-def load_video_task_row(db, task_id: str) -> Optional[VideoTask]:
-    """Read a task from a session that may have an aborted transaction.
-
-    Recovery endpoints often open a new session after another operation has
-    failed. PostgreSQL keeps that session unusable until ``ROLLBACK``; a
-    second SELECT otherwise only raises ``InFailedSqlTransaction`` and hides
-    the original error. Keep the retry local to the read so callers do not
-    accidentally lose unrelated pending changes.
-    """
-    normalized_id = str(task_id or "").strip()
-    if not normalized_id:
-        return None
-    recovered_session = False
-    for attempt in range(2):
-        try:
-            if attempt == 0 and getattr(db, "is_active", True) is False:
-                db.rollback()
-                recovered_session = True
-            return db.query(VideoTask).filter(VideoTask.id == normalized_id).first()
-        except Exception:
-            if not recovered_session:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-                recovered_session = True
-            if attempt:
-                raise
-    return None
+    ), {"task_id": task_id}).mappings().first()
+    return dict(row) if row else None
 
 
 def _task_result_payload_from_row(row: VideoTask) -> Dict[str, Any]:
@@ -429,26 +373,13 @@ def _find_equivalent_task_by_content_fingerprint(
     if not desired:
         return None
     status_filter = statuses or {"pending", "processing", "completed"}
-    rows = None
-    for attempt in range(2):
-        try:
-            if getattr(db, "is_active", True) is False:
-                db.rollback()
-            rows = (
-                db.query(VideoTask)
-                .filter(VideoTask.status.in_(list(status_filter)))
-                .order_by(VideoTask.updated_at.desc(), VideoTask.created_at.desc())
-                .limit(max(1, int(limit or 400)))
-                .all()
-            )
-            break
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            if attempt:
-                raise
+    rows = (
+        db.query(VideoTask)
+        .filter(VideoTask.status.in_(list(status_filter)))
+        .order_by(VideoTask.updated_at.desc(), VideoTask.created_at.desc())
+        .limit(max(1, int(limit or 400)))
+        .all()
+    )
     for row in rows:
         task_payload = _task_result_payload_from_row(row)
         if str(task_payload.get("content_fingerprint") or "").strip() == desired:
@@ -457,7 +388,7 @@ def _find_equivalent_task_by_content_fingerprint(
 
 
 def _fetch_lease_row(db, task_id: str) -> Optional[Dict[str, Any]]:
-    statement = text(
+    row = db.execute(text(
         f"""
         SELECT task_id, executor_id, attempt_number, created_at, updated_at,
                started_at, heartbeat_at,
@@ -466,19 +397,8 @@ def _fetch_lease_row(db, task_id: str) -> Optional[Dict[str, Any]]:
         FROM {_TASK_LEASE_TABLE}
         WHERE task_id = :task_id
         """
-    )
-    for attempt in range(2):
-        try:
-            row = db.execute(statement, {"task_id": task_id}).mappings().first()
-            return dict(row) if row else None
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            if attempt:
-                raise
-    return None
+    ), {"task_id": task_id}).mappings().first()
+    return dict(row) if row else None
 
 
 def _upsert_dedupe_row(
@@ -755,84 +675,37 @@ def request_cancel_task(task_id: str, message: str = "Cancelado pelo usuário.")
         db.close()
 
 
-def reset_task_for_retry(
-    task_id: str,
-    progress: int = 1,
-    message: str = "Reiniciando tarefa...",
-    *,
-    snapshot: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict[str, Any]]:
-    """Reset a task without losing a recoverable task snapshot.
-
-    A task can still exist in the queue/Redis snapshot after a transient DB
-    failure. In that case recovery repairs the missing ``video_tasks`` row
-    with the same id instead of creating a second production.
-    """
+def reset_task_for_retry(task_id: str, progress: int = 1, message: str = "Reiniciando tarefa...") -> Optional[Dict[str, Any]]:
     _control_set(task_id, {"cancel": False, "pause": False, "deleted": False})
-    normalized_id = str(task_id or "").strip()
-    for attempt in range(2):
-        db = SessionLocal()
+    db = SessionLocal()
+    try:
+        _ensure_task_support_tables()
+        db.execute(text(
+            f"""
+            DELETE FROM {_TASK_LEASE_TABLE}
+            WHERE task_id = :task_id
+            """
+        ), {"task_id": task_id})
+        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if not row:
+            return None
+        row.status = "processing"
         try:
-            _ensure_task_support_tables()
-            # This session is owned by this function, so clearing a possible
-            # pooled PostgreSQL failure cannot discard caller work.
-            try:
-                db.rollback()
-            except Exception:
-                pass
-
-            row = load_video_task_row(db, normalized_id)
-            if not row and isinstance(snapshot, dict):
-                snapshot_result = snapshot.get("result")
-                if snapshot_result is None and snapshot.get("result_json"):
-                    try:
-                        snapshot_result = json.loads(snapshot.get("result_json") or "null")
-                    except Exception:
-                        snapshot_result = snapshot.get("result_json")
-                row = VideoTask(
-                    id=normalized_id,
-                    user_id=snapshot.get("user_id"),
-                    status=str(snapshot.get("status") or "failed"),
-                    progress=int(snapshot.get("progress") or 0),
-                    message=str(snapshot.get("message") or "Falha preservada para recuperação."),
-                    result_json=_json_dumps(snapshot_result),
-                )
-                db.add(row)
-                db.flush()
-
-            if not row:
-                return None
-
-            # Delete the lease only after the task row is readable. If the
-            # SELECT must roll back and retry, no valid lease deletion is lost.
-            db.execute(text(
-                f"""
-                DELETE FROM {_TASK_LEASE_TABLE}
-                WHERE task_id = :task_id
-                """
-            ), {"task_id": normalized_id})
-            row.status = "processing"
-            try:
-                row.progress = int(progress)
-            except Exception:
-                row.progress = 1
-            row.message = message
-            _sync_task_aux_state(db, normalized_id, status="processing", result_json=row.result_json)
-            db.commit()
-            current = _db_to_dict(row, aux_meta=_task_aux_meta(db, normalized_id))
-            video_tasks[normalized_id] = current
-            _redis_set(normalized_id, current)
-            return current
+            row.progress = int(progress)
         except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            if attempt:
-                return None
-        finally:
-            db.close()
-    return None
+            row.progress = 1
+        row.message = message
+        _sync_task_aux_state(db, task_id, status="processing", result_json=row.result_json)
+        db.commit()
+        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
+        video_tasks[task_id] = current
+        _redis_set(task_id, current)
+        return current
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
 
 
 def enqueue_paused_task_for_resume(
@@ -931,40 +804,6 @@ def _db_to_dict(row: VideoTask, aux_meta: Optional[Dict[str, Any]] = None) -> Di
         out.update(aux_meta)
     return out
 
-
-def _insert_video_task_row(
-    db,
-    *,
-    user_id: Optional[int],
-    task_id: str,
-    initial_status: str,
-    progress: int,
-    message: str,
-    result: Any,
-) -> VideoTask:
-    """Insere uma VideoTask na sessão fornecida e valida a gravação.
-
-    O pipeline unificado precisa criar ``video_tasks`` e ``unified_videos`` na
-    mesma operação de submissão. Usar uma segunda sessão aqui permitia que um
-    erro de ``create_task`` fosse engolido e que o chamador continuasse com um
-    UUID que nunca existiu no PostgreSQL, produzindo uma violação de FK
-    posterior.
-    ``flush`` força o banco a validar a linha antes de qualquer referência a
-    ela ser gravada.
-    """
-    row = VideoTask(
-        id=str(task_id),
-        user_id=user_id,
-        status=initial_status,
-        progress=int(progress or 0),
-        message=message,
-        result_json=_json_dumps(result),
-    )
-    db.add(row)
-    db.flush()
-    return row
-
-
 def create_task(
     user_id: Optional[int] = None,
     *,
@@ -976,6 +815,14 @@ def create_task(
 ):
     _ensure_task_support_tables()
     task_id = str(task_id or uuid.uuid4())
+    initial = {
+        "task_id": task_id,
+        "status": initial_status,
+        "progress": int(progress or 0),
+        "message": message,
+        "result": result,
+        "created_at": _utcnow().isoformat(),
+    }
     db = SessionLocal()
     try:
         existing = db.query(VideoTask).filter(VideoTask.id == task_id).first()
@@ -984,27 +831,22 @@ def create_task(
             video_tasks[task_id] = current
             _redis_set(task_id, current)
             return task_id
-        row = _insert_video_task_row(
-            db,
+        row = VideoTask(
+            id=task_id,
             user_id=user_id,
-            task_id=task_id,
-            initial_status=initial_status,
-            progress=progress,
+            status=initial_status,
+            progress=int(progress or 0),
             message=message,
-            result=result,
+            result_json=_json_dumps(result),
         )
+        db.add(row)
         db.commit()
-        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
     except Exception:
         db.rollback()
-        # Nunca devolva um task_id que não foi persistido. Em produção isso
-        # evita que uma falha real apareça depois como erro de FK em
-        # ``unified_videos`` e preserva a causa original para diagnóstico.
-        raise
     finally:
         db.close()
-    video_tasks[task_id] = current
-    _redis_set(task_id, current)
+    video_tasks[task_id] = initial
+    _redis_set(task_id, initial)
     return task_id
 
 def update_task(task_id, status=None, progress=None, message=None, result=None):
@@ -1186,17 +1028,13 @@ def get_task(task_id):
     db = SessionLocal()
     try:
         _ensure_task_support_tables()
-        row = load_video_task_row(db, task_id)
+        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
         if row:
             current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
             video_tasks[task_id] = current
             _redis_set(task_id, current)
             return current
     except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            pass
         pass
     finally:
         db.close()
@@ -1221,10 +1059,6 @@ def get_task_by_idempotency_key(idempotency_key: str) -> Optional[Dict[str, Any]
         _redis_set(task.id, current)
         return current
     except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            pass
         return None
     finally:
         db.close()
@@ -1232,6 +1066,7 @@ def get_task_by_idempotency_key(idempotency_key: str) -> Optional[Dict[str, Any]
 
 def claim_video_task(
     *,
+    db=None,
     idempotency_key: str,
     request_hash: str,
     payload: Dict[str, Any],
@@ -1239,7 +1074,6 @@ def claim_video_task(
     force_regenerate: bool = False,
     user_id: Optional[int] = None,
     initial_result: Optional[Dict[str, Any]] = None,
-    db=None,
 ) -> Dict[str, Any]:
     key = str(idempotency_key or "").strip()
     req_hash = str(request_hash or "").strip()
@@ -1247,40 +1081,23 @@ def claim_video_task(
         raise ValueError("idempotency_key e request_hash são obrigatórios.")
     _ensure_task_support_tables()
     lock_info = acquire_distributed_lock(f"claim:{key}", timeout_seconds=20, ttl_seconds=30)
-    owns_session = db is None
+    owns_db = db is None
+    work_db = db or SessionLocal()
     try:
-        if owns_session:
-            db = SessionLocal()
-
-        def _commit_if_owned() -> None:
-            # The unified submit passes its own session so the task row,
-            # dedupe record, and UnifiedVideo FK are committed atomically.
-            # Direct legacy callers retain the previous self-contained
-            # commit behavior.
-            if owns_session:
-                db.commit()
-
         try:
-            # SessionLocal normally starts clean, but an earlier request on a
-            # reused connection may have left a failed transaction marker.
-            # Rollback is idempotent and makes the dedupe read retryable.
-            db.rollback()
             now = _utcnow()
-            dedupe = _fetch_dedupe_row(db, key)
+            dedupe = _fetch_dedupe_row(work_db, key)
             if dedupe and dedupe.get("task_id"):
                 task_id = str(dedupe.get("task_id") or "").strip()
-                task = load_video_task_row(db, task_id)
+                task = work_db.query(VideoTask).filter(VideoTask.id == task_id).first()
                 if task:
                     existing_user_id = getattr(task, "user_id", None)
                     if user_id is not None and existing_user_id not in (None, int(user_id)):
                         task = None
                     elif user_id is not None and existing_user_id is None:
                         task.user_id = int(user_id)
-                        # Deixe a alteração na transação do claim. Um commit
-                        # intermediário que falhe pode deixar a sessão
-                        # abortada e mascarar a causa na próxima leitura do
-                        # registro de deduplicação.
-                        db.flush()
+                        if owns_db:
+                            work_db.commit()
                 if task:
                     status_norm = str(task.status or "").strip().lower()
                     dedupe_exp = _parse_dt(dedupe.get("expires_at"))
@@ -1292,8 +1109,7 @@ def claim_video_task(
                         )
                     )
                     if not force_regenerate and status_norm in {"pending", "processing"}:
-                        _commit_if_owned()
-                        current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
+                        current = _db_to_dict(task, aux_meta=_task_aux_meta(work_db, task_id))
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
                         return {
@@ -1306,8 +1122,7 @@ def claim_video_task(
                             "task": current,
                         }
                     if not force_regenerate and status_norm == "completed" and within_window:
-                        _commit_if_owned()
-                        current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
+                        current = _db_to_dict(task, aux_meta=_task_aux_meta(work_db, task_id))
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
                         return {
@@ -1319,17 +1134,18 @@ def claim_video_task(
                             "matched_by": "idempotency_key",
                             "task": current,
                         }
-            equivalent_task = _find_equivalent_task_by_content_fingerprint(db, payload=payload)
+            equivalent_task = _find_equivalent_task_by_content_fingerprint(work_db, payload=payload)
             if equivalent_task and str(equivalent_task.id or "").strip():
                 task_id = str(equivalent_task.id or "").strip()
-                task = load_video_task_row(db, task_id)
+                task = work_db.query(VideoTask).filter(VideoTask.id == task_id).first()
                 if task and user_id is not None:
                     existing_user_id = getattr(task, "user_id", None)
                     if existing_user_id not in (None, int(user_id)):
                         task = None
                     elif existing_user_id is None:
                         task.user_id = int(user_id)
-                        db.flush()
+                        if owns_db:
+                            work_db.commit()
                 if task and (force_regenerate is False):
                     status_norm = str(task.status or "").strip().lower()
                     if status_norm and status_norm not in {"pending", "processing", "completed"}:
@@ -1337,7 +1153,7 @@ def claim_video_task(
                 if task and (force_regenerate is False):
                     task_payload = _task_result_payload_from_row(task)
                     _upsert_dedupe_row(
-                        db,
+                        work_db,
                         idempotency_key=key,
                         request_hash=req_hash,
                         task_id=task_id,
@@ -1347,8 +1163,9 @@ def claim_video_task(
                         expires_at=now + timedelta(seconds=max(60, int(dedupe_window_seconds or _task_dedupe_window_seconds()))),
                         completed_at=now if status_norm == "completed" else None,
                     )
-                    _commit_if_owned()
-                    current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
+                    if owns_db:
+                        work_db.commit()
+                    current = _db_to_dict(task, aux_meta=_task_aux_meta(work_db, task_id))
                     video_tasks[task_id] = current
                     _redis_set(task_id, current)
                     return {
@@ -1364,22 +1181,24 @@ def claim_video_task(
             task_payload["payload"] = payload
             task_payload["idempotency_key"] = key
             task_payload["request_hash"] = req_hash
-            # A tarefa canônica precisa nascer nesta operação de submissão,
-            # antes de ser referenciada pelo UnifiedVideo. Antes,
-            # create_task() usava outra sessão e engolia falhas, retornando um
-            # UUID sem linha correspondente.
+            # Crie a linha canônica na mesma sessão que gravará UnifiedVideo.
+            # O antigo create_task() usava outra sessão e, em caso de falha,
+            # engolia a exceção e devolvia um task_id que não existia no banco.
+            # Isso deixava unified_videos.task_id órfão e contaminava a sessão
+            # seguinte com InFailedSqlTransaction.
             task_id = str(uuid.uuid4())
-            task_row = _insert_video_task_row(
-                db,
+            task = VideoTask(
+                id=task_id,
                 user_id=user_id,
-                task_id=task_id,
-                initial_status="pending",
+                status="pending",
                 progress=0,
                 message="Aguardando início...",
-                result=task_payload,
+                result_json=_json_dumps(task_payload),
             )
+            work_db.add(task)
+            work_db.flush()
             _upsert_dedupe_row(
-                db,
+                work_db,
                 idempotency_key=key,
                 request_hash=req_hash,
                 task_id=task_id,
@@ -1389,8 +1208,9 @@ def claim_video_task(
                 expires_at=now + timedelta(seconds=max(60, int(dedupe_window_seconds or _task_dedupe_window_seconds()))),
                 completed_at=None,
             )
-            _commit_if_owned()
-            current = _db_to_dict(task_row, aux_meta=_task_aux_meta(db, task_id))
+            if owns_db:
+                work_db.commit()
+            current = _db_to_dict(task, aux_meta=_task_aux_meta(work_db, task_id))
             video_tasks[task_id] = current
             _redis_set(task_id, current)
             return {
@@ -1403,11 +1223,11 @@ def claim_video_task(
                 "task": current,
             }
         except Exception:
-            db.rollback()
+            work_db.rollback()
             raise
         finally:
-            if owns_session:
-                db.close()
+            if owns_db:
+                work_db.close()
     finally:
         release_distributed_lock(lock_info)
 

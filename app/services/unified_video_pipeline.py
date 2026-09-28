@@ -41,7 +41,7 @@ from app.config import (
     absolute_path_for_video,
 )
 from app.database import SessionLocal
-from app.models import UnifiedVideo, UnifiedVideoStatus, User, VideoTask
+from app.models import UnifiedVideo, UnifiedVideoStatus, User
 from app.services.task_manager import (
     acquire_distributed_lock,
     acquire_task_execution_lease,
@@ -50,7 +50,6 @@ from app.services.task_manager import (
     get_task,
     get_task_by_idempotency_key,
     heartbeat_task_execution_lease,
-    load_video_task_row,
     release_distributed_lock,
     release_task_execution_lease,
     update_task,
@@ -120,7 +119,6 @@ class UnifiedVideoRequest(BaseModel):
     seeded_script: Optional[Dict[str, Any]] = None
     selected_images: Optional[List[str]] = None
     reuse_audio_from: Optional[Dict[str, Any]] = None
-    logo_only_visuals: bool = False
     request_hash: Optional[str] = Field(None, description="Hash canônico (se omitido é calculado aqui).")
     legacy_payload: Optional[Dict[str, Any]] = Field(
         None, description="Payload bruto do módulo de origem para compatibilidade (não participa do request_hash)."
@@ -236,28 +234,6 @@ def build_unified_video_request(
         image_count = 8
     image_count = max(1, min(64, image_count))
 
-    # A qualidade visual estrita é calculada pela duração, mas o pedido legado
-    # ainda pode carregar o default histórico de 8 imagens. Quando o chamador
-    # já assinou uma meta visual (Quality Gate / recuperação), essa meta precisa
-    # chegar ao registro canônico e à validação, não apenas ao payload auxiliar.
-    contract_image_count = 0
-    for key in ("strict_visual_target_count", "expected_image_count"):
-        try:
-            contract_image_count = max(contract_image_count, int(raw.get(key) or 0))
-        except (TypeError, ValueError):
-            continue
-    repair_budget = raw.get("repair_image_budget")
-    if isinstance(repair_budget, dict):
-        try:
-            contract_image_count = max(
-                contract_image_count,
-                int(repair_budget.get("expected_image_count") or 0),
-            )
-        except (TypeError, ValueError):
-            pass
-    if contract_image_count > image_count:
-        image_count = min(64, contract_image_count)
-
     tags = raw.get("override_tags")
     override_tags = [str(item) for item in tags if item is not None] if isinstance(tags, list) else None
     selected = raw.get("selected_images")
@@ -309,21 +285,6 @@ def build_unified_video_request(
 # ---------------------------------------------------------------------------
 
 
-def _is_aborted_transaction_error(exc: BaseException) -> bool:
-    """Identifica o erro que pode ser recuperado com rollback + retry.
-
-    O texto pode vir do psycopg diretamente ou encapsulado pelo SQLAlchemy;
-    não dependemos de uma classe opcional do driver para manter os testes e o
-    modo local funcionando.
-    """
-    text_value = str(exc or "").lower()
-    return (
-        "infailedsqltransaction" in text_value
-        or "current transaction is aborted" in text_value
-        or "current transaction is aborted, commands ignored" in text_value
-    )
-
-
 def _sort_jsonable(v: Any) -> Any:
     if isinstance(v, dict):
         return {str(k): _sort_jsonable(v[k]) for k in sorted(v.keys(), key=str)}
@@ -361,40 +322,6 @@ def _safe_bool(v: Any) -> bool:
     except Exception:
         return False
 
-
-def _is_logo_only_visuals(*candidates: Any) -> bool:
-    """Return whether an explicit request/result enables logo-only rendering.
-
-    The browser sends logo_only_visuals on the request and the worker keeps
-    the flag in the rendered script/report. Validation must honor that same
-    source-owned intent: the official logo is the sole visual asset, so a
-    storyboard scene list is not required. Unrelated payloads remain fail-closed.
-    """
-    truthy = {"1", "true", "yes", "on"}
-
-    def _enabled(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        return str(value or "").strip().lower() in truthy
-
-    def _walk(value: Any, depth: int = 0) -> bool:
-        if depth > 3:
-            return False
-        if not isinstance(value, dict):
-            return _enabled(getattr(value, "logo_only_visuals", None))
-        if _enabled(value.get("logo_only_visuals")):
-            return True
-        # Keep compatibility with the persisted task envelope/report without
-        # treating arbitrary text or titles as an opt-in signal.
-        for key in ("payload", "request", "video_request", "script", "render_report", "visual_plan"):
-            nested = value.get(key)
-            if isinstance(nested, dict) and _walk(nested, depth + 1):
-                return True
-        return False
-
-    return any(_walk(candidate) for candidate in candidates)
 
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
@@ -604,95 +531,7 @@ class UnifiedVideoPipelineService:
                     db.commit()
         except Exception:
             # Em produção o Alembic cria a tabela; deixamos passar para não quebrar startup.
-            try:
-                db.rollback()
-            except Exception:
-                pass
             pass
-
-    def _ensure_claimed_task_visible(
-        self,
-        db,
-        *,
-        task_id: str,
-        claimed: Dict[str, Any],
-        request: UnifiedVideoRequest,
-        initial_result: Optional[Dict[str, Any]],
-        user_id: Optional[int],
-    ) -> VideoTask:
-        """Guarantee that the FK target exists in the submit session.
-
-        ``claim_video_task`` normally commits the task in its own session.
-        A stale dedupe row, a mixed app/worker release, or a connection
-        boundary during a deploy can nevertheless return a task id whose row
-        is not visible to the session that is about to insert ``UnifiedVideo``.
-        In that situation PostgreSQL correctly rejects the FK, but the user
-        loses the submit before the approved script can be stored.
-
-        Re-checking here makes the ordering explicit and repairs only the
-        missing task row with the same id. The repair is flushed in the
-        caller's session, so the task and ``UnifiedVideo`` remain in one
-        atomic transaction. This also avoids relying on a second connection
-        seeing an uncommitted row during a concurrent submit.
-        """
-        tid = str(task_id or "").strip()
-        if not tid:
-            raise ValueError("UnifiedVideoPipeline recebeu task_id vazio.")
-
-        # A sessão pode chegar aqui depois de uma consulta opcional/legada que
-        # falhou. No PostgreSQL, qualquer SELECT seguinte recebe
-        # ``InFailedSqlTransaction`` até que o rollback seja feito. Recuperar
-        # neste limite evita mascarar a causa original e mantém o submit
-        # idempotente.
-        task = load_video_task_row(db, tid)
-        if task is not None:
-            return task
-
-        # End the failed/read transaction before repairing. This releases a
-        # stale PostgreSQL snapshot/lock and lets the same submit session
-        # flush the FK target before inserting UnifiedVideo.
-        try:
-            db.rollback()
-        except Exception:
-            pass
-
-        claimed_task = claimed.get("task") if isinstance(claimed, dict) else None
-        claimed_task = claimed_task if isinstance(claimed_task, dict) else {}
-        result_obj = claimed_task.get("result")
-        if not isinstance(result_obj, dict):
-            result_obj = dict(initial_result or {})
-            result_obj.setdefault("payload", _jsonable_payload_for_legacy(request))
-            result_obj.setdefault("idempotency_key", str(request.idempotency_key))
-            result_obj.setdefault("request_hash", str(request.request_hash or ""))
-
-        repaired = VideoTask(
-            id=tid,
-            user_id=claimed_task.get("user_id") or user_id,
-            status=str(claimed_task.get("status") or "pending"),
-            progress=int(claimed_task.get("progress") or 0),
-            message=str(claimed_task.get("message") or "Aguardando início..."),
-            result_json=_json_dumps(result_obj),
-        )
-        try:
-            db.add(repaired)
-            db.flush()
-            # ``flush`` já confirmou a INSERT na transação canônica. Não
-            # faça uma segunda consulta aqui: além de ser desnecessária, ela
-            # pode abrir outro caminho de recuperação e transformar uma linha
-            # válida em um falso "task_id invisível".
-            return repaired
-        except Exception:
-            # A concurrent submit may have inserted the same id after our
-            # first read. Roll back the failed INSERT and accept that row if
-            # it is now visible; otherwise preserve the original exception.
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            task = load_video_task_row(db, tid)
-            if task is None:
-                raise
-        return task
 
     # ------------------------------------------------------------------
     # Entrada 1: submit ou reaproveita (idempotência).
@@ -714,33 +553,13 @@ class UnifiedVideoPipelineService:
             ttl_seconds=45,
         )
         try:
-            # A submissão grava apenas metadados, a tarefa e o roteiro
-            # aprovado; nenhuma chamada paga acontece aqui. Portanto uma
-            # retentativa única após uma transação abortada é segura: a chave
-            # de idempotência reaproveita a tarefa/linha que já tenha sido
-            # persistida e não cria uma segunda produção.
-            for attempt in range(2):
-                if attempt:
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
-                try:
-                    return self._submit_or_reuse_locked(
-                        db,
-                        request=request,
-                        kick_queue_callback=kick_queue_callback,
-                        legacy_initial_result=legacy_initial_result,
-                        user=user,
-                    )
-                except Exception as exc:
-                    if attempt or not _is_aborted_transaction_error(exc):
-                        raise
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
-            raise RuntimeError("UnifiedVideoPipeline não conseguiu concluir o submit após recuperar a transação.")
+            return self._submit_or_reuse_locked(
+                db,
+                request=request,
+                kick_queue_callback=kick_queue_callback,
+                legacy_initial_result=legacy_initial_result,
+                user=user,
+            )
         finally:
             release_distributed_lock(lock_info)
 
@@ -753,15 +572,6 @@ class UnifiedVideoPipelineService:
         legacy_initial_result: Optional[Dict[str, Any]] = None,
         user: Optional[User] = None,
     ) -> UnifiedPipelineResult:
-        # Todas as rotas passam por este limite canônico. A sessão pertence ao
-        # submit e não pode carregar alterações pendentes de outro estágio;
-        # por isso o rollback é deliberadamente incondicional. Em PostgreSQL
-        # ``Session.is_active`` pode continuar True depois de um erro de
-        # statement, embora a transação do servidor já esteja abortada.
-        try:
-            db.rollback()
-        except Exception:
-            pass
         self.ensure_schema(db)
 
         if not request.request_hash:
@@ -772,6 +582,7 @@ class UnifiedVideoPipelineService:
 
         # 1. Reclama task idempotente via task_manager (garante 1 executor em processamento).
         claimed = claim_video_task(
+            db=db,
             idempotency_key=str(request.idempotency_key).strip(),
             request_hash=request.request_hash,
             payload=_jsonable_payload_for_legacy(request),
@@ -779,24 +590,11 @@ class UnifiedVideoPipelineService:
             force_regenerate=bool(request.force_regenerate),
             user_id=user_id,
             initial_result=initial_result,
-            db=db,
         )
         task_id = str(claimed.get("task_id"))
         created_new = bool(claimed.get("created_new_task"))
         reused_existing = bool(claimed.get("reused_existing_task"))
         reused_completed = bool(claimed.get("reused_completed_task"))
-
-        # The UnifiedVideo FK must be validated before we build the central
-        # row. This also repairs a legacy/partial claim without discarding the
-        # approved script that is about to be persisted.
-        self._ensure_claimed_task_visible(
-            db,
-            task_id=task_id,
-            claimed=claimed,
-            request=request,
-            initial_result=initial_result,
-            user_id=user_id,
-        )
 
         # 2. Cria/atualiza a linha central UnifiedVideo.
         uv: Optional[UnifiedVideo] = (
@@ -804,8 +602,6 @@ class UnifiedVideoPipelineService:
         )
         uv_created_now = False
         if uv is None:
-            seeded_script = request.seeded_script if isinstance(request.seeded_script, dict) else None
-            seeded_scenes = seeded_script.get("scenes") if isinstance(seeded_script, dict) else None
             uv = UnifiedVideo(
                 idempotency_key=str(request.idempotency_key).strip(),
                 task_id=task_id,
@@ -828,12 +624,7 @@ class UnifiedVideoPipelineService:
                 image_provider=str(request.image_provider)[:64] or "configured",
                 voice_provider=str(request.voice_provider)[:64] or "configured",
                 voice_model=request.voice_id,
-                script_json=_json_dumps(seeded_script),
-                storyboard_json=_json_dumps({"scenes": seeded_scenes}) if isinstance(seeded_scenes, list) else None,
-                result_json=_json_dumps({
-                    "request": request.model_dump(mode="python"),
-                    "approved_script_snapshot": seeded_script,
-                }),
+                result_json=_json_dumps({"request": request.model_dump(mode="python")}),
             )
             db.add(uv)
             uv_created_now = True
@@ -858,13 +649,6 @@ class UnifiedVideoPipelineService:
             uv.voice_provider = str(request.voice_provider)[:64] or uv.voice_provider
             if request.voice_id:
                 uv.voice_model = request.voice_id
-            if request.script_text:
-                uv.script_text = request.script_text
-            if isinstance(request.seeded_script, dict):
-                uv.script_json = _json_dumps(request.seeded_script)
-                scenes = request.seeded_script.get("scenes")
-                if isinstance(scenes, list):
-                    uv.storyboard_json = _json_dumps({"scenes": scenes})
             # Uma task nova após descarte/falha deve reabrir a linha canônica.
             # Preservamos artefatos e custos para auditoria, mas não carregamos
             # o estado terminal da tentativa antiga para a nova execução.
@@ -879,15 +663,6 @@ class UnifiedVideoPipelineService:
                 uv.last_error = None
         try:
             db.flush()
-        except Exception:
-            db.rollback()
-            raise
-
-        # Commit the canonical row before optional telemetry/kick work. If a
-        # queue-count query fails, it must not poison or erase the stored
-        # approved script and task relationship.
-        try:
-            db.commit()
         except Exception:
             db.rollback()
             raise
@@ -914,6 +689,12 @@ class UnifiedVideoPipelineService:
                     message=errors[0],
                     errors=errors,
                 )
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
         # 5. Popula resultado reaproveitado (já tem vídeo / upload) para o cliente imediatamente.
         t = get_task(task_id) or {}
@@ -1061,12 +842,6 @@ class UnifiedVideoPipelineService:
             )
         task = get_task(str(uv.task_id)) if uv.task_id else None
         task_result = task.get("result") if isinstance(task, dict) and isinstance(task.get("result"), dict) else {}
-        task_payload = task_result.get("payload") if isinstance(task_result.get("payload"), dict) else {}
-        director_quality_required = bool(
-            task_payload.get("director_quality_required")
-            or task_payload.get("editorial_reviewed")
-            or task_payload.get("editorial_review_ready")
-        )
         script_obj = _json_loads(uv.script_json) if isinstance(uv.script_json, str) else None
         if not isinstance(script_obj, dict):
             script_obj = task_result.get("script") if isinstance(task_result.get("script"), dict) else None
@@ -1097,14 +872,9 @@ class UnifiedVideoPipelineService:
         scenes = storyboard_obj.get("scenes") if isinstance(storyboard_obj, dict) else None
         if not isinstance(scenes, list):
             scenes = script_obj.get("scenes") if isinstance(script_obj, dict) else None
-        logo_only_visuals = _is_logo_only_visuals(task_result, script_obj, uv)
-        scenes_ok = logo_only_visuals or (isinstance(scenes, list) and len(scenes) >= 1)
+        scenes_ok = isinstance(scenes, list) and len(scenes) >= 1
         checks["storyboard_valid"] = bool(scenes_ok)
-        details["storyboard"] = {
-            "scene_count": len(scenes) if isinstance(scenes, list) else 0,
-            "logo_only_visuals": bool(logo_only_visuals),
-            "scene_requirement": "not_required_logo_only" if logo_only_visuals else "required",
-        }
+        details["storyboard"] = {"scene_count": len(scenes) if isinstance(scenes, list) else 0}
 
         # 3. quantidade mínima de imagens
         #
@@ -1116,24 +886,11 @@ class UnifiedVideoPipelineService:
         # ``youtube_series`` validamos contra esse plano; se o relatório não
         # existir, mantemos o mínimo solicitado original. Os demais módulos,
         # especialmente História/Devocional, não mudam de comportamento.
-        contract_expected_images = 0
-        for candidate in (
-            task_payload.get("strict_visual_target_count"),
-            task_payload.get("expected_image_count"),
-            (task_payload.get("repair_image_budget") or {}).get("expected_image_count")
-            if isinstance(task_payload.get("repair_image_budget"), dict)
-            else 0,
-        ):
-            contract_expected_images = max(contract_expected_images, _safe_int(candidate, 0))
-        requested_min_images = (
-            1
-            if logo_only_visuals
-            else max(1, min(max(int(uv.image_count or 1), contract_expected_images), 256))
-        )
+        requested_min_images = max(1, min(int(uv.image_count or 1), 256))
         min_images = requested_min_images
         render_planned_min_images: Optional[int] = None
-        image_count_policy = "logo_only_single_asset" if logo_only_visuals else "requested_image_count"
-        if not logo_only_visuals and str(getattr(uv, "source_module", "") or "").strip().lower() == "youtube_series":
+        image_count_policy = "requested_image_count"
+        if str(getattr(uv, "source_module", "") or "").strip().lower() == "youtube_series":
             persisted_result = _json_loads(getattr(uv, "result_json", None))
             persisted_result = persisted_result if isinstance(persisted_result, dict) else {}
             render_report = (
@@ -1193,81 +950,12 @@ class UnifiedVideoPipelineService:
         checks["ffprobe_has_video_stream"] = bool(has_video_stream)
         checks["ffprobe_has_audio_stream"] = bool(has_audio_stream)
         checks["duration_valid"] = bool(video_duration >= 1.0)
-        requested_duration = max(0.0, float(getattr(uv, "duration_minutes", 0) or 0) * 60.0)
-        duration_delta = abs(video_duration - requested_duration) if requested_duration > 0 else 0.0
-        duration_tolerance = max(5.0, requested_duration * 0.05) if requested_duration > 0 else 0.0
-        duration_matches_request = bool(
-            not director_quality_required
-            or requested_duration <= 0
-            or (video_duration >= 1.0 and duration_delta <= duration_tolerance)
-        )
-        checks["duration_matches_request"] = duration_matches_request
-
-        render_report = task_result.get("render_report") if isinstance(task_result.get("render_report"), dict) else {}
-        visual_plan = render_report.get("visual_plan") if isinstance(render_report.get("visual_plan"), dict) else {}
-        sync_validation = render_report.get("sync_validation") if isinstance(render_report.get("sync_validation"), dict) else {}
-        reused_images = _safe_int(visual_plan.get("reused_image_count"), 0)
-        average_image_duration = _safe_float(visual_plan.get("average_image_duration_sec"), 0.0)
-        visual_metrics_present = bool(
-            "reused_image_count" in visual_plan
-            and "average_image_duration_sec" in visual_plan
-        )
-        visual_variety_ok = bool(
-            not director_quality_required
-            or (
-                visual_metrics_present
-                and
-                reused_images == 0
-                and 0.0 < average_image_duration <= 30.0
-            )
-        )
-        checks["visual_variety_valid"] = visual_variety_ok
-
-        caption_timeline = render_report.get("caption_timeline") if isinstance(render_report.get("caption_timeline"), dict) else {}
-        caption_source = str(
-            sync_validation.get("timeline_source")
-            or caption_timeline.get("source")
-            or ""
-        ).strip()
-        captions_synced = sync_validation.get("captions_synced_with_audio")
-        if captions_synced is None:
-            captions_synced = sync_validation.get("captions_ok")
-        real_audio_caption_sources = {
-            "official_audio_transcript",
-            "approved_edge_tts_word_boundaries",
-            "local_audio_activity_alignment",
-        }
-        caption_sync_ok = bool(
-            not director_quality_required
-            or (
-                captions_synced is True
-                and caption_source in real_audio_caption_sources
-            )
-        )
-        checks["caption_sync_valid"] = caption_sync_ok
         details["mp4"] = {
             "path": video_candidate,
             "abs_path": abs_video,
             "size_bytes": int(video_size),
             "streams": {"video": bool(has_video_stream), "audio": bool(has_audio_stream)},
             "duration_seconds": float(video_duration),
-            "requested_duration_seconds": float(requested_duration),
-            "duration_difference_seconds": round(float(video_duration - requested_duration), 3) if requested_duration > 0 else 0.0,
-            "duration_tolerance_seconds": round(float(duration_tolerance), 3),
-        }
-        details["director_quality"] = {
-            "required": director_quality_required,
-            "visual_variety": {
-                "reused_image_count": reused_images,
-                "average_image_duration_seconds": average_image_duration,
-                "maximum_average_image_duration_seconds": 30.0,
-                "metrics_present": visual_metrics_present,
-            },
-            "caption_sync": {
-                "timeline_source": caption_source,
-                "captions_synced_with_audio": captions_synced,
-                "accepted_timeline_sources": sorted(real_audio_caption_sources),
-            },
         }
         # Sincroniza tamanhos/durações do banco para auditabilidade.
         if probe_local_paths:
@@ -1309,9 +997,6 @@ class UnifiedVideoPipelineService:
             "ffprobe_has_video_stream",
             "ffprobe_has_audio_stream",
             "duration_valid",
-            "duration_matches_request",
-            "visual_variety_valid",
-            "caption_sync_valid",
             "http_200_or_206",
         ] if not checks.get(k)), None)
         ok = first_failed is None and all(checks.values())
@@ -1351,7 +1036,6 @@ class UnifiedVideoPipelineService:
                 else UnifiedVideoStatus.APPROVED
             )
             uv.status = new_status
-            uv.last_error = None
             uv.progress = 100
             uv.last_message = (
                 "Validação concluída — aguardando revisão."
@@ -1394,7 +1078,7 @@ class UnifiedVideoPipelineService:
                 "youtube_url": uv.youtube_url,
                 "message": "Upload único já realizado — pulando segundo upload.",
             }
-        if str(uv.status) not in {UnifiedVideoStatus.APPROVED, UnifiedVideoStatus.PUBLISHED}:
+        if str(uv.status) not in {UnifiedVideoStatus.APPROVED, UnifiedVideoStatus.PUBLISHED, UnifiedVideoStatus.AWAITING_REVIEW}:
             return {
                 "ok": False,
                 "code": "not_approved",
@@ -1415,33 +1099,17 @@ class UnifiedVideoPipelineService:
             self.transition_status(
                 db,
                 str(uv.task_id or uv.idempotency_key),
-                status=UnifiedVideoStatus.APPROVED,
-                progress=100,
-                message="Vídeo aprovado; publicação no YouTube pendente. A produção foi preservada.",
-                merge_result={
-                    "publish_pending": True,
-                    "production_preserved": True,
-                    "publish_error": {"type": type(exc).__name__, "message": str(exc)[:300]},
-                },
+                status=UnifiedVideoStatus.FAILED,
+                message=f"Upload falhou: {type(exc).__name__}: {str(exc)[:300]}",
+                merge_result={"publish_error": {"type": type(exc).__name__, "message": str(exc)[:300]}},
             )
-            return {
-                "ok": False,
-                "code": "publication_pending",
-                "production_preserved": True,
-                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
-                "youtube_video_id": None,
-            }
-        yid = str(
-            (out or {}).get("youtube_video_id")
-            or (out or {}).get("video_id")
-            or (out or {}).get("id")
-            or ""
-        ).strip()
+            return {"ok": False, "code": "exception", "error": f"{type(exc).__name__}: {str(exc)[:300]}", "youtube_video_id": None}
+        yid = str((out or {}).get("youtube_video_id") or (out or {}).get("video_id") or "").strip()
         if not yid:
             self.transition_status(
                 db,
                 str(uv.task_id or uv.idempotency_key),
-                status=UnifiedVideoStatus.APPROVED,
+                status=UnifiedVideoStatus.AWAITING_REVIEW if bool(uv.review_required) else UnifiedVideoStatus.APPROVED,
                 message="Upload não retornou YouTube Video ID. Verifique credenciais/permissões.",
                 merge_result={"publish_result": out},
             )
@@ -1480,10 +1148,6 @@ class UnifiedVideoPipelineService:
             processing = any(str(r["status"] or "").lower() == "processing" for r in rows if str(r["id"]) != str(task_id))
             return int(position or 0), bool(processing)
         except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
             return 0, False
 
     def _find_any(self, db, idempotency_key_or_task_id: str) -> Optional[UnifiedVideo]:
@@ -1522,17 +1186,14 @@ class UnifiedVideoPipelineService:
                 or audio_gen.get("output_path")
                 or audio_gen.get("audio_path")
             )
-            if audio_path:
-                if str(audio_path) != uv.audio_path:
-                    uv.audio_duration_seconds = None
-                    uv.audio_size_bytes = None
+            if audio_path and not uv.audio_path:
                 uv.audio_path = str(audio_path)
             audio_duration = (
                 audio_gen.get("duration_seconds")
                 or audio_gen.get("final_audio_duration_sec")
                 or audio_gen.get("audio_duration_sec")
             )
-            if audio_duration:
+            if audio_duration and not uv.audio_duration_seconds:
                 uv.audio_duration_seconds = _safe_float(audio_duration)
             provider = audio_gen.get("provider") or audio_gen.get("provider_used") or audio_gen.get("configured_provider")
             if provider:
@@ -1564,16 +1225,15 @@ class UnifiedVideoPipelineService:
                             break
             if paths:
                 uv.images_json = _json_dumps({"paths": paths})
-        # Um retry pode produzir outro MP4 para a mesma tarefa. O resultado
-        # atual deve substituir o caminho antigo; do contrário a validação
-        # pode medir novamente o vídeo anterior e reprovar o novo.
-        video_candidate = self._task_video_path(result)
-        if video_candidate:
-            uv.video_path = str(video_candidate)
-            uv.video_url = str(result["video_url"]) if result.get("video_url") else None
-            # Even a render overwriting the same path needs a fresh probe.
-            uv.video_size_bytes = None
-            uv.video_duration_seconds = None
+        # vídeo
+        for k in ("video_url", "video_path", "file_path"):
+            v = result.get(k)
+            if v and not uv.video_path:
+                # Preferimos path absoluto para probe, mas se vier URL pode ser reconstruído depois.
+                if k == "file_path" or k == "video_path":
+                    uv.video_path = str(v)
+                elif k == "video_url":
+                    uv.video_url = str(v)
         # youtube
         if result.get("youtube_video_id") and not uv.youtube_video_id:
             uv.youtube_video_id = str(result["youtube_video_id"])[:64]
@@ -1631,36 +1291,6 @@ class UnifiedVideoPipelineService:
                 for it in v:
                     if isinstance(it, str) and it:
                         paths.append(it)
-        # Logo-only jobs persist the canonical logo under one of these fields;
-        # include it as the single physical visual even when no scene list exists.
-        if isinstance(task_result, dict):
-            for k in (
-                "logo_only_logo_path",
-                "logo_path",
-                "channel_logo_path",
-                "official_channel_logo_path",
-            ):
-                value = task_result.get(k)
-                if isinstance(value, str) and value.strip():
-                    paths.append(value.strip())
-            for container_key in ("script", "render_report"):
-                container = task_result.get(container_key)
-                if not isinstance(container, dict):
-                    continue
-                for k in (
-                    "logo_only_logo_path",
-                    "logo_path",
-                    "channel_logo_path",
-                    "official_channel_logo_path",
-                ):
-                    value = container.get(k)
-                    if isinstance(value, str) and value.strip():
-                        paths.append(value.strip())
-                visual_plan = container.get("visual_plan")
-                if isinstance(visual_plan, dict):
-                    value = visual_plan.get("logo_only_logo_path")
-                    if isinstance(value, str) and value.strip():
-                        paths.append(value.strip())
         # storyboard scenes
         if isinstance(storyboard_obj, dict):
             scenes = storyboard_obj.get("scenes")
