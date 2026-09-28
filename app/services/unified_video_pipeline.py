@@ -50,6 +50,7 @@ from app.services.task_manager import (
     get_task,
     get_task_by_idempotency_key,
     heartbeat_task_execution_lease,
+    load_video_task_row,
     release_distributed_lock,
     release_task_execution_lease,
     update_task,
@@ -306,6 +307,21 @@ def build_unified_video_request(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_aborted_transaction_error(exc: BaseException) -> bool:
+    """Identifica o erro que pode ser recuperado com rollback + retry.
+
+    O texto pode vir do psycopg diretamente ou encapsulado pelo SQLAlchemy;
+    não dependemos de uma classe opcional do driver para manter os testes e o
+    modo local funcionando.
+    """
+    text_value = str(exc or "").lower()
+    return (
+        "infailedsqltransaction" in text_value
+        or "current transaction is aborted" in text_value
+        or "current transaction is aborted, commands ignored" in text_value
+    )
 
 
 def _sort_jsonable(v: Any) -> Any:
@@ -626,14 +642,7 @@ class UnifiedVideoPipelineService:
         # ``InFailedSqlTransaction`` até que o rollback seja feito. Recuperar
         # neste limite evita mascarar a causa original e mantém o submit
         # idempotente.
-        try:
-            task = db.query(VideoTask).filter(VideoTask.id == tid).first()
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            task = db.query(VideoTask).filter(VideoTask.id == tid).first()
+        task = load_video_task_row(db, tid)
         if task is not None:
             return task
 
@@ -662,7 +671,10 @@ class UnifiedVideoPipelineService:
                 db.flush()
             return repaired
         except Exception:
-            existing = db.query(VideoTask).filter(VideoTask.id == tid).first()
+            # The savepoint normally contains the conflict. If the driver
+            # still reports an aborted transaction, the helper clears it
+            # before checking whether the concurrent row won the race.
+            existing = load_video_task_row(db, tid)
             if existing is not None:
                 return existing
             raise
@@ -687,13 +699,33 @@ class UnifiedVideoPipelineService:
             ttl_seconds=45,
         )
         try:
-            return self._submit_or_reuse_locked(
-                db,
-                request=request,
-                kick_queue_callback=kick_queue_callback,
-                legacy_initial_result=legacy_initial_result,
-                user=user,
-            )
+            # A submissão grava apenas metadados, a tarefa e o roteiro
+            # aprovado; nenhuma chamada paga acontece aqui. Portanto uma
+            # retentativa única após uma transação abortada é segura: a chave
+            # de idempotência reaproveita a tarefa/linha que já tenha sido
+            # persistida e não cria uma segunda produção.
+            for attempt in range(2):
+                if attempt:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                try:
+                    return self._submit_or_reuse_locked(
+                        db,
+                        request=request,
+                        kick_queue_callback=kick_queue_callback,
+                        legacy_initial_result=legacy_initial_result,
+                        user=user,
+                    )
+                except Exception as exc:
+                    if attempt or not _is_aborted_transaction_error(exc):
+                        raise
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+            raise RuntimeError("UnifiedVideoPipeline não conseguiu concluir o submit após recuperar a transação.")
         finally:
             release_distributed_lock(lock_info)
 
@@ -706,15 +738,13 @@ class UnifiedVideoPipelineService:
         legacy_initial_result: Optional[Dict[str, Any]] = None,
         user: Optional[User] = None,
     ) -> UnifiedPipelineResult:
-        # Todas as rotas passam por este limite canônico. Uma rota pode ter
-        # executado uma leitura de compatibilidade antes do submit; se ela
-        # falhou, o PostgreSQL mantém a sessão abortada até rollback. Só
-        # desfazemos a sessão quando o SQLAlchemy a marcou como inativa: um
-        # rollback incondicional também poderia descartar alterações normais
-        # ainda pendentes do roteiro aprovado.
+        # Todas as rotas passam por este limite canônico. A sessão pertence ao
+        # submit e não pode carregar alterações pendentes de outro estágio;
+        # por isso o rollback é deliberadamente incondicional. Em PostgreSQL
+        # ``Session.is_active`` pode continuar True depois de um erro de
+        # statement, embora a transação do servidor já esteja abortada.
         try:
-            if getattr(db, "is_active", True) is False:
-                db.rollback()
+            db.rollback()
         except Exception:
             pass
         self.ensure_schema(db)

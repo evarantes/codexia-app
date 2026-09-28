@@ -386,16 +386,20 @@ def load_video_task_row(db, task_id: str) -> Optional[VideoTask]:
     normalized_id = str(task_id or "").strip()
     if not normalized_id:
         return None
+    recovered_session = False
     for attempt in range(2):
         try:
-            if getattr(db, "is_active", True) is False:
+            if attempt == 0 and getattr(db, "is_active", True) is False:
                 db.rollback()
+                recovered_session = True
             return db.query(VideoTask).filter(VideoTask.id == normalized_id).first()
         except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
+            if not recovered_session:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                recovered_session = True
             if attempt:
                 raise
     return None
@@ -425,13 +429,26 @@ def _find_equivalent_task_by_content_fingerprint(
     if not desired:
         return None
     status_filter = statuses or {"pending", "processing", "completed"}
-    rows = (
-        db.query(VideoTask)
-        .filter(VideoTask.status.in_(list(status_filter)))
-        .order_by(VideoTask.updated_at.desc(), VideoTask.created_at.desc())
-        .limit(max(1, int(limit or 400)))
-        .all()
-    )
+    rows = None
+    for attempt in range(2):
+        try:
+            if getattr(db, "is_active", True) is False:
+                db.rollback()
+            rows = (
+                db.query(VideoTask)
+                .filter(VideoTask.status.in_(list(status_filter)))
+                .order_by(VideoTask.updated_at.desc(), VideoTask.created_at.desc())
+                .limit(max(1, int(limit or 400)))
+                .all()
+            )
+            break
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt:
+                raise
     for row in rows:
         task_payload = _task_result_payload_from_row(row)
         if str(task_payload.get("content_fingerprint") or "").strip() == desired:
@@ -1240,7 +1257,7 @@ def claim_video_task(
             dedupe = _fetch_dedupe_row(db, key)
             if dedupe and dedupe.get("task_id"):
                 task_id = str(dedupe.get("task_id") or "").strip()
-                task = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+                task = load_video_task_row(db, task_id)
                 if task:
                     existing_user_id = getattr(task, "user_id", None)
                     if user_id is not None and existing_user_id not in (None, int(user_id)):
@@ -1293,7 +1310,7 @@ def claim_video_task(
             equivalent_task = _find_equivalent_task_by_content_fingerprint(db, payload=payload)
             if equivalent_task and str(equivalent_task.id or "").strip():
                 task_id = str(equivalent_task.id or "").strip()
-                task = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+                task = load_video_task_row(db, task_id)
                 if task and user_id is not None:
                     existing_user_id = getattr(task, "user_id", None)
                     if existing_user_id not in (None, int(user_id)):
