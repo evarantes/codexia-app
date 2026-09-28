@@ -29,7 +29,6 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy.orm import Session
 
 from app.config import (
     UNIFIED_AUDIO_DIR,
@@ -631,11 +630,10 @@ class UnifiedVideoPipelineService:
         loses the submit before the approved script can be stored.
 
         Re-checking here makes the ordering explicit and repairs only the
-        missing task row with the same id.  The repair deliberately uses a
-        clean session instead of a savepoint in the caller's session.  If the
-        caller already contains a PostgreSQL statement error, closing a
-        savepoint can itself fail with ``RELEASE SAVEPOINT`` and hide the
-        original problem.
+        missing task row with the same id. The repair is flushed in the
+        caller's session, so the task and ``UnifiedVideo`` remain in one
+        atomic transaction. This also avoids relying on a second connection
+        seeing an uncommitted row during a concurrent submit.
         """
         tid = str(task_id or "").strip()
         if not tid:
@@ -650,8 +648,9 @@ class UnifiedVideoPipelineService:
         if task is not None:
             return task
 
-        # End the read transaction before a second connection tries to repair
-        # the row.  This also releases a stale PostgreSQL snapshot/lock.
+        # End the failed/read transaction before repairing. This releases a
+        # stale PostgreSQL snapshot/lock and lets the same submit session
+        # flush the FK target before inserting UnifiedVideo.
         try:
             db.rollback()
         except Exception:
@@ -666,44 +665,32 @@ class UnifiedVideoPipelineService:
             result_obj.setdefault("idempotency_key", str(request.idempotency_key))
             result_obj.setdefault("request_hash", str(request.request_hash or ""))
 
-        # Derive the new session from the caller's bind.  This keeps isolated
-        # test databases and any explicitly configured worker bind aligned
-        # while still giving the repair a completely clean transaction.
-        repair_db = Session(bind=db.get_bind())
+        repaired = VideoTask(
+            id=tid,
+            user_id=claimed_task.get("user_id") or user_id,
+            status=str(claimed_task.get("status") or "pending"),
+            progress=int(claimed_task.get("progress") or 0),
+            message=str(claimed_task.get("message") or "Aguardando início..."),
+            result_json=_json_dumps(result_obj),
+        )
         try:
-            repair_db.rollback()
-            existing = load_video_task_row(repair_db, tid)
-            if existing is None:
-                repaired = VideoTask(
-                    id=tid,
-                    user_id=claimed_task.get("user_id") or user_id,
-                    status=str(claimed_task.get("status") or "pending"),
-                    progress=int(claimed_task.get("progress") or 0),
-                    message=str(claimed_task.get("message") or "Aguardando início..."),
-                    result_json=_json_dumps(result_obj),
-                )
-                repair_db.add(repaired)
-                try:
-                    repair_db.commit()
-                except Exception:
-                    # Another submit may have repaired the same task between
-                    # the read and insert.  Re-read after a full rollback;
-                    # never leave a failed transaction around the submit.
-                    repair_db.rollback()
-                    existing = load_video_task_row(repair_db, tid)
-                    if existing is None:
-                        raise
-            task = existing or load_video_task_row(repair_db, tid)
-        finally:
-            repair_db.close()
-
-        # The caller's session started its read before the repair commit.
-        # Reset it and confirm the FK target is visible before inserting the
-        # UnifiedVideo row.
-        try:
-            db.rollback()
+            db.add(repaired)
+            db.flush()
+            task = load_video_task_row(db, tid)
         except Exception:
-            pass
+            # A concurrent submit may have inserted the same id after our
+            # first read. Roll back the failed INSERT and accept that row if
+            # it is now visible; otherwise preserve the original exception.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            task = load_video_task_row(db, tid)
+            if task is None:
+                raise
+
+        # Confirm the FK target in the same session before inserting the
+        # UnifiedVideo row. No second session or intermediate commit is used.
         task = load_video_task_row(db, tid)
         if task is None:
             raise RuntimeError(
