@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.orm import Session
 
 from app.config import (
     UNIFIED_AUDIO_DIR,
