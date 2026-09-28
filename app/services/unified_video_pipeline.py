@@ -676,7 +676,11 @@ class UnifiedVideoPipelineService:
         try:
             db.add(repaired)
             db.flush()
-            task = load_video_task_row(db, tid)
+            # ``flush`` já confirmou a INSERT na transação canônica. Não
+            # faça uma segunda consulta aqui: além de ser desnecessária, ela
+            # pode abrir outro caminho de recuperação e transformar uma linha
+            # válida em um falso "task_id invisível".
+            return repaired
         except Exception:
             # A concurrent submit may have inserted the same id after our
             # first read. Roll back the failed INSERT and accept that row if
@@ -688,15 +692,6 @@ class UnifiedVideoPipelineService:
             task = load_video_task_row(db, tid)
             if task is None:
                 raise
-
-        # Confirm the FK target in the same session before inserting the
-        # UnifiedVideo row. No second session or intermediate commit is used.
-        task = load_video_task_row(db, tid)
-        if task is None:
-            raise RuntimeError(
-                "UnifiedVideoPipeline não conseguiu confirmar a tarefa "
-                f"{tid} antes de gravar o roteiro."
-            )
         return task
 
     # ------------------------------------------------------------------
