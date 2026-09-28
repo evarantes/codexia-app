@@ -374,6 +374,33 @@ def _fetch_dedupe_row_by_task_id(db, task_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def load_video_task_row(db, task_id: str) -> Optional[VideoTask]:
+    """Read a task from a session that may have an aborted transaction.
+
+    Recovery endpoints often open a new session after another operation has
+    failed. PostgreSQL keeps that session unusable until ``ROLLBACK``; a
+    second SELECT otherwise only raises ``InFailedSqlTransaction`` and hides
+    the original error. Keep the retry local to the read so callers do not
+    accidentally lose unrelated pending changes.
+    """
+    normalized_id = str(task_id or "").strip()
+    if not normalized_id:
+        return None
+    for attempt in range(2):
+        try:
+            if getattr(db, "is_active", True) is False:
+                db.rollback()
+            return db.query(VideoTask).filter(VideoTask.id == normalized_id).first()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt:
+                raise
+    return None
+
+
 def _task_result_payload_from_row(row: VideoTask) -> Dict[str, Any]:
     if not row or not getattr(row, "result_json", None):
         return {}
@@ -711,37 +738,84 @@ def request_cancel_task(task_id: str, message: str = "Cancelado pelo usuário.")
         db.close()
 
 
-def reset_task_for_retry(task_id: str, progress: int = 1, message: str = "Reiniciando tarefa...") -> Optional[Dict[str, Any]]:
+def reset_task_for_retry(
+    task_id: str,
+    progress: int = 1,
+    message: str = "Reiniciando tarefa...",
+    *,
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Reset a task without losing a recoverable task snapshot.
+
+    A task can still exist in the queue/Redis snapshot after a transient DB
+    failure. In that case recovery repairs the missing ``video_tasks`` row
+    with the same id instead of creating a second production.
+    """
     _control_set(task_id, {"cancel": False, "pause": False, "deleted": False})
-    db = SessionLocal()
-    try:
-        _ensure_task_support_tables()
-        db.execute(text(
-            f"""
-            DELETE FROM {_TASK_LEASE_TABLE}
-            WHERE task_id = :task_id
-            """
-        ), {"task_id": task_id})
-        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
-        if not row:
-            return None
-        row.status = "processing"
+    normalized_id = str(task_id or "").strip()
+    for attempt in range(2):
+        db = SessionLocal()
         try:
-            row.progress = int(progress)
+            _ensure_task_support_tables()
+            # This session is owned by this function, so clearing a possible
+            # pooled PostgreSQL failure cannot discard caller work.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+            row = load_video_task_row(db, normalized_id)
+            if not row and isinstance(snapshot, dict):
+                snapshot_result = snapshot.get("result")
+                if snapshot_result is None and snapshot.get("result_json"):
+                    try:
+                        snapshot_result = json.loads(snapshot.get("result_json") or "null")
+                    except Exception:
+                        snapshot_result = snapshot.get("result_json")
+                row = VideoTask(
+                    id=normalized_id,
+                    user_id=snapshot.get("user_id"),
+                    status=str(snapshot.get("status") or "failed"),
+                    progress=int(snapshot.get("progress") or 0),
+                    message=str(snapshot.get("message") or "Falha preservada para recuperação."),
+                    result_json=_json_dumps(snapshot_result),
+                )
+                db.add(row)
+                db.flush()
+
+            if not row:
+                return None
+
+            # Delete the lease only after the task row is readable. If the
+            # SELECT must roll back and retry, no valid lease deletion is lost.
+            db.execute(text(
+                f"""
+                DELETE FROM {_TASK_LEASE_TABLE}
+                WHERE task_id = :task_id
+                """
+            ), {"task_id": normalized_id})
+            row.status = "processing"
+            try:
+                row.progress = int(progress)
+            except Exception:
+                row.progress = 1
+            row.message = message
+            _sync_task_aux_state(db, normalized_id, status="processing", result_json=row.result_json)
+            db.commit()
+            current = _db_to_dict(row, aux_meta=_task_aux_meta(db, normalized_id))
+            video_tasks[normalized_id] = current
+            _redis_set(normalized_id, current)
+            return current
         except Exception:
-            row.progress = 1
-        row.message = message
-        _sync_task_aux_state(db, task_id, status="processing", result_json=row.result_json)
-        db.commit()
-        current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
-        video_tasks[task_id] = current
-        _redis_set(task_id, current)
-        return current
-    except Exception:
-        db.rollback()
-        return None
-    finally:
-        db.close()
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt:
+                return None
+        finally:
+            db.close()
+    return None
 
 
 def enqueue_paused_task_for_resume(
@@ -1095,7 +1169,7 @@ def get_task(task_id):
     db = SessionLocal()
     try:
         _ensure_task_support_tables()
-        row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        row = load_video_task_row(db, task_id)
         if row:
             current = _db_to_dict(row, aux_meta=_task_aux_meta(db, task_id))
             video_tasks[task_id] = current

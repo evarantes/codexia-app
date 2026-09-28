@@ -67,6 +67,7 @@ from app.services.task_manager import (
     mark_task_paused,
     enqueue_paused_task_for_resume,
     reset_task_for_retry,
+    load_video_task_row,
     claim_video_task,
     acquire_distributed_lock,
     release_distributed_lock,
@@ -1156,7 +1157,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
     payload.setdefault("force_reuse_assets", True)
     db = SessionLocal()
     try:
-        row = db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
+        row = load_video_task_row(db, task_id)
         if not row or not getattr(row, "result_json", None):
             return payload
         try:
@@ -7342,6 +7343,7 @@ def retry_task(task_id: str, _admin=Depends(get_current_admin_user)):
             task_id,
             progress=resume_progress,
             message="Retomada preparada com reaproveitamento dos ativos; aguardando worker CX33...",
+            snapshot=task,
         )
         if not reset:
             raise HTTPException(status_code=500, detail="Não foi possível preparar a tarefa para recuperação.")

@@ -33,7 +33,7 @@ HELPER_BLOCK = r'''def _intelligent_retry_visual_materials(task_id: str, payload
     """Build a read-only retry proposal from local assets and the V2 quality contract."""
     db = SessionLocal()
     try:
-        row = db.query(VideoTask).filter(VideoTask.id == str(task_id)).first()
+        row = load_video_task_row(db, task_id)
         if row is None:
             return {"requires_confirmation": False, "optimization_required": False}, {}
         try:

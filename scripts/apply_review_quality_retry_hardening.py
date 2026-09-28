@@ -111,6 +111,7 @@ RESET_ANCHOR = '''        reset = reset_task_for_retry(
             task_id,
             progress=resume_progress,
             message="Retomada preparada com reaproveitamento dos ativos; aguardando worker CX33...",
+            snapshot=task,
         )'''
 
 RESET_REPLACEMENT = '''        retry_message = (
@@ -122,6 +123,7 @@ RESET_REPLACEMENT = '''        retry_message = (
             task_id,
             progress=resume_progress,
             message=retry_message,
+            snapshot=task,
         )'''
 
 PIPELINE_ANCHOR = '''                message="Retomada preparada, reutilizando os ativos disponíveis e aguardando worker CX33.",
