@@ -1239,6 +1239,7 @@ def claim_video_task(
     force_regenerate: bool = False,
     user_id: Optional[int] = None,
     initial_result: Optional[Dict[str, Any]] = None,
+    db=None,
 ) -> Dict[str, Any]:
     key = str(idempotency_key or "").strip()
     req_hash = str(request_hash or "").strip()
@@ -1246,8 +1247,19 @@ def claim_video_task(
         raise ValueError("idempotency_key e request_hash são obrigatórios.")
     _ensure_task_support_tables()
     lock_info = acquire_distributed_lock(f"claim:{key}", timeout_seconds=20, ttl_seconds=30)
+    owns_session = db is None
     try:
-        db = SessionLocal()
+        if owns_session:
+            db = SessionLocal()
+
+        def _commit_if_owned() -> None:
+            # The unified submit passes its own session so the task row,
+            # dedupe record, and UnifiedVideo FK are committed atomically.
+            # Direct legacy callers retain the previous self-contained
+            # commit behavior.
+            if owns_session:
+                db.commit()
+
         try:
             # SessionLocal normally starts clean, but an earlier request on a
             # reused connection may have left a failed transaction marker.
@@ -1280,7 +1292,7 @@ def claim_video_task(
                         )
                     )
                     if not force_regenerate and status_norm in {"pending", "processing"}:
-                        db.commit()
+                        _commit_if_owned()
                         current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
@@ -1294,7 +1306,7 @@ def claim_video_task(
                             "task": current,
                         }
                     if not force_regenerate and status_norm == "completed" and within_window:
-                        db.commit()
+                        _commit_if_owned()
                         current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
@@ -1335,7 +1347,7 @@ def claim_video_task(
                         expires_at=now + timedelta(seconds=max(60, int(dedupe_window_seconds or _task_dedupe_window_seconds()))),
                         completed_at=now if status_norm == "completed" else None,
                     )
-                    db.commit()
+                    _commit_if_owned()
                     current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
                     video_tasks[task_id] = current
                     _redis_set(task_id, current)
@@ -1377,7 +1389,7 @@ def claim_video_task(
                 expires_at=now + timedelta(seconds=max(60, int(dedupe_window_seconds or _task_dedupe_window_seconds()))),
                 completed_at=None,
             )
-            db.commit()
+            _commit_if_owned()
             current = _db_to_dict(task_row, aux_meta=_task_aux_meta(db, task_id))
             video_tasks[task_id] = current
             _redis_set(task_id, current)
@@ -1394,7 +1406,8 @@ def claim_video_task(
             db.rollback()
             raise
         finally:
-            db.close()
+            if owns_session:
+                db.close()
     finally:
         release_distributed_lock(lock_info)
 
