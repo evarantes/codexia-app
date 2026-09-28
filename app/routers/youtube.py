@@ -6489,13 +6489,17 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
     unified_req = _build_unified_request_from_legacy(payload, user_id=user_id, module="story")
     if unified_req is None:
         raise HTTPException(status_code=422, detail="Payload inválido para o UnifiedVideoPipeline canônico.")
+    pipeline_db = None
     try:
-        # The content-reuse probe is optional and the route may have passed
-        # through a legacy settings/narration read. Start the canonical submit
-        # at a clean transaction boundary so a previous failed statement can
-        # never reach claim_video_task as InFailedSqlTransaction.
+        # The content-reuse probe is optional and the request may have passed
+        # through legacy reads before reaching this point. Do not reuse the
+        # dependency session for the canonical submit: psycopg can keep the
+        # underlying connection aborted even after an earlier compatibility
+        # query was caught. A fresh session makes the boundary explicit and
+        # keeps the approved script/task submit independent of that probe.
+        pipeline_db = SessionLocal()
         try:
-            db.rollback()
+            pipeline_db.rollback()
         except Exception:
             pass
         kick_cb = _kick_story_video_task_queue_async if callable(_kick_story_video_task_queue_async) else None
@@ -6510,7 +6514,7 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
             "content_hash": content_hash or None,
         }
         res = unified_video_pipeline().submit_or_reuse(
-            db,
+            pipeline_db,
             request=unified_req,
             kick_queue_callback=kick_cb,
             legacy_initial_result=base_result,
@@ -6540,6 +6544,12 @@ def generate_video(request: VideoRequest, background_tasks: BackgroundTasks, db:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"UnifiedVideoPipeline falhou no submit: {type(exc).__name__}: {str(exc)[:300]}")
+    finally:
+        if pipeline_db is not None:
+            try:
+                pipeline_db.close()
+            except Exception:
+                pass
 
 
 # Dependência segura: retorna None se o token for inválido (sem bloquear clients RQ/scheduler).
