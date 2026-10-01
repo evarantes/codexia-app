@@ -694,6 +694,58 @@ class UnifiedVideoPipelineService:
                 raise
         return task
 
+
+    def _verify_task_row_committed(
+        self,
+        db,
+        *,
+        task_id: str,
+        claimed: Dict[str, Any],
+        request: UnifiedVideoRequest,
+        initial_result: Optional[Dict[str, Any]],
+        user_id: Optional[int],
+    ) -> None:
+        """Confirma a tarefa em uma conexão independente antes da FK."""
+        tid = str(task_id or "").strip()
+        if not tid:
+            raise RuntimeError("UnifiedVideoPipeline recebeu task_id vazio antes da verificação final.")
+
+        verify_db = SessionLocal()
+        try:
+            verify_db.rollback()
+            row = verify_db.query(VideoTask).filter(VideoTask.id == tid).first()
+            if row is None:
+                claimed_task = claimed.get("task") if isinstance(claimed, dict) else None
+                claimed_task = claimed_task if isinstance(claimed_task, dict) else {}
+                result_obj = claimed_task.get("result")
+                if not isinstance(result_obj, dict):
+                    result_obj = dict(initial_result or {})
+                    result_obj.setdefault("payload", _jsonable_payload_for_legacy(request))
+                    result_obj.setdefault("idempotency_key", str(request.idempotency_key))
+                    result_obj.setdefault("request_hash", str(request.request_hash or ""))
+                row = VideoTask(
+                    id=tid,
+                    user_id=claimed_task.get("user_id") or user_id,
+                    status=str(claimed_task.get("status") or "pending"),
+                    progress=int(claimed_task.get("progress") or 0),
+                    message=str(claimed_task.get("message") or "Aguardando início..."),
+                    result_json=_json_dumps(result_obj),
+                )
+                verify_db.add(row)
+                verify_db.commit()
+
+            if verify_db.query(VideoTask.id).filter(VideoTask.id == tid).first() is None:
+                raise RuntimeError(f"A tarefa {tid} não ficou visível após o commit PostgreSQL.")
+        except Exception:
+            verify_db.rollback()
+            raise
+        finally:
+            verify_db.close()
+
+        db.rollback()
+        if db.query(VideoTask.id).filter(VideoTask.id == tid).first() is None:
+            raise RuntimeError(f"A tarefa {tid} não está visível na sessão do UnifiedVideo após o commit.")
+
     # ------------------------------------------------------------------
     # Entrada 1: submit ou reaproveita (idempotência).
     # ------------------------------------------------------------------
@@ -803,6 +855,14 @@ class UnifiedVideoPipelineService:
         # materialized in PostgreSQL before the central row is constructed.
         db.flush()
         db.commit()
+        self._verify_task_row_committed(
+            db,
+            task_id=task_id,
+            claimed=claimed,
+            request=request,
+            initial_result=initial_result,
+            user_id=user_id,
+        )
 
         # 2. Cria/atualiza a linha central UnifiedVideo.
         uv: Optional[UnifiedVideo] = (
