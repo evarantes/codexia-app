@@ -802,6 +802,7 @@ class UnifiedVideoPipelineService:
         # flush at the submit boundary so a repaired or newly claimed task is
         # materialized in PostgreSQL before the central row is constructed.
         db.flush()
+        db.commit()
 
         # 2. Cria/atualiza a linha central UnifiedVideo.
         uv: Optional[UnifiedVideo] = (
