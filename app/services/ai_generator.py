@@ -427,15 +427,30 @@ class AIContentGenerator:
                 voice=voice,
                 input=normalized_text,
             )
-            if hasattr(response, "read"):
-                data = response.read()
-            else:
-                data = getattr(response, "content", None)
-            if isinstance(data, (bytes, bytearray)) and data:
-                return bytes(data)
+            # O SDK pode retornar HttpxBinaryResponseContent, bytes puros ou
+            # um objeto que só expõe content/iter_bytes dependendo da versão.
+            # Aceitamos todas as formas para não transformar áudio válido em
+            # "resposta vazia".
+            candidates = []
+            try:
+                candidates.append(response.read() if hasattr(response, "read") else None)
+            except Exception:
+                pass
+            try:
+                candidates.append(getattr(response, "content", None))
+            except Exception:
+                pass
+            if hasattr(response, "iter_bytes"):
+                try:
+                    candidates.append(b"".join(response.iter_bytes()))
+                except Exception:
+                    pass
+            for data in candidates:
+                if isinstance(data, (bytes, bytearray)) and data:
+                    return bytes(data)
             return None
         except Exception as e:
-            print(f"OpenAI TTS error: {e}")
+            print(f"OpenAI TTS error: {type(e).__name__}: {e}")
             return None
 
     def generate_audio_with_diagnostics(
