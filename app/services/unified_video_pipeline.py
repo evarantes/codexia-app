@@ -805,12 +805,32 @@ class UnifiedVideoPipelineService:
         reused_existing = bool(claimed.get("reused_existing_task"))
         reused_completed = bool(claimed.get("reused_completed_task"))
 
-        # A tarefa e o UnifiedVideo precisam nascer na mesma transação.
-        # claim_video_task/_insert_video_task_row já fazem flush da VideoTask;
-        # aqui garantimos o alvo da FK e mantemos a transação aberta até a
-        # linha central também ser gravada. Não fazemos commit/rollback nem
-        # uma consulta de verificação intermediária: esse ciclo criava um
-        # falso "task_id invisível" em produção e descartava a atomicidade.
+        # A VideoTask/deduplicação é confirmada antes da linha central.
+        #
+        # O PostgreSQL coloca a transação inteira em estado abortado quando
+        # qualquer statement falha. Manter claim, leituras auxiliares e
+        # UnifiedVideo no mesmo bloco fazia o erro aparecer apenas no SELECT
+        # de unified_videos, escondendo a causa real. A fronteira explícita
+        # abaixo torna o claim durável; se a segunda etapa falhar, a chave de
+        # idempotência reaproveita a mesma tarefa sem duplicar produção.
+        try:
+            db.flush()
+            db.commit()
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Falha ao confirmar VideoTask antes de gravar UnifiedVideo: "
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+
+        # Garante uma sessão ORM limpa para a FK e para a busca idempotente.
+        try:
+            db.rollback()
+        except Exception:
+            pass
         self._ensure_claimed_task_visible(
             db,
             task_id=task_id,
