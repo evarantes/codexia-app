@@ -1293,7 +1293,7 @@ def claim_video_task(
                     )
                     if not force_regenerate and status_norm in {"pending", "processing"}:
                         _commit_if_owned()
-                        current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
+                        current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id) if owns_session else {})
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
                         return {
@@ -1307,7 +1307,7 @@ def claim_video_task(
                         }
                     if not force_regenerate and status_norm == "completed" and within_window:
                         _commit_if_owned()
-                        current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
+                        current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id) if owns_session else {})
                         video_tasks[task_id] = current
                         _redis_set(task_id, current)
                         return {
@@ -1348,7 +1348,7 @@ def claim_video_task(
                         completed_at=now if status_norm == "completed" else None,
                     )
                     _commit_if_owned()
-                    current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id))
+                    current = _db_to_dict(task, aux_meta=_task_aux_meta(db, task_id) if owns_session else {})
                     video_tasks[task_id] = current
                     _redis_set(task_id, current)
                     return {
@@ -1390,7 +1390,7 @@ def claim_video_task(
                 completed_at=None,
             )
             _commit_if_owned()
-            current = _db_to_dict(task_row, aux_meta=_task_aux_meta(db, task_id))
+            current = _db_to_dict(task_row, aux_meta=_task_aux_meta(db, task_id) if owns_session else {})
             video_tasks[task_id] = current
             _redis_set(task_id, current)
             return {
