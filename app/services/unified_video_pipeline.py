@@ -832,9 +832,12 @@ class UnifiedVideoPipelineService:
         reused_existing = bool(claimed.get("reused_existing_task"))
         reused_completed = bool(claimed.get("reused_completed_task"))
 
-        # The UnifiedVideo FK must be validated before we build the central
-        # row. This also repairs a legacy/partial claim without discarding the
-        # approved script that is about to be persisted.
+        # A tarefa e o UnifiedVideo precisam nascer na mesma transação.
+        # claim_video_task/_insert_video_task_row já fazem flush da VideoTask;
+        # aqui garantimos o alvo da FK e mantemos a transação aberta até a
+        # linha central também ser gravada. Não fazemos commit/rollback nem
+        # uma consulta de verificação intermediária: esse ciclo criava um
+        # falso "task_id invisível" em produção e descartava a atomicidade.
         self._ensure_claimed_task_visible(
             db,
             task_id=task_id,
@@ -843,20 +846,7 @@ class UnifiedVideoPipelineService:
             initial_result=initial_result,
             user_id=user_id,
         )
-
-        # The task row is the FK target of UnifiedVideo. Keep this explicit
-        # flush at the submit boundary so a repaired or newly claimed task is
-        # materialized in PostgreSQL before the central row is constructed.
         db.flush()
-        db.commit()
-        self._verify_task_row_committed(
-            db,
-            task_id=task_id,
-            claimed=claimed,
-            request=request,
-            initial_result=initial_result,
-            user_id=user_id,
-        )
 
         # 2. Cria/atualiza a linha central UnifiedVideo.
         uv: Optional[UnifiedVideo] = (
