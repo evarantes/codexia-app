@@ -611,50 +611,31 @@ class UnifiedVideoPipelineService:
             pass
 
     def _ensure_claimed_task_visible(
-        self,
-        db,
-        *,
-        task_id: str,
-        claimed: Dict[str, Any],
-        request: UnifiedVideoRequest,
-        initial_result: Optional[Dict[str, Any]],
+        self, db, *, task_id: str, claimed: Dict[str, Any],
+        request: UnifiedVideoRequest, initial_result: Optional[Dict[str, Any]],
         user_id: Optional[int],
     ) -> VideoTask:
-        """Guarantee that the FK target exists in the submit session.
+        """Garante o alvo da FK sem descartar a tarefa recém-criada.
 
-        ``claim_video_task`` normally commits the task in its own session.
-        A stale dedupe row, a mixed app/worker release, or a connection
-        boundary during a deploy can nevertheless return a task id whose row
-        is not visible to the session that is about to insert ``UnifiedVideo``.
-        In that situation PostgreSQL correctly rejects the FK, but the user
-        loses the submit before the approved script can be stored.
-
-        Re-checking here makes the ordering explicit and repairs only the
-        missing task row with the same id. The repair is flushed in the
-        caller's session, so the task and ``UnifiedVideo`` remain in one
-        atomic transaction. This also avoids relying on a second connection
-        seeing an uncommitted row during a concurrent submit.
+        A sessão usa autoflush=False; portanto a tarefa precisa ser flushed
+        antes da consulta. O caminho normal nunca faz rollback: rollback aqui
+        descartaria a VideoTask e o dedupe recém-criados.
         """
         tid = str(task_id or "").strip()
         if not tid:
             raise ValueError("UnifiedVideoPipeline recebeu task_id vazio.")
 
-        # A sessão pode chegar aqui depois de uma consulta opcional/legada que
-        # falhou. No PostgreSQL, qualquer SELECT seguinte recebe
-        # ``InFailedSqlTransaction`` até que o rollback seja feito. Recuperar
-        # neste limite evita mascarar a causa original e mantém o submit
-        # idempotente.
+        try:
+            db.flush()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
         task = load_video_task_row(db, tid)
         if task is not None:
             return task
-
-        # End the failed/read transaction before repairing. This releases a
-        # stale PostgreSQL snapshot/lock and lets the same submit session
-        # flush the FK target before inserting UnifiedVideo.
-        try:
-            db.rollback()
-        except Exception:
-            pass
 
         claimed_task = claimed.get("task") if isinstance(claimed, dict) else None
         claimed_task = claimed_task if isinstance(claimed_task, dict) else {}
@@ -676,15 +657,8 @@ class UnifiedVideoPipelineService:
         try:
             db.add(repaired)
             db.flush()
-            # ``flush`` já confirmou a INSERT na transação canônica. Não
-            # faça uma segunda consulta aqui: além de ser desnecessária, ela
-            # pode abrir outro caminho de recuperação e transformar uma linha
-            # válida em um falso "task_id invisível".
             return repaired
         except Exception:
-            # A concurrent submit may have inserted the same id after our
-            # first read. Roll back the failed INSERT and accept that row if
-            # it is now visible; otherwise preserve the original exception.
             try:
                 db.rollback()
             except Exception:
@@ -692,8 +666,7 @@ class UnifiedVideoPipelineService:
             task = load_video_task_row(db, tid)
             if task is None:
                 raise
-        return task
-
+            return task
 
     def _verify_task_row_committed(
         self,
