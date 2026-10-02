@@ -6,7 +6,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.cinematic_director import CinematicDirector, CinematicDirectorError, DirectorResult
 
@@ -83,7 +83,9 @@ def _distribute_scene_seconds(scenes: List[Dict[str, Any]], total_seconds: int) 
         return
     counts = [max(1, _word_count(scene.get("narration"))) for scene in scenes]
     total_words = max(1, sum(counts))
-    minimum = 4
+    # Em vídeos de teste, a quantidade de cenas pode ser maior que o relógio.
+    # Reduzimos o piso por cena para nunca ultrapassar o alvo total.
+    minimum = max(1, min(4, int(total_seconds) // len(scenes)))
     available = max(0, int(total_seconds) - minimum * len(scenes))
     raw_extra = [(count / total_words) * available for count in counts]
     extras = [int(math.floor(value)) for value in raw_extra]
