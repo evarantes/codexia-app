@@ -6,6 +6,7 @@ changing the large legacy router.
 """
 from . import pydantic_compat as _pydantic_compat  # noqa: F401
 from . import youtube as youtube
+from . import pipeline_v3 as pipeline_v3
 from . import cinematic_campaign as _cinematic_campaign
 from .cinematic_budget_optimizer import wrap_budget_guard
 from .cinematic_compose import router as _cinematic_compose_router
@@ -31,6 +32,9 @@ youtube.router.include_router(_cinematic_director_async_router)
 youtube.router.include_router(_cinematic_project_router)
 youtube.router.include_router(_cinematic_project_pipeline_router)
 youtube.router.include_router(_cinematic_queue_router)
+
+# O V3 é montado sob /youtube para não alterar o app.main legado.
+youtube.router.include_router(pipeline_v3.router)
 
 # Director-approved narration must remain immutable during downstream editorial
 # stages, while technical guards continue to run normally.
