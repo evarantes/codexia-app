@@ -35,6 +35,8 @@ class AsyncDirectorRequest(BaseModel):
     theme: str = Field(..., min_length=3, max_length=500)
     content_type: str = Field("story", pattern="^(story|devotional|short)$")
     duration_minutes: int = Field(10, ge=1, le=30)
+    # Opcional para testes curtos; quando informado, prevalece sobre minutos.
+    duration_seconds: Optional[int] = Field(None, ge=5, le=1800)
     budget_brl: float = Field(90.0, ge=1, le=1000)
 
 
@@ -69,6 +71,8 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
             message="Claude está criando roteiro, gancho, cenas e direção visual.",
         )
         db: Optional[Session] = None
+        target_seconds = int(request_payload.get("duration_seconds") or (int(request_payload.get("duration_minutes") or 10) * 60))
+        director_minutes = max(1, min(30, (target_seconds + 59) // 60))
         try:
             db = SessionLocal()
             settings = _settings(db, user_id)
@@ -76,7 +80,7 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
             result = director.build_plan(
                 theme=str(request_payload.get("theme") or ""),
                 content_type=str(request_payload.get("content_type") or "story"),
-                duration_minutes=int(request_payload.get("duration_minutes") or 10),
+                duration_minutes=director_minutes,
                 budget_brl=float(request_payload.get("budget_brl") or 90.0),
             )
             _store.update(
@@ -90,7 +94,8 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
                 director,
                 result,
                 content_type=str(request_payload.get("content_type") or "story"),
-                duration_minutes=int(request_payload.get("duration_minutes") or 10),
+                duration_minutes=director_minutes,
+                duration_seconds=target_seconds,
                 budget_brl=float(request_payload.get("budget_brl") or 90.0),
             )
         finally:
@@ -110,7 +115,7 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
         plan = _rebalance_plan_to_budget(
             result.plan,
             content_type=str(request_payload.get("content_type") or "story"),
-            duration_minutes=int(request_payload.get("duration_minutes") or 10),
+            duration_minutes=director_minutes,
             budget_brl=float(request_payload.get("budget_brl") or 90.0),
         )
         usd_brl = _usd_brl()
@@ -131,6 +136,7 @@ def _run_job(user_id: int, job_id: str, request_payload: Dict[str, Any]) -> None
                 "theme": request_payload.get("theme"),
                 "content_type": request_payload.get("content_type"),
                 "duration_minutes": request_payload.get("duration_minutes"),
+                "duration_seconds": request_payload.get("duration_seconds"),
                 "budget_brl": request_payload.get("budget_brl"),
                 "plan": plan,
                 "director": director_meta,
@@ -209,6 +215,7 @@ def create_director_job(
         "theme": body.theme,
         "content_type": body.content_type,
         "duration_minutes": body.duration_minutes,
+        "duration_seconds": body.duration_seconds,
         "budget_brl": body.budget_brl,
     }
     try:

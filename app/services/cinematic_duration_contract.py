@@ -6,7 +6,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.cinematic_director import CinematicDirector, CinematicDirectorError, DirectorResult
 
@@ -83,7 +83,9 @@ def _distribute_scene_seconds(scenes: List[Dict[str, Any]], total_seconds: int) 
         return
     counts = [max(1, _word_count(scene.get("narration"))) for scene in scenes]
     total_words = max(1, sum(counts))
-    minimum = 4
+    # Em vídeos de teste, a quantidade de cenas pode ser maior que o relógio.
+    # Reduzimos o piso por cena para nunca ultrapassar o alvo total.
+    minimum = max(1, min(4, int(total_seconds) // len(scenes)))
     available = max(0, int(total_seconds) - minimum * len(scenes))
     raw_extra = [(count / total_words) * available for count in counts]
     extras = [int(math.floor(value)) for value in raw_extra]
@@ -99,10 +101,14 @@ def build_duration_contract(
     plan: Dict[str, Any],
     *,
     duration_minutes: int,
+    duration_seconds: Optional[int] = None,
     repair_attempts: int = 0,
 ) -> Dict[str, Any]:
-    duration = max(1, int(duration_minutes or 1))
-    target_seconds = duration * 60
+    # Durações curtas podem ser expressas em segundos sem quebrar o contrato
+    # histórico em minutos. O alvo em segundos é a fonte de verdade.
+    requested_seconds = _safe_int(duration_seconds, 0)
+    target_seconds = requested_seconds if requested_seconds > 0 else max(60, int(duration_minutes or 1) * 60)
+    duration = target_seconds / 60.0
     wpm = _voice_wpm()
     tolerance = _duration_tolerance_ratio()
     target_words = max(1, int(round(duration * wpm)))
@@ -128,7 +134,8 @@ def build_duration_contract(
 
     return {
         "version": 1,
-        "requested_minutes": duration,
+        "requested_minutes": round(duration, 4),
+        "requested_seconds": target_seconds,
         "target_seconds": target_seconds,
         "voice_wpm": wpm,
         "tolerance_ratio": round(tolerance, 4),
@@ -155,6 +162,7 @@ def _repair_prompt(
     *,
     content_type: str,
     duration_minutes: int,
+    duration_seconds: Optional[int] = None,
     contract: Dict[str, Any],
 ) -> str:
     scenes = [item for item in (plan.get("scenes") or []) if isinstance(item, dict)]
@@ -177,7 +185,7 @@ def _repair_prompt(
 Você é o Diretor-Chefe do Codexia fazendo a checagem FINAL do contrato de produção.
 O plano abaixo foi rejeitado pelo relógio de narração. Corrija-o ANTES de qualquer mídia paga.
 
-DURAÇÃO CONTRATADA: {int(duration_minutes)} minutos / {contract['target_seconds']} segundos
+DURAÇÃO CONTRATADA: {contract['target_seconds']} segundos ({contract['requested_minutes']} minutos)
 RITMO DE CÁLCULO DA VOZ: {contract['voice_wpm']} palavras por minuto
 ALVO DE NARRAÇÃO: {contract['target_words']} palavras
 FAIXA OBRIGATÓRIA: {contract['min_words']} a {contract['max_words']} palavras
@@ -226,6 +234,7 @@ def enforce_director_duration_contract(
     *,
     content_type: str,
     duration_minutes: int,
+    duration_seconds: Optional[int] = None,
     budget_brl: float,
 ) -> DirectorResult:
     """Fail-closed duration contract for Claude-directed productions.
@@ -242,13 +251,14 @@ def enforce_director_duration_contract(
     for attempt in range(_max_repairs() + 1):
         scenes, canonical_script = _scene_narration(plan)
         if scenes:
-            _distribute_scene_seconds(scenes, max(1, int(duration_minutes)) * 60)
+            target_seconds = _safe_int(duration_seconds, 0) or max(60, int(duration_minutes or 1) * 60)
+            _distribute_scene_seconds(scenes, target_seconds)
             plan["scenes"] = scenes
         # The scene narrations are the canonical spoken source. Never let a hidden
         # parallel full_script be longer than what the user reviewed scene by scene.
         if canonical_script:
             plan["full_script"] = canonical_script
-        contract = build_duration_contract(plan, duration_minutes=duration_minutes, repair_attempts=repairs)
+        contract = build_duration_contract(plan, duration_minutes=duration_minutes, duration_seconds=duration_seconds, repair_attempts=repairs)
         plan["duration_contract"] = contract
         checks = plan.get("quality_checks") if isinstance(plan.get("quality_checks"), dict) else {}
         checks["duration_validated"] = bool(contract.get("validated"))
@@ -269,6 +279,7 @@ def enforce_director_duration_contract(
             plan,
             content_type=content_type,
             duration_minutes=duration_minutes,
+            duration_seconds=duration_seconds,
             contract=contract,
         )
         repaired_raw, repair_usage = _call_repair(director, result.provider, prompt)
@@ -283,7 +294,7 @@ def enforce_director_duration_contract(
         merged_usage = _merge_usage(merged_usage, repair_usage)
         total_cost += director._estimate_cost_usd(repair_usage)
 
-    final_contract = build_duration_contract(plan, duration_minutes=duration_minutes, repair_attempts=repairs)
+    final_contract = build_duration_contract(plan, duration_minutes=duration_minutes, duration_seconds=duration_seconds, repair_attempts=repairs)
     raise CinematicDirectorError(
         "Claude não conseguiu fechar o contrato de duração antes da produção. "
         f"Alvo {final_contract['target_words']} palavras; faixa {final_contract['min_words']}–{final_contract['max_words']}; "
