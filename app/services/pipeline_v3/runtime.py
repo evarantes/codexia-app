@@ -16,20 +16,24 @@ class PipelineRuntime:
     root: Path
 
     @classmethod
-    def from_env(cls) -> "PipelineRuntime":
-        environment = os.getenv("CODEXIA_PIPELINE_ENV", "production").strip().lower()
+    def for_environment(cls, environment: str) -> "PipelineRuntime":
+        environment = str(environment or "").strip().lower()
         if environment not in {"production", "test"}:
-            raise ValueError("CODEXIA_PIPELINE_ENV deve ser production ou test")
+            raise ValueError("environment deve ser production ou test")
 
         configured = os.getenv("CODEXIA_PIPELINE_ROOT")
         if configured:
-            root = Path(configured)
+            root = Path(configured) / environment
         elif environment == "test":
             root = Path("/data/pipeline_test")
         else:
             root = Path("/data/pipeline_v3")
 
         return cls(environment=environment, root=root)
+
+    @classmethod
+    def from_env(cls) -> "PipelineRuntime":
+        return cls.for_environment(os.getenv("CODEXIA_PIPELINE_ENV", "production"))
 
     @property
     def tasks_dir(self) -> Path:
