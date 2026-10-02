@@ -43,8 +43,7 @@ def _enabled(environment: str) -> bool:
 
 
 def _orchestrator(environment: str) -> PipelineV3Orchestrator:
-    os.environ["CODEXIA_PIPELINE_ENV"] = environment
-    return PipelineV3Orchestrator(PipelineRuntime.from_env())
+    return PipelineV3Orchestrator(PipelineRuntime.for_environment(environment))
 
 
 @router.post("/tasks", status_code=201)
