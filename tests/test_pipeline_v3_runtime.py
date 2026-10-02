@@ -63,3 +63,11 @@ def test_production_manifest_is_separate_from_test(tmp_path: Path) -> None:
     production_store = PipelineV3ManifestStore(production_runtime)
 
     assert test_store.runtime.tasks_dir != production_store.runtime.tasks_dir
+
+def test_configured_root_is_namespaced_by_environment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CODEXIA_PIPELINE_ROOT", str(tmp_path))
+    test_runtime = PipelineRuntime.for_environment("test")
+    production_runtime = PipelineRuntime.for_environment("production")
+
+    assert test_runtime.root == tmp_path / "test"
+    assert production_runtime.root == tmp_path / "production"
