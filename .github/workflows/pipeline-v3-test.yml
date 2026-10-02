@@ -1,0 +1,35 @@
+name: Pipeline V3 isolated tests
+
+on:
+  push:
+    branches:
+      - pipeline-test
+  pull_request:
+    branches:
+      - pipeline-v3-foundation
+      - main
+    paths:
+      - "app/services/pipeline_v3/**"
+      - "tests/test_pipeline_v3_foundation.py"
+      - ".github/workflows/pipeline-v3-test.yml"
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile isolated package
+        run: python -m compileall -q app/services/pipeline_v3 tests/test_pipeline_v3_foundation.py
+
+      - name: Install test runner
+        run: python -m pip install --disable-pip-version-check --no-input pytest
+
+      - name: Run isolated tests
+        run: python -m pytest tests/test_pipeline_v3_foundation.py -q
