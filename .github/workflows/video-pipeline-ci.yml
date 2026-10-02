@@ -12,8 +12,10 @@ on:
       - "app/routers/pipeline_v3.py"
       - "app/routers/__init__.py"
       - "tests/test_pipeline_v3_foundation.py"
+      - "tests/test_pipeline_v3_runtime.py"
       - "docs/PIPELINE_V3.md"
       - ".github/workflows/pipeline-v3-test.yml"
+      - ".github/workflows/video-pipeline-ci.yml"
   workflow_dispatch:
 
 permissions:
