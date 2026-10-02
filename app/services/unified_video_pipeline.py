@@ -100,6 +100,7 @@ class UnifiedVideoRequest(BaseModel):
     topic: Optional[str] = Field(None, description="Tema/título em linguagem natural.")
     script_text: Optional[str] = Field(None, description="Texto pré-escrito. Se nulo, IA gera.")
     duration_minutes: int = Field(3, ge=1, le=180, description="Duração alvo em minutos.")
+    duration_seconds: Optional[int] = Field(None, ge=5, le=10800, description="Alvo exato opcional em segundos para testes curtos.")
     aspect_ratio: str = Field("16:9", description="16:9 | 9:16 | 1:1 | 4:5")
     image_count: int = Field(8, ge=1, le=64, description="Quantidade alvo de imagens/cenas.")
     text_provider: str = Field("configured", max_length=64)
@@ -226,10 +227,18 @@ def build_unified_video_request(
         kind = "story" if mode == "story" else ("short" if str(raw.get("video_type") or "").lower() == "short" else "custom")
 
     try:
+        requested_seconds = int(raw.get("duration_seconds") or 0)
+    except Exception:
+        requested_seconds = 0
+    requested_seconds = max(0, min(10800, requested_seconds))
+    try:
         duration = int(raw.get("duration") or raw.get("duration_minutes") or 5)
     except Exception:
         duration = 5
-    duration = max(1, min(180, duration))
+    if requested_seconds:
+        duration = max(1, min(180, math.ceil(requested_seconds / 60)))
+    else:
+        duration = max(1, min(180, duration))
     try:
         image_count = int(raw.get("image_count") or (8 if str(raw.get("image_mode") or "").lower() == "multiple" else 1))
     except Exception:
@@ -277,6 +286,7 @@ def build_unified_video_request(
         topic=str(raw.get("topic") or raw.get("title") or raw.get("theme") or "")[:4000] or None,
         script_text=str(raw.get("story_content") or raw.get("script_text") or "")[:120000] or None,
         duration_minutes=duration,
+        duration_seconds=requested_seconds or None,
         aspect_ratio=str(raw.get("aspect_ratio") or "16:9").strip()[:12],
         image_count=image_count,
         text_provider=str(raw.get("text_provider") or "configured").strip()[:64] or "configured",
