@@ -380,6 +380,7 @@ def _build_video_generation_canonical_payload(payload: Dict[str, Any]) -> Dict[s
         "topic": _normalize_hash_text(payload.get("topic") or ""),
         "story_content": _normalize_hash_text(payload.get("story_content") or ""),
         "duration": max(1, min(60, int(payload.get("duration") or 5))),
+        "duration_seconds": max(0, min(10800, int(payload.get("duration_seconds") or 0))),
         "aspect_ratio": aspect_ratio,
         "auto_upload": bool(payload.get("auto_upload")),
         "voice_style": voice_style,
@@ -3556,6 +3557,9 @@ async def upload_music(file: UploadFile = File(...)):
 class VideoRequest(BaseModel):
     topic: Optional[str] = None
     duration: int = 5
+    # Alvo opcional em segundos para testes rápidos; quando informado,
+    # prevalece sobre duration e também participa da idempotência.
+    duration_seconds: Optional[int] = Field(None, ge=5, le=10800)
     auto_upload: bool = False
     mode: str = "topic" # topic | story
     kind: Optional[str] = None  # story | devotional | prayer (apenas quando mode=story)
