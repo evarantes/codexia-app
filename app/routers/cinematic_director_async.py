@@ -36,7 +36,7 @@ class AsyncDirectorRequest(BaseModel):
     content_type: str = Field("story", pattern="^(story|devotional|short)$")
     duration_minutes: int = Field(10, ge=1, le=30)
     # Opcional para testes curtos; quando informado, prevalece sobre minutos.
-    duration_seconds: Optional[int] = Field(None, ge=15, le=1800)
+    duration_seconds: Optional[int] = Field(None, ge=5, le=1800)
     budget_brl: float = Field(90.0, ge=1, le=1000)
 
 
