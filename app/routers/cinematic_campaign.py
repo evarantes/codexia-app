@@ -355,6 +355,8 @@ class DirectorRequest(BaseModel):
     theme: str = Field(..., min_length=3, max_length=500)
     content_type: str = Field("story", pattern="^(story|devotional|short)$")
     duration_minutes: int = Field(10, ge=1, le=30)
+    # Durações curtas para teste; quando informado, prevalece sobre minutos.
+    duration_seconds: Optional[int] = Field(None, ge=15, le=1800)
     budget_brl: float = Field(90.0, ge=1, le=1000)
 
 
@@ -438,19 +440,22 @@ def director_plan(
 ):
     uid = _user_id(current_user)
     settings = _settings(db, uid)
+    target_seconds = int(body.duration_seconds or (body.duration_minutes * 60))
+    director_minutes = max(1, min(30, math.ceil(target_seconds / 60)))
     try:
         result = CinematicDirector(settings).build_plan(
             theme=body.theme,
             content_type=body.content_type,
-            duration_minutes=body.duration_minutes,
+            duration_minutes=director_minutes,
             budget_brl=body.budget_brl,
         )
         plan = _rebalance_plan_to_budget(
             result.plan,
             content_type=body.content_type,
-            duration_minutes=body.duration_minutes,
+            duration_minutes=director_minutes,
             budget_brl=body.budget_brl,
         )
+        plan["requested_duration_seconds"] = target_seconds
         usd_brl = _usd_brl()
         director_meta = {
             "provider": result.provider,
@@ -468,6 +473,7 @@ def director_plan(
                 "theme": body.theme,
                 "content_type": body.content_type,
                 "duration_minutes": body.duration_minutes,
+                "duration_seconds": body.duration_seconds,
                 "budget_brl": body.budget_brl,
                 "plan": plan,
                 "director": director_meta,
