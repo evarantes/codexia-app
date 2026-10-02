@@ -837,6 +837,15 @@ class UnifiedVideoPipelineService:
                 f"{type(exc).__name__}: {str(exc)[:300]}"
             ) from exc
 
+        # A VideoTask já está confirmada. Fechar a sessão devolve a conexão ao
+        # pool; a próxima consulta reabre uma conexão limpa para UnifiedVideo.
+        # Em algumas conexões PostgreSQL, rollback sozinho não limpava o estado
+        # abortado que chegava de uma tentativa anterior.
+        try:
+            db.close()
+        except Exception:
+            pass
+
         # Garante uma sessão ORM limpa para a FK e para a busca idempotente.
         try:
             db.rollback()
