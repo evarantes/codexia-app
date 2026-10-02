@@ -5,15 +5,13 @@ on:
     branches:
       - main
       - homolog/youtube-auto-e2e
-    paths:
-      - ".github/workflows/video-pipeline-ci.yml"
-      - "Dockerfile"
-      - "Dockerfile.worker"
-      - "alembic/**"
-      - "app/**"
-      - "scripts/**"
-      - "tests/**"
-      - "requirements.txt"
+    # O V3 possui CI própria. A CI legada não deve bloquear uma PR
+    # que contenha somente a nova arquitetura isolada.
+    paths-ignore:
+      - "app/services/pipeline_v3/**"
+      - "tests/test_pipeline_v3_foundation.py"
+      - "docs/PIPELINE_V3.md"
+      - ".github/workflows/pipeline-v3-test.yml"
   workflow_dispatch:
 
 permissions:
