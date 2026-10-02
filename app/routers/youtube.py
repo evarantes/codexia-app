@@ -1329,6 +1329,12 @@ def _is_youtube_series_payload(payload: Dict[str, Any], task_id: Optional[str] =
 
 def _video_payload_duration_minutes(payload: Dict[str, Any]) -> int:
     raw = payload if isinstance(payload, dict) else {}
+    try:
+        exact_seconds = int(raw.get("duration_seconds") or 0)
+    except (TypeError, ValueError):
+        exact_seconds = 0
+    if exact_seconds > 0:
+        return max(1, min(180, math.ceil(exact_seconds / 60)))
     candidates = [
         raw.get("duration"),
         raw.get("duration_minutes"),
