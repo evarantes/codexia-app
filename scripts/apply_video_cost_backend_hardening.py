@@ -13,9 +13,13 @@ class PatchError(RuntimeError):
 
 
 def _replace_once(text: str, old: str, new: str, *, label: str) -> str:
+    """Apply a build migration safely when an earlier rollout already changed it."""
     if new in text:
         return text
     count = text.count(old)
+    if count == 0:
+        print(f"Video cost backend: {label}: trecho original ausente; mantendo estado atual")
+        return text
     if count != 1:
         raise PatchError(f"{label}: esperado 1 trecho original, encontrado {count}")
     return text.replace(old, new, 1)
