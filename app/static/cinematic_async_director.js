@@ -94,7 +94,11 @@
       throw error;
     }
     if (!response.ok) {
-      const error = new Error(data.detail || data.message || `HTTP ${response.status}`);
+      const rawDetail = data.detail ?? data.message;
+      const detail = Array.isArray(rawDetail)
+        ? rawDetail.map(item => typeof item === 'object' ? (item.msg || item.message || JSON.stringify(item)) : String(item)).join(' | ')
+        : (rawDetail && typeof rawDetail === 'object' ? (rawDetail.message || rawDetail.msg || JSON.stringify(rawDetail)) : rawDetail);
+      const error = new Error(detail || `HTTP ${response.status}`);
       error.status = response.status;
       throw error;
     }
@@ -102,10 +106,15 @@
   }
 
   function payload() {
+    const select = document.getElementById('duration');
+    const raw = String(select?.value || '10');
+    const seconds = /s$/.test(raw) ? Number(raw.replace(/s$/, '')) : 0;
+    const minutes = seconds > 0 ? Math.max(1, Math.ceil(seconds / 60)) : Math.max(1, Number(raw.replace(/m$/, '')) || 10);
     return {
       theme: document.getElementById('theme').value,
       content_type: document.getElementById('contentType').value,
-      duration_minutes: Number(document.getElementById('duration').value),
+      duration_minutes: minutes,
+      duration_seconds: seconds > 0 ? seconds : undefined,
       budget_brl: Number(document.getElementById('videoBudget').value),
     };
   }
