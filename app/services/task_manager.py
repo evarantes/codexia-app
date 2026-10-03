@@ -1,5 +1,6 @@
 import uuid
 import json
+import logging
 import time
 import threading
 import os
@@ -26,6 +27,7 @@ _TASK_DEDUPE_TABLE = "video_task_dedupe"
 _TASK_LEASE_TABLE = "video_task_leases"
 _TASK_LOCK_TABLE = "video_task_locks"
 _TASK_SCHEMA_REQUIRED_REVISION = "b8f4a7c9d321"
+_logger = logging.getLogger(__name__)
 _TASK_SCHEMA_COLUMNS = {
     _TASK_DEDUPE_TABLE: {
         "idempotency_key",
@@ -59,6 +61,37 @@ _TASK_SCHEMA_COLUMNS = {
     },
 }
 
+
+
+def _root_database_exception(exc: BaseException) -> BaseException:
+    current = exc
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        nested = getattr(current, "orig", None) or getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if nested is None or id(nested) in seen:
+            break
+        current = nested
+    return current or exc
+
+
+def _log_database_recovery(db, operation: str, attempt: int, exc: BaseException, *, diagnostic_id: Optional[str] = None) -> None:
+    """Log database metadata only; never include SQL or bound values."""
+    original = _root_database_exception(exc)
+    diag = getattr(original, "diag", None)
+    info = getattr(db, "info", {})
+    if not isinstance(info, dict):
+        info = {}
+    correlation = str(diagnostic_id or info.get("unified_submit_diagnostic_id") or "-")[:64]
+    stage = str(operation or info.get("unified_submit_stage") or "database")[:80]
+    sqlstate = getattr(original, "pgcode", None) or getattr(original, "sqlstate", None) or "-"
+    _logger.warning(
+        "UNIFIED_SUBMIT_DB_RECOVERY diagnostic_id=%s operation=%s attempt=%s exception=%s sqlstate=%s constraint=%s table=%s column=%s",
+        correlation, stage, max(1, int(attempt or 1)), type(original).__name__, str(sqlstate)[:12],
+        str(getattr(diag, "constraint_name", None) or "-")[:100],
+        str(getattr(diag, "table_name", None) or "-")[:100],
+        str(getattr(diag, "column_name", None) or "-")[:100],
+    )
 
 def _utcnow() -> datetime:
     return datetime.utcnow()
@@ -338,7 +371,8 @@ def _fetch_dedupe_row(db, idempotency_key: str) -> Optional[Dict[str, Any]]:
         try:
             row = db.execute(statement, {"idempotency_key": idempotency_key}).mappings().first()
             return dict(row) if row else None
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "dedupe_lookup", attempt + 1, exc)
             # A failed statement poisons a PostgreSQL transaction. Clear it
             # before one retry; otherwise the next SELECT reports only
             # InFailedSqlTransaction and hides the original failure.
@@ -364,7 +398,8 @@ def _fetch_dedupe_row_by_task_id(db, task_id: str) -> Optional[Dict[str, Any]]:
         try:
             row = db.execute(statement, {"task_id": task_id}).mappings().first()
             return dict(row) if row else None
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "dedupe_task_lookup", attempt + 1, exc)
             try:
                 db.rollback()
             except Exception:
@@ -393,7 +428,8 @@ def load_video_task_row(db, task_id: str) -> Optional[VideoTask]:
                 db.rollback()
                 recovered_session = True
             return db.query(VideoTask).filter(VideoTask.id == normalized_id).first()
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "video_task_lookup", attempt + 1, exc)
             if not recovered_session:
                 try:
                     db.rollback()
@@ -442,7 +478,8 @@ def _find_equivalent_task_by_content_fingerprint(
                 .all()
             )
             break
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "content_fingerprint_lookup", attempt + 1, exc)
             try:
                 db.rollback()
             except Exception:
@@ -471,7 +508,8 @@ def _fetch_lease_row(db, task_id: str) -> Optional[Dict[str, Any]]:
         try:
             row = db.execute(statement, {"task_id": task_id}).mappings().first()
             return dict(row) if row else None
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "lease_lookup", attempt + 1, exc)
             try:
                 db.rollback()
             except Exception:
@@ -1402,7 +1440,8 @@ def claim_video_task(
                 "matched_by": "new_task",
                 "task": current,
             }
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "task_claim", 1, exc)
             db.rollback()
             raise
         finally:
