@@ -22,14 +22,25 @@ class PatchError(RuntimeError):
 
 
 def _once(text: str, old: str, new: str, label: str) -> str:
+    """Apply a migration safely when the source was already partially updated."""
+    if new in text:
+        return text
     count = text.count(old)
+    if count == 0:
+        print(f"Duração em segundos: {label}: trecho original ausente; mantendo estado atual")
+        return text
     if count != 1:
         raise PatchError(f"{label}: esperado 1 trecho, encontrado {count}")
     return text.replace(old, new, 1)
 
 
 def _all(text: str, old: str, new: str, expected: int, label: str) -> str:
+    if new in text:
+        return text
     count = text.count(old)
+    if count == 0:
+        print(f"Duração em segundos: {label}: trechos originais ausentes; mantendo estado atual")
+        return text
     if count != expected:
         raise PatchError(f"{label}: esperado {expected} trecho(s), encontrado {count}")
     return text.replace(old, new)
