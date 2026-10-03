@@ -837,20 +837,20 @@ class UnifiedVideoPipelineService:
                 f"{type(exc).__name__}: {str(exc)[:300]}"
             ) from exc
 
-        # A VideoTask já está confirmada. Fechar a sessão devolve a conexão ao
-        # pool; a próxima consulta reabre uma conexão limpa para UnifiedVideo.
-        # Em algumas conexões PostgreSQL, rollback sozinho não limpava o estado
-        # abortado que chegava de uma tentativa anterior.
+        # A VideoTask já está confirmada. Não reutilize o mesmo objeto Session
+        # depois de fechá-lo: em PostgreSQL/psycopg isso pode reter no pool uma
+        # conexão marcada como abortada e transformar a consulta de UnifiedVideo
+        # no erro secundário InFailedSqlTransaction.
         try:
             db.close()
         except Exception:
             pass
 
-        # Garante uma sessão ORM limpa para a FK e para a busca idempotente.
-        try:
-            db.rollback()
-        except Exception:
-            pass
+        # Fronteira real de transação: o UnifiedVideo sempre usa uma Session
+        # nova, criada depois do commit da VideoTask. Assim qualquer falha da
+        # etapa anterior não pode contaminar a FK, a busca idempotente ou o
+        # commit do roteiro aprovado.
+        db = SessionLocal()
         self._ensure_claimed_task_visible(
             db,
             task_id=task_id,
