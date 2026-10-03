@@ -26,6 +26,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -52,6 +53,7 @@ from app.services.task_manager import (
     get_task_by_idempotency_key,
     heartbeat_task_execution_lease,
     load_video_task_row,
+    _log_database_recovery,
     release_distributed_lock,
     release_task_execution_lease,
     update_task,
@@ -320,27 +322,45 @@ def build_unified_video_request(
 # ---------------------------------------------------------------------------
 
 
+
+def _set_submit_stage(db, diagnostic_context: Dict[str, str], stage: str) -> None:
+    diagnostic_context["stage"] = str(stage or "submit")[:80]
+    try:
+        db.info["unified_submit_diagnostic_id"] = str(diagnostic_context.get("diagnostic_id") or "")
+        db.info["unified_submit_stage"] = diagnostic_context["stage"]
+    except Exception:
+        pass
+
 def _is_aborted_transaction_error(exc: BaseException) -> bool:
-    """Identifica o erro que pode ser recuperado com rollback + retry.
-
-    O texto pode vir do psycopg diretamente ou encapsulado pelo SQLAlchemy;
-    não dependemos de uma classe opcional do driver para manter os testes e o
-    modo local funcionando.
-    """
-    text_value = str(exc or "").lower()
-    return (
-        "infailedsqltransaction" in text_value
-        or "current transaction is aborted" in text_value
-        or "current transaction is aborted, commands ignored" in text_value
+    """Identifica falha de transação mesmo quando foi encapsulada por outra exceção."""
+    markers = (
+        "infailedsqltransaction",
+        "current transaction is aborted",
+        "current transaction is aborted, commands ignored",
     )
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        message = str(current or "").lower()
+        if any(marker in message for marker in markers):
+            return True
+        for attribute in ("orig", "__cause__", "__context__"):
+            nested = getattr(current, attribute, None)
+            if nested is not None and id(nested) not in seen:
+                pending.append(nested)
+    return False
 
 
-def _friendly_submit_error(exc: BaseException) -> str:
+def _friendly_submit_error(exc: BaseException, diagnostic_id: Optional[str] = None) -> str:
     """Converte falhas de persistência em diagnóstico acionável para a UI.
 
     O PostgreSQL costuma exibir apenas InFailedSqlTransaction depois que um
     statement anterior falhou. A mensagem deve apontar a etapa e a ação, sem
-    vazar o SQL interno para o navegador; o traceback completo continua no log.
+    vazar SQL ou valores para o navegador; o log registra metadados SQL seguros.
     """
     root = getattr(exc, "orig", None) or exc
     raw = str(root or exc).strip()
@@ -360,10 +380,10 @@ def _friendly_submit_error(exc: BaseException) -> str:
         )
     if _is_aborted_transaction_error(exc) or _is_aborted_transaction_error(root):
         return (
-            "O banco encerrou a transação durante o envio do contrato aprovado. "
-            "A causa original ocorreu antes desta consulta e a sessão foi isolada para evitar repetição. "
-            "Ação: redeploy do app/worker e novo envio; se persistir, consultar o log do servidor pelo código "
-            "UNIFIED_SUBMIT_TRANSACTION."
+            "O banco interrompeu o envio do contrato aprovado. "
+            f"Diagnóstico: {str(diagnostic_id or 'sem identificador')}. "
+            "A tarefa pode já ter sido gravada; não repita o envio várias vezes. "
+            "Ação: consultar os logs do servidor pelo diagnóstico e pelo código UNIFIED_SUBMIT_TRANSACTION."
         )
     return (
         "Falha ao salvar a produção no banco durante o envio do contrato aprovado. "
@@ -675,7 +695,8 @@ class UnifiedVideoPipelineService:
 
         try:
             db.flush()
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "claimed_task_flush", 1, exc)
             try:
                 db.rollback()
             except Exception:
@@ -706,7 +727,8 @@ class UnifiedVideoPipelineService:
             db.add(repaired)
             db.flush()
             return repaired
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "claimed_task_repair", 1, exc)
             try:
                 db.rollback()
             except Exception:
@@ -765,65 +787,61 @@ class UnifiedVideoPipelineService:
     # Entrada 1: submit ou reaproveita (idempotência).
     # ------------------------------------------------------------------
     def submit_or_reuse(
-        self,
-        db,
-        *,
-        request: UnifiedVideoRequest,
+        self, db, *, request: UnifiedVideoRequest,
         kick_queue_callback: Optional[Callable[[], None]] = None,
         legacy_initial_result: Optional[Dict[str, Any]] = None,
         user: Optional[User] = None,
     ) -> UnifiedPipelineResult:
-        """Serializa claim e UnifiedVideo para impedir corrida entre cliques."""
+        """Serializa o submit e mantém diagnóstico da primeira falha SQL."""
         key = str(request.idempotency_key or "").strip()
-        lock_info = acquire_distributed_lock(
-            f"unified-submit:{key}",
-            timeout_seconds=20,
-            ttl_seconds=45,
-        )
+        diagnostic_context: Dict[str, str] = {
+            "diagnostic_id": uuid.uuid4().hex[:12], "stage": "acquire_submit_lock",
+        }
+        _set_submit_stage(db, diagnostic_context, diagnostic_context["stage"])
+        lock_info = acquire_distributed_lock(f"unified-submit:{key}", timeout_seconds=20, ttl_seconds=45)
         try:
-            # A submissão grava apenas metadados, a tarefa e o roteiro
-            # aprovado; nenhuma chamada paga acontece aqui. Portanto uma
-            # retentativa única após uma transação abortada é segura: a chave
-            # de idempotência reaproveita a tarefa/linha que já tenha sido
-            # persistida e não cria uma segunda produção.
             for attempt in range(2):
-                if attempt:
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
+                attempt_db = db if attempt == 0 else SessionLocal()
+                _set_submit_stage(attempt_db, diagnostic_context, "submit_attempt")
                 try:
                     return self._submit_or_reuse_locked(
-                        db,
-                        request=request,
-                        kick_queue_callback=kick_queue_callback,
-                        legacy_initial_result=legacy_initial_result,
-                        user=user,
+                        attempt_db, request=request, kick_queue_callback=kick_queue_callback,
+                        legacy_initial_result=legacy_initial_result, user=user,
+                        diagnostic_context=diagnostic_context,
                     )
                 except Exception as exc:
-                    if attempt:
-                        raise RuntimeError(_friendly_submit_error(exc)) from exc
-                    if not _is_aborted_transaction_error(exc):
-                        raise
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
+                    _log_database_recovery(
+                        attempt_db, diagnostic_context.get("stage", "submit"), attempt + 1, exc,
+                        diagnostic_id=diagnostic_context.get("diagnostic_id"),
+                    )
+                    if attempt == 0 and _is_aborted_transaction_error(exc):
+                        try:
+                            attempt_db.rollback()
+                        except Exception:
+                            pass
+                        continue
+                    raise RuntimeError(
+                        _friendly_submit_error(exc, diagnostic_context.get("diagnostic_id"))
+                    ) from exc
+                finally:
+                    if attempt_db is not db:
+                        try:
+                            attempt_db.close()
+                        except Exception:
+                            pass
             raise RuntimeError(
                 "UnifiedVideoPipeline não conseguiu concluir o submit. "
-                "Código: UNIFIED_SUBMIT_TRANSACTION."
+                f"Diagnóstico: {diagnostic_context['diagnostic_id']}. Código: UNIFIED_SUBMIT_TRANSACTION."
             )
         finally:
             release_distributed_lock(lock_info)
 
     def _submit_or_reuse_locked(
-        self,
-        db,
-        *,
-        request: UnifiedVideoRequest,
+        self, db, *, request: UnifiedVideoRequest,
         kick_queue_callback: Optional[Callable[[], None]] = None,
         legacy_initial_result: Optional[Dict[str, Any]] = None,
         user: Optional[User] = None,
+        diagnostic_context: Dict[str, str],
     ) -> UnifiedPipelineResult:
         # Todas as rotas passam por este limite canônico. A sessão pertence ao
         # submit e não pode carregar alterações pendentes de outro estágio;
@@ -834,6 +852,7 @@ class UnifiedVideoPipelineService:
             db.rollback()
         except Exception:
             pass
+        _set_submit_stage(db, diagnostic_context, "schema_check")
         self.ensure_schema(db)
 
         if not request.request_hash:
@@ -843,6 +862,7 @@ class UnifiedVideoPipelineService:
         initial_result = dict(legacy_initial_result or {}) or None
 
         # 1. Reclama task idempotente via task_manager (garante 1 executor em processamento).
+        _set_submit_stage(db, diagnostic_context, "claim_video_task")
         claimed = claim_video_task(
             idempotency_key=str(request.idempotency_key).strip(),
             request_hash=request.request_hash,
@@ -866,6 +886,7 @@ class UnifiedVideoPipelineService:
         # de unified_videos, escondendo a causa real. A fronteira explícita
         # abaixo torna o claim durável; se a segunda etapa falhar, a chave de
         # idempotência reaproveita a mesma tarefa sem duplicar produção.
+        _set_submit_stage(db, diagnostic_context, "commit_video_task")
         try:
             db.flush()
             db.commit()
@@ -893,6 +914,7 @@ class UnifiedVideoPipelineService:
         # etapa anterior não pode contaminar a FK, a busca idempotente ou o
         # commit do roteiro aprovado.
         db = SessionLocal()
+        _set_submit_stage(db, diagnostic_context, "verify_video_task")
         self._ensure_claimed_task_visible(
             db,
             task_id=task_id,
@@ -904,6 +926,7 @@ class UnifiedVideoPipelineService:
         db.flush()
 
         # 2. Cria/atualiza a linha central UnifiedVideo.
+        _set_submit_stage(db, diagnostic_context, "lookup_unified_video")
         uv: Optional[UnifiedVideo] = (
             db.query(UnifiedVideo).filter(UnifiedVideo.idempotency_key == str(request.idempotency_key).strip()).first()
         )
@@ -982,22 +1005,27 @@ class UnifiedVideoPipelineService:
                 uv.progress = 0
                 uv.last_message = "Nova geração criada após descarte da tentativa anterior."
                 uv.last_error = None
+        _set_submit_stage(db, diagnostic_context, "flush_unified_video")
         try:
             db.flush()
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "flush_unified_video", 1, exc, diagnostic_id=diagnostic_context.get("diagnostic_id"))
             db.rollback()
             raise
 
         # Commit the canonical row before optional telemetry/kick work. If a
         # queue-count query fails, it must not poison or erase the stored
         # approved script and task relationship.
+        _set_submit_stage(db, diagnostic_context, "commit_unified_video")
         try:
             db.commit()
-        except Exception:
+        except Exception as exc:
+            _log_database_recovery(db, "commit_unified_video", 1, exc, diagnostic_id=diagnostic_context.get("diagnostic_id"))
             db.rollback()
             raise
 
         # 3. Posição na fila para a UI informar ao usuário.
+        _set_submit_stage(db, diagnostic_context, "queue_position")
         queue_position, already_processing = self._queue_position(db, task_id)
 
         # 4. Kick (se for criado nova task). O callback é o kick legado do router.
