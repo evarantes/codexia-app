@@ -332,18 +332,27 @@ def _set_submit_stage(db, diagnostic_context: Dict[str, str], stage: str) -> Non
         pass
 
 def _is_aborted_transaction_error(exc: BaseException) -> bool:
-    """Identifica o erro que pode ser recuperado com rollback + retry.
-
-    O texto pode vir do psycopg diretamente ou encapsulado pelo SQLAlchemy;
-    não dependemos de uma classe opcional do driver para manter os testes e o
-    modo local funcionando.
-    """
-    text_value = str(exc or "").lower()
-    return (
-        "infailedsqltransaction" in text_value
-        or "current transaction is aborted" in text_value
-        or "current transaction is aborted, commands ignored" in text_value
+    """Identifica falha de transação mesmo quando foi encapsulada por outra exceção."""
+    markers = (
+        "infailedsqltransaction",
+        "current transaction is aborted",
+        "current transaction is aborted, commands ignored",
     )
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        message = str(current or "").lower()
+        if any(marker in message for marker in markers):
+            return True
+        for attribute in ("orig", "__cause__", "__context__"):
+            nested = getattr(current, attribute, None)
+            if nested is not None and id(nested) not in seen:
+                pending.append(nested)
+    return False
 
 
 def _friendly_submit_error(exc: BaseException, diagnostic_id: Optional[str] = None) -> str:
@@ -351,7 +360,7 @@ def _friendly_submit_error(exc: BaseException, diagnostic_id: Optional[str] = No
 
     O PostgreSQL costuma exibir apenas InFailedSqlTransaction depois que um
     statement anterior falhou. A mensagem deve apontar a etapa e a ação, sem
-    vazar o SQL interno para o navegador; o traceback completo continua no log.
+    vazar SQL ou valores para o navegador; o log registra metadados SQL seguros.
     """
     root = getattr(exc, "orig", None) or exc
     raw = str(root or exc).strip()
