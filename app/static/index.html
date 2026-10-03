@@ -95,6 +95,18 @@
         </div>
       </section>
 
+        <div id="productionControls" class="card hidden" style="margin-top:16px;border-color:#cfd8ff;background:#fbfcff">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+            <div><b>Controle da produção</b><div id="productionStatus" style="color:var(--muted);font-size:13px;margin-top:4px">Aguardando tarefa…</div></div>
+            <div class="right-actions">
+              <button class="btn btn-ghost" id="pauseProductionBtn">Pausar</button>
+              <button class="btn btn-primary hidden" id="resumeProductionBtn">Retomar</button>
+              <button class="btn btn-danger" id="cancelProductionBtn">Cancelar</button>
+            </div>
+          </div>
+          <p id="productionMessage" style="color:var(--muted);margin:12px 0 0">O roteiro e os ativos concluídos serão preservados quando a pausa for solicitada.</p>
+        </div>
+
       <section class="page" id="page-devotional">
         <div class="hero" style="background:linear-gradient(135deg,#0f6c58,#239c7c)"><div><span class="pill">🙏 Retenção e recorrência</span><h1>Devocionais</h1><p>Teste primeiro com 15, 30, 45 segundos ou 1 minuto; depois avance para produções longas com texto, voz e atmosfera.</p></div><button class="btn btn-primary" id="newDevotional">Criar devocional</button></div>
         <div class="section-title"><div><h2>Temas de alta intenção</h2><p>Conteúdos pensados para serem ouvidos até o fim.</p></div></div>
@@ -121,7 +133,56 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const token=localStorage.getItem('access_token'); if(!token) location.href='/login.html';
 const authFetch=async(url,opt={})=>{const h={...(opt.headers||{}),Authorization:`Bearer ${token}`}; if(opt.body&&!h['Content-Type'])h['Content-Type']='application/json'; const r=await fetch(url,{...opt,headers:h}); let d={}; try{d=await r.json()}catch{} if(r.status===401){localStorage.removeItem('access_token');location.href='/login.html';throw new Error('Sessão expirada');} if(!r.ok)throw new Error(d.detail||d.message||`HTTP ${r.status}`); return d};
-let statusData=null, currentPlan=null;
+let statusData=null, currentPlan=null;\nlet statusData=null, currentPlan=null, activeTaskId=null, productionPoll=null;
+
+function setProductionControlsVisible(visible){
+  $('#productionControls')?.classList.toggle('hidden', !visible);
+}
+function updateProductionControls(item){
+  if(!item){ return; }
+  const status=String(item.status||'').toLowerCase();
+  const pct=Number(item.progress||0);
+  const label={pending:'Na fila',processing:'Em execução',pause_requested:'Pausa solicitada',paused:'Pausada',completed:'Concluída',cancelled:'Cancelada',failed:'Falhou'}[status]||status;
+  $('#productionStatus').textContent=`${label} · ${pct}%`;
+  $('#productionMessage').textContent=item.message||item.queue_label||'A produção está sendo acompanhada pelo worker.';
+  const active=['pending','processing','pause_requested'].includes(status);
+  $('#pauseProductionBtn').classList.toggle('hidden', !['pending','processing'].includes(status));
+  $('#resumeProductionBtn').classList.toggle('hidden', status!=='paused');
+  $('#cancelProductionBtn').classList.toggle('hidden', !active);
+  setProductionControlsVisible(true);
+  if(!active && status!=='paused' && productionPoll){ clearInterval(productionPoll); productionPoll=null; }
+}
+async function refreshProductionStatus(){
+  if(!activeTaskId)return;
+  try{
+    const data=await authFetch('/youtube/tasks/queue?limit=50');
+    const item=(data.items||[]).find(x=>String(x.task_id||'')===String(activeTaskId));
+    if(item) updateProductionControls(item);
+    else if(!productionPoll){ $('#productionStatus').textContent='Tarefa enviada; aguardando atualização do worker…'; }
+  }catch(e){ console.warn('status da produção:',e.message); }
+}
+function monitorProduction(taskId){
+  activeTaskId=taskId;
+  setProductionControlsVisible(true);
+  if(productionPoll)clearInterval(productionPoll);
+  refreshProductionStatus();
+  productionPoll=setInterval(refreshProductionStatus,5000);
+}
+async function productionAction(action){
+  if(!activeTaskId)return;
+  const labels={pause:'Solicitar pausa',resume:'Retomar',cancel:'Cancelar'};
+  if(action==='cancel' && !confirm('Cancelar esta produção? O que já foi concluído será preservado, mas a tarefa não continuará.'))return;
+  const button=action==='pause'?$('#pauseProductionBtn'):action==='resume'?$('#resumeProductionBtn'):$('#cancelProductionBtn');
+  button.disabled=true; button.textContent=action==='pause'?'Pausando…':action==='resume'?'Retomando…':'Cancelando…';
+  try{
+    const endpoint=action==='pause'?'/youtube/task/'+activeTaskId+'/pause':action==='resume'?'/youtube/task/'+activeTaskId+'/retry':'/youtube/task/'+activeTaskId+'/cancel';
+    const d=await authFetch(endpoint,{method:'POST'});
+    $('#productionMessage').textContent=d.message||labels[action];
+    await refreshProductionStatus();
+  }catch(e){alert(e.message)}
+  finally{button.disabled=false;button.textContent=labels[action]}
+}
+
 const fmt=n=>new Intl.NumberFormat('pt-BR',{maximumFractionDigits:1}).format(Number(n||0));
 const money=n=>Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 function go(page){$$('.page').forEach(x=>x.classList.toggle('active',x.id===`page-${page}`)); $$('.nav button[data-page]').forEach(x=>x.classList.toggle('active',x.dataset.page===page)); const names={goal:'Meta Monetização',studio:'Produção Cinematográfica',devotional:'Devocionais',shorts:'Shorts',queue:'Fila & Custos'}; $('#pageTitle').textContent=names[page]||'Codexia'; scrollTo(0,0)}
@@ -148,7 +209,8 @@ function renderPlan(d){const p=d.plan;$('#directorOutput').classList.remove('hid
 function esc(v){return String(v||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]))}
 $('#estimateBtn').onclick=async()=>{if(!currentPlan)return;const scenes=currentPlan.scenes||[];const motion=scenes.reduce((a,s)=>a+(+s.generative_video_seconds||0),0),premium=scenes.filter(s=>s.tier==='A').reduce((a,s)=>a+(+s.generative_video_seconds||0),0);try{const d=await authFetch('/youtube/cinematic/estimate',{method:'POST',body:JSON.stringify({content_type:currentPlan.content_type,duration_minutes:currentPlan.duration_minutes,motion_seconds:motion,premium_motion_seconds:premium,estimated_images:scenes.length,voice:'elevenlabs'})});$('#estimateBox').innerHTML=`<div class="notice ok"><b>Estimativa: ${money(d.total_brl)}</b><br><small>Claude US$${d.components_usd.claude} · imagens US$${d.components_usd.images} · movimento US$${d.components_usd.motion} · voz US$${d.components_usd.voice} · reserva US$${d.components_usd.recovery_reserve}</small></div>`}catch(e){alert(e.message)}};
 async function pilot(idx){const s=(currentPlan?.scenes||[]).find(x=>x.index===idx);if(!s)return;const available=statusData?.providers||{};let provider=s.recommended_provider;if(provider==='kling'&&!available.kling?.configured)provider=available.veo?.configured?'veo':'runway';if(provider==='runway'&&!available.runway?.configured)provider=available.veo?.configured?'veo':'runway';if(provider==='veo'&&!available.veo?.configured)provider=available.runway?.configured?'runway':'veo';if(!confirm(`Gerar um clipe piloto de ${Math.min(8,s.generative_video_seconds||5)}s em ${provider.toUpperCase()}? Esta ação pode consumir créditos.`))return;try{const d=await authFetch('/youtube/cinematic/scene/submit',{method:'POST',body:JSON.stringify({provider,prompt:s.motion_prompt||s.visual_prompt,duration_seconds:Math.max(4,Math.min(8,s.generative_video_seconds||5)),premium:s.tier==='A',aspect_ratio:'16:9'})});alert(`Cena enviada. Job: ${d.job_id||'criado'}. O painel de fila cinematográfica será ligado a este job na próxima etapa de composição.`)}catch(e){alert(e.message)}}
-$('#baseProductionBtn').onclick=async()=>{if(!currentPlan)return;if(!confirm('Enviar o roteiro aprovado ao pipeline canônico atual? Esta etapa usa o renderizador existente; os clipes A/B só devem ser incorporados após a composição híbrida estar liberada.'))return;try{const d=await authFetch('/youtube/generate_video',{method:'POST',body:JSON.stringify({topic:currentPlan.theme||$('#theme').value,duration:durationPayload().duration_minutes,duration_seconds:durationPayload().duration_seconds||null,auto_upload:false,mode:'story',kind:currentPlan.content_type==='devotional'?'devotional':'story',story_content:currentPlan.full_script,image_mode:'multiple',aspect_ratio:'16:9'})});if(!d.task_id)throw new Error('O pipeline não retornou o ID da tarefa; a produção não foi registrada na biblioteca V2.');const title=(currentPlan.titles&&currentPlan.titles[0])||currentPlan.theme||$('#theme').value||'Produção Codexia V2';await authFetch('/youtube/cinematic/library/register',{method:'POST',body:JSON.stringify({task_id:d.task_id,title,project_slot:currentPlan.content_type==='devotional'?'devotional':currentPlan.content_type==='short'?'short':'story',duration_minutes:durationPayload().duration_minutes,duration_seconds:durationPayload().duration_seconds||null})});alert(`Produção enviada e registrada no Codexia V2. Tarefa: ${d.task_id}`)}catch(e){alert(e.message)}};
+$('#pauseProductionBtn').onclick=()=>productionAction('pause'); $('#resumeProductionBtn').onclick=()=>productionAction('resume'); $('#cancelProductionBtn').onclick=()=>productionAction('cancel');
+$('#baseProductionBtn').onclick=async()=>{if(!currentPlan)return;if(!confirm('Enviar o roteiro aprovado ao pipeline canônico atual? Esta etapa usa o renderizador existente; os clipes A/B só devem ser incorporados após a composição híbrida estar liberada.'))return;try{const d=await authFetch('/youtube/generate_video',{method:'POST',body:JSON.stringify({topic:currentPlan.theme||$('#theme').value,duration:durationPayload().duration_minutes,duration_seconds:durationPayload().duration_seconds||null,auto_upload:false,mode:'story',kind:currentPlan.content_type==='devotional'?'devotional':'story',story_content:currentPlan.full_script,image_mode:'multiple',aspect_ratio:'16:9'})});if(!d.task_id)throw new Error('O pipeline não retornou o ID da tarefa; a produção não foi registrada na biblioteca V2.');const title=(currentPlan.titles&&currentPlan.titles[0])||currentPlan.theme||$('#theme').value||'Produção Codexia V2';await authFetch('/youtube/cinematic/library/register',{method:'POST',body:JSON.stringify({task_id:d.task_id,title,project_slot:currentPlan.content_type==='devotional'?'devotional':currentPlan.content_type==='short'?'short':'story',duration_minutes:durationPayload().duration_minutes,duration_seconds:durationPayload().duration_seconds||null})});monitorProduction(d.task_id); alert(`Produção enviada e registrada no Codexia V2. Tarefa: ${d.task_id}`)}catch(e){alert(e.message)}};
 const devotionalIdeas=['Escute isto quando sua mente não consegue parar','Uma oração para quem está preocupado com dinheiro','Quando Deus parece estar em silêncio','Faça esta oração quando estiver com medo','10 minutos para entregar sua ansiedade a Deus','Antes de dormir, entregue este peso a Deus'];$('#devotionalIdeas').innerHTML=devotionalIdeas.map(x=>`<div class="card"><b>${x}</b><p style="color:var(--muted)">8–12 min · voz premium · movimento seletivo</p><button class="btn btn-ghost idea" data-t="${x.replace(/"/g,'&quot;')}">Criar</button></div>`).join('');$$('.idea').forEach(b=>b.onclick=()=>{$('#theme').value=b.dataset.t;$('#contentType').value='devotional';applyTypeDefaults();go('studio')});$('#newDevotional').onclick=()=>{$('#contentType').value='devotional';applyTypeDefaults();go('studio')};
 loadStatus();loadCalendar();
 </script>
