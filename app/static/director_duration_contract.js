@@ -163,6 +163,7 @@
         body: JSON.stringify({
           topic: currentPlan.theme || document.getElementById('theme')?.value || '',
           duration: targetMinutes,
+          duration_seconds: Number(contract.target_seconds || 0) || undefined,
           auto_upload: false,
           mode: 'story',
           kind: projectSlot === 'devotional' ? 'devotional' : 'story',
