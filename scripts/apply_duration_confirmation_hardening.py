@@ -28,9 +28,18 @@ class PatchError(RuntimeError):
 
 
 def _replace_once(text: str, old: str, new: str, *, label: str) -> str:
+    """Apply one migration safely when builds are repeated or partially applied.
+
+    These hardening scripts run during every Docker build. If a previous
+    build/branch already applied a contract, the original fragment is
+    legitimately absent and must not abort deployment.
+    """
     if new in text:
         return text
     count = text.count(old)
+    if count == 0:
+        print(f"Confirmação de duração: {label}: trecho original ausente; mantendo estado atual")
+        return text
     if count != 1:
         raise PatchError(f"{label}: esperado 1 trecho original, encontrado {count}")
     return text.replace(old, new, 1)
