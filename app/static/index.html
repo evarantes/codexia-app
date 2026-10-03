@@ -133,7 +133,7 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const token=localStorage.getItem('access_token'); if(!token) location.href='/login.html';
 const authFetch=async(url,opt={})=>{const h={...(opt.headers||{}),Authorization:`Bearer ${token}`}; if(opt.body&&!h['Content-Type'])h['Content-Type']='application/json'; const r=await fetch(url,{...opt,headers:h}); let d={}; try{d=await r.json()}catch{} if(r.status===401){localStorage.removeItem('access_token');location.href='/login.html';throw new Error('Sessão expirada');} if(!r.ok)throw new Error(d.detail||d.message||`HTTP ${r.status}`); return d};
-let statusData=null, currentPlan=null;\nlet statusData=null, currentPlan=null, activeTaskId=null, productionPoll=null;
+let statusData=null, currentPlan=null, activeTaskId=null, productionPoll=null;
 
 function setProductionControlsVisible(visible){
   $('#productionControls')?.classList.toggle('hidden', !visible);
