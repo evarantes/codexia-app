@@ -335,6 +335,43 @@ def _is_aborted_transaction_error(exc: BaseException) -> bool:
     )
 
 
+def _friendly_submit_error(exc: BaseException) -> str:
+    """Converte falhas de persistência em diagnóstico acionável para a UI.
+
+    O PostgreSQL costuma exibir apenas InFailedSqlTransaction depois que um
+    statement anterior falhou. A mensagem deve apontar a etapa e a ação, sem
+    vazar o SQL interno para o navegador; o traceback completo continua no log.
+    """
+    root = getattr(exc, "orig", None) or exc
+    raw = str(root or exc).strip()
+    lowered = raw.lower()
+    if "foreignkeyviolation" in lowered or "foreign key constraint" in lowered:
+        return (
+            "Falha ao vincular a tarefa à produção (chave estrangeira). "
+            "A tarefa de vídeo não foi confirmada no banco antes do vínculo. "
+            "Ação: faça um novo envio após o redeploy; o sistema preservará o roteiro. "
+            "Código: UNIFIED_SUBMIT_FOREIGN_KEY."
+        )
+    if "uniqueviolation" in lowered or "duplicate key" in lowered:
+        return (
+            "Esta produção já possui um registro no banco. "
+            "Ação: abra a Fila & Custos e use o registro existente, ou descarte a tentativa falha antes de reenviar. "
+            "Código: UNIFIED_SUBMIT_DUPLICATE."
+        )
+    if _is_aborted_transaction_error(exc) or _is_aborted_transaction_error(root):
+        return (
+            "O banco encerrou a transação durante o envio do contrato aprovado. "
+            "A causa original ocorreu antes desta consulta e a sessão foi isolada para evitar repetição. "
+            "Ação: redeploy do app/worker e novo envio; se persistir, consultar o log do servidor pelo código "
+            "UNIFIED_SUBMIT_TRANSACTION."
+        )
+    return (
+        "Falha ao salvar a produção no banco durante o envio do contrato aprovado. "
+        f"Causa técnica: {raw[:240]}. Ação: consulte o log do servidor e não clique várias vezes para evitar duplicidade. "
+        "Código: UNIFIED_SUBMIT_DATABASE."
+    )
+
+
 def _sort_jsonable(v: Any) -> Any:
     if isinstance(v, dict):
         return {str(k): _sort_jsonable(v[k]) for k in sorted(v.keys(), key=str)}
@@ -764,13 +801,18 @@ class UnifiedVideoPipelineService:
                         user=user,
                     )
                 except Exception as exc:
-                    if attempt or not _is_aborted_transaction_error(exc):
+                    if attempt:
+                        raise RuntimeError(_friendly_submit_error(exc)) from exc
+                    if not _is_aborted_transaction_error(exc):
                         raise
                     try:
                         db.rollback()
                     except Exception:
                         pass
-            raise RuntimeError("UnifiedVideoPipeline não conseguiu concluir o submit após recuperar a transação.")
+            raise RuntimeError(
+                "UnifiedVideoPipeline não conseguiu concluir o submit. "
+                "Código: UNIFIED_SUBMIT_TRANSACTION."
+            )
         finally:
             release_distributed_lock(lock_info)
 
