@@ -184,11 +184,13 @@
 
       let librarySynced = true;
       if (data.task_id) {
+        if (typeof globalThis.monitorProduction === 'function') globalThis.monitorProduction(String(data.task_id));
         const registration = {
           task_id: String(data.task_id),
           title: firstTitle || currentPlan.theme || '',
           project_slot: projectSlot,
           duration_minutes: targetMinutes,
+          duration_seconds: Number(contract.target_seconds || 0) || undefined,
         };
         rememberPendingRegistration(registration);
         try {
