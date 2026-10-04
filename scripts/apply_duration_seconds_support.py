@@ -50,6 +50,21 @@ def patch_index(text: str) -> str:
     if MARKER in text:
         return text
 
+    # The current Codexia V2 UI already exposes duration in seconds and sends
+    # the exact integer duration_seconds to the canonical API. The legacy UI
+    # migration below must not be applied to this different page structure.
+    if "function durationPayload()" in text:
+        required = (
+            "duration_seconds:seconds",
+            "duration_seconds:durationPayload().duration_seconds||null",
+        )
+        missing = [item for item in required if item not in text]
+        if missing:
+            raise PatchError(
+                "index/V2 seconds contract incomplete: " + ", ".join(missing)
+            )
+        return text
+
     text = _once(
         text,
         '''                            <div>
@@ -219,6 +234,7 @@ def patch_index(text: str) -> str:
                             duration_min: requestedMin,
                             duration_max: requestedMax,
                             duration_unit: durationUnit,
+                            duration_seconds: durationUnit === 'seconds' ? Math.round(requestedMaxSeconds) : null,
                             duration_override_approved: durationOverrideApproved,
                             auto_upload: !!this.ytStoryAutoUpload,''',
         "index/video-payload",
@@ -266,71 +282,74 @@ def patch_youtube_router(text: str) -> str:
     text = _once(
         text,
         '''    duration: int = 5
-    duration_min: Optional[int] = None
-    duration_max: Optional[int] = None
-    duration_override_approved: bool = False''',
+    # Alvo opcional em segundos para testes rápidos; quando informado,
+    # prevalece sobre duration e também participa da idempotência.
+    duration_seconds: Optional[int] = Field(None, ge=5, le=10800)
+    auto_upload: bool = False''',
         '''    duration: float = 5
+    # Alvo opcional em segundos para testes rápidos; quando informado,
+    # prevalece sobre duration e também participa da idempotência.
+    duration_seconds: Optional[int] = Field(None, ge=5, le=10800)
     duration_min: Optional[float] = None
     duration_max: Optional[float] = None
     duration_unit: str = "minutes"
-    duration_override_approved: bool = False''',
-        "youtube/video-request",
+    auto_upload: bool = False''',
+        "youtube/video-request-current",
     )
 
     text = _once(
         text,
         '''        "duration": max(1, min(60, int(payload.get("duration") or 5))),
-        "duration_min": max(1, min(60, int(payload.get("duration_min") or payload.get("duration") or 5))),
-        "duration_max": max(1, min(60, int(payload.get("duration_max") or payload.get("duration") or 5))),
-        "duration_override_approved": bool(payload.get("duration_override_approved")),''',
+        "duration_seconds": max(0, min(10800, int(payload.get("duration_seconds") or 0))),''',
         '''        "duration": max(5.0 / 60.0, min(60.0, float(payload.get("duration") or 5))),
         "duration_min": max(5.0 / 60.0, min(60.0, float(payload.get("duration_min") or payload.get("duration") or 5))),
         "duration_max": max(5.0 / 60.0, min(60.0, float(payload.get("duration_max") or payload.get("duration") or 5))),
         "duration_unit": _normalize_hash_text(payload.get("duration_unit") or "minutes", lower=True) or "minutes",
-        "duration_override_approved": bool(payload.get("duration_override_approved")),''',
-        "youtube/dedupe",
+        "duration_seconds": max(0, min(10800, int(payload.get("duration_seconds") or 0))),''',
+        "youtube/dedupe-current",
     )
 
     text = _once(
         text,
-        '''        requested_minutes = max(1, min(60, requested_minutes))
-        try:
-            requested_min_minutes = int(getattr(request, "duration_min", None) or requested_minutes)
+        '''        try:
+            requested_minutes = int(getattr(request, "duration", 5) or 5)
         except Exception:
-            requested_min_minutes = requested_minutes
-        try:
-            requested_max_minutes = int(getattr(request, "duration_max", None) or requested_minutes)
+            requested_minutes = 5
+        requested_minutes = max(1, min(60, requested_minutes))
+        default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"''',
+        '''        try:
+            requested_minutes = float(getattr(request, "duration", 5) or 5)
         except Exception:
-            requested_max_minutes = requested_minutes
-        requested_min_minutes = max(1, min(60, requested_min_minutes))
-        requested_max_minutes = max(requested_min_minutes, min(60, requested_max_minutes))
-        duration_override_approved = bool(getattr(request, "duration_override_approved", False))''',
-        '''        requested_minutes = max(5.0 / 60.0, min(60.0, float(requested_minutes)))
+            requested_minutes = 5.0
+        try:
+            exact_seconds = float(getattr(request, "duration_seconds", None) or 0)
+        except (TypeError, ValueError):
+            exact_seconds = 0.0
+        if exact_seconds > 0:
+            requested_minutes = exact_seconds / 60.0
+        requested_minutes = max(5.0 / 60.0, min(60.0, float(requested_minutes)))
         try:
             requested_min_minutes = float(getattr(request, "duration_min", None) or requested_minutes)
-        except Exception:
+        except (TypeError, ValueError):
             requested_min_minutes = requested_minutes
         try:
             requested_max_minutes = float(getattr(request, "duration_max", None) or requested_minutes)
-        except Exception:
+        except (TypeError, ValueError):
             requested_max_minutes = requested_minutes
         requested_min_minutes = max(5.0 / 60.0, min(60.0, requested_min_minutes))
         requested_max_minutes = max(requested_min_minutes, min(60.0, requested_max_minutes))
         duration_unit = str(getattr(request, "duration_unit", "minutes") or "minutes").strip().lower()
         if duration_unit not in {"seconds", "minutes"}:
             duration_unit = "minutes"
-        duration_override_approved = bool(getattr(request, "duration_override_approved", False))''',
-        "youtube/runtime",
+        duration_override_approved = bool(getattr(request, "duration_override_approved", False))
+        default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"''',
+        "youtube/runtime-current",
     )
 
     text = _once(
         text,
-        '''            script["duration_min"] = int(requested_min_minutes)
-            script["duration_max"] = int(requested_max_minutes)
-            script["duration_max_sec"] = int(requested_max_minutes * 60)
-            script["target_duration_sec"] = int(requested_minutes * 60)
-            script["target_duration_min"] = int(requested_minutes)
-            script["duration_override_approved"] = duration_override_approved''',
+        '''            script["target_duration_sec"] = int(requested_minutes * 60)
+            script["target_duration_min"] = int(requested_minutes)''',
         '''            script["duration_min"] = float(requested_min_minutes)
             script["duration_max"] = float(requested_max_minutes)
             script["duration_min_sec"] = int(round(requested_min_minutes * 60))
@@ -339,7 +358,7 @@ def patch_youtube_router(text: str) -> str:
             script["target_duration_min"] = float(requested_minutes)
             script["duration_unit"] = duration_unit
             script["duration_override_approved"] = duration_override_approved''',
-        "youtube/plan",
+        "youtube/plan-current",
     )
 
     text = _once(
