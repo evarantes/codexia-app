@@ -33,6 +33,8 @@ class DurationSecondsSupportTests(unittest.TestCase):
         self.assertIn('script["duration_min_sec"] = int(round(requested_min_minutes * 60))', router)
         self.assertIn('script["target_duration_sec"] = int(round(requested_minutes * 60))', router)
         self.assertIn('duration_seconds: Optional[int] = Field(None, ge=5, le=10800)', router)
+        self.assertIn("duration_override_approved: bool = False", router)
+        self.assertIn('script["duration_override_approved"] = duration_override_approved', router)
 
     def test_story_generation_allows_subminute_word_ranges(self):
         editor = (ROOT / "app/services/story_review_editor.py").read_text(encoding="utf-8")
