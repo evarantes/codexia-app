@@ -22,6 +22,10 @@ from app.services.narrative_structure_standard import (
 from app.services.recovery_image_budget import RecoveryImageCallBudget
 from app.services.recovery_image_budget import RecoveryImageBudgetExceeded
 from app.services.safe_text_layout import SafeTextLayout
+from app.services.narration_duration_feedback import (
+    calibrated_body_duration_target,
+    planning_duration_bounds,
+)
 
 CAPTION_SAFE_AREA_X_RATIO = 0.06
 CAPTION_SAFE_AREA_TOP_RATIO = 0.08
@@ -2043,10 +2047,10 @@ class VideoGenerator:
         target_total_sec = float(duration_range.get("target_sec") or 0.0)
 
         planning_attempts: List[Dict[str, Any]] = []
-        planning_max_total_sec = float(max_total_sec) * 0.96 if max_total_sec > 0 else 0.0
-        planning_min_total_sec = max(
-            float(min_total_sec) * 0.97 if min_total_sec > 0 else 0.0,
-            float(target_total_sec) * 0.98 if target_total_sec > 0 else 0.0,
+        planning_min_total_sec, planning_max_total_sec = planning_duration_bounds(
+            min_total_sec,
+            max_total_sec,
+            target_total_sec,
         )
         opening_est = self._estimate_text_duration_with_voice(opening_text, voice_style=voice_style, voice_gender=voice_gender)
         closing_est = self._estimate_text_duration_with_voice(closing_text, voice_style=voice_style, voice_gender=voice_gender)
@@ -2062,7 +2066,7 @@ class VideoGenerator:
                 "body_word_count": self._count_words(body_text),
                 "estimated_total_duration_sec": round(total_est, 2),
                 "within_requested_range": bool((not min_total_sec or total_est >= min_total_sec) and (not max_total_sec or total_est <= max_total_sec)),
-                "within_planning_budget": bool((not min_total_sec or total_est >= min_total_sec) and (not planning_max_total_sec or total_est <= planning_max_total_sec)),
+                "within_planning_budget": bool((not planning_min_total_sec or total_est >= planning_min_total_sec) and (not planning_max_total_sec or total_est <= planning_max_total_sec)),
             })
             if planning_min_total_sec > 0 and total_est < planning_min_total_sec:
                 target_body_min_sec = max(
@@ -6292,13 +6296,25 @@ $synth.Dispose()
                         min_requested_duration * 0.97 if min_requested_duration > 0 else 0.0,
                         target_requested_duration * 0.98 if target_requested_duration > 0 else 0.0,
                     )
+                    current_body_estimate = self._estimate_text_duration_with_voice(
+                        current_body_text,
+                        voice_style=voice_style,
+                        voice_gender=voice_gender,
+                    )
+                    fixed_audio_estimate = (
+                        initial_opening_silence_sec
+                        + opening_duration_est
+                        + closing_duration_est
+                        + pause_before_cta_sec
+                    )
                     target_body_min_sec = max(
                         8.0,
-                        desired_audio_min
-                        - initial_opening_silence_sec
-                        - opening_duration_est
-                        - closing_duration_est
-                        - pause_before_cta_sec,
+                        calibrated_body_duration_target(
+                            current_body_estimate,
+                            actual_total_audio_dur,
+                            fixed_audio_estimate,
+                            desired_audio_min,
+                        ),
                     )
                     expanded = self._expand_body_text_to_fit(
                         current_body_text,
@@ -6352,6 +6368,8 @@ $synth.Dispose()
                         "replanned_after_real_audio": True,
                         "duration_action": "expanded_short_real_audio",
                         "actual_audio_duration_sec": round(actual_total_audio_dur, 2),
+                        "desired_audio_min_sec": round(desired_audio_min, 2),
+                        "estimated_body_duration_sec": round(current_body_estimate, 2),
                         "target_body_min_sec": round(target_body_min_sec, 2),
                     })
                     for idx, scene in enumerate(scenes):
@@ -6397,12 +6415,22 @@ $synth.Dispose()
                 opening_duration_est = self._estimate_text_duration_with_voice(current_opening, voice_style=voice_style, voice_gender=voice_gender)
                 closing_duration_est = self._estimate_text_duration_with_voice(current_closing, voice_style=voice_style, voice_gender=voice_gender)
                 current_body_estimate = self._estimate_text_duration_with_voice(current_body_text, voice_style=voice_style, voice_gender=voice_gender)
-                body_actual_estimate = max(1.0, actual_total_audio_dur - initial_opening_silence_sec - opening_duration_est - closing_duration_est)
-                target_body_max_sec = max(8.0, (real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur) - initial_opening_silence_sec - opening_duration_est - closing_duration_est)
-                if max_requested_duration > 0 and actual_total_audio_dur > 0:
-                    shrink_ratio = max(0.35, min(0.95, float(real_audio_target_max_sec or max_requested_duration) / max(1.0, actual_total_audio_dur)))
-                    proportional_target = min(current_body_estimate, body_actual_estimate) * shrink_ratio
-                    target_body_max_sec = max(8.0, min(target_body_max_sec, proportional_target))
+                fixed_audio_estimate = (
+                    initial_opening_silence_sec
+                    + opening_duration_est
+                    + closing_duration_est
+                    + pause_before_cta_sec
+                )
+                desired_audio_max = real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur
+                target_body_max_sec = max(
+                    8.0,
+                    calibrated_body_duration_target(
+                        current_body_estimate,
+                        actual_total_audio_dur,
+                        fixed_audio_estimate,
+                        desired_audio_max,
+                    ),
+                )
 
                 condensed = self._condense_body_text_to_fit(
                     current_body_text,
@@ -6441,6 +6469,8 @@ $synth.Dispose()
                     "estimated_total_duration_sec": planning_meta.get("estimated_total_duration_sec"),
                     "replanned_after_real_audio": True,
                     "actual_audio_duration_sec": round(actual_total_audio_dur, 2),
+                    "desired_audio_max_sec": round(desired_audio_max, 2),
+                    "estimated_body_duration_sec": round(current_body_estimate, 2),
                     "target_body_max_sec": round(target_body_max_sec, 2),
                 })
                 for idx, scene in enumerate(scenes):
