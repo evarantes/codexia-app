@@ -583,24 +583,35 @@ def _sync_task_aux_state(db, task_id: str, *, status: Optional[str], result_json
     now = _utcnow()
     completed_at = now if status_norm == "completed" else None
     expires_at = _task_dedupe_expires_at(now) if status_norm in {"pending", "processing", "completed"} else now
-    db.execute(text(
-        f"""
-        UPDATE {_TASK_DEDUPE_TABLE}
-        SET status = :status,
-            result_json = COALESCE(:result_json, result_json),
-            updated_at = :updated_at,
-            expires_at = :expires_at,
-            completed_at = CASE WHEN :completed_at IS NOT NULL THEN :completed_at ELSE completed_at END
-        WHERE task_id = :task_id
-        """
-    ), {
+    updates = [
+        "status = :status",
+        "result_json = COALESCE(:result_json, result_json)",
+        "updated_at = :updated_at",
+        "expires_at = :expires_at",
+    ]
+    params = {
         "status": status_norm or "pending",
         "result_json": result_json,
         "updated_at": now,
         "expires_at": expires_at,
-        "completed_at": completed_at,
         "task_id": task_id,
-    })
+    }
+    # Não vincular completed_at=None dentro de CASE/IS NOT NULL: PostgreSQL
+    # não consegue inferir o tipo do parâmetro nulo e aborta a transação.
+    # Atualize a coluna somente quando houver um horário de conclusão.
+    if completed_at is not None:
+        updates.append("completed_at = :completed_at")
+        params["completed_at"] = completed_at
+    db.execute(
+        text(
+            f"""
+            UPDATE {_TASK_DEDUPE_TABLE}
+            SET {", ".join(updates)}
+            WHERE task_id = :task_id
+            """
+        ),
+        params,
+    )
 
 
 def _task_aux_meta(db, task_id: str) -> Dict[str, Any]:
