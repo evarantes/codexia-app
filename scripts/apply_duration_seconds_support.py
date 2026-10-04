@@ -300,6 +300,9 @@ def patch_youtube_router(text: str) -> str:
     text = _once(
         text,
         '''        "duration": max(1, min(60, int(payload.get("duration") or 5))),
+        "duration_min": max(1, min(60, int(payload.get("duration_min") or payload.get("duration") or 5))),
+        "duration_max": max(1, min(60, int(payload.get("duration_max") or payload.get("duration") or 5))),
+        "duration_override_approved": bool(payload.get("duration_override_approved")),
         "duration_seconds": max(0, min(10800, int(payload.get("duration_seconds") or 0))),''',
         '''        "duration": max(5.0 / 60.0, min(60.0, float(payload.get("duration") or 5))),
         "duration_min": max(5.0 / 60.0, min(60.0, float(payload.get("duration_min") or payload.get("duration") or 5))),
@@ -316,6 +319,17 @@ def patch_youtube_router(text: str) -> str:
         except Exception:
             requested_minutes = 5
         requested_minutes = max(1, min(60, requested_minutes))
+        try:
+            requested_min_minutes = int(getattr(request, "duration_min", None) or requested_minutes)
+        except Exception:
+            requested_min_minutes = requested_minutes
+        try:
+            requested_max_minutes = int(getattr(request, "duration_max", None) or requested_minutes)
+        except Exception:
+            requested_max_minutes = requested_minutes
+        requested_min_minutes = max(1, min(60, requested_min_minutes))
+        requested_max_minutes = max(requested_min_minutes, min(60, requested_max_minutes))
+        duration_override_approved = bool(getattr(request, "duration_override_approved", False))
         default_voice_style = "soft_prayer" if kind_norm == "prayer" else "human"''',
         '''        try:
             requested_minutes = float(getattr(request, "duration", 5) or 5)
@@ -348,8 +362,12 @@ def patch_youtube_router(text: str) -> str:
 
     text = _once(
         text,
-        '''            script["target_duration_sec"] = int(requested_minutes * 60)
-            script["target_duration_min"] = int(requested_minutes)''',
+        '''            script["duration_min"] = int(requested_min_minutes)
+            script["duration_max"] = int(requested_max_minutes)
+            script["duration_max_sec"] = int(requested_max_minutes * 60)
+            script["target_duration_sec"] = int(requested_minutes * 60)
+            script["target_duration_min"] = int(requested_minutes)
+            script["duration_override_approved"] = duration_override_approved''',
         '''            script["duration_min"] = float(requested_min_minutes)
             script["duration_max"] = float(requested_max_minutes)
             script["duration_min_sec"] = int(round(requested_min_minutes * 60))
