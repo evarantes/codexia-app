@@ -134,10 +134,12 @@ jobs:
           python scripts/check_schema_consistency.py
 
       - name: Test VideoTask status sync against PostgreSQL
+        id: postgres_status_sync_test
         if: ${{ always() && steps.postgres_migrations.outcome == 'success' }}
         run: python -m unittest tests.test_video_task_status_sync_postgres -v
 
       - name: Start application against migrated PostgreSQL
+        if: ${{ always() && steps.postgres_status_sync_test.outcome == 'success' }}
         env:
           PREFLIGHT_STARTUP_TIMEOUT_SEC: "35"
         run: python scripts/preflight_validate.py
