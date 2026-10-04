@@ -6,8 +6,11 @@ Runs only against the isolated PostgreSQL database used by GitHub Actions.
 import unittest
 import uuid
 
+from sqlalchemy import text
+
 from app.database import SessionLocal, engine
 from app.models import UnifiedVideo, VideoTask
+import app.services.task_manager as task_manager
 
 
 _IS_ISOLATED_POSTGRES_CI = (
@@ -59,6 +62,95 @@ class VideoTaskStatusSyncPostgresTests(unittest.TestCase):
         finally:
             db.rollback()
             db.close()
+
+    def test_processing_status_persists_when_completed_at_is_null(self):
+        task_id = f"dedupe-sync-{uuid.uuid4()}"
+        idempotency_key = f"dedupe-sync:{uuid.uuid4()}"
+        setup_db = SessionLocal()
+        try:
+            task = VideoTask(
+                id=task_id,
+                status="pending",
+                progress=0,
+                message="Queued",
+            )
+            setup_db.add(task)
+            setup_db.flush()
+            task_manager._upsert_dedupe_row(
+                setup_db,
+                idempotency_key=idempotency_key,
+                request_hash=str(uuid.uuid4()),
+                task_id=task_id,
+                status="pending",
+                payload={"test": "postgres-null-completed-at"},
+            )
+            setup_db.commit()
+        finally:
+            setup_db.rollback()
+            setup_db.close()
+
+        try:
+            updated = task_manager.update_task(
+                task_id,
+                status="processing",
+                progress=17,
+                message="Renderizando vídeo",
+            )
+            self.assertIsInstance(updated, dict)
+            self.assertEqual(updated["status"], "processing")
+            self.assertEqual(updated["progress"], 17)
+
+            verify_db = SessionLocal()
+            try:
+                dedupe = verify_db.execute(
+                    text(
+                        "SELECT status, completed_at FROM video_task_dedupe "
+                        "WHERE task_id = :task_id"
+                    ),
+                    {"task_id": task_id},
+                ).mappings().one()
+                self.assertEqual(dedupe["status"], "processing")
+                self.assertIsNone(dedupe["completed_at"])
+            finally:
+                verify_db.close()
+
+            completed = task_manager.update_task(
+                task_id,
+                status="completed",
+                progress=100,
+                message="Concluído",
+            )
+            self.assertIsInstance(completed, dict)
+            self.assertEqual(completed["status"], "completed")
+
+            verify_db = SessionLocal()
+            try:
+                dedupe = verify_db.execute(
+                    text(
+                        "SELECT status, completed_at FROM video_task_dedupe "
+                        "WHERE task_id = :task_id"
+                    ),
+                    {"task_id": task_id},
+                ).mappings().one()
+                self.assertEqual(dedupe["status"], "completed")
+                self.assertIsNotNone(dedupe["completed_at"])
+            finally:
+                verify_db.close()
+        finally:
+            cleanup_db = SessionLocal()
+            try:
+                cleanup_db.execute(
+                    text("DELETE FROM video_task_dedupe WHERE task_id = :task_id"),
+                    {"task_id": task_id},
+                )
+                cleanup_db.execute(
+                    text("DELETE FROM video_tasks WHERE id = :task_id"),
+                    {"task_id": task_id},
+                )
+                cleanup_db.commit()
+            finally:
+                cleanup_db.rollback()
+                cleanup_db.close()
 
 
 if __name__ == "__main__":
