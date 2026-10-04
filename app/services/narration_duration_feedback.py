@@ -57,3 +57,33 @@ def calibrated_body_duration_target(
     if estimate <= 0 or actual_body <= 0:
         return desired_body
     return estimate * desired_body / actual_body
+
+
+def expansion_word_range(
+    current_words: int,
+    estimated_body_sec: float,
+    target_body_sec: float,
+    words_per_minute: float,
+) -> tuple[int, int, int]:
+    """Choose a proportional word range for a short narration correction."""
+    try:
+        words = max(0, int(current_words))
+    except (TypeError, ValueError):
+        words = 0
+    estimate = _non_negative(estimated_body_sec)
+    target = _non_negative(target_body_sec)
+    wpm = _non_negative(words_per_minute) or 150.0
+    if words <= 0 or target <= 0:
+        return 0, 0, 0
+
+    duration_ratio = target / estimate if estimate > 0 else 1.0
+    proportional_words = math.ceil(words * duration_ratio * 1.04)
+    wpm_words = math.ceil(target * wpm / 60.0)
+    target_words = max(words + max(8, math.ceil(words * 0.04)), proportional_words, wpm_words)
+    target_words = max(words + 8, min(2600, target_words))
+    min_words = max(
+        words + max(5, math.ceil(words * 0.03)),
+        math.ceil(target_words * 0.97),
+    )
+    max_words = max(min_words + 10, math.ceil(target_words * 1.04))
+    return min_words, max_words, target_words
