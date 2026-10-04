@@ -293,6 +293,7 @@ def patch_youtube_router(text: str) -> str:
     duration_min: Optional[float] = None
     duration_max: Optional[float] = None
     duration_unit: str = "minutes"
+    duration_override_approved: bool = False
     auto_upload: bool = False''',
         "youtube/video-request-current",
     )
@@ -308,6 +309,7 @@ def patch_youtube_router(text: str) -> str:
         "duration_min": max(5.0 / 60.0, min(60.0, float(payload.get("duration_min") or payload.get("duration") or 5))),
         "duration_max": max(5.0 / 60.0, min(60.0, float(payload.get("duration_max") or payload.get("duration") or 5))),
         "duration_unit": _normalize_hash_text(payload.get("duration_unit") or "minutes", lower=True) or "minutes",
+        "duration_override_approved": bool(payload.get("duration_override_approved")),
         "duration_seconds": max(0, min(10800, int(payload.get("duration_seconds") or 0))),''',
         "youtube/dedupe-current",
     )
