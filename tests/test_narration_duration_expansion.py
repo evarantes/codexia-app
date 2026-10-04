@@ -78,6 +78,8 @@ def test_queue_failure_message_hides_internal_validation_dump():
 def test_real_audio_is_replanned_before_any_short_video_render():
     source = Path("app/services/video_generator.py").read_text(encoding="utf-8")
     assert '"duration_action": "expanded_short_real_audio"' in source
+    assert "calibrated_body_duration_target(" in source
+    assert "expansion_word_range(" in source
     assert "a narracao permaneceu menor que a duracao solicitada" in source
     assert "O video nao foi renderizado" in source
 
