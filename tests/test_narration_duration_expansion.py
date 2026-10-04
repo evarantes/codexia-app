@@ -2,6 +2,10 @@ import re
 from pathlib import Path
 
 from app.services.video_generator import VideoGenerator
+from app.services.narration_duration_feedback import (
+    calibrated_body_duration_target,
+    planning_duration_bounds,
+)
 
 
 class ExpandingAI:
@@ -76,3 +80,23 @@ def test_real_audio_is_replanned_before_any_short_video_render():
     assert '"duration_action": "expanded_short_real_audio"' in source
     assert "a narracao permaneceu menor que a duracao solicitada" in source
     assert "O video nao foi renderizado" in source
+
+
+def test_exact_target_has_a_feasible_planning_band():
+    lower, upper = planning_duration_bounds(60, 60, 60)
+
+    assert lower == 58.8
+    assert upper == 61.2
+    assert lower <= upper
+
+
+def test_short_tts_audio_calibrates_the_next_body_target_to_real_pace():
+    target = calibrated_body_duration_target(
+        estimated_body_sec=40,
+        actual_audio_sec=54,
+        fixed_audio_sec=12,
+        desired_audio_sec=58.8,
+    )
+
+    assert target > 40
+    assert round(target, 2) == 44.57
