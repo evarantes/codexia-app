@@ -2,6 +2,7 @@ import unittest
 
 from app.services.narration_duration_feedback import (
     calibrated_body_duration_target,
+    expansion_word_range,
     planning_duration_bounds,
 )
 
@@ -22,6 +23,17 @@ class NarrationDurationFeedbackTests(unittest.TestCase):
         )
         self.assertGreater(target, 40)
         self.assertAlmostEqual(target, 44.57142857)
+
+    def test_small_duration_deficit_uses_a_proportional_word_range(self):
+        min_words, max_words, target_words = expansion_word_range(
+            current_words=125,
+            estimated_body_sec=47,
+            target_body_sec=52.5,
+            words_per_minute=150,
+        )
+
+        self.assertEqual((min_words, max_words, target_words), (142, 152, 146))
+        self.assertLess(target_words, 205)
 
 
 if __name__ == "__main__":
