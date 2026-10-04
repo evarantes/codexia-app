@@ -193,11 +193,12 @@ def _sync_video_task_state_to_unified(session, _flush_context):
         elif status == "rendered_upload_failed":
             status_expr = "CASE WHEN review_required THEN 'awaiting_review' ELSE 'failed' END"
         else:
-            status_expr = ":canonical_status"
+            status_expr = ":canonical_status_assignment"
 
         params = {
             "task_id": item["task_id"],
-            "canonical_status": item["canonical"],
+            "canonical_status_assignment": item["canonical"],
+            "canonical_status_condition": item["canonical"],
             "progress": item["progress"],
             "message": item["message"],
             "last_error": item["message"] if status == "failed" else None,
@@ -211,8 +212,8 @@ def _sync_video_task_state_to_unified(session, _flush_context):
                         progress = :progress,
                         last_message = COALESCE(:message, last_message),
                         last_error = CASE
-                            WHEN :canonical_status = 'failed' THEN COALESCE(:last_error, last_error)
-                            WHEN :canonical_status IN ('queued','cancelled') THEN NULL
+                            WHEN :canonical_status_condition = 'failed' THEN COALESCE(:last_error, last_error)
+                            WHEN :canonical_status_condition IN ('queued','cancelled') THEN NULL
                             ELSE last_error
                         END,
                         updated_at = CURRENT_TIMESTAMP
@@ -222,7 +223,7 @@ def _sync_video_task_state_to_unified(session, _flush_context):
                 params,
             )
         except Exception:
-            # Não mascara o fluxo principal se a linha de auditoria ainda não
-            # existir (ex.: bootstrap/migration). A próxima transição canônica
-            # fará a reconciliação normal.
-            continue
+            # Não engolir uma falha SQL em after_flush: o PostgreSQL marca a
+            # transação inteira como abortada. Propagar preserva a causa e deixa
+            # a camada chamadora executar o rollback.
+            raise
