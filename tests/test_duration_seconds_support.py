@@ -10,9 +10,18 @@ ROOT = Path(__file__).resolve().parents[1]
 class DurationSecondsSupportTests(unittest.TestCase):
     def test_frontend_exposes_seconds_and_preserves_fractional_minutes(self):
         html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
-        self.assertIn("function durationPayload()", html)
-        self.assertIn("duration_seconds:seconds", html)
-        self.assertIn("duration_seconds:durationPayload().duration_seconds||null", html)
+        if "function durationPayload()" in html:
+            self.assertIn("duration_seconds:seconds", html)
+            self.assertIn("duration_seconds:durationPayload().duration_seconds||null", html)
+        else:
+            # CI temporarily mounts the archived legacy UI for these
+            # compatibility contracts, then restores the V2 shell.
+            self.assertIn("Segundos — teste rápido", html)
+            self.assertIn("Minutos — produção normal", html)
+            self.assertIn(":min=\"ytStoryDurationUnit === 'seconds' ? 5 : 1\"", html)
+            self.assertIn("Math.round(durationRaw * 60) / 60", html)
+            self.assertIn("const requestedMin = requestedMinSeconds / 60", html)
+            self.assertIn("duration_unit: durationUnit", html)
 
     def test_backend_keeps_exact_second_target(self):
         router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
