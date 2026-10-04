@@ -130,6 +130,9 @@ jobs:
           alembic current | grep --fixed-strings "d7e8f9a0b1c2"
           python scripts/check_schema_consistency.py
 
+      - name: Test VideoTask status sync against PostgreSQL
+        run: python -m unittest tests.test_video_task_status_sync_postgres -v
+
       - name: Start application against migrated PostgreSQL
         env:
           PREFLIGHT_STARTUP_TIMEOUT_SEC: "35"
