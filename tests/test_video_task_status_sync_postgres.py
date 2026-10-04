@@ -41,14 +41,19 @@ class VideoTaskStatusSyncPostgresTests(unittest.TestCase):
             last_error="old error",
         )
         try:
-            db.add_all([task, unified])
+            # Create the task first to satisfy unified_videos.task_id's FK.
+            db.add(task)
+            db.flush()
+            db.add(unified)
             db.flush()
 
-            # The after_flush hook runs raw SQL. Expiring forces a PostgreSQL
-            # read after that statement and proves the transaction is healthy.
+            # Now touch the task so the after_flush hook updates the existing
+            # audit row. Expiring forces a PostgreSQL read after the raw SQL.
+            task.progress = 42
+            db.flush()
             db.expire(unified)
             self.assertEqual(unified.status, "queued")
-            self.assertEqual(unified.progress, 41)
+            self.assertEqual(unified.progress, 42)
             self.assertEqual(unified.last_message, "Status sync regression")
             self.assertIsNone(unified.last_error)
         finally:
