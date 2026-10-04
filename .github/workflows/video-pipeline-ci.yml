@@ -73,6 +73,7 @@ jobs:
           cache: pip
 
       - name: Install FFmpeg and dependencies
+        id: install_dependencies
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet=2 ffmpeg >/dev/null
@@ -125,12 +126,15 @@ jobs:
           python -m unittest tests.test_cinematic_v2 -q
 
       - name: Apply canonical Alembic migration on PostgreSQL
+        id: postgres_migrations
+        if: ${{ always() && steps.install_dependencies.outcome == 'success' }}
         run: |
           python scripts/apply_migrations.py
           alembic current | grep --fixed-strings "d7e8f9a0b1c2"
           python scripts/check_schema_consistency.py
 
       - name: Test VideoTask status sync against PostgreSQL
+        if: ${{ always() && steps.postgres_migrations.outcome == 'success' }}
         run: python -m unittest tests.test_video_task_status_sync_postgres -v
 
       - name: Start application against migrated PostgreSQL
