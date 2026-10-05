@@ -3,14 +3,20 @@
 Runs only against the isolated PostgreSQL database used by GitHub Actions.
 """
 
+import tempfile
 import unittest
 import uuid
+from pathlib import Path
+from unittest.mock import patch
 
 from sqlalchemy import text
 
 from app.database import SessionLocal, engine
 from app.models import UnifiedVideo, VideoTask
 import app.services.task_manager as task_manager
+import app.services.financial_guardian_service as financial_guardian_module
+from app.services.financial_guardian import FinancialContext
+from app.services.financial_guardian_service import FinancialGuardianService
 
 
 _IS_ISOLATED_POSTGRES_CI = (
@@ -151,6 +157,82 @@ class VideoTaskStatusSyncPostgresTests(unittest.TestCase):
             finally:
                 cleanup_db.rollback()
                 cleanup_db.close()
+
+
+@unittest.skipUnless(
+    _IS_ISOLATED_POSTGRES_CI,
+    "requires the isolated PostgreSQL CI database",
+)
+class FinancialGuardianCachePostgresTests(unittest.TestCase):
+    def test_image_cache_insert_reuses_string_binds_with_explicit_postgres_types(self):
+        context_id = f"cache-scope-type:{uuid.uuid4()}"
+        with tempfile.TemporaryDirectory(prefix="guardian-postgres-cache-") as tmp:
+            image_path = Path(tmp) / "scene.png"
+            image_path.write_bytes(b"image cache regression fixture")
+            context = FinancialContext(
+                source_type="youtube_auto",
+                context_id=context_id,
+                user_id=987654321,
+                metadata={},
+            )
+            db = SessionLocal()
+            try:
+                with patch.object(
+                    financial_guardian_module,
+                    "_MANIFEST_DIR",
+                    Path(tmp) / "manifest",
+                ), patch.object(financial_guardian_module, "_schema_ready", False):
+                    result = FinancialGuardianService().cache_images_from_context_result(
+                        db,
+                        context=context,
+                        plan={
+                            "scenes": [
+                                {
+                                    "image_prompt": "A quiet shoreline at dawn",
+                                    "text": "The day begins beside the sea.",
+                                }
+                            ]
+                        },
+                        image_paths=[str(image_path)],
+                    )
+                    self.assertEqual(result["db_stored_assets"], 1)
+                    self.assertFalse(result["persistence_degraded"])
+                    db.commit()
+
+                rows = db.execute(
+                    text(
+                        "SELECT scope_key, asset_kind FROM codexia_asset_generation_cache "
+                        "WHERE context_id = :context_id"
+                    ),
+                    {"context_id": context_id},
+                ).mappings().all()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["scope_key"], "user:987654321")
+                self.assertEqual(rows[0]["asset_kind"], "image")
+            finally:
+                db.rollback()
+                db.close()
+
+                cleanup_db = SessionLocal()
+                try:
+                    cleanup_db.execute(
+                        text(
+                            "DELETE FROM codexia_asset_generation_cache "
+                            "WHERE context_id = :context_id"
+                        ),
+                        {"context_id": context_id},
+                    )
+                    cleanup_db.execute(
+                        text(
+                            "DELETE FROM codexia_financial_audit_events "
+                            "WHERE context_id = :context_id"
+                        ),
+                        {"context_id": context_id},
+                    )
+                    cleanup_db.commit()
+                finally:
+                    cleanup_db.rollback()
+                    cleanup_db.close()
 
 
 if __name__ == "__main__":
