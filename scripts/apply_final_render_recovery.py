@@ -511,6 +511,63 @@ RETRY_OLD = '''        payload = _maybe_enable_render_only_flags(payload, task_i
 RETRY_NEW = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        final_render_recovery = _recovery_try_promote_final_render(payload, task_id)\n        if isinstance(final_render_recovery, dict) and final_render_recovery.get("recovered"):\n            return final_render_recovery\n        if isinstance(final_render_recovery, dict) and final_render_recovery.get("blocked"):\n            raise HTTPException(status_code=409, detail=str(final_render_recovery.get("message") or "Recuperação bloqueada."))\n        if bool(payload.get("_recovery_block_paid_regeneration")):'''
 
 
+AUTO_FAILURE_OLD = '''    except Exception as e:
+        print(f"Erro na tarefa {task_id}: {e}")
+        try:
+            import traceback as _tb
+            _dbg_event("H3", "process_video_generation exception", {
+'''
+
+AUTO_FAILURE_NEW = '''    except Exception as e:
+        # CODEXIA_AUTO_FINAL_RENDER_RECOVERY_V1
+        # If a late bookkeeping error occurs after the renderer saved the MP4,
+        # validate and promote that exact output before marking the task failed.
+        _automatic_recovery = None
+        try:
+            current_task = get_task(task_id) or {}
+            current_result = current_task.get("result") if isinstance(current_task.get("result"), dict) else {}
+            candidate_collector = globals().get("_recovery_final_video_explicit_candidates")
+            recovery_handler = globals().get("_recovery_try_promote_final_render")
+            video_references = (
+                candidate_collector(current_result, {})
+                if callable(candidate_collector)
+                else []
+            )
+            video_references = [
+                value for value in video_references
+                if ".mp4" in str(value or "").lower()
+            ]
+            if video_references and callable(recovery_handler):
+                try:
+                    recovery_payload = request.model_dump()
+                except Exception:
+                    try:
+                        recovery_payload = request.dict()
+                    except Exception:
+                        recovery_payload = {}
+                _automatic_recovery = recovery_handler(recovery_payload, str(task_id))
+            if isinstance(_automatic_recovery, dict) and _automatic_recovery.get("recovered"):
+                _dbg_event("H3", "existing final render recovered after task exception", {
+                    "task_id": str(task_id),
+                    "video_url": str(_automatic_recovery.get("video_url") or ""),
+                })
+                return
+        except Exception as _recovery_error:
+            try:
+                _dbg_event("H3", "automatic final-render recovery error", {
+                    "task_id": str(task_id),
+                    "error": f"{type(_recovery_error).__name__}: {str(_recovery_error)[:300]}",
+                })
+            except Exception:
+                pass
+        print(f"Erro na tarefa {task_id}: {e}")
+        try:
+            import traceback as _tb
+            _dbg_event("H3", "process_video_generation exception", {
+'''
+
+
+
 class PatchError(RuntimeError):
     pass
 
@@ -529,6 +586,10 @@ def apply() -> None:
         if RETRY_OLD not in text:
             raise PatchError("anchor do retry v3 não encontrado")
         text = text.replace(RETRY_OLD, RETRY_NEW, 1)
+    if AUTO_FAILURE_NEW not in text:
+        if AUTO_FAILURE_OLD not in text:
+            raise PatchError("anchor da recuperação automática pós-render não encontrado")
+        text = text.replace(AUTO_FAILURE_OLD, AUTO_FAILURE_NEW, 1)
     TARGET.write_text(text.rstrip() + BLOCK + "\n", encoding="utf-8")
 
 
@@ -543,6 +604,9 @@ def check() -> None:
         "recovered_final_render_frames",
         "transition_to_awaiting_review_if_valid",
         "Render final já existente recuperado e validado sem novas chamadas pagas.",
+        "CODEXIA_AUTO_FINAL_RENDER_RECOVERY_V1",
+        "existing final render recovered after task exception",
+        "automatic final-render recovery error",
     )
     missing = [item for item in required if item not in text]
     if missing:
