@@ -58,6 +58,7 @@ from app.services.task_manager import (
     release_task_execution_lease,
     update_task,
 )
+from app.services.narration_caption_contract import measured_text_timeline_is_reviewable
 
 _CANONICAL_IGNORE_KEYS = {
     "task_id",
@@ -693,14 +694,13 @@ class UnifiedVideoPipelineService:
         if not tid:
             raise ValueError("UnifiedVideoPipeline recebeu task_id vazio.")
 
-        try:
-            db.flush()
-        except Exception as exc:
-            _log_database_recovery(db, "claimed_task_flush", 1, exc)
+        # Let the task-row loader own recovery when the session is already
+        # inactive. A preliminary flush and rollback here would recover twice.
+        if getattr(db, "is_active", True) is not False:
             try:
-                db.rollback()
-            except Exception:
-                pass
+                db.flush()
+            except Exception as exc:
+                _log_database_recovery(db, "claimed_task_flush", 1, exc)
 
         task = load_video_task_row(db, tid)
         if task is not None:
@@ -801,7 +801,7 @@ class UnifiedVideoPipelineService:
         lock_info = acquire_distributed_lock(f"unified-submit:{key}", timeout_seconds=20, ttl_seconds=45)
         try:
             for attempt in range(2):
-                attempt_db = db if attempt == 0 else SessionLocal()
+                attempt_db = db
                 _set_submit_stage(attempt_db, diagnostic_context, "submit_attempt")
                 try:
                     return self._submit_or_reuse_locked(
@@ -900,20 +900,9 @@ class UnifiedVideoPipelineService:
                 f"{type(exc).__name__}: {str(exc)[:300]}"
             ) from exc
 
-        # A VideoTask já está confirmada. Não reutilize o mesmo objeto Session
-        # depois de fechá-lo: em PostgreSQL/psycopg isso pode reter no pool uma
-        # conexão marcada como abortada e transformar a consulta de UnifiedVideo
-        # no erro secundário InFailedSqlTransaction.
-        try:
-            db.close()
-        except Exception:
-            pass
-
-        # Fronteira real de transação: o UnifiedVideo sempre usa uma Session
-        # nova, criada depois do commit da VideoTask. Assim qualquer falha da
-        # etapa anterior não pode contaminar a FK, a busca idempotente ou o
-        # commit do roteiro aprovado.
-        db = SessionLocal()
+        # O commit da VideoTask encerra a transação anterior. Mantemos a
+        # sessão recebida pelo chamador para verificar a tarefa e gravar o
+        # UnifiedVideo no mesmo banco, inclusive em sessões isoladas.
         _set_submit_stage(db, diagnostic_context, "verify_video_task")
         self._ensure_claimed_task_visible(
             db,
@@ -1326,7 +1315,13 @@ class UnifiedVideoPipelineService:
         checks["ffprobe_has_video_stream"] = bool(has_video_stream)
         checks["ffprobe_has_audio_stream"] = bool(has_audio_stream)
         checks["duration_valid"] = bool(video_duration >= 1.0)
-        # Testes curtos usam duration_seconds; não podem ser validados como 1 minuto.\n        try:\n            requested_duration = max(0.0, float(task_payload.get("duration_seconds") or 0))\n        except (TypeError, ValueError):\n            requested_duration = 0.0\n        if requested_duration <= 0:\n            requested_duration = max(0.0, float(getattr(uv, "duration_minutes", 0) or 0) * 60.0)
+        # Testes curtos usam duration_seconds; não podem ser validados como 1 minuto.
+        try:
+            requested_duration = max(0.0, float(task_payload.get("duration_seconds") or 0))
+        except (TypeError, ValueError):
+            requested_duration = 0.0
+        if requested_duration <= 0:
+            requested_duration = max(0.0, float(getattr(uv, "duration_minutes", 0) or 0) * 60.0)
         duration_delta = abs(video_duration - requested_duration) if requested_duration > 0 else 0.0
         duration_tolerance = max(5.0, requested_duration * 0.05) if requested_duration > 0 else 0.0
         duration_matches_request = bool(
@@ -1370,11 +1365,26 @@ class UnifiedVideoPipelineService:
             "approved_edge_tts_word_boundaries",
             "local_audio_activity_alignment",
         }
+        text_integrity = render_report.get("text_integrity") if isinstance(render_report.get("text_integrity"), dict) else {}
+        utf8_audit = render_report.get("utf8_audit") if isinstance(render_report.get("utf8_audit"), dict) else {}
+        text_matches = text_integrity.get("captions_match_narration_source")
+        if text_matches is None:
+            text_matches = utf8_audit.get("texts_identical_after_whitespace_normalization")
+        estimated_caption_fallback = measured_text_timeline_is_reviewable(
+            source=caption_source or str(caption_timeline.get("source") or ""),
+            timing_source=str(caption_timeline.get("timing_source") or ""),
+            alignment_quality=str(caption_timeline.get("alignment_quality") or ""),
+            captions_synced=captions_synced is True,
+            text_matches=text_matches is True,
+        )
         caption_sync_ok = bool(
             not director_quality_required
             or (
                 captions_synced is True
-                and caption_source in real_audio_caption_sources
+                and (
+                    caption_source in real_audio_caption_sources
+                    or estimated_caption_fallback
+                )
             )
         )
         checks["caption_sync_valid"] = caption_sync_ok
@@ -1400,6 +1410,7 @@ class UnifiedVideoPipelineService:
                 "timeline_source": caption_source,
                 "captions_synced_with_audio": captions_synced,
                 "accepted_timeline_sources": sorted(real_audio_caption_sources),
+                "estimated_measured_text_fallback": estimated_caption_fallback,
             },
         }
         # Sincroniza tamanhos/durações do banco para auditabilidade.

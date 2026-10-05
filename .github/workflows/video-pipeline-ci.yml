@@ -78,7 +78,7 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet=2 ffmpeg >/dev/null
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet -r requirements.txt
+          python -m pip install --quiet -r requirements.txt pytest
 
       - name: Apply and verify hardening with Codexia V2 bridge
         shell: bash
@@ -163,7 +163,7 @@ jobs:
 
           if [ "$test_status" -ne 0 ]; then
             echo "===== UNIT TEST FAILURES ====="
-            tail -n 180 /tmp/codexia-unittest.log
+            tail -n 1200 /tmp/codexia-unittest.log
             python - <<'PY'
           from pathlib import Path
           raw = Path('/tmp/codexia-unittest.log').read_text(encoding='utf-8', errors='replace')

@@ -76,8 +76,94 @@ def patch_video(text: str) -> str:
     )
     text = _replace_once(
         text,
-        '                target_body_max_sec = max(8.0, (real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur) - initial_opening_silence_sec - opening_duration_est - closing_duration_est)',
-        '                target_body_max_sec = max(8.0, (real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur) - initial_opening_silence_sec - opening_duration_est - float(planning_meta.get("reflection_duration_est_sec") or 0.0) - closing_duration_est)',
+        '''                    fixed_audio_estimate = (
+                        initial_opening_silence_sec
+                        + opening_duration_est
+                        + closing_duration_est
+                        + pause_before_cta_sec
+                    )
+                    target_body_min_sec = max(
+                        8.0,
+                        calibrated_body_duration_target(
+                            current_body_estimate,
+                            actual_total_audio_dur,
+                            fixed_audio_estimate,
+                            desired_audio_min,
+                        ),
+                    )''',
+        '''                    fixed_audio_estimate = (
+                        initial_opening_silence_sec
+                        + opening_duration_est
+                        + float(planning_meta.get("reflection_duration_est_sec") or 0.0)
+                        + closing_duration_est
+                        + pause_before_cta_sec
+                    )
+                    target_body_min_sec = max(
+                        8.0,
+                        calibrated_body_duration_target(
+                            current_body_estimate,
+                            actual_total_audio_dur,
+                            fixed_audio_estimate,
+                            desired_audio_min,
+                        ),
+                    )''',
+        "short real-audio budget reserves reflection",
+    )
+    text = _replace_once(
+        text,
+        '                    replanned_full_text = " ".join([current_opening, new_body_text, current_closing]).strip()',
+        '                    replanned_full_text = " ".join([current_opening, new_body_text, str(planning_meta.get("reflection_text") or "").strip(), current_closing]).strip()',
+        "short replan preserves protected reflection",
+    )
+    text = _replace_once(
+        text,
+        '''                    main_story_narration_text = " ".join(
+                        part
+                        for part in [current_opening, new_body_text]
+                        if part
+                    ).strip()''',
+        '''                    main_story_narration_text = " ".join(
+                        part
+                        for part in [current_opening, new_body_text, str(planning_meta.get("reflection_text") or "").strip()]
+                        if part
+                    ).strip()''',
+        "short replan TTS preserves protected reflection",
+    )
+    text = _replace_once(
+        text,
+        '''                fixed_audio_estimate = (
+                    initial_opening_silence_sec
+                    + opening_duration_est
+                    + closing_duration_est
+                    + pause_before_cta_sec
+                )
+                desired_audio_max = real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur
+                target_body_max_sec = max(
+                    8.0,
+                    calibrated_body_duration_target(
+                        current_body_estimate,
+                        actual_total_audio_dur,
+                        fixed_audio_estimate,
+                        desired_audio_max,
+                    ),
+                )''',
+        '''                fixed_audio_estimate = (
+                    initial_opening_silence_sec
+                    + opening_duration_est
+                    + float(planning_meta.get("reflection_duration_est_sec") or 0.0)
+                    + closing_duration_est
+                    + pause_before_cta_sec
+                )
+                desired_audio_max = real_audio_target_max_sec or max_requested_duration or actual_total_audio_dur
+                target_body_max_sec = max(
+                    8.0,
+                    calibrated_body_duration_target(
+                        current_body_estimate,
+                        actual_total_audio_dur,
+                        fixed_audio_estimate,
+                        desired_audio_max,
+                    ),
+                )''',
         "real audio budget reserves reflection",
     )
     text = _replace_once(
@@ -97,6 +183,36 @@ def patch_video(text: str) -> str:
         '''                    + float(planning_meta.get("body_duration_est_sec") or 0.0)\n                    + float(planning_meta.get("closing_duration_est_sec") or 0.0)''',
         '''                    + float(planning_meta.get("body_duration_est_sec") or 0.0)\n                    + float(planning_meta.get("reflection_duration_est_sec") or 0.0)\n                    + float(planning_meta.get("closing_duration_est_sec") or 0.0)''',
         "replan estimate includes reflection",
+    )
+    text = _replace_once(
+        text,
+        '''                        + float(planning_meta.get("body_duration_est_sec") or 0.0)
+                        + float(planning_meta.get("closing_duration_est_sec") or closing_duration_est)
+                        + float(planning_meta.get("pause_duration_sec") or 0.0),''',
+        '''                        + float(planning_meta.get("body_duration_est_sec") or 0.0)
+                        + float(planning_meta.get("reflection_duration_est_sec") or 0.0)
+                        + float(planning_meta.get("closing_duration_est_sec") or closing_duration_est)
+                        + float(planning_meta.get("pause_duration_sec") or 0.0),''',
+        "short replan estimate includes reflection",
+    )
+    text = _replace_once(
+        text,
+        '''                main_story_narration_text = " ".join(
+                    part for part in [
+                        str(planning_meta.get("opening_text") or "").strip(),
+                        str(planning_meta.get("body_text") or "").strip(),
+                    ]
+                    if part
+                ).strip()''',
+        '''                main_story_narration_text = " ".join(
+                    part for part in [
+                        str(planning_meta.get("opening_text") or "").strip(),
+                        str(planning_meta.get("body_text") or "").strip(),
+                        str(planning_meta.get("reflection_text") or "").strip(),
+                    ]
+                    if part
+                ).strip()''',
+        "long replan TTS preserves protected reflection",
     )
     text = _replace_once(
         text,

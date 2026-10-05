@@ -17,6 +17,7 @@ from app.services.cinematic_library_store import CinematicLibraryStore
 from app.services.intelligent_cost_optimizer import minimum_visual_count_for_duration
 from app.services.production_manifest import build_recovery_plan
 from app.services.production_manifest_diagnostics import build_manifest_diagnostic
+from app.services.narration_caption_contract import measured_text_timeline_is_reviewable
 from app.services.task_manager import update_task
 from app.services.unified_video_pipeline import unified_video_pipeline
 from app.services.youtube_service import YouTubeService
@@ -268,6 +269,7 @@ def _artifact_checklist(
     caption_checkpoint = result.get("caption_checkpoint") if isinstance(result.get("caption_checkpoint"), dict) else {}
     render_report = result.get("render_report") if isinstance(result.get("render_report"), dict) else {}
     sync = render_report.get("sync_validation") if isinstance(render_report.get("sync_validation"), dict) else {}
+    caption_timeline = render_report.get("caption_timeline") if isinstance(render_report.get("caption_timeline"), dict) else {}
     srt = render_report.get("srt") if isinstance(render_report.get("srt"), dict) else {}
     caption_duration = max(
         _seconds(persisted_captions.get("duration_sec")),
@@ -327,6 +329,13 @@ def _artifact_checklist(
     if text_matches_raw is None:
         text_matches_raw = utf8_audit.get("texts_identical_after_whitespace_normalization")
     text_matches = bool(text_matches_raw)
+    estimated_timing_accepted = measured_text_timeline_is_reviewable(
+        source=caption_source or str(caption_timeline.get("source") or ""),
+        timing_source=str(caption_timeline.get("timing_source") or ""),
+        alignment_quality=str(caption_timeline.get("alignment_quality") or ""),
+        captions_synced=sync.get("captions_synced_with_audio") is True,
+        text_matches=text_matches,
+    )
     sync_delta = _seconds(persisted_compatibility.get("duration_difference_sec"))
     if sync_delta <= 0 and audio_duration > 0 and caption_duration > 0:
         sync_delta = abs(audio_duration - caption_duration)
@@ -338,7 +347,7 @@ def _artifact_checklist(
         audio_found
         and caption_entries > 0
         and text_matches
-        and timing_source_verified
+        and (timing_source_verified or estimated_timing_accepted)
         and sync_delta <= sync_tolerance
     )
     task_message_lower = str(getattr(row, "message", "") or "").lower()
@@ -350,12 +359,16 @@ def _artifact_checklist(
             and image_expected > image_actual
         )
     )
-    director_verdict = str(
-        persisted_compatibility.get("director_verdict")
-        or (
-            "Narração e legenda compatíveis"
-            if narration_caption_compatible
-            else "Narração e legenda precisam de correção"
+    director_verdict = (
+        "Texto confere; sincronização estimada pela duração do áudio. Revise antes de publicar."
+        if estimated_timing_accepted and narration_caption_compatible
+        else str(
+            persisted_compatibility.get("director_verdict")
+            or (
+                "Narração e legenda compatíveis"
+                if narration_caption_compatible
+                else "Narração e legenda precisam de correção"
+            )
         )
     )
 
@@ -414,6 +427,7 @@ def _artifact_checklist(
             "tolerance_sec": round(sync_tolerance, 3),
             "text_matches": text_matches,
             "timing_source_verified": timing_source_verified,
+            "timing_source_estimated": estimated_timing_accepted,
             "timing_source": timing_source or None,
             "director_validated": True,
         },
@@ -445,6 +459,7 @@ def _artifact_checklist(
             "verdict": director_verdict,
             "text_matches": text_matches,
             "timing_source_verified": timing_source_verified,
+            "timing_source_estimated": estimated_timing_accepted,
             "duration_difference_sec": round(sync_delta, 3),
             "tolerance_sec": round(sync_tolerance, 3),
         },

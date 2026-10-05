@@ -122,6 +122,65 @@ class CinematicOperationalQueueTests(unittest.TestCase):
         self.assertEqual(rejected_by_key["narration_caption_sync"]["status"], "partial")
         self.assertFalse(rejected["director_validation"]["narration_caption_compatible"])
 
+    @patch("app.routers.cinematic_queue.build_recovery_plan", return_value={})
+    @patch("app.routers.cinematic_queue.build_manifest_diagnostic", return_value={})
+    def test_measured_text_fallback_is_reviewable_and_marked_estimated(self, _diagnostic, _recovery):
+        row = SimpleNamespace(id="task-estimated-captions", status="awaiting_review")
+        source = "text_fallback_shifted_by_opening_silence"
+        result = {
+            "artifact_checklist": {
+                "target_duration_sec": 60,
+                "script": {"preserved": True},
+                "images": {"actual": 1, "expected": 1, "preserved": True},
+                "narration": {"duration_sec": 60, "target_sec": 60, "preserved": True},
+                "captions": {
+                    "duration_sec": 60,
+                    "target_sec": 60,
+                    "entries": 8,
+                    "source": source,
+                    "preserved": True,
+                },
+                "narration_caption_compatibility": {
+                    "text_matches": True,
+                    "timing_source_verified": False,
+                    "timing_source": source,
+                    "duration_difference_sec": 0,
+                    "tolerance_sec": 1,
+                    "director_verdict": "Narração e legenda precisam de correção",
+                },
+            },
+            "render_report": {
+                "caption_timeline": {
+                    "source": "text_fallback_from_measured_audio",
+                    "timing_source": "measured_audio_duration",
+                    "alignment_quality": "estimated_from_measured_audio_duration",
+                },
+                "sync_validation": {
+                    "timeline_source": source,
+                    "captions_synced_with_audio": True,
+                    "captions_duration_sec": 60,
+                    "audio_duration_sec": 60,
+                },
+                "text_integrity": {"captions_match_narration_source": True},
+            },
+        }
+        checklist = _artifact_checklist(
+            row,
+            result,
+            {},
+            duration_minutes=1,
+            video_url="/media/videos/task-estimated-captions.mp4",
+        )
+        by_key = {item["key"]: item for item in checklist["items"]}
+        sync = by_key["narration_caption_sync"]
+        self.assertEqual(sync["status"], "ok")
+        self.assertFalse(sync["timing_source_verified"])
+        self.assertTrue(sync["timing_source_estimated"])
+        self.assertIn("estimada", sync["summary"])
+        self.assertTrue(checklist["director_validation"]["narration_caption_compatible"])
+        self.assertTrue(checklist["director_validation"]["timing_source_estimated"])
+        self.assertEqual(by_key["render"]["status"], "ok")
+
     def test_library_store_is_explicit_v2_membership_and_soft_delete(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = CinematicLibraryStore(tmp)
@@ -214,7 +273,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
         self.assertIn("operational_queue.js?v=20260920-artifact-checklist1", patch)
-        self.assertIn("director_duration_contract.js?v=20260927-quality4", patch)
+        self.assertIn("director_duration_contract.js?v=20261003-quality5", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
 
