@@ -58,6 +58,7 @@ from app.services.task_manager import (
     release_task_execution_lease,
     update_task,
 )
+from app.services.narration_caption_contract import measured_text_timeline_is_reviewable
 
 _CANONICAL_IGNORE_KEYS = {
     "task_id",
@@ -1364,11 +1365,26 @@ class UnifiedVideoPipelineService:
             "approved_edge_tts_word_boundaries",
             "local_audio_activity_alignment",
         }
+        text_integrity = render_report.get("text_integrity") if isinstance(render_report.get("text_integrity"), dict) else {}
+        utf8_audit = render_report.get("utf8_audit") if isinstance(render_report.get("utf8_audit"), dict) else {}
+        text_matches = text_integrity.get("captions_match_narration_source")
+        if text_matches is None:
+            text_matches = utf8_audit.get("texts_identical_after_whitespace_normalization")
+        estimated_caption_fallback = measured_text_timeline_is_reviewable(
+            source=caption_source or str(caption_timeline.get("source") or ""),
+            timing_source=str(caption_timeline.get("timing_source") or ""),
+            alignment_quality=str(caption_timeline.get("alignment_quality") or ""),
+            captions_synced=captions_synced is True,
+            text_matches=text_matches is True,
+        )
         caption_sync_ok = bool(
             not director_quality_required
             or (
                 captions_synced is True
-                and caption_source in real_audio_caption_sources
+                and (
+                    caption_source in real_audio_caption_sources
+                    or estimated_caption_fallback
+                )
             )
         )
         checks["caption_sync_valid"] = caption_sync_ok
@@ -1394,6 +1410,7 @@ class UnifiedVideoPipelineService:
                 "timeline_source": caption_source,
                 "captions_synced_with_audio": captions_synced,
                 "accepted_timeline_sources": sorted(real_audio_caption_sources),
+                "estimated_measured_text_fallback": estimated_caption_fallback,
             },
         }
         # Sincroniza tamanhos/durações do banco para auditabilidade.
