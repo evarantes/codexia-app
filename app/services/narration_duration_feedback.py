@@ -59,6 +59,38 @@ def calibrated_body_duration_target(
     return estimate * desired_body / actual_body
 
 
+def playback_rate_for_target(
+    speech_duration_sec: float,
+    fixed_duration_sec: float,
+    target_total_sec: float,
+    *,
+    minimum_rate: float = 0.90,
+) -> float | None:
+    """Return a pitch-preserving slowdown rate for a small duration deficit.
+
+    Fixed visual opening silence and pauses are excluded. ``None`` means the
+    shortfall is too large to correct without materially slowing the voice, so
+    the caller should replan the narration text instead.
+    """
+    speech = _non_negative(speech_duration_sec)
+    fixed = _non_negative(fixed_duration_sec)
+    target = _non_negative(target_total_sec)
+    try:
+        min_rate = float(minimum_rate)
+    except (TypeError, ValueError):
+        min_rate = 0.90
+    if not math.isfinite(min_rate):
+        min_rate = 0.90
+    min_rate = max(0.5, min(1.0, min_rate))
+    target_speech = target - fixed
+    if speech <= 0 or target_speech <= speech:
+        return None
+    rate = speech / target_speech
+    if rate < min_rate or rate >= 1.0:
+        return None
+    return round(rate, 6)
+
+
 def expansion_word_range(
     current_words: int,
     estimated_body_sec: float,

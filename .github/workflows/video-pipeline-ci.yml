@@ -163,7 +163,7 @@ jobs:
 
           if [ "$test_status" -ne 0 ]; then
             echo "===== UNIT TEST FAILURES ====="
-            tail -n 180 /tmp/codexia-unittest.log
+            tail -n 1200 /tmp/codexia-unittest.log
             python - <<'PY'
           from pathlib import Path
           raw = Path('/tmp/codexia-unittest.log').read_text(encoding='utf-8', errors='replace')

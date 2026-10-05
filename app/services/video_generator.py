@@ -25,6 +25,7 @@ from app.services.safe_text_layout import SafeTextLayout
 from app.services.narration_duration_feedback import (
     calibrated_body_duration_target,
     expansion_word_range,
+    playback_rate_for_target,
     planning_duration_bounds,
 )
 
@@ -39,10 +40,12 @@ DEFAULT_SCENE_IMAGE_LEAD_SEC = 0.30
 DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20
 DEFAULT_CINEMATIC_END_SCREEN_SEC = 4.0
 DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC = 7.0
-REAL_AUDIO_CAPTION_TIMELINE_SOURCES = {
+MAX_REAL_AUDIO_NARRATION_ATTEMPTS = 5
+DIRECTOR_ACCEPTED_CAPTION_TIMELINE_SOURCES = {
     "official_audio_transcript",
     "approved_edge_tts_word_boundaries",
     "local_audio_activity_alignment",
+    "text_fallback_from_measured_audio",
 }
 
 
@@ -255,6 +258,66 @@ class VideoGenerator:
             if obtained <= 0 or (expected > 0 and obtained < expected - 0.35):
                 raise RuntimeError(
                     f"Áudio preparado ficou curto: obtido={obtained:.2f}s esperado={expected:.2f}s."
+                )
+            return output
+        except Exception:
+            try:
+                if "output" in locals() and output and os.path.isfile(output):
+                    os.remove(output)
+            except Exception:
+                pass
+            raise
+
+    def _apply_narration_playback_rate(self, source_path: str, playback_rate: float) -> str:
+        """Slow a narration segment with pitch preservation, leaving its cache untouched."""
+        source = os.path.abspath(str(source_path or "").strip())
+        rate = float(playback_rate or 1.0)
+        if rate >= 0.999:
+            return source
+        if rate < 0.5 or rate >= 1.0:
+            raise ValueError("Ajuste de ritmo fora da faixa segura.")
+        if not source or not os.path.isfile(source) or os.path.getsize(source) <= 1000:
+            raise RuntimeError("Áudio de narração indisponível para ajuste de ritmo.")
+
+        try:
+            import shutil
+            import subprocess
+
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise RuntimeError("FFmpeg não está disponível para ajustar o ritmo da narração.")
+            output = os.path.join(self.output_dir, f"narration_rate_{uuid.uuid4().hex}.mp3")
+            source_duration = float(self._ffprobe_duration_seconds(source) or 0.0)
+            timeout = max(120.0, min(1800.0, (source_duration * 2.0) + 60.0))
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-i", source,
+                    "-map", "0:a:0",
+                    "-af", f"atempo={rate:.6f}",
+                    "-vn",
+                    "-c:a", "libmp3lame",
+                    "-b:a", "192k",
+                    output,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            if result.returncode != 0 or not os.path.isfile(output) or os.path.getsize(output) <= 1000:
+                raise RuntimeError(
+                    "FFmpeg não conseguiu ajustar o ritmo da narração: "
+                    + str(result.stderr or "erro desconhecido")[-500:]
+                )
+            obtained = float(self._ffprobe_duration_seconds(output) or 0.0)
+            expected = source_duration / rate if source_duration > 0 else 0.0
+            if obtained <= 0 or (expected > 0 and abs(obtained - expected) > max(0.6, expected * 0.02)):
+                raise RuntimeError(
+                    f"Áudio ajustado ficou com duração inesperada: obtido={obtained:.2f}s esperado={expected:.2f}s."
                 )
             return output
         except Exception:
@@ -1541,6 +1604,7 @@ class VideoGenerator:
         initial_silence_duration_sec: float = 0.0,
         status_callback: Optional[Callable[[str], None]] = None,
         premium_voice_required: bool = False,
+        speech_rate: float = 1.0,
     ) -> Dict[str, Any]:
         try:
             from moviepy.editor import AudioFileClip, concatenate_audioclips, AudioClip
@@ -1562,8 +1626,11 @@ class VideoGenerator:
         # replaces ``_last_tts_debug`` with the CTA diagnostics.
         main_tts_debug = dict(getattr(self, "_last_tts_debug", {}) or {})
 
-        main_audio_clip = AudioFileClip(main_audio_path)
+        speech_rate = max(0.5, min(1.0, float(speech_rate or 1.0)))
+        main_render_path = self._apply_narration_playback_rate(main_audio_path, speech_rate)
+        main_audio_clip = AudioFileClip(main_render_path)
         cta_audio_path = None
+        cta_render_path = None
         cta_audio_clip = None
         silence_clip = None
         initial_silence_clip = None
@@ -1588,7 +1655,8 @@ class VideoGenerator:
                 if not cta_audio_path or not os.path.exists(cta_audio_path):
                     raise Exception("Falha ao gerar o audio do CTA.")
                 cta_tts_debug = dict(getattr(self, "_last_tts_debug", {}) or {})
-                cta_audio_clip = AudioFileClip(cta_audio_path)
+                cta_render_path = self._apply_narration_playback_rate(cta_audio_path, speech_rate)
+                cta_audio_clip = AudioFileClip(cta_render_path)
                 sequence = []
                 if initial_silence_clip is not None:
                     sequence.append(initial_silence_clip)
@@ -1623,26 +1691,27 @@ class VideoGenerator:
             cta_duration = float(getattr(cta_audio_clip, "duration", 0.0) or 0.0) if cta_audio_clip is not None else 0.0
             exact_timeline: List[Dict[str, Any]] = []
 
-            def _append_exact_timeline(debug: Dict[str, Any], offset: float) -> None:
+            def _append_exact_timeline(debug: Dict[str, Any], offset: float, rate: float) -> None:
                 if debug.get("caption_alignment_exact") is not True:
                     return
                 for raw in debug.get("caption_timeline") or []:
                     if not isinstance(raw, dict):
                         continue
                     try:
-                        start = max(0.0, float(raw.get("start") or 0.0)) + offset
-                        end = max(start, float(raw.get("end") or start)) + offset
+                        start = max(0.0, float(raw.get("start") or 0.0)) / rate + offset
+                        end = max(float(raw.get("start") or 0.0), float(raw.get("end") or 0.0)) / rate + offset
                     except (TypeError, ValueError):
                         continue
                     word = str(raw.get("word") or raw.get("text") or "").strip()
                     if word and end > start:
                         exact_timeline.append({"start": round(start, 4), "end": round(end, 4), "word": word})
 
-            _append_exact_timeline(main_tts_debug, initial_silence_duration_sec)
+            _append_exact_timeline(main_tts_debug, initial_silence_duration_sec, speech_rate)
             if cta_audio_clip is not None:
                 _append_exact_timeline(
                     cta_tts_debug,
                     initial_silence_duration_sec + main_duration + pause_duration_sec,
+                    speech_rate,
                 )
 
             combined_debug = dict(cta_tts_debug or main_tts_debug)
@@ -1656,12 +1725,17 @@ class VideoGenerator:
                 and (not cta_text or cta_tts_debug.get("caption_alignment_exact") is True)
             )
             combined_debug["caption_timing_source"] = "edge_tts_exact_ptbr_fallback"
+            combined_debug["narration_playback_rate"] = speech_rate
             self._last_tts_debug = combined_debug
 
             return {
                 "audio_path": combined_audio_path,
-                "main_audio_path": main_audio_path,
-                "cta_audio_path": cta_audio_path,
+                "main_audio_path": main_render_path,
+                "main_tts_source_path": main_audio_path,
+                "cta_audio_path": cta_render_path or cta_audio_path,
+                "cta_tts_source_path": cta_audio_path,
+                "main_tts_cache_hit": bool(main_tts_debug.get("cache_hit")),
+                "cta_tts_cache_hit": bool(cta_tts_debug.get("cache_hit")) if cta_text else True,
                 "main_duration_sec": round(main_duration, 2),
                 "cta_duration_sec": round(cta_duration, 2),
                 "initial_silence_duration_sec": round(initial_silence_duration_sec, 2),
@@ -1673,6 +1747,7 @@ class VideoGenerator:
                     and (not cta_text or cta_tts_debug.get("caption_alignment_exact") is True)
                 ),
                 "caption_timing_source": "edge_tts_exact_ptbr_fallback",
+                "narration_playback_rate": speech_rate,
             }
         finally:
             for clip in [combined_clip, initial_silence_clip, silence_clip, cta_audio_clip, main_audio_clip]:
@@ -1979,56 +2054,87 @@ class VideoGenerator:
             "Retorne somente a narracao final em portugues."
             f"{feedback_instruction}\n\nTEXTO ORIGINAL:\n{clean_body[:18000]}"
         )
-        try:
-            ai_result = self.ai_service._generate_text(
-                prompt,
-                system_prompt=(
-                    "Voce e um diretor e editor de narracao para YouTube. "
-                    "A duracao solicitada e um requisito; amplie com substancia, sem repeticao."
-                ),
-                temperature=0.45,
-                json_mode=False,
-            )
-        except Exception as exc:
-            return {
-                "body_text": clean_body,
-                "scene_texts": scene_texts,
-                "used_ai": False,
-                "attempted": True,
-                "reason": f"ai_error:{type(exc).__name__}",
-            }
-
-        expanded = self._normalize_tts_text(ai_result)
-        expanded_words = self._count_words(expanded)
-        expanded_estimate = self._estimate_text_duration_with_voice(
-            expanded,
-            voice_style=voice_style,
-            voice_gender=voice_gender,
-        )
         minimum_growth = max(
             current_words + max(5, int(current_words * 0.03)),
             min_words - max(2, int(min_words * 0.02)),
         )
-        if not expanded or expanded_words < minimum_growth or expanded_estimate <= estimated_now:
+        last_reason = "ai_did_not_expand_enough"
+        last_word_count = 0
+        for ai_attempt in range(2):
+            attempt_prompt = prompt
+            if ai_attempt:
+                attempt_prompt += (
+                    f"\n\nCORREÇÃO DO DIRETOR: a resposta anterior trouxe {last_word_count} palavras, "
+                    f"abaixo do mínimo de {minimum_growth}. Refaça a narração com pelo menos "
+                    f"{min_words} palavras, mantendo o mesmo sentido e sem repetir ideias."
+                )
+            try:
+                ai_result = self.ai_service._generate_text(
+                    attempt_prompt,
+                    system_prompt=(
+                        "Voce e um diretor e editor de narracao para YouTube. "
+                        "A duracao solicitada e um requisito; amplie com substancia, sem repeticao."
+                    ),
+                    temperature=0.45,
+                    json_mode=False,
+                )
+            except Exception as exc:
+                last_reason = f"ai_error:{type(exc).__name__}"
+                if ai_attempt == 0:
+                    continue
+                return {
+                    "body_text": clean_body,
+                    "scene_texts": scene_texts,
+                    "used_ai": False,
+                    "attempted": True,
+                    "reason": last_reason,
+                    "attempt_count": ai_attempt + 1,
+                }
+
+            expanded = self._normalize_tts_text(ai_result)
+            expanded_words = self._count_words(expanded)
+            expanded_estimate = self._estimate_text_duration_with_voice(
+                expanded,
+                voice_style=voice_style,
+                voice_gender=voice_gender,
+            )
+            last_word_count = expanded_words
+            if not expanded or expanded_words < minimum_growth or expanded_estimate <= estimated_now:
+                last_reason = "ai_did_not_expand_enough"
+                if ai_attempt == 0:
+                    continue
+                return {
+                    "body_text": clean_body,
+                    "scene_texts": scene_texts,
+                    "used_ai": False,
+                    "attempted": True,
+                    "reason": last_reason,
+                    "requested_words": target_words,
+                    "returned_words": expanded_words,
+                    "attempt_count": ai_attempt + 1,
+                }
+
             return {
-                "body_text": clean_body,
-                "scene_texts": scene_texts,
-                "used_ai": False,
+                "body_text": expanded,
+                "scene_texts": self._redistribute_body_text_to_scenes(expanded, scenes),
+                "used_ai": True,
                 "attempted": True,
-                "reason": "ai_did_not_expand_enough",
+                "reason": "expanded",
                 "requested_words": target_words,
                 "returned_words": expanded_words,
+                "attempt_count": ai_attempt + 1,
+                "estimated_duration_sec": round(expanded_estimate, 2),
             }
 
         return {
-            "body_text": expanded,
-            "scene_texts": self._redistribute_body_text_to_scenes(expanded, scenes),
-            "used_ai": True,
+            "body_text": clean_body,
+            "scene_texts": scene_texts,
+            "used_ai": False,
             "attempted": True,
-            "reason": "expanded",
+            "reason": last_reason,
             "requested_words": target_words,
-            "returned_words": expanded_words,
-            "estimated_duration_sec": round(expanded_estimate, 2),
+            "returned_words": last_word_count,
+            "attempt_count": 2,
         }
 
     def prepare_final_narration_text(self, plan: Optional[Dict[str, Any]], scenes: List[Dict[str, Any]], voice_style: Optional[str] = None, voice_gender: Optional[str] = None) -> Dict[str, Any]:
@@ -3608,14 +3714,11 @@ class VideoGenerator:
             else:
                 transcription_error = None
 
-        # Recovery path: when the official audio transcription is temporarily
-        # unavailable, do not abort the whole production at 20%. Build a
-        # deterministic text timeline over the measured audio duration, then
-        # keep the source explicit so the quality gate/report can flag it.
-        #
-        # This avoids re-generating paid media and lets the project continue;
-        # the timeline can later be replaced by an official transcript on a
-        # subsequent pass if desired.
+        # Recovery path: when transcription and acoustic boundaries are both
+        # unavailable, align the exact TTS text over the measured audio length.
+        # The timing is marked as estimated so the report stays transparent,
+        # while a missing optional transcription provider does not strand the
+        # production before rendering.
         if audio_path:
             activity_aligned = self._caption_timeline_from_audio_activity(
                 narration,
@@ -3636,6 +3739,7 @@ class VideoGenerator:
                     "timeline": fallback,
                     "source": "text_fallback_from_measured_audio",
                     "timing_source": "measured_audio_duration",
+                    "alignment_quality": "estimated_from_measured_audio_duration",
                     "error": transcription_error or "official_audio_transcript_unavailable",
                 }
             return {
@@ -6197,7 +6301,8 @@ $synth.Dispose()
                 duration_range_report["within_requested_range"] = bool(max_ok and min_ok)
                 duration_range_report["decision"] = "seed_audio_reuse"
                 duration_range_report["decision_reason"] = "Áudio reutilizado a partir do seed_audio_path."
-            for narration_attempt in range(0 if seed_audio_used else 4):
+            playback_rate_correction_attempted = False
+            for narration_attempt in range(0 if seed_audio_used else MAX_REAL_AUDIO_NARRATION_ATTEMPTS):
                 segmented_audio = self._compose_segmented_narration_audio(
                     main_text=main_story_narration_text or final_narration_text,
                     cta_text=cta_narration_text,
@@ -6275,7 +6380,121 @@ $synth.Dispose()
                     break
                 if not min_ok:
                     duration_range_report["attempted_replanning_after_real_audio"] = True
-                    if narration_attempt >= 3:
+                    desired_audio_min = max(
+                        min_requested_duration * 0.97 if min_requested_duration > 0 else 0.0,
+                        target_requested_duration * 0.98 if target_requested_duration > 0 else 0.0,
+                    )
+
+                    # Small TTS duration misses are corrected locally by
+                    # slowing only the spoken segments. This preserves pitch,
+                    # the exact script, the four-second visual opening, and
+                    # the CTA pause; the cached provider audio is not changed.
+                    speech_duration_sec = (
+                        float(segmented_audio.get("main_duration_sec") or 0.0)
+                        + float(segmented_audio.get("cta_duration_sec") or 0.0)
+                    )
+                    fixed_duration_sec = (
+                        float(segmented_audio.get("initial_silence_duration_sec") or 0.0)
+                        + float(segmented_audio.get("pause_duration_sec") or 0.0)
+                    )
+                    playback_rate = None
+                    if not playback_rate_correction_attempted:
+                        playback_rate = playback_rate_for_target(
+                            speech_duration_sec,
+                            fixed_duration_sec,
+                            desired_audio_min,
+                        )
+                    if playback_rate is not None:
+                        playback_rate_correction_attempted = True
+                        _tts_status("Claude Diretor: ajustando o ritmo da narração para cumprir a duração solicitada...")
+                        try:
+                            corrected_audio = self._compose_segmented_narration_audio(
+                                main_text=main_story_narration_text or final_narration_text,
+                                cta_text=cta_narration_text,
+                                voice_style=voice_style,
+                                voice_gender=voice_gender,
+                                pause_duration_sec=pause_before_cta_sec,
+                                initial_silence_duration_sec=initial_opening_silence_sec,
+                                status_callback=_tts_status,
+                                premium_voice_required=premium_voice_required,
+                                speech_rate=playback_rate,
+                            )
+                            if main_audio_clip is not None:
+                                try:
+                                    main_audio_clip.close()
+                                except Exception:
+                                    pass
+                            segmented_audio = corrected_audio
+                            main_audio_path = str(corrected_audio.get("audio_path") or "")
+                            if not main_audio_path or not os.path.isfile(main_audio_path):
+                                raise RuntimeError("Áudio corrigido não foi encontrado após o ajuste de ritmo.")
+                            main_audio_clip = AudioFileClip(main_audio_path)
+                            self._assert_clip_not_none(
+                                main_audio_clip,
+                                "duration_corrected_narration_audio_clip",
+                                {"path": main_audio_path},
+                            )
+                            actual_total_audio_dur = float(self._ffprobe_duration_seconds(main_audio_path) or 0.0)
+                            if actual_total_audio_dur <= 0:
+                                actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
+                            max_ok = (max_requested_duration <= 0) or (
+                                actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance))
+                            )
+                            min_ok = actual_total_audio_dur >= min_requested_duration * (1.0 - range_tolerance)
+                            duration_range_report["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
+                            duration_range_report["above_requested_range_sec"] = round(
+                                max(0.0, actual_total_audio_dur - max_requested_duration)
+                                if max_requested_duration > 0 else 0.0,
+                                2,
+                            )
+                            duration_range_report["below_requested_range_sec"] = round(
+                                max(0.0, min_requested_duration - actual_total_audio_dur)
+                                if min_requested_duration > 0 else 0.0,
+                                2,
+                            )
+                            duration_range_report["within_requested_range"] = bool(max_ok and min_ok)
+                            render_report["audio_generation"] = dict(self._last_tts_debug or {})
+                            render_report["audio_generation"].update({
+                                "final_text_sent_to_tts": final_narration_text,
+                                "final_audio_duration_sec": round(actual_total_audio_dur, 2),
+                                "output_path": main_audio_path,
+                                "duration_auto_correction": {
+                                    "strategy": "pitch_preserving_speech_slowdown",
+                                    "playback_rate": playback_rate,
+                                    "source_speech_duration_sec": round(speech_duration_sec, 2),
+                                    "target_total_duration_sec": round(desired_audio_min, 2),
+                                    "tts_sources_reused_from_cache": {
+                                        "main": bool(corrected_audio.get("main_tts_cache_hit")),
+                                        "cta": bool(corrected_audio.get("cta_tts_cache_hit")),
+                                    },
+                                    "opening_silence_and_cta_pause_preserved": True,
+                                },
+                            })
+                            render_report["audio_generation"]["segmented_audio"] = {
+                                "main_audio_path": corrected_audio.get("main_audio_path"),
+                                "cta_audio_path": corrected_audio.get("cta_audio_path"),
+                                "initial_silence_duration_sec": corrected_audio.get("initial_silence_duration_sec"),
+                                "pause_duration_sec": corrected_audio.get("pause_duration_sec"),
+                                "main_duration_sec": corrected_audio.get("main_duration_sec"),
+                                "cta_duration_sec": corrected_audio.get("cta_duration_sec"),
+                                "narration_playback_rate": corrected_audio.get("narration_playback_rate"),
+                            }
+                            debug_ctx["audio_path"] = main_audio_path
+                            debug_ctx["title_audio_path"] = corrected_audio.get("main_audio_path")
+                            debug_ctx["end_audio_path"] = corrected_audio.get("cta_audio_path")
+                            if max_ok and min_ok:
+                                duration_range_report["decision"] = "within_requested_range_after_audio_correction"
+                                duration_range_report["decision_reason"] = (
+                                    "O Diretor ajustou o ritmo da fala, preservou a abertura e a pausa, e a narração "
+                                    "alcançou a faixa solicitada sem gerar outro áudio no provedor."
+                                )
+                                break
+                        except Exception as correction_exc:
+                            duration_range_report["playback_rate_correction_error"] = (
+                                f"{type(correction_exc).__name__}: {str(correction_exc)[:240]}"
+                            )
+
+                    if narration_attempt >= MAX_REAL_AUDIO_NARRATION_ATTEMPTS - 1:
                         raise Exception(
                             "Falha de qualidade do Claude Diretor: a narracao permaneceu menor que a duracao solicitada "
                             f"apos as correcoes automaticas ({actual_total_audio_dur:.0f}s de audio para uma meta de "
@@ -6294,10 +6513,6 @@ $synth.Dispose()
                         current_closing,
                         voice_style=voice_style,
                         voice_gender=voice_gender,
-                    )
-                    desired_audio_min = max(
-                        min_requested_duration * 0.97 if min_requested_duration > 0 else 0.0,
-                        target_requested_duration * 0.98 if target_requested_duration > 0 else 0.0,
                     )
                     current_body_estimate = self._estimate_text_duration_with_voice(
                         current_body_text,
@@ -6370,6 +6585,7 @@ $synth.Dispose()
                         "estimated_total_duration_sec": planning_meta.get("estimated_total_duration_sec"),
                         "replanned_after_real_audio": True,
                         "duration_action": "expanded_short_real_audio",
+                        "editorial_correction_attempts": int(expanded.get("attempt_count") or 1),
                         "actual_audio_duration_sec": round(actual_total_audio_dur, 2),
                         "desired_audio_min_sec": round(desired_audio_min, 2),
                         "estimated_body_duration_sec": round(current_body_estimate, 2),
@@ -6405,7 +6621,7 @@ $synth.Dispose()
                     cta_narration_text = current_closing
                     continue
 
-                if narration_attempt >= 3:
+                if narration_attempt >= MAX_REAL_AUDIO_NARRATION_ATTEMPTS - 1:
                     duration_range_report["kept_complete_narration"] = True
                     duration_range_report["decision"] = "keep_complete_narration_outside_range"
                     duration_range_report["decision_reason"] = "Duracao final excedeu a faixa de referencia, mas a narracao foi mantida completa para nao cortar o audio."
@@ -6610,7 +6826,7 @@ $synth.Dispose()
                     or plan.get("editorial_review_ready")
                 )
             )
-            if director_quality_required and caption_timeline_source not in REAL_AUDIO_CAPTION_TIMELINE_SOURCES:
+            if director_quality_required and caption_timeline_source not in DIRECTOR_ACCEPTED_CAPTION_TIMELINE_SOURCES:
                 raise Exception(
                     "Falha de qualidade do Claude Diretor: a legenda não recebeu timestamps da narração real. "
                     "A produção foi interrompida antes do render final para evitar legenda fora de sincronia. "
@@ -6620,6 +6836,7 @@ $synth.Dispose()
             render_report["caption_timeline"] = {
                 "source": caption_timeline_source,
                 "timing_source": str(caption_timeline_details.get("timing_source") or ""),
+                "alignment_quality": str(caption_timeline_details.get("alignment_quality") or "verified"),
                 "error": str(caption_timeline_details.get("error") or ""),
             }
             if caption_timeline_source in {"text_fallback", "text_fallback_from_measured_audio"} and initial_opening_silence_sec > 0 and final_narration_text:

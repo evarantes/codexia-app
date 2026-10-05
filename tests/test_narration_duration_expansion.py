@@ -26,6 +26,17 @@ class NonExpandingAI:
         return "Texto curto sem expansão suficiente."
 
 
+class ShortThenExpandingAI:
+    def __init__(self):
+        self.calls = 0
+
+    def _generate_text(self, prompt, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return "A primeira expansão ficou curta demais."
+        return ExpandingAI()._generate_text(prompt, **kwargs)
+
+
 def _short_scenes(count=48):
     return [
         {
@@ -69,6 +80,24 @@ def test_expansion_fails_closed_when_ai_returns_another_short_text(tmp_path: Pat
     assert result["reason"] == "ai_did_not_expand_enough"
 
 
+def test_director_retries_once_when_its_first_expansion_is_still_short(tmp_path: Path):
+    ai = ShortThenExpandingAI()
+    generator = VideoGenerator(output_dir=str(tmp_path), ai_service=ai)
+    original_body = " ".join(["reflexao" for _ in range(90)])
+
+    result = generator._expand_body_text_to_fit(
+        original_body,
+        _short_scenes(8),
+        target_min_sec=90.0,
+        kind="devotional",
+    )
+
+    assert result["used_ai"] is True
+    assert result["attempt_count"] == 2
+    assert ai.calls == 2
+    assert result["returned_words"] >= result["requested_words"] - 5
+
+
 def test_queue_failure_message_hides_internal_validation_dump():
     source = Path("app/routers/youtube.py").read_text(encoding="utf-8")
     assert "O Claude Diretor bloqueou o vídeo porque a duração ficou em" in source
@@ -80,6 +109,9 @@ def test_real_audio_is_replanned_before_any_short_video_render():
     assert '"duration_action": "expanded_short_real_audio"' in source
     assert "calibrated_body_duration_target(" in source
     assert "expansion_word_range(" in source
+    assert "MAX_REAL_AUDIO_NARRATION_ATTEMPTS = 5" in source
+    assert "playback_rate_for_target(" in source
+    assert '"strategy": "pitch_preserving_speech_slowdown"' in source
     assert "a narracao permaneceu menor que a duracao solicitada" in source
     assert "O video nao foi renderizado" in source
 
