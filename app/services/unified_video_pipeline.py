@@ -1314,7 +1314,13 @@ class UnifiedVideoPipelineService:
         checks["ffprobe_has_video_stream"] = bool(has_video_stream)
         checks["ffprobe_has_audio_stream"] = bool(has_audio_stream)
         checks["duration_valid"] = bool(video_duration >= 1.0)
-        # Testes curtos usam duration_seconds; não podem ser validados como 1 minuto.\n        try:\n            requested_duration = max(0.0, float(task_payload.get("duration_seconds") or 0))\n        except (TypeError, ValueError):\n            requested_duration = 0.0\n        if requested_duration <= 0:\n            requested_duration = max(0.0, float(getattr(uv, "duration_minutes", 0) or 0) * 60.0)
+        # Testes curtos usam duration_seconds; não podem ser validados como 1 minuto.
+        try:
+            requested_duration = max(0.0, float(task_payload.get("duration_seconds") or 0))
+        except (TypeError, ValueError):
+            requested_duration = 0.0
+        if requested_duration <= 0:
+            requested_duration = max(0.0, float(getattr(uv, "duration_minutes", 0) or 0) * 60.0)
         duration_delta = abs(video_duration - requested_duration) if requested_duration > 0 else 0.0
         duration_tolerance = max(5.0, requested_duration * 0.05) if requested_duration > 0 else 0.0
         duration_matches_request = bool(
