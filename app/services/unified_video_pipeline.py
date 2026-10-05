@@ -693,14 +693,13 @@ class UnifiedVideoPipelineService:
         if not tid:
             raise ValueError("UnifiedVideoPipeline recebeu task_id vazio.")
 
-        try:
-            db.flush()
-        except Exception as exc:
-            _log_database_recovery(db, "claimed_task_flush", 1, exc)
+        # Let the task-row loader own recovery when the session is already
+        # inactive. A preliminary flush and rollback here would recover twice.
+        if getattr(db, "is_active", True) is not False:
             try:
-                db.rollback()
-            except Exception:
-                pass
+                db.flush()
+            except Exception as exc:
+                _log_database_recovery(db, "claimed_task_flush", 1, exc)
 
         task = load_video_task_row(db, tid)
         if task is not None:
@@ -801,7 +800,7 @@ class UnifiedVideoPipelineService:
         lock_info = acquire_distributed_lock(f"unified-submit:{key}", timeout_seconds=20, ttl_seconds=45)
         try:
             for attempt in range(2):
-                attempt_db = db if attempt == 0 else SessionLocal()
+                attempt_db = db
                 _set_submit_stage(attempt_db, diagnostic_context, "submit_attempt")
                 try:
                     return self._submit_or_reuse_locked(
@@ -900,20 +899,9 @@ class UnifiedVideoPipelineService:
                 f"{type(exc).__name__}: {str(exc)[:300]}"
             ) from exc
 
-        # A VideoTask já está confirmada. Não reutilize o mesmo objeto Session
-        # depois de fechá-lo: em PostgreSQL/psycopg isso pode reter no pool uma
-        # conexão marcada como abortada e transformar a consulta de UnifiedVideo
-        # no erro secundário InFailedSqlTransaction.
-        try:
-            db.close()
-        except Exception:
-            pass
-
-        # Fronteira real de transação: o UnifiedVideo sempre usa uma Session
-        # nova, criada depois do commit da VideoTask. Assim qualquer falha da
-        # etapa anterior não pode contaminar a FK, a busca idempotente ou o
-        # commit do roteiro aprovado.
-        db = SessionLocal()
+        # O commit da VideoTask encerra a transação anterior. Mantemos a
+        # sessão recebida pelo chamador para verificar a tarefa e gravar o
+        # UnifiedVideo no mesmo banco, inclusive em sessões isoladas.
         _set_submit_stage(db, diagnostic_context, "verify_video_task")
         self._ensure_claimed_task_visible(
             db,
