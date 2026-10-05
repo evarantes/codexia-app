@@ -726,6 +726,7 @@ class FinancialGuardianService:
             _reset_db_session(db)
 
         now = _utcnow()
+        # Pin the reused PostgreSQL bind to one type in both INSERT and lookup.
         insert_statement = text(
             f"""
             INSERT INTO {_CACHE_TABLE} (
@@ -733,12 +734,12 @@ class FinancialGuardianService:
                 hit_count, last_used_at, created_at, updated_at, meta_json
             )
             SELECT
-                :user_id, :job_id, :source_type, :context_id, :scope_key, 'image', :cache_key, :file_hash, :file_path,
+                :user_id, :job_id, :source_type, :context_id, CAST(:scope_key AS VARCHAR(128)), 'image', :cache_key, :file_hash, :file_path,
                 :hit_count, :last_used_at, :created_at, :updated_at, :meta_json
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM {_CACHE_TABLE}
-                WHERE scope_key = :scope_key
+                WHERE scope_key = CAST(:scope_key AS VARCHAR(128))
                   AND asset_kind = 'image'
                   AND cache_key = :cache_key
                   AND file_hash = :file_hash
