@@ -78,7 +78,7 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet=2 ffmpeg >/dev/null
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet -r requirements.txt
+          python -m pip install --quiet -r requirements.txt pytest
 
       - name: Apply and verify hardening with Codexia V2 bridge
         shell: bash
