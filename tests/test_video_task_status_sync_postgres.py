@@ -164,7 +164,7 @@ class VideoTaskStatusSyncPostgresTests(unittest.TestCase):
     "requires the isolated PostgreSQL CI database",
 )
 class FinancialGuardianCachePostgresTests(unittest.TestCase):
-    def test_image_cache_insert_reuses_scope_key_with_explicit_postgres_type(self):
+    def test_image_cache_insert_reuses_string_binds_with_explicit_postgres_types(self):
         context_id = f"cache-scope-type:{uuid.uuid4()}"
         with tempfile.TemporaryDirectory(prefix="guardian-postgres-cache-") as tmp:
             image_path = Path(tmp) / "scene.png"
