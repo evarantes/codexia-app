@@ -124,6 +124,47 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     @patch("app.routers.cinematic_queue.build_recovery_plan", return_value={})
     @patch("app.routers.cinematic_queue.build_manifest_diagnostic", return_value={})
+    def test_failed_task_with_verified_embedded_captions_keeps_mp4_and_captions_available(self, _diagnostic, _recovery):
+        row = SimpleNamespace(id="task-existing-mp4", status="failed")
+        result = {
+            "artifact_checklist": {
+                "target_duration_sec": 60,
+                "script": {"preserved": True},
+                "images": {"actual": 8, "expected": 8, "preserved": True},
+                "narration": {"duration_sec": 60, "target_sec": 60, "preserved": True},
+            },
+            "render_report": {
+                "caption_timeline": {
+                    "source": "approved_edge_tts_word_boundaries",
+                    "timing_source": "approved_edge_tts_word_boundaries",
+                    "alignment_quality": "verified",
+                },
+                "sync_validation": {
+                    "timeline_source": "approved_edge_tts_word_boundaries",
+                    "captions_ok": True,
+                    "last_caption_end_sec": 60,
+                    "narration_duration_sec": 60,
+                },
+                "text_integrity": {"captions_match_narration_source": True},
+            },
+        }
+        checklist = _artifact_checklist(
+            row,
+            result,
+            {},
+            duration_minutes=1,
+            video_url="/media/videos/task-existing-mp4.mp4",
+        )
+        by_key = {item["key"]: item for item in checklist["items"]}
+        self.assertEqual(by_key["captions"]["status"], "ok")
+        self.assertIn("Embutidas no MP4", by_key["captions"]["summary"])
+        self.assertEqual(by_key["narration_caption_sync"]["status"], "ok")
+        self.assertEqual(by_key["render"]["status"], "partial")
+        self.assertTrue(by_key["render"]["preserved"])
+        self.assertIn("revalidação", by_key["render"]["summary"])
+
+    @patch("app.routers.cinematic_queue.build_recovery_plan", return_value={})
+    @patch("app.routers.cinematic_queue.build_manifest_diagnostic", return_value={})
     def test_measured_text_fallback_is_reviewable_and_marked_estimated(self, _diagnostic, _recovery):
         row = SimpleNamespace(id="task-estimated-captions", status="awaiting_review")
         source = "text_fallback_shifted_by_opening_silence"

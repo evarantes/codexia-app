@@ -271,11 +271,18 @@ def _artifact_checklist(
     sync = render_report.get("sync_validation") if isinstance(render_report.get("sync_validation"), dict) else {}
     caption_timeline = render_report.get("caption_timeline") if isinstance(render_report.get("caption_timeline"), dict) else {}
     srt = render_report.get("srt") if isinstance(render_report.get("srt"), dict) else {}
+    caption_sync_validated = sync.get("captions_synced_with_audio")
+    if caption_sync_validated is None:
+        caption_sync_validated = sync.get("captions_ok")
+    caption_sync_validated = caption_sync_validated is True
+
     caption_duration = max(
         _seconds(persisted_captions.get("duration_sec")),
         _seconds(caption_checkpoint.get("duration_sec")),
         _seconds(sync.get("captions_duration_sec")),
         _seconds(sync.get("spoken_audio_end_sec")),
+        _seconds(sync.get("last_caption_end_sec")),
+        _seconds(sync.get("narration_duration_sec")) if caption_sync_validated else 0.0,
     )
     caption_entries = max(
         _integer(persisted_captions.get("entries")),
@@ -286,11 +293,12 @@ def _artifact_checklist(
         persisted_captions.get("source")
         or caption_checkpoint.get("source")
         or sync.get("timeline_source")
+        or caption_timeline.get("source")
         or srt.get("source")
         or ""
     ).strip()
     caption_target = _seconds(persisted_captions.get("target_sec")) or audio_duration
-    caption_ok = bool(
+    caption_file_ok = bool(
         caption_entries > 0
         and caption_duration > 0
         and (
@@ -316,6 +324,7 @@ def _artifact_checklist(
         or caption_source
         or sync.get("caption_timeline_source")
         or sync.get("timeline_source")
+        or caption_timeline.get("timing_source")
         or ""
     ).strip()
     timing_source_verified = bool(
@@ -333,7 +342,7 @@ def _artifact_checklist(
         source=caption_source or str(caption_timeline.get("source") or ""),
         timing_source=str(caption_timeline.get("timing_source") or ""),
         alignment_quality=str(caption_timeline.get("alignment_quality") or ""),
-        captions_synced=sync.get("captions_synced_with_audio") is True,
+        captions_synced=caption_sync_validated,
         text_matches=text_matches,
     )
     sync_delta = _seconds(persisted_compatibility.get("duration_difference_sec"))
@@ -343,9 +352,22 @@ def _artifact_checklist(
         _seconds(persisted_compatibility.get("tolerance_sec"))
         or max(1.0, audio_duration * 0.02)
     )
+    embedded_captions_verified = bool(
+        video_url
+        and caption_duration > 0
+        and caption_sync_validated
+        and text_matches
+        and (timing_source_verified or estimated_timing_accepted)
+        and sync_delta <= sync_tolerance
+        and (
+            caption_target <= 0
+            or abs(caption_duration - caption_target) <= max(1.0, caption_target * 0.02)
+        )
+    )
+    caption_ok = bool(caption_file_ok or embedded_captions_verified)
     narration_caption_compatible = bool(
         audio_found
-        and caption_entries > 0
+        and (caption_entries > 0 or embedded_captions_verified)
         and text_matches
         and (timing_source_verified or estimated_timing_accepted)
         and sync_delta <= sync_tolerance
@@ -373,7 +395,13 @@ def _artifact_checklist(
     )
 
     status = str(getattr(row, "status", "") or "").strip().lower()
-    render_ok = bool(video_url and status in _READY_STATUSES)
+    render_available = bool(video_url)
+    render_ok = bool(render_available and status in _READY_STATUSES)
+    render_status = (
+        "ok"
+        if render_ok
+        else ("partial" if render_available and status == "failed" else ("failed" if status == "failed" else "pending"))
+    )
     persisted_script = persisted.get("script") if isinstance(persisted.get("script"), dict) else {}
     script_ok = bool(
         persisted_script.get("preserved")
@@ -411,12 +439,20 @@ def _artifact_checklist(
             "key": "captions",
             "label": "Legendas",
             "status": "ok" if caption_ok else ("partial" if caption_entries else "missing"),
-            "summary": f"{caption_entries} bloco(s)" if caption_entries else "Não preservadas",
+            "summary": (
+                "Embutidas no MP4; texto e sincronização validados"
+                if embedded_captions_verified
+                else (f"{caption_entries} bloco(s)" if caption_entries else "Não preservadas")
+            ),
             "duration_sec": round(caption_duration, 3) if caption_duration > 0 else None,
             "target_sec": round(caption_target, 3) if caption_target > 0 else None,
             "entries": caption_entries,
             "source": caption_source or None,
-            "preserved": bool(persisted_captions.get("preserved") or caption_checkpoint),
+            "preserved": bool(
+                persisted_captions.get("preserved")
+                or caption_checkpoint
+                or embedded_captions_verified
+            ),
         },
         {
             "key": "narration_caption_sync",
@@ -434,17 +470,21 @@ def _artifact_checklist(
         {
             "key": "render",
             "label": "Vídeo final",
-            "status": "ok" if render_ok else ("failed" if status == "failed" else "pending"),
+            "status": render_status,
             "summary": (
                 "Pronto para revisão"
                 if render_ok
                 else (
-                    "Quality Gate bloqueou antes da revisão; ativos anteriores preservados"
-                    if quality_gate_blocked
-                    else ("Render falhou; ativos anteriores preservados" if status == "failed" else "Pendente")
+                    "MP4 identificado; tarefa falhou e exige revalidação"
+                    if render_available and status == "failed"
+                    else (
+                        "Quality Gate bloqueou antes da revisão; ativos anteriores preservados"
+                        if quality_gate_blocked
+                        else ("Render falhou; ativos anteriores preservados" if status == "failed" else "Pendente")
+                    )
                 )
             ),
-            "preserved": render_ok,
+            "preserved": render_available,
         },
     ]
     reusable_assets = [item for item in items if item.get("key") in {"script", "images", "narration", "captions"}]
