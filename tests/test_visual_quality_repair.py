@@ -1,0 +1,79 @@
+from app.services.visual_quality_repair import (
+    build_auto_visual_repair_plan,
+    rendered_visual_diversity_report,
+)
+
+
+def test_reused_path_count_does_not_fail_a_varied_render():
+    report = {
+        "visual_plan": {
+            "requested_image_count": 8,
+            "reused_image_count": 3,
+            "average_image_duration_sec": 8,
+        },
+        "scene_visuals": [
+            {"image_path": f"/images/scene-{index}.png", "final_visual_duration_sec": 8}
+            for index in range(8)
+        ],
+    }
+
+    result = rendered_visual_diversity_report(report)
+
+    assert result["passed"] is True
+    assert result["unique_rendered_image_count"] == 8
+    assert result["path_reuse_count_is_advisory"] == 3
+
+
+def test_one_repeated_image_fails_even_when_legacy_average_is_low():
+    report = {
+        "visual_plan": {
+            "requested_image_count": 8,
+            "reused_image_count": 1,
+            "average_image_duration_sec": 8,
+        },
+        "scene_visuals": [
+            {"image_path": "/images/scene-1.png", "final_visual_duration_sec": 8}
+            for _ in range(8)
+        ],
+    }
+
+    result = rendered_visual_diversity_report(report)
+
+    assert result["passed"] is False
+    assert result["unique_rendered_image_count"] == 1
+    assert result["minimum_unique_image_count"] == 6
+
+
+def test_auto_repair_forces_multiple_images_and_preserves_narration():
+    original = {
+        "title": "Teste",
+        "scenes": [{"text": f"Cena {index}"} for index in range(8)],
+        "selected_images": ["/images/scene-1.png"],
+        "seed_audio_path": "/audio/narration.mp3",
+        "seed_narration_text": "Narração aprovada",
+    }
+    report = {
+        "visual_plan": {"requested_image_count": 8},
+        "scene_visuals": [
+            {"image_path": "/images/scene-1.png", "final_visual_duration_sec": 40}
+        ],
+        "audio_generation": {"output_path": "/audio/narration.mp3"},
+    }
+
+    result = build_auto_visual_repair_plan(
+        original,
+        report,
+        expected_image_count=8,
+        task_id="task-1",
+        attempt=1,
+        max_new_image_calls=4,
+        reuse_audio=True,
+    )
+
+    assert result["ok"] is True
+    assert result["plan"]["image_mode"] == "multiple"
+    assert result["plan"]["single_bg"] is False
+    assert result["plan"]["allow_image_reuse"] is False
+    assert result["plan"]["seed_audio_path"] == "/audio/narration.mp3"
+    assert result["plan"]["_partial_image_recovery"]["max_new_image_calls"] == 4
+    assert original["selected_images"] == ["/images/scene-1.png"]
