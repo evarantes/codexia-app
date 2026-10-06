@@ -91,19 +91,7 @@ OLD_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
         missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
         images_complete = bool(images_ok and missing_image_count == 0)
-        audio_short = bool(
-            audio_path
-            and audio_duration > 0
-            and requested_audio_min_seconds > 0
-            and audio_duration + 0.5 < requested_audio_min_seconds
-        )
-        audio_ok = bool(
-            audio_path
-            and _file_ok(audio_path)
-            and _recovery_audio_duration_plausible(audio_duration, target_minutes)
-            and not audio_short
-        )
-        payload["repair_regenerate_audio"] = bool(audio_short)
+        audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
         render_only = bool(script_ok and images_complete and audio_ok)'''
 
 NEW_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
@@ -190,7 +178,19 @@ def patch_youtube(text: str) -> str:
     v4_tail = '''        images_ok = bool(valid_images) and _selected_images_ok(valid_images)
         missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
         images_complete = bool(images_ok and missing_image_count == 0)
-        audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+        audio_short = bool(
+            audio_path
+            and audio_duration > 0
+            and requested_audio_min_seconds > 0
+            and audio_duration + 0.5 < requested_audio_min_seconds
+        )
+        audio_ok = bool(
+            audio_path
+            and _file_ok(audio_path)
+            and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+            and not audio_short
+        )
+        payload["repair_regenerate_audio"] = bool(audio_short)
         render_only = bool(script_ok and images_complete and audio_ok)'''
     v4_count = text.count(v4_tail)
     if v4_count != 1:
