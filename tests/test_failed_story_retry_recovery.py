@@ -217,6 +217,119 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertTrue(checkpoint["strict_visual_retry"])
         self.assertFalse(checkpoint["images_complete"])
 
+    def test_complete_assets_do_not_auto_select_worker_local_render_only(self):
+        images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
+        row = SimpleNamespace(
+            id="task-complete-assets",
+            message="Falha de validação recuperável.",
+            result_json=json.dumps({
+                "script": {
+                    "scenes": [{"text": "Cena válida."}],
+                    "selected_images": images,
+                },
+                "render_report": {
+                    "audio_generation": {
+                        "output_path": "/data/media/audio/valid.mp3",
+                        "final_audio_duration_sec": 60,
+                    },
+                    "narration_plan": {
+                        "requested_duration_range_sec": {"min_sec": 60, "target_sec": 60},
+                    },
+                    "visual_plan": {"requested_image_count": 8},
+                },
+            }),
+        )
+        fake_db = Mock()
+        task_query = Mock()
+        task_query.filter.return_value = task_query
+        task_query.order_by.return_value = task_query
+        task_query.first.return_value = row
+        unified_query = Mock()
+        unified_query.filter.return_value = unified_query
+        unified_query.order_by.return_value = unified_query
+        unified_query.first.return_value = None
+        fake_db.query.side_effect = lambda model: (
+            unified_query if getattr(model, "__name__", "") == "UnifiedVideo" else task_query
+        )
+        payload = {"mode": "story", "kind": "devotional", "duration_seconds": 60}
+        with (
+            patch("app.routers.youtube.SessionLocal", return_value=fake_db),
+            patch("app.routers.youtube._selected_images_ok", return_value=True),
+            patch("app.routers.youtube._file_ok", return_value=True),
+            patch(
+                "app.services.production_manifest.build_recovery_plan",
+                return_value={
+                    "expected_image_count": 8,
+                    "existing_image_paths": images,
+                    "audio_path": "/data/media/audio/valid.mp3",
+                },
+            ),
+        ):
+            prepared = _maybe_enable_render_only_flags(dict(payload), "task-complete-assets")
+
+        self.assertFalse(prepared.get("force_render_only", False))
+        self.assertTrue(prepared["force_reuse_assets"])
+
+    def test_short_audio_retry_regenerates_only_audio_and_preserves_images(self):
+        images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
+        row = SimpleNamespace(
+            id="task-short-audio",
+            message="Falha de qualidade: narração abaixo da meta.",
+            result_json=json.dumps({
+                "script": {
+                    "scenes": [{"text": "Cena válida."}],
+                    "selected_images": images,
+                },
+                "render_report": {
+                    "audio_generation": {
+                        "output_path": "/data/media/audio/short.mp3",
+                        "final_audio_duration_sec": 54,
+                        "final_text_sent_to_tts": "Narração preservada para corrigir.",
+                    },
+                    "narration_plan": {
+                        "requested_duration_range_sec": {"min_sec": 60, "target_sec": 60},
+                        "duration_range_report": {"actual_audio_duration_sec": 54},
+                    },
+                    "visual_plan": {"requested_image_count": 8},
+                },
+            }),
+        )
+        fake_db = Mock()
+        task_query = Mock()
+        task_query.filter.return_value = task_query
+        task_query.order_by.return_value = task_query
+        task_query.first.return_value = row
+        unified_query = Mock()
+        unified_query.filter.return_value = unified_query
+        unified_query.order_by.return_value = unified_query
+        unified_query.first.return_value = None
+        fake_db.query.side_effect = lambda model: (
+            unified_query if getattr(model, "__name__", "") == "UnifiedVideo" else task_query
+        )
+        payload = {"mode": "story", "kind": "devotional", "duration_seconds": 60}
+        with (
+            patch("app.routers.youtube.SessionLocal", return_value=fake_db),
+            patch("app.routers.youtube._selected_images_ok", return_value=True),
+            patch("app.routers.youtube._file_ok", return_value=True),
+            patch(
+                "app.services.production_manifest.build_recovery_plan",
+                return_value={
+                    "expected_image_count": 8,
+                    "existing_image_paths": images,
+                    "audio_path": "/data/media/audio/short.mp3",
+                },
+            ),
+        ):
+            prepared = _maybe_enable_render_only_flags(dict(payload), "task-short-audio")
+
+        self.assertFalse(prepared["force_render_only"])
+        self.assertTrue(prepared["force_reuse_assets"])
+        self.assertTrue(prepared["repair_regenerate_audio"])
+        self.assertTrue(prepared["repair_mode"])
+        self.assertEqual(prepared["selected_images"], images)
+        self.assertFalse(prepared.get("repair_complete_visuals"))
+        self.assertNotIn("reuse_audio_from", prepared)
+
     def test_partial_visual_retry_regenerates_audio_when_local_file_is_missing(self):
         images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
         row = SimpleNamespace(
