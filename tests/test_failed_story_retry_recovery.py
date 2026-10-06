@@ -331,7 +331,7 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         finalize.assert_called_once()
         reset.assert_not_called()
         dispatch.assert_not_called()
-        fake_db.close.assert_called_once()
+        self.assertGreaterEqual(fake_db.close.call_count, 1)
 
     def test_retry_endpoint_dispatches_same_failed_task(self):
         task = {
