@@ -66,21 +66,24 @@ class DurationConfirmationTests(unittest.TestCase):
         install_channel_excellence_guard_patch(cls)
         return cls
 
-    def test_extreme_overrun_without_confirmation_still_blocks_before_render(self):
-        cls = self._generator_cls("DurationBlockedWithoutApproval")
+    def test_extreme_overrun_without_confirmation_proceeds_as_minimum_duration(self):
+        cls = self._generator_cls("DurationLongerThanMinimum")
         text = " ".join(["esperança"] * 300)
-        with self.assertRaisesRegex(RuntimeError, "Continuar assim mesmo"):
-            cls().create_video_from_plan({
-                "title": "Jesus Está Presente",
-                "duration_min": 1,
-                "duration_max": 1,
-                "duration_max_sec": 60,
-                "target_duration_sec": 60,
-                "scenes": [{"text": text}],
-            })
-        self.assertEqual(cls.render_calls, 0)
+        result = cls().create_video_from_plan({
+            "title": "Jesus Está Presente",
+            "duration_min": 1,
+            "duration_max": 1,
+            "duration_max_sec": 60,
+            "target_duration_sec": 60,
+            "scenes": [{"text": text}],
+        })
+        self.assertEqual(cls.render_calls, 1)
+        report = result["channel_excellence_guard"]["duration_preflight"]
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["maximum_is_advisory"])
+        self.assertTrue(report["minimum_estimate_met"])
 
-    def test_extreme_overrun_with_user_confirmation_proceeds_and_is_audited(self):
+    def test_extreme_overrun_with_confirmation_is_not_treated_as_an_override(self):
         cls = self._generator_cls("DurationApprovedByUser")
         text = " ".join(["esperança"] * 300)
         result = cls().create_video_from_plan({
@@ -94,9 +97,10 @@ class DurationConfirmationTests(unittest.TestCase):
         })
         self.assertEqual(cls.render_calls, 1)
         report = result["channel_excellence_guard"]["duration_preflight"]
-        self.assertFalse(report["passed"])
-        self.assertTrue(report["overridden_by_user"])
-        self.assertEqual(report["approval_source"], "user_confirmation")
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["maximum_is_advisory"])
+        self.assertTrue(report["minimum_estimate_met"])
+        self.assertFalse(report.get("overridden_by_user", False))
 
     def test_frontend_uses_requested_range_and_warns_before_submit(self):
         html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
