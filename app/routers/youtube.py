@@ -7310,6 +7310,78 @@ def retry_task(task_id: str, _admin=Depends(get_current_admin_user)):
         except Exception:
             raise HTTPException(status_code=400, detail="Payload inválido para reiniciar a tarefa.")
 
+        # A failed status can be a false negative even when the MP4 and all
+        # production artifacts are complete. Revalidate that render before spending
+        # credits or replacing it with a new render.
+        if status == "failed":
+            _revalidation_db = SessionLocal()
+            try:
+                _revalidation_service = unified_video_pipeline()
+                _revalidation, _revalidated_uv = _revalidation_service.transition_to_awaiting_review_if_valid(
+                    _revalidation_db,
+                    task_id,
+                    probe_local_paths=True,
+                    probe_http=False,
+                )
+                if _revalidation and _revalidation.ok and _revalidated_uv is not None:
+                    _revalidated_db_status = str(
+                        getattr(_revalidated_uv, "status") or "awaiting_review"
+                    ).strip().lower()
+                    _revalidated_task_status = (
+                        "completed"
+                        if _revalidated_db_status in {"approved", "published"}
+                        else "awaiting_review"
+                    )
+                    _revalidated_message = (
+                        "Vídeo existente revalidado com sucesso; nenhuma nova geração foi necessária."
+                    )
+                    _revalidated_result = dict(result) if isinstance(result, dict) else {}
+                    _revalidated_result["unified_pipeline"] = {
+                        "validation_checks": _revalidation.checks,
+                        "validation_ok": True,
+                        "status": _revalidated_db_status,
+                        "unified_video_id": getattr(_revalidated_uv, "id", None),
+                        "existing_render_revalidated": True,
+                    }
+                    _revalidated_result["existing_render_revalidation"] = {
+                        "reused_existing_video": True,
+                        "render_skipped": True,
+                        "validated_at": datetime.utcnow().isoformat(),
+                    }
+                    _finalized = finalize_task_once(
+                        task_id,
+                        status=_revalidated_task_status,
+                        progress=100,
+                        message=_revalidated_message,
+                        result=_revalidated_result,
+                    )
+                    _finalized_task = _finalized.get("task") if isinstance(_finalized, dict) else {}
+                    _finalized_status = str((_finalized_task or {}).get("status") or "").strip().lower()
+                    if not (_finalized.get("finalized_now") or _finalized_status == _revalidated_task_status):
+                        raise HTTPException(
+                            status_code=500,
+                            detail="O vídeo existente passou na validação, mas não foi possível atualizar o status da tarefa.",
+                        )
+                    return {
+                        "message": _revalidated_message,
+                        "task_id": task_id,
+                        "status": _revalidated_task_status,
+                        "revalidated_existing_video": True,
+                        "render_skipped": True,
+                        "reuse_assets": True,
+                        "unified_video_id": getattr(_revalidated_uv, "id", None),
+                    }
+            except HTTPException:
+                raise
+            except Exception as _revalidation_error:
+                print(
+                    f"Revalidação do render existente falhou para {task_id}; "
+                    f"seguindo para a recuperação automática: "
+                    f"{type(_revalidation_error).__name__}: {str(_revalidation_error)[:240]}"
+                )
+            finally:
+                _revalidation_db.close()
+
         if status == "paused":
             merge_task_result(task_id, {
                 "payload": payload,
