@@ -284,6 +284,55 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertIn('"pipeline": "unified_video_pipeline"', source)
         self.assertNotIn("threading.Thread(target=process_video_generation", source)
 
+    def test_retry_revalidates_existing_good_mp4_without_rendering_again(self):
+        task = {
+            "status": "failed",
+            "progress": 100,
+            "updated_at": datetime.utcnow().isoformat(),
+            "result": {
+                "payload": {
+                    "mode": "story",
+                    "kind": "devotional",
+                    "duration": 3,
+                    "story_content": "Texto completo",
+                },
+                "video_url": "/data/media/videos/completo.mp4",
+                "file_path": "/data/media/videos/completo.mp4",
+                "script": {"title": "Vídeo completo", "scenes": [{"text": "Cena"}]},
+                "render_report": {"scene_visuals": [{"image_path": "/data/media/images/1.png"}]},
+            },
+        }
+        fake_db = Mock()
+        fake_pipeline = Mock()
+        fake_pipeline.transition_to_awaiting_review_if_valid.return_value = (
+            SimpleNamespace(ok=True, checks={"mp4_exists": True}, first_failed=None),
+            SimpleNamespace(status="awaiting_review", id=17),
+        )
+        with (
+            patch("app.routers.youtube.acquire_distributed_lock", return_value={"backend": "test"}),
+            patch("app.routers.youtube.release_distributed_lock"),
+            patch("app.routers.youtube.get_task", return_value=task),
+            patch("app.routers.youtube._maybe_enable_render_only_flags", side_effect=lambda payload, _task_id: payload),
+            patch("app.routers.youtube.SessionLocal", return_value=fake_db),
+            patch("app.routers.youtube.unified_video_pipeline", return_value=fake_pipeline),
+            patch(
+                "app.routers.youtube.finalize_task_once",
+                return_value={"finalized_now": True, "task": {"status": "awaiting_review"}},
+            ) as finalize,
+            patch("app.routers.youtube.reset_task_for_retry") as reset,
+            patch("app.routers.youtube._dispatch_video_generation_task") as dispatch,
+        ):
+            result = retry_task("task-good-render", _admin=SimpleNamespace(id=1))
+
+        self.assertTrue(result["revalidated_existing_video"])
+        self.assertTrue(result["render_skipped"])
+        self.assertEqual(result["status"], "awaiting_review")
+        fake_pipeline.transition_to_awaiting_review_if_valid.assert_called_once()
+        finalize.assert_called_once()
+        reset.assert_not_called()
+        dispatch.assert_not_called()
+        fake_db.close.assert_called_once()
+
     def test_retry_endpoint_dispatches_same_failed_task(self):
         task = {
             "status": "failed",
