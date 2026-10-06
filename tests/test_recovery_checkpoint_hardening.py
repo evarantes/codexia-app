@@ -13,11 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RecoveryCheckpointHardeningTests(unittest.TestCase):
-    def test_55_second_audio_is_never_valid_for_ten_minute_retry(self):
-        self.assertFalse(_recovery_audio_duration_plausible(55.338, 10))
+    def test_measurable_seed_audio_is_kept_for_minimum_repair_check(self):
+        self.assertTrue(_recovery_audio_duration_plausible(55.338, 10))
         self.assertTrue(_recovery_audio_duration_plausible(600.0, 10))
         self.assertTrue(_recovery_audio_duration_plausible(774.0, 10))
-        self.assertFalse(_recovery_audio_duration_plausible(1200.0, 10))
+        self.assertTrue(_recovery_audio_duration_plausible(1200.0, 10))
+        self.assertFalse(_recovery_audio_duration_plausible(0.5, 10))
 
     def test_visuals_are_recovered_from_render_report_scene_visuals(self):
         result = {
@@ -73,7 +74,8 @@ class RecoveryCheckpointHardeningTests(unittest.TestCase):
         self.assertIn('Claude Diretor: vou reparar automaticamente os ativos faltantes', router)
         self.assertIn('payload["repair_mode"] = True', router)
         self.assertIn('payload["repair_complete_visuals"] = "imagens" in missing', router)
-        self.assertIn('payload["repair_regenerate_audio"] = "áudio" in missing', router)
+        self.assertIn('payload["repair_regenerate_audio"] = bool(audio_short)', router)
+        self.assertIn('payload["repair_regenerate_audio"] = bool(payload.get("repair_regenerate_audio"))', router)
         self.assertIn('payload.pop("_recovery_block_paid_regeneration", None)', router)
         self.assertNotIn("Nenhuma nova mídia foi gerada nesta tentativa.", router)
 
