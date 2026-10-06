@@ -43,14 +43,17 @@ class FinalRenderRecoveryTests(unittest.TestCase):
         paid_block_pos = router.index('if bool(payload.get("_recovery_block_paid_regeneration"))', salvage_pos)
         self.assertLess(salvage_pos, paid_block_pos)
 
-    def test_duration_guard_rejects_short_render_for_ten_minute_task(self):
+    def test_duration_guard_treats_requested_duration_as_minimum(self):
         from app.routers.youtube import _recovery_final_video_duration_plausible
 
         self.assertFalse(_recovery_final_video_duration_plausible(55.0, 10))
         self.assertFalse(_recovery_final_video_duration_plausible(300.0, 10))
         self.assertTrue(_recovery_final_video_duration_plausible(600.0, 10))
+        self.assertFalse(_recovery_final_video_duration_plausible(599.99, 10))
         self.assertTrue(_recovery_final_video_duration_plausible(622.0, 10))
-        self.assertFalse(_recovery_final_video_duration_plausible(1200.0, 10))
+        self.assertTrue(_recovery_final_video_duration_plausible(1200.0, 10))
+        self.assertTrue(_recovery_final_video_duration_plausible(64.977, 10, 30.0))
+        self.assertFalse(_recovery_final_video_duration_plausible(29.99, 10, 30.0))
 
     def test_explicit_candidate_collector_finds_nested_video_references(self):
         from app.routers.youtube import _recovery_final_video_explicit_candidates

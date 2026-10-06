@@ -41,6 +41,48 @@ PAID_GUARD_NEW = PAID_GUARD_NEW.replace(
             }:''',
 )
 
+AUTO_REPAIR_CONFIRM_OLD = '''            update_task(task_id, message=recovery_message)
+            payload.pop("_recovery_block_paid_regeneration", None)'''
+
+AUTO_REPAIR_CONFIRM_NEW = '''            update_task(task_id, message=recovery_message)
+            try:
+                manifest_plan = build_recovery_plan(task_id, payload_override=payload)
+            except Exception:
+                manifest_plan = {}
+            manifest_action = str(manifest_plan.get("action") or "") if isinstance(manifest_plan, dict) else ""
+            if manifest_action == "rerender_without_paid_media":
+                payload = recovery_payload_patch(task_id, payload, manifest_plan)
+                ready_message = (
+                    "Recuperação sem novas chamadas pagas: roteiro, áudio e imagens preservados serão reutilizados; "
+                    "somente a composição/renderização será refeita."
+                )
+                update_task(task_id, message=ready_message)
+            elif manifest_action in {
+                "regenerate_missing_images",
+                "rebuild_untrusted_audio",
+                "rebuild_missing_audio",
+                "rebuild_audio_and_missing_images",
+            }:
+                try:
+                    manifest_decision = confirm_or_prepare_partial_recovery(task_id, payload)
+                except Exception:
+                    manifest_decision = {"allow": False, "plan": manifest_plan, "reason": "manifest_error"}
+                confirmed_plan = manifest_decision.get("plan") if isinstance(manifest_decision, dict) else manifest_plan
+                if isinstance(manifest_decision, dict) and bool(manifest_decision.get("allow")):
+                    recovered_payload = manifest_decision.get("payload")
+                    if isinstance(recovered_payload, dict):
+                        payload = recovered_payload
+                    ready_message = recovery_ready_message(confirmed_plan if isinstance(confirmed_plan, dict) else {})
+                    update_task(task_id, message=ready_message)
+                else:
+                    recovery_message = recovery_confirmation_message(confirmed_plan if isinstance(confirmed_plan, dict) else manifest_plan)
+                    update_task(task_id, message=recovery_message)
+                    raise HTTPException(status_code=409, detail=recovery_message)
+            # Se o manifesto estiver indisponível, preserve a reparação automática
+            # já preparada pelos checkpoints da tarefa; não descarte roteiro ou mídia.
+            payload.pop("_recovery_block_paid_regeneration", None)'''
+
+
 
 SCOPE_OLD = '''            if bool(payload.get("_recovery_block_paid_regeneration")):\n                update_task(task_id, message=message)\n                return {\n                    "recovered": False,\n                    "blocked": True,\n                    "task_id": task_id,\n                    "message": message,\n                    "reason": base_reason,\n                }\n            return None'''
 
@@ -135,7 +177,17 @@ def apply() -> None:
     if "CODEXIA_FINAL_RENDER_RECOVERY_SCOPE_V1" not in yt_text:
         raise PatchError("final render scope v1 deve ser aplicado antes do manifesto")
     yt_text, _ = _replace_once(yt_text, IMPORT_OLD, IMPORT_NEW, "production manifest import")
-    yt_text, _ = _replace_once(yt_text, PAID_GUARD_OLD, PAID_GUARD_NEW, "paid recovery confirmation")
+    if PAID_GUARD_NEW in yt_text or AUTO_REPAIR_CONFIRM_NEW in yt_text:
+        pass
+    elif PAID_GUARD_OLD in yt_text:
+        yt_text, _ = _replace_once(yt_text, PAID_GUARD_OLD, PAID_GUARD_NEW, "paid recovery confirmation")
+    else:
+        yt_text, _ = _replace_once(
+            yt_text,
+            AUTO_REPAIR_CONFIRM_OLD,
+            AUTO_REPAIR_CONFIRM_NEW,
+            "paid recovery confirmation after automatic repair flags",
+        )
     yt_text, _ = _replace_once(yt_text, SCOPE_OLD, SCOPE_NEW, "final render partial recovery scope")
     yt_text, _ = _replace_once(yt_text, SEED_AUDIO_OLD, SEED_AUDIO_NEW, "manifest audio seed fallback")
     yt_text, _ = _replace_once(yt_text, SEED_SCRIPT_OLD, SEED_SCRIPT_NEW, "manifest partial metadata")

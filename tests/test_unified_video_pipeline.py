@@ -1023,5 +1023,17 @@ class UnifiedVideoPipelineContractTests(unittest.TestCase):
         )
 
 
+    def test_16_requested_duration_is_a_minimum_and_full_narration_is_preserved(self):
+        from app.services.unified_video_pipeline import (
+            output_covers_narration,
+            output_duration_meets_minimum,
+        )
+
+        self.assertTrue(output_duration_meets_minimum(64.98, 30))
+        self.assertTrue(output_duration_meets_minimum(36.32, 30))
+        self.assertFalse(output_duration_meets_minimum(29.99, 30))
+        self.assertFalse(output_covers_narration(36.32, 60.0))
+        self.assertTrue(output_covers_narration(64.98, 60.0))
+
 if __name__ == "__main__":
     unittest.main()

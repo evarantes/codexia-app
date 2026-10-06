@@ -18,18 +18,27 @@ BLOCK = r'''
 # the wrapper returns its result. In that case image references can be lost even
 # though the final render is still safely persisted in /data/media/videos.
 # Recovery must prefer that finished local render over any new paid media call.
-def _recovery_final_video_duration_plausible(duration_sec: Any, target_minutes: Any) -> bool:
+def _recovery_final_video_duration_plausible(
+    duration_sec: Any,
+    target_minutes: Any,
+    target_duration_sec: Any = 0.0,
+) -> bool:
     try:
         duration = float(duration_sec or 0.0)
-    except Exception:
+    except (TypeError, ValueError):
         duration = 0.0
     try:
-        target_sec = max(60.0, float(target_minutes or 0.0) * 60.0)
-    except Exception:
+        exact_target_sec = max(0.0, float(target_duration_sec or 0.0))
+    except (TypeError, ValueError):
+        exact_target_sec = 0.0
+    try:
+        target_sec = exact_target_sec or max(60.0, float(target_minutes or 0.0) * 60.0)
+    except (TypeError, ValueError):
         target_sec = 300.0
     if duration <= 1.0:
         return False
-    return (target_sec * 0.60) <= duration <= (target_sec * 1.80)
+    # Requested duration is a floor. Preserve a longer completed render.
+    return duration >= target_sec
 
 
 def _recovery_final_video_explicit_candidates(result_obj: Any, unified_obj: Any) -> List[str]:
@@ -99,30 +108,36 @@ def _recovery_final_video_url(path_value: Any) -> str:
 
 
 def _recovery_final_video_audio_checkpoint_duration(result_obj: Dict[str, Any], unified_obj: Dict[str, Any]) -> float:
+    # Keep the longest saved narration as the completion contract. A later
+    # failed retry may have written a shorter duration without replacing the
+    # original approved audio checkpoint.
+    durations: List[float] = []
     for source in (result_obj, unified_obj):
         if not isinstance(source, dict):
             continue
         recovery = source.get("recovery_checkpoint") if isinstance(source.get("recovery_checkpoint"), dict) else {}
-        for key in ("audio_duration_sec", "audio_duration_seconds"):
-            try:
-                value = float(recovery.get(key) or 0.0)
-            except Exception:
-                value = 0.0
-            if value > 0:
-                return value
         checkpoint = source.get("audio_checkpoint") if isinstance(source.get("audio_checkpoint"), dict) else {}
-        for key in ("final_audio_duration_sec", "duration_seconds", "audio_duration_seconds"):
+        for value in (
+            recovery.get("audio_duration_sec"),
+            recovery.get("audio_duration_seconds"),
+            checkpoint.get("final_audio_duration_sec"),
+            checkpoint.get("duration_seconds"),
+            checkpoint.get("audio_duration_seconds"),
+        ):
             try:
-                value = float(checkpoint.get(key) or 0.0)
-            except Exception:
-                value = 0.0
-            if value > 0:
-                return value
+                seconds = float(value or 0.0)
+            except (TypeError, ValueError):
+                seconds = 0.0
+            if seconds > 0.0:
+                durations.append(seconds)
     meta = unified_obj.get("_unified_recovery_meta") if isinstance(unified_obj.get("_unified_recovery_meta"), dict) else {}
     try:
-        return float(meta.get("audio_duration_seconds") or 0.0)
-    except Exception:
-        return 0.0
+        meta_duration = float(meta.get("audio_duration_seconds") or 0.0)
+    except (TypeError, ValueError):
+        meta_duration = 0.0
+    if meta_duration > 0.0:
+        durations.append(meta_duration)
+    return max(durations, default=0.0)
 
 
 def _recovery_final_video_claimed_paths(db: Any, task_id: str) -> set:
@@ -139,7 +154,13 @@ def _recovery_final_video_claimed_paths(db: Any, task_id: str) -> set:
     return claimed
 
 
-def _recovery_probe_final_video(path: str, *, target_minutes: Any, audio_duration_sec: float = 0.0) -> Dict[str, Any]:
+def _recovery_probe_final_video(
+    path: str,
+    *,
+    target_minutes: Any,
+    target_duration_sec: float = 0.0,
+    audio_duration_sec: float = 0.0,
+) -> Dict[str, Any]:
     try:
         probe = probe_media_file(path)
     except Exception as exc:
@@ -156,12 +177,17 @@ def _recovery_probe_final_video(path: str, *, target_minutes: Any, audio_duratio
         float(probe.get("audio_duration") or 0.0),
         float(probe.get("format_duration") or 0.0),
     )
-    if not _recovery_final_video_duration_plausible(duration, target_minutes):
+    if not _recovery_final_video_duration_plausible(
+        duration,
+        target_minutes,
+        target_duration_sec,
+    ):
         return {"ok": False, "path": path, "probe": probe, "duration_sec": duration, "error": "duration_outside_target"}
     audio_delta = 0.0
     if float(audio_duration_sec or 0.0) > 0:
-        audio_delta = abs(duration - float(audio_duration_sec))
-        tolerance = max(5.0, float(audio_duration_sec) * 0.015)
+        # A video may run longer than its narration, but it may not truncate it.
+        audio_delta = max(0.0, float(audio_duration_sec) - duration)
+        tolerance = max(0.5, float(audio_duration_sec) * 0.005)
         if audio_delta > tolerance:
             return {
                 "ok": False,
@@ -169,8 +195,8 @@ def _recovery_probe_final_video(path: str, *, target_minutes: Any, audio_duratio
                 "probe": probe,
                 "duration_sec": duration,
                 "audio_checkpoint_duration_sec": float(audio_duration_sec),
-                "audio_delta_sec": audio_delta,
-                "error": "render_does_not_match_audio_checkpoint",
+                "audio_shortfall_sec": audio_delta,
+                "error": "render_cuts_audio_checkpoint",
             }
     return {
         "ok": True,
@@ -198,6 +224,10 @@ def _recovery_choose_existing_final_video(
     if not target_minutes:
         meta = unified_obj.get("_unified_recovery_meta") if isinstance(unified_obj.get("_unified_recovery_meta"), dict) else {}
         target_minutes = meta.get("duration_minutes") or 5
+    try:
+        target_duration_sec = max(0.0, float(payload.get("duration_seconds") or 0.0))
+    except (TypeError, ValueError):
+        target_duration_sec = 0.0
     audio_duration = _recovery_final_video_audio_checkpoint_duration(result_obj, unified_obj)
     claimed = _recovery_final_video_claimed_paths(db, str(getattr(row, "id", None) or ""))
 
@@ -211,7 +241,12 @@ def _recovery_choose_existing_final_video(
     for path in explicit_paths:
         if path in claimed:
             continue
-        report = _recovery_probe_final_video(path, target_minutes=target_minutes, audio_duration_sec=audio_duration)
+        report = _recovery_probe_final_video(
+            path,
+            target_minutes=target_minutes,
+            target_duration_sec=target_duration_sec,
+            audio_duration_sec=audio_duration,
+        )
         report["source"] = "persisted_reference"
         diagnostics.append(report)
         if report.get("ok"):
@@ -243,7 +278,12 @@ def _recovery_choose_existing_final_video(
             mtime = 0.0
         if created_ts > 0 and mtime > 0 and mtime < (created_ts - 10 * 60):
             continue
-        report = _recovery_probe_final_video(abs_path, target_minutes=target_minutes, audio_duration_sec=audio_duration)
+        report = _recovery_probe_final_video(
+            abs_path,
+            target_minutes=target_minutes,
+            target_duration_sec=target_duration_sec,
+            audio_duration_sec=audio_duration,
+        )
         report["source"] = "video_output_scan"
         report["mtime"] = mtime
         diagnostics.append(report)
@@ -378,7 +418,7 @@ def _recovery_try_promote_final_render(payload: Dict[str, Any], task_id: str) ->
         video_path = str(candidate.get("path") or "").strip()
         video_url = _recovery_final_video_url(video_path)
         duration_sec = float(candidate.get("duration_sec") or 0.0)
-        requested_frames = max(1, min(64, int(getattr(uv, "image_count", 1) or 1)))
+        requested_frames = max(2, min(64, int(getattr(uv, "image_count", 1) or 1)))
         frames, frame_source = _recovery_extract_review_frames(video_path, task_id, requested_frames, duration_sec)
         if len(frames) < requested_frames:
             message = (
@@ -417,6 +457,34 @@ def _recovery_try_promote_final_render(payload: Dict[str, Any], task_id: str) ->
             "required_frame_count": requested_frames,
             "checked_without_paid_calls": True,
         }
+        # Reuse only a report that belongs to this exact MP4. A failed retry can
+        # leave newer 36s caption/duration telemetry beside an older complete
+        # render; that stale report must not be used to reject the older file.
+        report_candidates = []
+        for report_source in (result_obj, unified_obj):
+            candidate_report = (
+                report_source.get("render_report")
+                if isinstance(report_source, dict)
+                and isinstance(report_source.get("render_report"), dict)
+                else {}
+            )
+            duration_plan = (
+                candidate_report.get("duration_plan")
+                if isinstance(candidate_report.get("duration_plan"), dict)
+                else {}
+            )
+            try:
+                report_duration = float(duration_plan.get("obtained_duration_sec") or 0.0)
+            except (TypeError, ValueError):
+                report_duration = 0.0
+            if report_duration > 0 and abs(report_duration - duration_sec) <= max(2.0, duration_sec * 0.05):
+                report_candidates.append((abs(report_duration - duration_sec), candidate_report))
+        if report_candidates:
+            result_obj["render_report"] = min(report_candidates, key=lambda item: item[0])[1]
+        else:
+            had_render_report = isinstance(result_obj.get("render_report"), dict) and bool(result_obj.get("render_report"))
+            result_obj["render_report"] = {}
+            recovery_meta["stale_render_report_discarded"] = bool(had_render_report)
         result_obj["file_path"] = video_path
         result_obj["video_path"] = video_path
         result_obj["video_url"] = video_url
@@ -511,6 +579,30 @@ RETRY_OLD = '''        payload = _maybe_enable_render_only_flags(payload, task_i
 RETRY_NEW = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        final_render_recovery = _recovery_try_promote_final_render(payload, task_id)\n        if isinstance(final_render_recovery, dict) and final_render_recovery.get("recovered"):\n            return final_render_recovery\n        if isinstance(final_render_recovery, dict) and final_render_recovery.get("blocked"):\n            raise HTTPException(status_code=409, detail=str(final_render_recovery.get("message") or "Recuperação bloqueada."))\n        if bool(payload.get("_recovery_block_paid_regeneration")):'''
 
 
+WORKER_PREFLIGHT_OLD = '''def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
+    resource_report = _series_resource_preflight(payload, task_id)'''
+
+WORKER_PREFLIGHT_NEW = '''def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
+    # Worker-side retry preflight: the API and CX33 may not share the media
+    # mount. Search/recover the completed MP4 where the renderer's files live
+    # before starting another paid render.
+    if isinstance(payload, dict) and bool(payload.get("_recovery_worker_final_render_preflight")):
+        try:
+            recovered = _recovery_try_promote_final_render(payload, str(task_id))
+            if isinstance(recovered, dict) and recovered.get("recovered"):
+                return recovered
+            if isinstance(recovered, dict) and recovered.get("blocked"):
+                print(
+                    "Final-render retry preflight could not promote the prior MP4; "
+                    "continuing with automatic asset repair."
+                )
+        except Exception as recovery_exc:
+            print(
+                "Final-render retry preflight failed; continuing with automatic asset repair: "
+                f"{type(recovery_exc).__name__}: {str(recovery_exc)[:240]}"
+            )
+    resource_report = _series_resource_preflight(payload, task_id)'''
+
 AUTO_FAILURE_OLD = '''    except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")
         try:
@@ -590,6 +682,10 @@ def apply() -> None:
         if AUTO_FAILURE_OLD not in text:
             raise PatchError("anchor da recuperação automática pós-render não encontrado")
         text = text.replace(AUTO_FAILURE_OLD, AUTO_FAILURE_NEW, 1)
+    if WORKER_PREFLIGHT_NEW not in text:
+        if WORKER_PREFLIGHT_OLD not in text:
+            raise PatchError("anchor do preflight de retry no worker não encontrado")
+        text = text.replace(WORKER_PREFLIGHT_OLD, WORKER_PREFLIGHT_NEW, 1)
     TARGET.write_text(text.rstrip() + BLOCK + "\n", encoding="utf-8")
 
 
@@ -607,6 +703,8 @@ def check() -> None:
         "CODEXIA_AUTO_FINAL_RENDER_RECOVERY_V1",
         "existing final render recovered after task exception",
         "automatic final-render recovery error",
+        "_recovery_worker_final_render_preflight",
+        "continuing with automatic asset repair",
     )
     missing = [item for item in required if item not in text]
     if missing:

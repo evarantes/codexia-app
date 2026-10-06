@@ -57,7 +57,7 @@ class RecoveryCheckpointHardeningTests(unittest.TestCase):
             ],
         )
 
-    def test_runtime_build_applies_checkpoint_v4_and_blocks_silent_paid_retry(self):
+    def test_runtime_build_applies_checkpoint_v4_and_continues_automatic_repair(self):
         router = (ROOT / "app/routers/youtube.py").read_text(encoding="utf-8")
         self.assertIn("CODEXIA_RECOVERY_CHECKPOINT_V3_START", router)
         self.assertNotIn("CODEXIA_RECOVERY_CHECKPOINT_V2_START", router)
@@ -70,7 +70,12 @@ class RecoveryCheckpointHardeningTests(unittest.TestCase):
         self.assertIn('payload["force_render_only"] = bool(render_only)', router)
         self.assertIn('payload["_recovery_block_paid_regeneration"] = True', router)
         self.assertIn("db.query(UnifiedVideo)", router)
-        self.assertIn("Nenhuma nova mídia foi gerada nesta tentativa.", router)
+        self.assertIn('Claude Diretor: vou reparar automaticamente os ativos faltantes', router)
+        self.assertIn('payload["repair_mode"] = True', router)
+        self.assertIn('payload["repair_complete_visuals"] = "imagens" in missing', router)
+        self.assertIn('payload["repair_regenerate_audio"] = "áudio" in missing', router)
+        self.assertIn('payload.pop("_recovery_block_paid_regeneration", None)', router)
+        self.assertNotIn("Nenhuma nova mídia foi gerada nesta tentativa.", router)
 
         for filename in ("Dockerfile", "Dockerfile.worker"):
             content = (ROOT / filename).read_text(encoding="utf-8")
