@@ -8731,12 +8731,20 @@ def process_video_generation(request: VideoRequest, task_id):
             _pipeline_status_target = "completed"
             _pipeline_final_message = "Vídeo gerado com sucesso!"
             _pipeline_final_status = "completed"
+            _auto_quality_repairs = []
             try:
                 if _unified_enabled() and unified_video_pipeline is not None:
+                    import copy as _copy
                     from app.database import SessionLocal as _SLocal
+                    from app.services.visual_quality_repair import (
+                        build_auto_visual_repair_plan,
+                        rendered_visual_diversity_report,
+                    )
+
+                    _pipeline_service = unified_video_pipeline()
                     _pdb = _SLocal()
                     try:
-                        unified_video_pipeline().transition_status(
+                        _pipeline_service.transition_status(
                             _pdb,
                             str(task_id),
                             status="validating",
@@ -8745,7 +8753,368 @@ def process_video_generation(request: VideoRequest, task_id):
                             message="Validando artefatos físicos / mp4 / áudio / imagens (UnifiedVideoPipeline)...",
                             merge_result=final_payload,
                         )
-                        _pipeline_validation, _uv = unified_video_pipeline().transition_to_awaiting_review_if_valid(
+                        _pipeline_validation = _pipeline_service.validate_before_awaiting_review(
+                            _pdb,
+                            str(task_id),
+                            probe_local_paths=True,
+                            probe_http=False,
+                        )
+
+                        def _quality_int(value):
+                            try:
+                                return max(0, int(value or 0))
+                            except (TypeError, ValueError):
+                                return 0
+
+                        def _quality_float(value):
+                            try:
+                                return max(0.0, float(value or 0))
+                            except (TypeError, ValueError):
+                                return 0.0
+
+                        def _visual_repair_score(validation_result, report, script_obj):
+                            checks = getattr(validation_result, "checks", {}) or {}
+                            details = getattr(validation_result, "details", {}) or {}
+                            image_details = details.get("images") if isinstance(details, dict) else {}
+                            available = int((image_details or {}).get("actual_found") or 0)
+                            if isinstance(script_obj, dict):
+                                available = max(available, len({
+                                    str(item).strip()
+                                    for item in (script_obj.get("selected_images") or [])
+                                    if isinstance(item, str) and str(item).strip()
+                                }))
+                            report_quality = rendered_visual_diversity_report(
+                                report,
+                                available_image_count=available,
+                            )
+                            return (
+                                sum(1 for value in checks.values() if value is True),
+                                int(report_quality.get("unique_rendered_image_count") or 0),
+                                int(bool(report_quality.get("passed"))),
+                            )
+
+                        _best_candidate = {
+                            "attempt": 0,
+                            "script": _copy.deepcopy(script if isinstance(script, dict) else {}),
+                            "video_result": _copy.deepcopy(video_result if isinstance(video_result, dict) else {}),
+                            "render_report": _copy.deepcopy(render_report if isinstance(render_report, dict) else {}),
+                            "sync_validation": _copy.deepcopy(sync_validation),
+                            "audio_generation": _copy.deepcopy(audio_generation),
+                            "video_path": video_path,
+                            "abs_video_path": abs_video_path,
+                            "payload": _copy.deepcopy(final_payload),
+                            "score": _visual_repair_score(
+                                _pipeline_validation,
+                                render_report,
+                                script if isinstance(script, dict) else {},
+                            ),
+                        }
+                        _repairable_checks = {
+                            "image_count_minimum",
+                            "image_files_exist",
+                            "audio_exists_and_non_empty",
+                            "mp4_exists",
+                            "mp4_larger_than_100kb",
+                            "ffprobe_has_video_stream",
+                            "ffprobe_has_audio_stream",
+                            "duration_valid",
+                            "duration_matches_request",
+                            "duration_covers_narration",
+                            "visual_variety_valid",
+                            "caption_sync_valid",
+                        }
+                        _image_repair_calls_remaining = 12
+                        _latest_successful_attempt = 0
+
+                        for _repair_attempt in range(1, 3):
+                            _current_checks = (
+                                getattr(_pipeline_validation, "checks", {})
+                                if _pipeline_validation is not None
+                                else {}
+                            ) or {}
+                            _failed_checks = {
+                                key for key in _repairable_checks
+                                if _current_checks.get(key) is False
+                            }
+                            if not _failed_checks:
+                                break
+
+                            _best_script = _best_candidate["script"]
+                            _best_report = _best_candidate["render_report"]
+                            _visual_plan = (
+                                _best_report.get("visual_plan")
+                                if isinstance(_best_report.get("visual_plan"), dict)
+                                else {}
+                            )
+                            _validation_details = (
+                                getattr(_pipeline_validation, "details", {})
+                                if _pipeline_validation is not None
+                                else {}
+                            ) or {}
+                            _image_details = (
+                                _validation_details.get("images")
+                                if isinstance(_validation_details, dict)
+                                else {}
+                            ) or {}
+                            _requested_visual_count = max(
+                                _quality_int(getattr(request, "image_count", 0)),
+                                _quality_int(getattr(request, "expected_image_count", 0)),
+                                _quality_int(getattr(request, "strict_visual_target_count", 0)),
+                                _quality_int(_best_script.get("expected_image_count")),
+                                _quality_int(_best_script.get("strict_visual_target_count")),
+                                _quality_int(_visual_plan.get("requested_image_count")),
+                                _quality_int(_visual_plan.get("group_count")),
+                                _quality_int(_image_details.get("expected_min")),
+                            )
+                            _audio_info = (
+                                _best_report.get("audio_generation")
+                                if isinstance(_best_report.get("audio_generation"), dict)
+                                else {}
+                            )
+                            _narration_info = (
+                                _best_report.get("narration_plan")
+                                if isinstance(_best_report.get("narration_plan"), dict)
+                                else {}
+                            )
+                            _audio_path = str(
+                                _audio_info.get("output_path")
+                                or _audio_info.get("final_audio_path")
+                                or _audio_info.get("audio_path")
+                                or ""
+                            ).strip()
+                            _audio_seconds = _quality_float(
+                                _audio_info.get("duration_seconds")
+                                or _audio_info.get("final_audio_duration_sec")
+                                or _audio_info.get("audio_duration_sec")
+                            )
+                            _requested_seconds = _quality_float(
+                                ((_validation_details.get("mp4") or {}).get("requested_duration_seconds"))
+                                if isinstance(_validation_details.get("mp4"), dict)
+                                else 0
+                            )
+                            _preserve_audio = (
+                                "audio_exists_and_non_empty" not in _failed_checks
+                                and not (
+                                    "duration_matches_request" in _failed_checks
+                                    and _requested_seconds > 0
+                                    and _audio_seconds > 0
+                                    and _audio_seconds + 0.5 < _requested_seconds
+                                )
+                            )
+                            _repair = build_auto_visual_repair_plan(
+                                _best_script,
+                                _best_report,
+                                expected_image_count=_requested_visual_count,
+                                task_id=str(task_id),
+                                attempt=_repair_attempt,
+                                max_new_image_calls=_image_repair_calls_remaining,
+                                audio_path=_audio_path,
+                                narration_text=str(_narration_info.get("full_text") or ""),
+                                reuse_audio=_preserve_audio,
+                            )
+                            if not _repair.get("ok"):
+                                _auto_quality_repairs.append({
+                                    "attempt": _repair_attempt,
+                                    "status": "not_repairable",
+                                    "reason": str(_repair.get("reason") or "repair_plan_rejected"),
+                                    "failed_checks": sorted(_failed_checks),
+                                })
+                                break
+
+                            _repair_plan = _repair["plan"]
+                            _repair_history_entry = {
+                                "attempt": _repair_attempt,
+                                "status": "running",
+                                "failed_checks": sorted(_failed_checks),
+                                "unique_images_before": _best_candidate["score"][1],
+                                "target_image_count": int(_repair.get("target_image_count") or 0),
+                                "preserved_image_count": int(_repair.get("preserved_image_count") or 0),
+                                "max_new_image_calls": int(_repair.get("max_new_image_calls") or 0),
+                                "previous_video_path": _best_candidate.get("video_path"),
+                            }
+                            _auto_quality_repairs.append(_repair_history_entry)
+                            update_task(
+                                task_id,
+                                progress=93,
+                                message=(
+                                    f"Diretor Claude corrigindo a produção automaticamente "
+                                    f"(tentativa {_repair_attempt}/2)..."
+                                ),
+                                result=_merged_task_result({
+                                    "pipeline_stage": "director_visual_quality_repair",
+                                    "auto_quality_repairs": _auto_quality_repairs,
+                                }),
+                            )
+                            heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
+                            _raise_if_cancelled()
+
+                            def _repair_progress(raw_progress, detail, _attempt=_repair_attempt):
+                                try:
+                                    mapped = 92 + int(max(0.0, min(100.0, float(raw_progress or 0))) * 0.04)
+                                except (TypeError, ValueError):
+                                    mapped = 92
+                                progress_callback(
+                                    mapped,
+                                    f"Correção automática {_attempt}/2 — {str(detail or '').strip()}",
+                                )
+
+                            try:
+                                _repair_result = video_service.create_video_from_plan(
+                                    _repair_plan,
+                                    aspect_ratio=str(request.aspect_ratio or "16:9"),
+                                    progress_callback=_repair_progress,
+                                    voice_style=voice_style,
+                                    voice_gender=voice_gender,
+                                    music_file_path=(
+                                        str(request.music_file_path).strip()
+                                        if request.music_file_path
+                                        else None
+                                    ),
+                                )
+                                if not isinstance(_repair_result, dict) or not _repair_result.get("video_url"):
+                                    raise RuntimeError("O render de correção não devolveu um MP4.")
+                                _repair_video_path = str(_repair_result.get("video_url") or "")
+                                _repair_report = (
+                                    _repair_result.get("render_report")
+                                    if isinstance(_repair_result.get("render_report"), dict)
+                                    else {}
+                                )
+                                _repair_abs_path = _resolve_rendered_video_file_path(_repair_result)
+                                if not _repair_abs_path or not os.path.isfile(_repair_abs_path):
+                                    raise RuntimeError("O MP4 da correção não foi encontrado no disco.")
+                            except (_TaskCancelled, _TaskPaused):
+                                raise
+                            except Exception as _repair_exc:
+                                _repair_history_entry.update({
+                                    "status": "render_failed",
+                                    "error": f"{type(_repair_exc).__name__}: {str(_repair_exc)[:500]}",
+                                })
+                                _image_repair_calls_remaining = max(
+                                    0,
+                                    _image_repair_calls_remaining
+                                    - _quality_int(_repair.get("max_new_image_calls")),
+                                )
+                                update_task(
+                                    task_id,
+                                    progress=96,
+                                    message=(
+                                        "O Diretor Claude tentou corrigir a produção automaticamente, "
+                                        "mas o novo render não terminou; o melhor MP4 já produzido foi preservado."
+                                    ),
+                                    result=_merged_task_result({
+                                        "auto_quality_repairs": _auto_quality_repairs,
+                                    }),
+                                )
+                                break
+
+                            _latest_successful_attempt = _repair_attempt
+                            _repair_history_entry.update({
+                                "status": "rendered",
+                                "video_path": _repair_abs_path,
+                            })
+                            _repair_budget_report = (
+                                _repair_report.get("visual_plan", {}).get("recovery_image_budget", {})
+                                if isinstance(_repair_report.get("visual_plan"), dict)
+                                else {}
+                            )
+                            _used_image_calls = _quality_int(
+                                _repair_budget_report.get("used_new_image_calls")
+                            )
+                            if _used_image_calls <= 0 and int(_repair.get("max_new_image_calls") or 0) > 0:
+                                _used_image_calls = _quality_int(_repair.get("max_new_image_calls"))
+                            _image_repair_calls_remaining = max(
+                                0,
+                                _image_repair_calls_remaining - max(0, _used_image_calls),
+                            )
+
+                            video_result = _repair_result
+                            script = _repair_plan
+                            video_path = _repair_video_path
+                            abs_video_path = _repair_abs_path
+                            render_report = _repair_report
+                            sync_validation = (
+                                render_report.get("sync_validation")
+                                if isinstance(render_report.get("sync_validation"), dict)
+                                else {}
+                            )
+                            audio_generation = (
+                                render_report.get("audio_generation")
+                                if isinstance(render_report.get("audio_generation"), dict)
+                                else {}
+                            )
+                            final_payload = _merged_task_result({
+                                "video_url": video_path,
+                                "file_path": abs_video_path,
+                                "title": script.get("title"),
+                                "description": script.get("description"),
+                                "tags": script.get("tags"),
+                                "kind": "story" if request.mode == "story" else "topic",
+                                "editorial_intelligence": script.get("editorial_intelligence"),
+                                "script": script,
+                                "render_report": render_report,
+                                "audio_generation": audio_generation,
+                                "sync_validation": sync_validation,
+                                "executor_id": executor_id,
+                                "attempt_number": int(lease_info.get("attempt_number") or 1),
+                                "financial_guardian": guardian_summary,
+                                "auto_quality_repairs": _auto_quality_repairs,
+                            })
+                            _pipeline_service.transition_status(
+                                _pdb,
+                                str(task_id),
+                                status="validating",
+                                step="validating",
+                                progress=97,
+                                message=(
+                                    f"Revalidando a correção automática {_repair_attempt}/2 do Diretor Claude..."
+                                ),
+                                merge_result=final_payload,
+                            )
+                            _pipeline_validation = _pipeline_service.validate_before_awaiting_review(
+                                _pdb,
+                                str(task_id),
+                                probe_local_paths=True,
+                                probe_http=False,
+                            )
+                            _candidate_score = _visual_repair_score(
+                                _pipeline_validation,
+                                render_report,
+                                script,
+                            )
+                            if _candidate_score > _best_candidate["score"]:
+                                _best_candidate = {
+                                    "attempt": _repair_attempt,
+                                    "script": _copy.deepcopy(script),
+                                    "video_result": _copy.deepcopy(video_result),
+                                    "render_report": _copy.deepcopy(render_report),
+                                    "sync_validation": _copy.deepcopy(sync_validation),
+                                    "audio_generation": _copy.deepcopy(audio_generation),
+                                    "video_path": video_path,
+                                    "abs_video_path": abs_video_path,
+                                    "payload": _copy.deepcopy(final_payload),
+                                    "score": _candidate_score,
+                                }
+
+                        # Keep the best physically validated render if a retry regressed.
+                        script = _best_candidate["script"]
+                        video_result = _best_candidate["video_result"]
+                        render_report = _best_candidate["render_report"]
+                        sync_validation = _best_candidate["sync_validation"]
+                        audio_generation = _best_candidate["audio_generation"]
+                        video_path = _best_candidate["video_path"]
+                        abs_video_path = _best_candidate["abs_video_path"]
+                        final_payload = _copy.deepcopy(_best_candidate["payload"])
+                        final_payload["auto_quality_repairs"] = _auto_quality_repairs
+                        _pipeline_service.transition_status(
+                            _pdb,
+                            str(task_id),
+                            status="validating",
+                            step="validating",
+                            progress=98,
+                            message="Conferindo o melhor render da produção antes de liberar a revisão...",
+                            merge_result=final_payload,
+                        )
+                        _pipeline_validation, _uv = _pipeline_service.transition_to_awaiting_review_if_valid(
                             _pdb,
                             str(task_id),
                             probe_local_paths=True,
@@ -8756,6 +9125,10 @@ def process_video_generation(request: VideoRequest, task_id):
                             _pipeline_final_status = "failed"
                             failed_check = str(_pipeline_validation.first_failed or "unknown")
                             if failed_check == "duration_matches_request":
+                                _attempted_count = sum(
+                                    1 for item in _auto_quality_repairs
+                                    if item.get("status") in {"running", "rendered", "render_failed"}
+                                )
                                 _duration_details = (
                                     (_pipeline_validation.details or {}).get("mp4")
                                     if isinstance(_pipeline_validation.details, dict)
@@ -8766,55 +9139,97 @@ def process_video_generation(request: VideoRequest, task_id):
                                 _obtained_label = f"{_obtained_sec // 60}:{_obtained_sec % 60:02d}"
                                 _requested_label = f"{_requested_sec // 60}:{_requested_sec % 60:02d}"
                                 _pipeline_final_message = (
-                                    "O Claude Diretor bloqueou o vídeo porque a duração ficou em "
-                                    f"{_obtained_label}, mas o pedido foi de {_requested_label}. "
-                                    "O arquivo não foi liberado para revisão. Reinicie para o roteiro e a narração "
-                                    "serem corrigidos antes de um novo render."
+                                    "A duração final ficou abaixo do mínimo solicitado: "
+                                    f"{_obtained_label} de {_requested_label}. "
+                                    f"Foram executadas {_attempted_count} tentativa(s) de correção automática; "
+                                    "os ativos foram preservados."
                                 )
-                            elif failed_check == "visual_variety_valid":
+                            elif failed_check in {"visual_variety_valid", "image_count_minimum", "image_files_exist"}:
+                                _attempted_count = sum(
+                                    1 for item in _auto_quality_repairs
+                                    if item.get("status") in {"running", "rendered", "render_failed"}
+                                )
+                                _visual_details = (
+                                    ((_pipeline_validation.details or {}).get("director_quality") or {}).get("visual_variety")
+                                    if isinstance(_pipeline_validation.details, dict)
+                                    else {}
+                                ) or {}
+                                _unique = int(_visual_details.get("unique_rendered_image_count") or 0)
+                                _minimum = int(_visual_details.get("minimum_unique_image_count") or 0)
+                                if _attempted_count:
+                                    _pipeline_final_message = (
+                                        f"Após {_attempted_count} tentativa(s) de correção automática, "
+                                        f"o melhor render ainda tem {_unique} imagens distintas; "
+                                        f"o mínimo calculado foi {_minimum}. O melhor vídeo e os ativos foram preservados."
+                                    )
+                                else:
+                                    _pipeline_final_message = (
+                                        "A variedade visual ficou abaixo do mínimo e não foi possível iniciar "
+                                        "uma correção automática nesta execução. O melhor vídeo e os ativos foram preservados."
+                                    )
+                            elif failed_check == "duration_covers_narration":
+                                _mp4_details = (
+                                    (_pipeline_validation.details or {}).get("mp4")
+                                    if isinstance(_pipeline_validation.details, dict)
+                                    else {}
+                                ) or {}
+                                _audio_duration = _quality_float(_mp4_details.get("narration_duration_seconds"))
+                                _video_duration = _quality_float(_mp4_details.get("duration_seconds"))
+                                _attempted_count = sum(
+                                    1 for item in _auto_quality_repairs
+                                    if item.get("status") in {"running", "rendered", "render_failed"}
+                                )
                                 _pipeline_final_message = (
-                                    "O Claude Diretor bloqueou o vídeo por repetição excessiva de imagens. "
-                                    "Reinicie para corrigir a variedade visual antes de um novo render."
+                                    "O vídeo foi encerrado antes do fim da narração: "
+                                    f"{int(round(_video_duration))}s de {int(round(_audio_duration))}s. "
+                                    f"Foram executadas {_attempted_count} tentativa(s) de correção automática; "
+                                    "o melhor render foi preservado."
                                 )
                             elif failed_check == "caption_sync_valid":
+                                _attempted_count = sum(
+                                    1 for item in _auto_quality_repairs
+                                    if item.get("status") in {"running", "rendered", "render_failed"}
+                                )
                                 _pipeline_final_message = (
-                                    "O Claude Diretor bloqueou o vídeo porque não conseguiu comprovar a sincronização "
-                                    "das legendas com o áudio real. Reinicie para refazer essa etapa."
+                                    "A validação ainda não comprovou a sincronização das legendas com o áudio. "
+                                    f"Foram executadas {_attempted_count} tentativa(s) de correção automática; "
+                                    "o melhor vídeo e os ativos foram preservados."
                                 )
                             else:
                                 _pipeline_final_message = (
-                                    "O Claude Diretor bloqueou o vídeo antes da revisão porque uma verificação de qualidade "
-                                    f"não foi atendida ({failed_check}). Reinicie para corrigir a etapa correspondente."
+                                    "A validação final encontrou uma pendência "
+                                    f"({failed_check}). O Diretor Claude tentou a correção automática e preservou "
+                                    "o melhor vídeo e os ativos da produção."
                                 )
                             final_payload["unified_pipeline"] = {
                                 "validation_checks": _pipeline_validation.checks,
                                 "validation_first_failed": failed_check,
                                 "status": "failed",
+                                "auto_quality_repairs": _auto_quality_repairs,
                             }
                         elif _pipeline_validation and _pipeline_validation.ok and _uv is not None:
-                            # Se não precisa de revisão ou auto_upload=True, completed. Caso contrário: awaiting_review
                             _target_db_status = str(getattr(_uv, "status") or "awaiting_review")
                             if _target_db_status == "approved":
                                 _pipeline_final_status = "completed"
                                 _pipeline_status_target = "completed"
-                                _pipeline_final_message = "Vídeo gerado, aprovado automaticamente e pronto para publicação (UnifiedVideoPipeline)."
+                                _pipeline_final_message = (
+                                    "Vídeo gerado, aprovado automaticamente e pronto para publicação (UnifiedVideoPipeline)."
+                                )
                             elif _target_db_status == "published":
                                 _pipeline_final_status = "completed"
                                 _pipeline_status_target = "completed"
                             else:
-                                # awaiting_review na UnifiedVideo → ainda marcamos a VideoTask como awaiting_review e finalizamos.
-                                # Mantemos "completed" na task_manager (compatibilidade UI GET /task/{id} exibe bandejas);
-                                # mas marcamos a task como "awaiting_review" também.
                                 _pipeline_final_status = "awaiting_review"
                                 _pipeline_status_target = "awaiting_review"
                                 _pipeline_final_message = (
-                                    "Vídeo gerado e validação física aprovada (UnifiedVideoPipeline): em Aguardando Revisão."
+                                    "Vídeo gerado e validado pelo UnifiedVideoPipeline: em Aguardando Revisão."
                                 )
                             final_payload["unified_pipeline"] = {
                                 "validation_checks": _pipeline_validation.checks,
                                 "validation_ok": True,
                                 "status": _target_db_status,
                                 "unified_video_id": getattr(_uv, "id", None),
+                                "auto_quality_repairs": _auto_quality_repairs,
                             }
                         _pdb.commit()
                     finally:

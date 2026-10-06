@@ -59,6 +59,7 @@ from app.services.task_manager import (
     update_task,
 )
 from app.services.narration_caption_contract import measured_text_timeline_is_reviewable
+from app.services.visual_quality_repair import rendered_visual_diversity_report
 
 _CANONICAL_IGNORE_KEYS = {
     "task_id",
@@ -1409,15 +1410,39 @@ class UnifiedVideoPipelineService:
             "reused_image_count" in visual_plan
             and "average_image_duration_sec" in visual_plan
         )
-        recovered_review_frames = bool(recovered_final_render and actual_images >= 2)
+        available_image_paths = []
+        for source in (
+            task_result.get("selected_images"),
+            task_result.get("custom_image_paths"),
+            (script_obj or {}).get("selected_images") if isinstance(script_obj, dict) else None,
+            (script_obj or {}).get("custom_image_paths") if isinstance(script_obj, dict) else None,
+        ):
+            if not isinstance(source, list):
+                continue
+            for item in source:
+                if isinstance(item, str) and item.strip():
+                    available_image_paths.append(item.strip())
+                elif isinstance(item, dict):
+                    image_path = next(
+                        (
+                            str(item.get(key) or "").strip()
+                            for key in ("image_path", "image_url", "path", "url", "storage_key")
+                            if str(item.get(key) or "").strip()
+                        ),
+                        "",
+                    )
+                    if image_path:
+                        available_image_paths.append(image_path)
+        available_image_count = max(actual_images, len(set(available_image_paths)))
+        director_visual_quality = rendered_visual_diversity_report(
+            render_report,
+            available_image_count=available_image_count,
+            recovered_render=recovered_final_render,
+        )
         visual_variety_ok = bool(
             not director_quality_required
-            or (
-                visual_metrics_present
-                and reused_images == 0
-                and 0.0 < average_image_duration <= 30.0
-            )
-            or (not visual_metrics_present and recovered_review_frames)
+            or logo_only_visuals
+            or director_visual_quality.get("passed")
         )
         checks["visual_variety_valid"] = visual_variety_ok
 
@@ -1486,10 +1511,11 @@ class UnifiedVideoPipelineService:
         details["director_quality"] = {
             "required": director_quality_required,
             "visual_variety": {
+                **director_visual_quality,
                 "reused_image_count": reused_images,
                 "average_image_duration_seconds": average_image_duration,
-                "maximum_average_image_duration_seconds": 30.0,
-                "metrics_present": visual_metrics_present,
+                "legacy_metrics_present": visual_metrics_present,
+                "path_reuse_is_advisory": True,
             },
             "caption_sync": {
                 "timeline_source": caption_source,
