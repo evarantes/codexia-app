@@ -217,6 +217,39 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertTrue(checkpoint["strict_visual_retry"])
         self.assertFalse(checkpoint["images_complete"])
 
+    def test_recovery_audio_selection_prefers_audio_that_meets_requested_minimum(self):
+        sources = [
+            {"audio_checkpoint": {"output_path": "/audio/short.mp3", "duration_seconds": 54}},
+            {"audio_checkpoint": {"output_path": "/audio/complete.mp3", "duration_seconds": 68}},
+        ]
+        with (
+            patch("app.routers.youtube._file_ok", return_value=True),
+            patch("app.routers.youtube._recovery_probe_audio_duration", return_value=0),
+        ):
+            path, duration, _source = youtube_router._recovery_choose_audio(
+                sources,
+                1,
+                minimum_seconds=60,
+            )
+        self.assertEqual(path, "/audio/complete.mp3")
+        self.assertEqual(duration, 68)
+
+    def test_recovery_audio_selection_keeps_short_audio_for_repair_detection(self):
+        sources = [
+            {"audio_checkpoint": {"output_path": "/audio/short.mp3", "duration_seconds": 54}},
+        ]
+        with (
+            patch("app.routers.youtube._file_ok", return_value=True),
+            patch("app.routers.youtube._recovery_probe_audio_duration", return_value=0),
+        ):
+            path, duration, _source = youtube_router._recovery_choose_audio(
+                sources,
+                1,
+                minimum_seconds=60,
+            )
+        self.assertEqual(path, "/audio/short.mp3")
+        self.assertEqual(duration, 54)
+
     def test_complete_assets_do_not_auto_select_worker_local_render_only(self):
         images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
         row = SimpleNamespace(
@@ -270,6 +303,8 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         self.assertFalse(prepared.get("force_render_only", False))
         self.assertTrue(prepared["force_reuse_assets"])
         self.assertFalse(prepared["repair_regenerate_audio"])
+        self.assertIn("áudio", prepared["_recovery_missing_assets"])
+        self.assertTrue(prepared["force_reuse_assets"])
         self.assertNotIn("reuse_audio_from", prepared)
 
     def test_short_audio_retry_regenerates_only_audio_and_preserves_images(self):
