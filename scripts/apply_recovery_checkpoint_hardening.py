@@ -379,11 +379,19 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             seed_script = dict(seed_script)
             if valid_images:
                 seed_script["selected_images"] = list(valid_images)
+                # A strict recovery with multiple preserved assets must keep
+                # the previous multi-image composition, even if a stale script
+                # checkpoint says "single".
+                if strict_visual_retry and expected_images > 1 and len(valid_images) > 1:
+                    seed_script["image_mode"] = "multiple"
+                    seed_script["single_bg"] = False
             result_obj["script"] = seed_script
             payload["seeded_script"] = seed_script
         if valid_images:
             result_obj["selected_images"] = list(valid_images)
             payload["selected_images"] = list(valid_images)
+            if strict_visual_retry and expected_images > 1 and len(valid_images) > 1:
+                payload["image_mode"] = "multiple"
         if audio_ok:
             report = result_obj.get("render_report") if isinstance(result_obj.get("render_report"), dict) else {}
             report = dict(report)
@@ -409,6 +417,19 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         if missing:
             payload["_recovery_block_paid_regeneration"] = True
             payload["_recovery_missing_assets"] = list(missing)
+            payload["repair_mode"] = True
+            payload["repair_complete_visuals"] = "imagens" in missing
+            payload["repair_regenerate_audio"] = "áudio" in missing
+            payload["force_render_only"] = False
+            if expected_images > 0:
+                payload["expected_image_count"] = max(
+                    int(payload.get("expected_image_count") or 0),
+                    int(expected_images),
+                )
+                payload["strict_visual_target_count"] = max(
+                    int(payload.get("strict_visual_target_count") or 0),
+                    int(expected_images),
+                )
 
         recovery = result_obj.get("recovery_checkpoint") if isinstance(result_obj.get("recovery_checkpoint"), dict) else {}
         recovery = dict(recovery)
@@ -429,7 +450,8 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             "target_minutes": int(float(target_minutes or 0)),
             "force_render_only": bool(render_only),
             "missing_assets": list(missing),
-            "paid_stage_regeneration_blocked": bool(missing),
+            "paid_stage_regeneration_blocked": False,
+            "automatic_asset_repair_requested": bool(missing),
             "unified_meta": unified_obj.get("_unified_recovery_meta") if isinstance(unified_obj, dict) else {},
         })
         result_obj["recovery_checkpoint"] = recovery
@@ -448,7 +470,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
 
 
 BLOCK_PAID_RETRY_OLD = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        try:\n            VideoRequest(**payload)'''
-BLOCK_PAID_RETRY_NEW = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]\n            missing_label = ", ".join(missing) if missing else "ativos necessários"\n            recovery_message = (\n                "Recuperação segura bloqueada antes de novas chamadas pagas: "\n                f"faltam {missing_label}. Os ativos existentes foram preservados. "\n                "Nenhuma nova mídia foi gerada nesta tentativa."\n            )\n            update_task(task_id, message=recovery_message)\n            raise HTTPException(status_code=409, detail=recovery_message)\n        try:\n            VideoRequest(**payload)'''
+BLOCK_PAID_RETRY_NEW = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]\n            missing_label = ", ".join(missing) if missing else "ativos necessários"\n            recovery_message = (\n                "Claude Diretor: vou reparar automaticamente os ativos faltantes "\n                f"({missing_label}) e continuar a produção antes de liberar a revisão."\n            )\n            payload["repair_mode"] = True\n            payload["repair_complete_visuals"] = "imagens" in missing\n            payload["repair_regenerate_audio"] = "áudio" in missing\n            payload["force_render_only"] = False\n            if payload.get("expected_image_count") or payload.get("strict_visual_target_count"):\n                payload["expected_image_count"] = max(\n                    int(payload.get("expected_image_count") or 0),\n                    int(payload.get("strict_visual_target_count") or 0),\n                )\n                payload["strict_visual_target_count"] = int(payload["expected_image_count"])\n            update_task(task_id, message=recovery_message)\n            payload.pop("_recovery_block_paid_regeneration", None)\n            payload.pop("_recovery_missing_assets", None)\n        try:\n            VideoRequest(**payload)'''
 
 
 def _strip_existing(text: str) -> str:
@@ -485,7 +507,8 @@ def check() -> None:
         'payload["_recovery_block_paid_regeneration"] = True',
         'db.query(UnifiedVideo)',
         'paid_stage_regeneration_blocked',
-        'Nenhuma nova mídia foi gerada nesta tentativa.',
+        '"automatic_asset_repair_requested": bool(missing)',
+        'Claude Diretor: vou reparar automaticamente os ativos faltantes',
     )
     missing = [token for token in required if token not in text]
     if missing:
