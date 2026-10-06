@@ -22,6 +22,7 @@ class NarrationDurationFeedbackTests(unittest.TestCase):
             54,
             60,
         ))
+
     def test_exact_target_has_a_feasible_planning_band(self):
         lower, upper = planning_duration_bounds(60, 60, 60)
         self.assertAlmostEqual(lower, 58.8)
