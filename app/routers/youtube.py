@@ -1340,11 +1340,16 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 }
             else:
                 payload.pop("reuse_audio_from", None)
-        elif script_ok and images_ok and audio_short and missing_images == 0 and not strict_visual_retry:
-            # Corrige somente áudio/legendas: mantém roteiro e imagens pagos.
+        elif script_ok and images_ok and missing_images == 0 and not strict_visual_retry:
+            # Reuse roteiro/imagens e deixe o worker validar o áudio no volume
+            # que ele próprio enxerga. Só marque reparo de áudio quando a duração
+            # registrada prova que ficou abaixo do mínimo.
             seeded = dict(seed_script or {})
             seeded["selected_images"] = list(selected_images)
-            seeded["repair_regenerate_audio"] = True
+            if audio_short:
+                seeded["repair_regenerate_audio"] = True
+            else:
+                seeded.pop("repair_regenerate_audio", None)
             payload.update({
                 "seeded_script": seeded,
                 "selected_images": list(selected_images),
@@ -1353,10 +1358,18 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 "force_regenerate": False,
                 "repair_mode": True,
                 "repair_complete_visuals": False,
-                "repair_regenerate_audio": True,
+                "repair_regenerate_audio": audio_short,
                 "expected_image_count": expected_images or actual_images,
             })
-            payload.pop("reuse_audio_from", None)
+            if audio_ok and not audio_short:
+                payload["reuse_audio_from"] = {
+                    "output_path": audio_path,
+                    "final_audio_path": audio_path,
+                    "audio_path": audio_path,
+                    "source": "preserved_retry",
+                }
+            else:
+                payload.pop("reuse_audio_from", None)
     finally:
         db.close()
     return payload
