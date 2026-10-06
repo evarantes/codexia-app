@@ -6226,6 +6226,7 @@ $synth.Dispose()
             min_requested_duration = float(requested_range.get("min_sec") or 0.0)
             max_requested_duration = float(requested_range.get("max_sec") or 0.0)
             target_requested_duration = float(requested_range.get("target_sec") or 0.0)
+            min_requested_duration = max(min_requested_duration, target_requested_duration)
             duration_range_report = {
                 "requested_duration_min_sec": round(min_requested_duration, 2),
                 "requested_duration_max_sec": round(max_requested_duration, 2),
