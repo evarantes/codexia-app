@@ -255,7 +255,7 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
         with (
             patch("app.routers.youtube.SessionLocal", return_value=fake_db),
             patch("app.routers.youtube._selected_images_ok", return_value=True),
-            patch("app.routers.youtube._file_ok", return_value=True),
+            patch("app.routers.youtube._file_ok", return_value=False),
             patch(
                 "app.services.production_manifest.build_recovery_plan",
                 return_value={
@@ -269,6 +269,8 @@ class FailedStoryRetryRecoveryTests(unittest.TestCase):
 
         self.assertFalse(prepared.get("force_render_only", False))
         self.assertTrue(prepared["force_reuse_assets"])
+        self.assertFalse(prepared["repair_regenerate_audio"])
+        self.assertNotIn("reuse_audio_from", prepared)
 
     def test_short_audio_retry_regenerates_only_audio_and_preserves_images(self):
         images = [f"/data/media/images/img-{idx:02d}.png" for idx in range(8)]
