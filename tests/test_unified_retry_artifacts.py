@@ -40,14 +40,20 @@ class RetryArtifactTests(unittest.TestCase):
             validation, _ = self.service.transition_to_awaiting_review_if_valid(self.db, self.uv.task_id)
             return validation
 
-    def test_retry_validates_new_951_video_instead_of_old_515_video(self):
+    def test_retry_validates_new_overlong_video_instead_of_old_short_video(self):
         self.merge({'file_path': '/new.mp4', 'video_path': '/alternate.mp4', 'video_url': '/media/new.mp4'})
-        result = self.validate({'/old.mp4': 315.0, '/new.mp4': 591.0})
+        result = self.validate({'/old.mp4': 315.0, '/new.mp4': 605.0})
         self.assertTrue(result.ok, result.details)
         self.assertEqual(result.details['mp4']['path'], '/new.mp4')
         self.assertEqual(self.uv.video_url, '/media/new.mp4')
-        self.assertEqual(self.uv.video_duration_seconds, 591.0)
+        self.assertEqual(self.uv.video_duration_seconds, 605.0)
         self.assertIsNone(self.uv.last_error)
+
+    def test_slightly_short_replacement_is_still_rejected(self):
+        self.merge({'file_path': '/short.mp4'})
+        result = self.validate({'/old.mp4': 605.0, '/short.mp4': 591.0})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.first_failed, 'duration_matches_request')
 
     def test_short_replacement_is_still_rejected(self):
         self.merge({'file_path': '/short.mp4'})
@@ -82,7 +88,7 @@ class RetryArtifactTests(unittest.TestCase):
         self.merge({'file_path': '/old.mp4'})
         self.assertIsNone(self.uv.video_duration_seconds)
         self.assertIsNone(self.uv.video_url)
-        self.assertTrue(self.validate({'/old.mp4': 591.0}).ok)
+        self.assertTrue(self.validate({'/old.mp4': 605.0}).ok)
 
 
 if __name__ == '__main__':
