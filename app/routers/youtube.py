@@ -1275,8 +1275,8 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         )
         requested_audio_min_seconds = 0.0
         for candidate in (
-            requested_duration_range.get("min_sec"),
             requested_duration_range.get("target_sec"),
+            requested_duration_range.get("min_sec"),
             payload.get("duration_seconds"),
         ):
             try:
