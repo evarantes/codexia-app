@@ -41,6 +41,32 @@ DEFAULT_SCENE_CAPTION_LEAD_SEC = 0.20
 DEFAULT_CINEMATIC_END_SCREEN_SEC = 4.0
 DEFAULT_MAX_CINEMATIC_VISUAL_HOLD_SEC = 7.0
 MAX_REAL_AUDIO_NARRATION_ATTEMPTS = 5
+
+
+def _seed_audio_requires_regeneration(
+    plan: Optional[Dict[str, Any]],
+    audio_duration_seconds: float,
+    requested_minimum_seconds: float,
+) -> bool:
+    """Reject a reusable seed when it cannot satisfy the requested minimum."""
+    metadata = plan if isinstance(plan, dict) else {}
+    # Contract-approved narration stays immutable; ordinary retries may repair it.
+    if bool(metadata.get("approved_narration_required")):
+        return False
+    if bool(metadata.get("repair_regenerate_audio")):
+        return True
+    try:
+        audio_seconds = float(audio_duration_seconds or 0.0)
+        minimum_seconds = float(requested_minimum_seconds or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        audio_seconds > 0
+        and minimum_seconds > 0
+        and audio_seconds + 0.5 < minimum_seconds
+    )
+
+
 DIRECTOR_ACCEPTED_CAPTION_TIMELINE_SOURCES = {
     "official_audio_transcript",
     "approved_edge_tts_word_boundaries",
@@ -6200,7 +6226,6 @@ $synth.Dispose()
             min_requested_duration = float(requested_range.get("min_sec") or 0.0)
             max_requested_duration = float(requested_range.get("max_sec") or 0.0)
             target_requested_duration = float(requested_range.get("target_sec") or 0.0)
-            range_tolerance = 0.05
             duration_range_report = {
                 "requested_duration_min_sec": round(min_requested_duration, 2),
                 "requested_duration_max_sec": round(max_requested_duration, 2),
@@ -6251,6 +6276,24 @@ $synth.Dispose()
                 seed_audio_path = str(plan.get("seed_audio_path") or "").strip()
                 seed_audio_text = str(plan.get("seed_narration_text") or "").strip()
             if seed_audio_path and os.path.exists(seed_audio_path) and os.path.getsize(seed_audio_path) > 1000:
+                seed_audio_duration = float(self._ffprobe_duration_seconds(seed_audio_path) or 0.0)
+                if _seed_audio_requires_regeneration(
+                    plan,
+                    seed_audio_duration,
+                    min_requested_duration,
+                ):
+                    render_report["audio_generation"].update({
+                        "seed_reuse_skipped": True,
+                        "seed_reuse_skip_reason": (
+                            "repair_requested"
+                            if bool((plan or {}).get("repair_regenerate_audio"))
+                            else "seed_audio_shorter_than_requested_minimum"
+                        ),
+                        "seed_audio_duration_sec": round(seed_audio_duration, 2),
+                        "requested_minimum_duration_sec": round(min_requested_duration, 2),
+                    })
+                    seed_audio_path = ""
+            if seed_audio_path and os.path.exists(seed_audio_path) and os.path.getsize(seed_audio_path) > 1000:
                 seed_audio_used = True
                 approved_seed_required = bool(
                     isinstance(plan, dict) and plan.get("approved_narration_required")
@@ -6293,8 +6336,8 @@ $synth.Dispose()
                 render_report["audio_generation"]["opening_silence_applied_locally_sec"] = (
                     round(initial_opening_silence_sec, 2) if approved_seed_required else 0.0
                 )
-                max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))
-                min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= (min_requested_duration * (1.0 - range_tolerance)))
+                max_ok = True  # A duração pedida é piso; narração mais longa é aceita.
+                min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= min_requested_duration)
                 duration_range_report["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
                 duration_range_report["above_requested_range_sec"] = round(max(0.0, actual_total_audio_dur - max_requested_duration) if max_requested_duration > 0 else 0.0, 2)
                 duration_range_report["below_requested_range_sec"] = round(max(0.0, min_requested_duration - actual_total_audio_dur) if min_requested_duration > 0 else 0.0, 2)
@@ -6366,8 +6409,8 @@ $synth.Dispose()
                 render_report["audio_generation"]["main_narration_duration_sec"] = segmented_audio.get("main_duration_sec")
                 render_report["audio_generation"]["cta_duration_sec"] = segmented_audio.get("cta_duration_sec")
 
-                max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))
-                min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= (min_requested_duration * (1.0 - range_tolerance)))
+                max_ok = True  # A duração pedida é piso; narração mais longa é aceita.
+                min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= min_requested_duration)
                 above_requested_range_sec = max(0.0, actual_total_audio_dur - max_requested_duration) if max_requested_duration > 0 else 0.0
                 below_requested_range_sec = max(0.0, min_requested_duration - actual_total_audio_dur) if min_requested_duration > 0 else 0.0
                 duration_range_report["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
@@ -6376,13 +6419,13 @@ $synth.Dispose()
                 duration_range_report["within_requested_range"] = bool(max_ok and min_ok)
                 if max_ok and min_ok:
                     duration_range_report["decision"] = "within_requested_range"
-                    duration_range_report["decision_reason"] = "Narracao completa ficou dentro da faixa solicitada."
+                    duration_range_report["decision_reason"] = "A narração alcançou a duração mínima; qualquer excedente foi mantido."
                     break
                 if not min_ok:
                     duration_range_report["attempted_replanning_after_real_audio"] = True
                     desired_audio_min = max(
-                        min_requested_duration * 0.97 if min_requested_duration > 0 else 0.0,
-                        target_requested_duration * 0.98 if target_requested_duration > 0 else 0.0,
+                        min_requested_duration + 0.75 if min_requested_duration > 0 else 0.0,
+                        target_requested_duration + 0.75 if target_requested_duration > 0 else 0.0,
                     )
 
                     # Small TTS duration misses are corrected locally by
@@ -6437,10 +6480,8 @@ $synth.Dispose()
                             actual_total_audio_dur = float(self._ffprobe_duration_seconds(main_audio_path) or 0.0)
                             if actual_total_audio_dur <= 0:
                                 actual_total_audio_dur = float(getattr(main_audio_clip, "duration", 0) or 0.0)
-                            max_ok = (max_requested_duration <= 0) or (
-                                actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance))
-                            )
-                            min_ok = actual_total_audio_dur >= min_requested_duration * (1.0 - range_tolerance)
+                            max_ok = True  # A duração pedida é piso; narração mais longa é aceita.
+                            min_ok = (min_requested_duration <= 0) or (actual_total_audio_dur >= min_requested_duration)
                             duration_range_report["actual_audio_duration_sec"] = round(actual_total_audio_dur, 2)
                             duration_range_report["above_requested_range_sec"] = round(
                                 max(0.0, actual_total_audio_dur - max_requested_duration)
@@ -6486,7 +6527,7 @@ $synth.Dispose()
                                 duration_range_report["decision"] = "within_requested_range_after_audio_correction"
                                 duration_range_report["decision_reason"] = (
                                     "O Diretor ajustou o ritmo da fala, preservou a abertura e a pausa, e a narração "
-                                    "alcançou a faixa solicitada sem gerar outro áudio no provedor."
+                                    "alcançou a duração mínima solicitada."
                                 )
                                 break
                         except Exception as correction_exc:
