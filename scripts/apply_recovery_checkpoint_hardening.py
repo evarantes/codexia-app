@@ -552,11 +552,60 @@ def _strip_existing(text: str) -> str:
 def apply() -> None:
     text = TARGET.read_text(encoding="utf-8")
     text = _strip_existing(text)
+    text, repaired_flag_count = re.subn(
+        r'(?m)^(?P<indent>\\s*)payload\\["repair_regenerate_audio"\\] = "áudio" in missing
+
+def check() -> None:
+    text = TARGET.read_text(encoding="utf-8")
+    required = (
+        START,
+        '"strategy": "highest_valid_checkpoint_v4"',
+        'payload["seeded_script"] = seed_script',
+        'payload["selected_images"] = list(valid_images)',
+        'payload["reuse_audio_from"] = dict(audio_generation)',
+        'payload["force_render_only"] = bool(render_only)',
+        '"missing_image_count": int(missing_image_count or 0)',
+        '"strict_visual_retry": bool(strict_visual_retry)',
+        'payload["_recovery_block_paid_regeneration"] = True',
+        'db.query(UnifiedVideo)',
+        'paid_stage_regeneration_blocked',
+        '"automatic_asset_repair_requested": bool(missing)',
+        'payload["repair_regenerate_audio"] = bool(audio_short)',
+        'Claude Diretor: vou reparar automaticamente os ativos faltantes',
+    )
+    missing = [token for token in required if token not in text]
+    if missing:
+        raise RuntimeError(f"recovery checkpoint v3 ausente: {missing}")
+    if "CODEXIA_RECOVERY_CHECKPOINT_V2_START" in text:
+        raise RuntimeError("recovery checkpoint v2 antigo ainda presente")
+    compile(text, str(TARGET), "exec")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    if args.apply:
+        apply()
+    if args.check:
+        check()
+    if not args.apply and not args.check:
+        parser.error("use --apply e/ou --check")
+
+
+if __name__ == "__main__":
+    main()
+,
+        r'\\g<indent>payload["repair_regenerate_audio"] = bool(payload.get("repair_regenerate_audio"))',
+        text,
+    )
     if BLOCK_PAID_RETRY_NEW not in text:
-        if BLOCK_PAID_RETRY_OLD not in text:
+        if BLOCK_PAID_RETRY_OLD in text:
+            text = text.replace(BLOCK_PAID_RETRY_OLD, BLOCK_PAID_RETRY_NEW, 1)
+        elif repaired_flag_count <= 0:
             raise RuntimeError("recovery/paid-retry guard anchor não encontrado")
-        text = text.replace(BLOCK_PAID_RETRY_OLD, BLOCK_PAID_RETRY_NEW, 1)
-    TARGET.write_text(text.rstrip() + BLOCK + "\n", encoding="utf-8")
+    TARGET.write_text(text.rstrip() + BLOCK + "\\n", encoding="utf-8")
 
 
 def check() -> None:
