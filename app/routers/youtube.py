@@ -9085,6 +9085,7 @@ def process_video_generation(request: VideoRequest, task_id):
                                 audio_path=_audio_path,
                                 narration_text=str(_narration_info.get("full_text") or ""),
                                 reuse_audio=_preserve_audio,
+                                replace_repeated_visuals="visual_variety_valid" in _failed_checks,
                             )
                             if not _repair.get("ok"):
                                 _auto_quality_repairs.append({
