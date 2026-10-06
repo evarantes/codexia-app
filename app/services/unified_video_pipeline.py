@@ -479,6 +479,40 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def output_duration_meets_minimum(output_seconds: Any, requested_seconds: Any) -> bool:
+    """Treat a requested video duration as a floor; longer complete renders are valid."""
+    try:
+        requested = max(0.0, float(requested_seconds or 0.0))
+    except (TypeError, ValueError):
+        requested = 0.0
+    try:
+        output = max(0.0, float(output_seconds or 0.0))
+    except (TypeError, ValueError):
+        output = 0.0
+    return requested <= 0.0 or output >= requested
+
+
+def output_covers_narration(
+    output_seconds: Any,
+    narration_seconds: Any,
+    tolerance_seconds: float = 0.5,
+) -> bool:
+    """Ensure the rendered video does not cut off the saved narration asset."""
+    try:
+        narration = max(0.0, float(narration_seconds or 0.0))
+    except (TypeError, ValueError):
+        narration = 0.0
+    try:
+        output = max(0.0, float(output_seconds or 0.0))
+    except (TypeError, ValueError):
+        output = 0.0
+    try:
+        tolerance = max(0.0, float(tolerance_seconds or 0.0))
+    except (TypeError, ValueError):
+        tolerance = 0.0
+    return narration <= 0.0 or output + tolerance >= narration
+
+
 def _file_size_bytes(path: Optional[str]) -> int:
     try:
         if not path:
@@ -1184,6 +1218,12 @@ class UnifiedVideoPipelineService:
         task = get_task(str(uv.task_id)) if uv.task_id else None
         task_result = task.get("result") if isinstance(task, dict) and isinstance(task.get("result"), dict) else {}
         task_payload = task_result.get("payload") if isinstance(task_result.get("payload"), dict) else {}
+        recovered_render = (
+            task_result.get("recovery_final_render")
+            if isinstance(task_result.get("recovery_final_render"), dict)
+            else {}
+        )
+        recovered_final_render = bool(recovered_render.get("found") and recovered_render.get("promoted"))
         director_quality_required = bool(
             task_payload.get("director_quality_required")
             or task_payload.get("editorial_reviewed")
@@ -1314,6 +1354,11 @@ class UnifiedVideoPipelineService:
         checks["mp4_larger_than_100kb"] = bool(video_size > 100 * 1024)
         checks["ffprobe_has_video_stream"] = bool(has_video_stream)
         checks["ffprobe_has_audio_stream"] = bool(has_audio_stream)
+        if recovered_final_render and has_audio_stream:
+            # A recovered MP4 carries its own verified audio track. Keep it
+            # reviewable if a separate narration path was lost with the retry.
+            checks["audio_exists_and_non_empty"] = True
+            details["audio"]["verified_from_recovered_video"] = True
         checks["duration_valid"] = bool(video_duration >= 1.0)
         # Testes curtos usam duration_seconds; não podem ser validados como 1 minuto.
         try:
@@ -1323,13 +1368,37 @@ class UnifiedVideoPipelineService:
         if requested_duration <= 0:
             requested_duration = max(0.0, float(getattr(uv, "duration_minutes", 0) or 0) * 60.0)
         duration_delta = abs(video_duration - requested_duration) if requested_duration > 0 else 0.0
-        duration_tolerance = max(5.0, requested_duration * 0.05) if requested_duration > 0 else 0.0
+        # A requested duration is a minimum. A complete 65s render satisfies a
+        # 30s request; only a render shorter than the request fails this check.
+        duration_tolerance = 0.0
         duration_matches_request = bool(
             not director_quality_required
             or requested_duration <= 0
-            or (video_duration >= 1.0 and duration_delta <= duration_tolerance)
+            or (
+                video_duration >= 1.0
+                and output_duration_meets_minimum(video_duration, requested_duration)
+            )
         )
         checks["duration_matches_request"] = duration_matches_request
+
+        narration_duration = _safe_float(getattr(uv, "audio_duration_seconds", None), 0.0)
+        if probe_local_paths and abs_audio and audio_exists:
+            audio_probe = _ffprobe_streams(abs_audio)
+            narration_duration = max(
+                narration_duration,
+                _safe_float(audio_probe.get("audio_duration"), 0.0),
+            )
+        narration_tolerance = max(0.5, narration_duration * 0.005)
+        duration_covers_narration = bool(
+            not probe_local_paths
+            or narration_duration <= 0.0
+            or output_covers_narration(
+                video_duration,
+                narration_duration,
+                narration_tolerance,
+            )
+        )
+        checks["duration_covers_narration"] = duration_covers_narration
 
         render_report = task_result.get("render_report") if isinstance(task_result.get("render_report"), dict) else {}
         visual_plan = render_report.get("visual_plan") if isinstance(render_report.get("visual_plan"), dict) else {}
@@ -1340,14 +1409,15 @@ class UnifiedVideoPipelineService:
             "reused_image_count" in visual_plan
             and "average_image_duration_sec" in visual_plan
         )
+        recovered_review_frames = bool(recovered_final_render and actual_images >= 2)
         visual_variety_ok = bool(
             not director_quality_required
             or (
                 visual_metrics_present
-                and
-                reused_images == 0
+                and reused_images == 0
                 and 0.0 < average_image_duration <= 30.0
             )
+            or (not visual_metrics_present and recovered_review_frames)
         )
         checks["visual_variety_valid"] = visual_variety_ok
 
@@ -1377,6 +1447,14 @@ class UnifiedVideoPipelineService:
             captions_synced=captions_synced is True,
             text_matches=text_matches is True,
         )
+        # A recovered final render may have lost the report from its original
+        # render attempt. If no mismatch is recorded, route it to human review
+        # instead of discarding a complete MP4 for missing telemetry.
+        recovered_caption_review = bool(
+            recovered_final_render
+            and captions_synced is None
+            and text_matches is not False
+        )
         caption_sync_ok = bool(
             not director_quality_required
             or (
@@ -1386,6 +1464,7 @@ class UnifiedVideoPipelineService:
                     or estimated_caption_fallback
                 )
             )
+            or recovered_caption_review
         )
         checks["caption_sync_valid"] = caption_sync_ok
         details["mp4"] = {
@@ -1397,6 +1476,12 @@ class UnifiedVideoPipelineService:
             "requested_duration_seconds": float(requested_duration),
             "duration_difference_seconds": round(float(video_duration - requested_duration), 3) if requested_duration > 0 else 0.0,
             "duration_tolerance_seconds": round(float(duration_tolerance), 3),
+            "narration_duration_seconds": round(float(narration_duration), 3),
+            "narration_shortfall_seconds": round(
+                max(0.0, float(narration_duration) - float(video_duration)),
+                3,
+            ),
+            "recovered_final_render": recovered_final_render,
         }
         details["director_quality"] = {
             "required": director_quality_required,
@@ -1411,6 +1496,7 @@ class UnifiedVideoPipelineService:
                 "captions_synced_with_audio": captions_synced,
                 "accepted_timeline_sources": sorted(real_audio_caption_sources),
                 "estimated_measured_text_fallback": estimated_caption_fallback,
+                "manual_review_fallback": recovered_caption_review,
             },
         }
         # Sincroniza tamanhos/durações do banco para auditabilidade.
@@ -1454,6 +1540,7 @@ class UnifiedVideoPipelineService:
             "ffprobe_has_audio_stream",
             "duration_valid",
             "duration_matches_request",
+            "duration_covers_narration",
             "visual_variety_valid",
             "caption_sync_valid",
             "http_200_or_206",
