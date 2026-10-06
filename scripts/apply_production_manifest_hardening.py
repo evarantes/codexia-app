@@ -121,7 +121,7 @@ SEED_AUDIO_NEW = SEED_AUDIO_NEW.replace(
 )
 
 
-SEED_SCRIPT_OLD = '''                elif bool(getattr(request, "force_reuse_assets", False)) and seed_script_ok:\n                    script = dict(seed_script or {})\n                    reused: List[str] = ["roteiro"]'''
+SEED_SCRIPT_OLD = '''                elif reuse_assets_requested and seed_script_ok:\n                    script = dict(seed_script or {})\n                    reused: List[str] = ["roteiro"]'''
 
 SEED_SCRIPT_NEW = '''                elif bool(getattr(request, "force_reuse_assets", False)) and seed_script_ok:\n                    script = dict(seed_script or {})\n                    # Preserve recovery metadata supplied by the durable\n                    # manifest even when the canonical task JSON contributes\n                    # the actual script body.\n                    request_seed = request.seeded_script if isinstance(getattr(request, "seeded_script", None), dict) else {}\n                    partial_meta = request_seed.get("_partial_image_recovery") if isinstance(request_seed, dict) else None\n                    if isinstance(partial_meta, dict):\n                        script["_partial_image_recovery"] = dict(partial_meta)\n                    reused: List[str] = ["roteiro"]'''
 
