@@ -209,7 +209,7 @@ class FinalVideoQualityGateTests(unittest.TestCase):
         self.assertEqual(report["target_sec"], 60)
         self.assertLessEqual(report["estimated_sec"], report["max_sec"])
 
-    def test_duration_preflight_blocks_extreme_overrun_before_render(self):
+    def test_duration_preflight_accepts_longer_narration_when_request_is_minimum(self):
         os.environ["ENABLE_DURATION_SANITY_PREFLIGHT"] = "true"
 
         class CountingGenerator(QualityGenerator):
@@ -219,16 +219,20 @@ class FinalVideoQualityGateTests(unittest.TestCase):
                 type(self).render_calls += 1
                 return super().create_video_from_plan(plan, *args, **kwargs)
 
-        cls = type("BlockedDurationGenerator", (CountingGenerator,), {"render_calls": 0})
+        cls = type("LongerDurationGenerator", (CountingGenerator,), {"render_calls": 0})
         install_channel_excellence_guard_patch(cls)
         text = " ".join(["esperança"] * 300)
-        with self.assertRaisesRegex(RuntimeError, "fora da tolerância editorial de duração"):
-            cls().create_video_from_plan({
-                "title": "Jesus Está Presente",
-                "target_duration_sec": 60,
-                "scenes": [{"text": text}],
-            })
-        self.assertEqual(cls.render_calls, 0)
+        result = cls().create_video_from_plan({
+            "title": "Jesus Está Presente",
+            "target_duration_sec": 60,
+            "scenes": [{"text": text}],
+        })
+        report = result["channel_excellence_guard"]["duration_preflight"]
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["maximum_is_advisory"])
+        self.assertTrue(report["minimum_estimate_met"])
+        self.assertGreater(report["estimated_sec"], report["max_sec"])
+        self.assertEqual(cls.render_calls, 1)
 
     def test_premium_endcard_generates_dedicated_ai_background(self):
         os.environ["ENABLE_AI_PREMIUM_ENDCARD"] = "true"
