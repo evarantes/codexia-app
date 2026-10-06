@@ -255,16 +255,31 @@ def _recovery_choose_audio(
             continue
         known_durations: Dict[str, float] = {}
         checkpoint = source.get("audio_checkpoint") if isinstance(source.get("audio_checkpoint"), dict) else {}
-        for key in ("output_path", "final_audio_path", "audio_path"):
-            path = str(checkpoint.get(key) or "").strip()
-            if not path:
-                continue
-            try:
-                duration = float(checkpoint.get("final_audio_duration_sec") or checkpoint.get("duration_seconds") or 0.0)
-            except Exception:
+        source_report = source.get("render_report") if isinstance(source.get("render_report"), dict) else {}
+        audio_metadata = (
+            checkpoint,
+            source.get("audio_generation") if isinstance(source.get("audio_generation"), dict) else {},
+            source_report.get("audio_generation") if isinstance(source_report.get("audio_generation"), dict) else {},
+        )
+        for metadata in audio_metadata:
+            for key in ("output_path", "final_audio_path", "audio_path"):
+                path = str(metadata.get(key) or "").strip()
+                if not path:
+                    continue
                 duration = 0.0
-            if duration > 0:
-                known_durations[path] = duration
+                for duration_key in (
+                    "final_audio_duration_sec",
+                    "duration_seconds",
+                    "audio_duration_sec",
+                    "recovery_validated_duration_sec",
+                    "actual_audio_duration_sec",
+                ):
+                    try:
+                        duration = max(duration, float(metadata.get(duration_key) or 0.0))
+                    except (TypeError, ValueError):
+                        continue
+                if duration > 0:
+                    known_durations[path] = max(known_durations.get(path, 0.0), duration)
         for path in _recovery_collect_audio_candidates(source):
             if not _file_ok(path):
                 continue
