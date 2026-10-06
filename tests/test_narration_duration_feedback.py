@@ -1,5 +1,6 @@
 import unittest
 
+from app.services.video_generator import _seed_audio_requires_regeneration
 from app.services.narration_duration_feedback import (
     calibrated_body_duration_target,
     expansion_word_range,
@@ -9,6 +10,19 @@ from app.services.narration_duration_feedback import (
 
 
 class NarrationDurationFeedbackTests(unittest.TestCase):
+    def test_short_seed_audio_is_replaced_to_meet_minimum(self):
+        self.assertTrue(_seed_audio_requires_regeneration({}, 54, 60))
+        self.assertFalse(_seed_audio_requires_regeneration({}, 60, 60))
+        self.assertFalse(_seed_audio_requires_regeneration({}, 66, 60))
+        self.assertTrue(_seed_audio_requires_regeneration(
+            {"repair_regenerate_audio": True}, 60, 60
+        ))
+        self.assertFalse(_seed_audio_requires_regeneration(
+            {"approved_narration_required": True, "repair_regenerate_audio": True},
+            54,
+            60,
+        ))
+
     def test_exact_target_has_a_feasible_planning_band(self):
         lower, upper = planning_duration_bounds(60, 60, 60)
         self.assertAlmostEqual(lower, 58.8)

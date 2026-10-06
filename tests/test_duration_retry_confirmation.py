@@ -61,7 +61,7 @@ class DurationRetryConfirmationTests(unittest.TestCase):
         os.environ.pop("ENABLE_DURATION_SANITY_PREFLIGHT", None)
         os.environ.pop("ENABLE_FINAL_VIDEO_QUALITY_GATE", None)
 
-    def test_retry_of_duration_failure_is_explicit_confirmation(self):
+    def test_retry_of_longer_video_does_not_require_duration_confirmation(self):
         cls = type("DurationApprovedByRetry", (_RetryDurationGenerator,), {"render_calls": 0})
         install_channel_excellence_guard_patch(cls)
         text = " ".join(["esperança"] * 300)
@@ -76,9 +76,10 @@ class DurationRetryConfirmationTests(unittest.TestCase):
         })
         self.assertEqual(cls.render_calls, 1)
         report = result["channel_excellence_guard"]["duration_preflight"]
-        self.assertFalse(report["passed"])
-        self.assertTrue(report["overridden_by_user"])
-        self.assertEqual(report["approval_source"], "retry_after_duration_warning")
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["maximum_is_advisory"])
+        self.assertTrue(report["minimum_estimate_met"])
+        self.assertFalse(report.get("overridden_by_user", False))
 
     def test_frontend_exposes_post_editorial_duration_confirmation(self):
         html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")

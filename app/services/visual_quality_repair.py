@@ -138,8 +138,14 @@ def build_auto_visual_repair_plan(
     audio_path: str = "",
     narration_text: str = "",
     reuse_audio: bool = True,
+    replace_repeated_visuals: bool = False,
 ) -> Dict[str, Any]:
-    """Build a bounded, same-task repair plan using every preserved image first."""
+    """Build a bounded, same-task repair plan using every valid image first.
+
+    If the rendered video failed the diversity check, use only distinct images
+    that actually appeared in the MP4. Unused cached images do not help repair
+    a render that repeated one image across scenes.
+    """
     plan = deepcopy(script) if isinstance(script, dict) else {}
     report = render_report if isinstance(render_report, dict) else {}
     visual_plan = report.get("visual_plan") if isinstance(report.get("visual_plan"), dict) else {}
@@ -150,6 +156,12 @@ def build_auto_visual_repair_plan(
         images.extend(_paths(plan.get(key)))
     images.extend(_paths(scene_visuals))
     images = list(dict.fromkeys(images))
+    if replace_repeated_visuals:
+        # Trust what the renderer actually used, not the larger unused cache.
+        # Repeated scene assignments collapse to unique paths here, so the
+        # partial-recovery budget fills the remaining visual groups with fresh
+        # images while preserving each distinct rendered image once.
+        images = _paths(scene_visuals)
 
     scenes = plan.get("scenes") if isinstance(plan.get("scenes"), list) else []
     if len(scenes) < 2:
@@ -188,6 +200,7 @@ def build_auto_visual_repair_plan(
         "target_image_count": target_count,
         "preserved_image_count": available_count,
         "max_new_image_calls": max_new,
+        "replacing_repeated_visuals": bool(replace_repeated_visuals),
     }
 
     if missing_count > 0:

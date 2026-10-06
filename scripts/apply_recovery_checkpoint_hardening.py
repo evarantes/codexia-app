@@ -97,17 +97,13 @@ def _recovery_collect_visual_candidates(result_obj: Any) -> List[str]:
 
 
 def _recovery_audio_duration_plausible(duration_sec: Any, target_minutes: Any) -> bool:
+    # Inventory accepts any measurable seed. The minimum is checked against the
+    # request separately, so short audio can be repaired and longer audio kept.
     try:
         duration = float(duration_sec or 0.0)
     except Exception:
         duration = 0.0
-    try:
-        target_sec = max(60.0, float(target_minutes or 0.0) * 60.0)
-    except Exception:
-        target_sec = 300.0
-    if duration <= 1.0:
-        return False
-    return (target_sec * 0.60) <= duration <= (target_sec * 1.80)
+    return duration > 1.0
 
 
 def _recovery_collect_audio_candidates(result_obj: Any) -> List[str]:
@@ -231,30 +227,59 @@ def _recovery_unified_snapshot(db: Any, task_id: str) -> Dict[str, Any]:
     return snapshot
 
 
-def _recovery_choose_audio(sources: List[Dict[str, Any]], target_minutes: Any) -> Tuple[str, float, str]:
+def _recovery_choose_audio(
+    sources: List[Dict[str, Any]],
+    target_minutes: Any,
+    *,
+    minimum_seconds: Any = None,
+) -> Tuple[str, float, str]:
     try:
-        target_sec = max(60.0, float(target_minutes or 0.0) * 60.0)
+        target_sec = max(1.0, float(minimum_seconds or 0.0))
     except Exception:
-        target_sec = 300.0
+        target_sec = 0.0
+    if target_sec <= 0:
+        try:
+            target_sec = max(1.0, float(target_minutes or 0.0) * 60.0)
+        except Exception:
+            target_sec = 300.0
+    try:
+        minimum_sec = max(0.0, float(minimum_seconds or 0.0))
+    except Exception:
+        minimum_sec = 0.0
     best_path = ""
     best_duration = 0.0
     best_source = ""
-    best_distance = float("inf")
+    best_score = (2, float("inf"))
     for source_index, source in enumerate(sources):
         if not isinstance(source, dict):
             continue
         known_durations: Dict[str, float] = {}
         checkpoint = source.get("audio_checkpoint") if isinstance(source.get("audio_checkpoint"), dict) else {}
-        for key in ("output_path", "final_audio_path", "audio_path"):
-            path = str(checkpoint.get(key) or "").strip()
-            if not path:
-                continue
-            try:
-                duration = float(checkpoint.get("final_audio_duration_sec") or checkpoint.get("duration_seconds") or 0.0)
-            except Exception:
+        source_report = source.get("render_report") if isinstance(source.get("render_report"), dict) else {}
+        audio_metadata = (
+            checkpoint,
+            source.get("audio_generation") if isinstance(source.get("audio_generation"), dict) else {},
+            source_report.get("audio_generation") if isinstance(source_report.get("audio_generation"), dict) else {},
+        )
+        for metadata in audio_metadata:
+            for key in ("output_path", "final_audio_path", "audio_path"):
+                path = str(metadata.get(key) or "").strip()
+                if not path:
+                    continue
                 duration = 0.0
-            if duration > 0:
-                known_durations[path] = duration
+                for duration_key in (
+                    "final_audio_duration_sec",
+                    "duration_seconds",
+                    "audio_duration_sec",
+                    "recovery_validated_duration_sec",
+                    "actual_audio_duration_sec",
+                ):
+                    try:
+                        duration = max(duration, float(metadata.get(duration_key) or 0.0))
+                    except (TypeError, ValueError):
+                        continue
+                if duration > 0:
+                    known_durations[path] = max(known_durations.get(path, 0.0), duration)
         for path in _recovery_collect_audio_candidates(source):
             if not _file_ok(path):
                 continue
@@ -263,12 +288,12 @@ def _recovery_choose_audio(sources: List[Dict[str, Any]], target_minutes: Any) -
                 duration = _recovery_probe_audio_duration(path)
             if not _recovery_audio_duration_plausible(duration, target_minutes):
                 continue
-            distance = abs(duration - target_sec)
-            if distance < best_distance:
+            score = (0 if minimum_sec <= 0 or duration + 0.5 >= minimum_sec else 1, abs(duration - target_sec))
+            if score < best_score:
                 best_path = path
                 best_duration = duration
                 best_source = "video_task" if source_index == 0 else "unified_video"
-                best_distance = distance
+                best_score = score
     return best_path, best_duration, best_source
 
 
@@ -354,7 +379,50 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             except Exception:
                 pass
 
-        audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
+        seed_render_report = (
+            result_obj.get("render_report")
+            if isinstance(result_obj.get("render_report"), dict)
+            else {}
+        )
+        seed_narration_plan = (
+            seed_render_report.get("narration_plan")
+            if isinstance(seed_render_report.get("narration_plan"), dict)
+            else {}
+        )
+        requested_range = (
+            seed_narration_plan.get("requested_duration_range_sec")
+            if isinstance(seed_narration_plan.get("requested_duration_range_sec"), dict)
+            else {}
+        )
+        requested_audio_min_seconds = 0.0
+        for candidate in (
+            payload.get("duration_seconds"),
+            payload.get("target_duration_sec"),
+            requested_range.get("target_sec"),
+            requested_range.get("min_sec"),
+        ):
+            try:
+                requested_audio_min_seconds = float(candidate or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if requested_audio_min_seconds > 0:
+                break
+        if requested_audio_min_seconds <= 0:
+            duration_unit = str(payload.get("duration_unit") or "minutes").strip().lower()
+            duration_scale = 1.0 if duration_unit in {"second", "seconds", "s"} else 60.0
+            for candidate in (payload.get("duration_min"), payload.get("duration")):
+                try:
+                    requested_audio_min_seconds = float(candidate or 0.0) * duration_scale
+                except (TypeError, ValueError):
+                    continue
+                if requested_audio_min_seconds > 0:
+                    break
+
+        audio_path, audio_duration, audio_source = _recovery_choose_audio(
+            sources,
+            target_minutes,
+            minimum_seconds=requested_audio_min_seconds,
+        )
         # A PR #202 pode ter persistido a narração validada no próprio payload
         # (reuse_audio_from) depois da última falha. Esse checkpoint precisa
         # participar do inventário; caso contrário o retry enxerga "áudio=FALTA"
@@ -364,6 +432,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             payload_audio_path, payload_audio_duration, _ = _recovery_choose_audio(
                 [{"audio_checkpoint": payload_audio, "audio_generation": payload_audio}],
                 target_minutes,
+                minimum_seconds=requested_audio_min_seconds,
             )
             if payload_audio_path:
                 audio_path = payload_audio_path
@@ -372,7 +441,19 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
         missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
         images_complete = bool(images_ok and missing_image_count == 0)
-        audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+        audio_short = bool(
+            audio_path
+            and audio_duration > 0
+            and requested_audio_min_seconds > 0
+            and audio_duration + 0.5 < requested_audio_min_seconds
+        )
+        audio_ok = bool(
+            audio_path
+            and _file_ok(audio_path)
+            and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+            and not audio_short
+        )
+        payload["repair_regenerate_audio"] = bool(audio_short)
         render_only = bool(script_ok and images_complete and audio_ok)
 
         if script_ok and isinstance(seed_script, dict):
@@ -419,7 +500,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             payload["_recovery_missing_assets"] = list(missing)
             payload["repair_mode"] = True
             payload["repair_complete_visuals"] = "imagens" in missing
-            payload["repair_regenerate_audio"] = "áudio" in missing
+            payload["repair_regenerate_audio"] = bool(audio_short)
             payload["force_render_only"] = False
             if expected_images > 0:
                 payload["expected_image_count"] = max(
@@ -470,7 +551,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
 
 
 BLOCK_PAID_RETRY_OLD = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        try:\n            VideoRequest(**payload)'''
-BLOCK_PAID_RETRY_NEW = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]\n            missing_label = ", ".join(missing) if missing else "ativos necessários"\n            recovery_message = (\n                "Claude Diretor: vou reparar automaticamente os ativos faltantes "\n                f"({missing_label}) e continuar a produção antes de liberar a revisão."\n            )\n            payload["repair_mode"] = True\n            payload["repair_complete_visuals"] = "imagens" in missing\n            payload["repair_regenerate_audio"] = "áudio" in missing\n            payload["force_render_only"] = False\n            if payload.get("expected_image_count") or payload.get("strict_visual_target_count"):\n                payload["expected_image_count"] = max(\n                    int(payload.get("expected_image_count") or 0),\n                    int(payload.get("strict_visual_target_count") or 0),\n                )\n                payload["strict_visual_target_count"] = int(payload["expected_image_count"])\n            update_task(task_id, message=recovery_message)\n            payload.pop("_recovery_block_paid_regeneration", None)\n            payload.pop("_recovery_missing_assets", None)\n        try:\n            VideoRequest(**payload)'''
+BLOCK_PAID_RETRY_NEW = '''        payload = _maybe_enable_render_only_flags(payload, task_id)\n        if bool(payload.get("_recovery_block_paid_regeneration")):\n            missing = [str(item) for item in (payload.get("_recovery_missing_assets") or []) if str(item or "").strip()]\n            missing_label = ", ".join(missing) if missing else "ativos necessários"\n            recovery_message = (\n                "Claude Diretor: vou reparar automaticamente os ativos faltantes "\n                f"({missing_label}) e continuar a produção antes de liberar a revisão."\n            )\n            payload["repair_mode"] = True\n            payload["repair_complete_visuals"] = "imagens" in missing\n            # A API pode não acessar o volume do worker; o worker valida o áudio.\n            payload["repair_regenerate_audio"] = bool(payload.get("repair_regenerate_audio"))\n            payload["force_render_only"] = False\n            if payload.get("expected_image_count") or payload.get("strict_visual_target_count"):\n                payload["expected_image_count"] = max(\n                    int(payload.get("expected_image_count") or 0),\n                    int(payload.get("strict_visual_target_count") or 0),\n                )\n                payload["strict_visual_target_count"] = int(payload["expected_image_count"])\n            update_task(task_id, message=recovery_message)\n            payload.pop("_recovery_block_paid_regeneration", None)\n            payload.pop("_recovery_missing_assets", None)\n        try:\n            VideoRequest(**payload)'''
 
 
 def _strip_existing(text: str) -> str:
@@ -486,13 +567,17 @@ def _strip_existing(text: str) -> str:
 def apply() -> None:
     text = TARGET.read_text(encoding="utf-8")
     text = _strip_existing(text)
+    text, repaired_flag_count = re.subn(
+        r'(?m)^(?P<indent>\s*)payload\["repair_regenerate_audio"\] = "áudio" in missing$',
+        r'\g<indent>payload["repair_regenerate_audio"] = bool(payload.get("repair_regenerate_audio"))',
+        text,
+    )
     if BLOCK_PAID_RETRY_NEW not in text:
-        if BLOCK_PAID_RETRY_OLD not in text:
+        if BLOCK_PAID_RETRY_OLD in text:
+            text = text.replace(BLOCK_PAID_RETRY_OLD, BLOCK_PAID_RETRY_NEW, 1)
+        elif repaired_flag_count <= 0:
             raise RuntimeError("recovery/paid-retry guard anchor não encontrado")
-        text = text.replace(BLOCK_PAID_RETRY_OLD, BLOCK_PAID_RETRY_NEW, 1)
     TARGET.write_text(text.rstrip() + BLOCK + "\n", encoding="utf-8")
-
-
 def check() -> None:
     text = TARGET.read_text(encoding="utf-8")
     required = (
@@ -508,6 +593,7 @@ def check() -> None:
         'db.query(UnifiedVideo)',
         'paid_stage_regeneration_blocked',
         '"automatic_asset_repair_requested": bool(missing)',
+        'payload["repair_regenerate_audio"] = bool(audio_short)',
         'Claude Diretor: vou reparar automaticamente os ativos faltantes',
     )
     missing = [token for token in required if token not in text]

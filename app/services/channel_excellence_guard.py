@@ -179,19 +179,23 @@ def _duration_preflight(plan: Any) -> Dict[str, Any]:
 
     estimated_sec = max(1, int(round((word_count / float(wpm)) * 60.0)))
     allowed_extra = max(extra_seconds, int(round(target_sec * (tolerance_pct / 100.0))))
-    max_sec = target_sec + allowed_extra
-    passed = estimated_sec <= max_sec
+    max_sec = target_sec + allowed_extra  # limite editorial informativo; o pedido é duração mínima
+    minimum_estimate_met = estimated_sec >= target_sec
+    passed = True  # O áudio real será medido depois; abaixo do piso aciona autocorreção.
     return {
         "checked": True,
         "passed": passed,
         "target_sec": target_sec,
+        "minimum_sec": target_sec,
+        "minimum_estimate_met": minimum_estimate_met,
         "estimated_sec": estimated_sec,
         "max_sec": max_sec,
+        "maximum_is_advisory": True,
         "word_count": word_count,
         "estimated_wpm": wpm,
         "tolerance_pct": tolerance_pct,
         "extra_seconds": extra_seconds,
-        "reason": "within_editorial_tolerance" if passed else "estimated_duration_far_above_target",
+        "reason": "duration_minimum_estimated" if minimum_estimate_met else "short_estimate_deferred_to_narration_repair",
     }
 
 
@@ -486,7 +490,7 @@ def install_channel_excellence_guard_patch(video_generator_cls: Type[Any]) -> Ty
                     f"alvo {int(duration_preflight.get('target_sec') or 0)}s, "
                     f"estimado {int(duration_preflight.get('estimated_sec') or 0)}s, "
                     f"limite flexível {int(duration_preflight.get('max_sec') or 0)}s. "
-                    "Revise ou condense o roteiro sem cortar o fechamento natural."
+                    "Expanda ou ajuste o roteiro para alcançar a duração mínima; narrações mais longas são aceitas."
                 )
 
             closing_source = guarded.get("final_message") or guarded.get("closing_message")

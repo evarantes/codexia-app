@@ -226,12 +226,22 @@ def patch_video(text: str) -> str:
         '''            output_path = self._ensure_playable_mp4(output_path)\n            # CODEXIA_POST_RENDER_DURATION_GATE_V1\n            task_id = str(getattr(self, "_codexia_task_id", "") or "").strip()\n            if task_id:\n                try:\n                    from app.services.production_manifest import record_artifact\n                    record_artifact(task_id, output_path, kind="video", source="render_immediate")\n                except Exception:\n                    pass\n            rendered_duration = float(self._measure_rendered_video_duration_seconds(output_path) or 0.0)\n            expected_render_duration = float(target_video_duration or actual_total_audio_dur or 0.0)\n            render_tolerance = duration_sync_tolerance_seconds(expected_render_duration) if expected_render_duration > 0 else 0.0\n            if expected_render_duration > 0 and rendered_duration + render_tolerance < expected_render_duration:\n                raise Exception(\n                    "Render final truncado antes da conclusão/CTA: "\n                    f"arquivo={rendered_duration:.2f}s, esperado={expected_render_duration:.2f}s, "\n                    f"tolerância={render_tolerance:.2f}s. O MP4 foi preservado para diagnóstico, mas não será aprovado."\n                )\n            try:\n                self._dbg_event("H1", "_ensure_playable_mp4 done (narrated)", {''',
         "post-render duration gate",
     )
-    if "CODEXIA_DURATION_IS_MINIMUM_V1" not in text:
+    duration_marker = "CODEXIA_DURATION_IS_MINIMUM_V1"
+    if duration_marker not in text:
         # Do not shorten complete narration just because it exceeds a requested target.
         max_bound = 'max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))'
-        if text.count(max_bound) != 2:
-            raise PatchError("duration floor: esperadas 2 verificações do limite superior da narração")
-        text = text.replace(max_bound, 'max_ok = True  # CODEXIA_DURATION_IS_MINIMUM_V1')
+        bound_count = text.count(max_bound)
+        if bound_count == 2:
+            text = text.replace(max_bound, "max_ok = True  # CODEXIA_DURATION_IS_MINIMUM_V1")
+        elif bound_count == 0 and text.count("max_ok = True") >= 2:
+            # Source may already implement the minimum rule directly; mark it
+            # here so subsequent build hardening remains idempotent.
+            text = text.replace(
+                "max_ok = True",
+                "max_ok = True  # CODEXIA_DURATION_IS_MINIMUM_V1",
+            )
+        else:
+            raise PatchError("duration floor: não foi possível reconhecer as duas verificações de duração")
 
         old_duration_report = '''            if requested_duration_final > 0:
                 diff_pct = abs(obtained_duration_final - requested_duration_final) / requested_duration_final

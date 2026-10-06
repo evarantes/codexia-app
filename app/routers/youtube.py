@@ -1240,9 +1240,63 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
         script_ok = _is_valid_seed_script(seed_script)
         images_ok = _selected_images_ok(selected_images)
         audio_ok = _file_ok(audio_path)
-        if script_ok and images_ok and audio_ok and missing_images == 0 and not strict_visual_retry:
-            payload["force_render_only"] = True
-        elif script_ok and images_ok and expected_images > actual_images:
+
+        narration_plan = (
+            seed_render_report.get("narration_plan")
+            if isinstance(seed_render_report.get("narration_plan"), dict)
+            else {}
+        )
+        audio_generation = (
+            seed_render_report.get("audio_generation")
+            if isinstance(seed_render_report.get("audio_generation"), dict)
+            else {}
+        )
+        narration_duration_report = (
+            narration_plan.get("duration_range_report")
+            if isinstance(narration_plan.get("duration_range_report"), dict)
+            else {}
+        )
+        audio_duration_seconds = 0.0
+        for candidate in (
+            audio_generation.get("final_audio_duration_sec"),
+            audio_generation.get("duration_seconds"),
+            audio_generation.get("audio_duration_sec"),
+            narration_duration_report.get("actual_audio_duration_sec"),
+        ):
+            try:
+                audio_duration_seconds = max(audio_duration_seconds, float(candidate or 0.0))
+            except (TypeError, ValueError):
+                continue
+
+        requested_duration_range = (
+            narration_plan.get("requested_duration_range_sec")
+            if isinstance(narration_plan.get("requested_duration_range_sec"), dict)
+            else {}
+        )
+        requested_audio_min_seconds = 0.0
+        for candidate in (
+            requested_duration_range.get("target_sec"),
+            requested_duration_range.get("min_sec"),
+            payload.get("duration_seconds"),
+        ):
+            try:
+                requested_audio_min_seconds = float(candidate or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if requested_audio_min_seconds > 0:
+                break
+        if requested_audio_min_seconds <= 0:
+            requested_audio_min_seconds = float(_video_payload_duration_minutes(payload) * 60)
+        audio_short = bool(
+            audio_duration_seconds > 0
+            and requested_audio_min_seconds > 0
+            and audio_duration_seconds + 0.5 < requested_audio_min_seconds
+        )
+
+        # O app e o worker podem ver volumes diferentes. A API nunca conclui
+        # "render-only" com base apenas em arquivos que ela própria enxerga;
+        # o worker valida cada ativo e regenera o que não estiver acessível.
+        if script_ok and images_ok and expected_images > actual_images:
             # Recuperação parcial: preserve roteiro e imagens válidas, gere
             # somente a diferença até a meta e aplique um teto rígido às
             # chamadas pagas. O áudio é reaproveitado apenas se estiver
@@ -1262,7 +1316,7 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
             seeded["_partial_image_recovery"] = dict(budget)
             seeded["expected_image_count"] = expected_images
             seeded["repair_complete_visuals"] = True
-            seeded["repair_regenerate_audio"] = not audio_ok
+            seeded["repair_regenerate_audio"] = audio_short
             payload.update({
                 "seeded_script": seeded,
                 "selected_images": list(selected_images),
@@ -1271,13 +1325,43 @@ def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Di
                 "force_regenerate": False,
                 "repair_mode": True,
                 "repair_complete_visuals": True,
-                "repair_regenerate_audio": not audio_ok,
+                "repair_regenerate_audio": audio_short,
                 "repair_image_budget": budget,
                 "expected_image_count": expected_images,
                 "strict_visual_target_count": expected_images,
                 "director_quality_required": True,
             })
-            if audio_ok:
+            if audio_ok and not audio_short:
+                payload["reuse_audio_from"] = {
+                    "output_path": audio_path,
+                    "final_audio_path": audio_path,
+                    "audio_path": audio_path,
+                    "source": "preserved_retry",
+                }
+            else:
+                payload.pop("reuse_audio_from", None)
+        elif script_ok and images_ok and missing_images == 0 and not strict_visual_retry:
+            # Reuse roteiro/imagens e deixe o worker validar o áudio no volume
+            # que ele próprio enxerga. Só marque reparo de áudio quando a duração
+            # registrada prova que ficou abaixo do mínimo.
+            seeded = dict(seed_script or {})
+            seeded["selected_images"] = list(selected_images)
+            if audio_short:
+                seeded["repair_regenerate_audio"] = True
+            else:
+                seeded.pop("repair_regenerate_audio", None)
+            payload.update({
+                "seeded_script": seeded,
+                "selected_images": list(selected_images),
+                "force_render_only": False,
+                "force_reuse_assets": True,
+                "force_regenerate": False,
+                "repair_mode": True,
+                "repair_complete_visuals": False,
+                "repair_regenerate_audio": audio_short,
+                "expected_image_count": expected_images or actual_images,
+            })
+            if audio_ok and not audio_short:
                 payload["reuse_audio_from"] = {
                     "output_path": audio_path,
                     "final_audio_path": audio_path,
@@ -8049,6 +8133,7 @@ def process_video_generation(request: VideoRequest, task_id):
 
         script = dict(request.seeded_script) if isinstance(request.seeded_script, dict) else None
         seed_mode = bool(getattr(request, "force_render_only", False) or getattr(request, "force_reuse_assets", False))
+        repair_audio_requested = bool(getattr(request, "repair_regenerate_audio", False))
         if seed_mode and guardian_task_row is not None:
             try:
                 seed_result = json.loads(getattr(guardian_task_row, "result_json", "") or "{}")
@@ -8084,23 +8169,32 @@ def process_video_generation(request: VideoRequest, task_id):
                 seed_audio_ok = _file_ok(seed_audio_path)
                 seed_images_ok = _selected_images_ok(seed_selected_images)
 
-                if bool(getattr(request, "force_render_only", False)):
-                    if not (seed_script_ok and seed_images_ok and seed_audio_ok):
-                        finalize_task_once(
-                            task_id,
-                            status="failed",
-                            progress=0,
-                            message="Recuperação (render-only) bloqueada: faltam roteiro, imagens ou áudio válidos para reutilização.",
-                            result=_merged_task_result({
-                                "recovery": {
-                                    "mode": "render_only",
-                                    "seed_script_ok": bool(seed_script_ok),
-                                    "seed_images_ok": bool(seed_images_ok),
-                                    "seed_audio_ok": bool(seed_audio_ok),
-                                }
-                            }),
-                        )
-                        return
+                render_only_requested = bool(getattr(request, "force_render_only", False))
+                reuse_assets_requested = bool(getattr(request, "force_reuse_assets", False))
+                repair_audio_requested = bool(
+                    repair_audio_requested or getattr(request, "repair_regenerate_audio", False)
+                )
+                if render_only_requested and not (seed_script_ok and seed_images_ok and seed_audio_ok):
+                    # Um seed ausente no worker é recuperável. Reutilize cada ativo
+                    # disponível e deixe o pipeline recriar áudio/legendas/imagens que faltarem.
+                    render_only_requested = False
+                    reuse_assets_requested = True
+                    repair_audio_requested = repair_audio_requested or not seed_audio_ok
+                    update_task(
+                        task_id,
+                        progress=5,
+                        message="Recuperação automática: ativo indisponível no worker; corrigindo e continuando a produção...",
+                        result=_merged_task_result({
+                            "recovery": {
+                                "mode": "repair_missing_assets",
+                                "seed_script_ok": bool(seed_script_ok),
+                                "seed_images_ok": bool(seed_images_ok),
+                                "seed_audio_ok": bool(seed_audio_ok),
+                            }
+                        }),
+                    )
+
+                if render_only_requested:
                     script = dict(seed_script or {})
                     script["selected_images"] = seed_selected_images
                     script["seed_audio_path"] = seed_audio_path
@@ -8109,17 +8203,22 @@ def process_video_generation(request: VideoRequest, task_id):
                     script["force_reuse_assets"] = True
                     script["force_render_only"] = True
                     update_task(task_id, progress=10, message="1/8 Recuperação (render-only): reutilizando roteiro/imagens/áudio e renderizando MP4...", result=_merged_task_result({"pipeline_stage": "stage_1_script_recovery"}))
-                elif bool(getattr(request, "force_reuse_assets", False)) and seed_script_ok:
+                elif reuse_assets_requested and seed_script_ok:
                     script = dict(seed_script or {})
                     reused: List[str] = ["roteiro"]
                     if seed_images_ok:
                         script["selected_images"] = seed_selected_images
                         reused.append("imagens")
-                    if seed_audio_ok:
+                    if seed_audio_ok and not repair_audio_requested:
                         script["seed_audio_path"] = seed_audio_path
                         if seed_narration_text:
                             script["seed_narration_text"] = seed_narration_text
                         reused.append("áudio")
+                    else:
+                        script.pop("seed_audio_path", None)
+                        if repair_audio_requested or not seed_audio_ok:
+                            repair_audio_requested = True
+                            script["repair_regenerate_audio"] = True
                     script["force_reuse_assets"] = True
                     update_task(task_id, progress=10, message=f"1/8 Recuperação: reutilizando {', '.join(reused)} e gerando apenas o que faltar...", result=_merged_task_result({"pipeline_stage": "stage_1_assets_recovery"}))
 
@@ -8169,6 +8268,9 @@ def process_video_generation(request: VideoRequest, task_id):
             ).strip()[:2000]
         if isinstance(script, dict) and bool(getattr(request, "director_quality_required", False)):
             script["director_quality_required"] = True
+        if isinstance(script, dict) and repair_audio_requested:
+            script["repair_regenerate_audio"] = True
+            script.pop("seed_audio_path", None)
 
         print("Roteiro gerado/estruturado.")
         _raise_if_cancelled()
@@ -8983,6 +9085,7 @@ def process_video_generation(request: VideoRequest, task_id):
                                 audio_path=_audio_path,
                                 narration_text=str(_narration_info.get("full_text") or ""),
                                 reuse_audio=_preserve_audio,
+                                replace_repeated_visuals="visual_variety_valid" in _failed_checks,
                             )
                             if not _repair.get("ok"):
                                 _auto_quality_repairs.append({
