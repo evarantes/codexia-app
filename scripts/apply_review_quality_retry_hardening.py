@@ -101,11 +101,14 @@ PROMOTE_REPLACEMENT = '''        quality_correction_retry = _is_review_quality_r
             payload = _prepare_review_quality_retry_payload(payload)
             final_render_recovery = None
         else:
+            # The API may not share the worker's media volume. Let the worker
+            # check for the finished MP4 before starting a replacement render.
+            payload["_recovery_worker_final_render_preflight"] = True
             final_render_recovery = _recovery_try_promote_final_render(payload, task_id)
         if isinstance(final_render_recovery, dict) and final_render_recovery.get("recovered"):
             return final_render_recovery
-        if isinstance(final_render_recovery, dict) and final_render_recovery.get("blocked"):
-            raise HTTPException(status_code=409, detail=str(final_render_recovery.get("message") or "Recuperação bloqueada."))'''
+        # A recovery candidate that needs repair must not terminate the task.
+        # Continue the same task through the worker's automatic correction path.'''
 
 RESET_ANCHOR = '''        reset = reset_task_for_retry(
             task_id,
@@ -218,6 +221,8 @@ def check() -> None:
         'prepared["force_reuse_assets"] = False',
         'prepared.pop(key, None)',
         "if quality_correction_retry",
+        '_recovery_worker_final_render_preflight',
+        "Continue the same task through the worker's automatic correction path.",
         'uv.force_reuse_assets = bool(payload.get("force_reuse_assets"))',
     )
     missing = [token for token in required if token not in text]
