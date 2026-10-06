@@ -91,7 +91,19 @@ OLD_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
         missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
         images_complete = bool(images_ok and missing_image_count == 0)
-        audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+        audio_short = bool(
+            audio_path
+            and audio_duration > 0
+            and requested_audio_min_seconds > 0
+            and audio_duration + 0.5 < requested_audio_min_seconds
+        )
+        audio_ok = bool(
+            audio_path
+            and _file_ok(audio_path)
+            and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+            and not audio_short
+        )
+        payload["repair_regenerate_audio"] = bool(audio_short)
         render_only = bool(script_ok and images_complete and audio_ok)'''
 
 NEW_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery_choose_audio(sources, target_minutes)
@@ -125,13 +137,26 @@ NEW_CHECKPOINT = '''        audio_path, audio_duration, audio_source = _recovery
         images_ok = bool(valid_images) and _selected_images_ok(valid_images)
         missing_image_count = max(0, int(expected_images or 0) - len(valid_images))
         images_complete = bool(images_ok and missing_image_count == 0)
-        audio_ok = bool(audio_path) and _file_ok(audio_path) and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+        audio_short = bool(
+            audio_path
+            and audio_duration > 0
+            and requested_audio_min_seconds > 0
+            and audio_duration + 0.5 < requested_audio_min_seconds
+        )
+        audio_ok = bool(
+            audio_path
+            and _file_ok(audio_path)
+            and _recovery_audio_duration_plausible(audio_duration, target_minutes)
+            and not audio_short
+        )
+        payload["repair_regenerate_audio"] = bool(audio_short)
         manifest_action = str(manifest_checkpoint_plan.get("action") or "") if isinstance(manifest_checkpoint_plan, dict) else ""
         if manifest_action in {"rebuild_untrusted_audio", "rebuild_missing_audio", "rebuild_audio_and_missing_images"}:
             audio_path = ""
             audio_duration = 0.0
             audio_source = ""
             audio_ok = False
+            payload["repair_regenerate_audio"] = True
             payload.pop("reuse_audio_from", None)
         render_only = bool(script_ok and images_complete and audio_ok)'''
 
