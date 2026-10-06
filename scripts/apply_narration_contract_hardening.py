@@ -226,6 +226,48 @@ def patch_video(text: str) -> str:
         '''            output_path = self._ensure_playable_mp4(output_path)\n            # CODEXIA_POST_RENDER_DURATION_GATE_V1\n            task_id = str(getattr(self, "_codexia_task_id", "") or "").strip()\n            if task_id:\n                try:\n                    from app.services.production_manifest import record_artifact\n                    record_artifact(task_id, output_path, kind="video", source="render_immediate")\n                except Exception:\n                    pass\n            rendered_duration = float(self._measure_rendered_video_duration_seconds(output_path) or 0.0)\n            expected_render_duration = float(target_video_duration or actual_total_audio_dur or 0.0)\n            render_tolerance = duration_sync_tolerance_seconds(expected_render_duration) if expected_render_duration > 0 else 0.0\n            if expected_render_duration > 0 and rendered_duration + render_tolerance < expected_render_duration:\n                raise Exception(\n                    "Render final truncado antes da conclusão/CTA: "\n                    f"arquivo={rendered_duration:.2f}s, esperado={expected_render_duration:.2f}s, "\n                    f"tolerância={render_tolerance:.2f}s. O MP4 foi preservado para diagnóstico, mas não será aprovado."\n                )\n            try:\n                self._dbg_event("H1", "_ensure_playable_mp4 done (narrated)", {''',
         "post-render duration gate",
     )
+    # CODEXIA_DURATION_IS_MINIMUM_V1
+    # Do not shorten complete narration just because it exceeds a requested target.
+    max_bound = 'max_ok = (max_requested_duration <= 0) or (actual_total_audio_dur <= (max_requested_duration * (1.0 + range_tolerance)))'
+    if text.count(max_bound) != 2:
+        raise PatchError("duration floor: esperadas 2 verificações do limite superior da narração")
+    text = text.replace(max_bound, 'max_ok = True  # CODEXIA_DURATION_IS_MINIMUM_V1')
+
+    old_duration_report = '''            if requested_duration_final > 0:
+                diff_pct = abs(obtained_duration_final - requested_duration_final) / requested_duration_final
+            else:
+                diff_pct = 0.0
+            render_report["duration_plan"]["tolerance_pct"] = 5.0
+            render_report["duration_plan"]["within_tolerance"] = bool(requested_duration_final <= 0 or diff_pct <= 0.05)'''
+    new_duration_report = '''            if requested_duration_final > 0:
+                shortfall_sec = max(0.0, requested_duration_final - obtained_duration_final)
+                diff_pct = shortfall_sec / requested_duration_final
+            else:
+                diff_pct = 0.0
+            render_report["duration_plan"]["tolerance_pct"] = 0.0
+            render_report["duration_plan"]["within_tolerance"] = bool(
+                requested_duration_final <= 0 or obtained_duration_final >= requested_duration_final
+            )'''
+    text = _replace_once(
+        text,
+        old_duration_report,
+        new_duration_report,
+        "duration floor report",
+    )
+
+    old_range_report = '''            render_report["duration_plan"]["within_requested_range"] = bool(
+                (min_requested_duration <= 0 or obtained_duration_final >= min_requested_duration)
+                and (max_requested_duration <= 0 or obtained_duration_final <= max_requested_duration)
+            )'''
+    new_range_report = '''            render_report["duration_plan"]["within_requested_range"] = bool(
+                min_requested_duration <= 0 or obtained_duration_final >= min_requested_duration
+            )'''
+    text = _replace_once(
+        text,
+        old_range_report,
+        new_range_report,
+        "duration range floor report",
+    )
     return text
 
 
@@ -300,7 +342,7 @@ def apply(write: bool) -> int:
 
 def check_markers() -> None:
     requirements = {
-        VIDEO: (MARKER_VIDEO, MARKER_TRACK, MARKER_RENDER),
+        VIDEO: (MARKER_VIDEO, MARKER_TRACK, MARKER_RENDER, "CODEXIA_DURATION_IS_MINIMUM_V1", 'within_requested_range"] = bool(\n                min_requested_duration <= 0 or obtained_duration_final >= min_requested_duration'),
         YOUTUBE: (MARKER_YOUTUBE, '_codexia_task_id = str(task_id)'),
         WORKER: (MARKER_WORKER, 'NarrationContractGuard ausente'),
         MANIFEST: (MARKER_MANIFEST, 'def record_artifact(', 'audio_duration * 0.015'),
