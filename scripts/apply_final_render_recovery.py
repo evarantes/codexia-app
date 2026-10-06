@@ -108,30 +108,36 @@ def _recovery_final_video_url(path_value: Any) -> str:
 
 
 def _recovery_final_video_audio_checkpoint_duration(result_obj: Dict[str, Any], unified_obj: Dict[str, Any]) -> float:
+    # Keep the longest saved narration as the completion contract. A later
+    # failed retry may have written a shorter duration without replacing the
+    # original approved audio checkpoint.
+    durations: List[float] = []
     for source in (result_obj, unified_obj):
         if not isinstance(source, dict):
             continue
         recovery = source.get("recovery_checkpoint") if isinstance(source.get("recovery_checkpoint"), dict) else {}
-        for key in ("audio_duration_sec", "audio_duration_seconds"):
-            try:
-                value = float(recovery.get(key) or 0.0)
-            except Exception:
-                value = 0.0
-            if value > 0:
-                return value
         checkpoint = source.get("audio_checkpoint") if isinstance(source.get("audio_checkpoint"), dict) else {}
-        for key in ("final_audio_duration_sec", "duration_seconds", "audio_duration_seconds"):
+        for value in (
+            recovery.get("audio_duration_sec"),
+            recovery.get("audio_duration_seconds"),
+            checkpoint.get("final_audio_duration_sec"),
+            checkpoint.get("duration_seconds"),
+            checkpoint.get("audio_duration_seconds"),
+        ):
             try:
-                value = float(checkpoint.get(key) or 0.0)
-            except Exception:
-                value = 0.0
-            if value > 0:
-                return value
+                seconds = float(value or 0.0)
+            except (TypeError, ValueError):
+                seconds = 0.0
+            if seconds > 0.0:
+                durations.append(seconds)
     meta = unified_obj.get("_unified_recovery_meta") if isinstance(unified_obj.get("_unified_recovery_meta"), dict) else {}
     try:
-        return float(meta.get("audio_duration_seconds") or 0.0)
-    except Exception:
-        return 0.0
+        meta_duration = float(meta.get("audio_duration_seconds") or 0.0)
+    except (TypeError, ValueError):
+        meta_duration = 0.0
+    if meta_duration > 0.0:
+        durations.append(meta_duration)
+    return max(durations, default=0.0)
 
 
 def _recovery_final_video_claimed_paths(db: Any, task_id: str) -> set:
@@ -179,8 +185,9 @@ def _recovery_probe_final_video(
         return {"ok": False, "path": path, "probe": probe, "duration_sec": duration, "error": "duration_outside_target"}
     audio_delta = 0.0
     if float(audio_duration_sec or 0.0) > 0:
-        audio_delta = abs(duration - float(audio_duration_sec))
-        tolerance = max(5.0, float(audio_duration_sec) * 0.015)
+        # A video may run longer than its narration, but it may not truncate it.
+        audio_delta = max(0.0, float(audio_duration_sec) - duration)
+        tolerance = max(0.5, float(audio_duration_sec) * 0.005)
         if audio_delta > tolerance:
             return {
                 "ok": False,
@@ -188,8 +195,8 @@ def _recovery_probe_final_video(
                 "probe": probe,
                 "duration_sec": duration,
                 "audio_checkpoint_duration_sec": float(audio_duration_sec),
-                "audio_delta_sec": audio_delta,
-                "error": "render_does_not_match_audio_checkpoint",
+                "audio_shortfall_sec": audio_delta,
+                "error": "render_cuts_audio_checkpoint",
             }
     return {
         "ok": True,
