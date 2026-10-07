@@ -217,7 +217,8 @@ def _artifact_checklist(
     except Exception:
         recovery = {}
 
-    target_sec = _seconds(persisted.get("target_duration_sec"))
+    requested_sec = _seconds(payload.get("duration_seconds"))
+    target_sec = requested_sec or _seconds(persisted.get("target_duration_sec"))
     if target_sec <= 0 and duration_minutes:
         target_sec = float(duration_minutes) * 60.0
 
@@ -253,13 +254,14 @@ def _artifact_checklist(
         or recovery.get("audio_reusable")
         or (diagnostic.get("audio") or {}).get("reusable")
     )
-    audio_target = _seconds(persisted_audio.get("target_sec")) or target_sec
+    audio_target = requested_sec or _seconds(persisted_audio.get("target_sec")) or target_sec
     audio_tolerance = max(5.0, audio_target * 0.05) if audio_target > 0 else 5.0
     audio_ok = bool(
         audio_found
         and audio_reusable
         and (
             audio_target <= 0
+            or audio_duration >= audio_target
             or abs(audio_duration - audio_target) <= audio_tolerance
             or (0.90 * audio_target) <= audio_duration <= audio_target
         )

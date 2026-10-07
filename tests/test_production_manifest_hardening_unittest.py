@@ -11,6 +11,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProductionManifestHardeningTests(unittest.TestCase):
+    def test_recovery_respects_seconds_and_preserves_longer_narration(self):
+        manifest = {"payload": {"duration_seconds": 30, "duration": 1}}
+        audio = {"resolved_path": "/audio/voice.mp3", "source": "tts_immediate"}
+        for duration in (49, 54, 75):
+            with self.subTest(duration=duration), \
+                    patch.object(pm, "load_manifest", return_value=manifest), \
+                    patch.object(pm, "_valid_artifacts", side_effect=lambda _manifest, kind: [audio] if kind == "audio" else []), \
+                    patch.object(pm, "_probe_duration", return_value=duration), \
+                    patch.object(pm, "resolve_recovery_image_paths", return_value={"paths": []}):
+                plan = pm.build_recovery_plan("short-request")
+                self.assertEqual(plan["target_duration_minutes"], 0.5)
+                self.assertTrue(plan["audio_reusable"])
+                self.assertEqual(plan["audio_duration_sec"], duration)
+
     def test_partial_recovery_payload_marks_seed_script_and_reuses_audio(self):
         manifest = {
             "script": {

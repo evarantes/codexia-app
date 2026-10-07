@@ -10,6 +10,26 @@ from app.services.cinematic_library_store import CinematicLibraryStore
 
 
 class CinematicOperationalQueueTests(unittest.TestCase):
+    @patch("app.routers.cinematic_queue.build_recovery_plan", return_value={})
+    @patch("app.routers.cinematic_queue.build_manifest_diagnostic", return_value={})
+    def test_seconds_override_rounded_and_stale_targets_and_accept_longer_audio(self, *_mocks):
+        for duration in (30, 49, 54, 75):
+            with self.subTest(duration=duration):
+                checklist = _artifact_checklist(
+                    SimpleNamespace(id="short-request", status="failed"),
+                    {"artifact_checklist": {
+                        "target_duration_sec": 60,
+                        "narration": {"target_sec": 60, "duration_sec": duration, "preserved": True},
+                    }},
+                    {"duration_seconds": 30, "duration": 1},
+                    duration_minutes=1,
+                    video_url="",
+                )
+                narration = next(item for item in checklist["items"] if item["key"] == "narration")
+                self.assertEqual(checklist["target_duration_sec"], 30)
+                self.assertEqual(narration["target_sec"], 30)
+                self.assertEqual(narration["status"], "ok")
+
     def test_serializes_registered_video_task_for_v2(self):
         row = SimpleNamespace(
             id="task-123",
