@@ -6966,11 +6966,11 @@
                             return;
                         }
                         if (res.ok && data.auth_url) {
-                            // Fluxo moderno: abre na MESMA aba para o Google redirecionar automaticamente
+                            // Abre na aba principal, fora do iframe de Configurações, para o Google redirecionar automaticamente
                             // de volta para /youtube/auth/callback, que salva o token e retorna para cá.
                             this.oauthFlash = { type: '', msg: 'Redirecionando para o Google…', err: '' };
                             try {
-                                window.location.href = data.auth_url;
+                                window.top.location.href = data.auth_url;
                             } catch (e) {
                                 window.open(data.auth_url, '_blank');
                             }
