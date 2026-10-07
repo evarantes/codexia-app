@@ -1709,14 +1709,32 @@ class UnifiedVideoPipelineService:
             or ""
         ).strip()
         if not yid:
+            response = out if isinstance(out, dict) else {}
+            reason = str(response.get("error") or "").strip()[:1000]
+            upload_status = str(response.get("status") or "").strip()
+            if reason:
+                error = f"Publicação no YouTube falhou: {reason}"
+                if upload_status == "not_connected":
+                    error += " Reconecte o canal em Configurações > YouTube e tente publicar novamente."
+                code = "publication_pending"
+            else:
+                error = "O YouTube não confirmou o ID do vídeo. Confira o YouTube Studio antes de tentar publicar novamente para evitar duplicidade."
+                code = "no_video_id"
+            error += " O vídeo gerado continua aprovado e foi preservado."
             self.transition_status(
                 db,
                 str(uv.task_id or uv.idempotency_key),
                 status=UnifiedVideoStatus.APPROVED,
-                message="Upload não retornou YouTube Video ID. Verifique credenciais/permissões.",
-                merge_result={"publish_result": out},
+                progress=100,
+                message=error,
+                merge_result={
+                    "publish_result": out,
+                    "publish_pending": True,
+                    "production_preserved": True,
+                    "publish_error": {"code": code, "status": upload_status, "message": error},
+                },
             )
-            return {"ok": False, "code": "no_video_id", "error": "Upload não retornou YouTube Video ID", "raw": out}
+            return {"ok": False, "code": code, "error": error, "production_preserved": True, "raw": out}
         url = f"https://www.youtube.com/watch?v={yid}"
         merge_artifacts: Dict[str, Any] = {
             "youtube_video_id": yid,
