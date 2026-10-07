@@ -8913,6 +8913,7 @@ def process_video_generation(request: VideoRequest, task_id):
                     from app.services.visual_quality_repair import (
                         build_auto_visual_repair_plan,
                         rendered_visual_diversity_report,
+                        visual_failure_message,
                     )
 
                     _pipeline_service = unified_video_pipeline()
@@ -9324,24 +9325,11 @@ def process_video_generation(request: VideoRequest, task_id):
                                     1 for item in _auto_quality_repairs
                                     if item.get("status") in {"running", "rendered", "render_failed"}
                                 )
-                                _visual_details = (
-                                    ((_pipeline_validation.details or {}).get("director_quality") or {}).get("visual_variety")
-                                    if isinstance(_pipeline_validation.details, dict)
-                                    else {}
-                                ) or {}
-                                _unique = int(_visual_details.get("unique_rendered_image_count") or 0)
-                                _minimum = int(_visual_details.get("minimum_unique_image_count") or 0)
-                                if _attempted_count:
-                                    _pipeline_final_message = (
-                                        f"Após {_attempted_count} tentativa(s) de correção automática, "
-                                        f"o melhor render ainda tem {_unique} imagens distintas; "
-                                        f"o mínimo calculado foi {_minimum}. O melhor vídeo e os ativos foram preservados."
-                                    )
-                                else:
-                                    _pipeline_final_message = (
-                                        "A variedade visual ficou abaixo do mínimo e não foi possível iniciar "
-                                        "uma correção automática nesta execução. O melhor vídeo e os ativos foram preservados."
-                                    )
+                                _pipeline_final_message = visual_failure_message(
+                                    failed_check,
+                                    _pipeline_validation.details or {},
+                                    _attempted_count,
+                                )
                             elif failed_check == "duration_covers_narration":
                                 _mp4_details = (
                                     (_pipeline_validation.details or {}).get("mp4")

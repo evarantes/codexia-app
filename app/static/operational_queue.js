@@ -130,12 +130,15 @@
     if (!items.length) return '';
     const states = {
       ok: { icon: '✓', bg: '#e9f8f1', fg: '#14704f', label: 'OK' },
+      approved: { icon: '✓', bg: '#e9f8f1', fg: '#14704f', label: 'Aprovado por você' },
       partial: { icon: '!', bg: '#fff7df', fg: '#8a6100', label: 'Verificar' },
       failed: { icon: '×', bg: '#feeceb', fg: '#a22820', label: 'Falhou' },
       missing: { icon: '×', bg: '#feeceb', fg: '#a22820', label: 'Ausente' },
       pending: { icon: '…', bg: '#eef1f8', fg: '#526079', label: 'Pendente' },
     };
     const detail = item => {
+      if (item.manual_approval) return item.summary;
+      if (item.status === 'pending') return item.summary || 'Aguardando a conclusão desta etapa.';
       if (item.key === 'images') return item.summary || `${Number(item.actual || 0)}/${item.expected || '?'}`;
       if (item.key === 'narration' || item.key === 'captions') {
         const duration = item.duration_sec ? durationText(item.duration_sec) : 'sem duração';
@@ -157,7 +160,12 @@
         <span aria-hidden="true" style="display:grid;place-items:center;width:28px;height:28px;border-radius:999px;background:${state.bg};color:${state.fg};font-weight:900">${state.icon}</span>
         <b>${esc(item.label || item.key || 'Ativo')}</b>
         <span class="oq-artifact-detail" style="color:#536079;line-height:1.35">${esc(detail(item))}</span>
-        <span style="color:${state.fg};font-size:11px;font-weight:850;white-space:nowrap">${esc(state.label)}</span>
+        <div class="oq-artifact-actions" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          ${task.can_review_assets && ['partial', 'failed', 'missing'].includes(item.status)
+            ? `<button type="button" class="btn btn-ghost oq-asset" data-id="${esc(task.id)}" data-asset="${esc(item.key)}" data-action="verify" style="color:${state.fg};font-size:11px">Verificar</button>
+               ${task.video_url ? `<button type="button" class="btn btn-ghost oq-asset" data-id="${esc(task.id)}" data-asset="${esc(item.key)}" data-action="approve" style="font-size:11px">Aprovar mesmo assim</button>` : ''}`
+            : `<span style="color:${state.fg};font-size:11px;font-weight:850">${esc(state.label)}</span>`}
+        </div>
       </div>`;
     }).join('');
     const reusable = Number(checklist.reusable_count || 0);
@@ -231,6 +239,7 @@
         .oq-project-row { min-width: 760px; }
         .oq-artifact-row { grid-template-columns: 34px minmax(0,1fr) auto; }
         .oq-artifact-detail { grid-column: 2 / 4; padding-bottom: 3px; }
+        .oq-artifact-actions { grid-column: 2 / 4; justify-content: flex-start !important; }
         .oq-mobile-scroll-hint {
           display: block;
           position: sticky;
@@ -365,6 +374,9 @@
     }
     if (task.can_approve) {
       items.push(`<button type="button" class="btn btn-primary oq-review" data-action="approve" data-id="${esc(task.id)}">✓ Aprovar</button>`);
+    }
+    if (task.can_approve_anyway) {
+      items.push(`<button type="button" class="btn btn-ghost oq-review" data-action="approve-anyway" data-id="${esc(task.id)}">✓ Aprovar vídeo mesmo assim</button>`);
     }
     if (task.can_reject) {
       items.push(`<button type="button" class="btn btn-danger oq-review" data-action="reject" data-id="${esc(task.id)}">Solicitar correção</button>`);
@@ -689,10 +701,15 @@
 
   async function reviewProject(action, id, button) {
     let notes = '';
+    const approveAnyway = action === 'approve-anyway';
+    if (approveAnyway) {
+      if (!confirm('Você assistiu ao vídeo e deseja aprová-lo mesmo com os alertas? Sua decisão será registrada para este vídeo. A publicação continuará sendo uma ação separada.')) return;
+      action = 'approve';
+    }
     if (action === 'reject') {
       notes = prompt('Descreva o que o Claude Diretor deve corrigir antes de uma nova produção:') || '';
       if (!notes.trim()) return;
-    } else if (!confirm('Aprovar este vídeo para publicação? O Codexia fará uma última validação de duração, variedade visual e sincronização.')) {
+    } else if (!approveAnyway && !confirm('Aprovar este vídeo para publicação? O Codexia fará uma última validação de duração, variedade visual e sincronização.')) {
       return;
     }
     const original = button.textContent;
@@ -701,7 +718,7 @@
     try {
       await api(`/youtube/cinematic/queue/${encodeURIComponent(id)}/${action}`, {
         method: 'POST',
-        body: JSON.stringify({ notes: notes.trim() || undefined }),
+        body: JSON.stringify({ notes: notes.trim() || undefined, approve_anyway: approveAnyway }),
       });
       await loadQueue(false);
       const modal = document.getElementById('v2ProjectModal');
@@ -709,6 +726,25 @@
       alert(action === 'approve'
         ? 'Vídeo aprovado. O botão “Publicar no YouTube” já está disponível.'
         : 'Reprovação registrada. As observações foram anexadas ao projeto para a próxima correção.');
+    } catch (error) {
+      alert(error.message);
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function reviewAsset(id, asset, action, button) {
+    if (action === 'approve' && !confirm('Aceitar este ativo após sua revisão do vídeo? Apenas os alertas deste ativo serão aceitos e registrados no histórico.')) return;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = action === 'verify' ? 'Verificando…' : 'Registrando…';
+    try {
+      const response = await api(`/youtube/cinematic/queue/${encodeURIComponent(id)}/assets/${encodeURIComponent(asset)}`, {
+        method: 'POST', body: JSON.stringify({ action }),
+      });
+      await loadQueue(false);
+      await openProject(id, false);
+      alert(response.message || 'Ativo verificado.');
     } catch (error) {
       alert(error.message);
       button.disabled = false;
@@ -769,6 +805,12 @@
       const id = action.dataset.id;
       const kind = action.dataset.action;
       if (id && kind) void runAction(kind, id, action);
+      return;
+    }
+
+    const asset = event.target.closest?.('.oq-asset');
+    if (asset?.dataset.id && asset?.dataset.asset) {
+      void reviewAsset(asset.dataset.id, asset.dataset.asset, asset.dataset.action, asset);
       return;
     }
 

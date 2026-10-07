@@ -860,7 +860,12 @@ def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]]
     videos = _valid_artifacts(manifest, "video")
 
     target_minutes = float(payload.get("duration") or payload.get("duration_minutes") or manifest.get("expected_duration_minutes") or 0.0)
-    target_seconds = max(60.0, target_minutes * 60.0) if target_minutes > 0 else 0.0
+    try:
+        requested_seconds = max(0.0, float(payload.get("duration_seconds") or 0.0))
+    except (TypeError, ValueError):
+        requested_seconds = 0.0
+    target_seconds = requested_seconds or (target_minutes * 60.0 if target_minutes > 0 else 0.0)
+    target_minutes = target_seconds / 60.0
     expected_images = int(manifest.get("expected_image_count") or _expected_image_count({}, payload, script) or 0)
     selected_references = payload.get("selected_images") if isinstance(payload.get("selected_images"), list) else None
     image_resolution = resolve_recovery_image_paths(
@@ -880,7 +885,7 @@ def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]]
         duration = _probe_duration(str(item.get("resolved_path") or ""))
         if duration <= 0:
             continue
-        if target_seconds and not (target_seconds * 0.60 <= duration <= target_seconds * 1.80):
+        if target_seconds and duration < target_seconds * 0.60:
             continue
         audio_choice = item
         audio_duration = duration

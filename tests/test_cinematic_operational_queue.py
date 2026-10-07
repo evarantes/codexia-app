@@ -10,6 +10,26 @@ from app.services.cinematic_library_store import CinematicLibraryStore
 
 
 class CinematicOperationalQueueTests(unittest.TestCase):
+    @patch("app.routers.cinematic_queue.build_recovery_plan", return_value={})
+    @patch("app.routers.cinematic_queue.build_manifest_diagnostic", return_value={})
+    def test_seconds_override_rounded_and_stale_targets_and_accept_longer_audio(self, *_mocks):
+        for duration in (30, 49, 54, 75):
+            with self.subTest(duration=duration):
+                checklist = _artifact_checklist(
+                    SimpleNamespace(id="short-request", status="failed"),
+                    {"artifact_checklist": {
+                        "target_duration_sec": 60,
+                        "narration": {"target_sec": 60, "duration_sec": duration, "preserved": True},
+                    }},
+                    {"duration_seconds": 30, "duration": 1},
+                    duration_minutes=1,
+                    video_url="",
+                )
+                narration = next(item for item in checklist["items"] if item["key"] == "narration")
+                self.assertEqual(checklist["target_duration_sec"], 30)
+                self.assertEqual(narration["target_sec"], 30)
+                self.assertEqual(narration["status"], "ok")
+
     def test_serializes_registered_video_task_for_v2(self):
         row = SimpleNamespace(
             id="task-123",
@@ -313,7 +333,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20260920-artifact-checklist1", patch)
+        self.assertIn("operational_queue.js?v=20261007-asset-review1", patch)
         self.assertIn("director_duration_contract.js?v=20261003-quality5", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)

@@ -71,7 +71,8 @@ def rendered_visual_diversity_report(
         else min(scene_limit, expected_count, max(2, int(ceil(expected_count * 0.75))))
     )
 
-    path_holds: Dict[str, float] = {}
+    beat_holds: List[float] = []
+    previous_path = ""
     for item in scene_visuals:
         if not isinstance(item, dict):
             continue
@@ -83,11 +84,16 @@ def rendered_visual_diversity_report(
             or item.get("max_visual_hold_sec")
         )
         if path and hold:
-            path_holds[path] = path_holds.get(path, 0.0) + hold
-    beat_holds = list(path_holds.values())
+            if path == previous_path and beat_holds:
+                beat_holds[-1] += hold
+            else:
+                beat_holds.append(hold)
+        previous_path = path
     resource_profile = report.get("resource_profile") if isinstance(report.get("resource_profile"), dict) else {}
     hold_target = _positive_float(resource_profile.get("visual_hold_target_sec"))
-    hold_limit = max(11.0, hold_target + 0.75) if hold_target else 30.0
+    # The director's preferred pace is advisory. A user-approved duration
+    # must not create a tighter, invented rejection threshold.
+    hold_limit = 30.0
     visual_plan_avg = _positive_float(visual_plan.get("average_image_duration_sec"))
 
     if rendered_paths:
@@ -118,13 +124,35 @@ def rendered_visual_diversity_report(
         "rendered_scene_count": scene_count,
         "unique_rendered_image_count": len(rendered_paths),
         "minimum_unique_image_count": minimum_unique,
+        "count_ok": count_ok,
+        "pacing_ok": pacing_ok,
         "visual_hold_target_sec": round(hold_target, 3),
         "visual_hold_limit_sec": round(hold_limit, 3),
         "max_visual_beat_hold_sec": round(max(beat_holds), 3) if beat_holds else None,
         "legacy_average_image_duration_sec": round(visual_plan_avg, 3) if visual_plan_avg else None,
         "path_reuse_count_is_advisory": _positive_int(visual_plan.get("reused_image_count")),
-        "review_recommended": evidence == "recovered_render_frames_for_human_review",
+        "review_recommended": bool(
+            evidence == "recovered_render_frames_for_human_review"
+            or (hold_target and beat_holds and max(beat_holds) > hold_target)
+        ),
     }
+
+
+def visual_failure_message(check: str, details: Dict[str, Any], attempts: int = 0) -> str:
+    visual = (details.get("director_quality") or {}).get("visual_variety") or {}
+    images = details.get("images") or {}
+    if check == "image_count_minimum":
+        reason = f"Arquivos de imagens disponíveis: {images.get('actual_found', 0)}; mínimo necessário: {images.get('expected_min', 0)}."
+    elif check == "image_files_exist":
+        reason = "Nenhum arquivo de imagem disponível foi encontrado."
+    elif not visual.get("count_ok", True):
+        reason = f"Imagens distintas no vídeo: {visual.get('unique_rendered_image_count', 0)}; mínimo necessário: {visual.get('minimum_unique_image_count', 0)}."
+    elif not visual.get("pacing_ok", True):
+        reason = f"Uma imagem permanece continuamente por {visual.get('max_visual_beat_hold_sec') or visual.get('legacy_average_image_duration_sec', 0)}s; limite: {visual.get('visual_hold_limit_sec', 30)}s."
+    else:
+        reason = "Não foi possível comprovar a variedade visual pelo relatório do render."
+    prefix = f"Após {attempts} tentativa(s) de correção automática, " if attempts else ""
+    return prefix + reason + " O vídeo e os ativos foram preservados."
 
 
 def build_auto_visual_repair_plan(

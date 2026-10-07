@@ -99,7 +99,15 @@ def apply() -> None:
     service = _replace_once(service, POOL_OLD, POOL_NEW, "task-owned image pool")
     service = _replace_once(service, POOL_STRATEGY_OLD, POOL_STRATEGY_NEW, "image pool strategy")
     service = _insert_before_once(service, "def build_recovery_plan(task_id: Any, payload_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:\n", AUDIO_HELPERS, "audio checkpoint helpers")
-    service = _replace_once(service, AUDIO_OLD, AUDIO_NEW, "audio checkpoint selection")
+    # Source-owned duration rules accept narration above the requested floor.
+    # Preserve them while installing checkpoint trust, including on reruns.
+    legacy_guard = "if target_seconds and not (target_seconds * 0.60 <= duration <= target_seconds * 1.80):"
+    minimum_guard = "if target_seconds and duration < target_seconds * 0.60:"
+    old_seconds = AUDIO_OLD.replace(legacy_guard, minimum_guard)
+    new_seconds = AUDIO_NEW.replace(legacy_guard, minimum_guard)
+    service = service.replace(AUDIO_NEW, new_seconds)
+    selection_old = old_seconds if old_seconds in service else AUDIO_OLD
+    service = _replace_once(service, selection_old, new_seconds, "audio checkpoint selection")
     service = _replace_once(service, AUDIO_PLAN_OLD, AUDIO_PLAN_NEW, "audio trust label")
     SERVICE.write_text(service, encoding="utf-8")
 
