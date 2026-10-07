@@ -3997,11 +3997,11 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
         if not self.elevenlabs_key or not text or not text.strip():
             return None
         try:
-            normalized_text = self._assert_tts_text_not_truncated(text, provider="ElevenLabs TTS", max_chars=5000)
+            normalized_text = self._assert_tts_text_not_truncated(text, provider="ElevenLabs TTS", max_chars=10000)
             voice_meta = self._resolve_elevenlabs_voice_selection(voice_hint)
             voice_id = str(voice_meta.get("voice_id_used") or "").strip()
             if not voice_id:
-                return None
+                raise ValueError("ElevenLabs: voz não configurada. Confira o Voice ID em Configurações.")
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             headers = {"xi-api-key": self.elevenlabs_key, "Content-Type": "application/json"}
             settings = {
@@ -4027,11 +4027,34 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
                 timeout=int(timeout_seconds or _narration_provider_timeout_seconds()),
             )
             if r.status_code == 200:
+                if not r.content:
+                    raise RuntimeError("ElevenLabs HTTP 200: áudio vazio recebido; tente novamente sem refazer o roteiro.")
                 return r.content
-            print(f"ElevenLabs TTS HTTP {r.status_code}: {r.text[:240]}")
-        except Exception as e:
-            print(f"ElevenLabs TTS error: {e}")
-        return None
+            try:
+                body = r.json()
+            except ValueError:
+                body = {}
+            detail = body.get("detail") if isinstance(body, dict) else None
+            code = str(detail.get("status") or "") if isinstance(detail, dict) else ""
+            hints = {
+                "invalid_api_key": "Confira a chave ElevenLabs em Configurações.",
+                "voice_not_found": "Confira se o Voice ID existe e está disponível para sua conta.",
+                "quota_exceeded": "A cota ElevenLabs é insuficiente para esta narração; confira o saldo da conta.",
+                "max_character_limit_exceeded": "O trecho excedeu o limite do provedor; é necessário dividir a narração sem cortar o texto.",
+                "too_many_concurrent_requests": "O limite de narrações simultâneas foi atingido; aguarde as outras tarefas.",
+                "system_busy": "O ElevenLabs está ocupado; tente novamente mais tarde.",
+            }
+            message = str(detail.get("message") or "") if isinstance(detail, dict) else ""
+            # Never expose the credential even if a provider echoes it in its message.
+            safe = (message.replace(str(self.elevenlabs_key), "[chave ocultada]") if self.elevenlabs_key else message)[:180]
+            raise RuntimeError(
+                f"ElevenLabs HTTP {r.status_code} ({code or 'erro do provedor'}): "
+                + hints.get(code, safe or "Confira as permissões da chave e a disponibilidade do provedor.")
+            )
+        except requests.Timeout:
+            raise RuntimeError("ElevenLabs: tempo de resposta esgotado. A geração não foi confirmada; confira o histórico do provedor antes de tentar novamente.") from None
+        except requests.RequestException:
+            raise RuntimeError("ElevenLabs: falha de conexão com o provedor. Confira a rede do servidor e tente novamente.") from None
 
     def generate_song_lyrics(self, theme: str, message: str, language: str = "pt-BR", style: str = "", genre: str = ""):
         self._load_config()
