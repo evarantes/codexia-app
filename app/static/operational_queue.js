@@ -776,9 +776,11 @@
         alert('Publicado com sucesso no YouTube.');
       }
     } catch (error) {
-      alert(error.message);
       button.disabled = false;
       button.textContent = original;
+      alert(error.message);
+      await loadQueue(false);
+      await openProject(id, false);
     }
   }
 

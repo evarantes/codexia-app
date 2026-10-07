@@ -122,3 +122,45 @@ class AssetReviewTests(unittest.TestCase):
                 result = service.publish_if_ready(MagicMock(), "task", upload_callable=upload)
             self.assertEqual(result["code"], "manual_approval_stale")
             upload.assert_not_called()
+
+
+class PublicationFailureTests(unittest.TestCase):
+    def _publish(self, response):
+        unified = SimpleNamespace(status="approved", youtube_video_id=None,
+            video_path="/videos/existing.mp4", review_feedback_json="{}",
+            task_id="task", idempotency_key="task", visibility="unlisted")
+        service = UnifiedVideoPipelineService()
+        with patch.object(service, "_find_any", return_value=unified), \
+                patch.object(service, "_file_exists_or_url", return_value=True), \
+                patch.object(service, "transition_status") as transition:
+            result = service.publish_if_ready(MagicMock(), "task",
+                upload_callable=MagicMock(return_value=response))
+        return result, transition.call_args.kwargs
+
+    def test_disconnected_channel_keeps_real_reason_and_approved_media(self):
+        result, saved = self._publish({"error": "Autorização expirada", "status": "not_connected"})
+        self.assertFalse(result["ok"])
+        self.assertIn("Autorização expirada", result["error"])
+        self.assertIn("Configurações > YouTube", result["error"])
+        self.assertEqual(saved["status"], "approved")
+        self.assertEqual(saved["progress"], 100)
+        self.assertTrue(saved["merge_result"]["production_preserved"])
+        self.assertTrue(saved["merge_result"]["publish_pending"])
+
+    def test_provider_failure_is_not_replaced_by_missing_id(self):
+        result, saved = self._publish({"error": "quotaExceeded"})
+        self.assertIn("quotaExceeded", result["error"])
+        self.assertEqual(result["code"], "publication_pending")
+        self.assertEqual(saved["status"], "approved")
+
+    def test_unknown_upload_result_requires_studio_check_before_retry(self):
+        result, saved = self._publish({})
+        self.assertEqual(result["code"], "no_video_id")
+        self.assertIn("YouTube Studio", result["error"])
+        self.assertEqual(saved["status"], "approved")
+
+    def test_confirmed_upload_still_publishes(self):
+        result, saved = self._publish({"id": "confirmed-id"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["youtube_video_id"], "confirmed-id")
+        self.assertEqual(saved["status"], "published")
