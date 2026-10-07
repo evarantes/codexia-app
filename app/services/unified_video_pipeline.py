@@ -60,6 +60,7 @@ from app.services.task_manager import (
 )
 from app.services.narration_caption_contract import measured_text_timeline_is_reviewable
 from app.services.visual_quality_repair import rendered_visual_diversity_report
+from app.services.asset_review import apply_manual_review, video_fingerprint
 
 _CANONICAL_IGNORE_KEYS = {
     "task_id",
@@ -1553,6 +1554,13 @@ class UnifiedVideoPipelineService:
         else:
             checks["http_200_or_206"] = True  # skip de propósito (testes / sem network)
 
+        # Keep measured failures visible in the audit while honoring an
+        # authenticated human's decision for this exact generated file.
+        details["automatic_checks"] = dict(checks)
+        details["manual_review"] = apply_manual_review(
+            checks, _json_loads(getattr(uv, "review_feedback_json", None)), str(abs_video or "")
+        ) if probe_local_paths else {}
+
         # Apura primeiro falho
         first_failed = next((k for k in [
             "script_valid",
@@ -1662,6 +1670,12 @@ class UnifiedVideoPipelineService:
         )
         if not self._file_exists_or_url(video_candidate, local_only=True):
             return {"ok": False, "code": "mp4_missing", "error": f"MP4 não encontrado em: {video_candidate}"}
+        review = _json_loads(getattr(uv, "review_feedback_json", None)) or {}
+        approvals = review.get("asset_approvals") or {}
+        if approvals:
+            digest = video_fingerprint(str(video_candidate or ""))
+            if any(record.get("video_sha256") != digest for record in approvals.values() if isinstance(record, dict)):
+                return {"ok": False, "code": "manual_approval_stale", "error": "O arquivo mudou após sua aprovação manual. Assista e aprove esta versão antes de publicar."}
         transitioned = self.transition_status(db, str(uv.task_id or uv.idempotency_key), status=UnifiedVideoStatus.UPLOADING, message="Iniciando upload para o YouTube (único).")
         metadata = dict(upload_metadata or {})
         visibility = (visibility_override or uv.visibility or "unlisted").lower()

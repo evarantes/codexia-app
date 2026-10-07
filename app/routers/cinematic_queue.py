@@ -21,6 +21,9 @@ from app.services.narration_caption_contract import measured_text_timeline_is_re
 from app.services.task_manager import update_task
 from app.services.unified_video_pipeline import unified_video_pipeline
 from app.services.youtube_service import YouTubeService
+from app.services.asset_review import ASSET_CHECKS, CHECK_HINTS, apply_manual_review, video_fingerprint
+from app.services.visual_quality_repair import visual_failure_message
+from app.services.unified_video_pipeline import _ffprobe_streams
 
 
 router = APIRouter(prefix="/cinematic", tags=["Codexia Cinematic Queue"])
@@ -40,6 +43,12 @@ class LibraryRegisterRequest(BaseModel):
 
 
 class ReviewDecisionRequest(BaseModel):
+    notes: Optional[str] = Field(None, max_length=2000)
+    approve_anyway: bool = False
+
+
+class AssetReviewRequest(BaseModel):
+    action: str = Field("verify", pattern="^(verify|approve)$")
     notes: Optional[str] = Field(None, max_length=2000)
 
 
@@ -555,7 +564,7 @@ def _task_to_public(
         or ""
     ).strip().lower()
     url = _video_url(result)
-    ready_for_watch = status in _READY_STATUSES and bool(url)
+    ready_for_watch = status not in _ACTIVE_STATUSES and bool(url)
     youtube_url = ""
     for view in _nested_dicts(result):
         candidate = str(view.get("youtube_url") or "").strip()
@@ -570,6 +579,31 @@ def _task_to_public(
         duration_minutes=duration,
         video_url=url,
     )
+    if status in _ACTIVE_STATUSES:
+        for item in checklist["items"]:
+            if item["key"] in {"captions", "narration_caption_sync", "render"} and item["status"] in {"missing", "failed"}:
+                item["status"] = "pending"
+                item["summary"] = "Aguardando a conclusão desta etapa."
+    records = (result.get("review") or {}).get("asset_approvals") or {}
+    verifications = result.get("asset_verifications") or {}
+    if records or verifications:
+        path = str(result.get("file_path") or result.get("video_path") or absolute_path_for_video(url) or "")
+        digest = video_fingerprint(path)
+        for item in checklist["items"]:
+            acceptance = records.get(item["key"]) or records.get("all") or {}
+            verified = verifications.get(item["key"]) or {}
+            if digest and acceptance.get("video_sha256") == digest and acceptance.get("reviewed_by"):
+                item["automatic_status"] = item["status"]
+                item["status"] = "approved"
+                item["manual_approval"] = True
+                item["summary"] = "Aprovado manualmente; alerta registrado no histórico."
+            elif digest and verified.get("video_sha256") == digest:
+                item["status"] = "ok" if verified.get("ok") else "partial"
+                item["verification"] = verified
+        accepted_sync = records.get("all") or records.get("narration_caption_sync") or records.get("captions") or {}
+        if digest and accepted_sync.get("video_sha256") == digest and accepted_sync.get("reviewed_by"):
+            checklist["director_validation"]["automatic_verdict"] = checklist["director_validation"]["verdict"]
+            checklist["director_validation"]["verdict"] = "Aceito na sua revisão manual; avaliação automática preservada no histórico."
 
     return {
         "id": str(getattr(row, "id", "") or ""),
@@ -594,6 +628,8 @@ def _task_to_public(
         "can_cancel": status in {"pending", "processing", "pause_requested", "paused"},
         "can_delete": status not in _ACTIVE_STATUSES,
         "can_approve": status == "awaiting_review",
+        "can_approve_anyway": bool(url and status in {"failed", "awaiting_review", "ready", "completed", "approved"}),
+        "can_review_assets": status not in _ACTIVE_STATUSES and status not in {"published", "cancelled", "canceled"},
         "can_reject": status == "awaiting_review",
         "can_publish": status == "approved",
         "youtube_url": youtube_url or None,
@@ -631,6 +667,99 @@ def _review_record(*, decision: str, notes: str, user_id: int) -> Dict[str, Any]
         "reviewed_by": int(user_id or 0) or None,
         "reviewed_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _existing_review(unified: UnifiedVideo) -> Dict[str, Any]:
+    try:
+        review = json.loads(unified.review_feedback_json or "{}")
+        return review if isinstance(review, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _review_video_path(unified: UnifiedVideo, result: Dict[str, Any]) -> str:
+    candidate = unified.video_path or result.get("file_path") or result.get("video_path") or unified.video_url or _video_url(result)
+    return str(absolute_path_for_video(str(candidate or "")) or "")
+
+
+def _manual_acceptance(unified: UnifiedVideo, result: Dict[str, Any], *, asset: str, notes: str, uid: int, checks: Dict[str, bool]) -> Dict[str, Any]:
+    path = _review_video_path(unified, result)
+    probe = _ffprobe_streams(path)
+    digest = video_fingerprint(path)
+    if not digest or not probe.get("has_video") or _seconds(probe.get("video_duration")) <= 0:
+        raise HTTPException(status_code=422, detail="Não há um vídeo reproduzível para aprovação manual.")
+    review = _existing_review(unified)
+    record = _review_record(decision="approved_anyway", notes=notes, user_id=uid)
+    record.update({
+        "asset": asset, "video_sha256": digest, "automatic_checks": dict(checks),
+        "previous_error": result.get("error") or result.get("last_error") or unified.last_error,
+    })
+    approvals = {
+        key: value for key, value in (review.get("asset_approvals") or {}).items()
+        if isinstance(value, dict) and value.get("video_sha256") == digest
+    }
+    approvals[asset] = record
+    history = list(review.get("approval_history") or [])
+    history.append(record)
+    review.update({"asset_approvals": approvals, "approval_history": history})
+    return review
+
+
+@router.post("/queue/{task_id}/assets/{asset}")
+def review_v2_asset(
+    task_id: str,
+    asset: str,
+    body: AssetReviewRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_admin_user),
+):
+    if asset not in ASSET_CHECKS:
+        raise HTTPException(status_code=422, detail="Ativo inválido.")
+    uid = _uid(current_user)
+    row, entry = _registered_owned_task(db, task_id, uid)
+    if str(row.status).lower() in _ACTIVE_STATUSES | {"published", "cancelled", "canceled"}:
+        raise HTTPException(status_code=409, detail="Aguarde a produção terminar antes de revisar um ativo.")
+    unified = _unified_for_task(db, task_id)
+    validation = unified_video_pipeline().validate_before_awaiting_review(db, task_id, probe_local_paths=True, probe_http=False)
+    raw = validation.details.get("automatic_checks") or validation.checks
+    selected = {name: bool(raw.get(name)) for name in sorted(ASSET_CHECKS[asset])}
+    result = _result_obj(row)
+    path = _review_video_path(unified, result)
+    if body.action == "approve":
+        review = _manual_acceptance(unified, result, asset=asset, notes=str(body.notes or ""), uid=uid, checks=selected)
+        unified.review_feedback_json = json.dumps(review, ensure_ascii=False)
+        result["review"] = review
+        message = "Ativo aprovado manualmente. O vídeo e os demais ativos foram preservados."
+        ok = True
+    else:
+        failed = [name for name, passed in selected.items() if not passed]
+        ok = not failed
+        message = "Ativo revalidado com sucesso; nenhuma nova geração foi necessária." if ok else "O ativo ainda precisa de atenção: " + "; ".join(CHECK_HINTS.get(name, name) for name in failed) + ". Os demais ativos foram preservados."
+        if failed and failed[0] in {"visual_variety_valid", "image_count_minimum", "image_files_exist"}:
+            message = visual_failure_message(failed[0], validation.details)
+        verification = {
+            "ok": ok, "checks": selected, "message": message,
+            "video_sha256": video_fingerprint(path),
+            "checked_at": datetime.now(timezone.utc).isoformat(), "checked_by": uid,
+        }
+        verifications = dict(result.get("asset_verifications") or {})
+        verifications[asset] = verification
+        result["asset_verifications"] = verifications
+    row.result_json = json.dumps(result, ensure_ascii=False)
+    effective = dict(validation.checks)
+    apply_manual_review(effective, _existing_review(unified), path)
+    if all(effective.values()) and str(row.status).lower() == "failed":
+        row.status = "awaiting_review"
+        row.message = "Vídeo existente revalidado; aguardando sua aprovação."
+        unified.status = UnifiedVideoStatus.AWAITING_REVIEW
+        unified.last_error = None
+        result["error"] = None
+        result["last_error"] = None
+        row.result_json = json.dumps(result, ensure_ascii=False)
+    db.commit()
+    update_task(task_id, status=row.status, progress=row.progress, message=row.message, result=result)
+    # The selected action never enters the generation/retry pipeline.
+    return {"ok": ok, "asset": asset, "message": message, "project": _task_to_public(row, entry)}
 
 
 @router.post("/library/register")
@@ -757,7 +886,7 @@ def approve_v2_project(
     uid = _uid(current_user)
     row, entry = _registered_owned_task(db, task_id, uid)
     status = str(getattr(row, "status", "") or "").strip().lower()
-    if status != "awaiting_review":
+    if status != "awaiting_review" and not (body.approve_anyway and status in {"failed", "ready", "completed", "approved"}):
         raise HTTPException(status_code=409, detail="Somente um projeto aguardando revisão pode ser aprovado.")
 
     validation = unified_video_pipeline().validate_before_awaiting_review(
@@ -766,7 +895,7 @@ def approve_v2_project(
         probe_local_paths=True,
         probe_http=False,
     )
-    if not validation.ok:
+    if not validation.ok and not body.approve_anyway:
         raise HTTPException(
             status_code=422,
             detail={
@@ -779,14 +908,21 @@ def approve_v2_project(
         )
 
     notes = str(body.notes or "").strip()
-    review = _review_record(decision="approved", notes=notes, user_id=uid)
     unified = _unified_for_task(db, task_id)
+    result = _result_obj(row)
+    review = _existing_review(unified)
+    if body.approve_anyway:
+        review = _manual_acceptance(unified, result, asset="all", notes=notes, uid=uid, checks=validation.details.get("automatic_checks") or validation.checks)
+    review.update(_review_record(decision="approved_anyway" if body.approve_anyway else "approved", notes=notes, user_id=uid))
     unified.status = UnifiedVideoStatus.APPROVED
     unified.approved_at = datetime.utcnow()
+    unified.last_error = None
+    unified.auto_publish = False
     unified.review_feedback_json = json.dumps(review, ensure_ascii=False)
 
-    result = _result_obj(row)
     result["review"] = review
+    result["error"] = None
+    result["last_error"] = None
     row.status = "approved"
     row.progress = 100
     row.message = "Vídeo aprovado na revisão. Pronto para publicar no YouTube."

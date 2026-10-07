@@ -119,6 +119,34 @@ def test_auto_repair_replaces_only_visuals_not_used_in_a_repetitive_render():
     assert original["selected_images"] == [f"/images/candidate-{index}.png" for index in range(8)]
 
 class VisualQualityRepairRegressionTests(unittest.TestCase):
+    def test_eight_images_above_seven_minimum_pass_despite_director_pace_target(self):
+        report = {
+            "visual_plan": {"requested_image_count": 9},
+            "resource_profile": {"visual_hold_target_sec": 10},
+            "scene_visuals": [
+                {"image_path": f"/images/{index}.png", "final_visual_duration_sec": 12}
+                for index in range(8)
+            ],
+        }
+        quality = rendered_visual_diversity_report(report)
+        self.assertEqual(quality["minimum_unique_image_count"], 7)
+        self.assertTrue(quality["passed"])
+        self.assertTrue(quality["review_recommended"])
+
+    def test_separate_appearances_are_not_added_as_continuous_hold(self):
+        scenes = [{"image_path": f"/images/{index}.png", "final_visual_duration_sec": 20} for index in range(4)]
+        scenes += [{"image_path": "/images/0.png", "final_visual_duration_sec": 20}]
+        quality = rendered_visual_diversity_report({"scene_visuals": scenes})
+        self.assertTrue(quality["passed"])
+        self.assertEqual(quality["max_visual_beat_hold_sec"], 20)
+
+    def test_continuous_hold_above_thirty_seconds_remains_a_real_alert(self):
+        scenes = [{"image_path": f"/images/{index}.png", "final_visual_duration_sec": 31} for index in range(8)]
+        quality = rendered_visual_diversity_report({"scene_visuals": scenes})
+        self.assertFalse(quality["passed"])
+        self.assertTrue(quality["count_ok"])
+        self.assertFalse(quality["pacing_ok"])
+
     def test_repeated_render_replaces_unused_candidates_and_preserves_audio(self):
         original = {
             "title": "Teste",
