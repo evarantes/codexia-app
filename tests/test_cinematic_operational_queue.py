@@ -333,7 +333,7 @@ class CinematicOperationalQueueTests(unittest.TestCase):
 
     def test_ui_patch_bumps_queue_and_handoff_cache_versions(self):
         patch = Path("app/services/cinematic_ui_patch.py").read_text(encoding="utf-8")
-        self.assertIn("operational_queue.js?v=20261007-publish-error2", patch)
+        self.assertIn("operational_queue.js?v=20261008-progress1", patch)
         self.assertIn("director_duration_contract.js?v=20261003-quality5", patch)
         self.assertIn("OPERATIONAL_QUEUE_SCRIPT_TAG", patch)
         self.assertIn("DURATION_CONTRACT_SCRIPT_TAG", patch)
