@@ -18,7 +18,7 @@ from app.services.intelligent_cost_optimizer import minimum_visual_count_for_dur
 from app.services.production_manifest import build_recovery_plan
 from app.services.production_manifest_diagnostics import build_manifest_diagnostic
 from app.services.narration_caption_contract import measured_text_timeline_is_reviewable
-from app.services.task_manager import update_task
+from app.services.task_manager import update_task, reset_task_for_retry, get_task
 from app.services.production_progress import activity_status
 from app.services.unified_video_pipeline import unified_video_pipeline
 from app.services.youtube_service import YouTubeService
@@ -596,8 +596,12 @@ def _task_to_public(
         elif item["key"] == "render" and render_measure:
             percent = render_measure.get("percent")
             item["progress_detail"] = f"{render_measure.get('kind')}: {render_measure.get('current')}/{render_measure.get('total')} {render_measure.get('unit')}"
+        repair = result.get("asset_repair") or {}
+        if repair.get("asset") == item.get("key"):
+            item["progress_detail"] = str(row.message or "") if status in {"pending", "processing"} else ""
+            item["repair_message"] = ("Correção aguardando worker" if status == "pending" or (status == "processing" and not monitor.get("heartbeat_at")) else "Correção em andamento" if status == "processing" else "Correção encerrada — confira o resultado")
         item["progress_percent"] = percent
-        item["progress_label"] = "Concluído" if percent == 100 and item["status"] == "ok" else ("Em execução" if percent is not None else "Sem medição desta etapa")
+        item["progress_label"] = "Concluído" if percent == 100 and item["status"] == "ok" else ("Em execução" if status == "processing" and percent is not None else "Aguardando execução" if status == "pending" else "Interrompido" if status == "failed" and percent is not None else "Sem medição desta etapa")
     if status in _ACTIVE_STATUSES:
         checklist["director_validation"]["verdict"] = "Avaliação final pendente; produção em andamento."
     records = (result.get("review") or {}).get("asset_approvals") or {}
@@ -776,7 +780,39 @@ def review_v2_asset(
         row.result_json = json.dumps(result, ensure_ascii=False)
     db.commit()
     update_task(task_id, status=row.status, progress=row.progress, message=row.message, result=result)
-    # The selected action never enters the generation/retry pipeline.
+    if body.action == "verify" and not ok:
+        from app.services.targeted_asset_repair import repair_payload
+        from app.routers.youtube import VideoRequest, _dispatch_video_generation_task
+        from app.services.task_manager import acquire_distributed_lock, release_distributed_lock
+        lock = None
+        try:
+            lock = acquire_distributed_lock(f"story-retry:{task_id}", timeout_seconds=5, ttl_seconds=30)
+            current = get_task(task_id) or {}
+            if str(current.get("status") or "").lower() in {"pending", "processing", "pause_requested"}:
+                raise HTTPException(status_code=409, detail="Já existe uma correção na fila para este projeto.")
+            try:
+                payload = repair_payload(_payload(result), result, build_recovery_plan(task_id), asset)
+                VideoRequest(**payload)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            repair = {"asset": asset, "requested_at": datetime.now(timezone.utc).isoformat(), "requested_by": uid}
+            result.update(payload=payload, asset_repair=repair, production_progress={})
+            row.result_json = json.dumps(result, ensure_ascii=False)
+            unified.auto_publish = False
+            db.commit()
+            update_task(task_id, result=result)
+            if not reset_task_for_retry(task_id, progress=1, message=f"Correção de {asset} preparada; aguardando worker."):
+                raise HTTPException(status_code=500, detail="Não foi possível preparar a correção.")
+            _dispatch_video_generation_task(payload, task_id)
+            db.expire_all()
+            return {"ok": True, "repair_started": True, "asset": asset,
+                    "message": "Correção solicitada. Acompanhe a fila e o progresso do ativo.",
+                    "project": _task_to_public(row, entry)}
+        except TimeoutError:
+            raise HTTPException(status_code=409, detail="Outra solicitação está preparando a correção. Aguarde.")
+        finally:
+            if lock:
+                release_distributed_lock(lock)
     return {"ok": ok, "asset": asset, "message": message, "project": _task_to_public(row, entry)}
 
 

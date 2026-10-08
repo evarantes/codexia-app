@@ -1155,6 +1155,8 @@ def _selected_images_ok(urls: List[str], *, min_bytes: int = 1000) -> bool:
 def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
+    if payload.get("targeted_repair_asset"):
+        return payload
     payload.setdefault("force_reuse_assets", True)
     db = SessionLocal()
     try:
@@ -3691,6 +3693,7 @@ class VideoRequest(BaseModel):
     review_feedback: Optional[str] = None
     # Contrato explícito de recuperação parcial. Sem estes campos o Pydantic
     # descartava a meta 20/20 antes de o worker receber o pedido.
+    targeted_repair_asset: Optional[str] = None
     repair_mode: bool = False
     repair_complete_visuals: bool = False
     repair_regenerate_audio: bool = False
@@ -8132,9 +8135,11 @@ def process_video_generation(request: VideoRequest, task_id):
             return plan
 
         script = dict(request.seeded_script) if isinstance(request.seeded_script, dict) else None
+        import copy as _scoped_copy
+        scoped_scenes = _scoped_copy.deepcopy((script or {}).get("scenes")) if request.targeted_repair_asset and request.targeted_repair_asset != "script" else None
         seed_mode = bool(getattr(request, "force_render_only", False) or getattr(request, "force_reuse_assets", False))
         repair_audio_requested = bool(getattr(request, "repair_regenerate_audio", False))
-        if seed_mode and guardian_task_row is not None:
+        if seed_mode and guardian_task_row is not None and not request.targeted_repair_asset:
             try:
                 seed_result = json.loads(getattr(guardian_task_row, "result_json", "") or "{}")
             except Exception:
@@ -8274,6 +8279,14 @@ def process_video_generation(request: VideoRequest, task_id):
 
         print("Roteiro gerado/estruturado.")
         _raise_if_cancelled()
+
+        if request.targeted_repair_asset and request.targeted_repair_asset != "script":
+            # Fail closed when the worker cannot access an unselected asset.
+            # Do not silently spend credits regenerating a different asset.
+            if request.targeted_repair_asset != "narration" and not _file_ok(str(script.get("seed_audio_path") or "")):
+                raise RuntimeError("Narração preservada indisponível no worker; corrija o acesso ao volume antes de continuar.")
+            if request.targeted_repair_asset != "images" and not _selected_images_ok(script.get("selected_images") or []):
+                raise RuntimeError("Imagens preservadas indisponíveis no worker; corrija o acesso ao volume antes de continuar.")
 
         if isinstance(script, dict):
             def _target_scene_count(duration_minutes: int) -> int:
@@ -8446,7 +8459,9 @@ def process_video_generation(request: VideoRequest, task_id):
                     if isinstance(v, str) and v.strip():
                         selected.append(v.strip())
             if selected:
-                script["selected_images"] = selected[:24]
+                script["selected_images"] = selected if request.targeted_repair_asset else selected[:24]
+            if scoped_scenes is not None:
+                script["scenes"] = scoped_scenes
             if guardian_db is not None:
                 guardian_context = youtube_auto_financial_adapter.build_context(
                     task_id=str(task_id),
@@ -9007,7 +9022,7 @@ def process_video_generation(request: VideoRequest, task_id):
                         _image_repair_calls_remaining = 12
                         _latest_successful_attempt = 0
 
-                        for _repair_attempt in range(1, 3):
+                        for _repair_attempt in ([] if request.targeted_repair_asset else range(1, 3)):
                             _current_checks = (
                                 getattr(_pipeline_validation, "checks", {})
                                 if _pipeline_validation is not None

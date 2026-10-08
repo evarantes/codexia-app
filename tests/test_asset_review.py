@@ -102,6 +102,34 @@ class AssetReviewTests(unittest.TestCase):
         self.assertEqual(row.status, "failed")
         self.assertEqual([call[0] for call in service.method_calls], ["validate_before_awaiting_review"])
 
+    def test_failed_selected_asset_dispatches_scoped_repair(self):
+        from app.routers import youtube
+        from app.services import task_manager
+        original, row, unified, service = self._fixtures()
+        original['payload'] = {'mode': 'topic', 'topic': 'Original', 'duration': 10}
+        original['script']['scenes'] = [{'text': 'Preserved'}]
+        row.result_json = json.dumps(original)
+        with patch.object(cq, '_registered_owned_task', return_value=(row, {})), \
+                patch.object(cq, '_unified_for_task', return_value=unified), \
+                patch.object(cq, 'unified_video_pipeline', return_value=service), \
+                patch.object(cq, 'video_fingerprint', return_value='digest'), \
+                patch.object(cq, '_task_to_public', return_value={}), \
+                patch.object(cq, 'get_task', return_value={'status': 'failed'}), \
+                patch.object(cq, 'build_recovery_plan', return_value={'existing_image_paths': ['a.png'], 'audio_path': 'voice.mp3', 'expected_image_count': 20}), \
+                patch.object(cq, 'reset_task_for_retry', return_value=True), \
+                patch.object(cq, 'update_task'), \
+                patch.object(task_manager, 'acquire_distributed_lock', return_value={'acquired': True}), \
+                patch.object(task_manager, 'release_distributed_lock'), \
+                patch.object(youtube, '_dispatch_video_generation_task') as dispatch:
+            response = cq.review_v2_asset('task', 'images', cq.AssetReviewRequest(), MagicMock(), SimpleNamespace(id=7))
+        self.assertTrue(response['repair_started'])
+        payload, task_id = dispatch.call_args.args
+        self.assertEqual(task_id, 'task')
+        self.assertEqual(payload['targeted_repair_asset'], 'images')
+        self.assertEqual(payload['seeded_script']['seed_audio_path'], 'voice.mp3')
+        self.assertEqual(payload['seeded_script']['scenes'], original['script']['scenes'])
+        self.assertFalse(unified.auto_publish)
+
     def test_active_task_cannot_be_approved_or_modified(self):
         _, row, _, _ = self._fixtures()
         row.status = "processing"
