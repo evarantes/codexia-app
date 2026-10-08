@@ -74,7 +74,10 @@ def central_index(task):
     for item in entries:
         p = Path(item.get('path') or '')
         if p.is_file() and any(p.resolve().is_relative_to(r.resolve()) for r in roots().values()):
-            unique[(item['kind'], item['filename'])] = item
+            actual = dict(item)
+            actual['sha256'] = digest(p)
+            actual['size'] = p.stat().st_size
+            unique[(item['kind'], item['filename'])] = actual
     return list(unique.values())
 
 
