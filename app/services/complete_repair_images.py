@@ -1,5 +1,6 @@
 """Complete physical image files before any renderer can consume the plan."""
 from pathlib import Path
+from app.services.central_asset_transfer import digest
 from app.services.recovery_image_budget import RecoveryImageCallBudget
 
 
@@ -14,10 +15,14 @@ def complete_repair_images(script, renderer, aspect_ratio, checkpoint, cancel, t
         recovery = resolve_recovery_image_paths(task_id, references, expected_count=target)
         references = list(recovery.get('paths') or []) + references
     paths = []
+    image_hashes = set()
     for reference in references:
         path = renderer._resolve_input_image_path(reference)
         if path and Path(path).is_file() and Path(path).stat().st_size > 0 and path not in paths:
-            paths.append(path)
+            content_hash = digest(path)
+            if content_hash not in image_hashes:
+                paths.append(path)
+                image_hashes.add(content_hash)
     script['selected_images'] = list(paths)
     checkpoint(paths, target, f'Imagens: {len(paths)}/{target} acessíveis no worker')
     if len(paths) < int(budget.snapshot()['existing_image_count']):
@@ -52,6 +57,10 @@ def complete_repair_images(script, renderer, aspect_ratio, checkpoint, cancel, t
         path = renderer._resolve_input_image_path(path)
         if not path or not Path(path).is_file() or Path(path).stat().st_size == 0 or path in paths:
             raise RuntimeError('Geração não retornou uma nova imagem válida; render não iniciado.')
+        content_hash = digest(path)
+        if content_hash in image_hashes:
+            raise RuntimeError('Provedor retornou imagem repetida; ativos preservados, render não iniciado.')
+        image_hashes.add(content_hash)
         paths.append(path)
         script['selected_images'] = list(paths)
         checkpoint(paths, target, f'Imagens: {len(paths)}/{target} concluídas')
