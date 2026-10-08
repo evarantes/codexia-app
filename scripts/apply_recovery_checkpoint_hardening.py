@@ -310,6 +310,8 @@ def _recovery_choose_script(sources: List[Dict[str, Any]]) -> Tuple[Optional[Dic
 def _maybe_enable_render_only_flags(payload: Dict[str, Any], task_id: str) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
+    if payload.get("targeted_repair_asset"):
+        return payload
     payload["force_reuse_assets"] = True
     payload.pop("_recovery_block_paid_regeneration", None)
     payload.pop("_recovery_missing_assets", None)

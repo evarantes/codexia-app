@@ -36,7 +36,10 @@ def repair_payload(payload, result, plan, asset):
     if asset == 'images':
         target = max(len(images), int(plan.get('expected_image_count') or 0))
         budget = dict(enabled=True, existing_image_count=len(images), expected_image_count=target,
-                      missing_image_count=target-len(images), max_new_image_calls=target-len(images))
+                      missing_image_count=target-len(images), max_new_image_calls=target-len(images),
+                      plan_hash=plan.get('plan_hash') or '',
+                      estimated_image_cost_usd=plan.get('estimated_image_cost_usd') or 0,
+                      estimated_image_cost_brl=plan.get('estimated_image_cost_brl') or 0)
         patched.update(repair_image_budget=budget, expected_image_count=target)
     elif images:
         patched['expected_image_count'] = len(images)
