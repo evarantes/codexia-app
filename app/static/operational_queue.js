@@ -160,12 +160,12 @@
         <span aria-hidden="true" style="display:grid;place-items:center;width:28px;height:28px;border-radius:999px;background:${state.bg};color:${state.fg};font-weight:900">${state.icon}</span>
         <b>${esc(item.label || item.key || 'Ativo')}</b>
         <span class="oq-artifact-detail" style="color:#536079;line-height:1.35">${esc(detail(item))}
-          <div style="margin-top:6px;font-size:12px">${esc(item.progress_label || '')}${item.progress_percent != null ? ` · ${Number(item.progress_percent)}%` : ''}${item.progress_detail ? ` · ${esc(item.progress_detail)}` : ''}</div>
+          <div style="margin-top:6px;font-size:12px">${esc(item.repair_message || item.progress_label || '')}${item.progress_percent != null ? ` · ${Number(item.progress_percent)}%` : ''}${item.progress_detail ? ` · ${esc(item.progress_detail)}` : ''}</div>
           ${item.progress_percent != null ? `<progress aria-label="Progresso de ${esc(item.label)}" max="100" value="${Number(item.progress_percent)}" style="width:100%;height:9px"></progress>` : ''}
         </span>
         <div class="oq-artifact-actions" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
           ${task.can_review_assets && ['partial', 'failed', 'missing'].includes(item.status)
-            ? `<button type="button" class="btn btn-ghost oq-asset" data-id="${esc(task.id)}" data-asset="${esc(item.key)}" data-action="verify" style="color:${state.fg};font-size:11px">Verificar</button>
+            ? `<button type="button" class="btn btn-ghost oq-asset" data-id="${esc(task.id)}" data-asset="${esc(item.key)}" data-action="verify" style="color:${state.fg};font-size:11px">Corrigir ativo</button>
                ${task.video_url ? `<button type="button" class="btn btn-ghost oq-asset" data-id="${esc(task.id)}" data-asset="${esc(item.key)}" data-action="approve" style="font-size:11px">Aprovar mesmo assim</button>` : ''}`
             : `<span style="color:${state.fg};font-size:11px;font-weight:850">${esc(state.label)}</span>`}
         </div>
@@ -749,7 +749,7 @@
     if (action === 'approve' && !confirm('Aceitar este ativo após sua revisão do vídeo? Apenas os alertas deste ativo serão aceitos e registrados no histórico.')) return;
     const original = button.textContent;
     button.disabled = true;
-    button.textContent = action === 'verify' ? 'Verificando…' : 'Registrando…';
+    button.textContent = action === 'verify' ? 'Preparando correção…' : 'Registrando…';
     try {
       const response = await api(`/youtube/cinematic/queue/${encodeURIComponent(id)}/assets/${encodeURIComponent(asset)}`, {
         method: 'POST', body: JSON.stringify({ action }),

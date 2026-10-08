@@ -6293,6 +6293,8 @@ $synth.Dispose()
                         "seed_audio_duration_sec": round(seed_audio_duration, 2),
                         "requested_minimum_duration_sec": round(min_requested_duration, 2),
                     })
+                    if plan.get("targeted_repair_asset") and plan.get("targeted_repair_asset") not in {"script", "narration"}:
+                        raise RuntimeError("Narração preservada exige correção; selecione o ativo Narração antes de continuar.")
                     seed_audio_path = ""
             if seed_audio_path and os.path.exists(seed_audio_path) and os.path.getsize(seed_audio_path) > 1000:
                 seed_audio_used = True
