@@ -3,18 +3,25 @@ from pathlib import Path
 from app.services.recovery_image_budget import RecoveryImageCallBudget
 
 
-def complete_repair_images(script, renderer, aspect_ratio, checkpoint, cancel):
+def complete_repair_images(script, renderer, aspect_ratio, checkpoint, cancel, task_id=None):
     budget = RecoveryImageCallBudget(script)
     target = budget.target_image_count
     if not budget.enabled or not target:
         raise RuntimeError('Correção de imagens sem meta e orçamento; render não iniciado.')
+    references = list(script.get('selected_images') or [])
+    if task_id:
+        from app.services.production_manifest import resolve_recovery_image_paths
+        recovery = resolve_recovery_image_paths(task_id, references, expected_count=target)
+        references = list(recovery.get('paths') or []) + references
     paths = []
-    for reference in script.get('selected_images') or []:
+    for reference in references:
         path = renderer._resolve_input_image_path(reference)
         if path and Path(path).is_file() and Path(path).stat().st_size > 0 and path not in paths:
             paths.append(path)
+    script['selected_images'] = list(paths)
+    checkpoint(paths, target, f'Imagens: {len(paths)}/{target} acessíveis no worker')
     if len(paths) < int(budget.snapshot()['existing_image_count']):
-        raise RuntimeError('Imagens preservadas não estão acessíveis no worker. Render não iniciado.')
+        raise RuntimeError(f'Worker acessa {len(paths)} de {int(budget.snapshot()["existing_image_count"])} imagens preservadas, mesmo após consultar o manifesto. Confira o volume /data compartilhado entre API e worker. Nenhuma imagem paga foi solicitada; render não iniciado.')
     scenes = script.get('scenes') or []
     if not scenes:
         raise RuntimeError('Roteiro indisponível para orientar as imagens faltantes.')
