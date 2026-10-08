@@ -40,6 +40,7 @@ def repair_payload(payload, result, plan, asset):
                       plan_hash=plan.get('plan_hash') or '',
                       estimated_image_cost_usd=plan.get('estimated_image_cost_usd') or 0,
                       estimated_image_cost_brl=plan.get('estimated_image_cost_brl') or 0)
+        script['_partial_image_recovery'] = dict(budget)
         patched.update(repair_image_budget=budget, expected_image_count=target)
     elif images:
         patched['expected_image_count'] = len(images)
