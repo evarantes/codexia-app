@@ -589,6 +589,10 @@ def _task_to_public(
     render_measure = monitor.get("render") or {}
     for item in checklist["items"]:
         percent = None
+        image_correction = result.get("image_correction") or {}
+        if item["key"] == "images" and image_correction:
+            item["actual"] = image_correction.get("actual", item.get("actual", 0))
+            item["expected"] = image_correction.get("expected", item.get("expected"))
         if item["status"] == "ok":
             percent = 100
         elif item["key"] == "images" and item.get("expected"):

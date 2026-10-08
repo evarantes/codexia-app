@@ -8622,6 +8622,21 @@ def process_video_generation(request: VideoRequest, task_id):
             if script["premium_voice_required"]:
                 script["tts_fallback_policy"] = "premium_required"
 
+        if request.targeted_repair_asset == "images":
+            from app.services.complete_repair_images import complete_repair_images
+            def image_checkpoint(paths, target, detail):
+                update_task(task_id, status="processing", progress=min(85, int(85 * len(paths) / target)),
+                    message=detail, result=_merged_task_result({
+                        "script": script, "selected_images": list(paths),
+                        "image_correction": {"actual": len(paths), "expected": target},
+                        "pipeline_stage": "correcting_images", "stage_detail": detail,
+                        "production_progress": record_progress(
+                            (_merged_task_result({}).get("production_progress") or {}), "correcting_images", detail),
+                    }))
+                heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
+            complete_repair_images(script, video_service, str(request.aspect_ratio or "16:9"),
+                                   image_checkpoint, _raise_if_cancelled)
+
         video_result = video_service.create_video_from_plan(
             script,
             aspect_ratio=str(request.aspect_ratio or "16:9"),

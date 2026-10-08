@@ -44,6 +44,13 @@ def record_progress(previous, stage, message, now=None):
                 state['last_advance_at'] = now
             state['render'] = dict(kind=kind, current=current, total=total,
                                    unit=unit, percent=min(100, round(100 * current / total, 1)))
+    images = re.search(r'Imagens: (\d+)/(\d+)', message)
+    if images:
+        current, total = map(int, images.groups())
+        old = state.get('images') or {}
+        if current > old.get('current', -1):
+            state['last_advance_at'] = now
+        state['images'] = dict(current=current, total=total)
     return state
 
 
