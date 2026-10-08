@@ -9,7 +9,7 @@ class CompleteImagesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             paths=[]
             for n in range(48):
-                p=Path(directory)/f'{n}.png';p.write_bytes(b'image');paths.append(str(p))
+                p=Path(directory)/f'{n}.png';p.write_bytes(b'image'+str(n).encode());paths.append(str(p))
             renderer=Mock();renderer._resolve_input_image_path.side_effect=lambda p:p
             generated=iter(paths[14:])
             def generate(*args, **kw):
@@ -41,3 +41,40 @@ class CompleteImagesTests(unittest.TestCase):
                 self.assertEqual(complete_repair_images(script,renderer,'16:9',lambda *a:None,lambda:None,task_id='task'),[str(p)])
             resolve.assert_called_once_with('task',['/old/api/image.png'],expected_count=1)
             renderer._ensure_image_for_scene.assert_not_called()
+
+    def test_authorized_repair_uses_seven_available_and_creates_41(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for n in range(48):
+                p = Path(directory) / f'{n}.png'; p.write_bytes(b'image'+str(n).encode()); paths.append(str(p))
+            script = {'scenes': [{'text': 'scene'}], 'selected_images': paths[:7] + ['/gone/' + str(n) for n in range(7)],
+                      'repair_use_accessible_images': True,
+                      '_partial_image_recovery': {'enabled': True, 'existing_image_count': 14, 'expected_image_count': 48,
+                                                  'missing_image_count': 34, 'max_new_image_calls': 34}}
+            renderer = Mock(); renderer._resolve_input_image_path.side_effect = lambda p: p
+            generated = iter(paths[7:])
+            def generate(*args, **kw):
+                kw['paid_call_guard']()
+                return next(generated)
+            renderer._ensure_image_for_scene.side_effect = generate
+            result = complete_repair_images(script, renderer, '16:9', lambda *args: None, lambda: None)
+            self.assertEqual(len(result), 48)
+            self.assertEqual(renderer._ensure_image_for_scene.call_count, 41)
+
+    def test_cache_and_manifest_copies_do_not_count_as_distinct_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a = Path(directory) / 'a.png'; a.write_bytes(b'same image')
+            b = Path(directory) / 'b.png'; b.write_bytes(a.read_bytes())
+            c = Path(directory) / 'c.png'; c.write_bytes(b'new image')
+            renderer = Mock(); renderer._resolve_input_image_path.side_effect = lambda p: p
+            def generate(*args, **kw):
+                kw['paid_call_guard']()
+                return str(c)
+            renderer._ensure_image_for_scene.side_effect = generate
+            script = {'scenes': [{'text': 'scene'}], 'selected_images': [str(a), str(b)],
+                      'repair_use_accessible_images': True,
+                      '_partial_image_recovery': {'enabled': True, 'existing_image_count': 2, 'expected_image_count': 2,
+                                                  'missing_image_count': 0, 'max_new_image_calls': 0}}
+            result = complete_repair_images(script, renderer, '16:9', lambda *args: None, lambda: None)
+            self.assertEqual(result, [str(a), str(c)])
+            renderer._ensure_image_for_scene.assert_called_once()
