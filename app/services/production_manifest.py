@@ -110,6 +110,8 @@ def _kind_for_value(value: str, key_hint: str = "") -> str:
         return "image"
     if ext in _AUDIO_EXTS or "audio" in hint or "voice" in hint or "tts" in hint:
         return "audio"
+    if ext in {".srt", ".vtt", ".ass"}:
+        return "caption"
     if ext in _VIDEO_EXTS or "video" in hint or "render" in hint:
         return "video"
     return "other"
@@ -501,6 +503,8 @@ def sync_task_snapshot(task_id: Any, snapshot: Any) -> Dict[str, Any]:
             checkpoints = checkpoints[-200:]
         existing["checkpoints"] = checkpoints
         _atomic_write_json(path, existing)
+        from app.services.central_asset_transfer import CentralAssetTransfer
+        CentralAssetTransfer().publish_manifest(task_key)
         return dict(existing)
 
 
@@ -537,6 +541,8 @@ def record_artifact(task_id: Any, path: str, *, kind: str, source: str = "runtim
         existing["updated_at"] = _utc_iso()
         existing["scan_cursor_epoch"] = now_epoch
         _atomic_write_json(mpath, existing)
+        from app.services.central_asset_transfer import CentralAssetTransfer
+        CentralAssetTransfer().publish(task_key, entry['durable_path'], kind_norm, Path(resolved).name)
         return dict(entry)
 
 

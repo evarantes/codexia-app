@@ -23,6 +23,7 @@ def repair_payload(payload, result, plan, asset):
     script['targeted_repair_asset'] = asset
     script['force_reuse_assets'] = True
     script['repair_complete_visuals'] = asset == 'images'
+    script['repair_use_accessible_images'] = asset == 'images'
     if audio and asset not in {'script', 'narration'}:
         script['seed_audio_path'] = audio
         audio_report = (result.get('render_report') or {}).get('audio_generation') or {}

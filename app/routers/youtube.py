@@ -7710,7 +7710,20 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
     except Exception:
         update_task(task_id, status="failed", progress=0, message="Payload inválido para geração de vídeo.")
         return
-    process_video_generation(req, task_id)
+    from app.services.central_asset_transfer import CentralAssetTransfer
+    try:
+        transfer = CentralAssetTransfer()
+        from app.services.central_asset_transfer import map_cached_references
+        cached = transfer.hydrate(task_id)
+        req = VideoRequest(**map_cached_references(payload or {}, cached or {}))
+        process_video_generation(req, task_id)
+        transfer.publish_manifest(task_id)
+        current = get_task(task_id) or {}
+        if current.get('status') in {'completed', 'awaiting_review', 'approved'}:
+            transfer.clean_cache(task_id)
+    except Exception as exc:
+        update_task(task_id, status="failed", message=f"Transferência de ativos interrompida: {exc}. Arquivos locais preservados.")
+
 
 def process_video_generation(request: VideoRequest, task_id):
     # Lazy import VideoGenerator (moviepy/PIL/numpy) para reduzir memória no startup

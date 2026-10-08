@@ -21,7 +21,17 @@ def complete_repair_images(script, renderer, aspect_ratio, checkpoint, cancel, t
     script['selected_images'] = list(paths)
     checkpoint(paths, target, f'Imagens: {len(paths)}/{target} acessíveis no worker')
     if len(paths) < int(budget.snapshot()['existing_image_count']):
-        raise RuntimeError(f'Worker acessa {len(paths)} de {int(budget.snapshot()["existing_image_count"])} imagens preservadas, mesmo após consultar o manifesto. Confira o volume /data compartilhado entre API e worker. Nenhuma imagem paga foi solicitada; render não iniciado.')
+        if not script.get('repair_use_accessible_images'):
+            raise RuntimeError('Imagens preservadas inacessíveis; confirme a recuperação usando apenas os arquivos acessíveis.')
+        partial = dict(script['_partial_image_recovery'])
+        declared_missing = max(1, int(partial.get('missing_image_count') or 0))
+        for cost_key in ('estimated_image_cost_usd', 'estimated_image_cost_brl'):
+            partial[cost_key] = float(partial.get(cost_key) or 0) * (target-len(paths)) / declared_missing
+        partial.update(existing_image_count=len(paths), missing_image_count=target-len(paths),
+                       max_new_image_calls=target-len(paths))
+        script['_partial_image_recovery'] = partial
+        budget = RecoveryImageCallBudget(script)
+        checkpoint(paths, target, f'Imagens: {len(paths)}/{target} — criando {target-len(paths)} faltantes; referências inacessíveis ignoradas')
     scenes = script.get('scenes') or []
     if not scenes:
         raise RuntimeError('Roteiro indisponível para orientar as imagens faltantes.')

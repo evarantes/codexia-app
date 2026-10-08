@@ -1250,6 +1250,8 @@ async def read_reset_password():
     return FileResponse(os.path.join(_STATIC_SERVE, "reset-password.html"))
 
 # Routers
+from app.routers import production_assets
+app.include_router(production_assets.router)
 app.include_router(auth.router)
 app.include_router(books.router)
 app.include_router(marketing.router)
