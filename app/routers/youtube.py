@@ -8635,7 +8635,7 @@ def process_video_generation(request: VideoRequest, task_id):
                     }))
                 heartbeat_task_execution_lease(task_id, executor_id, ttl_seconds=5 * 60)
             complete_repair_images(script, video_service, str(request.aspect_ratio or "16:9"),
-                                   image_checkpoint, _raise_if_cancelled)
+                                   image_checkpoint, _raise_if_cancelled, task_id=task_id)
 
         video_result = video_service.create_video_from_plan(
             script,
