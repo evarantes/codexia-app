@@ -57,7 +57,7 @@ def index_path(task):
     return manifest_dir(task_key(task)) / 'central-index.json'
 
 
-def central_index(task):
+def central_index(task, verify=True):
     from app.services.production_manifest import load_manifest, _read_json
     entries = list((_read_json(index_path(task)).get('files') or []))
     for item in load_manifest(task).get('artifacts') or []:
@@ -69,14 +69,15 @@ def central_index(task):
         allowed = list(roots().values())
         if p.is_file() and any(p.resolve().is_relative_to(r.resolve()) for r in allowed):
             entries.append({'kind': kind, 'filename': Path(item.get('original_path') or p).name, 'path': str(p),
-                            'sha256': digest(p), 'size': p.stat().st_size})
+                            'sha256': digest(p) if verify else '', 'size': p.stat().st_size})
     unique = {}
     for item in entries:
         p = Path(item.get('path') or '')
         if p.is_file() and any(p.resolve().is_relative_to(r.resolve()) for r in roots().values()):
             actual = dict(item)
-            actual['sha256'] = digest(p)
-            actual['size'] = p.stat().st_size
+            if verify:
+                actual['sha256'] = digest(p)
+                actual['size'] = p.stat().st_size
             unique[(item['kind'], item['filename'])] = actual
     return list(unique.values())
 

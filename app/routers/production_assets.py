@@ -30,7 +30,7 @@ def files(task: str):
 
 @router.get('/{task}/{kind}/{filename}', dependencies=[Depends(authenticate)])
 def download(task: str, kind: str, filename: str):
-    for entry in central_index(task):
+    for entry in central_index(task, verify=False):
         if entry['kind'] == kind and entry['filename'] == filename:
             return FileResponse(entry['path'])
     raise HTTPException(404, 'Ativo não arquivado nesta produção')
