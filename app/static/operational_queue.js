@@ -159,7 +159,10 @@
       return `<div class="oq-artifact-row">
         <span aria-hidden="true" style="display:grid;place-items:center;width:28px;height:28px;border-radius:999px;background:${state.bg};color:${state.fg};font-weight:900">${state.icon}</span>
         <b>${esc(item.label || item.key || 'Ativo')}</b>
-        <span class="oq-artifact-detail" style="color:#536079;line-height:1.35">${esc(detail(item))}</span>
+        <span class="oq-artifact-detail" style="color:#536079;line-height:1.35">${esc(detail(item))}
+          <div style="margin-top:6px;font-size:12px">${esc(item.progress_label || '')}${item.progress_percent != null ? ` · ${Number(item.progress_percent)}%` : ''}${item.progress_detail ? ` · ${esc(item.progress_detail)}` : ''}</div>
+          ${item.progress_percent != null ? `<progress aria-label="Progresso de ${esc(item.label)}" max="100" value="${Number(item.progress_percent)}" style="width:100%;height:9px"></progress>` : ''}
+        </span>
         <div class="oq-artifact-actions" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
           ${task.can_review_assets && ['partial', 'failed', 'missing'].includes(item.status)
             ? `<button type="button" class="btn btn-ghost oq-asset" data-id="${esc(task.id)}" data-asset="${esc(item.key)}" data-action="verify" style="color:${state.fg};font-size:11px">Verificar</button>
@@ -534,17 +537,25 @@
     return data.project || {};
   }
 
+  function activityDetails(task) {
+    const activity = task.activity || {};
+    const age = value => value == null ? 'não disponível' : `${Math.floor(Number(value) / 60)}min ${Number(value) % 60}s atrás`;
+    return `<div class="notice" style="margin-top:12px"><b>${esc(activity.label || 'Atividade não confirmada')}</b><div>Último sinal do executor: ${age(activity.heartbeat_age_sec)} · Último avanço medido: ${age(activity.advance_age_sec)}</div></div>`;
+  }
+
   async function openProject(id, autoplay = false) {
     const modal = ensureModal();
     const title = modal.querySelector('#v2ProjectModalTitle');
     const subtitle = modal.querySelector('#v2ProjectModalSubtitle');
     const body = modal.querySelector('#v2ProjectModalBody');
     modal.classList.remove('hidden');
+    modal.dataset.projectId = id;
     title.textContent = 'Carregando projeto…';
     subtitle.textContent = '';
     body.innerHTML = '<div class="notice">Buscando os dados mais recentes…</div>';
     try {
       const task = await fetchProject(id);
+      modal.dataset.projectStatus = task.status;
       title.textContent = task.title || 'Projeto';
       subtitle.textContent = `${labels[task.status] || task.status || ''} · ${task.duration_minutes ? `${task.duration_minutes} min · ` : ''}Atualizado ${dateText(task.updated_at)}`;
       const video = task.video_url
@@ -554,12 +565,13 @@
       body.innerHTML = `${video}
         <div class="grid grid2">
           <div class="card" style="box-shadow:none"><div class="label">Status</div><div style="margin-top:7px">${statusBadge(task.status)}</div></div>
-          <div class="card" style="box-shadow:none"><div class="label">Progresso</div><div style="font-weight:850;font-size:20px;margin-top:4px">${Number(task.progress || 0)}%</div></div>
+          <div class="card" style="box-shadow:none"><div class="label">Progresso</div><div id="oqLivePercent" style="font-weight:850;font-size:20px;margin-top:4px">${Number(task.progress || 0)}%</div></div>
           <div class="card" style="box-shadow:none"><div class="label">Tipo</div><div style="font-weight:750;margin-top:4px">${esc(task.kind || '—')}</div></div>
           <div class="card" style="box-shadow:none"><div class="label">ID técnico</div><div style="font-size:11px;word-break:break-all;margin-top:5px">${esc(task.id || '')}</div></div>
         </div>
-        ${artifactChecklist(task)}
-        ${task.message ? `<div style="margin-top:15px"><b>Última informação</b><div style="color:#536079;margin-top:5px;line-height:1.5">${esc(task.message)}</div></div>` : ''}
+        <div id="oqLiveActivity">${activityDetails(task)}</div>
+        <div id="oqLiveAssets">${artifactChecklist(task)}</div>
+        ${task.message ? `<div style="margin-top:15px"><b>Última informação</b><div id="oqLiveMessage" style="color:#536079;margin-top:5px;line-height:1.5">${esc(task.message)}</div></div>` : ''}
         ${failure}
         <div style="margin-top:18px">${projectActions(task)}</div>`;
     } catch (error) {
@@ -838,5 +850,25 @@
   setInterval(() => {
     const page = document.getElementById('page-queue');
     if (page?.classList.contains('active')) void loadQueue(false);
+    const modal = document.getElementById('v2ProjectModal');
+    if (modal && !modal.classList.contains('hidden') && modal.dataset.projectId && !modal.dataset.refreshing) {
+      const id = modal.dataset.projectId;
+      modal.dataset.refreshing = 'yes';
+      void fetchProject(id).then(task => {
+        if (modal.classList.contains('hidden') || modal.dataset.projectId !== id) return;
+        if (modal.dataset.projectStatus !== task.status) { void openProject(id, false); return; }
+        const percent = modal.querySelector('#oqLivePercent');
+        const message = modal.querySelector('#oqLiveMessage');
+        if (percent) percent.textContent = `${Number(task.progress || 0)}%`;
+        if (message) message.textContent = task.message || '';
+        const activity = modal.querySelector('#oqLiveActivity');
+        const assets = modal.querySelector('#oqLiveAssets');
+        if (activity) activity.innerHTML = activityDetails(task);
+        if (assets) assets.innerHTML = artifactChecklist(task);
+      }).catch(() => {
+        const activity = modal.querySelector('#oqLiveActivity');
+        if (activity) activity.textContent = 'Não foi possível atualizar a atividade. A execução não está confirmada.';
+      }).finally(() => { delete modal.dataset.refreshing; });
+    }
   }, 10000);
 })();

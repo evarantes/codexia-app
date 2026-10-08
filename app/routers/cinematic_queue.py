@@ -19,6 +19,7 @@ from app.services.production_manifest import build_recovery_plan
 from app.services.production_manifest_diagnostics import build_manifest_diagnostic
 from app.services.narration_caption_contract import measured_text_timeline_is_reviewable
 from app.services.task_manager import update_task
+from app.services.production_progress import activity_status
 from app.services.unified_video_pipeline import unified_video_pipeline
 from app.services.youtube_service import YouTubeService
 from app.services.asset_review import ASSET_CHECKS, CHECK_HINTS, apply_manual_review, video_fingerprint
@@ -584,6 +585,21 @@ def _task_to_public(
             if item["key"] in {"captions", "narration_caption_sync", "render"} and item["status"] in {"missing", "failed"}:
                 item["status"] = "pending"
                 item["summary"] = "Aguardando a conclusão desta etapa."
+    monitor = result.get("production_progress") or {}
+    render_measure = monitor.get("render") or {}
+    for item in checklist["items"]:
+        percent = None
+        if item["status"] == "ok":
+            percent = 100
+        elif item["key"] == "images" and item.get("expected"):
+            percent = min(100, round(100 * item.get("actual", 0) / item["expected"]))
+        elif item["key"] == "render" and render_measure:
+            percent = render_measure.get("percent")
+            item["progress_detail"] = f"{render_measure.get('kind')}: {render_measure.get('current')}/{render_measure.get('total')} {render_measure.get('unit')}"
+        item["progress_percent"] = percent
+        item["progress_label"] = "Concluído" if percent == 100 and item["status"] == "ok" else ("Em execução" if percent is not None else "Sem medição desta etapa")
+    if status in _ACTIVE_STATUSES:
+        checklist["director_validation"]["verdict"] = "Avaliação final pendente; produção em andamento."
     records = (result.get("review") or {}).get("asset_approvals") or {}
     verifications = result.get("asset_verifications") or {}
     if records or verifications:
@@ -634,6 +650,8 @@ def _task_to_public(
         "can_publish": status == "approved",
         "youtube_url": youtube_url or None,
         "artifact_checklist": checklist,
+        "activity": activity_status(monitor, status),
+        "production_progress": monitor,
     }
 
 

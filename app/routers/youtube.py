@@ -8557,6 +8557,8 @@ def process_video_generation(request: VideoRequest, task_id):
                 return (75 + sub, "6/8 Renderizando vídeo final...", "stage_6_render")
             return (89, "6/8 Renderizando vídeo final...", "stage_6_render")
 
+        from app.services.production_progress import record_progress
+
         def progress_callback(progress, message):
             raw = 0
             try:
@@ -8575,7 +8577,11 @@ def process_video_generation(request: VideoRequest, task_id):
                 task_id,
                 progress=task_pct,
                 message=visible_message[:500],
-                result=_merged_task_result({"pipeline_stage": stage_key, "stage_detail": detail[:300]}),
+                result=_merged_task_result({
+                    "pipeline_stage": stage_key, "stage_detail": detail[:300],
+                    "production_progress": record_progress(
+                        (_merged_task_result({}).get("production_progress") or {}), stage_key, detail),
+                }),
             )
             try:
                 msg_txt = str(message or "")

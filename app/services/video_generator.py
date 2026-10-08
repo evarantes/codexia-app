@@ -7880,27 +7880,7 @@ $synth.Dispose()
             if progress_callback:
                 try:
                     import proglog
-                    class RenderProgressLogger(proglog.ProgressBarLogger):
-                        def __init__(self, callback, message):
-                            super().__init__()
-                            self._cb = callback
-                            self._msg = str(message or "Renderizando arquivo final...")
-                        def bars_callback(self, bar, attr, value, old_value=None):
-                            super().bars_callback(bar, attr, value, old_value)
-                            if not self._cb or bar not in self.bars:
-                                return
-                            total = self.bars[bar].get("total")
-                            if total and value is not None:
-                                pct = 95 + int(4 * (value / total))
-                                try:
-                                    self._cb(min(99, pct), self._msg)
-                                except Exception:
-                                    pass
-                                try:
-                                    if value == 1 or value == total or (old_value is not None and int(value) != int(old_value) and int(value) % 25 == 0):
-                                        pass
-                                except Exception:
-                                    pass
+                    from app.services.production_progress import MeasuredRenderLogger as RenderProgressLogger
                     write_logger = RenderProgressLogger(progress_callback, output_msg)
                 except Exception:
                     pass
@@ -7949,13 +7929,7 @@ $synth.Dispose()
                                 _elapsed_str = f"{_s:d}s"
                             _mb = round(_size / (1024 * 1024), 1) if _size else 0
                             if progress_callback:
-                                _base_pct = 95 if _size <= 0 else 96
-                                _tick += 1
-                                _swing = (_tick % 30)
-                                if _size > 0 and _elapsed_sec > 60:
-                                    _base_pct = 97 if (_swing < 15) else 98
-                                elif _size > 0 and _elapsed_sec > 20:
-                                    _base_pct = 96 if (_swing < 15) else 97
+                                _base_pct = 95  # A heartbeat does not measure render completion.
                                 _msg = (f"6/8 Renderizando arquivo final... "
                                         f"({_elapsed_str} decorridos; arquivo: ~{_mb} MB)")
                                 try:
