@@ -40,12 +40,19 @@ def task_key(task):
     return str(task)
 
 
-def archive_path(kind, filename):
+def archive_path(kind, filename, task=None):
+    """Resolve new archive writes inside the task namespace.
+
+    Without a task this remains a filename validator/legacy path resolver
+    for callers that only inspect downloaded metadata.
+    """
     if kind not in EXTENSIONS or Path(filename).name != filename or not re.fullmatch(r'[A-Za-z0-9_.-]{1,240}', filename):
         raise ValueError('Ativo inválido')
     if Path(filename).suffix.lower() not in EXTENSIONS[kind]:
         raise ValueError('Extensão inválida')
     root = roots()[kind].resolve()
+    if task is not None:
+        root = root / task_key(task)
     path = (root / filename).resolve()
     if path.parent != root:
         raise ValueError('Caminho inválido')
