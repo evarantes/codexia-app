@@ -31,13 +31,24 @@ class CentralTransferTests(unittest.TestCase):
                 self.assertEqual(client.put(url, content=body).status_code, 401)
                 headers = {'X-Codexia-Asset-Token': 'test-token', 'X-Content-SHA256': sha}
                 self.assertEqual(client.put(url, content=b'bad', headers=headers).status_code, 422)
-                self.assertFalse((roots['image'] / 'one.png').exists())
+                self.assertFalse((roots['image'] / 'task' / 'one.png').exists())
                 self.assertEqual(client.put(url, content=body, headers=headers).status_code, 200)
                 self.assertEqual(client.get(url, headers=headers).content, body)
                 self.assertEqual(client.get(url.replace('/task/', '/other/'), headers=headers).status_code, 404)
                 bad_headers = dict(headers, **{'X-Content-SHA256': hashlib.sha256(b'changed').hexdigest()})
                 self.assertEqual(client.put(url, content=b'changed', headers=bad_headers).status_code, 409)
-                self.assertEqual((roots['image'] / 'one.png').read_bytes(), body)
+                self.assertEqual((roots['image'] / 'task' / 'one.png').read_bytes(), body)
+                # Same filename from another production is an independent asset.
+                other_body = b'other production content'
+                other_headers = dict(headers, **{'X-Content-SHA256': hashlib.sha256(other_body).hexdigest()})
+                other_url = url.replace('/task/', '/other/')
+                self.assertEqual(client.put(other_url, content=other_body, headers=other_headers).status_code, 200)
+                self.assertEqual(client.get(other_url, headers=other_headers).content, other_body)
+                self.assertEqual((roots['image'] / 'task' / 'one.png').read_bytes(), body)
+                self.assertEqual((roots['image'] / 'other' / 'one.png').read_bytes(), other_body)
+                # Retries for identical content succeed without conflict.
+                self.assertEqual(client.put(url, content=body, headers=headers).status_code, 200)
+                self.assertEqual(client.get(url, headers=headers).content, body)
 
     def test_unconfirmed_upload_preserves_source(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'CODEXIA_ASSET_ARCHIVE_URL': 'https://archive.example', 'CODEXIA_ASSET_TRANSFER_TOKEN': 'test'}):
