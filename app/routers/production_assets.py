@@ -41,7 +41,7 @@ async def upload(task: str, kind: str, filename: str, request: Request,
                  x_content_sha256: str = Header(default='')):
     try:
         task_key(task)
-        path = archive_path(kind, filename)
+        path = archive_path(kind, filename, task=task)
     except ValueError:
         raise HTTPException(400, 'Ativo inválido')
     if len(x_content_sha256) != 64 or any(c not in '0123456789abcdef' for c in x_content_sha256):
