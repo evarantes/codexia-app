@@ -368,7 +368,7 @@ _BIBLE_BOOKS = (
 )
 _BOOK_PATTERN = "|".join(re.escape(name) for name in sorted(_BIBLE_BOOKS, key=len, reverse=True))
 _BIBLE_REFERENCE = re.compile(
-    rf"(?<!\w)(?P<book>(?:(?:[1-3]|I{1,3})\s+)?(?:{_BOOK_PATTERN}))"
+    rf"(?<!\w)(?P<book>(?:(?:[1-3]|I{{1,3}})\s+)?(?:{_BOOK_PATTERN}))"
     rf"\s+(?P<chapter>\d{{1,3}})\s*:\s*(?P<verse>\d{{1,3}})"
     rf"(?P<last>\s*[-–]\s*\d{{1,3}})?(?!\d)",
     flags=re.IGNORECASE,
