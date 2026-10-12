@@ -306,9 +306,9 @@ def generate_review_ready_story_text(
     safe_kind = str(kind or "story").strip().lower()
     if safe_kind not in {"story", "devotional", "prayer"}:
         safe_kind = "story"
-    min_m = max(1, min(60, int(duration_min_minutes or 1)))
-    max_m = max(min_m, min(60, int(duration_max_minutes or min_m)))
-    min_words = max(90, int(min_m * 146))
+    min_m = max(5.0 / 60.0, min(60.0, float(duration_min_minutes or 1)))
+    max_m = max(min_m, min(60.0, float(duration_max_minutes or min_m)))
+    min_words = max(8, int(min_m * 146))
     max_words = max(min_words + 20, int(max_m * 165))
     source_instruction = _clean(instruction)
     narrative_profile = select_narrative_profile(safe_kind, source_instruction)
