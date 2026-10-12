@@ -68,6 +68,73 @@ def _repair_opening(text: str) -> str:
     return _clean(value)
 
 
+def _narrated_word_count(text: str) -> int:
+    """Count words in the final spoken text, not in image prompts or metadata."""
+    return len(re.findall(r"\b[\wÀ-ÿ]+(?:['’][\wÀ-ÿ]+)?\b", str(text or ""), flags=re.UNICODE))
+
+
+def _meet_minimum_narration_words(
+    ai_service: Any,
+    parsed: Dict[str, Any],
+    min_words: int,
+    *,
+    instruction: str,
+    max_expansions: int = 6,
+) -> tuple[Dict[str, Any], str]:
+    """Expand substantive narration, never return a shorter rewrite as success."""
+    current = dict(parsed)
+    sections = current.get("sections") if isinstance(current.get("sections"), dict) else {}
+    spoken = compose_canonical_narration(
+        sections,
+        cta_text=current.get("endcard_cta_text"),
+        fallback_text=_repair_opening(str(current.get("text") or "")),
+    )
+    for _ in range(max_expansions):
+        current_words = _narrated_word_count(spoken)
+        if current_words >= min_words:
+            break
+        missing = min_words - current_words
+        expansion_prompt = (
+            "Amplie o roteiro cristão a seguir. DURAÇÃO MÍNIMA OBRIGATÓRIA: "
+            f"{min_words} palavras NARRÁVEIS (atual: {current_words}, faltam: {missing}). "
+            "Preserve o título, tema e todas as seções existentes. Desenvolva as seções "
+            "com novos exemplos concretos, contexto bíblico fiel e aplicações úteis, "
+            "sem duplicar passagens, inventar referências ou acrescentar encheção de linguiça. "
+            "Responda SOMENTE JSON válido contendo title, sections (hook, development, "
+            "central_truth, transformation, application, climax, reflection), "
+            "closing_message e endcard_cta_text. Cada seção deve conter o TEXTO COMPLETO "
+            "revisado, não apenas trechos novos. "
+            f"INSTRUÇÃO ORIGINAL: {instruction}\n"
+            "ROTEIRO ATUAL EM JSON:\n"
+            + json.dumps(current, ensure_ascii=False)
+        )
+        try:
+            raw = ai_service._generate_text(
+                expansion_prompt,
+                system_prompt="Você é editor de roteiros narrados em português brasileiro. A duração mínima é um requisito obrigatório. Responda somente JSON válido.",
+                json_mode=True,
+            )
+            candidate = _safe_json(raw)
+            if not candidate or not isinstance(candidate.get("sections"), dict):
+                continue
+            candidate_sections = candidate["sections"]
+            if any(not _clean(candidate_sections.get(k)) for k in (
+                "hook", "development", "central_truth", "transformation",
+                "application", "climax", "reflection",
+            )):
+                continue
+            candidate_spoken = compose_canonical_narration(
+                candidate_sections, cta_text=candidate.get("endcard_cta_text")
+            )
+            if _narrated_word_count(candidate_spoken) <= current_words:
+                continue
+            current = candidate
+            spoken = candidate_spoken
+        except Exception:
+            continue
+    return current, spoken
+
+
 def _short_closing(value: Any) -> str:
     text = _clean(value)
     if not text:
@@ -241,7 +308,7 @@ def generate_review_ready_story_text(
         safe_kind = "story"
     min_m = max(1, min(60, int(duration_min_minutes or 1)))
     max_m = max(min_m, min(60, int(duration_max_minutes or min_m)))
-    min_words = max(90, int(min_m * 125))
+    min_words = max(90, int(min_m * 146))
     max_words = max(min_words + 20, int(max_m * 165))
     source_instruction = _clean(instruction)
     narrative_profile = select_narrative_profile(safe_kind, source_instruction)
@@ -275,6 +342,13 @@ def generate_review_ready_story_text(
             parsed = _safe_json(raw)
             if not parsed:
                 retry_issues = ["invalid_json"]
+                continue
+
+            parsed, expanded_text = _meet_minimum_narration_words(
+                ai_service, parsed, min_words, instruction=source_instruction
+            )
+            if _narrated_word_count(expanded_text) < min_words:
+                retry_issues = [f"narration_too_short:{_narrated_word_count(expanded_text)}/{min_words}_words"]
                 continue
 
             title = _clean(parsed.get("title"))[:90]
@@ -327,6 +401,12 @@ def generate_review_ready_story_text(
         {},
         fallback_text=_repair_opening(str(legacy or "")),
     )
+    if _narrated_word_count(legacy_text) < min_words:
+        raise ValueError(
+            f"Roteiro insuficiente: {_narrated_word_count(legacy_text)} palavras narráveis; "
+            f"mínimo exigido {min_words} para {min_m} minuto(s). "
+            "Nenhum roteiro curto será apresentado como pronto."
+        )
     fallback_contract = audit_canonical_narration(legacy_text)
     fallback_issues = _editorial_quality_issues(
         _fallback_title(source_instruction, safe_kind), legacy_text, source_instruction
