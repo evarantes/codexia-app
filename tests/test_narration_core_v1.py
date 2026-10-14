@@ -95,7 +95,23 @@ TEXTO NA TELA: Deus não esqueceu de você.
         artifact = build_narration_artifact(
             "Romanos 8:17 nos lembra que somos herdeiros com Cristo."
         )
-        self.assertIn("Romanos 8:17", artifact.spoken_text)
+        self.assertIn("Romanos capítulo 8, versículo 17", artifact.spoken_text)
+
+    def test_bible_citation_not_read_as_time(self):
+        artifact = build_narration_artifact(
+            "João 8:16 confirma a verdade. Em 1 João 4:8 lemos sobre o amor."
+        )
+        self.assertIn("João capítulo 8, versículo 16", artifact.spoken_text)
+        self.assertIn("1 João capítulo 4, versículo 8", artifact.spoken_text)
+        self.assertNotIn("8:16", artifact.spoken_text)
+
+    def test_bible_ranges_and_real_clock_times(self):
+        artifact = build_narration_artifact(
+            "Leia Salmos 23:1-3 e Romanos 8:28. A reunião é às 14:30."
+        )
+        self.assertIn("Salmos capítulo 23, versículo 1 até 3", artifact.spoken_text)
+        self.assertIn("Romanos capítulo 8, versículo 28", artifact.spoken_text)
+        self.assertIn("14:30", artifact.spoken_text)
 
     def test_pure_technical_payload_is_blocked(self):
         with self.assertRaises(NarrationCoreError):
