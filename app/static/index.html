@@ -249,7 +249,7 @@ async function loadShortChildren(){
       const watch=v.video_url?'<a href="'+shortEscape(v.video_url)+'" target="_blank" rel="noopener noreferrer">Pré-visualizar</a>':'';
       return '<div class="card" style="display:grid;gap:10px"><b>'+shortEscape(v.title||('Short #'+id))+'</b><small>Status: '+status+'</small>'+watch+
         '<label for="shortDate'+id+'">Data e hora para publicação</label><input id="shortDate'+id+'" class="input" type="datetime-local" value="'+shortEscape((v.scheduled_for||'').slice(0,16))+'">'+
-        '<div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-ghost" data-short-action="schedule" data-short-id="'+id+'">Agendar publicação</button><button type="button" class="btn btn-violet" data-short-action="publish" data-short-id="'+id+'">Publicar agora</button></div></div>';
+        '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="shortApproved'+id+'"> Aprovo este Short para publicação</label><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-ghost" data-short-action="schedule" data-short-id="'+id+'">Agendar publicação</button><button type="button" class="btn btn-violet" data-short-action="publish" data-short-id="'+id+'">Publicar agora</button></div></div>';
     }).join('');
   }catch(e){shortResults.textContent='Erro ao listar Shorts: '+e.message;}
 }
@@ -269,6 +269,7 @@ $('#createFromApproved').onclick=async()=>{
 shortResults.addEventListener('click',async e=>{
   const btn=e.target.closest('button[data-short-action]');if(!btn)return;
   const id=Number(btn.dataset.shortId),action=btn.dataset.shortAction;
+  if(!$('#shortApproved'+id)?.checked){alert('Assista ao Short e marque a confirmação de aprovação antes de publicar ou agendar.');return;}
   btn.disabled=true;
   try{
     if(action==='schedule'){
