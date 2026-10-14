@@ -115,8 +115,19 @@
 
       <section class="page" id="page-shorts">
         <div class="hero" style="background:linear-gradient(135deg,#7f3315,#dd6b2f)"><div><span class="pill">⚡ Aquisição</span><h1>Shorts</h1><p>Shorts deixam de ser produto isolado: viram funil para o vídeo longo e reaproveitam cenas já pagas.</p></div></div>
-        <div class="section-title"><div><h2>Regra do sistema</h2><p>2–3 Shorts por vídeo longo, 25–45 segundos, cliffhanger + CTA para assistir completo.</p></div></div>
-        <div class="grid grid3"><div class="card"><b>1. Descoberta</b><p>Use a cena mais forte nos 2 primeiros segundos.</p></div><div class="card"><b>2. Suspense</b><p>Interrompa antes da resolução, sem enganar o espectador.</p></div><div class="card"><b>3. Conversão</b><p>Direcione ao vídeo longo para gerar horas qualificadas.</p></div></div>
+        <div class="section-title"><div><h2>Criar Shorts dos vídeos aprovados</h2><p>Selecione um vídeo longo concluído ou publicado. Escolha quantos Shorts deseja produzir; depois aprove, publique ou agende cada Short separadamente.</p></div></div>
+        <div class="card" style="display:grid;gap:14px">
+          <label for="shortSource"><b>Vídeo de origem</b></label>
+          <select id="shortSource" class="input" style="width:100%;max-width:100%"><option value="">Carregando biblioteca…</option></select>
+          <div><button id="refreshShortSources" class="btn btn-ghost" type="button">Atualizar vídeos</button></div>
+          <label for="shortCount"><b>Quantidade de Shorts</b> (1 a 8)</label>
+          <input id="shortCount" class="input" type="number" min="1" max="8" step="1" value="3" style="max-width:130px">
+          <p style="color:var(--muted)">O sistema reutiliza o roteiro e os materiais disponíveis do vídeo original. Nenhum Short será publicado automaticamente.</p>
+          <button class="btn btn-violet" id="createFromApproved" type="button">Criar Shorts para revisão</button>
+          <p id="shortsFeedback" role="status" aria-live="polite" style="color:var(--muted)"></p>
+        </div>
+        <div class="section-title"><div><h2>Shorts criados — publicação e agenda</h2><p>Configure cada Short individualmente. Datas e horários são interpretados no fuso configurado pelo servidor; confirme antes de agendar.</p></div></div>
+        <div id="shortsCreatedList" class="grid" style="gap:12px"><div class="notice">Selecione um vídeo para ver seus Shorts.</div></div>
       </section>
 
       <section class="page" id="page-queue">
@@ -212,7 +223,71 @@ async function pilot(idx){const s=(currentPlan?.scenes||[]).find(x=>x.index===id
 $('#pauseProductionBtn').onclick=()=>productionAction('pause'); $('#resumeProductionBtn').onclick=()=>productionAction('resume'); $('#cancelProductionBtn').onclick=()=>productionAction('cancel');
 $('#baseProductionBtn').onclick=async()=>{if(!currentPlan)return;if(!confirm('Enviar o roteiro aprovado ao pipeline canônico atual? Esta etapa usa o renderizador existente; os clipes A/B só devem ser incorporados após a composição híbrida estar liberada.'))return;try{const d=await authFetch('/youtube/generate_video',{method:'POST',body:JSON.stringify({topic:currentPlan.theme||$('#theme').value,duration:durationPayload().duration_minutes,duration_seconds:durationPayload().duration_seconds||null,auto_upload:false,mode:'story',kind:currentPlan.content_type==='devotional'?'devotional':'story',story_content:currentPlan.full_script,image_mode:'multiple',aspect_ratio:'16:9'})});if(!d.task_id)throw new Error('O pipeline não retornou o ID da tarefa; a produção não foi registrada na biblioteca V2.');const title=(currentPlan.titles&&currentPlan.titles[0])||currentPlan.theme||$('#theme').value||'Produção Codexia V2';await authFetch('/youtube/cinematic/library/register',{method:'POST',body:JSON.stringify({task_id:d.task_id,title,project_slot:currentPlan.content_type==='devotional'?'devotional':currentPlan.content_type==='short'?'short':'story',duration_minutes:durationPayload().duration_minutes,duration_seconds:durationPayload().duration_seconds||null})});monitorProduction(d.task_id); alert(`Produção enviada e registrada no Codexia V2. Tarefa: ${d.task_id}`)}catch(e){alert(e.message)}};
 const devotionalIdeas=['Escute isto quando sua mente não consegue parar','Uma oração para quem está preocupado com dinheiro','Quando Deus parece estar em silêncio','Faça esta oração quando estiver com medo','10 minutos para entregar sua ansiedade a Deus','Antes de dormir, entregue este peso a Deus'];$('#devotionalIdeas').innerHTML=devotionalIdeas.map(x=>`<div class="card"><b>${x}</b><p style="color:var(--muted)">8–12 min · voz premium · movimento seletivo</p><button class="btn btn-ghost idea" data-t="${x.replace(/"/g,'&quot;')}">Criar</button></div>`).join('');$$('.idea').forEach(b=>b.onclick=()=>{$('#theme').value=b.dataset.t;$('#contentType').value='devotional';applyTypeDefaults();go('studio')});$('#newDevotional').onclick=()=>{$('#contentType').value='devotional';applyTypeDefaults();go('studio')};
-loadStatus();loadCalendar();
+
+const shortSource=$('#shortSource'), shortFeedback=$('#shortsFeedback'), shortResults=$('#shortsCreatedList');
+let shortsLibrary=[];
+const shortEscape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function loadShortSources(){
+  shortSource.innerHTML='<option value="">Carregando vídeos…</option>';
+  try{
+    const d=await authFetch('/youtube/schedule?video_type=video&limit=500');
+    shortsLibrary=(d.items||[]).filter(v=>['ready','completed','published'].includes(String(v.status||'').toLowerCase())&&!!(v.video_url||v.youtube_video_id));
+    shortSource.innerHTML='<option value="">Selecione um vídeo longo aprovado/concluído</option>'+shortsLibrary.map(v=>'<option value="'+Number(v.id)+'">'+shortEscape(v.title||v.theme||('Vídeo #'+v.id))+' — '+shortEscape(v.status)+'</option>').join('');
+    if(!shortsLibrary.length) shortFeedback.textContent='Nenhum vídeo longo pronto foi encontrado na fila de publicações. Vídeos ainda em produção não aparecem aqui.';
+    await loadShortChildren();
+  }catch(e){shortSource.innerHTML='<option value="">Biblioteca indisponível</option>'; shortFeedback.textContent='Não foi possível buscar vídeos: '+e.message;}
+}
+async function loadShortChildren(){
+  const parent=Number(shortSource.value);
+  if(!parent){shortResults.innerHTML='<div class="notice">Escolha um vídeo de origem acima.</div>';return;}
+  try{
+    const d=await authFetch('/youtube/schedule?video_type=short&limit=500');
+    const list=(d.items||[]).filter(v=>Number(v.parent_video_id)===parent);
+    if(!list.length){shortResults.innerHTML='<div class="notice">Ainda não há Shorts concluídos para este vídeo. Depois da geração, atualize a lista.</div>';return;}
+    shortResults.innerHTML=list.map(v=>{
+      const id=Number(v.id),status=shortEscape(v.status);
+      const watch=v.video_url?'<a href="'+shortEscape(v.video_url)+'" target="_blank" rel="noopener noreferrer">Pré-visualizar</a>':'';
+      return '<div class="card" style="display:grid;gap:10px"><b>'+shortEscape(v.title||('Short #'+id))+'</b><small>Status: '+status+'</small>'+watch+
+        '<label for="shortDate'+id+'">Data e hora para publicação</label><input id="shortDate'+id+'" class="input" type="datetime-local" value="'+shortEscape((v.scheduled_for||'').slice(0,16))+'">'+
+        '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="shortApproved'+id+'"> Aprovo este Short para publicação</label><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-ghost" data-short-action="schedule" data-short-id="'+id+'">Agendar publicação</button><button type="button" class="btn btn-violet" data-short-action="publish" data-short-id="'+id+'">Publicar agora</button></div></div>';
+    }).join('');
+  }catch(e){shortResults.textContent='Erro ao listar Shorts: '+e.message;}
+}
+$('#refreshShortSources').onclick=loadShortSources;
+shortSource.onchange=loadShortChildren;
+$('#createFromApproved').onclick=async()=>{
+  const videoId=Number(shortSource.value),count=Number($('#shortCount').value);
+  if(!videoId){shortFeedback.textContent='Escolha um vídeo concluído primeiro.';return;}
+  if(!Number.isInteger(count)||count<1||count>8){shortFeedback.textContent='Escolha entre 1 e 8 Shorts.';return;}
+  if(!confirm('Gerar '+count+' Shorts a partir do vídeo selecionado? A produção pode consumir créditos de IA; nenhum será publicado automaticamente.'))return;
+  const btn=$('#createFromApproved');btn.disabled=true;shortFeedback.textContent='Solicitando geração dos Shorts…';
+  try{
+    const r=await authFetch('/youtube/schedule/'+videoId+'/create_shorts_task',{method:'POST',body:JSON.stringify({count})});
+    shortFeedback.textContent='Geração iniciada (tarefa '+r.task_id+'). Aguarde a conclusão e clique em Atualizar vídeos para conferir os Shorts.';
+  }catch(e){shortFeedback.textContent='Não foi possível iniciar: '+e.message;}finally{btn.disabled=false;}
+};
+shortResults.addEventListener('click',async e=>{
+  const btn=e.target.closest('button[data-short-action]');if(!btn)return;
+  const id=Number(btn.dataset.shortId),action=btn.dataset.shortAction;
+  if(!$('#shortApproved'+id)?.checked){alert('Assista ao Short e marque a confirmação de aprovação antes de publicar ou agendar.');return;}
+  btn.disabled=true;
+  try{
+    if(action==='schedule'){
+      const dt=$('#shortDate'+id).value;
+      if(!dt)throw new Error('Informe data e hora antes de agendar.');
+      if(!confirm('Agendar este Short para '+dt+'? Confirme o fuso do servidor.'))return;
+      await authFetch('/youtube/schedule/'+id,{method:'PUT',body:JSON.stringify({scheduled_for:dt,auto_post:true})});
+      alert('Agendamento salvo. Confira o horário no painel de publicações.');
+    }else{
+      if(!confirm('Publicar este Short no YouTube agora?'))return;
+      await authFetch('/youtube/schedule/'+id+'/publish-now',{method:'POST'});
+      alert('Solicitação de publicação enviada. Confira o status atualizado.');
+    }
+    await loadShortChildren();
+  }catch(err){alert('Operação não concluída: '+err.message);}finally{btn.disabled=false;}
+});
+
+loadStatus();loadCalendar();loadShortSources();
 </script>
 </body>
 </html>

@@ -4788,6 +4788,12 @@ def create_shorts_from_scheduled_task(video_id: int, request: CreateShortsFromSc
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
     if (video.video_type or "video").strip().lower() != "video":
         raise HTTPException(status_code=400, detail="Apenas vídeos longos (não-shorts) podem gerar shorts.")
+    if str(video.status or "").strip().lower() not in {"ready", "completed", "published"}:
+        raise HTTPException(status_code=409, detail="Finalize e aprove o vídeo de origem antes de solicitar Shorts.")
+    if not (video.video_url or video.youtube_video_id):
+        raise HTTPException(status_code=409, detail="O vídeo de origem ainda não possui mídia concluída.")
+    if not 1 <= int(request.count) <= 8:
+        raise HTTPException(status_code=422, detail="Escolha entre 1 e 8 Shorts.")
 
     task_id = create_task()
     update_task(task_id, status="processing", progress=0, message="Iniciando criação de shorts a partir do vídeo...")
