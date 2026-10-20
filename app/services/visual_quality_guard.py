@@ -369,6 +369,8 @@ def install_visual_quality_guard_patch(video_generator_cls: Type[Any]) -> Type[A
         retries = _env_int("VISUAL_QA_MAX_RETRIES", 1, 0, 3)
         current_path = path
         current_review = review
+        # Keep the original asset as fallback if every replacement is rejected.
+        fallback_path = path
         for attempt in range(1, retries + 1):
             retry_prompt = _corrective_prompt(prompt, current_review, attempt)
             try:
@@ -383,9 +385,9 @@ def install_visual_quality_guard_patch(video_generator_cls: Type[Any]) -> Type[A
                     elif "image_prompt" in signature.parameters:
                         retry_kwargs["image_prompt"] = retry_prompt
                     else:
-                        current_path = None
-                    if current_path is not None:
-                        current_path = original_ensure(self, **retry_kwargs)
+                        # Unsupported signature: do not repeat the original prompt.
+                        break
+                    current_path = original_ensure(self, **retry_kwargs)
                 if not current_path:
                     continue
                 current_review = review_generated_image(
@@ -424,7 +426,7 @@ def install_visual_quality_guard_patch(video_generator_cls: Type[Any]) -> Type[A
         if _env_bool("VISUAL_QA_FAIL_CLOSED", False) and current_review and not bool(current_review.get("approve", True)):
             codes = ", ".join(str(x) for x in list(current_review.get("critical_issue_codes") or [])[:6]) or "qualidade visual crítica"
             raise RuntimeError(f"Cena reprovada pelo Fiscal Visual após retries seletivos: {codes}")
-        return current_path or path
+        return fallback_path or current_path
 
     def create_with_visual_guard(self: Any, plan: Any, *args: Any, **kwargs: Any):
         # Limpa somente o relatório da execução atual; não altera nenhum asset.
