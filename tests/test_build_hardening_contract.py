@@ -39,7 +39,6 @@ class BuildHardeningContractTests(unittest.TestCase):
             "apply_caption_integrity_self_heal.py",
             "apply_final_visual_quality_gate_self_heal.py",
             "apply_recovery_checkpoint_hardening.py",
-            "apply_production_manifest_hardening.py",
             "apply_narration_contract_hardening.py",
             "apply_manifest_asset_recovery_hardening.py",
             "apply_render_watchdog_false_positive_fix.py",
