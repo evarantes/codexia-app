@@ -54,6 +54,15 @@ class BuildHardeningContractTests(unittest.TestCase):
                 with self.subTest(profile=profile, script=name):
                     self.assertTrue((ROOT / "scripts" / name).is_file(), name)
 
+    def test_narration_core_is_shared_source(self):
+        self.assertTrue((ROOT / "app" / "services" / "narration_core.py").is_file())
+
+    def test_worker_and_api_use_same_hardening_entrypoint(self):
+        for dockerfile, profile in (("Dockerfile", "api"), ("Dockerfile.worker", "worker")):
+            with self.subTest(dockerfile=dockerfile):
+                content = (ROOT / dockerfile).read_text(encoding="utf-8")
+                self.assertIn(f"python scripts/run_build_hardening.py --profile {profile}", content)
+
     def test_runner_checks_each_applied_script(self):
         runner = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('_run(script_name, "--apply")', runner)
