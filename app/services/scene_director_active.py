@@ -134,18 +134,34 @@ def _expand_scenes_for_cinematic_variety(scenes: List[Dict[str, Any]]) -> tuple[
     desired_total = min(max_scenes, max(len(scenes), int(math.ceil(estimated_minutes * 8.0))))
     target_words = max(18, min(30, int(math.ceil(total_words / desired_total)))) if total_words else 22
 
+    # Never discard source scenes to satisfy an image-generation budget.
+    # An existing storyboard may legitimately contain more scenes than this cap.
+    if len(scenes) >= max_scenes:
+        return deepcopy(scenes), {
+            "enabled": True, "before": len(scenes), "after": len(scenes),
+            "expanded": 0, "total_words": total_words,
+            "estimated_minutes": round(estimated_minutes, 2),
+            "target_words_per_visual": target_words,
+            "max_unique_scenes": max_scenes,
+            "skipped_reason": "source_scene_count_at_or_above_budget",
+        }
+
     expanded: List[Dict[str, Any]] = []
     for scene_index, scene in enumerate(scenes):
-        if len(expanded) >= max_scenes:
-            break
         text = _scene_text(scene)
-        # Cena com imagem escolhida manualmente não é multiplicada silenciosamente.
         manual_image = bool(scene.get("image_path") or scene.get("selected_image") or scene.get("image"))
-        chunks = [text] if manual_image else _sentence_chunks(text, target_words=target_words, hard_max_words=max(target_words + 8, 28))
+        chunks = [text] if manual_image else _sentence_chunks(
+            text, target_words=target_words, hard_max_words=max(target_words + 8, 28)
+        )
         if not chunks:
             chunks = [text]
-        remaining = max_scenes - len(expanded)
-        chunks = chunks[:remaining]
+
+        # Reserve one slot for each later original scene. Merge excess beats
+        # back into this scene instead of dropping any narration.
+        later_originals = len(scenes) - scene_index - 1
+        available = max(1, max_scenes - len(expanded) - later_originals)
+        if len(chunks) > available:
+            chunks = chunks[:available - 1] + [" ".join(chunks[available - 1:])]
         for beat_index, chunk in enumerate(chunks):
             item = deepcopy(scene)
             _set_scene_text(item, chunk)
@@ -155,7 +171,7 @@ def _expand_scenes_for_cinematic_variety(scenes: List[Dict[str, Any]]) -> tuple[
                     f"Narrative beat {beat_index + 1}/{len(chunks)} from source scene {scene_index + 1}. "
                     "Generate a genuinely new composition for this beat; do not reuse the previous scene image."
                 )
-                item["image_prompt"] = re.sub(r"\s+", " ", f"{original_prompt} {beat_hint}").strip()
+                item["image_prompt"] = re.sub(r"\\s+", " ", f"{original_prompt} {beat_hint}").strip()
             item["_real_visual_beat"] = {
                 "source_scene": scene_index + 1,
                 "beat": beat_index + 1,
@@ -163,14 +179,11 @@ def _expand_scenes_for_cinematic_variety(scenes: List[Dict[str, Any]]) -> tuple[
             }
             expanded.append(item)
 
-    if len(expanded) < len(scenes):
-        expanded.extend(deepcopy(scenes[len(expanded):max_scenes]))
-
-    return expanded[:max_scenes], {
+    return expanded, {
         "enabled": True,
         "before": len(scenes),
-        "after": len(expanded[:max_scenes]),
-        "expanded": max(0, len(expanded[:max_scenes]) - len(scenes)),
+        "after": len(expanded),
+        "expanded": max(0, len(expanded) - len(scenes)),
         "total_words": total_words,
         "estimated_minutes": round(estimated_minutes, 2),
         "target_words_per_visual": target_words,
