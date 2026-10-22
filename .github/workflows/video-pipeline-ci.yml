@@ -72,6 +72,32 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Validate Docker Compose secret requirements and private ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          if env -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB -u MINIO_ROOT_USER -u MINIO_ROOT_PASSWORD docker compose -f docker-compose.yml config --quiet > /tmp/compose-missing-secrets.log 2>&1; then
+            echo "::error::Compose accepted missing mandatory database/object-storage credentials"
+            exit 1
+          fi
+          export POSTGRES_USER=codexia_ci POSTGRES_PASSWORD=ci-placeholder-only POSTGRES_DB=codexia_ci
+          export MINIO_ROOT_USER=minio_ci MINIO_ROOT_PASSWORD=ci-placeholder-only
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml config --format json > /tmp/codexia-compose.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          services = json.loads(Path("/tmp/codexia-compose.json").read_text())["services"]
+          for service in ("db", "redis", "minio"):
+              for port in services[service].get("ports", []):
+                  assert port.get("host_ip") == "127.0.0.1", (service, port)
+          for service in ("api", "worker"):
+              env = services[service]["environment"]
+              assert "ci-placeholder-only" in env["DATABASE_URL"]
+              assert env["S3_SECRET_KEY"] == "ci-placeholder-only"
+          print("Compose validation: secrets required and infrastructure ports bound to loopback")
+          PY
+
       - name: Install FFmpeg and dependencies
         id: install_dependencies
         run: |
