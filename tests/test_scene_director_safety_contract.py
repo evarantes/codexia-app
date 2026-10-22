@@ -21,6 +21,7 @@ class SceneDirectorSafetyContractTests(unittest.TestCase):
             result = Generator().create_video_from_plan(original)
         self.assertIs(result["received_plan"], original)
         self.assertEqual(result["scene_director"]["fallback"], "original_plan")
+        self.assertEqual(result["render_report"]["scene_director"]["fallback"], "original_plan")
         self.assertEqual(original["scenes"][0]["narration"], "Narracao integral.")
 
     def test_render_failure_must_propagate_even_after_director_fallback(self):
