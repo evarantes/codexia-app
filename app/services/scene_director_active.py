@@ -403,7 +403,23 @@ def install_scene_director_active_patch(video_generator_cls: Type[Any]) -> Type[
     original_create = getattr(video_generator_cls, "create_video_from_plan", None)
     if callable(original_create):
         def create_with_scene_director(self: Any, plan: Any, *args: Any, **kwargs: Any):
-            directed_plan, report = direct_scene_plan(plan)
+            try:
+                directed_plan, report = direct_scene_plan(plan)
+            except Exception as exc:
+                # Scene direction is advisory. A failure in prompt enhancement
+                # must not prevent rendering the original, unmodified plan.
+                directed_plan = plan
+                report = {
+                    "version": 3,
+                    "mode": "fallback",
+                    "enabled": True,
+                    "blocking": False,
+                    "changes_narration": False,
+                    "changes_scene_count": False,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:240],
+                    "fallback": "original_plan",
+                }
             result = original_create(self, directed_plan, *args, **kwargs)
             if isinstance(result, dict):
                 result["scene_director"] = deepcopy(report)
