@@ -98,6 +98,28 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
+          POSTGRES_DB: codexia_ci
+          POSTGRES_USER: codexia_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U codexia_ci -d codexia_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+    env:
       APP_ENV: homologation
       DATABASE_URL: postgresql://codexia_ci@127.0.0.1:5432/codexia_ci
       REDIS_URL: redis://127.0.0.1:6379/0
