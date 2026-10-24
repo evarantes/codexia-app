@@ -33,9 +33,16 @@ def test_review_first_flow():
             fetched = client.get(f"/api/assistant-bridge/projects/{project_id}", headers=headers)
             assert fetched.status_code == 200
             assert fetched.json()["payload"]["title"] == "Demo"
+            handoff_url = f"/api/assistant-bridge/projects/{project_id}/production-payloads"
+            assert client.get(handoff_url, headers=headers).status_code == 409
             approved = client.post(f"/api/assistant-bridge/projects/{project_id}/approve", headers=headers)
             assert approved.status_code == 200
             assert approved.json()["status"] == "approved_for_generation"
+            handoff = client.get(handoff_url, headers=headers)
+            assert handoff.status_code == 200
+            assert handoff.json()["music_request"]["genre"] == "Piseiro"
+            assert handoff.json()["auto_upload_youtube"] is False
+            assert handoff.json()["requires_explicit_generation_confirmation"] is True
             assert client.post(f"/api/assistant-bridge/projects/{project_id}/approve", headers=headers).status_code == 409
         finally:
             if previous_token is None:
