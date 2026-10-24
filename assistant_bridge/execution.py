@@ -80,6 +80,13 @@ def music_status(project_id: str, user: User = Depends(get_current_user)) -> dic
     task_id = production.get("task_id")
     if not task_id:
         raise HTTPException(409, "No music task attached")
+    # Verify the persisted task owner, not only the bridge payload.
+    from app.database import SessionLocal
+    from app.models import VideoTask
+    with SessionLocal() as owner_db:
+        owned = owner_db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if owned is None or owned.user_id != user.id:
+            raise HTTPException(403, "Music task ownership could not be verified")
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Music task not found")
@@ -169,6 +176,13 @@ def clip_status(project_id: str, user: User = Depends(get_current_user)) -> dict
     task_id = production.get("clip_task_id")
     if not task_id:
         raise HTTPException(409, "No clip task attached")
+    # Verify the persisted task owner, not only the bridge payload.
+    from app.database import SessionLocal
+    from app.models import VideoTask
+    with SessionLocal() as owner_db:
+        owned = owner_db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if owned is None or owned.user_id != user.id:
+            raise HTTPException(403, "Clip task ownership could not be verified")
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Clip task not found")
