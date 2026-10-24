@@ -152,6 +152,36 @@ async function refresh(){
  cancel.onclick=async()=>{try{await api(base+'/'+encodeURIComponent(p.id)+'/cancel','POST');await refresh()}catch(e){alert(e.message)}};
  box.append(approve,cancel);
  }
+ if(p.status==='approved_for_generation'){
+ const generate=node('button','Gerar música');
+ generate.onclick=async()=>{
+ if(!confirm('Confirmar geração musical? Esta ação pode consumir créditos do Suno.'))return;
+ try{await api(base+'/'+encodeURIComponent(p.id)+'/start-music?confirmed=true','POST');await refresh()}
+ catch(e){alert(e.message)}
+ };
+ box.append(generate);
+ }
+ if(['music_starting','music_processing','music_ready','music_failed'].includes(p.status)){
+ const status=node('button','Verificar música');
+ status.onclick=async()=>{try{const result=await api(base+'/'+encodeURIComponent(p.id)+'/music-status');
+ alert('Música: '+result.status);await refresh()}catch(e){alert(e.message)}};
+ box.append(status);
+ }
+ if(p.status==='music_ready'){
+ const clip=node('button','Gerar clipe');
+ clip.onclick=async()=>{
+ if(!confirm('Confirmar início da geração do clipe? Não haverá publicação automática.'))return;
+ try{await api(base+'/'+encodeURIComponent(p.id)+'/start-clip','POST');await refresh()}
+ catch(e){alert(e.message)}
+ };
+ box.append(clip);
+ }
+ if(['clip_starting','clip_processing','awaiting_clip_review','clip_failed'].includes(p.status)){
+ const clipStatus=node('button','Verificar clipe');
+ clipStatus.onclick=async()=>{try{const result=await api(base+'/'+encodeURIComponent(p.id)+'/clip-status');
+ alert('Clipe: '+result.status);await refresh()}catch(e){alert(e.message)}};
+ box.append(clipStatus);
+ }
  root.append(box);
  }
  }catch(e){root.replaceChildren(node('p','Não foi possível carregar: '+e.message))}
