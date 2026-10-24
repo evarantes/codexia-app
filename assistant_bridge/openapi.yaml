@@ -33,7 +33,7 @@ components:
         style: { type: string, minLength: 1, maxLength: 2000 }
         language: { type: string, default: pt-BR }
         voice: { type: string, default: automatic }
-        aspect_ratio: { type: string, enum: ["16:9", "9:16", "1:1"], default: "16:9" }
+        aspect_ratio: { type: string, enum: ["16:9", "9:16"], default: "16:9" }
         clip_direction: { type: string, maxLength: 10000 }
         assets:
           type: array
