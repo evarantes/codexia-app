@@ -6,7 +6,7 @@ info:
     Receives music/clip production briefs. Approval only approves the specification;
     it does not start paid generation or publish media.
 servers:
-  - url: https://YOUR-CODEXIA-DOMAIN.example
+  - url: https://g8w4so4gkkgog0scsw0ogwkw.89.167.1.253.sslip.io
 security:
   - BridgeToken: []
 components:
