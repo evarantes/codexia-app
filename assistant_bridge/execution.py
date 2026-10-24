@@ -102,7 +102,7 @@ def cancel_owned_project(project_id: str,
 
 @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 def production_dashboard(user: User = Depends(get_current_user)) -> str:
-    """Authenticated HTML shell. All project data comes from owner-checked APIs."""
+    """Authenticated HTML shell. The browser still needs Codexia JWT wiring."""
     from html import escape
     return """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
