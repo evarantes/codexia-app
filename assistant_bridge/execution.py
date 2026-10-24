@@ -100,7 +100,8 @@ def music_status(project_id: str, user: User = Depends(get_current_user)) -> dic
             "WHERE id=? AND status IN ('music_processing','music_ready','music_failed')",
             (next_status, now(), json.dumps(brief), project_id),
         )
-    return {"id": project_id, "status": next_status,
+    effective_status = next_status if row["status"] in ("music_processing", "music_ready", "music_failed") else row["status"]
+    return {"id": project_id, "status": effective_status,
             "task_id": task_id, "task_status": status,
             "music_filename": filename if next_status == "music_ready" else None}
 
