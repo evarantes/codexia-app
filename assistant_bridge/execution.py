@@ -23,8 +23,10 @@ router = APIRouter(prefix="/api/assistant-production", tags=["assistant-producti
 
 
 @router.post("/projects/{project_id}/start-music")
-def start_music(project_id: str, user: User = Depends(get_current_user)) -> dict[str, Any]:
+def start_music(project_id: str, user: User = Depends(get_current_user), confirmed: bool = False) -> dict[str, Any]:
     """One-shot, user-confirmed start. Fail closed without Suno configuration."""
+    if not confirmed:
+        raise HTTPException(428, "Confirm music generation explicitly")
     if not get_suno_api_key():
         raise HTTPException(503, "Suno API Key required for vocal production")
     with database() as db:
