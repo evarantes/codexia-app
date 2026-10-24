@@ -328,7 +328,7 @@ def music_status(project_id: str, user: User = Depends(get_current_user)) -> dic
     if status == "completed" and filename:
         next_status = "music_ready"
         production["music_filename"] = filename
-    elif status in ("failed", "cancelled"):
+    elif status in ("failed", "cancelled", "completed"):
         next_status = "music_failed"
     else:
         next_status = "music_processing"
@@ -403,7 +403,7 @@ def clip_status(project_id: str, user: User = Depends(get_current_user)) -> dict
         raise HTTPException(404, "Project not found")
     brief = json.loads(row["payload"])
     production = brief.get("_production") or {}
-    if production.get("user_id") != user.id:
+    if not is_project_owner(brief, user.id):
         raise HTTPException(403, "Project is not owned by current user")
     task_id = production.get("clip_task_id")
     if not task_id:
