@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from app.models import User
 from app.routers.auth import get_current_user
-from app.routers.music import GenerateMusicRequest, generate_music_from_lyrics
+from app.routers.music import (GenerateMusicRequest, GenerateClipRequest,\n                               generate_music_from_lyrics, generate_music_clip_task)\nfrom app.services.task_manager import get_task\nfrom app.database import get_db\nfrom sqlalchemy.orm import Session\nfrom assistant_bridge.codexia_adapter import clip_payload
 from app.services.suno_service import get_suno_api_key
 from assistant_bridge.router import database, now
 from assistant_bridge.codexia_adapter import music_payload
@@ -57,3 +57,91 @@ def start_music(project_id: str, user: User = Depends(get_current_user)) -> dict
         )
     return {"id": project_id, "status": "music_processing", "task_id": result.get("task_id"),
             "auto_upload_youtube": False}
+
+
+@router.get("/projects/{project_id}/music-status")
+def music_status(project_id: str, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Read owned music job and synchronize its state without starting new work."""
+    with database() as db:
+        row = db.execute(
+            "SELECT status, payload FROM assistant_projects WHERE id=?", (project_id,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Project not found")
+    brief = json.loads(row["payload"])
+    production = brief.get("_production") or {}
+    if production.get("user_id") != user.id:
+        raise HTTPException(403, "Project is not owned by current user")
+    task_id = production.get("task_id")
+    if not task_id:
+        raise HTTPException(409, "No music task attached")
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Music task not found")
+    status = task.get("status")
+    result = task.get("result") or {}
+    filename = result.get("music_filename") if isinstance(result, dict) else None
+    if status == "completed" and filename:
+        next_status = "music_ready"
+        production["music_filename"] = filename
+    elif status in ("failed", "cancelled"):
+        next_status = "music_failed"
+    else:
+        next_status = "music_processing"
+    brief["_production"] = production
+    with database() as db:
+        db.execute(
+            "UPDATE assistant_projects SET status=?, updated_at=?, payload=? "
+            "WHERE id=? AND status IN ('music_processing','music_ready','music_failed')",
+            (next_status, now(), json.dumps(brief), project_id),
+        )
+    return {"id": project_id, "status": next_status,
+            "task_id": task_id, "task_status": status,
+            "music_filename": filename if next_status == "music_ready" else None}
+
+
+@router.post("/projects/{project_id}/start-clip")
+def start_clip(project_id: str, user: User = Depends(get_current_user),
+               db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Explicit second confirmation: start clip only after owned music completes."""
+    with database() as bridge_db:
+        bridge_db.execute("BEGIN IMMEDIATE")
+        row = bridge_db.execute(
+            "SELECT status, payload FROM assistant_projects WHERE id=?", (project_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Project not found")
+        brief = json.loads(row["payload"])
+        production = brief.get("_production") or {}
+        if production.get("user_id") != user.id:
+            raise HTTPException(403, "Project is not owned by current user")
+        if row["status"] != "music_ready":
+            raise HTTPException(409, "Music must be ready and clip not previously started")
+        filename = production.get("music_filename")
+        if not filename:
+            raise HTTPException(409, "Music file is missing")
+        bridge_db.execute(
+            "UPDATE assistant_projects SET status='clip_starting', updated_at=? WHERE id=?",
+            (now(), project_id),
+        )
+        bridge_db.commit()
+    try:
+        clip_request = GenerateClipRequest(**clip_payload(brief, filename))
+        result = generate_music_clip_task(clip_request, user=user, db=db)
+    except Exception:
+        with database() as bridge_db:
+            bridge_db.execute(
+                "UPDATE assistant_projects SET status='clip_start_failed', updated_at=? "
+                "WHERE id=? AND status='clip_starting'", (now(), project_id)
+            )
+        raise
+    production["clip_task_id"] = result.get("task_id")
+    brief["_production"] = production
+    with database() as bridge_db:
+        bridge_db.execute(
+            "UPDATE assistant_projects SET status='clip_processing', updated_at=?, payload=? "
+            "WHERE id=? AND status='clip_starting'",
+            (now(), json.dumps(brief), project_id),
+        )
+    return {"id": project_id, "status": "clip_processing",
+            "task_id": result.get("task_id"), "auto_upload_youtube": False}
