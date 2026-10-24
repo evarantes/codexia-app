@@ -102,9 +102,8 @@ def cancel_owned_project(project_id: str,
 
 
 @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-def production_dashboard(user: User = Depends(get_current_user)) -> str:
-    """Authenticated HTML shell. The browser still needs Codexia JWT wiring."""
-    from html import escape
+def production_dashboard() -> str:
+    """Login-enabled HTML shell; project APIs enforce owner-bound JWT authentication."""
     return """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Codexia | Minhas produções</title>
@@ -118,7 +117,7 @@ textarea{min-height:110px}button{background:#6659df;color:white;border:0;border-
 button:disabled{opacity:.5}.item{padding:12px;border-bottom:1px solid #394365}
 small{color:#bac4e5}#feedback{white-space:pre-wrap}
 </style></head><body><header><h1>Codexia · Minhas produções</h1></header>
-<main><section><h2>Novo projeto</h2><label>Título<input id="title"></label>
+<main><section><h2>Acesso à conta</h2><p>Entre no Codexia para acessar seus projetos.</p><label>E-mail<input id="email" type="email"></label><label>Senha<input id="password" type="password"></label><button id="login">Entrar</button><button id="logout">Sair</button><p id="authstatus" role="status"></p></section><section><h2>Novo projeto</h2><label>Título<input id="title"></label>
 <label>Estilo<input id="style"></label><label>Letra<textarea id="lyrics"></textarea></label>
 <label>Direção do clipe<textarea id="direction"></textarea></label>
 <button id="create">Salvar para revisão</button><p id="feedback" role="status"></p></section>
