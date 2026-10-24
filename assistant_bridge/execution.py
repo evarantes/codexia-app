@@ -38,6 +38,9 @@ def start_music(project_id: str, user: User = Depends(get_current_user), confirm
             raise HTTPException(404, "Project not found")
         if row["status"] != "approved_for_generation":
             raise HTTPException(409, "Project is not approved or already started")
+        existing_owner = (json.loads(row["payload"]).get("_production") or {}).get("user_id")
+        if existing_owner is not None and existing_owner != user.id:
+            raise HTTPException(403, "Project belongs to another user")
         db.execute(
             "UPDATE assistant_projects SET status='music_starting', updated_at=? WHERE id=?",
             (now(), project_id),
