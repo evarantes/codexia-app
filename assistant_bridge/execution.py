@@ -145,3 +145,48 @@ def start_clip(project_id: str, user: User = Depends(get_current_user),
         )
     return {"id": project_id, "status": "clip_processing",
             "task_id": result.get("task_id"), "auto_upload_youtube": False}
+
+
+@router.get("/projects/{project_id}/clip-status")
+def clip_status(project_id: str, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Read the owned clip task and return its deliverable for manual review."""
+    with database() as bridge_db:
+        row = bridge_db.execute(
+            "SELECT status, payload FROM assistant_projects WHERE id=?", (project_id,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Project not found")
+    brief = json.loads(row["payload"])
+    production = brief.get("_production") or {}
+    if production.get("user_id") != user.id:
+        raise HTTPException(403, "Project is not owned by current user")
+    task_id = production.get("clip_task_id")
+    if not task_id:
+        raise HTTPException(409, "No clip task attached")
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Clip task not found")
+    task_state = task.get("status")
+    if task_state == "completed":
+        next_status = "awaiting_clip_review"
+    elif task_state in ("failed", "cancelled"):
+        next_status = "clip_failed"
+    else:
+        next_status = "clip_processing"
+    with database() as bridge_db:
+        bridge_db.execute(
+            "UPDATE assistant_projects SET status=?, updated_at=? "
+            "WHERE id=? AND status IN ('clip_processing','awaiting_clip_review','clip_failed')",
+            (next_status, now(), project_id),
+        )
+    return {
+        "id": project_id,
+        "status": next_status,
+        "task_id": task_id,
+        "task_status": task_state,
+        "progress": task.get("progress"),
+        "message": task.get("message"),
+        "result": task.get("result") if next_status == "awaiting_clip_review" else None,
+        "requires_review_before_publication": True,
+        "auto_upload_youtube": False,
+    }
