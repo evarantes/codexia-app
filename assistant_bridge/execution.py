@@ -227,7 +227,7 @@ def approve_owned_project(project_id: str,
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Project not found")
-        if (json.loads(row["payload"]).get("_production") or {}).get("user_id") != user.id:
+        if not is_project_owner(json.loads(row["payload"]), user.id):
             raise HTTPException(403, "Project belongs to another user")
         if row["status"] != "awaiting_review":
             raise HTTPException(409, "Project is not awaiting review")
@@ -252,10 +252,10 @@ def start_music(project_id: str, user: User = Depends(get_current_user), confirm
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Project not found")
-        if row["status"] != "approved_for_generation":
-            raise HTTPException(409, "Project is not approved or already started")
         if not is_project_owner(json.loads(row["payload"]), user.id):
             raise HTTPException(403, "Project must be assigned to the current user before generation")
+        if row["status"] != "approved_for_generation":
+            raise HTTPException(409, "Project is not approved or already started")
         db.execute(
             "UPDATE assistant_projects SET status='music_starting', updated_at=? WHERE id=?",
             (now(), project_id),
@@ -346,7 +346,7 @@ def start_clip(project_id: str, user: User = Depends(get_current_user),
             raise HTTPException(404, "Project not found")
         brief = json.loads(row["payload"])
         production = brief.get("_production") or {}
-        if production.get("user_id") != user.id:
+        if not is_project_owner(brief, user.id):
             raise HTTPException(403, "Project is not owned by current user")
         if row["status"] != "music_ready":
             raise HTTPException(409, "Music must be ready and clip not previously started")
