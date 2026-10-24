@@ -27,6 +27,8 @@ def music_payload(brief: dict[str, Any]) -> dict[str, Any]:
 def clip_payload(brief: dict[str, Any], music_filename: str) -> dict[str, Any]:
     if not music_filename or "/" in music_filename or "\\" in music_filename:
         raise ValueError("A valid saved music filename is required")
+    if brief.get("aspect_ratio", "16:9") not in ("16:9", "9:16"):
+        raise ValueError("Codexia clip pipeline supports only 16:9 or 9:16")
     return {
         "title": brief["title"],
         "lyrics": brief["lyrics"],
