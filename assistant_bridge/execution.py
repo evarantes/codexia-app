@@ -4,6 +4,7 @@ Requires the regular Codexia user session; bridge bearer token alone cannot
 spend provider credits. No publishing or automatic clip generation.
 """
 import json
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,10 +17,48 @@ from app.database import get_db
 from sqlalchemy.orm import Session
 from assistant_bridge.codexia_adapter import clip_payload
 from app.services.suno_service import get_suno_api_key
-from assistant_bridge.router import database, now
+from assistant_bridge.router import database, now, ProductionRequest
 from assistant_bridge.codexia_adapter import music_payload
 
 router = APIRouter(prefix="/api/assistant-production", tags=["assistant-production"])
+
+
+@router.post("/projects", status_code=201)
+def create_owned_project(request: ProductionRequest,
+                         user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Create a private draft bound to the authenticated Codexia account."""
+    project_id = str(uuid.uuid4())
+    stamp = now()
+    brief = request.model_dump()
+    brief["_production"] = {"user_id": user.id}
+    with database() as db:
+        db.execute(
+            "INSERT INTO assistant_projects VALUES (?, ?, ?, ?, ?)",
+            (project_id, stamp, stamp, "awaiting_review", json.dumps(brief)),
+        )
+    return {"id": project_id, "status": "awaiting_review"}
+
+
+@router.post("/projects/{project_id}/approve")
+def approve_owned_project(project_id: str,
+                          user: User = Depends(get_current_user)) -> dict[str, str]:
+    """Only the owner may approve their own draft; no paid work starts here."""
+    with database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT status, payload FROM assistant_projects WHERE id=?", (project_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Project not found")
+        if (json.loads(row["payload"]).get("_production") or {}).get("user_id") != user.id:
+            raise HTTPException(403, "Project belongs to another user")
+        if row["status"] != "awaiting_review":
+            raise HTTPException(409, "Project is not awaiting review")
+        db.execute(
+            "UPDATE assistant_projects SET status='approved_for_generation', updated_at=? WHERE id=?",
+            (now(), project_id),
+        )
+    return {"id": project_id, "status": "approved_for_generation"}
 
 
 @router.post("/projects/{project_id}/start-music")
