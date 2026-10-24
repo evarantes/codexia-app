@@ -666,6 +666,49 @@ def _upsert_admin_user(db, tenant, email: str, password: str, name: str | None, 
     print(f"{label} criado com sucesso (tenant Default).")
 
 
+def bootstrap_empty_database_admin():
+    """One-time initial admin for an empty database, configured via Coolify runtime secrets.
+
+    Never updates an existing account. Remove BOOTSTRAP_ADMIN_* after first successful
+    login so credentials do not remain in the deployment configuration.
+    """
+    email = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "").strip().lower()
+    password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+    if not email and not password:
+        return
+    if not email or not password or len(password) < 16 or "@" not in email:
+        print("Bootstrap admin skipped: configure a valid email and password of at least 16 characters.")
+        return
+    db = SessionLocal()
+    try:
+        from app.models import Tenant
+        from sqlalchemy import func
+        # PostgreSQL advisory transaction lock serializes simultaneous app startups.
+        if db.bind.dialect.name == "postgresql":
+            db.execute(text("SELECT pg_advisory_xact_lock(194071, 271)"))
+        if db.query(func.count(User.id)).scalar() != 0:
+            print("Bootstrap admin skipped: database already contains users.")
+            return
+        tenant = db.query(Tenant).filter(Tenant.slug == "default").first()
+        if tenant is None:
+            tenant = Tenant(name="Default", slug="default")
+            db.add(tenant)
+            db.flush()
+        db.add(User(
+            email=email, name="Administrador inicial", tenant_id=tenant.id,
+            hashed_password=get_password_hash(password),
+            is_admin=True, role="admin", is_active=True,
+            must_change_password=True,
+        ))
+        db.commit()
+        print("Initial administrator created for empty database; remove BOOTSTRAP_ADMIN_* secrets.")
+    except Exception:
+        db.rollback()
+        print("Initial administrator bootstrap failed; check database schema and configuration.")
+    finally:
+        db.close()
+
+
 def create_admin_master():
     """Cria admin principal com ADMIN_* e admin temporario com ADMINTEMP_* quando presentes."""
     admin_email = os.getenv("ADMIN_EMAIL", "").strip()
@@ -719,6 +762,11 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Legacy settings backfill warning (app continua): {e}")
         
+        try:
+            bootstrap_empty_database_admin()
+        except Exception as e:
+            print(f"Bootstrap admin warning (app continua): {e}")
+
         try:
             create_admin_master()
         except Exception as e:
