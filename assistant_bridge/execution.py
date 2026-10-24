@@ -310,6 +310,8 @@ def music_status(project_id: str, user: User = Depends(get_current_user)) -> dic
     task_id = production.get("task_id")
     if not task_id:
         raise HTTPException(409, "No music task attached")
+    if row["status"] not in ("music_processing", "music_ready", "music_failed"):
+        raise HTTPException(409, "Music status is unavailable in this project state")
     # Verify the persisted task owner, not only the bridge payload.
     from app.database import SessionLocal
     from app.models import VideoTask
@@ -406,6 +408,8 @@ def clip_status(project_id: str, user: User = Depends(get_current_user)) -> dict
     task_id = production.get("clip_task_id")
     if not task_id:
         raise HTTPException(409, "No clip task attached")
+    if row["status"] not in ("clip_processing", "awaiting_clip_review", "clip_failed"):
+        raise HTTPException(409, "Clip status is unavailable in this project state")
     # Verify the persisted task owner, not only the bridge payload.
     from app.database import SessionLocal
     from app.models import VideoTask
