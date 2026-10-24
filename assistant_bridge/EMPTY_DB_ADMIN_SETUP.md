@@ -6,7 +6,7 @@ Esta rotina usa a branch de testes e **não importa usuários nem senhas do Code
 2. Crie `BOOTSTRAP_ADMIN_EMAIL` com o e-mail desejado.
 3. Crie `BOOTSTRAP_ADMIN_PASSWORD` com **uma senha nova de pelo menos 16 caracteres**, diferente da senha do Codexia principal. Marque **Available at Runtime** e não marque **Available at Buildtime**. Não envie o valor ao chat.
 4. Clique em salvar e execute um **Deploy** da branch atualizada. Verifique se o commit implantado contém `a7463746` ou posterior (um deploy do commit antigo não inclui o recurso).
-5. Entre no painel `/api/assistant-production/dashboard` com essas credenciais. O login retorna `must_change_password=true`; troque a senha pelo fluxo autenticado `POST /auth/change-password` antes de usar a conta. Se o painel não oferecer essa opção, será necessária uma interface de troca de senha.
+5. Entre no painel `/api/assistant-production/dashboard` com essas credenciais. Use a senha inicial forte para entrar. Se desejar trocá-la, utilize o fluxo autenticado `POST /auth/change-password` (o painel ainda não oferece uma interface própria para isso).
 6. **Remova as duas variáveis de bootstrap do Coolify** e faça novo deploy após o primeiro login. Nunca deixe a senha inicial armazenada nas configurações.
 
 Segurança:
