@@ -46,7 +46,10 @@ def list_owned_projects(user: User = Depends(get_current_user)) -> dict[str, Any
     """List only drafts and jobs owned by the authenticated account."""
     with database() as db:
         rows = db.execute(
-            "SELECT id, status, updated_at, payload FROM assistant_projects ORDER BY updated_at DESC LIMIT 500"
+            """SELECT id, status, updated_at, payload FROM assistant_projects
+               WHERE json_type(payload, '$._production.user_id') = 'integer'
+                 AND json_extract(payload, '$._production.user_id') = ?
+               ORDER BY updated_at DESC LIMIT 500""", (user.id,)
         ).fetchall()
     projects = []
     for row in rows:
