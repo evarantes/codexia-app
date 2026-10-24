@@ -89,6 +89,8 @@ def get_project(project_id: str) -> dict[str, Any]:
         row = db.execute("SELECT * FROM assistant_projects WHERE id=?", (project_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "Project not found")
+    if (json.loads(row["payload"]).get("_production") or {}).get("user_id") is not None:
+        raise HTTPException(403, "Owned projects require a Codexia user session")
     return {**dict(row), "payload": json.loads(row["payload"])}
 
 
@@ -96,6 +98,9 @@ def get_project(project_id: str) -> dict[str, Any]:
 def approve_project(project_id: str) -> dict[str, str]:
     """Approve the production specification only; does not trigger generation."""
     with database() as db:
+        row = db.execute("SELECT payload FROM assistant_projects WHERE id=?", (project_id,)).fetchone()
+        if row and (json.loads(row["payload"]).get("_production") or {}).get("user_id") is not None:
+            raise HTTPException(403, "Owned projects require a Codexia user session")
         result = db.execute(
             "UPDATE assistant_projects SET status='approved_for_generation', updated_at=? "
             "WHERE id=? AND status='awaiting_review'", (now(), project_id)
