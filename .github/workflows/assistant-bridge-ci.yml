@@ -24,4 +24,4 @@ jobs:
       - name: Run bridge contract tests (no external providers)
         env:
           PYTHONPATH: .
-        run: python -m pytest -q assistant_bridge/test_bridge.py assistant_bridge/test_codexia_adapter.py assistant_bridge/test_ownership.py assistant_bridge/test_owner_listing.py assistant_bridge/test_dashboard_contract.py
+        run: python -m pytest -q assistant_bridge/test_bridge.py assistant_bridge/test_codexia_adapter.py assistant_bridge/test_ownership.py assistant_bridge/test_owner_listing.py assistant_bridge/test_dashboard_contract.py assistant_bridge/test_execution_safety.py
