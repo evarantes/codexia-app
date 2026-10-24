@@ -24,3 +24,10 @@
 - [ ] Operator approves a limited staging trial with paid calls explicitly authorized.
 - [ ] Complete one controlled end-to-end production and review costs/output.
 - [ ] Merge, deploy and monitor only after gates above pass.
+
+## Production routing decision (2026-10-24)
+- New CodexiaStudio pipeline is the default for new ChatGPT-submitted projects.
+- Legacy interface at /static/legacy/index.html remains unchanged and available for existing projects or manual fallback.
+- Never automatically retry or fail over a paid task to legacy: doing so may duplicate provider charges.
+- Keep explicit per-project review and authorization before paid generation and any publication.
+- Verify the HTTPS endpoint and authentication in the deployed environment; OpenAPI server URL alone does not install a ChatGPT connector.
