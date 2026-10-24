@@ -698,7 +698,7 @@ def bootstrap_empty_database_admin():
             email=email, name="Administrador inicial", tenant_id=tenant.id,
             hashed_password=get_password_hash(password),
             is_admin=True, role="admin", is_active=True,
-            must_change_password=True,
+            must_change_password=False,
         ))
         db.commit()
         print("Initial administrator created for empty database; remove BOOTSTRAP_ADMIN_* secrets.")
