@@ -39,6 +39,66 @@ def create_owned_project(request: ProductionRequest,
     return {"id": project_id, "status": "awaiting_review"}
 
 
+@router.get("/projects")
+def list_owned_projects(user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """List only drafts and jobs owned by the authenticated account."""
+    with database() as db:
+        rows = db.execute(
+            "SELECT id, status, updated_at, payload FROM assistant_projects ORDER BY updated_at DESC LIMIT 500"
+        ).fetchall()
+    projects = []
+    for row in rows:
+        brief = json.loads(row["payload"])
+        if (brief.get("_production") or {}).get("user_id") == user.id:
+            projects.append({
+                "id": row["id"], "status": row["status"],
+                "updated_at": row["updated_at"], "title": brief.get("title", ""),
+            })
+    return {"projects": projects}
+
+
+@router.get("/projects/{project_id}")
+def get_owned_project(project_id: str,
+                      user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Return a private draft without exposing internal task ownership metadata."""
+    with database() as db:
+        row = db.execute(
+            "SELECT status, updated_at, payload FROM assistant_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Project not found")
+    brief = json.loads(row["payload"])
+    if (brief.get("_production") or {}).get("user_id") != user.id:
+        raise HTTPException(403, "Project belongs to another user")
+    return {
+        "id": project_id, "status": row["status"], "updated_at": row["updated_at"],
+        "brief": {key: value for key, value in brief.items() if key != "_production"},
+    }
+
+
+@router.post("/projects/{project_id}/cancel")
+def cancel_owned_project(project_id: str,
+                         user: User = Depends(get_current_user)) -> dict[str, str]:
+    """Cancel only before paid generation begins; never cancel another user's work."""
+    with database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT status, payload FROM assistant_projects WHERE id=?", (project_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Project not found")
+        if (json.loads(row["payload"]).get("_production") or {}).get("user_id") != user.id:
+            raise HTTPException(403, "Project belongs to another user")
+        if row["status"] not in ("awaiting_review", "approved_for_generation"):
+            raise HTTPException(409, "Project cannot be cancelled after generation begins")
+        db.execute(
+            "UPDATE assistant_projects SET status='cancelled', updated_at=? WHERE id=?",
+            (now(), project_id),
+        )
+    return {"id": project_id, "status": "cancelled"}
+
+
 @router.post("/projects/{project_id}/approve")
 def approve_owned_project(project_id: str,
                           user: User = Depends(get_current_user)) -> dict[str, str]:
