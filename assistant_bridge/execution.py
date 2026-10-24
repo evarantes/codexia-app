@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from assistant_bridge.codexia_adapter import clip_payload
 from app.services.suno_service import get_suno_api_key
 from assistant_bridge.router import database, now, ProductionRequest
+from assistant_bridge.ownership import is_project_owner
 from assistant_bridge.codexia_adapter import music_payload
 
 router = APIRouter(prefix="/api/assistant-production", tags=["assistant-production"])
@@ -50,7 +51,7 @@ def list_owned_projects(user: User = Depends(get_current_user)) -> dict[str, Any
     projects = []
     for row in rows:
         brief = json.loads(row["payload"])
-        if (brief.get("_production") or {}).get("user_id") == user.id:
+        if is_project_owner(brief, user.id):
             projects.append({
                 "id": row["id"], "status": row["status"],
                 "updated_at": row["updated_at"], "title": brief.get("title", ""),
@@ -70,7 +71,7 @@ def get_owned_project(project_id: str,
     if row is None:
         raise HTTPException(404, "Project not found")
     brief = json.loads(row["payload"])
-    if (brief.get("_production") or {}).get("user_id") != user.id:
+    if not is_project_owner(brief, user.id):
         raise HTTPException(403, "Project belongs to another user")
     return {
         "id": project_id, "status": row["status"], "updated_at": row["updated_at"],
@@ -89,7 +90,7 @@ def cancel_owned_project(project_id: str,
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Project not found")
-        if (json.loads(row["payload"]).get("_production") or {}).get("user_id") != user.id:
+        if not is_project_owner(json.loads(row["payload"]), user.id):
             raise HTTPException(403, "Project belongs to another user")
         if row["status"] not in ("awaiting_review", "approved_for_generation"):
             raise HTTPException(409, "Project cannot be cancelled after generation begins")
@@ -201,8 +202,7 @@ def start_music(project_id: str, user: User = Depends(get_current_user), confirm
             raise HTTPException(404, "Project not found")
         if row["status"] != "approved_for_generation":
             raise HTTPException(409, "Project is not approved or already started")
-        existing_owner = (json.loads(row["payload"]).get("_production") or {}).get("user_id")
-        if existing_owner != user.id:
+        if not is_project_owner(json.loads(row["payload"]), user.id):
             raise HTTPException(403, "Project must be assigned to the current user before generation")
         db.execute(
             "UPDATE assistant_projects SET status='music_starting', updated_at=? WHERE id=?",
@@ -243,7 +243,7 @@ def music_status(project_id: str, user: User = Depends(get_current_user)) -> dic
         raise HTTPException(404, "Project not found")
     brief = json.loads(row["payload"])
     production = brief.get("_production") or {}
-    if production.get("user_id") != user.id:
+    if not is_project_owner(brief, user.id):
         raise HTTPException(403, "Project is not owned by current user")
     task_id = production.get("task_id")
     if not task_id:
