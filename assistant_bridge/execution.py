@@ -164,10 +164,10 @@ async function refresh(){
  };
  box.append(generate);
  }
- if(['music_starting','music_processing','music_ready','music_failed'].includes(p.status)){
+ if(['music_starting','music_processing','music_ready','music_failed','music_start_failed'].includes(p.status)){
  const status=node('button','Verificar música');
  status.onclick=async()=>{try{const result=await api(base+'/'+encodeURIComponent(p.id)+'/music-status');
- alert('Música: '+result.status);await refresh()}catch(e){alert(e.message)}};
+ el('feedback').textContent='Música: '+result.status+' | Tarefa: '+(result.task_status||'sem atualização');await refresh()}catch(e){alert(e.message)}};
  box.append(status);
  }
  if(p.status==='music_ready'){
@@ -179,10 +179,10 @@ async function refresh(){
  };
  box.append(clip);
  }
- if(['clip_starting','clip_processing','awaiting_clip_review','clip_failed'].includes(p.status)){
+ if(['clip_starting','clip_processing','awaiting_clip_review','clip_failed','clip_start_failed'].includes(p.status)){
  const clipStatus=node('button','Verificar clipe');
  clipStatus.onclick=async()=>{try{const result=await api(base+'/'+encodeURIComponent(p.id)+'/clip-status');
- alert('Clipe: '+result.status);await refresh()}catch(e){alert(e.message)}};
+ el('feedback').textContent='Clipe: '+result.status+' | Progresso: '+(result.progress??'não informado')+' | '+(result.message||'');await refresh()}catch(e){alert(e.message)}};
  box.append(clipStatus);
  }
  root.append(box);
