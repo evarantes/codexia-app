@@ -253,8 +253,6 @@ def start_music(project_id: str, user: User = Depends(get_current_user), confirm
     """One-shot, user-confirmed start. Fail closed without Suno configuration."""
     if not confirmed:
         raise HTTPException(428, "Confirm music generation explicitly")
-    if not get_suno_api_key():
-        raise HTTPException(503, "Suno API Key required for vocal production")
     with database() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
@@ -266,6 +264,8 @@ def start_music(project_id: str, user: User = Depends(get_current_user), confirm
             raise HTTPException(403, "Project must be assigned to the current user before generation")
         if row["status"] != "approved_for_generation":
             raise HTTPException(409, "Project is not approved or already started")
+        if not get_suno_api_key():
+            raise HTTPException(503, "Suno API Key required for vocal production")
         db.execute(
             "UPDATE assistant_projects SET status='music_starting', updated_at=? WHERE id=?",
             (now(), project_id),
