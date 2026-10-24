@@ -201,6 +201,7 @@ el('login').onclick=async()=>{
  const response=await fetch('/token',{method:'POST',credentials:'omit',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form});
  const data=await response.json();
  if(!response.ok||!data.access_token)throw Error(data.detail||'Login recusado');
+ if(data.must_change_password)throw Error('Altere sua senha no Codexia antes de usar esta central.');
  accessToken=data.access_token;
  el('password').value='';
  el('authstatus').textContent='Conectado ao Codexia.';
@@ -210,6 +211,8 @@ el('login').onclick=async()=>{
 el('logout').onclick=()=>{
  accessToken=null;
  el('projects').replaceChildren();
+ el('password').value='';
+ el('feedback').textContent='';
  el('authstatus').textContent='Sessão local encerrada.';
 };
 el('refresh').onclick=refresh;
