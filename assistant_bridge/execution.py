@@ -148,12 +148,19 @@ async function refresh(){
  detail.onclick=async()=>{try{const d=await api(base+'/'+encodeURIComponent(p.id));
  alert(JSON.stringify(d.brief,null,2))}catch(e){alert(e.message)}};
  box.append(detail);
+ if(['awaiting_review','approved_for_generation'].includes(p.status)){
  if(p.status==='awaiting_review'){
  const approve=node('button','Aprovar');
  approve.onclick=async()=>{try{await api(base+'/'+encodeURIComponent(p.id)+'/approve','POST');await refresh()}catch(e){alert(e.message)}};
  const cancel=node('button','Cancelar');
  cancel.onclick=async()=>{try{await api(base+'/'+encodeURIComponent(p.id)+'/cancel','POST');await refresh()}catch(e){alert(e.message)}};
  box.append(approve,cancel);
+ }else{
+ const cancel=node('button','Cancelar projeto');
+ cancel.onclick=async()=>{if(!confirm('Cancelar este projeto antes da geração?'))return;
+ try{await api(base+'/'+encodeURIComponent(p.id)+'/cancel','POST');await refresh()}catch(e){alert(e.message)}};
+ box.append(cancel);
+ }
  }
  if(p.status==='approved_for_generation'){
  const generate=node('button','Gerar música');
