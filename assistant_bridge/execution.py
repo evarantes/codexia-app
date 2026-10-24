@@ -161,7 +161,25 @@ el('create').onclick=async()=>{el('feedback').textContent='Salvando...';
  lyrics:el('lyrics').value,clip_direction:el('direction').value});
  el('feedback').textContent='Projeto salvo para revisão.';await refresh()}
  catch(e){el('feedback').textContent=e.message}};
-el('refresh').onclick=refresh;refresh();
+el('login').onclick=async()=>{
+ el('authstatus').textContent='Autenticando...';
+ try{
+ const form=new URLSearchParams({username:el('email').value,password:el('password').value});
+ const response=await fetch('/token',{method:'POST',credentials:'omit',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form});
+ const data=await response.json();
+ if(!response.ok||!data.access_token)throw Error(data.detail||'Login recusado');
+ accessToken=data.access_token;
+ el('password').value='';
+ el('authstatus').textContent='Conectado ao Codexia.';
+ await refresh();
+ }catch(error){accessToken=null;el('authstatus').textContent='Erro: '+error.message}
+};
+el('logout').onclick=()=>{
+ accessToken=null;
+ el('projects').replaceChildren();
+ el('authstatus').textContent='Sessão local encerrada.';
+};
+el('refresh').onclick=refresh;
 </script></body></html>"""
 
 
