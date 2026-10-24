@@ -7,7 +7,7 @@ This is an isolated opt-in UI. Mount in the FastAPI app:
 For production use, replace the bearer-token browser prompt with the app's
 authenticated user session and server-side access checks.
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
 router = APIRouter()
@@ -78,4 +78,4 @@ el('cancel').onclick=()=>act('/cancel','POST');
 
 @router.get("/assistant-production", response_class=HTMLResponse, include_in_schema=False)
 def assistant_production_page() -> str:
-    return HTML
+    raise HTTPException(503, 'Shared-token prototype disabled pending multi-user UI')
