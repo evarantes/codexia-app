@@ -1266,6 +1266,9 @@ app.include_router(diagnostics.router)
 app.include_router(book_factory.router)
 app.include_router(hotmart.router)
 app.include_router(music.router)
+# Opt-in authenticated assistant inbox. Never triggers paid production or publication.
+from assistant_bridge.router import router as assistant_bridge_router
+app.include_router(assistant_bridge_router)
 app.include_router(whatsapp.router)
 app.include_router(image_storyboard.router)
 app.include_router(admin.router)
