@@ -125,10 +125,12 @@ small{color:#bac4e5}#feedback{white-space:pre-wrap}
 <div id="projects"></div><small>A aprovação não consome créditos. A geração musical exige confirmação separada.</small></section></main>
 <script>
 const base='/api/assistant-production/projects';
+let accessToken=null;
 const el=id=>document.getElementById(id);
 async function api(path,method='GET',body){
- const r=await fetch(path,{method,credentials:'same-origin',
- headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+ if(!accessToken)throw Error('Entre na sua conta Codexia');
+ const r=await fetch(path,{method,credentials:'omit',
+ headers:{'Content-Type':'application/json','Authorization':'Bearer '+accessToken},body:body?JSON.stringify(body):undefined});
  const data=await r.json();if(!r.ok)throw Error(data.detail||('HTTP '+r.status));return data;
 }
 function node(tag,txt){const e=document.createElement(tag);e.textContent=txt;return e}
