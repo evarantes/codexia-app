@@ -44,6 +44,18 @@ def test_review_first_flow():
             assert handoff.json()["auto_upload_youtube"] is False
             assert handoff.json()["requires_explicit_generation_confirmation"] is True
             assert client.post(f"/api/assistant-bridge/projects/{project_id}/approve", headers=headers).status_code == 409
+            # A cancelled draft cannot be approved or used for production.
+            cancelled_draft = client.post("/api/assistant-bridge/projects", json=payload, headers=headers)
+            assert cancelled_draft.status_code == 201
+            cancelled_id = cancelled_draft.json()["id"]
+            cancel_url = f"/api/assistant-bridge/projects/{cancelled_id}/cancel"
+            assert client.post(cancel_url, headers=headers).json()["status"] == "cancelled"
+            assert client.post(cancel_url, headers=headers).status_code == 409
+            assert client.post(f"/api/assistant-bridge/projects/{cancelled_id}/approve", headers=headers).status_code == 409
+            assert client.get(f"/api/assistant-bridge/projects/{cancelled_id}/production-payloads", headers=headers).status_code == 409
+            # A configured bridge must reject incorrect bearer tokens.
+            assert client.get(f"/api/assistant-bridge/projects/{project_id}", headers={"Authorization": "Bearer invalid"}).status_code == 401
+
         finally:
             if previous_token is None:
                 os.environ.pop("CODEXIA_ASSISTANT_BRIDGE_TOKEN", None)
