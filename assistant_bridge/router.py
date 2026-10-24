@@ -116,3 +116,34 @@ def cancel_project(project_id: str) -> dict[str, str]:
         if result.rowcount != 1:
             raise HTTPException(409, "Project missing or cannot be cancelled")
     return {"id": project_id, "status": "cancelled"}
+
+
+@router.get("/projects/{project_id}/production-payloads", dependencies=[Depends(authorize)])
+def production_payloads(project_id: str) -> dict[str, Any]:
+    """Prepare a reviewed music request for the authenticated Codexia operator.
+
+    Does not start paid generation. Clip payload is intentionally omitted until
+    the Suno job produces an owned music_filename.
+    """
+    from assistant_bridge.codexia_adapter import music_payload, eligible_assets
+
+    with database() as db:
+        row = db.execute(
+            "SELECT status, payload FROM assistant_projects WHERE id=?", (project_id,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Project not found")
+    if row["status"] != "approved_for_generation":
+        raise HTTPException(409, "Approve the brief before preparing production")
+    brief = json.loads(row["payload"])
+    return {
+        "id": project_id,
+        "status": row["status"],
+        "music_endpoint": "/music/generate",
+        "music_request": music_payload(brief),
+        "clip_endpoint": "/music/clip/task",
+        "eligible_assets": eligible_assets(brief),
+        "requires_codexia_user_session": True,
+        "requires_explicit_generation_confirmation": True,
+        "auto_upload_youtube": False,
+    }
