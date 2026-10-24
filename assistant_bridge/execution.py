@@ -9,7 +9,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from app.models import User
 from app.routers.auth import get_current_user
-from app.routers.music import (GenerateMusicRequest, GenerateClipRequest,\n                               generate_music_from_lyrics, generate_music_clip_task)\nfrom app.services.task_manager import get_task\nfrom app.database import get_db\nfrom sqlalchemy.orm import Session\nfrom assistant_bridge.codexia_adapter import clip_payload
+from app.routers.music import (GenerateMusicRequest, GenerateClipRequest,
+                               generate_music_from_lyrics, generate_music_clip_task)
+from app.services.task_manager import get_task
+from app.database import get_db
+from sqlalchemy.orm import Session
+from assistant_bridge.codexia_adapter import clip_payload
 from app.services.suno_service import get_suno_api_key
 from assistant_bridge.router import database, now
 from assistant_bridge.codexia_adapter import music_payload
