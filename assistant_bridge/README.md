@@ -28,3 +28,9 @@ All calls require `Authorization: Bearer <secret>`.
 - Add separate explicit approval for publishing; never auto-publish a generated political video.
 - Add tests, migration strategy, and production deployment checks.
 - A ChatGPT conversation does **not** automatically have network access to this API. A properly configured connector/plugin or approved tool must provide the actual dispatch operation.
+
+## Authenticated music execution (not enabled in production)
+
+The Codexia-authenticated `POST /api/assistant-production/projects/{id}/start-music` endpoint now requires the query parameter `confirmed=true` **in addition to** a valid Codexia user session, an approved project, and configured Suno credentials. Missing confirmation returns HTTP 428 without starting a paid task. A caller must present this confirmation only after a separate user action in the Codexia interface. The bridge bearer token alone is not sufficient.
+
+This is a safeguard, not a substitute for an explicit approval UI, per-user project binding, usage limits, or end-to-end tests. Do not expose this API publicly or deploy until these controls have been reviewed.
