@@ -65,3 +65,48 @@ def test_review_first_flow():
                 os.environ.pop("CODEXIA_ASSISTANT_BRIDGE_DB", None)
             else:
                 os.environ["CODEXIA_ASSISTANT_BRIDGE_DB"] = previous_db
+
+
+def test_shared_bridge_token_cannot_access_user_owned_project():
+    """A connector-wide secret must not cross the boundary of a Codexia account."""
+    import json
+    from assistant_bridge.router import database, now
+
+    with tempfile.TemporaryDirectory() as directory:
+        old_token = os.environ.get("CODEXIA_ASSISTANT_BRIDGE_TOKEN")
+        old_db = os.environ.get("CODEXIA_ASSISTANT_BRIDGE_DB")
+        try:
+            os.environ["CODEXIA_ASSISTANT_BRIDGE_TOKEN"] = "test-token-" + "x" * 40
+            os.environ["CODEXIA_ASSISTANT_BRIDGE_DB"] = directory + "/projects.db"
+            app = FastAPI()
+            app.include_router(router)
+            client = TestClient(app)
+            headers = {"Authorization": "Bearer " + os.environ["CODEXIA_ASSISTANT_BRIDGE_TOKEN"]}
+            project_id = "owned-project"
+            stamp = now()
+            brief = {"title": "Private", "lyrics": "Original", "style": "Piseiro",
+                     "_production": {"user_id": 101}}
+            with database() as db:
+                db.execute(
+                    "INSERT INTO assistant_projects VALUES (?, ?, ?, ?, ?)",
+                    (project_id, stamp, stamp, "approved_for_generation", json.dumps(brief)),
+                )
+            base = f"/api/assistant-bridge/projects/{project_id}"
+            assert client.get(base, headers=headers).status_code == 403
+            assert client.post(base + "/approve", headers=headers).status_code == 403
+            assert client.post(base + "/cancel", headers=headers).status_code == 403
+            assert client.get(base + "/production-payloads", headers=headers).status_code == 403
+            with database() as db:
+                row = db.execute(
+                    "SELECT status FROM assistant_projects WHERE id=?", (project_id,)
+                ).fetchone()
+                assert row["status"] == "approved_for_generation"
+        finally:
+            if old_token is None:
+                os.environ.pop("CODEXIA_ASSISTANT_BRIDGE_TOKEN", None)
+            else:
+                os.environ["CODEXIA_ASSISTANT_BRIDGE_TOKEN"] = old_token
+            if old_db is None:
+                os.environ.pop("CODEXIA_ASSISTANT_BRIDGE_DB", None)
+            else:
+                os.environ["CODEXIA_ASSISTANT_BRIDGE_DB"] = old_db
