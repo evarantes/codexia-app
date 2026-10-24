@@ -60,7 +60,7 @@ class ProductionRequest(BaseModel):
     style: str = Field(min_length=1, max_length=2000)
     language: str = "pt-BR"
     voice: str = "automatic"
-    aspect_ratio: Literal["16:9", "9:16", "1:1"] = "16:9"
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9"
     clip_direction: str = Field(default="", max_length=10000)
     assets: list[MediaAsset] = Field(default_factory=list, max_length=100)
     synthetic_media_disclosure: bool = True
