@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from app.models import User
 from app.routers.auth import get_current_user
 from app.routers.music import (GenerateMusicRequest, GenerateClipRequest,
@@ -97,6 +98,69 @@ def cancel_owned_project(project_id: str,
             (now(), project_id),
         )
     return {"id": project_id, "status": "cancelled"}
+
+
+@router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+def production_dashboard(user: User = Depends(get_current_user)) -> str:
+    """Authenticated HTML shell. All project data comes from owner-checked APIs."""
+    from html import escape
+    return """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codexia | Minhas produções</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#eef1ff;background:#101426}
+*{box-sizing:border-box}body{margin:0}header{padding:22px;background:#222951}
+main{max-width:1000px;margin:auto;padding:20px}h1{margin:0;font-size:1.5rem}
+section{background:#1b2340;border:1px solid #3d4773;border-radius:16px;padding:18px;margin:16px 0}
+input,textarea,select{width:100%;background:#111a32;color:white;border:1px solid #62719e;border-radius:8px;padding:10px;margin:6px 0 12px}
+textarea{min-height:110px}button{background:#6659df;color:white;border:0;border-radius:8px;padding:10px 14px;margin:5px;cursor:pointer}
+button:disabled{opacity:.5}.item{padding:12px;border-bottom:1px solid #394365}
+small{color:#bac4e5}#feedback{white-space:pre-wrap}
+</style></head><body><header><h1>Codexia · Minhas produções</h1></header>
+<main><section><h2>Novo projeto</h2><label>Título<input id="title"></label>
+<label>Estilo<input id="style"></label><label>Letra<textarea id="lyrics"></textarea></label>
+<label>Direção do clipe<textarea id="direction"></textarea></label>
+<button id="create">Salvar para revisão</button><p id="feedback" role="status"></p></section>
+<section><h2>Meus projetos</h2><button id="refresh">Atualizar</button>
+<div id="projects"></div><small>A aprovação não consome créditos. A geração musical exige confirmação separada.</small></section></main>
+<script>
+const base='/api/assistant-production/projects';
+const el=id=>document.getElementById(id);
+async function api(path,method='GET',body){
+ const r=await fetch(path,{method,credentials:'same-origin',
+ headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+ const data=await r.json();if(!r.ok)throw Error(data.detail||('HTTP '+r.status));return data;
+}
+function node(tag,txt){const e=document.createElement(tag);e.textContent=txt;return e}
+async function refresh(){
+ const root=el('projects');root.replaceChildren(node('p','Carregando...'));
+ try{const data=await api(base);root.replaceChildren();
+ if(!data.projects.length)root.append(node('p','Nenhum projeto encontrado.'));
+ for(const p of data.projects){
+ const box=node('div','');box.className='item';
+ box.append(node('strong',p.title||'Sem título'),node('p','Estado: '+p.status));
+ const detail=node('button','Detalhes');
+ detail.onclick=async()=>{try{const d=await api(base+'/'+encodeURIComponent(p.id));
+ alert(JSON.stringify(d.brief,null,2))}catch(e){alert(e.message)}};
+ box.append(detail);
+ if(p.status==='awaiting_review'){
+ const approve=node('button','Aprovar');
+ approve.onclick=async()=>{try{await api(base+'/'+encodeURIComponent(p.id)+'/approve','POST');await refresh()}catch(e){alert(e.message)}};
+ const cancel=node('button','Cancelar');
+ cancel.onclick=async()=>{try{await api(base+'/'+encodeURIComponent(p.id)+'/cancel','POST');await refresh()}catch(e){alert(e.message)}};
+ box.append(approve,cancel);
+ }
+ root.append(box);
+ }
+ }catch(e){root.replaceChildren(node('p','Não foi possível carregar: '+e.message))}
+}
+el('create').onclick=async()=>{el('feedback').textContent='Salvando...';
+ try{await api(base,'POST',{title:el('title').value,style:el('style').value,
+ lyrics:el('lyrics').value,clip_direction:el('direction').value});
+ el('feedback').textContent='Projeto salvo para revisão.';await refresh()}
+ catch(e){el('feedback').textContent=e.message}};
+el('refresh').onclick=refresh;refresh();
+</script></body></html>"""
 
 
 @router.post("/projects/{project_id}/approve")
