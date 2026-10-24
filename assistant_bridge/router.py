@@ -113,6 +113,10 @@ def approve_project(project_id: str) -> dict[str, str]:
 @router.post("/projects/{project_id}/cancel", dependencies=[Depends(authorize)])
 def cancel_project(project_id: str) -> dict[str, str]:
     with database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT payload FROM assistant_projects WHERE id=?", (project_id,)).fetchone()
+        if row and (json.loads(row["payload"]).get("_production") or {}).get("user_id") is not None:
+            raise HTTPException(403, "Owned projects require a Codexia user session")
         result = db.execute(
             "UPDATE assistant_projects SET status='cancelled', updated_at=? "
             "WHERE id=? AND status IN ('awaiting_review','approved_for_generation')",
@@ -141,6 +145,8 @@ def production_payloads(project_id: str) -> dict[str, Any]:
     if row["status"] != "approved_for_generation":
         raise HTTPException(409, "Approve the brief before preparing production")
     brief = json.loads(row["payload"])
+    if (brief.get("_production") or {}).get("user_id") is not None:
+        raise HTTPException(403, "Owned projects require a Codexia user session")
     return {
         "id": project_id,
         "status": row["status"],
