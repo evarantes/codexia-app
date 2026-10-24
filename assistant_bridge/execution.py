@@ -275,6 +275,8 @@ def start_music(project_id: str, user: User = Depends(get_current_user), confirm
         brief = json.loads(row["payload"])
         request = GenerateMusicRequest(**music_payload(brief))
         result = generate_music_from_lyrics(request, user=user)
+        if not isinstance(result, dict) or not result.get("task_id"):
+            raise RuntimeError("Music provider did not return a trackable task_id")
     except Exception:
         with database() as db:
             db.execute(
@@ -373,6 +375,8 @@ def start_clip(project_id: str, user: User = Depends(get_current_user),
     try:
         clip_request = GenerateClipRequest(**clip_payload(brief, filename))
         result = generate_music_clip_task(clip_request, user=user, db=db)
+        if not isinstance(result, dict) or not result.get("task_id"):
+            raise RuntimeError("Clip pipeline did not return a trackable task_id")
     except Exception:
         with database() as bridge_db:
             bridge_db.execute(
