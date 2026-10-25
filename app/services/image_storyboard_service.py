@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import uuid
 import os
 import re
 import uuid
@@ -119,21 +120,55 @@ Reforço obrigatório:
     try:
         if _paid_ai_disabled() and str(os.getenv("AI_COST_DRY_RUN") or "").strip().lower() not in {"1", "true", "yes", "sim", "on"}:
             raise RuntimeError("Modo sem consumo pago ativo; storyboard e thumbnail desabilitados.")
-        path = ROUTER.generate_image(
-            user_id=None,
-            task_id=None,
-            video_id=None,
-            capability=AICapability.IMAGE_GENERATION,
-            prompt=final_prompt,
-            output_dir=str(BASE_DIR),
-        )
+        # Use Gemini when configured, falling back to the existing OpenAI router.
+        gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+        path = None
+        provider_used = "openai"
+        gemini_error = None
+        if gemini_key:
+            try:
+                response = requests.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent",
+                    headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": final_prompt}]}],
+                          "generationConfig": {"responseModalities": ["IMAGE"]}},
+                    timeout=120,
+                )
+                response.raise_for_status()
+                for candidate in response.json().get("candidates", []):
+                    for part in candidate.get("content", {}).get("parts", []):
+                        inline = part.get("inlineData") or part.get("inline_data") or {}
+                        if inline.get("data"):
+                            blob = base64.b64decode(inline["data"])
+                            path = str(BASE_DIR / f"storyboard_{uuid.uuid4().hex}.png")
+                            Path(path).write_bytes(blob)
+                            provider_used = "gemini-2.5-flash-image"
+                            break
+                    if path:
+                        break
+                if not path:
+                    raise RuntimeError("Gemini não retornou dados de imagem.")
+            except Exception as error:
+                gemini_error = str(error)[:300]
+        if not path:
+            try:
+                path = ROUTER.generate_image(
+                    user_id=None, task_id=None, video_id=None,
+                    capability=AICapability.IMAGE_GENERATION,
+                    prompt=final_prompt, output_dir=str(BASE_DIR),
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    f"Nenhum provedor gerou a cena {index}. "
+                    f"Gemini: {gemini_error or 'não configurado'}. OpenAI: {error}"
+                ) from error
         filename = os.path.basename(str(path))
         return {
             "scene": int(index),
             "prompt": (prompt or "").strip(),
             "file": str(path),
             "url": f"/generated_assets/storyboard_images/{filename}",
-            "model_used": model,
+            "model_used": provider_used,
         }
     except Exception as e:
         print("OPENAI IMAGE ERROR FULL:", repr(e))
