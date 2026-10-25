@@ -683,8 +683,9 @@
                                             <div>
                                                 <label class="block text-sm font-semibold text-gray-700">Modelo</label>
                                                 <select v-model="musicLyricsImagesModel" class="w-full border p-2 rounded mt-1">
-                                                    <option value="auto">Automático (OpenAI atualmente; outros provedores em preparação)</option>
-                                                    <option value="gpt-image-1">OpenAI (qualidade máxima)</option>
+                                                    <option value="auto">Automático (Gemini / OpenAI com fallback)</option>
+                                                    <option value="gpt-image-1">OpenAI</option>
+                                                    <option value="gemini">Gemini (requer chave configurada)</option>
                                                 </select>
                                             </div>
                                         </div>
