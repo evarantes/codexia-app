@@ -294,6 +294,16 @@ class GenerateMusicRequest(BaseModel):
     title: str = "Música"
     genre: str = ""
     vocal_gender: Optional[str] = None  # "m" ou "f" para Suno
+    # Campos opcionais para colar uma direção musical detalhada do ChatGPT.
+    style_prompt: Optional[str] = None
+    instruments: Optional[str] = None
+    tempo: Optional[str] = None
+    mood: Optional[str] = None
+    vocal_direction: Optional[str] = None
+    production_notes: Optional[str] = None
+    negative_style: Optional[str] = None
+    language: str = "pt-BR"
+
 
 
 class GenerateClipRequest(BaseModel):
@@ -493,21 +503,30 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
     if not request.lyrics or not request.lyrics.strip():
         raise HTTPException(status_code=400, detail="Envie a letra da música.")
     try:
-        api_key = get_suno_api_key()
+        api_key = get_suno_api_key(user_id=user.id)
         if api_key:
-            task_id = create_task(user_id=user.id)
-            update_task(
-                task_id,
-                status="processing",
-                progress=5,
-                message="Enviando para o Suno...",
-                result={"provider": "suno", "title": request.title or "Música"},
-            )
-
+            task_id = None
             lyrics = request.lyrics.strip()
             title = request.title or "Música"
-            style = request.genre or "Pop"
+            # A API Suno recebe uma única string de estilo, limitada a 1000 caracteres.
+            # Preservar os campos separadamente na entrada facilita copiar instruções
+            # sem confundir letra cantada com direção de produção.
+            style_parts = [
+                request.style_prompt or request.genre or "Pop",
+                f"Instrumentos: {request.instruments}" if request.instruments else "",
+                f"Andamento: {request.tempo}" if request.tempo else "",
+                f"Clima: {request.mood}" if request.mood else "",
+                f"Voz: {request.vocal_direction}" if request.vocal_direction else "",
+                f"Produção: {request.production_notes}" if request.production_notes else "",
+                f"Evitar: {request.negative_style}" if request.negative_style else "",
+                f"Idioma: {request.language}" if request.language else "",
+            ]
+            style = ". ".join(part.strip() for part in style_parts if part and part.strip())
+            if len(style) > 1000:
+                raise HTTPException(status_code=422, detail="As instruções de estilo ultrapassam 1000 caracteres. Resuma os campos.")
             vocal_gender = request.vocal_gender
+            task_id = create_task(user_id=user.id)
+            update_task(task_id, status="processing", progress=5, message="Enviando para o Suno...", result={"provider": "suno", "title": title})
 
             created = create_suno_task(
                 api_key=api_key,
