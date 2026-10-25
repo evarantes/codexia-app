@@ -265,6 +265,14 @@ def start_music(project_id: str, user: User = Depends(get_current_user), confirm
     """One-shot, user-confirmed start. Fail closed without Suno configuration."""
     if not confirmed:
         raise HTTPException(428, "Confirm music generation explicitly")
+    # Never silently fall back to a local provider when the requested architecture
+    # is the remote main installation. Capability checks are read-only.
+    import os
+    if os.getenv("CODEXIA_MAIN_INTERNAL_URL", "").strip():
+        raise HTTPException(
+            503,
+            "Remote main generation is not implemented yet. No Suno credits were spent."
+        )
     with database() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
