@@ -612,6 +612,21 @@
                                     <option value="m">Masculina</option>
                                 </select>
                             </div>
+                            <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-3">
+                                <h3 class="font-bold text-indigo-900">Direção musical avançada — cole as instruções do ChatGPT</h3>
+                                <p class="text-sm text-indigo-800">Preencha apenas o que desejar. Estes campos orientam o estilo e não serão cantados como letra. O limite combinado é 1000 caracteres.</p>
+                                <div><label class="block font-semibold mb-1">Prompt de estilo completo</label><textarea v-model="musicStylePrompt" rows="3" class="w-full border p-2 rounded" placeholder="Ex.: gospel cinematográfico brasileiro, voz emotiva, refrão grandioso..."></textarea></div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div><label class="block font-semibold mb-1">Instrumentos</label><input v-model="musicInstruments" class="w-full border p-2 rounded" placeholder="Piano, cordas, bateria..."></div>
+                                    <div><label class="block font-semibold mb-1">Andamento / BPM</label><input v-model="musicTempo" class="w-full border p-2 rounded" placeholder="72 BPM, lento..."></div>
+                                    <div><label class="block font-semibold mb-1">Clima / emoção</label><input v-model="musicMood" class="w-full border p-2 rounded" placeholder="Esperançoso, emocionante..."></div>
+                                    <div><label class="block font-semibold mb-1">Idioma</label><input v-model="musicLanguage" class="w-full border p-2 rounded" placeholder="pt-BR"></div>
+                                </div>
+                                <div><label class="block font-semibold mb-1">Interpretação vocal</label><textarea v-model="musicVocalDirection" rows="2" class="w-full border p-2 rounded" placeholder="Voz masculina grave, dicção brasileira clara..."></textarea></div>
+                                <div><label class="block font-semibold mb-1">Arranjo e produção</label><textarea v-model="musicProductionNotes" rows="2" class="w-full border p-2 rounded" placeholder="Introdução suave, crescendo no refrão, final cinematográfico..."></textarea></div>
+                                <div><label class="block font-semibold mb-1">Evitar</label><textarea v-model="musicNegativeStyle" rows="2" class="w-full border p-2 rounded" placeholder="Sem rap, sem voz robótica, sem batida eletrônica..."></textarea></div>
+                                <p class="text-xs text-indigo-800">A duração e a interpretação exatas dependem do Suno; instruções não garantem execução literal.</p>
+                            </div>
                             <div>
                                 <label class="block font-bold mb-2">Letra da música</label>
                                 <textarea v-model="musicLyrics" class="w-full border p-3 rounded" rows="12" placeholder="Cole ou digite a letra aqui...&#10;&#10;Verso 1&#10;Linha 1&#10;Linha 2&#10;&#10;Refrão&#10;..."></textarea>
@@ -5443,6 +5458,14 @@
                     musicTitle: 'Música',
                     musicGenre: '',
                     musicVocalGender: '',
+                    musicStylePrompt: '',
+                    musicInstruments: '',
+                    musicTempo: '',
+                    musicMood: '',
+                    musicVocalDirection: '',
+                    musicProductionNotes: '',
+                    musicNegativeStyle: '',
+                    musicLanguage: 'pt-BR',
                     musicLoading: false,
                     musicTaskId: null,
                     musicTaskStatus: null,
@@ -10644,7 +10667,15 @@
                                 lyrics: this.musicLyrics,
                                 title: this.musicTitle,
                                 genre: this.musicGenre,
-                                vocal_gender: this.musicVocalGender || null
+                                vocal_gender: this.musicVocalGender || null,
+                                style_prompt: this.musicStylePrompt,
+                                instruments: this.musicInstruments,
+                                tempo: this.musicTempo,
+                                mood: this.musicMood,
+                                vocal_direction: this.musicVocalDirection,
+                                production_notes: this.musicProductionNotes,
+                                negative_style: this.musicNegativeStyle,
+                                language: this.musicLanguage || 'pt-BR'
                             })
                         });
                         let data = {};
