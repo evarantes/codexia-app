@@ -1462,6 +1462,19 @@ class AIRouter:
                     action_required="Ativar a geração de imagens em Configurações.",
                     model=model_id,
                 )
+            # Gemini image policies are valid when a server-side key is available.
+            # Preserve policy inactivity and paid-AI safety checks above.
+            if provider in {"gemini", "google"}:
+                gemini_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+                if not gemini_key:
+                    raise AIOperationBlocked(
+                        "GEMINI_KEY_MISSING",
+                        "Gemini selecionado para imagens, mas GEMINI_API_KEY não está configurada no worker.",
+                        provider="gemini",
+                        action_required="Configurar GEMINI_API_KEY no worker CX33.",
+                    )
+                return {"ready": True, "provider": "gemini", "model": "gemini-2.5-flash-image",
+                        "cost_check": "local_no_charge", "task_id": task_id, "video_id": video_id}
             if provider != "openai":
                 raise AIOperationBlocked(
                     "IMAGE_PROVIDER_NOT_CONFIGURED",
@@ -1545,6 +1558,34 @@ class AIRouter:
         try:
             settings = self._get_settings(db, user_id=user_id)
             policy = self._load_policy(db, user_id=user_id, capability=capability, settings=settings)
+            configured_provider = str(policy.primary_provider or "").strip().lower()
+            if configured_provider in {"gemini", "google"}:
+                if not policy.is_active:
+                    raise AIOperationBlocked("POLICY_INACTIVE", "A geração de imagens está desativada.", provider="gemini")
+                if _env_flag_enabled("CODEXIA_DISABLE_PAID_AI", "DISABLE_PAID_AI", "NO_PAID_AI", "FINANCIAL_GUARDIAN_NO_PAID_MODE"):
+                    raise AIOperationBlocked("PAID_AI_DISABLED", "Consumo pago desativado.", provider="gemini")
+                gemini_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+                if not gemini_key:
+                    raise AIOperationBlocked("GEMINI_KEY_MISSING", "GEMINI_API_KEY ausente no worker.", provider="gemini")
+                response = requests.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent",
+                    headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": str(prompt or "")}]}],
+                          "generationConfig": {"responseModalities": ["IMAGE"]}},
+                    timeout=120,
+                )
+                response.raise_for_status()
+                for candidate in response.json().get("candidates", []):
+                    for part in candidate.get("content", {}).get("parts", []):
+                        inline = part.get("inlineData") or part.get("inline_data") or {}
+                        if inline.get("data"):
+                            target = Path(output_dir)
+                            target.mkdir(parents=True, exist_ok=True)
+                            filename = "gemini_" + hashlib.sha256(base64.b64decode(inline["data"])).hexdigest()[:24] + ".png"
+                            path = target / filename
+                            path.write_bytes(base64.b64decode(inline["data"]))
+                            return str(path)
+                raise RuntimeError("Gemini não retornou imagem.")
             if str(policy.primary_provider or "").strip().lower() != "openai":
                 raise AIOperationBlocked("IMAGE_PROVIDER_NOT_CONFIGURED", "Provider de imagem não configurado.", provider="openai")
             if not self._openai_capability_allowed(settings, capability):
