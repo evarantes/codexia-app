@@ -2303,12 +2303,12 @@ def generate_music_clip_task(request: GenerateClipRequest, user: User = Depends(
             if not lyrics_text:
                 raise Exception("Informe a letra para gerar o storyboard do clipe.")
 
-            _progress(8, f"Gerando imagens (OpenAI) 1/{storyboard_qty}...")
+            _progress(8, f"Gerando imagens (IA) 1/{storyboard_qty}...")
             try:
                 ai._load_config()
                 api_key = (ai.api_key or "").strip() if getattr(ai, "api_key", None) else ""
-                if not api_key:
-                    raise Exception("OpenAI não configurada (OPENAI_API_KEY ausente).")
+                if not api_key and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+                    raise Exception("Configure OPENAI_API_KEY ou GEMINI_API_KEY para gerar o clipe.")
                 storyboard = generate_storyboard_images(lyrics_text, quantity=storyboard_qty, api_key=api_key) or {}
             except Exception as e:
                 print("OPENAI IMAGE ERROR FULL:", repr(e))
