@@ -1319,6 +1319,8 @@ from assistant_bridge.router import router as assistant_bridge_router
 app.include_router(assistant_bridge_router)
 from assistant_bridge.execution import router as assistant_production_router
 app.include_router(assistant_production_router)
+from assistant_bridge.internal_service import router as internal_codexia_router
+app.include_router(internal_codexia_router)
 app.include_router(whatsapp.router)
 app.include_router(image_storyboard.router)
 app.include_router(admin.router)
