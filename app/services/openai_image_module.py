@@ -339,7 +339,11 @@ Regras para os campos:
         allocated = self._allocate_scenes(sections, images_count)
         prompt_language = self._coerce_prompt_language(opts.get("prompt_language") or "auto", lyrics)
 
-        semantic = self.interpretar_letra(lyrics, allocated, prompt_language=prompt_language) or {}
+        try:
+            semantic = self.interpretar_letra(lyrics, allocated, prompt_language=prompt_language) or {}
+        except Exception:
+            # Image generation can proceed with the original lyric sections.
+            semantic = {"tema": (lyrics or "")[:240], "cenas": []}
         global_semantic = semantic if isinstance(semantic, dict) else {}
         scene_semantics = global_semantic.get("cenas") if isinstance(global_semantic, dict) else None
         if not isinstance(scene_semantics, list):
@@ -386,6 +390,34 @@ Regras para os campos:
                 print("OPENAI IMAGE ERROR RAW:", repr(e))
                 return {"url": None, "error": str(e)[:400], "model": model}
 
+        requested_model = str(opts.get("model") or "auto").strip().lower()
+        if requested_model not in {"auto", "gemini", "gpt-image-1"}:
+            raise ValueError("Modelo de imagens não suportado.")
+        gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+
+        def _gemini_generate_image(prompt: str) -> Dict[str, Optional[str]]:
+            if not gemini_key:
+                return {"url": None, "error": "GEMINI_API_KEY não configurada", "model": "gemini"}
+            try:
+                endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent"
+                response = requests.post(
+                    endpoint,
+                    headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseModalities": ["IMAGE"]}},
+                    timeout=120,
+                )
+                response.raise_for_status()
+                for candidate in response.json().get("candidates", []):
+                    for part in candidate.get("content", {}).get("parts", []):
+                        inline = part.get("inlineData") or part.get("inline_data") or {}
+                        if inline.get("data"):
+                            url = _save_image_bytes(base64.b64decode(inline["data"]))
+                            if url:
+                                return {"url": url, "error": None, "model": "gemini-2.5-flash-image"}
+                return {"url": None, "error": "Gemini não retornou imagem.", "model": "gemini"}
+            except Exception as error:
+                return {"url": None, "error": str(error)[:400], "model": "gemini"}
+
         items: List[Dict[str, Any]] = []
         for idx, s in enumerate(allocated):
             ss = scene_semantics[idx] if idx < len(scene_semantics) and isinstance(scene_semantics[idx], dict) else {}
@@ -399,7 +431,20 @@ Regras para os campos:
                 ss["descricao_cena"] = (s.get("text") or "").strip()[:800]
             dalle_prompt = self.build_dalle_prompt(global_semantic, ss, opts, prompt_language)
             dalle_prompt = self.ai_service._sanitize_and_contextualize_image_prompt(dalle_prompt)
-            img_res = _openai_generate_image(dalle_prompt) or {}
+            providers = (["gemini"] if requested_model == "gemini" else
+                         ["openai"] if requested_model == "gpt-image-1" else
+                         (["gemini", "openai"] if gemini_key else ["openai"]))
+            img_res = {}
+            failures = []
+            for provider in providers:
+                attempt = (_gemini_generate_image(dalle_prompt) if provider == "gemini"
+                           else _openai_generate_image(dalle_prompt))
+                if attempt.get("url"):
+                    img_res = attempt
+                    break
+                failures.append(provider + ": " + str(attempt.get("error") or "sem imagem"))
+            if not img_res:
+                img_res = {"url": None, "error": " | ".join(failures)[:800], "model": None}
             image_url = img_res.get("url") if isinstance(img_res, dict) else None
             image_error = img_res.get("error") if isinstance(img_res, dict) else None
             model_used = img_res.get("model") if isinstance(img_res, dict) else None
