@@ -1,0 +1,96 @@
+openapi: 3.1.0
+info:
+  title: Codexia Assistant Production Inbox
+  version: 0.1.0
+  description: |
+    Receives music/clip production briefs. Approval only approves the specification;
+    it does not start paid generation or publish media.
+servers:
+  - url: https://g8w4so4gkkgog0scsw0ogwkw.89.167.1.253.sslip.io
+security:
+  - BridgeToken: []
+components:
+  securitySchemes:
+    BridgeToken:
+      type: http
+      scheme: bearer
+      description: Secret configured as CODEXIA_ASSISTANT_BRIDGE_TOKEN (minimum 32 chars).
+  schemas:
+    Asset:
+      type: object
+      required: [url, source]
+      properties:
+        url: { type: string, maxLength: 2048 }
+        source: { type: string, maxLength: 256 }
+        rights_confirmed: { type: boolean, default: false }
+        caption: { type: string, maxLength: 500 }
+    ProductionRequest:
+      type: object
+      required: [title, lyrics, style]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        lyrics: { type: string, minLength: 1, maxLength: 30000 }
+        style: { type: string, minLength: 1, maxLength: 2000 }
+        language: { type: string, default: pt-BR }
+        voice: { type: string, default: automatic }
+        aspect_ratio: { type: string, enum: ["16:9", "9:16"], default: "16:9" }
+        clip_direction: { type: string, maxLength: 10000 }
+        assets:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/Asset' }
+        synthetic_media_disclosure: { type: boolean, default: true }
+        notes: { type: string, maxLength: 4000 }
+paths:
+  /api/assistant-bridge/projects:
+    post:
+      operationId: createProductionBrief
+      summary: Save a production brief for review (does not generate)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductionRequest' }
+      responses:
+        '201':
+          description: Brief saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  status: { type: string }
+  /api/assistant-bridge/projects/{project_id}:
+    get:
+      operationId: getProductionBrief
+      summary: Read a saved production brief
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Project and status }
+  /api/assistant-bridge/projects/{project_id}/approve:
+    post:
+      operationId: approveProductionBrief
+      summary: Approve the brief specification only, not paid execution
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Approved specification }
+  /api/assistant-bridge/projects/{project_id}/cancel:
+    post:
+      operationId: cancelProductionBrief
+      summary: Cancel an unstarted project
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Cancelled }
