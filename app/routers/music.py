@@ -493,7 +493,7 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
     if not request.lyrics or not request.lyrics.strip():
         raise HTTPException(status_code=400, detail="Envie a letra da música.")
     try:
-        api_key = get_suno_api_key()
+        api_key = get_suno_api_key(user_id=user.id)
         if api_key:
             task_id = create_task(user_id=user.id)
             update_task(
