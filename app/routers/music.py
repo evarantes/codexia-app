@@ -469,8 +469,16 @@ def generate_images_from_lyrics_openai(request: GenerateLyricsImagesRequest, use
     try:
         ai = AIContentGenerator()
         ai._load_config()
-        if not (getattr(ai, "api_key", "") or "").strip():
+        import os
+        requested_provider = (request.model or "auto").strip().lower()
+        gemini_configured = bool((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
+        openai_configured = bool((getattr(ai, "api_key", "") or "").strip())
+        if requested_provider == "gemini" and not gemini_configured:
+            raise HTTPException(status_code=400, detail="Configure GEMINI_API_KEY para gerar imagens com Gemini.")
+        if requested_provider == "gpt-image-1" and not openai_configured:
             raise HTTPException(status_code=400, detail="Configure a OpenAI API Key em Configurações.")
+        if requested_provider in {"", "auto"} and not (gemini_configured or openai_configured):
+            raise HTTPException(status_code=400, detail="Configure OpenAI ou Gemini para gerar imagens.")
         from app.services.openai_image_module import OpenAIImageModule
 
         mod = OpenAIImageModule(ai_service=ai)
@@ -483,7 +491,7 @@ def generate_images_from_lyrics_openai(request: GenerateLyricsImagesRequest, use
                 "prompt_language": (request.prompt_language or "auto").strip(),
                 "mode": (request.mode or "epic").strip(),
                 "size": (request.size or "1024x1024").strip(),
-                "model": ("gpt-image-1" if (request.model or "").strip().lower() in {"", "auto"} else request.model.strip()),
+                "model": (request.model or "auto").strip(),
                 "quality": (request.quality or "standard").strip(),
             },
         )
