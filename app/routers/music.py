@@ -503,17 +503,9 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
     if not request.lyrics or not request.lyrics.strip():
         raise HTTPException(status_code=400, detail="Envie a letra da música.")
     try:
-        api_key = get_suno_api_key()
+        api_key = get_suno_api_key(user_id=user.id)
         if api_key:
-            task_id = create_task(user_id=user.id)
-            update_task(
-                task_id,
-                status="processing",
-                progress=5,
-                message="Enviando para o Suno...",
-                result={"provider": "suno", "title": request.title or "Música"},
-            )
-
+            task_id = None
             lyrics = request.lyrics.strip()
             title = request.title or "Música"
             # A API Suno recebe uma única string de estilo, limitada a 1000 caracteres.
@@ -533,6 +525,8 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
             if len(style) > 1000:
                 raise HTTPException(status_code=422, detail="As instruções de estilo ultrapassam 1000 caracteres. Resuma os campos.")
             vocal_gender = request.vocal_gender
+            task_id = create_task(user_id=user.id)
+            update_task(task_id, status="processing", progress=5, message="Enviando para o Suno...", result={"provider": "suno", "title": title})
 
             created = create_suno_task(
                 api_key=api_key,
