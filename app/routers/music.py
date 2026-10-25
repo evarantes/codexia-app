@@ -521,9 +521,39 @@ def generate_music_from_lyrics(request: GenerateMusicRequest, user: User = Depen
                 f"Evitar: {request.negative_style}" if request.negative_style else "",
                 f"Idioma: {request.language}" if request.language else "",
             ]
-            style = ". ".join(part.strip() for part in style_parts if part and part.strip())
+            # Suno accepts up to 1000 style characters. Keep the lyrics untouched.
+            # Deduplicate repeated instructions and fit at word boundaries so
+            # users can paste full directions without a blocking validation error.
+            seen_style = set()
+            compact_parts = []
+            for part in style_parts:
+                part = " ".join((part or "").split()).strip(" .;,")
+                if not part:
+                    continue
+                normalized = part.casefold()
+                if normalized in seen_style:
+                    continue
+                seen_style.add(normalized)
+                compact_parts.append(part)
+            remaining = 1000
+            selected_parts = []
+            for part in compact_parts:
+                separator = ". " if selected_parts else ""
+                available = remaining - len(separator)
+                if available <= 0:
+                    break
+                if len(part) > available:
+                    if available < 20:
+                        break
+                    clipped = part[:available]
+                    part = clipped.rsplit(" ", 1)[0] if " " in clipped else clipped
+                    part = part.rstrip(" ,;.")
+                if part:
+                    selected_parts.append(separator + part)
+                    remaining -= len(separator) + len(part)
+            style = "".join(selected_parts) or "Pop"
             if len(style) > 1000:
-                raise HTTPException(status_code=422, detail="As instruções de estilo ultrapassam 1000 caracteres. Resuma os campos.")
+                style = style[:1000]
             vocal_gender = request.vocal_gender
             task_id = create_task(user_id=user.id)
             update_task(task_id, status="processing", progress=5, message="Enviando para o Suno...", result={"provider": "suno", "title": title})
