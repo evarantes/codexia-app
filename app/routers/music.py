@@ -483,7 +483,7 @@ def generate_images_from_lyrics_openai(request: GenerateLyricsImagesRequest, use
                 "prompt_language": (request.prompt_language or "auto").strip(),
                 "mode": (request.mode or "epic").strip(),
                 "size": (request.size or "1024x1024").strip(),
-                "model": (request.model or "").strip(),
+                "model": ("gpt-image-1" if (request.model or "").strip().lower() in {"", "auto"} else request.model.strip()),
                 "quality": (request.quality or "standard").strip(),
             },
         )
