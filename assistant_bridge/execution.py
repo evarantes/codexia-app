@@ -20,9 +20,21 @@ from assistant_bridge.codexia_adapter import clip_payload
 from app.services.suno_service import get_suno_api_key
 from assistant_bridge.router import database, now, ProductionRequest
 from assistant_bridge.ownership import is_project_owner
+from assistant_bridge.remote_client import remote_music_capability
 from assistant_bridge.codexia_adapter import music_payload
 
 router = APIRouter(prefix="/api/assistant-production", tags=["assistant-production"])
+
+
+@router.get("/internal-connection-status")
+def internal_connection_status(user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Authenticated, non-billable connection diagnostic; never return provider keys."""
+    result = remote_music_capability()
+    return {
+        "connected": result.get("configured") is True and result.get("suno_available") is True,
+        "suno_available": result.get("suno_available") is True,
+        "reason": result.get("reason"),
+    }
 
 
 @router.post("/projects", status_code=201)
