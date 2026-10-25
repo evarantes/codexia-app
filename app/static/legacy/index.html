@@ -683,6 +683,7 @@
                                             <div>
                                                 <label class="block text-sm font-semibold text-gray-700">Modelo</label>
                                                 <select v-model="musicLyricsImagesModel" class="w-full border p-2 rounded mt-1">
+                                                    <option value="auto">Automático (provedor disponível)</option>
                                                     <option value="gpt-image-1">OpenAI (qualidade máxima)</option>
                                                 </select>
                                             </div>
@@ -5449,7 +5450,7 @@
                     musicLyricsImagesIntensity: 'epico',
                     musicLyricsImagesPromptLanguage: 'auto',
                     musicLyricsImagesMode: 'epic',
-                    musicLyricsImagesModel: 'gpt-image-1',
+                    musicLyricsImagesModel: 'auto',
                     musicLyricsImagesLoading: false,
                     musicLyricsImages: [],
                     musicLyricsImagesSummary: null,
