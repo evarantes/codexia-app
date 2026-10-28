@@ -139,8 +139,14 @@ class AIRouter:'''
     )
     text = _replace_once(
         text,
-        '            settings = self._get_settings(db, user_id=user_id)\n            policy = self._load_policy(db, user_id=user_id, capability=capability, settings=settings)\n            if str(policy.primary_provider or "").strip().lower() != "openai":',
-        '            settings = self._get_settings(db, user_id=user_id)\n            policy = self._load_policy(db, user_id=user_id, capability=capability, settings=settings)\n            production_mode, production_quality, production_unit_cost = _task_openai_image_profile(task_id)\n            policy = replace(policy, estimated_cost=production_unit_cost)\n            if str(policy.primary_provider or "").strip().lower() != "openai":',
+        """            if str(policy.primary_provider or "").strip().lower() != "openai":
+                raise AIOperationBlocked("IMAGE_PROVIDER_NOT_CONFIGURED", "Provider de imagem não configurado.", provider="openai")
+            if not self._openai_capability_allowed(settings, capability):""",
+        """            if str(policy.primary_provider or "").strip().lower() != "openai":
+                raise AIOperationBlocked("IMAGE_PROVIDER_NOT_CONFIGURED", "Provider de imagem não configurado.", provider="openai")
+            production_mode, production_quality, production_unit_cost = _task_openai_image_profile(task_id)
+            policy = replace(policy, estimated_cost=production_unit_cost)
+            if not self._openai_capability_allowed(settings, capability):""",
         label="ai/resolve-task-profile",
     )
     text = _replace_once(
@@ -149,12 +155,29 @@ class AIRouter:'''
         '            input_hash = _sha256_text(json.dumps({"prompt": raw_prompt, "quality": production_quality, "mode": production_mode}, ensure_ascii=False, sort_keys=True))',
         label="ai/cache-profile",
     )
-    return _replace_once(
+    text = _replace_once(
         text,
         "                image_bytes = self._call_openai_image(api_key=api_key, model=model_id, prompt=raw_prompt)",
         "                image_bytes = self._call_openai_image(api_key=api_key, model=model_id, prompt=raw_prompt, quality=production_quality)",
         label="ai/pass-task-quality",
     )
+    required = (
+        "def _task_openai_image_profile(task_id: Optional[str]) -> Tuple[str, str, float]:",
+        "production_mode, production_quality, production_unit_cost = _task_openai_image_profile(task_id)",
+        'input_hash = _sha256_text(json.dumps({"prompt": raw_prompt, "quality": production_quality, "mode": production_mode}, ensure_ascii=False, sort_keys=True))',
+        "image_bytes = self._call_openai_image(api_key=api_key, model=model_id, prompt=raw_prompt, quality=production_quality)",
+    )
+    missing = [token for token in required if token not in text]
+    if missing:
+        raise PatchError(f"ai/task-profile: contrato incompleto, ausente {missing}")
+
+    image_generation = text[text.index("    def generate_image("):]
+    assignment_index = image_generation.index(required[1])
+    cache_index = image_generation.index(required[2])
+    call_index = image_generation.index(required[3])
+    if not assignment_index < cache_index < call_index:
+        raise PatchError("ai/task-profile: quality precisa ser definida antes do cache e da chamada OpenAI")
+    return text
 
 
 PATCHERS: dict[str, Callable[[str], str]] = {
