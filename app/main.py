@@ -1265,6 +1265,8 @@ app.include_router(webhook.router)
 app.include_router(diagnostics.router)
 app.include_router(book_factory.router)
 app.include_router(hotmart.router)
+from app.routers.internal_codexia import router as internal_codexia_router
+app.include_router(internal_codexia_router)
 app.include_router(music.router)
 app.include_router(whatsapp.router)
 app.include_router(image_storyboard.router)
