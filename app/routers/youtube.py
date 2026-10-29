@@ -7707,20 +7707,73 @@ def diagnose_video_generation(task_id: Optional[str] = None, ai: bool = False, _
     return report
 
 def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
-    resource_report = _series_resource_preflight(payload, task_id)
-    if resource_report is not None and not bool(resource_report.get("allowed")):
-        return
-    _prefer_renderer_as_oom_victim(payload, task_id)
     try:
         req = VideoRequest(**(payload or {}))
     except Exception:
         update_task(task_id, status="failed", progress=0, message="Payload inválido para geração de vídeo.")
         return
+
     from app.services.central_asset_transfer import CentralAssetTransfer
     try:
         transfer = CentralAssetTransfer()
+        cleanup_report = (
+            transfer.cleanup_archived_worker_cache(task_id, target_free_gb=5.0, max_tasks=12)
+            if transfer.enabled
+            else {"reclaimed_gb": 0.0, "tasks_checked": 0}
+        )
+        from app.services.video_resource_guard import capture_resource_snapshot
+
+        try:
+            minimum_free_gb = float((os.getenv("VIDEO_GENERATION_MIN_FREE_DISK_GB") or "2.0").strip())
+        except Exception:
+            minimum_free_gb = 2.0
+        minimum_free_gb = max(0.5, min(10.0, minimum_free_gb))
+
+        resource_snapshot = capture_resource_snapshot()
+        free_gb = float(resource_snapshot.get("disk_free_gb") or 0.0)
+        if free_gb < minimum_free_gb:
+            reclaimed_gb = float(cleanup_report.get("reclaimed_gb") or 0.0)
+            disk_path = str(resource_snapshot.get("disk_path") or "/data")
+            mark_task_paused(
+                task_id,
+                message=(
+                    f"Produção pausada antes de gerar mídia: {disk_path} tem {free_gb:.2f} GB livres "
+                    f"e precisa de pelo menos {minimum_free_gb:.2f} GB. A limpeza automática recuperou "
+                    f"{reclaimed_gb:.2f} GB de cópias já confirmadas no arquivo central. "
+                    "Os ativos desta tarefa foram preservados. Libere espaço na Hetzner e toque em "
+                    "Retomar tarefa. Nenhuma nova chamada paga foi iniciada."
+                ),
+            )
+            return
+
+        resource_report = _series_resource_preflight(payload, task_id)
+        if resource_report is not None and not bool(resource_report.get("allowed")):
+            return
+        _prefer_renderer_as_oom_victim(payload, task_id)
+
         from app.services.central_asset_transfer import map_cached_references
         cached = transfer.hydrate(task_id)
+        resource_snapshot = capture_resource_snapshot()
+        free_gb = float(resource_snapshot.get("disk_free_gb") or 0.0)
+        if free_gb < minimum_free_gb:
+            try:
+                transfer.clean_cache(task_id)
+            except Exception:
+                pass
+            reclaimed_gb = float(cleanup_report.get("reclaimed_gb") or 0.0)
+            disk_path = str(resource_snapshot.get("disk_path") or "/data")
+            mark_task_paused(
+                task_id,
+                message=(
+                    f"Produção pausada com segurança após verificar os ativos: {disk_path} ficou com "
+                    f"{free_gb:.2f} GB livres; o mínimo seguro é {minimum_free_gb:.2f} GB. "
+                    f"A limpeza recuperou {reclaimed_gb:.2f} GB de cópias arquivadas. "
+                    "Os ativos centrais foram preservados e nenhuma nova chamada paga foi iniciada. "
+                    "Libere espaço na Hetzner e toque em Retomar tarefa."
+                ),
+            )
+            return
+
         req = VideoRequest(**map_cached_references(payload or {}, cached or {}))
         process_video_generation(req, task_id)
         transfer.publish_manifest(task_id)
