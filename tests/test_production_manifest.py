@@ -104,6 +104,37 @@ class ProductionManifestTests(unittest.TestCase):
             for item in manifest.get("artifacts") or []
         ))
 
+    def test_durable_copy_refreshes_replaced_same_size_source(self):
+        source = self.videos / "music_video_same_name.mp4"
+        source.write_bytes(b"old-video-bytes")
+        durable = Path(pm._durable_copy("task-refresh", str(source), "video"))
+        self.assertEqual(durable.read_bytes(), b"old-video-bytes")
+
+        replacement = self.videos / "replacement.tmp"
+        replacement.write_bytes(b"new-video-bytes")
+        os.replace(replacement, source)
+        refreshed = Path(pm._durable_copy("task-refresh", str(source), "video"))
+
+        self.assertEqual(refreshed, durable)
+        self.assertEqual(refreshed.read_bytes(), b"new-video-bytes")
+
+    def test_active_snapshots_defer_video_archive_until_final_state(self):
+        snapshot = {
+            "task_id": "task-video-archive",
+            "status": "processing",
+            "progress": 80,
+            "message": "Renderizando vídeo final...",
+            "result": {"payload": {"duration": 1}},
+        }
+        with patch("app.services.central_asset_transfer.CentralAssetTransfer.publish_manifest") as publish:
+            pm.sync_task_snapshot("task-video-archive", snapshot)
+            publish.assert_called_once_with("task-video-archive", include_video=False)
+
+            publish.reset_mock()
+            snapshot.update({"status": "awaiting_review", "progress": 100, "message": "Vídeo pronto"})
+            pm.sync_task_snapshot("task-video-archive", snapshot)
+            publish.assert_called_once_with("task-video-archive", include_video=True)
+
     def test_filesystem_checkpoint_only_claims_new_files(self):
         old = self.images / "old.png"
         _write_image(old, (20, 20, 20))
