@@ -151,8 +151,13 @@ class CentralAssetTransfer:
                 existing_sha = str(detail.get('existing_sha256') or '').strip().lower() if isinstance(detail, dict) else ''
             except Exception:
                 existing_sha = ''
-            if not re.fullmatch(r'[0-9a-f]{64}', existing_sha) or existing_sha == sha:
+            if not re.fullmatch(r'[0-9a-f]{64}', existing_sha):
                 response.raise_for_status()
+            if existing_sha == sha:
+                # O arquivo central já contém exatamente estes bytes: trata como
+                # sucesso idempotente para permitir reenvios após reinício do worker.
+                _ACK[key] = stamp
+                return
             expected_previous_sha = existing_sha
         else:
             response.raise_for_status()
@@ -227,7 +232,12 @@ class CentralAssetTransfer:
                 for key in ('original_path', 'durable_path'):
                     if item.get(key):
                         shared.add(str(Path(item[key]).resolve()))
-        candidates = set((manifest_dir(task) / 'central-cache').glob('*'))
+        manifest_root = manifest_dir(task)
+        candidates = set((manifest_root / 'central-cache').glob('*'))
+        candidates.update(manifest_root.glob(f'{task_key(task)}-*-script.json'))
+        local_script = manifest_root / 'script.json'
+        if local_script.is_file():
+            candidates.add(local_script)
         for item in load_manifest(task).get('artifacts') or []:
             if item.get('source') == 'filesystem_checkpoint':
                 continue
@@ -250,11 +260,11 @@ class CentralAssetTransfer:
         target_free_gb=5.0,
         max_tasks=12,
     ):
-        """Recupera espaço do worker usando somente cópias já verificadas no arquivo central.
+        """Recupera espaço temporário do worker sem apagar dados não arquivados.
 
-        Tarefas ativas, pausadas, falhas e canceladas são preservadas. O manifesto
-        e os arquivos centrais permanecem intactos; só remove do worker os ativos
-        finais cuja cópia central corresponde ao SHA-256 local.
+        Tarefas em execução permanecem intocadas. Cópias locais de tarefas pausadas,
+        falhas ou concluídas só são removidas quando o arquivo central confirma o
+        mesmo SHA-256; os ativos centrais e o manifesto permanecem intactos.
         """
         if not self.enabled:
             return {
@@ -303,7 +313,14 @@ class CentralAssetTransfer:
                 try:
                     task = get_task(task_id) or {}
                     status = str(task.get("status") or "").strip().lower()
-                    if status not in {"completed", "awaiting_review", "approved"}:
+                    if status not in {
+                        "completed",
+                        "awaiting_review",
+                        "approved",
+                        "rendered_upload_failed",
+                        "failed",
+                        "paused",
+                    }:
                         continue
                     checked += 1
                     self.clean_cache(task_id)
