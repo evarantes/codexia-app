@@ -7910,6 +7910,30 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
                 preflight_thread.join(timeout=1.0)
             except Exception:
                 pass
+        if transfer is not None and transfer.enabled and not _task_executor_is_alive(task_id):
+            try:
+                current = get_task(task_id) or {}
+                current_status = str(current.get("status") or "").strip().lower()
+                if current_status in {
+                    "completed",
+                    "awaiting_review",
+                    "approved",
+                    "rendered_upload_failed",
+                    "failed",
+                    "paused",
+                    "cancelled",
+                }:
+                    transfer.publish_manifest(task_id)
+                    transfer.clean_cache(task_id)
+            except Exception as cleanup_exc:
+                try:
+                    merge_task_result(task_id, {
+                        "worker_asset_cleanup_warning": (
+                            f"{type(cleanup_exc).__name__}: {str(cleanup_exc)[:240]}"
+                        )
+                    })
+                except Exception:
+                    pass
 
 
 def process_video_generation(request: VideoRequest, task_id):
