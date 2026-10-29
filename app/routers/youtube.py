@@ -1663,6 +1663,68 @@ def _runtime_view_for_task(task: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _start_video_transfer_preflight_monitor(task_id: str):
+    """Mantém telemetria enquanto o worker sincroniza ativos com o servidor principal."""
+    stop_event = threading.Event()
+    interval = _runtime_heartbeat_seconds()
+    executor_id = f"worker-preflight-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+    def _monitor():
+        sequence = 0
+        while not stop_event.is_set():
+            try:
+                task = get_task(task_id) or {}
+                if str(task.get("status") or "").strip().lower() not in {"pending", "processing"}:
+                    break
+
+                result = task.get("result") if isinstance(task.get("result"), dict) else {}
+                previous = result.get("runtime_telemetry") if isinstance(result.get("runtime_telemetry"), dict) else {}
+                now_iso = datetime.now(timezone.utc).isoformat()
+                stage = "worker_asset_sync"
+                message = str(task.get("message") or "CX33 sincronizando ativos com o servidor principal.")
+                signature = f"{int(task.get('progress') or 0)}|{stage}|{message}"
+                stage_changed_at = previous.get("stage_changed_at")
+                if str(previous.get("stage") or "") != stage or not stage_changed_at:
+                    stage_changed_at = now_iso
+
+                resource_health = previous.get("resource_health") if isinstance(previous.get("resource_health"), dict) else {}
+                try:
+                    from app.services.video_resource_guard import (
+                        capture_resource_snapshot,
+                        evaluate_runtime_resource_health,
+                    )
+                    resource_health = evaluate_runtime_resource_health(capture_resource_snapshot())
+                except Exception:
+                    pass
+
+                sequence = int(previous.get("sequence") or sequence or 0) + 1
+                telemetry = dict(previous)
+                telemetry.update({
+                    "version": 1,
+                    "heartbeat_at": now_iso,
+                    "stage_changed_at": stage_changed_at,
+                    "stage_signature": signature,
+                    "stage": stage,
+                    "sequence": sequence,
+                    "executor_id": executor_id,
+                    "pid": os.getpid(),
+                    "resource_health": resource_health,
+                })
+                merge_task_result(task_id, {"runtime_telemetry": telemetry})
+            except Exception:
+                pass
+            if stop_event.wait(interval):
+                break
+
+    thread = threading.Thread(
+        target=_monitor,
+        name=f"video-transfer-preflight-{str(task_id)[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
 def _start_video_runtime_monitor(task_id: str, executor_id: str):
     """Mantém heartbeat e telemetria durante roteiro, imagens, áudio e render."""
     stop_event = threading.Event()
@@ -7714,13 +7776,43 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
         return
 
     from app.services.central_asset_transfer import CentralAssetTransfer
+    transfer = None
+    preflight_stop = None
+    preflight_thread = None
     try:
         transfer = CentralAssetTransfer()
+        app_env = str(os.getenv("APP_ENV") or "").strip().lower()
+        if app_env in {"production", "prod"} and not transfer.enabled:
+            raise RuntimeError(
+                "Arquivo permanente do servidor principal não configurado; "
+                "produção bloqueada para não deixar ativos no CX33."
+            )
+
+        current_task = get_task(task_id) or {}
+        try:
+            current_progress = max(0, min(100, int(current_task.get("progress") or 0)))
+        except Exception:
+            current_progress = 0
+        update_task(
+            task_id,
+            status="processing",
+            progress=current_progress,
+            message="Worker CX33 sincronizando ativos e preparando armazenamento temporário...",
+        )
+        preflight_stop, preflight_thread = _start_video_transfer_preflight_monitor(task_id)
+
         cleanup_report = (
-            transfer.cleanup_archived_worker_cache(task_id, target_free_gb=5.0, max_tasks=12)
+            transfer.cleanup_archived_worker_cache(task_id, target_free_gb=5.0, max_tasks=50)
             if transfer.enabled
             else {"reclaimed_gb": 0.0, "tasks_checked": 0}
         )
+
+        if transfer.enabled and not _task_executor_is_alive(task_id):
+            # A tarefa retomada ainda não iniciou render. Sincroniza seu checkpoint
+            # e remove apenas as cópias cujo hash já foi confirmado no principal.
+            transfer.publish_manifest(task_id)
+            transfer.clean_cache(task_id)
+
         from app.services.video_resource_guard import capture_resource_snapshot
 
         try:
@@ -7731,6 +7823,16 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
 
         resource_snapshot = capture_resource_snapshot()
         free_gb = float(resource_snapshot.get("disk_free_gb") or 0.0)
+        if isinstance(cleanup_report, dict):
+            try:
+                cleanup_report["free_after_gb"] = round(free_gb, 2)
+                cleanup_report["reclaimed_gb"] = round(
+                    max(0.0, free_gb - float(cleanup_report.get("free_before_gb") or free_gb)),
+                    2,
+                )
+                merge_task_result(task_id, {"worker_cache_cleanup": cleanup_report})
+            except Exception:
+                pass
         if free_gb < minimum_free_gb:
             reclaimed_gb = float(cleanup_report.get("reclaimed_gb") or 0.0)
             disk_path = str(resource_snapshot.get("disk_path") or "/data")
@@ -7775,13 +7877,63 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
             return
 
         req = VideoRequest(**map_cached_references(payload or {}, cached or {}))
+        if preflight_stop is not None:
+            preflight_stop.set()
+            if preflight_thread is not None:
+                preflight_thread.join(timeout=1.0)
+            preflight_stop = None
+            preflight_thread = None
         process_video_generation(req, task_id)
         transfer.publish_manifest(task_id)
         current = get_task(task_id) or {}
-        if current.get('status') in {'completed', 'awaiting_review', 'approved'}:
+        current_status = str(current.get("status") or "").strip().lower()
+        if current_status in {
+            "completed",
+            "awaiting_review",
+            "approved",
+            "rendered_upload_failed",
+            "failed",
+            "paused",
+            "cancelled",
+        }:
+            # O arquivo principal já confirmou cada SHA-256 antes que as cópias
+            # temporárias do CX33 sejam apagadas. Pausas e falhas podem reidratar
+            # os ativos centrais quando a tarefa for retomada.
             transfer.clean_cache(task_id)
     except Exception as exc:
         update_task(task_id, status="failed", message=f"Transferência de ativos interrompida: {exc}. Arquivos locais preservados.")
+    finally:
+        if preflight_stop is not None:
+            preflight_stop.set()
+        if preflight_thread is not None:
+            try:
+                preflight_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        if transfer is not None and transfer.enabled and not _task_executor_is_alive(task_id):
+            try:
+                current = get_task(task_id) or {}
+                current_status = str(current.get("status") or "").strip().lower()
+                if current_status in {
+                    "completed",
+                    "awaiting_review",
+                    "approved",
+                    "rendered_upload_failed",
+                    "failed",
+                    "paused",
+                    "cancelled",
+                }:
+                    transfer.publish_manifest(task_id)
+                    transfer.clean_cache(task_id)
+            except Exception as cleanup_exc:
+                try:
+                    merge_task_result(task_id, {
+                        "worker_asset_cleanup_warning": (
+                            f"{type(cleanup_exc).__name__}: {str(cleanup_exc)[:240]}"
+                        )
+                    })
+                except Exception:
+                    pass
 
 
 def process_video_generation(request: VideoRequest, task_id):

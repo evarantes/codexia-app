@@ -110,6 +110,7 @@ class CentralAssetTransfer:
                 raise RuntimeError('Arquivo central exige URL HTTPS e token de transferência configurado.')
         self.session = requests.Session()
         self.session.headers['X-Codexia-Asset-Token'] = self.token
+        self._remote_index_cache = {}
 
     @property
     def enabled(self):
@@ -117,6 +118,24 @@ class CentralAssetTransfer:
 
     def endpoint(self, task, suffix=''):
         return f'{self.url}/internal/production-assets/{task_key(task)}{suffix}'
+
+    def _remote_index(self, task):
+        task = task_key(task)
+        if task in self._remote_index_cache:
+            return self._remote_index_cache[task]
+        response = self.session.get(self.endpoint(task), timeout=(10, 60), allow_redirects=False)
+        response.raise_for_status()
+        entries = {}
+        for item in response.json().get('files') or []:
+            kind = str(item.get('kind') or '')
+            filename = str(item.get('filename') or '')
+            if kind in EXTENSIONS and Path(filename).name == filename:
+                entries[(kind, filename)] = {
+                    'sha256': str(item.get('sha256') or ''),
+                    'size': int(item.get('size') or 0),
+                }
+        self._remote_index_cache[task] = entries
+        return entries
 
     def publish(self, task, path, kind, filename=None):
         if not self.enabled:
@@ -128,6 +147,18 @@ class CentralAssetTransfer:
         if _ACK.get(key) == stamp:
             return
         sha = digest(p)
+        size = p.stat().st_size
+        try:
+            existing = self._remote_index(task).get((kind, filename))
+        except Exception:
+            existing = None
+        if (
+            existing
+            and existing.get('sha256') == sha
+            and int(existing.get('size') or -1) == size
+        ):
+            _ACK[key] = stamp
+            return
         expected_previous_sha = ''
         response = None
         for _attempt in range(3):
@@ -151,8 +182,17 @@ class CentralAssetTransfer:
                 existing_sha = str(detail.get('existing_sha256') or '').strip().lower() if isinstance(detail, dict) else ''
             except Exception:
                 existing_sha = ''
-            if not re.fullmatch(r'[0-9a-f]{64}', existing_sha) or existing_sha == sha:
+            if not re.fullmatch(r'[0-9a-f]{64}', existing_sha):
                 response.raise_for_status()
+            if existing_sha == sha:
+                # O arquivo central já contém exatamente estes bytes: trata como
+                # sucesso idempotente para permitir reenvios após reinício do worker.
+                _ACK[key] = stamp
+                self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
+                    'sha256': sha,
+                    'size': size,
+                }
+                return
             expected_previous_sha = existing_sha
         else:
             response.raise_for_status()
@@ -160,6 +200,10 @@ class CentralAssetTransfer:
         if result.get('sha256') != sha or int(result.get('size', -1)) != p.stat().st_size:
             raise RuntimeError('Arquivo central não confirmou integridade; cópia local preservada.')
         _ACK[key] = stamp
+        self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
+            'sha256': sha,
+            'size': size,
+        }
 
     def hydrate(self, task):
         if not self.enabled:
@@ -227,7 +271,12 @@ class CentralAssetTransfer:
                 for key in ('original_path', 'durable_path'):
                     if item.get(key):
                         shared.add(str(Path(item[key]).resolve()))
-        candidates = set((manifest_dir(task) / 'central-cache').glob('*'))
+        manifest_root = manifest_dir(task)
+        candidates = set((manifest_root / 'central-cache').glob('*'))
+        candidates.update(manifest_root.glob(f'{task_key(task)}-*-script.json'))
+        local_script = manifest_root / 'script.json'
+        if local_script.is_file():
+            candidates.add(local_script)
         for item in load_manifest(task).get('artifacts') or []:
             if item.get('source') == 'filesystem_checkpoint':
                 continue
@@ -248,13 +297,13 @@ class CentralAssetTransfer:
         current_task,
         *,
         target_free_gb=5.0,
-        max_tasks=12,
+        max_tasks=50,
     ):
-        """Recupera espaço do worker usando somente cópias já verificadas no arquivo central.
+        """Mantém o worker temporário e o servidor principal como arquivo permanente.
 
-        Tarefas ativas, pausadas, falhas e canceladas são preservadas. O manifesto
-        e os arquivos centrais permanecem intactos; só remove do worker os ativos
-        finais cuja cópia central corresponde ao SHA-256 local.
+        Tarefas em execução permanecem intocadas. Ativos de tarefas pendentes,
+        pausadas, falhas ou concluídas são enviados ao arquivo central e removidos
+        do CX33 somente depois que o SHA-256 é confirmado.
         """
         if not self.enabled:
             return {
@@ -266,7 +315,7 @@ class CentralAssetTransfer:
                 "errors": 0,
             }
 
-        from app.services.production_manifest import _root_dir
+        from app.services.production_manifest import _root_dir, load_manifest, manifest_dir
         from app.services.task_manager import get_task
 
         storage_path = "/data" if os.path.isdir("/data") else "/"
@@ -277,40 +326,78 @@ class CentralAssetTransfer:
         try:
             task_limit = max(1, min(50, int(max_tasks)))
         except Exception:
-            task_limit = 12
+            task_limit = 50
 
         def _free_bytes():
             return int(shutil.disk_usage(storage_path).free)
 
         before = _free_bytes()
-        target_bytes = int(target_gb * (1024 ** 3))
         checked = 0
         errors = 0
-        if before < target_bytes:
+        manifests = []
+        try:
+            manifests = list(_root_dir().glob("*/manifest.json"))
+            manifests.sort(key=lambda item: item.stat().st_mtime)
+        except Exception:
             manifests = []
-            try:
-                manifests = list(_root_dir().glob("*/manifest.json"))
-                manifests.sort(key=lambda item: item.stat().st_mtime)
-            except Exception:
-                manifests = []
 
-            for manifest_path in manifests:
-                task_id = manifest_path.parent.name
-                if task_id == str(current_task or ""):
+        allowed_roots = [root.resolve() for root in roots().values()]
+
+        def _is_tracked_local_file(candidate):
+            try:
+                resolved = Path(candidate).resolve()
+                return (
+                    resolved.is_file()
+                    and any(resolved.is_relative_to(root) for root in allowed_roots)
+                )
+            except Exception:
+                return False
+
+        for manifest_path in manifests:
+            task_id = manifest_path.parent.name
+            if task_id == str(current_task or ""):
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+                continue
+            try:
+                task = get_task(task_id) or {}
+                status = str(task.get("status") or "").strip().lower()
+                if status not in {
+                    "completed",
+                    "awaiting_review",
+                    "approved",
+                    "rendered_upload_failed",
+                    "failed",
+                    "paused",
+                    "pending",
+                }:
                     continue
-                if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
-                    continue
-                try:
-                    task = get_task(task_id) or {}
-                    status = str(task.get("status") or "").strip().lower()
-                    if status not in {"completed", "awaiting_review", "approved"}:
+
+                task_manifest_dir = manifest_dir(task_id)
+                local_candidates = list((task_manifest_dir / "central-cache").glob("*"))
+                local_candidates.extend(task_manifest_dir.glob(f"{task_id}-*-script.json"))
+                local_script = task_manifest_dir / "script.json"
+                if local_script.is_file():
+                    local_candidates.append(local_script)
+                for artifact in load_manifest(task_id).get("artifacts") or []:
+                    if artifact.get("source") == "filesystem_checkpoint":
                         continue
-                    checked += 1
-                    self.clean_cache(task_id)
-                except Exception:
-                    errors += 1
-                if checked >= task_limit or _free_bytes() >= target_bytes:
-                    break
+                    for key in ("original_path", "durable_path"):
+                        raw_path = artifact.get(key)
+                        if raw_path:
+                            local_candidates.append(Path(raw_path))
+                if not any(_is_tracked_local_file(path) for path in local_candidates):
+                    continue
+
+                checked += 1
+                # Arquiva primeiro os ativos antigos que ainda não chegaram ao
+                # servidor principal; só depois remove cópias confirmadas.
+                self.publish_manifest(task_id)
+                self.clean_cache(task_id)
+            except Exception:
+                errors += 1
+            if checked >= task_limit:
+                break
 
         after = _free_bytes()
         return {
