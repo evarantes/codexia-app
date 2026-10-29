@@ -3879,7 +3879,7 @@ Retorne APENAS JSON válido com esta estrutura EXATA:
             if "content_policy" in low or "safety" in low or "policy" in low or "moderation" in low:
                 return "A OpenAI bloqueou o prompt pela política de conteúdo. Ajuste a descrição da imagem."
             if "model" in low and ("not found" in low or "does not exist" in low or "unsupported" in low):
-                return "O modelo de imagem da OpenAI não está disponível nessa conta/SDK. Verifique o acesso ao `gpt-image-1`."
+                return "O modelo de imagem selecionado não está disponível para esta chave OpenAI. Escolha um dos modelos listados em Configurações."
             return f"Falha ao gerar imagem na OpenAI: {raw[:500]}"
 
         notify("Gerando imagem (router)...")

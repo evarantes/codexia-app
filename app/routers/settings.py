@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from io import BytesIO
 from PIL import Image, ImageOps, UnidentifiedImageError
+import hashlib
 import requests
 import base64
 import os
@@ -25,6 +26,7 @@ from app.services.global_settings_service import (
     get_or_create_latest_settings,
     serialize_official_factory_settings,
 )
+from app.services.openai_image_models import available_openai_image_models
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -33,6 +35,7 @@ OFFICIAL_LOGO_MAX_PIXELS = 24_000_000
 OFFICIAL_LOGO_MAX_SIDE = 6000
 OFFICIAL_LOGO_RENDER_MAX_SIDE = 2400
 OFFICIAL_LOGO_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
+OPENAI_IMAGE_MODEL_LIST_CACHE: Dict[str, Any] = {}
 
 
 def _mask_configured(value: Optional[str]) -> bool:
@@ -333,6 +336,25 @@ def _get_circuit_state(db: Session) -> Dict[str, str]:
         return out
     except Exception:
         return {}
+
+
+def _reset_openai_image_circuits(db: Session) -> None:
+    """Clear image-specific lockouts after an explicit configuration change."""
+    try:
+        if "ai_provider_circuit_breakers" not in inspect(db.get_bind()).get_table_names():
+            return
+        db.execute(text(
+            """
+            UPDATE ai_provider_circuit_breakers
+            SET state = 'closed', consecutive_failures = 0,
+                cooldown_until = NULL, half_open_remaining = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE provider IN ('openai:image_generation', 'openai:thumbnail_generation')
+            """
+        ))
+    except Exception:
+        # Configuration should remain saveable even on an incomplete local schema.
+        pass
 
 class SettingsUpdate(BaseModel):
     openai_api_key: Optional[str] = None
@@ -660,7 +682,7 @@ def get_provider_status(db: Session = Depends(get_db), current_user: User = Depe
                 blocked_by_policy=openai_blocked_all,
                 no_credit=openai_no_credit,
             ),
-            "model": str(getattr(settings, "openai_image_model", "") or "gpt-image-1-mini"),
+            "model": str(getattr(settings, "openai_image_model", "") or os.getenv("CODEXIA_OPENAI_IMAGE_MODEL") or "gpt-image-2"),
             "capabilities": {
                 "TEXT_GENERATION": bool(getattr(settings, "openai_allow_text", False)),
                 "SCRIPT_GENERATION": bool(getattr(settings, "openai_allow_script", False)),
@@ -718,6 +740,79 @@ def get_provider_status(db: Session = Depends(get_db), current_user: User = Depe
         },
         "providers": providers,
     }
+
+
+@router.get("/openai/image-models")
+def get_openai_image_models(
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return image models currently listed for this user's OpenAI key."""
+    settings = _get_or_create_settings_row(db, user_id=current_user.id)
+    settings = backfill_settings_from_legacy(db, settings=settings, user_id=current_user.id)
+    resolved = resolve_global_provider_settings(settings)
+    api_key = normalize_secret((resolved.get("openai_api_key") or {}).get("value"))
+    if not api_key:
+        return {
+            "ok": True,
+            "configured": False,
+            "models": [],
+            "recommended_model": None,
+            "message": "Configure a OpenAI API Key em Configurações para consultar os modelos liberados para sua conta.",
+        }
+
+    cache_key = hashlib.sha256(api_key.encode("utf-8", errors="ignore")).hexdigest()
+    cached = OPENAI_IMAGE_MODEL_LIST_CACHE.get(cache_key)
+    if not refresh and isinstance(cached, dict) and float(cached.get("expires_at") or 0) > time.monotonic():
+        return dict(cached.get("payload") or {})
+
+    try:
+        response = requests.get(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=12,
+        )
+        if int(getattr(response, "status_code", 0) or 0) in {401, 403}:
+            return {
+                "ok": False,
+                "configured": True,
+                "models": [],
+                "recommended_model": None,
+                "message": "A chave OpenAI foi recusada ou não tem acesso à lista de modelos. Confira a chave em Configurações.",
+            }
+        response.raise_for_status()
+        data = response.json()
+        records = data.get("data") if isinstance(data, dict) else []
+        models = available_openai_image_models(records)
+        payload = {
+            "ok": True,
+            "configured": True,
+            "models": models,
+            "recommended_model": models[0]["id"] if models else None,
+            "message": "" if models else "Esta chave não retornou modelos de imagem disponíveis. Verifique o acesso da conta OpenAI.",
+        }
+        OPENAI_IMAGE_MODEL_LIST_CACHE[cache_key] = {
+            "expires_at": time.monotonic() + 300,
+            "payload": payload,
+        }
+        return payload
+    except requests.RequestException:
+        return {
+            "ok": False,
+            "configured": True,
+            "models": [],
+            "recommended_model": None,
+            "message": "Não foi possível consultar os modelos da OpenAI agora. Tente atualizar novamente em instantes.",
+        }
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "configured": True,
+            "models": [],
+            "recommended_model": None,
+            "message": "A OpenAI retornou uma resposta de modelos inválida. Tente atualizar novamente.",
+        }
 
 
 @router.post("/test/gemini")
@@ -910,6 +1005,12 @@ def update_ai_routing(
             "max_cost": float(item.max_cost) if item.max_cost is not None else None,
             "is_active": bool(item.is_active),
         })
+    if any(
+        str(getattr(item, "capability", "") or "").strip().upper()
+        in {"IMAGE_GENERATION", "THUMBNAIL_GENERATION"}
+        for item in policies or []
+    ):
+        _reset_openai_image_circuits(db)
     db.commit()
     return {"success": True, "count": len(policies or [])}
 
@@ -917,6 +1018,10 @@ def update_ai_routing(
 def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     settings = _get_or_create_settings_row(db, user_id=current_user.id)
     settings = backfill_settings_from_legacy(db, settings=settings, user_id=current_user.id)
+    reset_openai_image_circuits = (
+        settings_update.openai_api_key is not None
+        or settings_update.openai_image_model is not None
+    )
     
     if settings_update.openai_api_key is not None:
         v = str(settings_update.openai_api_key).strip()
@@ -1160,7 +1265,7 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
                         SET state = 'closed', consecutive_failures = 0,
                             cooldown_until = NULL, half_open_remaining = 0,
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE provider = 'openai'
+                        WHERE provider IN ('openai', 'openai:image_generation', 'openai:thumbnail_generation')
                         """
                     ))
         except Exception:
@@ -1168,6 +1273,8 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
             # desenvolvimento incompletos, salvar as demais configurações segue.
             pass
     
+    if reset_openai_image_circuits:
+        _reset_openai_image_circuits(db)
     db.commit()
     db.refresh(settings)
     return _serialize_settings_payload(settings, db, user_id=current_user.id)

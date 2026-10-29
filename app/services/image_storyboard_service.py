@@ -101,7 +101,7 @@ Regras:
     return prompts[:quantity]
 
 
-def generate_image(prompt: str, index: int, model: str = "gpt-image-1", api_key: Optional[str] = None) -> Dict[str, Any]:
+def generate_image(prompt: str, index: int, model: str = "openai", api_key: Optional[str] = None) -> Dict[str, Any]:
     final_prompt = f"""
 {SYSTEM_STYLE}
 
@@ -185,7 +185,7 @@ def generate_storyboard_images(text: str, quantity: int = 15, api_key: Optional[
             prompts.append(base)
 
     images: List[Dict[str, Any]] = []
-    preferred_model = "gpt-image-1"
+    preferred_model = "openai"
     for i, scene_prompt in enumerate(prompts[:qty], start=1):
         image = generate_image(scene_prompt, i, model=preferred_model, api_key=api_key)
         images.append(image)

@@ -684,7 +684,7 @@
                                                 <label class="block text-sm font-semibold text-gray-700">Modelo</label>
                                                 <select v-model="musicLyricsImagesModel" class="w-full border p-2 rounded mt-1">
                                                     <option value="auto">Automático (Gemini / OpenAI com fallback)</option>
-                                                    <option value="gpt-image-1">OpenAI</option>
+                                                    <option value="openai">OpenAI (modelo das Configurações)</option>
                                                     <option value="gemini">Gemini (requer chave configurada)</option>
                                                 </select>
                                             </div>
@@ -4230,8 +4230,20 @@
                             </div>
                             <div class="mt-3">
                                 <label class="block font-bold mb-2 text-sm">Modelo de imagem (OpenAI)</label>
-                                <input v-model="settings.openai_image_model" class="w-full border p-2 rounded bg-white" placeholder="gpt-image-1-mini">
-                                <p class="text-xs text-gray-600 mt-1">Padrão econômico: gpt-image-1-mini com qualidade low. Uma chamada por imagem, sem repetição automática paga.</p>
+                                <div class="flex gap-2">
+                                    <select v-model="settings.openai_image_model" class="w-full border p-2 rounded bg-white">
+                                        <option value="" disabled>Selecione um modelo liberado para esta chave</option>
+                                        <option v-if="settings.openai_image_model && !isOpenAIImageModelAvailable(settings.openai_image_model)" :value="settings.openai_image_model" disabled>
+                                            {{ settings.openai_image_model }} — indisponível; escolha outro
+                                        </option>
+                                        <option v-for="model in openaiImageModels" :key="model.id" :value="model.id">{{ model.label }}</option>
+                                    </select>
+                                    <button @click="fetchOpenAIImageModels(true)" :disabled="openaiImageModelsLoading" class="shrink-0 bg-white border px-3 py-2 rounded text-sm">
+                                        <i :class="openaiImageModelsLoading ? 'fas fa-spinner fa-spin' : 'fas fa-rotate'"></i>
+                                    </button>
+                                </div>
+                                <p v-if="openaiImageModelsMessage" class="text-xs mt-1" :class="openaiImageModelsOk ? 'text-gray-600' : 'text-amber-700'">{{ openaiImageModelsMessage }}</p>
+                                <p v-else class="text-xs text-gray-600 mt-1">Esta opção é o padrão quando o Roteamento de IA não define um modelo. A lista consulta os modelos liberados para sua chave; atualizar não gera imagens.</p>
                             </div>
                         </div>
 
@@ -4797,7 +4809,12 @@
                                         </select>
                                     </td>
                                     <td class="p-3">
-                                        <input v-model="row.primary_model" class="w-full border p-2 rounded bg-white" placeholder="modelo">
+                                        <select v-if="isOpenAIImageCapability(row) && row.primary_provider === 'openai'" v-model="row.primary_model" class="w-full border p-2 rounded bg-white">
+                                            <option value="" disabled>Selecione um modelo liberado</option>
+                                            <option v-if="row.primary_model && !isOpenAIImageModelAvailable(row.primary_model)" :value="row.primary_model" disabled>{{ row.primary_model }} — indisponível; escolha outro</option>
+                                            <option v-for="model in openaiImageModels" :key="model.id" :value="model.id">{{ model.label }}</option>
+                                        </select>
+                                        <input v-else v-model="row.primary_model" class="w-full border p-2 rounded bg-white" placeholder="modelo">
                                     </td>
                                     <td class="p-3">
                                         <div class="flex items-center gap-2">
@@ -4810,7 +4827,12 @@
                                                 <option value="openai">OpenAI</option>
                                             </select>
                                         </div>
-                                        <input v-model="row.fallback_model" class="w-full border p-2 rounded bg-white mt-2" placeholder="modelo fallback" :disabled="!row.fallback_enabled || !row.fallback_provider">
+                                        <select v-if="isOpenAIImageCapability(row) && row.fallback_provider === 'openai'" v-model="row.fallback_model" class="w-full border p-2 rounded bg-white mt-2" :disabled="!row.fallback_enabled">
+                                            <option value="" disabled>Selecione um modelo liberado</option>
+                                            <option v-if="row.fallback_model && !isOpenAIImageModelAvailable(row.fallback_model)" :value="row.fallback_model" disabled>{{ row.fallback_model }} — indisponível; escolha outro</option>
+                                            <option v-for="model in openaiImageModels" :key="model.id" :value="model.id">{{ model.label }}</option>
+                                        </select>
+                                        <input v-else v-model="row.fallback_model" class="w-full border p-2 rounded bg-white mt-2" placeholder="modelo fallback" :disabled="!row.fallback_enabled || !row.fallback_provider">
                                     </td>
                                     <td class="p-3">
                                         <label class="inline-flex items-center gap-2 text-sm">
@@ -4825,6 +4847,8 @@
                     <p class="text-xs text-gray-500 mt-3">OpenAI para texto fica bloqueada por padrão via “OpenAI — uso permitido” nas Configurações.</p>
                 </div>
             </div>
+
+            <p v-if="currentTab === 'ai_routing' && openaiImageModelsMessage" class="text-xs text-gray-500 mb-3">{{ openaiImageModelsMessage }}</p>
 
             </main>
         </div>
@@ -5574,7 +5598,7 @@
                     officialChannelLogoPreviewObjectUrl: '',
                     settings: {
                         openai_api_key: '',
-                        openai_image_model: 'gpt-image-1-mini',
+                        openai_image_model: '',
                         openai_allow_text: false,
                         openai_allow_script: false,
                         openai_allow_editorial: false,
@@ -5754,7 +5778,11 @@
                     aiRoutingPolicies: [],
                     aiRoutingLoading: false,
                     aiRoutingSaving: false,
-                    aiRoutingError: ''
+                    aiRoutingError: '',
+                    openaiImageModels: [],
+                    openaiImageModelsLoading: false,
+                    openaiImageModelsOk: false,
+                    openaiImageModelsMessage: ''
                 }
             },
             computed: {
@@ -6391,17 +6419,53 @@
                     this.aiRoutingLoading = true;
                     this.aiRoutingError = '';
                     try {
+                        await this.fetchOpenAIImageModels();
                         const res = await this.authFetch('/settings/ai-routing');
                         const data = await res.json().catch(() => ({}));
                         if (!res.ok) {
                             throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao carregar roteamento.'));
                         }
-                        this.aiRoutingPolicies = Array.isArray(data.policies) ? data.policies : [];
+                        this.aiRoutingPolicies = (Array.isArray(data.policies) ? data.policies : []).map(row => ({
+                            ...row,
+                            primary_model: row.primary_model || '',
+                            fallback_model: row.fallback_model || ''
+                        }));
                     } catch (e) {
                         this.aiRoutingError = e.message || String(e || 'Falha ao carregar roteamento.');
                     } finally {
                         this.aiRoutingLoading = false;
                     }
+                },
+                async fetchOpenAIImageModels(forceRefresh = false) {
+                    this.openaiImageModelsLoading = true;
+                    this.openaiImageModelsMessage = '';
+                    try {
+                        const modelUrl = forceRefresh ? '/settings/openai/image-models?refresh=true' : '/settings/openai/image-models';
+                        const res = await this.authFetch(modelUrl);
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao consultar modelos OpenAI.'));
+                        }
+                        this.openaiImageModels = Array.isArray(data.models) ? data.models : [];
+                        this.openaiImageModelsOk = data.ok !== false && this.openaiImageModels.length > 0;
+                        this.openaiImageModelsMessage = data.message || (this.openaiImageModels.length
+                            ? 'Modelos carregados da sua conta OpenAI. A consulta não gera imagens.'
+                            : 'Nenhum modelo de imagem disponível foi retornado para esta chave.');
+                    } catch (e) {
+                        this.openaiImageModels = [];
+                        this.openaiImageModelsOk = false;
+                        this.openaiImageModelsMessage = e.message || String(e || 'Falha ao consultar modelos OpenAI.');
+                    } finally {
+                        this.openaiImageModelsLoading = false;
+                    }
+                },
+                isOpenAIImageCapability(row) {
+                    const capability = String((row && row.capability) || '').toUpperCase();
+                    return capability === 'IMAGE_GENERATION' || capability === 'THUMBNAIL_GENERATION';
+                },
+                isOpenAIImageModelAvailable(modelId) {
+                    const target = String(modelId || '').trim().toLowerCase();
+                    return !!target && this.openaiImageModels.some(model => String((model && model.id) || '').trim().toLowerCase() === target);
                 },
                 async saveAiRouting() {
                     this.aiRoutingSaving = true;
@@ -6417,6 +6481,7 @@
                         if (!res.ok) {
                             throw new Error(this.formatApiError(data.detail || data.message || data, 'Falha ao salvar roteamento.'));
                         }
+                        await this.fetchOpenAIImageModels();
                     } catch (e) {
                         this.aiRoutingError = e.message || String(e || 'Falha ao salvar roteamento.');
                     } finally {
@@ -7458,6 +7523,8 @@
                                 ...((data && data.bible_video_factory) || {})
                             }
                         };
+                        this.settings.openai_image_model = this.settings.openai_image_model || '';
+                        await this.fetchOpenAIImageModels();
                         await this.loadOfficialChannelLogoPreview();
                         await this.fetchAiCredits();
                     } catch (e) { console.error(e); }
@@ -10080,6 +10147,8 @@
                                     };
                                 } catch (e) {}
                             }
+                            this.settings.openai_image_model = this.settings.openai_image_model || '';
+                            try { await this.fetchOpenAIImageModels(); } catch (e) {}
                             try { await this.fetchAiCredits(); } catch (e) {}
                             try { await this.loadOfficialChannelLogoPreview(); } catch (e) {}
                             this.saveMessage = "Configurações salvas com sucesso!";
