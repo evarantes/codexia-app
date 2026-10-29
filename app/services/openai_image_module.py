@@ -9,6 +9,7 @@ import uuid
 
 from app.config import STATIC_DIR
 from app.services.ai_router import AICapability
+from app.services.openai_image_models import is_openai_image_model
 
 
 class OpenAIImageModule:
@@ -349,7 +350,7 @@ Regras para os campos:
         if not isinstance(scene_semantics, list):
             scene_semantics = []
 
-        model = "gpt-image-1"
+        model = "OpenAI (modelo configurado)"
         size = "1024x1024"
 
         out_dir = os.path.join(str(STATIC_DIR), "generated_images")
@@ -391,7 +392,8 @@ Regras para os campos:
                 return {"url": None, "error": str(e)[:400], "model": model}
 
         requested_model = str(opts.get("model") or "auto").strip().lower()
-        if requested_model not in {"auto", "gemini", "gpt-image-1"}:
+        requested_openai = requested_model in {"openai", "gpt-image-1"} or is_openai_image_model(requested_model)
+        if requested_model not in {"auto", "gemini"} and not requested_openai:
             raise ValueError("Modelo de imagens não suportado.")
         gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
 
@@ -432,7 +434,7 @@ Regras para os campos:
             dalle_prompt = self.build_dalle_prompt(global_semantic, ss, opts, prompt_language)
             dalle_prompt = self.ai_service._sanitize_and_contextualize_image_prompt(dalle_prompt)
             providers = (["gemini"] if requested_model == "gemini" else
-                         ["openai"] if requested_model == "gpt-image-1" else
+                         ["openai"] if requested_openai else
                          (["gemini", "openai"] if gemini_key else ["openai"]))
             img_res = {}
             failures = []

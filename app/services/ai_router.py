@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import Settings
 from app.services.financial_guardian_service import FinancialContext, FinancialGuardianService
+from app.services.openai_image_models import openai_image_model_unavailable_message
 
 
 class AICapability:
@@ -157,7 +158,7 @@ def classify_openai_image_error(error: Exception, *, model: Optional[str] = None
             pass
     raw = " | ".join(part.strip() for part in fragments if str(part or "").strip())
     low = raw.lower()
-    model_id = _normalize_model_id(model) or "gpt-image-1-mini"
+    model_id = _normalize_model_id(model) or "gpt-image-2"
     billing_url = "https://platform.openai.com/settings/organization/billing/overview"
 
     no_credit_markers = (
@@ -194,10 +195,14 @@ def classify_openai_image_error(error: Exception, *, model: Optional[str] = None
             action_required="Verificar a organização na OpenAI ou selecionar outro modelo de imagem.",
             model=model_id,
         )
-    if any(marker in low for marker in ("model_not_found", "does not exist", "unsupported model", "not have access to model")):
+    if any(marker in low for marker in (
+        "model_not_found", "does not exist", "unsupported model", "not have access to model",
+        "model is not available", "not available for this account", "not available to you",
+        "model not accessible", "model unavailable",
+    )):
         return AIOperationBlocked(
             "OPENAI_MODEL_UNAVAILABLE",
-            f"O modelo de imagem {model_id} não está disponível para esta conta. Selecione um modelo liberado em Configurações.",
+            openai_image_model_unavailable_message(model_id),
             provider="openai",
             retryable=False,
             action_required="Selecionar um modelo de imagem disponível para a conta.",
@@ -247,6 +252,13 @@ class AIRouter:
 
     def __init__(self):
         self.guardian = FinancialGuardianService()
+
+    @staticmethod
+    def _image_circuit_provider(capability: str) -> str:
+        normalized = str(capability or "").strip().upper()
+        if normalized == AICapability.THUMBNAIL_GENERATION:
+            return "openai:thumbnail_generation"
+        return "openai:image_generation"
 
     def _dry_run_enabled(self) -> bool:
         return _env_flag_enabled("AI_COST_DRY_RUN", "CODEXIA_AI_COST_DRY_RUN")
@@ -369,7 +381,7 @@ class AIRouter:
         gemini_analysis = _normalize_model_id(getattr(settings, "gemini_analysis_model", None)) or "gemini-2.0-flash"
         openrouter_model = _normalize_model_id(getattr(settings, "openrouter_model", None)) or "google/gemini-2.5-flash-lite"
         groq_transcription = _normalize_model_id(getattr(settings, "groq_transcription_model", None)) or "whisper-large-v3"
-        openai_image_model = _normalize_model_id(getattr(settings, "openai_image_model", None)) or "gpt-image-1-mini"
+        openai_image_model = _normalize_model_id(getattr(settings, "openai_image_model", None)) or str(os.getenv("CODEXIA_OPENAI_IMAGE_MODEL") or "gpt-image-2").strip()
 
         defaults: Dict[str, AIPolicy] = {
             AICapability.SCRIPT_GENERATION: AIPolicy(
@@ -471,10 +483,16 @@ class AIRouter:
             """
         ), {"user_id": user_id, "capability": str(capability)}).fetchone()
         if row:
+            primary_model = str(row[2]) if row[2] else None
+            if not primary_model and str(capability) in {
+                AICapability.IMAGE_GENERATION,
+                AICapability.THUMBNAIL_GENERATION,
+            }:
+                primary_model = self._default_policy(str(capability), settings).primary_model
             return AIPolicy(
                 capability=str(row[0]),
                 primary_provider=str(row[1]),
-                primary_model=str(row[2]) if row[2] else None,
+                primary_model=primary_model,
                 fallback_enabled=bool(row[3]),
                 fallback_provider=str(row[4]) if row[4] else None,
                 fallback_model=str(row[5]) if row[5] else None,
@@ -1453,7 +1471,7 @@ class AIRouter:
             settings = self._get_settings(db, user_id=user_id)
             policy = self._load_policy(db, user_id=user_id, capability=capability, settings=settings)
             provider = str(policy.primary_provider or "").strip().lower()
-            model_id = _normalize_model_id(policy.primary_model) or "gpt-image-1-mini"
+            model_id = _normalize_model_id(policy.primary_model) or str(os.getenv("CODEXIA_OPENAI_IMAGE_MODEL") or "gpt-image-2").strip()
             if not policy.is_active:
                 raise AIOperationBlocked(
                     "POLICY_INACTIVE",
@@ -1509,7 +1527,8 @@ class AIRouter:
                     action_required="Adicionar a OpenAI API Key.",
                     model=model_id,
                 )
-            circuit = self._cb_get_row(db, provider="openai")
+            circuit_provider = self._image_circuit_provider(capability)
+            circuit = self._cb_get_row(db, provider=circuit_provider)
             circuit_state = str(circuit.get("state") or "closed").lower()
             cooldown_until = circuit.get("cooldown_until")
             cooldown_active = True
@@ -1606,7 +1625,8 @@ class AIRouter:
                 raise Exception("Prompt vazio.")
 
             input_hash = _sha256_text(json.dumps({"prompt": raw_prompt}, ensure_ascii=False, sort_keys=True))
-            model_id = _normalize_model_id(policy.primary_model) or "gpt-image-1-mini"
+            model_id = _normalize_model_id(policy.primary_model) or str(os.getenv("CODEXIA_OPENAI_IMAGE_MODEL") or "gpt-image-2").strip()
+            circuit_provider = self._image_circuit_provider(capability)
             cache_key = self._cache_key(provider="openai", model=model_id, capability=capability, input_hash=input_hash)
             operation_id = self._operation_id(scope_type="youtube_task" if task_id else "global", scope_id=task_id, cache_key=cache_key)
 
@@ -1626,7 +1646,7 @@ class AIRouter:
                 user_id=user_id,
                 task_id=task_id,
                 video_id=video_id,
-                provider="openai",
+                provider=circuit_provider,
             ):
                 raise AIOperationBlocked(
                     "OPENAI_CIRCUIT_OPEN",
@@ -1645,7 +1665,7 @@ class AIRouter:
                     user_id=user_id,
                     task_id=task_id,
                     video_id=video_id,
-                    provider="openai",
+                    provider=circuit_provider,
                     error_message="simulated_failure",
                 )
                 db.commit()
@@ -1708,18 +1728,18 @@ class AIRouter:
                 out_path = base_dir / filename
                 img = Image.new("RGB", (1024, 1024), (18, 18, 18))
                 img.save(out_path, format="PNG")
-                cb_state = self._cb_get_row(db, provider="openai").get("state")
+                cb_state = self._cb_get_row(db, provider=circuit_provider).get("state")
                 if str(cb_state or "").lower() != "closed":
                     self._record_cb_event(
                         db,
                         user_id=user_id,
                         task_id=task_id,
                         video_id=video_id,
-                        provider="openai",
+                        provider=circuit_provider,
                         event_type="AI_PROVIDER_CIRCUIT_CLOSED",
                         details={"previous_state": str(cb_state)},
                     )
-                self._cb_on_success(db, provider="openai")
+                self._cb_on_success(db, provider=circuit_provider)
                 self._complete_operation(db, operation_id=operation_id, result={"path": str(out_path)}, latency_ms=0, actual_cost=0.0)
                 self._record_ai_usage(
                     db,
@@ -1748,18 +1768,18 @@ class AIRouter:
                 image_bytes = self._call_openai_image(api_key=api_key, model=model_id, prompt=raw_prompt)
                 out_path.write_bytes(image_bytes)
                 latency_ms = int((time.time() - started) * 1000)
-                cb_state = self._cb_get_row(db, provider="openai").get("state")
+                cb_state = self._cb_get_row(db, provider=circuit_provider).get("state")
                 if str(cb_state or "").lower() != "closed":
                     self._record_cb_event(
                         db,
                         user_id=user_id,
                         task_id=task_id,
                         video_id=video_id,
-                        provider="openai",
+                        provider=circuit_provider,
                         event_type="AI_PROVIDER_CIRCUIT_CLOSED",
                         details={"previous_state": str(cb_state)},
                     )
-                self._cb_on_success(db, provider="openai")
+                self._cb_on_success(db, provider=circuit_provider)
                 result = {"path": str(out_path)}
                 self._complete_operation(db, operation_id=operation_id, result=result, latency_ms=latency_ms, actual_cost=0.0)
                 self._record_ai_usage(
@@ -1785,28 +1805,14 @@ class AIRouter:
                 self._fail_operation(db, operation_id=operation_id, error=failure_payload, latency_ms=latency_ms)
                 if isinstance(failure, AIOperationBlocked) and failure.code == "OPENAI_NO_CREDIT":
                     settings.openai_no_credit = True
-                if isinstance(failure, AIOperationBlocked) and failure.code in {
-                    "OPENAI_NO_CREDIT", "OPENAI_AUTH_ERROR", "OPENAI_MODEL_UNAVAILABLE",
-                    "OPENAI_ORG_VERIFICATION_REQUIRED", "OPENAI_IMAGE_ERROR"
-                }:
-                    self._cb_open_immediately(
-                        db,
-                        settings=settings,
-                        user_id=user_id,
-                        task_id=task_id,
-                        video_id=video_id,
-                        provider="openai",
-                        reason_code=failure.code,
-                        error_message=str(failure),
-                    )
-                elif not isinstance(failure, AIOperationBlocked) or failure.code != "OPENAI_CONTENT_POLICY":
+                if isinstance(failure, AIOperationBlocked) and failure.retryable:
                     self._cb_on_failure(
                         db,
                         settings=settings,
                         user_id=user_id,
                         task_id=task_id,
                         video_id=video_id,
-                        provider="openai",
+                        provider=circuit_provider,
                         error_message=str(failure),
                     )
                 db.commit()

@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from app.services.ai_router import AIOperationBlocked, classify_openai_image_error
+from app.services.ai_router import AICapability, AIOperationBlocked, AIRouter, classify_openai_image_error
 from app.services.video_generator import VideoGenerator
 
 
@@ -40,6 +40,25 @@ class OpenAIImageCostGuardTests(unittest.TestCase):
                 failure = classify_openai_image_error(error, model="gpt-image-1-mini")
                 self.assertEqual(failure.code, expected_code)
                 self.assertEqual(failure.retryable, retryable)
+
+    def test_retired_model_is_actionable_and_does_not_trip_retry_circuit(self):
+        failure = classify_openai_image_error(
+            Exception("The model gpt-image-1 is not available for this account."),
+            model="gpt-image-1",
+        )
+
+        self.assertEqual(failure.code, "OPENAI_MODEL_UNAVAILABLE")
+        self.assertFalse(failure.retryable)
+        self.assertIn("23/10/2026", str(failure))
+        self.assertIn("Configurações", str(failure))
+
+    def test_image_and_thumbnail_failures_use_separate_circuits(self):
+        image_circuit = AIRouter._image_circuit_provider(AICapability.IMAGE_GENERATION)
+        thumbnail_circuit = AIRouter._image_circuit_provider(AICapability.THUMBNAIL_GENERATION)
+
+        self.assertEqual(image_circuit, "openai:image_generation")
+        self.assertEqual(thumbnail_circuit, "openai:thumbnail_generation")
+        self.assertNotEqual(image_circuit, thumbnail_circuit)
 
     def test_scene_generation_makes_only_one_paid_call_and_preserves_error(self):
         expected = AIOperationBlocked(

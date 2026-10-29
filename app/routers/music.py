@@ -24,6 +24,7 @@ from app.services.suno_service import (
     download_suno_audio,
 )
 from app.services.ai_generator import AIContentGenerator
+from app.services.openai_image_models import is_openai_image_model
 from app.routers.auth import get_current_user, SECRET_KEY, ALGORITHM
 from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification, ScheduledVideo
 from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
@@ -475,7 +476,8 @@ def generate_images_from_lyrics_openai(request: GenerateLyricsImagesRequest, use
         openai_configured = bool((getattr(ai, "api_key", "") or "").strip())
         if requested_provider == "gemini" and not gemini_configured:
             raise HTTPException(status_code=400, detail="Configure GEMINI_API_KEY para gerar imagens com Gemini.")
-        if requested_provider == "gpt-image-1" and not openai_configured:
+        requested_openai = requested_provider in {"openai", "gpt-image-1"} or is_openai_image_model(requested_provider)
+        if requested_openai and not openai_configured:
             raise HTTPException(status_code=400, detail="Configure a OpenAI API Key em Configurações.")
         if requested_provider in {"", "auto"} and not (gemini_configured or openai_configured):
             raise HTTPException(status_code=400, detail="Configure OpenAI ou Gemini para gerar imagens.")
