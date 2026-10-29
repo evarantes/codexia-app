@@ -110,6 +110,7 @@ class CentralAssetTransfer:
                 raise RuntimeError('Arquivo central exige URL HTTPS e token de transferência configurado.')
         self.session = requests.Session()
         self.session.headers['X-Codexia-Asset-Token'] = self.token
+        self._remote_index_cache = {}
 
     @property
     def enabled(self):
@@ -117,6 +118,24 @@ class CentralAssetTransfer:
 
     def endpoint(self, task, suffix=''):
         return f'{self.url}/internal/production-assets/{task_key(task)}{suffix}'
+
+    def _remote_index(self, task):
+        task = task_key(task)
+        if task in self._remote_index_cache:
+            return self._remote_index_cache[task]
+        response = self.session.get(self.endpoint(task), timeout=(10, 60), allow_redirects=False)
+        response.raise_for_status()
+        entries = {}
+        for item in response.json().get('files') or []:
+            kind = str(item.get('kind') or '')
+            filename = str(item.get('filename') or '')
+            if kind in EXTENSIONS and Path(filename).name == filename:
+                entries[(kind, filename)] = {
+                    'sha256': str(item.get('sha256') or ''),
+                    'size': int(item.get('size') or 0),
+                }
+        self._remote_index_cache[task] = entries
+        return entries
 
     def publish(self, task, path, kind, filename=None):
         if not self.enabled:
@@ -128,6 +147,18 @@ class CentralAssetTransfer:
         if _ACK.get(key) == stamp:
             return
         sha = digest(p)
+        size = p.stat().st_size
+        try:
+            existing = self._remote_index(task).get((kind, filename))
+        except Exception:
+            existing = None
+        if (
+            existing
+            and existing.get('sha256') == sha
+            and int(existing.get('size') or -1) == size
+        ):
+            _ACK[key] = stamp
+            return
         expected_previous_sha = ''
         response = None
         for _attempt in range(3):
@@ -157,6 +188,10 @@ class CentralAssetTransfer:
                 # O arquivo central já contém exatamente estes bytes: trata como
                 # sucesso idempotente para permitir reenvios após reinício do worker.
                 _ACK[key] = stamp
+                self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
+                    'sha256': sha,
+                    'size': size,
+                }
                 return
             expected_previous_sha = existing_sha
         else:
@@ -165,6 +200,10 @@ class CentralAssetTransfer:
         if result.get('sha256') != sha or int(result.get('size', -1)) != p.stat().st_size:
             raise RuntimeError('Arquivo central não confirmou integridade; cópia local preservada.')
         _ACK[key] = stamp
+        self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
+            'sha256': sha,
+            'size': size,
+        }
 
     def hydrate(self, task):
         if not self.enabled:
@@ -276,7 +315,7 @@ class CentralAssetTransfer:
                 "errors": 0,
             }
 
-        from app.services.production_manifest import _root_dir
+        from app.services.production_manifest import _root_dir, load_manifest, manifest_dir
         from app.services.task_manager import get_task
 
         storage_path = "/data" if os.path.isdir("/data") else "/"
@@ -304,6 +343,18 @@ class CentralAssetTransfer:
             except Exception:
                 manifests = []
 
+            allowed_roots = [root.resolve() for root in roots().values()]
+
+            def _is_tracked_local_file(candidate):
+                try:
+                    resolved = Path(candidate).resolve()
+                    return (
+                        resolved.is_file()
+                        and any(resolved.is_relative_to(root) for root in allowed_roots)
+                    )
+                except Exception:
+                    return False
+
             for manifest_path in manifests:
                 task_id = manifest_path.parent.name
                 if task_id == str(current_task or ""):
@@ -322,7 +373,27 @@ class CentralAssetTransfer:
                         "paused",
                     }:
                         continue
+
+                    task_manifest_dir = manifest_dir(task_id)
+                    local_candidates = list((task_manifest_dir / "central-cache").glob("*"))
+                    local_candidates.extend(task_manifest_dir.glob(f"{task_id}-*-script.json"))
+                    local_script = task_manifest_dir / "script.json"
+                    if local_script.is_file():
+                        local_candidates.append(local_script)
+                    for artifact in load_manifest(task_id).get("artifacts") or []:
+                        if artifact.get("source") == "filesystem_checkpoint":
+                            continue
+                        for key in ("original_path", "durable_path"):
+                            raw_path = artifact.get(key)
+                            if raw_path:
+                                local_candidates.append(Path(raw_path))
+                    if not any(_is_tracked_local_file(path) for path in local_candidates):
+                        continue
+
                     checked += 1
+                    # Arquiva primeiro os ativos antigos que ainda não chegaram ao
+                    # servidor principal; só depois remove cópias confirmadas.
+                    self.publish_manifest(task_id)
                     self.clean_cache(task_id)
                 except Exception:
                     errors += 1
