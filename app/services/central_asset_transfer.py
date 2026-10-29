@@ -5,6 +5,7 @@ Disabled unless configured. Never deletes a file on an unverified transfer.
 import hashlib
 import os
 import re
+import shutil
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
@@ -240,6 +241,88 @@ class CentralAssetTransfer:
                 continue
             if p.is_file() and digest(p) in hashes:
                 p.unlink()
+
+
+    def cleanup_archived_worker_cache(
+        self,
+        current_task,
+        *,
+        target_free_gb=5.0,
+        max_tasks=12,
+    ):
+        """Recupera espaço do worker usando somente cópias já verificadas no arquivo central.
+
+        Tarefas ativas, pausadas, falhas e canceladas são preservadas. O manifesto
+        e os arquivos centrais permanecem intactos; só remove do worker os ativos
+        finais cuja cópia central corresponde ao SHA-256 local.
+        """
+        if not self.enabled:
+            return {
+                "enabled": False,
+                "free_before_gb": 0.0,
+                "free_after_gb": 0.0,
+                "reclaimed_gb": 0.0,
+                "tasks_checked": 0,
+                "errors": 0,
+            }
+
+        from app.services.production_manifest import _root_dir
+        from app.services.task_manager import get_task
+
+        storage_path = "/data" if os.path.isdir("/data") else "/"
+        try:
+            target_gb = max(1.0, min(50.0, float(target_free_gb)))
+        except Exception:
+            target_gb = 5.0
+        try:
+            task_limit = max(1, min(50, int(max_tasks)))
+        except Exception:
+            task_limit = 12
+
+        def _free_bytes():
+            return int(shutil.disk_usage(storage_path).free)
+
+        before = _free_bytes()
+        target_bytes = int(target_gb * (1024 ** 3))
+        checked = 0
+        errors = 0
+        if before < target_bytes:
+            manifests = []
+            try:
+                manifests = list(_root_dir().glob("*/manifest.json"))
+                manifests.sort(key=lambda item: item.stat().st_mtime)
+            except Exception:
+                manifests = []
+
+            for manifest_path in manifests:
+                task_id = manifest_path.parent.name
+                if task_id == str(current_task or ""):
+                    continue
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+                    continue
+                try:
+                    task = get_task(task_id) or {}
+                    status = str(task.get("status") or "").strip().lower()
+                    if status not in {"completed", "awaiting_review", "approved"}:
+                        continue
+                    checked += 1
+                    self.clean_cache(task_id)
+                except Exception:
+                    errors += 1
+                if checked >= task_limit or _free_bytes() >= target_bytes:
+                    break
+
+        after = _free_bytes()
+        return {
+            "enabled": True,
+            "storage_path": storage_path,
+            "target_free_gb": round(target_gb, 2),
+            "free_before_gb": round(before / (1024 ** 3), 2),
+            "free_after_gb": round(after / (1024 ** 3), 2),
+            "reclaimed_gb": round(max(0, after - before) / (1024 ** 3), 2),
+            "tasks_checked": checked,
+            "errors": errors,
+        }
 
 
 def map_cached_references(value, mapping):
