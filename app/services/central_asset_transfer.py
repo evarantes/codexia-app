@@ -127,10 +127,34 @@ class CentralAssetTransfer:
         if _ACK.get(key) == stamp:
             return
         sha = digest(p)
-        with p.open('rb') as stream:
-            response = self.session.put(self.endpoint(task, f'/{kind}/{filename}'), data=stream,
-                headers={'X-Content-SHA256': sha}, timeout=(10, 300), allow_redirects=False)
-        response.raise_for_status()
+        expected_previous_sha = ''
+        response = None
+        for _attempt in range(3):
+            headers = {'X-Content-SHA256': sha}
+            if expected_previous_sha:
+                headers['X-Expected-Previous-SHA256'] = expected_previous_sha
+            with p.open('rb') as stream:
+                response = self.session.put(self.endpoint(task, f'/{kind}/{filename}'), data=stream,
+                    headers=headers, timeout=(10, 300), allow_redirects=False)
+            if response.status_code != 409:
+                response.raise_for_status()
+                break
+
+            # A renderer can publish an early checkpoint while an MP4 is still
+            # being finalized. If the same task/name now contains those earlier
+            # bytes, replace them only with a compare-and-swap against the hash
+            # returned by the archive. This also recovers retries racing each
+            # other without clobbering a newer upload.
+            try:
+                detail = response.json().get('detail') or {}
+                existing_sha = str(detail.get('existing_sha256') or '').strip().lower() if isinstance(detail, dict) else ''
+            except Exception:
+                existing_sha = ''
+            if not re.fullmatch(r'[0-9a-f]{64}', existing_sha) or existing_sha == sha:
+                response.raise_for_status()
+            expected_previous_sha = existing_sha
+        else:
+            response.raise_for_status()
         result = response.json()
         if result.get('sha256') != sha or int(result.get('size', -1)) != p.stat().st_size:
             raise RuntimeError('Arquivo central não confirmou integridade; cópia local preservada.')
@@ -169,13 +193,15 @@ class CentralAssetTransfer:
                 tmp.unlink(missing_ok=True)
         return mapping
 
-    def publish_manifest(self, task):
+    def publish_manifest(self, task, *, include_video=True):
         if not self.enabled:
             return
         from app.services.production_manifest import load_manifest, manifest_dir
         for entry in load_manifest(task).get('artifacts') or []:
             p = Path(entry.get('durable_path') or entry.get('original_path') or '')
-            if entry.get('kind') in EXTENSIONS and p.is_file():
+            if (entry.get('kind') in EXTENSIONS
+                    and (include_video or entry.get('kind') != 'video')
+                    and p.is_file()):
                 self.publish(task, p, entry['kind'], Path(entry.get('original_path') or p).name)
         script = manifest_dir(task) / 'script.json'
         if script.is_file():
