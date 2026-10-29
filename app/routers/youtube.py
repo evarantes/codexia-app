@@ -7778,7 +7778,19 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
         process_video_generation(req, task_id)
         transfer.publish_manifest(task_id)
         current = get_task(task_id) or {}
-        if current.get('status') in {'completed', 'awaiting_review', 'approved'}:
+        current_status = str(current.get("status") or "").strip().lower()
+        if current_status in {
+            "completed",
+            "awaiting_review",
+            "approved",
+            "rendered_upload_failed",
+            "failed",
+            "paused",
+            "cancelled",
+        }:
+            # O arquivo principal já confirmou cada SHA-256 antes que as cópias
+            # temporárias do CX33 sejam apagadas. Pausas e falhas podem reidratar
+            # os ativos centrais quando a tarefa for retomada.
             transfer.clean_cache(task_id)
     except Exception as exc:
         update_task(task_id, status="failed", message=f"Transferência de ativos interrompida: {exc}. Arquivos locais preservados.")
