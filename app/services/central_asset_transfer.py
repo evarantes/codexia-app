@@ -297,13 +297,13 @@ class CentralAssetTransfer:
         current_task,
         *,
         target_free_gb=5.0,
-        max_tasks=12,
+        max_tasks=50,
     ):
-        """Recupera espaço temporário do worker sem apagar dados não arquivados.
+        """Mantém o worker temporário e o servidor principal como arquivo permanente.
 
-        Tarefas em execução permanecem intocadas. Cópias locais de tarefas pausadas,
-        falhas ou concluídas só são removidas quando o arquivo central confirma o
-        mesmo SHA-256; os ativos centrais e o manifesto permanecem intactos.
+        Tarefas em execução permanecem intocadas. Ativos de tarefas pendentes,
+        pausadas, falhas ou concluídas são enviados ao arquivo central e removidos
+        do CX33 somente depois que o SHA-256 é confirmado.
         """
         if not self.enabled:
             return {
@@ -326,79 +326,78 @@ class CentralAssetTransfer:
         try:
             task_limit = max(1, min(50, int(max_tasks)))
         except Exception:
-            task_limit = 12
+            task_limit = 50
 
         def _free_bytes():
             return int(shutil.disk_usage(storage_path).free)
 
         before = _free_bytes()
-        target_bytes = int(target_gb * (1024 ** 3))
         checked = 0
         errors = 0
-        if before < target_bytes:
+        manifests = []
+        try:
+            manifests = list(_root_dir().glob("*/manifest.json"))
+            manifests.sort(key=lambda item: item.stat().st_mtime)
+        except Exception:
             manifests = []
+
+        allowed_roots = [root.resolve() for root in roots().values()]
+
+        def _is_tracked_local_file(candidate):
             try:
-                manifests = list(_root_dir().glob("*/manifest.json"))
-                manifests.sort(key=lambda item: item.stat().st_mtime)
+                resolved = Path(candidate).resolve()
+                return (
+                    resolved.is_file()
+                    and any(resolved.is_relative_to(root) for root in allowed_roots)
+                )
             except Exception:
-                manifests = []
+                return False
 
-            allowed_roots = [root.resolve() for root in roots().values()]
-
-            def _is_tracked_local_file(candidate):
-                try:
-                    resolved = Path(candidate).resolve()
-                    return (
-                        resolved.is_file()
-                        and any(resolved.is_relative_to(root) for root in allowed_roots)
-                    )
-                except Exception:
-                    return False
-
-            for manifest_path in manifests:
-                task_id = manifest_path.parent.name
-                if task_id == str(current_task or ""):
+        for manifest_path in manifests:
+            task_id = manifest_path.parent.name
+            if task_id == str(current_task or ""):
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+                continue
+            try:
+                task = get_task(task_id) or {}
+                status = str(task.get("status") or "").strip().lower()
+                if status not in {
+                    "completed",
+                    "awaiting_review",
+                    "approved",
+                    "rendered_upload_failed",
+                    "failed",
+                    "paused",
+                    "pending",
+                }:
                     continue
-                if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+
+                task_manifest_dir = manifest_dir(task_id)
+                local_candidates = list((task_manifest_dir / "central-cache").glob("*"))
+                local_candidates.extend(task_manifest_dir.glob(f"{task_id}-*-script.json"))
+                local_script = task_manifest_dir / "script.json"
+                if local_script.is_file():
+                    local_candidates.append(local_script)
+                for artifact in load_manifest(task_id).get("artifacts") or []:
+                    if artifact.get("source") == "filesystem_checkpoint":
+                        continue
+                    for key in ("original_path", "durable_path"):
+                        raw_path = artifact.get(key)
+                        if raw_path:
+                            local_candidates.append(Path(raw_path))
+                if not any(_is_tracked_local_file(path) for path in local_candidates):
                     continue
-                try:
-                    task = get_task(task_id) or {}
-                    status = str(task.get("status") or "").strip().lower()
-                    if status not in {
-                        "completed",
-                        "awaiting_review",
-                        "approved",
-                        "rendered_upload_failed",
-                        "failed",
-                        "paused",
-                    }:
-                        continue
 
-                    task_manifest_dir = manifest_dir(task_id)
-                    local_candidates = list((task_manifest_dir / "central-cache").glob("*"))
-                    local_candidates.extend(task_manifest_dir.glob(f"{task_id}-*-script.json"))
-                    local_script = task_manifest_dir / "script.json"
-                    if local_script.is_file():
-                        local_candidates.append(local_script)
-                    for artifact in load_manifest(task_id).get("artifacts") or []:
-                        if artifact.get("source") == "filesystem_checkpoint":
-                            continue
-                        for key in ("original_path", "durable_path"):
-                            raw_path = artifact.get(key)
-                            if raw_path:
-                                local_candidates.append(Path(raw_path))
-                    if not any(_is_tracked_local_file(path) for path in local_candidates):
-                        continue
-
-                    checked += 1
-                    # Arquiva primeiro os ativos antigos que ainda não chegaram ao
-                    # servidor principal; só depois remove cópias confirmadas.
-                    self.publish_manifest(task_id)
-                    self.clean_cache(task_id)
-                except Exception:
-                    errors += 1
-                if checked >= task_limit or _free_bytes() >= target_bytes:
-                    break
+                checked += 1
+                # Arquiva primeiro os ativos antigos que ainda não chegaram ao
+                # servidor principal; só depois remove cópias confirmadas.
+                self.publish_manifest(task_id)
+                self.clean_cache(task_id)
+            except Exception:
+                errors += 1
+            if checked >= task_limit:
+                break
 
         after = _free_bytes()
         return {
