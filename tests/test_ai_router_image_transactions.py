@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.services.ai_router import AICapability, AIOperationBlocked, AIRouter
+from app.services.ai_router import AICapability, AIOperationBlocked, AIPolicy, AIRouter
 
 
 class _FakeResult:
@@ -46,10 +46,16 @@ def _fake_settings():
 
 
 def _fake_policy():
-    return SimpleNamespace(
+    return AIPolicy(
+        capability=AICapability.IMAGE_GENERATION,
         primary_provider="openai",
         primary_model="gpt-image-2",
+        fallback_enabled=False,
+        fallback_provider=None,
+        fallback_model=None,
+        cache_enabled=False,
         estimated_cost=0.005,
+        max_cost=None,
         is_active=True,
     )
 
