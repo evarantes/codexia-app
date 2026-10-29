@@ -1562,6 +1562,56 @@ class AIRouter:
             except Exception:
                 pass
 
+    def _record_openai_image_success(
+        self,
+        db: Session,
+        *,
+        user_id: Optional[int],
+        task_id: Optional[str],
+        video_id: Optional[str],
+        capability: str,
+        circuit_provider: str,
+        operation_id: str,
+        model_id: str,
+        output_path: str,
+        latency_ms: int,
+        estimated_cost: float,
+    ) -> None:
+        cb_state = self._cb_get_row(db, provider=circuit_provider).get("state")
+        if str(cb_state or "").lower() != "closed":
+            self._record_cb_event(
+                db,
+                user_id=user_id,
+                task_id=task_id,
+                video_id=video_id,
+                provider=circuit_provider,
+                event_type="AI_PROVIDER_CIRCUIT_CLOSED",
+                details={"previous_state": str(cb_state)},
+            )
+        self._cb_on_success(db, provider=circuit_provider)
+        self._complete_operation(
+            db,
+            operation_id=operation_id,
+            result={"path": output_path},
+            latency_ms=latency_ms,
+            actual_cost=0.0,
+        )
+        self._record_ai_usage(
+            db,
+            user_id=user_id,
+            task_id=task_id,
+            video_id=video_id,
+            capability=capability,
+            provider="openai",
+            model=model_id,
+            estimated_cost=estimated_cost,
+            actual_cost=0.0,
+            latency_ms=latency_ms,
+            cache_hit=False,
+            operation_id=operation_id,
+        )
+        db.commit()
+
     def generate_image(
         self,
         *,
@@ -1586,6 +1636,9 @@ class AIRouter:
                 gemini_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
                 if not gemini_key:
                     raise AIOperationBlocked("GEMINI_KEY_MISSING", "GEMINI_API_KEY ausente no worker.", provider="gemini")
+                # Do not keep the policy/settings read transaction open while
+                # the external image provider is working.
+                db.commit()
                 response = requests.post(
                     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent",
                     headers={"x-goog-api-key": gemini_key, "Content-Type": "application/json"},
@@ -1721,6 +1774,25 @@ class AIRouter:
                     db.commit()
                     return reused["path"]
 
+            # _claim_operation uses a transaction-scoped advisory lock. Persist
+            # the running marker and release that lock before the paid network
+            # request so a slow provider call cannot leave a DB transaction idle.
+            try:
+                db.commit()
+            except Exception as state_error:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                raise AIOperationBlocked(
+                    "IMAGE_OPERATION_STATE_UNAVAILABLE",
+                    "Não foi possível registrar a operação de imagem no banco. A OpenAI não foi chamada; tente novamente quando a conexão do banco estiver estável.",
+                    provider="openai",
+                    retryable=True,
+                    action_required="Verificar a conexão do banco e retomar a mesma tarefa.",
+                    model=model_id,
+                ) from state_error
+
             if self._dry_run_enabled():
                 base_dir = Path(output_dir)
                 base_dir.mkdir(parents=True, exist_ok=True)
@@ -1766,57 +1838,128 @@ class AIRouter:
             started = time.time()
             try:
                 image_bytes = self._call_openai_image(api_key=api_key, model=model_id, prompt=raw_prompt)
-                out_path.write_bytes(image_bytes)
+            except Exception as e:
                 latency_ms = int((time.time() - started) * 1000)
-                cb_state = self._cb_get_row(db, provider=circuit_provider).get("state")
-                if str(cb_state or "").lower() != "closed":
-                    self._record_cb_event(
+                failure = e if isinstance(e, AIOperationBlocked) else classify_openai_image_error(e, model=model_id)
+                failure_payload = failure.to_dict() if isinstance(failure, AIOperationBlocked) else {"error": str(failure)}
+                # Roll back first: if any earlier DB command invalidated this
+                # transaction, error recording must not replace the real
+                # provider diagnosis with PendingRollbackError.
+                try:
+                    db.rollback()
+                    self._fail_operation(db, operation_id=operation_id, error=failure_payload, latency_ms=latency_ms)
+                    if isinstance(failure, AIOperationBlocked) and failure.code == "OPENAI_NO_CREDIT":
+                        settings.openai_no_credit = True
+                    if isinstance(failure, AIOperationBlocked) and failure.retryable:
+                        self._cb_on_failure(
+                            db,
+                            settings=settings,
+                            user_id=user_id,
+                            task_id=task_id,
+                            video_id=video_id,
+                            provider=circuit_provider,
+                            error_message=str(failure),
+                        )
+                    db.commit()
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                if failure is e:
+                    raise
+                raise failure from e
+
+            try:
+                out_path.write_bytes(image_bytes)
+            except Exception as file_error:
+                try:
+                    db.rollback()
+                    self._fail_operation(
                         db,
-                        user_id=user_id,
-                        task_id=task_id,
-                        video_id=video_id,
-                        provider=circuit_provider,
-                        event_type="AI_PROVIDER_CIRCUIT_CLOSED",
-                        details={"previous_state": str(cb_state)},
+                        operation_id=operation_id,
+                        error={"code": "IMAGE_FILE_WRITE_FAILED", "error": str(file_error)[:300]},
+                        latency_ms=int((time.time() - started) * 1000),
                     )
-                self._cb_on_success(db, provider=circuit_provider)
-                result = {"path": str(out_path)}
-                self._complete_operation(db, operation_id=operation_id, result=result, latency_ms=latency_ms, actual_cost=0.0)
-                self._record_ai_usage(
+                    db.commit()
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                raise AIOperationBlocked(
+                    "IMAGE_FILE_WRITE_FAILED",
+                    "A OpenAI gerou a imagem, mas o Codexia não conseguiu gravar o arquivo no armazenamento local.",
+                    provider="openai",
+                    action_required="Verificar espaço e permissões de escrita no armazenamento do Codexia.",
+                    model=model_id,
+                ) from file_error
+
+            latency_ms = int((time.time() - started) * 1000)
+            try:
+                self._record_openai_image_success(
                     db,
                     user_id=user_id,
                     task_id=task_id,
                     video_id=video_id,
                     capability=capability,
-                    provider="openai",
-                    model=model_id,
-                    estimated_cost=policy.estimated_cost,
-                    actual_cost=0.0,
-                    latency_ms=latency_ms,
-                    cache_hit=False,
+                    circuit_provider=circuit_provider,
                     operation_id=operation_id,
+                    model_id=model_id,
+                    output_path=str(out_path),
+                    latency_ms=latency_ms,
+                    estimated_cost=policy.estimated_cost,
                 )
-                db.commit()
-                return str(out_path)
-            except Exception as e:
-                latency_ms = int((time.time() - started) * 1000)
-                failure = e if isinstance(e, AIOperationBlocked) else classify_openai_image_error(e, model=model_id)
-                failure_payload = failure.to_dict() if isinstance(failure, AIOperationBlocked) else {"error": str(failure)}
-                self._fail_operation(db, operation_id=operation_id, error=failure_payload, latency_ms=latency_ms)
-                if isinstance(failure, AIOperationBlocked) and failure.code == "OPENAI_NO_CREDIT":
-                    settings.openai_no_credit = True
-                if isinstance(failure, AIOperationBlocked) and failure.retryable:
-                    self._cb_on_failure(
-                        db,
-                        settings=settings,
+            except Exception as persistence_error:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+                recovery_db = SessionLocal()
+                try:
+                    existing = recovery_db.execute(text(
+                        "SELECT status, result_json FROM ai_operation_runs WHERE operation_id = :operation_id"
+                    ), {"operation_id": operation_id}).fetchone()
+                    if existing and str(existing[0] or "").lower() == "completed":
+                        try:
+                            existing_result = json.loads(existing[1] or "{}")
+                        except Exception:
+                            existing_result = {}
+                        if str(existing_result.get("path") or "") == str(out_path):
+                            return str(out_path)
+                    self._record_openai_image_success(
+                        recovery_db,
                         user_id=user_id,
                         task_id=task_id,
                         video_id=video_id,
-                        provider=circuit_provider,
-                        error_message=str(failure),
+                        capability=capability,
+                        circuit_provider=circuit_provider,
+                        operation_id=operation_id,
+                        model_id=model_id,
+                        output_path=str(out_path),
+                        latency_ms=latency_ms,
+                        estimated_cost=policy.estimated_cost,
                     )
-                db.commit()
-                raise failure
+                    return str(out_path)
+                except Exception as recovery_error:
+                    try:
+                        recovery_db.rollback()
+                    except Exception:
+                        pass
+                    raise AIOperationBlocked(
+                        "IMAGE_RESULT_PERSISTENCE_FAILED",
+                        "A OpenAI gerou a imagem, mas o Codexia não conseguiu registrar o resultado no banco. A tentativa foi mantida protegida contra uma nova cobrança; verifique a conexão do banco e retome a mesma tarefa.",
+                        provider="openai",
+                        action_required="Verificar a conexão do banco antes de retomar a mesma tarefa.",
+                        model=model_id,
+                    ) from recovery_error
+                finally:
+                    try:
+                        recovery_db.close()
+                    except Exception:
+                        pass
+            return str(out_path)
         finally:
             try:
                 db.close()
