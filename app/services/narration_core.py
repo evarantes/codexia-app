@@ -351,6 +351,42 @@ def _assert_no_technical_residue(text: str) -> None:
         )
 
 
+# Bible citations in Portuguese must not be interpreted as clock times by TTS.
+# Match recognized book names only; ordinary times (14:30) remain unchanged.
+_BIBLE_BOOKS = (
+    "Gênesis", "Êxodo", "Levítico", "Números", "Deuteronômio",
+    "Josué", "Juízes", "Rute", "Samuel", "Reis", "Crônicas",
+    "Esdras", "Neemias", "Ester", "Jó", "Salmos", "Salmo", "Provérbios",
+    "Eclesiastes", "Cânticos", "Cântico dos Cânticos", "Isaías",
+    "Jeremias", "Lamentações", "Ezequiel", "Daniel", "Oseias",
+    "Joel", "Amós", "Obadias", "Jonas", "Miqueias", "Naum",
+    "Habacuque", "Sofonias", "Ageu", "Zacarias", "Malaquias",
+    "Mateus", "Marcos", "Lucas", "João", "Atos", "Romanos",
+    "Coríntios", "Gálatas", "Efésios", "Filipenses", "Colossenses",
+    "Tessalonicenses", "Timóteo", "Tito", "Filemom", "Hebreus",
+    "Tiago", "Pedro", "Judas", "Apocalipse",
+)
+_BOOK_PATTERN = "|".join(re.escape(name) for name in sorted(_BIBLE_BOOKS, key=len, reverse=True))
+_BIBLE_REFERENCE = re.compile(
+    rf"(?<!\w)(?P<book>(?:(?:[1-3]|I{{1,3}})\s+)?(?:{_BOOK_PATTERN}))"
+    rf"\s+(?P<chapter>\d{{1,3}})\s*:\s*(?P<verse>\d{{1,3}})"
+    rf"(?P<last>\s*[-–]\s*\d{{1,3}})?(?!\d)",
+    flags=re.IGNORECASE,
+)
+
+
+def normalize_bible_references_for_tts(value: str) -> str:
+    """Expand unambiguous biblical chapter:verse notation for natural speech."""
+    def replace(match: re.Match[str]) -> str:
+        book, chapter, verse = match.group("book", "chapter", "verse")
+        last = match.group("last")
+        spoken = f"{book} capítulo {int(chapter)}, versículo {int(verse)}"
+        if last:
+            spoken += f" até {int(last.strip().lstrip('-–').strip())}"
+        return spoken
+    return _BIBLE_REFERENCE.sub(replace, str(value or ""))
+
+
 def extract_spoken_text(value: Any) -> tuple[str, int, str]:
     """Retorna somente a fala segura, sem chamar TTS nem depender do renderer."""
     removed = [0]
@@ -376,6 +412,7 @@ def extract_spoken_text(value: Any) -> tuple[str, int, str]:
     if not text:
         raise NarrationCoreError("nenhum texto falável seguro foi encontrado")
     _assert_no_technical_residue(text)
+    text = normalize_bible_references_for_tts(text)
     return text, int(removed[0]), source_kind
 
 
@@ -421,6 +458,7 @@ __all__ = [
     "NarrationCoreError",
     "NarrationArtifact",
     "extract_spoken_text",
+    "normalize_bible_references_for_tts",
     "build_narration_artifact",
     "narration_fingerprint",
     "require_current_core",
