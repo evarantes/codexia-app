@@ -181,20 +181,40 @@ def _durable_copy(task_id: str, source: str, kind: str) -> str:
         assets_dir.mkdir(parents=True, exist_ok=True)
         name_hash = hashlib.sha1(str(source_path).encode("utf-8")).hexdigest()[:10]
         target = assets_dir / f"{name_hash}_{source_path.name}"
-        if target.is_file() and target.stat().st_size == source_path.stat().st_size:
-            return str(target)
+        if target.is_file():
+            try:
+                if os.path.samefile(source_path, target):
+                    return str(target)
+                source_stat = source_path.stat()
+                target_stat = target.stat()
+                if (source_stat.st_size == target_stat.st_size
+                        and source_stat.st_mtime_ns == target_stat.st_mtime_ns
+                        and _sample_hash(str(source_path)) == _sample_hash(str(target))):
+                    return str(target)
+            except Exception:
+                pass
+
+        # Try a hard link for new assets. If a prior version already occupies
+        # this durable path, refresh it atomically instead of silently reusing
+        # a stale same-sized copy.
+        if not target.exists():
+            try:
+                os.link(source_path, target)
+                return str(target)
+            except FileExistsError:
+                pass
+            except Exception:
+                # Avoid duplicating a very large video on a different volume;
+                # the original remains the durable source for this task.
+                if kind == "video" and source_path.stat().st_size > 256 * 1024 * 1024:
+                    return str(source_path)
+
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
-            os.link(source_path, target)
-        except FileExistsError:
-            pass
-        except Exception:
-            # Copiar imagens/áudio é barato. Para vídeo grande, preferimos manter
-            # a referência original quando hardlink não for possível, evitando
-            # duplicar muitos GB sem necessidade.
-            if kind != "video" or source_path.stat().st_size <= 256 * 1024 * 1024:
-                shutil.copy2(source_path, target)
-            else:
-                return str(source_path)
+            shutil.copy2(source_path, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         return str(target if target.is_file() else source_path)
     except Exception:
         return source
@@ -504,7 +524,13 @@ def sync_task_snapshot(task_id: Any, snapshot: Any) -> Dict[str, Any]:
         existing["checkpoints"] = checkpoints
         _atomic_write_json(path, existing)
         from app.services.central_asset_transfer import CentralAssetTransfer
-        CentralAssetTransfer().publish_manifest(task_key)
+        # Video files appear on disk before MoviePy/FFmpeg finishes writing
+        # them. Checkpoint scans may publish images/audio as they are completed,
+        # but videos are archived only after the task reaches a final state.
+        CentralAssetTransfer().publish_manifest(
+            task_key,
+            include_video=status in {"awaiting_review", "completed", "approved"},
+        )
         return dict(existing)
 
 
@@ -541,8 +567,9 @@ def record_artifact(task_id: Any, path: str, *, kind: str, source: str = "runtim
         existing["updated_at"] = _utc_iso()
         existing["scan_cursor_epoch"] = now_epoch
         _atomic_write_json(mpath, existing)
-        from app.services.central_asset_transfer import CentralAssetTransfer
-        CentralAssetTransfer().publish(task_key, entry['durable_path'], kind_norm, Path(resolved).name)
+        if kind_norm != "video":
+            from app.services.central_asset_transfer import CentralAssetTransfer
+            CentralAssetTransfer().publish(task_key, entry['durable_path'], kind_norm, Path(resolved).name)
         return dict(entry)
 
 
