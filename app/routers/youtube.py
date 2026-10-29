@@ -7802,7 +7802,7 @@ def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
         preflight_stop, preflight_thread = _start_video_transfer_preflight_monitor(task_id)
 
         cleanup_report = (
-            transfer.cleanup_archived_worker_cache(task_id, target_free_gb=5.0, max_tasks=12)
+            transfer.cleanup_archived_worker_cache(task_id, target_free_gb=5.0, max_tasks=50)
             if transfer.enabled
             else {"reclaimed_gb": 0.0, "tasks_checked": 0}
         )
