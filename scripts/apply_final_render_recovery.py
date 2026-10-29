@@ -580,12 +580,12 @@ RETRY_NEW = '''        payload = _maybe_enable_render_only_flags(payload, task_i
 
 
 WORKER_PREFLIGHT_OLD = '''def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
-    resource_report = _series_resource_preflight(payload, task_id)'''
+    try:
+        req = VideoRequest(**(payload or {}))'''
 
 WORKER_PREFLIGHT_NEW = '''def process_video_generation_payload(payload: Dict[str, Any], task_id: str):
-    # Worker-side retry preflight: the API and CX33 may not share the media
-    # mount. Search/recover the completed MP4 where the renderer's files live
-    # before starting another paid render.
+    # Worker-side retry preflight: API e CX33 podem ter montagens de mídia separadas.
+    # Validar um MP4 existente evita iniciar novas chamadas pagas em uma retomada.
     if isinstance(payload, dict) and bool(payload.get("_recovery_worker_final_render_preflight")):
         try:
             recovered = _recovery_try_promote_final_render(payload, str(task_id))
@@ -601,7 +601,8 @@ WORKER_PREFLIGHT_NEW = '''def process_video_generation_payload(payload: Dict[str
                 "Final-render retry preflight failed; continuing with automatic asset repair: "
                 f"{type(recovery_exc).__name__}: {str(recovery_exc)[:240]}"
             )
-    resource_report = _series_resource_preflight(payload, task_id)'''
+    try:
+        req = VideoRequest(**(payload or {}))'''
 
 AUTO_FAILURE_OLD = '''    except Exception as e:
         print(f"Erro na tarefa {task_id}: {e}")
