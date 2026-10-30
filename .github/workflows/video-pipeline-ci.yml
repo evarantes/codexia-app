@@ -15,7 +15,6 @@ on:
       - "tests/test_pipeline_v3_runtime.py"
       - "docs/PIPELINE_V3.md"
       - ".github/workflows/pipeline-v3-test.yml"
-      - ".github/workflows/video-pipeline-ci.yml"
   workflow_dispatch:
 
 permissions:
@@ -26,11 +25,75 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: PostgreSQL, pipeline and smoke
+  security:
+    name: Compose secrets and network isolation
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
+    env:
+      APP_ENV: homologation
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Validate Docker Compose secret requirements and private ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          if env -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB -u MINIO_ROOT_USER -u MINIO_ROOT_PASSWORD docker compose -f docker-compose.yml config --quiet > /tmp/compose-missing-secrets.log 2>&1; then
+            echo "::error::Compose accepted missing mandatory database/object-storage credentials"
+            exit 1
+          fi
+          export POSTGRES_USER=codexia_ci POSTGRES_PASSWORD=ci-placeholder-only POSTGRES_DB=codexia_ci
+          export MINIO_ROOT_USER=minio_ci MINIO_ROOT_PASSWORD=ci-placeholder-only
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml config --format json > /tmp/codexia-compose.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          services = json.loads(Path("/tmp/codexia-compose.json").read_text())["services"]
+          for service in ("db", "redis", "minio"):
+              for port in services[service].get("ports", []):
+                  assert port.get("host_ip") == "127.0.0.1", (service, port)
+          for service in ("api", "worker"):
+              env = services[service]["environment"]
+              assert "ci-placeholder-only" in env["DATABASE_URL"]
+              assert env["S3_SECRET_KEY"] == "ci-placeholder-only"
+          print("Compose validation: secrets required and infrastructure ports bound to loopback")
+          PY
+
+  dependencies:
+    name: Python dependency integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ENV: homologation
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt pytest
+      - name: Verify Python dependency environment
+        run: |
+          python -m pip check
+          python -m compileall -q app scripts
+  database:
+    name: PostgreSQL migrations and status sync
+    needs: [dependencies]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -61,7 +124,49 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379/0
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt pytest
+      - name: Apply build hardening and check V2 bridge
+        run: |
+          python scripts/run_build_hardening.py --profile api
+          python scripts/codexia_v2_legacy_ui_bridge.py check
+      - name: Apply canonical Alembic migration on PostgreSQL
+        id: postgres_migrations
+        run: |
+          python scripts/apply_migrations.py
+          alembic current | grep --fixed-strings "d7e8f9a0b1c2"
+          python scripts/check_schema_consistency.py
+
+      - name: Test VideoTask status sync against PostgreSQL
+        id: postgres_status_sync_test
+        run: python -m unittest tests.test_video_task_status_sync_postgres -v
+
+      - name: Start application against migrated PostgreSQL
+        env:
+          PREFLIGHT_STARTUP_TIMEOUT_SEC: "35"
+        run: python scripts/preflight_validate.py
+
+  regression:
+    name: Hardening and complete regression suite
+    needs: [dependencies]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      APP_ENV: homologation
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -125,25 +230,6 @@ jobs:
           # New architecture contracts are checked with the V2 shell active.
           python -m unittest tests.test_cinematic_v2 -q
 
-      - name: Apply canonical Alembic migration on PostgreSQL
-        id: postgres_migrations
-        if: ${{ always() && steps.install_dependencies.outcome == 'success' }}
-        run: |
-          python scripts/apply_migrations.py
-          alembic current | grep --fixed-strings "d7e8f9a0b1c2"
-          python scripts/check_schema_consistency.py
-
-      - name: Test VideoTask status sync against PostgreSQL
-        id: postgres_status_sync_test
-        if: ${{ always() && steps.postgres_migrations.outcome == 'success' }}
-        run: python -m unittest tests.test_video_task_status_sync_postgres -v
-
-      - name: Start application against migrated PostgreSQL
-        if: ${{ always() && steps.postgres_status_sync_test.outcome == 'success' }}
-        env:
-          PREFLIGHT_STARTUP_TIMEOUT_SEC: "35"
-        run: python scripts/preflight_validate.py
-
       - name: Run complete test suite
         env:
           APP_ENV: development
@@ -185,9 +271,59 @@ jobs:
           fi
           echo "Complete unit suite: OK"
 
+  video:
+    name: Real FFmpeg rendering smoke
+    needs: [dependencies]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ENV: homologation
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FFmpeg and dependencies
+        id: install_dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet=2 ffmpeg >/dev/null
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt pytest
+
+      - name: Apply build hardening and check V2 bridge
+        run: |
+          python scripts/run_build_hardening.py --profile api
+          python scripts/codexia_v2_legacy_ui_bridge.py check
       - name: Run real FFmpeg smoke without paid providers
         env:
           APP_ENV: development
           ENABLE_SQLITE_DEV: "true"
           DATABASE_URL: sqlite:////tmp/codexia-video-pipeline-smoke.sqlite3
         run: python tests/smoke_e2e_stability.py
+  final:
+    name: Required CI gate
+    needs: [security, dependencies, database, regression, video]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reject incomplete or failed jobs
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['NEEDS_JSON'])
+          failures = {name: job['result'] for name, job in jobs.items() if job['result'] != 'success'}
+          if failures:
+              raise SystemExit(f'Required CI jobs did not succeed: {failures}')
+          print('All required CI jobs succeeded')
+          PY
