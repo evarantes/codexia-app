@@ -135,6 +135,9 @@ def google_drive_oauth_callback(
         db.commit()
         db.refresh(settings)
         GoogleDriveArchive(user_id=user_id).root_folder_id()
+        from app.services.server_resource_monitor import invalidate_drive_usage_cache
+
+        invalidate_drive_usage_cache(user_id)
     except Exception as exc:
         db.rollback()
         message = str(exc) if isinstance(exc, (RuntimeError, GoogleDriveArchiveError)) else "Falha ao trocar o código OAuth. Confira o callback HTTPS cadastrado no Google Cloud."
@@ -267,6 +270,9 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
         "finished_at": datetime.now(timezone.utc).isoformat(),
     })
     _write_job(job_id, payload)
+    from app.services.server_resource_monitor import invalidate_drive_usage_cache
+
+    invalidate_drive_usage_cache(user_id)
 
 
 @router.post("/migrate/start")
