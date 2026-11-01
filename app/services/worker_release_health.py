@@ -136,6 +136,12 @@ def start_worker_release_heartbeat(connection: Any) -> threading.Thread:
                 )
             except Exception:
                 pass
+            try:
+                from app.services.server_resource_monitor import publish_worker_resources
+
+                publish_worker_resources(connection, ttl_seconds=ttl)
+            except Exception:
+                pass
             threading.Event().wait(interval)
 
     thread = threading.Thread(

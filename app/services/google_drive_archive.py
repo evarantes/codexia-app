@@ -211,6 +211,47 @@ class GoogleDriveArchive:
         folder_id = self.root_folder_id()
         return {"connected": True, "folder": ROOT_FOLDER_NAME, "folder_id": folder_id}
 
+    def archive_usage(self) -> Dict[str, Any]:
+        """Return storage used by Codexia-owned archive files, without wider Drive scopes."""
+        if not self.is_configured():
+            return {
+                "status": "not_connected",
+                "connected": False,
+                "archive_files": 0,
+                "archive_bytes": 0,
+            }
+
+        service = self.drive_service()
+        query = (
+            "appProperties has { key='archive_version' and value='1' } "
+            "and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+        )
+        page_token = None
+        file_count = 0
+        total_bytes = 0
+        while True:
+            response = service.files().list(
+                q=query,
+                pageSize=1000,
+                pageToken=page_token,
+                fields="nextPageToken,files(size)",
+            ).execute()
+            for item in response.get("files") or []:
+                file_count += 1
+                try:
+                    total_bytes += max(0, int(item.get("size") or 0))
+                except (TypeError, ValueError):
+                    continue
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return {
+            "status": "connected",
+            "connected": True,
+            "archive_files": file_count,
+            "archive_bytes": total_bytes,
+        }
+
     def _task_folder(self, service, root_id: str, task: str) -> str:
         task = _valid_task(task)
         query = (

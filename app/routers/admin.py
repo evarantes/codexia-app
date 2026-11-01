@@ -9,6 +9,15 @@ from app.services import backup_service
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
+@router.get("/server-resources")
+def server_resources(admin: User = Depends(get_current_admin_user)):
+    """Live resource usage for the main API, CX33 worker, and Codexia Drive archive."""
+    from app.redis_client import conn
+    from app.services.server_resource_monitor import server_resources_overview
+
+    return server_resources_overview(conn, admin_user_id=int(admin.id))
+
+
 @router.get("/backups")
 def list_backups(admin: User = Depends(get_current_admin_user)):
     """Lista backups disponíveis (nome, data, tamanho)."""
