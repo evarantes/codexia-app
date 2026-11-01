@@ -143,6 +143,9 @@ def _normalize_official_logo(content: bytes) -> tuple[Image.Image, Dict[str, int
 def _serialize_settings_payload(settings: Settings, db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:
     settings = backfill_settings_from_legacy(db, settings=settings, user_id=user_id)
     payload = {column.name: getattr(settings, column.name) for column in Settings.__table__.columns}
+    # OAuth refresh tokens are write-only; the Drive panel uses a safe status API.
+    payload.pop("google_drive_refresh_token", None)
+    payload.pop("google_drive_folder_id", None)
     payload["bible_video_factory"] = serialize_official_factory_settings(settings)
     return payload
 

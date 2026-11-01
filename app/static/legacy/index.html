@@ -4523,6 +4523,31 @@
                         <label class="block font-bold mb-2">YouTube Refresh Token</label>
                         <input v-model="settings.youtube_refresh_token" type="password" class="w-full border p-2 rounded">
                     </div>
+                    <div class="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                                <h3 class="font-bold text-slate-900">Arquivo permanente no Google Drive</h3>
+                                <p class="mt-1 text-sm text-slate-600">Depois de conectar, novas mídias vão direto ao Drive. CX33 e servidor principal mantêm arquivos locais só durante a produção; a mídia antiga só é removida após confirmação de checksum.</p>
+                            </div>
+                            <span class="rounded px-2 py-1 text-xs font-bold" :class="googleDriveStatus.connected ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'">
+                                {{ googleDriveStatus.connected ? 'Conectado' : 'Não conectado' }}
+                            </span>
+                        </div>
+                        <p v-if="googleDriveStatus.error" class="mt-2 text-sm text-red-700">{{ googleDriveStatus.error }}</p>
+                        <p v-if="googleDriveRedirectUri" class="mt-2 break-all text-xs text-slate-500">Callback OAuth: {{ googleDriveRedirectUri }}</p>
+                        <div class="mt-3 flex flex-wrap gap-2">
+                            <button type="button" @click="connectGoogleDrive" class="rounded bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800">Conectar Google Drive</button>
+                            <button type="button" @click="fetchGoogleDriveStatus" :disabled="googleDriveStatus.checking" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Atualizar status</button>
+                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Migrando...' : 'Liberar espaço migrando arquivos antigos' }}</button>
+                        </div>
+                        <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
+                            Migração: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived || 0 }} arquivos · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
+                        </p>
+                        <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
+                            <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
+                        </ul>
+                        <p class="mt-2 text-xs text-slate-500">A migração processa até 5 arquivos antigos por rodada e ignora itens alterados nas últimas 24 horas. Banco de dados, código e cache ativo continuam nos servidores.</p>
+                    </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <div class="flex items-center justify-between">
                             <div>
@@ -5594,6 +5619,10 @@
                     officialChannelLogoUploading: false,
                     officialChannelLogoMessage: '',
                     officialChannelLogoMessageType: 'success',
+                    googleDriveStatus: { connected: false, checking: false, error: '' },
+                    googleDriveRedirectUri: '',
+                    googleDriveMigration: null,
+                    googleDriveMigrationBusy: false,
                     officialChannelLogoPreviewUrl: '',
                     officialChannelLogoPreviewObjectUrl: '',
                     settings: {
@@ -7510,6 +7539,78 @@
                     } finally {
                         this.officialChannelLogoUploading = false;
                     }
+                },
+                formatBytes(value) {
+                    const bytes = Math.max(0, Number(value || 0));
+                    if (bytes < 1024) return `${bytes} B`;
+                    const units = ['KB', 'MB', 'GB', 'TB'];
+                    let amount = bytes / 1024;
+                    let unit = 0;
+                    while (amount >= 1024 && unit < units.length - 1) {
+                        amount /= 1024;
+                        unit += 1;
+                    }
+                    return `${amount.toFixed(1)} ${units[unit]}`;
+                },
+                async fetchGoogleDriveStatus() {
+                    this.googleDriveStatus.checking = true;
+                    try {
+                        const response = await this.authFetch('/settings/google-drive/status');
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || 'Falha ao consultar o Google Drive.');
+                        this.googleDriveStatus = { connected: !!data.connected, checking: false, error: data.error || '' };
+                    } catch (error) {
+                        this.googleDriveStatus = { connected: false, checking: false, error: error && error.message ? error.message : 'Falha ao consultar o Google Drive.' };
+                    }
+                },
+                async connectGoogleDrive() {
+                    try {
+                        const response = await this.authFetch('/settings/google-drive/auth-url');
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok || !data.auth_url) throw new Error(data.detail || 'Não foi possível iniciar a autorização do Drive.');
+                        this.googleDriveRedirectUri = data.redirect_uri || '';
+                        const popup = window.open(data.auth_url, '_blank');
+                        if (!popup) window.location.href = data.auth_url;
+                    } catch (error) {
+                        this.googleDriveStatus.error = error && error.message ? error.message : 'Falha ao conectar o Google Drive.';
+                    }
+                },
+                async startGoogleDriveMigration() {
+                    if (!confirm('Arquivar e remover do servidor até 5 mídias com mais de 24 horas? Cada arquivo só será removido depois da confirmação do Google Drive.')) return;
+                    this.googleDriveMigrationBusy = true;
+                    this.googleDriveMigration = { status: 'iniciando', archived: 0, bytes_freed: 0, errors: [] };
+                    try {
+                        const response = await this.authFetch('/settings/google-drive/migrate/start?limit=5', { method: 'POST' });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok || !data.job_id) throw new Error(data.detail || 'Não foi possível iniciar a migração.');
+                        localStorage.setItem('google_drive_migration_job', data.job_id);
+                        await this.pollGoogleDriveMigration(data.job_id);
+                    } catch (error) {
+                        this.googleDriveMigration = { status: 'falhou', archived: 0, bytes_freed: 0, errors: [error && error.message ? error.message : 'Falha ao migrar arquivos.'] };
+                        this.googleDriveMigrationBusy = false;
+                    }
+                },
+                async pollGoogleDriveMigration(jobId) {
+                    for (let attempt = 0; attempt < 720; attempt += 1) {
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        try {
+                            const response = await this.authFetch(`/settings/google-drive/migrate/${encodeURIComponent(jobId)}`);
+                            const data = await response.json().catch(() => ({}));
+                            if (!response.ok) throw new Error(data.detail || 'Falha ao consultar a migração.');
+                            this.googleDriveMigration = data;
+                            if (['completed', 'completed_with_errors', 'failed'].includes(data.status)) {
+                                localStorage.removeItem('google_drive_migration_job');
+                                this.googleDriveMigrationBusy = false;
+                                await this.fetchGoogleDriveStatus();
+                                return;
+                            }
+                        } catch (error) {
+                            this.googleDriveMigration = { ...(this.googleDriveMigration || {}), status: 'não foi possível atualizar', errors: [error && error.message ? error.message : 'Falha ao consultar a migração.'] };
+                            this.googleDriveMigrationBusy = false;
+                            return;
+                        }
+                    }
+                    this.googleDriveMigrationBusy = false;
                 },
                 async fetchSettings() {
                     try {
@@ -12452,6 +12553,14 @@
                     }
                 } catch (_) {}
                 this.fetchYoutubeStats();
+                this.fetchGoogleDriveStatus();
+                try {
+                    const driveJobId = localStorage.getItem('google_drive_migration_job');
+                    if (driveJobId) {
+                        this.googleDriveMigrationBusy = true;
+                        this.pollGoogleDriveMigration(driveJobId);
+                    }
+                } catch (_) {}
             }
         }).mount('#app')
     </script>

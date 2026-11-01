@@ -80,14 +80,37 @@ def central_index(task, verify=True):
                             'sha256': digest(p) if verify else '', 'size': p.stat().st_size})
     unique = {}
     for item in entries:
-        p = Path(item.get('path') or '')
-        if p.is_file() and any(p.resolve().is_relative_to(r.resolve()) for r in roots().values()):
+        p = Path(item.get('path') or '') if item.get('path') else None
+        if p and p.is_file() and any(p.resolve().is_relative_to(r.resolve()) for r in roots().values()):
             actual = dict(item)
             if verify:
                 actual['sha256'] = digest(p)
                 actual['size'] = p.stat().st_size
             unique[(item['kind'], item['filename'])] = actual
+        elif item.get('drive_file_id') and item.get('sha256') and item.get('size') is not None:
+            # Drive-backed assets remain discoverable after all full-size local
+            # copies have been removed from the production servers.
+            unique[(item['kind'], item['filename'])] = dict(item)
     return list(unique.values())
+
+
+def find_drive_asset(kind, filename):
+    """Find the most recently indexed Drive copy for public media routes."""
+    from app.services.production_manifest import _root_dir, _read_json
+    if kind not in EXTENSIONS or Path(str(filename or '')).name != str(filename or ''):
+        return None
+    matches = []
+    try:
+        indexes = list(_root_dir().glob('*/central-index.json'))
+        indexes.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        for path in indexes:
+            for entry in (_read_json(path).get('files') or []):
+                if (entry.get('kind') == kind and entry.get('filename') == filename
+                        and entry.get('drive_file_id') and entry.get('sha256')):
+                    matches.append(entry)
+        return matches[0] if matches else None
+    except Exception:
+        return None
 
 
 def register(task, entry):
@@ -162,12 +185,12 @@ class CentralAssetTransfer:
         expected_previous_sha = ''
         response = None
         for _attempt in range(3):
-            headers = {'X-Content-SHA256': sha}
+            headers = {'X-Content-SHA256': sha, 'X-Content-Length': str(size)}
             if expected_previous_sha:
                 headers['X-Expected-Previous-SHA256'] = expected_previous_sha
             with p.open('rb') as stream:
                 response = self.session.put(self.endpoint(task, f'/{kind}/{filename}'), data=stream,
-                    headers=headers, timeout=(10, 300), allow_redirects=False)
+                    headers=headers, timeout=(10, 1800), allow_redirects=False)
             if response.status_code != 409:
                 response.raise_for_status()
                 break

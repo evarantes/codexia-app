@@ -82,4 +82,4 @@ ENV PYTHONUNBUFFERED=1
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-CMD sh -c 'if [ -z "${YOUTUBE_OAUTH_REDIRECT_URI:-}" ] && [ -n "${BASE_URL:-}" ]; then export YOUTUBE_OAUTH_REDIRECT_URI="${BASE_URL%/}/youtube/auth/callback"; fi; python scripts/apply_migrations.py && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'
+CMD sh -c 'if [ -z "${YOUTUBE_OAUTH_REDIRECT_URI:-}" ] && [ -n "${BASE_URL:-}" ]; then export YOUTUBE_OAUTH_REDIRECT_URI="${BASE_URL%/}/youtube/auth/callback"; fi; if [ -z "${GOOGLE_DRIVE_OAUTH_REDIRECT_URI:-}" ] && [ -n "${BASE_URL:-}" ]; then export GOOGLE_DRIVE_OAUTH_REDIRECT_URI="${BASE_URL%/}/settings/google-drive/callback"; fi; python scripts/apply_migrations.py && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'
