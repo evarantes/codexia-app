@@ -130,7 +130,7 @@ jobs:
         if: ${{ always() && steps.install_dependencies.outcome == 'success' }}
         run: |
           python scripts/apply_migrations.py
-          alembic current | grep --fixed-strings "d7e8f9a0b1c2"
+          alembic current | grep --fixed-strings "9a7b3c2d1e4f"
           python scripts/check_schema_consistency.py
 
       - name: Test VideoTask status sync against PostgreSQL

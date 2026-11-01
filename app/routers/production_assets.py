@@ -4,14 +4,23 @@ import hmac
 import os
 import tempfile
 import threading
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from contextlib import contextmanager
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from app.services.central_asset_transfer import archive_path, central_index, digest, register, task_key
+from app.services.google_drive_archive import (
+    DriveAssetConflict,
+    GoogleDriveArchive,
+    GoogleDriveArchiveError,
+)
 
 router = APIRouter(prefix='/internal/production-assets', include_in_schema=False)
 _ARCHIVE_WRITE_LOCK = threading.RLock()
+_ASYNC_FALLBACK_LOCKS = {}
+_ASYNC_FALLBACK_LOCKS_GUARD = threading.Lock()
 
 
 @contextmanager
@@ -30,6 +39,31 @@ def _archive_write_lock(path: Path):
                     yield
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@asynccontextmanager
+async def _archive_write_lock_async(path: Path):
+    """Hold the same cross-process lock without blocking the async upload loop."""
+    lock_path = path.parent / '.asset-archive.lock'
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows development fallback
+        key = str(lock_path.resolve())
+        with _ASYNC_FALLBACK_LOCKS_GUARD:
+            lock = _ASYNC_FALLBACK_LOCKS.setdefault(key, asyncio.Lock())
+        async with lock:
+            yield
+        return
+
+    lock_file = lock_path.open('a+b')
+    try:
+        await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
 
 
 def authenticate(x_codexia_asset_token: str = Header(default='')):
@@ -53,14 +87,18 @@ def files(task: str):
 def download(task: str, kind: str, filename: str):
     for entry in central_index(task, verify=False):
         if entry['kind'] == kind and entry['filename'] == filename:
-            return FileResponse(entry['path'])
+            if entry.get('path') and Path(entry['path']).is_file():
+                return FileResponse(entry['path'])
+            if entry.get('drive_file_id'):
+                return GoogleDriveArchive().stream_response(entry)
     raise HTTPException(404, 'Ativo não arquivado nesta produção')
 
 
 @router.put('/{task}/{kind}/{filename}', dependencies=[Depends(authenticate)])
 async def upload(task: str, kind: str, filename: str, request: Request,
                  x_content_sha256: str = Header(default=''),
-                 x_expected_previous_sha256: str = Header(default='')):
+                 x_expected_previous_sha256: str = Header(default=''),
+                 x_content_length: int = Header(default=0)):
     try:
         task_key(task)
         path = archive_path(kind, filename, task=task)
@@ -73,6 +111,37 @@ async def upload(task: str, kind: str, filename: str, request: Request,
         or any(c not in '0123456789abcdef' for c in x_expected_previous_sha256)
     ):
         raise HTTPException(400, 'SHA256 anterior inválido')
+
+    # Once a Drive account is connected, stream chunks directly to its
+    # resumable-upload session. No full-size media file is written to /data.
+    drive = GoogleDriveArchive()
+    try:
+        drive_configured = drive.is_configured()
+    except GoogleDriveArchiveError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if drive_configured:
+        max_bytes = int(os.getenv('CODEXIA_ASSET_MAX_BYTES', str(4 * 1024**3)))
+        if x_content_length <= 0:
+            raise HTTPException(411, 'Tamanho do ativo obrigatório para upload direto ao Google Drive')
+        if x_content_length > max_bytes:
+            raise HTTPException(413, 'Ativo excede o limite de transferência')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            async with _archive_write_lock_async(path):
+                entry = await drive.upload_stream(
+                    task, kind, filename, request.stream(), x_content_sha256,
+                    x_content_length, x_expected_previous_sha256,
+                )
+                register(task, entry)
+        except DriveAssetConflict as exc:
+            raise HTTPException(status_code=409, detail={
+                'code': 'ASSET_CONTENT_CONFLICT', 'existing_sha256': exc.existing_sha256,
+                'message': str(exc),
+            })
+        except (GoogleDriveArchiveError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        return entry
+
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, suffix='.upload')
     tmp = Path(temporary)
