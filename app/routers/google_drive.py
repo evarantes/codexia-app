@@ -7,6 +7,7 @@ import hmac
 import logging
 import os
 import re
+import secrets
 import shutil
 import time
 import uuid
@@ -111,6 +112,8 @@ def _oauth_error_reason(exc: Exception) -> str:
     if not isinstance(description, str) or not description.strip():
         return "unavailable"
     normalized = re.sub(r"[^a-z0-9]+", " ", description.lower()).strip()
+    if "missing code verifier" in normalized or "missing code_verifier" in description.lower():
+        return "pkce_verifier_missing"
     if "token has been expired or revoked" in normalized:
         return "token_expired_or_revoked"
     if "redirect" in normalized and "uri" in normalized:
@@ -245,12 +248,16 @@ def google_drive_auth_url(
         raise HTTPException(400, "O Google Drive exige callback HTTPS. Configure GOOGLE_DRIVE_OAUTH_REDIRECT_URI com a URL HTTPS pública do app.")
     flow_id = uuid.uuid4().hex[:12]
     client_fingerprint = _oauth_pair_fingerprint(client_id, client_secret)
+    # PKCE requires the same verifier at authorization and token exchange.
+    # Encrypt it because OAuth state is signed but otherwise readable in URLs.
+    code_verifier = secrets.token_urlsafe(64)
     state = _STATE.dumps({
         "user_id": int(current_user.id), "redirect_uri": redirect_uri,
         "account_id": int(existing_account.id) if existing_account else None,
         "label": account_label, "nonce": uuid.uuid4().hex,
         "flow_id": flow_id, "issued_at": int(time.time()),
         "client_fingerprint": client_fingerprint,
+        "code_verifier": encrypt_drive_secret(code_verifier),
     })
     client_config = {"web": {
         "client_id": client_id,
@@ -260,7 +267,10 @@ def google_drive_auth_url(
         "redirect_uris": [redirect_uri],
     }}
     try:
-        flow = Flow.from_client_config(client_config, scopes=[DRIVE_SCOPE], state=state)
+        flow = Flow.from_client_config(
+            client_config, scopes=[DRIVE_SCOPE], state=state,
+            code_verifier=code_verifier, autogenerate_code_verifier=False,
+        )
         flow.redirect_uri = redirect_uri
         auth_url, _ = flow.authorization_url(
             access_type="offline", prompt="consent select_account", include_granted_scopes="true", state=state,
@@ -293,11 +303,17 @@ def google_drive_oauth_callback(
         account_label = str(state_data.get("label") or "Conta Google Drive").strip()[:120]
         flow_id = str(state_data.get("flow_id") or "legacy")[:32]
         state_client_fingerprint = str(state_data.get("client_fingerprint") or "")
+        encrypted_code_verifier = str(state_data.get("code_verifier") or "")
+        if not encrypted_code_verifier:
+            raise ValueError("PKCE verifier missing from OAuth state")
+        code_verifier = decrypt_drive_secret(encrypted_code_verifier)
+        if not code_verifier:
+            raise ValueError("PKCE verifier could not be decrypted")
         try:
             flow_age_seconds = max(0, int(time.time() - float(state_data["issued_at"])))
         except (KeyError, TypeError, ValueError, OverflowError):
             flow_age_seconds = "unavailable"
-    except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError):
+    except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError, GoogleDriveArchiveError):
         return HTMLResponse("<h2>Autorização expirada</h2><p>Feche esta aba e conecte o Google Drive novamente nas Configurações.</p>", status_code=400)
     if not code:
         return HTMLResponse("<h2>Código Google ausente</h2><p>Feche esta aba e tente conectar novamente.</p>", status_code=400)
@@ -326,7 +342,10 @@ def google_drive_oauth_callback(
             "token_uri": "https://oauth2.googleapis.com/token",
             "redirect_uris": [redirect_uri],
         }}
-        flow = Flow.from_client_config(client_config, scopes=[DRIVE_SCOPE], state=state)
+        flow = Flow.from_client_config(
+            client_config, scopes=[DRIVE_SCOPE], state=state,
+            code_verifier=code_verifier, autogenerate_code_verifier=False,
+        )
         flow.redirect_uri = redirect_uri
         oauth_stage = "exchange_authorization_code"
         flow.fetch_token(code=code)
