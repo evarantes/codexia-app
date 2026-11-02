@@ -4523,6 +4523,19 @@
                         <label class="block font-bold mb-2">YouTube Refresh Token</label>
                         <input v-model="settings.youtube_refresh_token" type="password" class="w-full border p-2 rounded">
                     </div>
+                    <div class="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                        <h3 class="font-bold text-slate-900">Credenciais OAuth do Google Drive</h3>
+                        <p class="mt-1 mb-3 text-sm text-slate-600">Estas credenciais são separadas das credenciais do YouTube. Use um cliente OAuth do tipo Aplicativo da Web e cadastre abaixo o callback exibido nesta página. O segredo é armazenado criptografado; depois de salvo, ele não é exibido. Deixe o campo vazio para manter o segredo atual.</p>
+                        <div class="mb-3">
+                            <label class="mb-1 block text-sm font-semibold text-slate-700">Google Drive Client ID</label>
+                            <input v-model="settings.google_drive_client_id" class="w-full rounded border p-2 text-sm" placeholder="...apps.googleusercontent.com">
+                        </div>
+                        <div>
+                            <label class="mb-1 block text-sm font-semibold text-slate-700">Google Drive Client Secret</label>
+                            <input v-model="settings.google_drive_client_secret" type="password" autocomplete="new-password" class="w-full rounded border p-2 text-sm" :placeholder="settings.google_drive_client_secret_configured ? 'Salvo — preencha apenas para substituir' : 'Cole o Client Secret do OAuth Client do Drive'">
+                            <p v-if="settings.google_drive_client_secret_configured" class="mt-1 text-xs text-emerald-700">Client Secret do Drive salvo.</p>
+                        </div>
+                    </div>
                     <div class="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
                         <div class="flex flex-wrap items-center justify-between gap-2">
                             <div>
@@ -5686,6 +5699,9 @@
                         ai_provider: 'openrouter',
                         youtube_client_id: '',
                         youtube_client_secret: '',
+                        google_drive_client_id: '',
+                        google_drive_client_secret: '',
+                        google_drive_client_secret_configured: false,
                         youtube_refresh_token: '',
                         official_channel_logo_path: '',
                         official_channel_logo_url: '',
@@ -10307,6 +10323,7 @@
                                     };
                                 } catch (e) {}
                             }
+                            this.settings.google_drive_client_secret = '';
                             this.settings.openai_image_model = this.settings.openai_image_model || '';
                             try { await this.fetchOpenAIImageModels(); } catch (e) {}
                             try { await this.fetchAiCredits(); } catch (e) {}
