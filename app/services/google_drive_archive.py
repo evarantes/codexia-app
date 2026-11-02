@@ -83,6 +83,30 @@ class DriveAssetConflict(GoogleDriveArchiveError):
         super().__init__("O Google Drive já contém uma versão diferente deste ativo.")
 
 
+def google_drive_oauth_client_credentials(settings: Optional[Settings]) -> tuple[str, str]:
+    """Resolve a complete Drive OAuth pair, then falls back to legacy YouTube credentials."""
+    drive_client_id = str(getattr(settings, "google_drive_client_id", None) or "").strip()
+    drive_secret = str(getattr(settings, "google_drive_client_secret", None) or "").strip()
+    if drive_client_id and drive_secret:
+        return drive_client_id, decrypt_drive_secret(drive_secret).strip()
+
+    env_drive_id = str(os.getenv("GOOGLE_DRIVE_CLIENT_ID") or "").strip()
+    env_drive_secret = str(os.getenv("GOOGLE_DRIVE_CLIENT_SECRET") or "").strip()
+    if env_drive_id and env_drive_secret:
+        return env_drive_id, env_drive_secret
+
+    youtube_client_id = str(getattr(settings, "youtube_client_id", None) or "").strip()
+    youtube_secret = str(getattr(settings, "youtube_client_secret", None) or "").strip()
+    if youtube_client_id and youtube_secret:
+        return youtube_client_id, youtube_secret
+
+    env_youtube_id = str(os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
+    env_youtube_secret = str(os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
+    if env_youtube_id and env_youtube_secret:
+        return env_youtube_id, env_youtube_secret
+    return "", ""
+
+
 def _quoted(value: str) -> str:
     return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
@@ -253,8 +277,8 @@ class GoogleDriveArchive:
                     (getattr(account, "refresh_token", None) or getattr(row, "google_drive_refresh_token", None) or "")
                 ),
                 "folder_id": (getattr(account, "folder_id", None) or getattr(row, "google_drive_folder_id", None) or "").strip(),
-                "client_id": (os.getenv("GOOGLE_DRIVE_CLIENT_ID") or getattr(row, "youtube_client_id", None) or os.getenv("YOUTUBE_CLIENT_ID") or "").strip(),
-                "client_secret": (os.getenv("GOOGLE_DRIVE_CLIENT_SECRET") or getattr(row, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip(),
+                "client_id": google_drive_oauth_client_credentials(row)[0],
+                "client_secret": google_drive_oauth_client_credentials(row)[1],
             }
         finally:
             db.close()
