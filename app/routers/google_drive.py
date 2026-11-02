@@ -37,6 +37,7 @@ from app.services.google_drive_archive import (
     decrypt_drive_secret,
     encrypt_drive_secret,
     encrypt_refresh_token,
+    google_drive_oauth_client_credentials,
 )
 
 router = APIRouter(prefix="/settings/google-drive", tags=["Google Drive archive"])
@@ -73,10 +74,15 @@ def _drive_upload_session_lock(task: str, kind: str, filename: str):
 
 
 def _oauth_credentials(settings: Settings) -> tuple[str, str]:
-    client_id = (os.getenv("GOOGLE_DRIVE_CLIENT_ID") or getattr(settings, "youtube_client_id", None) or os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
-    client_secret = (os.getenv("GOOGLE_DRIVE_CLIENT_SECRET") or getattr(settings, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
+    try:
+        client_id, client_secret = google_drive_oauth_client_credentials(settings)
+    except GoogleDriveArchiveError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not client_id or not client_secret:
-        raise HTTPException(400, "Configure primeiro o Client ID e o Client Secret OAuth do Google nas Configurações.")
+        raise HTTPException(
+            400,
+            "Configure o Client ID e o Client Secret exclusivos do Google Drive em Configurações.",
+        )
     return client_id, client_secret
 
 

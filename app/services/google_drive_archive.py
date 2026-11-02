@@ -65,7 +65,7 @@ def _decrypt_refresh_token(token: str) -> str:
 
 
 def encrypt_drive_secret(value: str) -> str:
-    """Encrypt short-lived Drive capability URLs before persisting upload state."""
+    """Encrypt a Google Drive secret before persisting it."""
     return encrypt_refresh_token(value)
 
 
@@ -81,6 +81,20 @@ class DriveAssetConflict(GoogleDriveArchiveError):
     def __init__(self, existing_sha256: str):
         self.existing_sha256 = existing_sha256
         super().__init__("O Google Drive já contém uma versão diferente deste ativo.")
+
+
+def google_drive_oauth_client_credentials(settings: Optional[Settings]) -> tuple[str, str]:
+    """Resolve Google Drive OAuth credentials without reading YouTube settings."""
+    drive_client_id = str(getattr(settings, "google_drive_client_id", None) or "").strip()
+    drive_secret = str(getattr(settings, "google_drive_client_secret", None) or "").strip()
+    if drive_client_id and drive_secret:
+        return drive_client_id, decrypt_drive_secret(drive_secret).strip()
+
+    env_drive_id = str(os.getenv("GOOGLE_DRIVE_CLIENT_ID") or "").strip()
+    env_drive_secret = str(os.getenv("GOOGLE_DRIVE_CLIENT_SECRET") or "").strip()
+    if env_drive_id and env_drive_secret:
+        return env_drive_id, env_drive_secret
+    return "", ""
 
 
 def _quoted(value: str) -> str:
@@ -245,6 +259,7 @@ class GoogleDriveArchive:
                 row = (db.query(Settings)
                        .filter(Settings.google_drive_refresh_token.isnot(None))
                        .order_by(desc(Settings.id)).first())
+            client_id, client_secret = google_drive_oauth_client_credentials(row)
             return {
                 "id": getattr(row, "id", None),
                 "account_id": getattr(account, "id", None),
@@ -253,8 +268,8 @@ class GoogleDriveArchive:
                     (getattr(account, "refresh_token", None) or getattr(row, "google_drive_refresh_token", None) or "")
                 ),
                 "folder_id": (getattr(account, "folder_id", None) or getattr(row, "google_drive_folder_id", None) or "").strip(),
-                "client_id": (os.getenv("GOOGLE_DRIVE_CLIENT_ID") or getattr(row, "youtube_client_id", None) or os.getenv("YOUTUBE_CLIENT_ID") or "").strip(),
-                "client_secret": (os.getenv("GOOGLE_DRIVE_CLIENT_SECRET") or getattr(row, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip(),
+                "client_id": client_id,
+                "client_secret": client_secret,
             }
         finally:
             db.close()

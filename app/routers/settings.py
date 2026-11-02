@@ -27,6 +27,7 @@ from app.services.global_settings_service import (
     serialize_official_factory_settings,
 )
 from app.services.openai_image_models import available_openai_image_models
+from app.services.google_drive_archive import encrypt_drive_secret
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -146,6 +147,10 @@ def _serialize_settings_payload(settings: Settings, db: Session, user_id: Option
     # OAuth refresh tokens are write-only; the Drive panel uses a safe status API.
     payload.pop("google_drive_refresh_token", None)
     payload.pop("google_drive_folder_id", None)
+    payload.pop("google_drive_client_secret", None)
+    payload["google_drive_client_secret_configured"] = bool(
+        str(getattr(settings, "google_drive_client_secret", None) or "").strip()
+    )
     payload["bible_video_factory"] = serialize_official_factory_settings(settings)
     return payload
 
@@ -403,6 +408,8 @@ class SettingsUpdate(BaseModel):
     mercadopago_access_token: Optional[str] = None
     youtube_client_id: Optional[str] = None
     youtube_client_secret: Optional[str] = None
+    google_drive_client_id: Optional[str] = None
+    google_drive_client_secret: Optional[str] = None
     youtube_refresh_token: Optional[str] = None
     official_channel_logo_path: Optional[str] = None
     official_channel_logo_url: Optional[str] = None
@@ -1141,6 +1148,15 @@ def update_settings(settings_update: SettingsUpdate, db: Session = Depends(get_d
         v = str(settings_update.youtube_refresh_token).strip()
         if v:
             settings.youtube_refresh_token = v
+    # Drive OAuth has its own credentials, independent from YouTube.
+    if settings_update.google_drive_client_id is not None:
+        v = str(settings_update.google_drive_client_id).strip()
+        if v:
+            settings.google_drive_client_id = v
+    if settings_update.google_drive_client_secret is not None:
+        v = str(settings_update.google_drive_client_secret).strip()
+        if v:
+            settings.google_drive_client_secret = encrypt_drive_secret(v)
     if settings_update.official_channel_logo_path is not None:
         v = str(settings_update.official_channel_logo_path).strip()
         settings.official_channel_logo_path = v or None

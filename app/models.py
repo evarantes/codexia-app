@@ -187,6 +187,8 @@ class Settings(Base):
     # YouTube Integration
     youtube_client_id = Column(String, nullable=True)
     youtube_client_secret = Column(String, nullable=True)
+    google_drive_client_id = Column(String, nullable=True)
+    google_drive_client_secret = Column(String, nullable=True)
     youtube_refresh_token = Column(String, nullable=True)
     google_drive_refresh_token = Column(String, nullable=True)
     google_drive_folder_id = Column(String, nullable=True)
