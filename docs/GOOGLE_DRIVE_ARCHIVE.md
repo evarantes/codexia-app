@@ -8,9 +8,10 @@ Banco PostgreSQL, Redis, código, logs e cache ativo do renderizador não são m
 
 1. No Google Cloud Console, selecione o projeto OAuth usado pela Codexia e habilite a **Google Drive API**.
 2. Configure a tela de consentimento OAuth e autorize a conta Google que será dona do arquivo.
-3. Use um OAuth Client do tipo **Web application**. Adicione exatamente a URL de callback exibida em Configurações da Codexia. Com `BASE_URL` em HTTPS, o deploy define automaticamente `/settings/google-drive/callback`; também pode ser configurada pela variável `GOOGLE_DRIVE_OAUTH_REDIRECT_URI`.
-4. A Codexia solicita apenas o escopo `drive.file`, que permite ao app criar e acessar os próprios arquivos. O app cria a pasta `Codexia Archive` e subpastas por tarefa.
-5. Abra **Configurações → Arquivo permanente no Google Drive**, dê um nome à conta, conecte-a e confirme. É possível conectar várias contas, definir a principal e pausar uma conta para novos projetos. Novas tarefas são distribuídas entre as contas ativas; cada projeto fica permanentemente associado à conta inicialmente escolhida. Projetos antigos continuam vinculados à conta original, mesmo quando ela é pausada. Os tokens de atualização ficam criptografados no banco usando `SECRET_KEY`; mantenha essa chave estável entre deploys.
+3. Crie um OAuth Client do tipo **Aplicativo da Web**. Em **Configurações → Configurações OAuth do Google Drive** na Codexia, informe o Client ID e o Client Secret próprios do Drive. Eles ficam separados das credenciais do YouTube; o segredo é criptografado no banco usando `SECRET_KEY` e não é retornado pela API.
+4. Copie a URL **Callback OAuth** exibida no painel do Google Drive da Codexia e cadastre-a em **URIs de redirecionamento autorizados** no OAuth Client. Com `BASE_URL` em HTTPS, o caminho é `/settings/google-drive/callback`; também pode ser configurada pela variável `GOOGLE_DRIVE_OAUTH_REDIRECT_URI`.
+5. A Codexia solicita apenas o escopo `drive.file`, que permite ao app criar e acessar os próprios arquivos. O app cria a pasta `Codexia Archive` e subpastas por tarefa.
+6. Na mesma página da Codexia, dê um nome à conta, conecte-a e confirme. É possível conectar várias contas, definir a principal e pausar uma conta para novos projetos. Novas tarefas são distribuídas entre as contas ativas; cada projeto fica permanentemente associado à conta inicialmente escolhida. Projetos antigos continuam vinculados à conta original, mesmo quando ela é pausada. Os tokens de atualização ficam criptografados no banco usando `SECRET_KEY`; mantenha essa chave estável entre deploys.
 
 ## Arquivos já existentes
 
