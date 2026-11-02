@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -90,6 +91,37 @@ def _oauth_credentials(settings: Settings) -> tuple[str, str]:
 
 def _callback_uri(request: Request) -> str:
     return (os.getenv("GOOGLE_DRIVE_OAUTH_REDIRECT_URI") or str(request.url_for("google_drive_oauth_callback"))).strip()
+
+
+def _oauth_pair_fingerprint(client_id: str, client_secret: str) -> str:
+    """Return a keyed, short fingerprint so OAuth attempts can be compared without logging secrets."""
+    key = str(SECRET_KEY).encode("utf-8")
+    material = f"{client_id}\0{client_secret}".encode("utf-8")
+    return hmac.new(key, material, hashlib.sha256).hexdigest()[:12]
+
+
+def _oauth_error_reason(exc: Exception) -> str:
+    """Map Google's description to a fixed label; never log provider-supplied text."""
+    description = getattr(exc, "description", None)
+    if not isinstance(description, str) or not description.strip():
+        for arg in getattr(exc, "args", ()):
+            if isinstance(arg, dict) and isinstance(arg.get("error_description"), str):
+                description = arg["error_description"]
+                break
+    if not isinstance(description, str) or not description.strip():
+        return "unavailable"
+    normalized = re.sub(r"[^a-z0-9]+", " ", description.lower()).strip()
+    if "token has been expired or revoked" in normalized:
+        return "token_expired_or_revoked"
+    if "redirect" in normalized and "uri" in normalized:
+        return "redirect_uri_rejected"
+    if "client" in normalized and any(word in normalized for word in ("invalid", "deleted", "unauthorized")):
+        return "client_rejected"
+    if "code" in normalized and any(word in normalized for word in ("invalid", "expired", "used")):
+        return "authorization_code_rejected"
+    if "bad request" in normalized:
+        return "bad_request"
+    return "other"
 
 
 @router.get("/status")
@@ -211,10 +243,14 @@ def google_drive_auth_url(
     redirect_uri = _callback_uri(request)
     if not redirect_uri.startswith("https://") and "localhost" not in redirect_uri and "127.0.0.1" not in redirect_uri:
         raise HTTPException(400, "O Google Drive exige callback HTTPS. Configure GOOGLE_DRIVE_OAUTH_REDIRECT_URI com a URL HTTPS pública do app.")
+    flow_id = uuid.uuid4().hex[:12]
+    client_fingerprint = _oauth_pair_fingerprint(client_id, client_secret)
     state = _STATE.dumps({
         "user_id": int(current_user.id), "redirect_uri": redirect_uri,
         "account_id": int(existing_account.id) if existing_account else None,
         "label": account_label, "nonce": uuid.uuid4().hex,
+        "flow_id": flow_id, "issued_at": int(time.time()),
+        "client_fingerprint": client_fingerprint,
     })
     client_config = {"web": {
         "client_id": client_id,
@@ -231,6 +267,11 @@ def google_drive_auth_url(
         )
     except Exception as exc:
         raise HTTPException(400, "Não foi possível iniciar a autorização do Google Drive. Verifique o OAuth Client e o callback cadastrado.") from exc
+    redirect_fingerprint = hashlib.sha256(redirect_uri.encode("utf-8")).hexdigest()[:12]
+    logger.info(
+        "Google Drive OAuth authorization started: flow_id=%s client_fingerprint=%s redirect_fingerprint=%s",
+        flow_id, client_fingerprint, redirect_fingerprint,
+    )
     return {"auth_url": auth_url, "redirect_uri": redirect_uri}
 
 
@@ -250,6 +291,12 @@ def google_drive_oauth_callback(
         redirect_uri = str(state_data["redirect_uri"])
         account_id = state_data.get("account_id")
         account_label = str(state_data.get("label") or "Conta Google Drive").strip()[:120]
+        flow_id = str(state_data.get("flow_id") or "legacy")[:32]
+        state_client_fingerprint = str(state_data.get("client_fingerprint") or "")
+        try:
+            flow_age_seconds = max(0, int(time.time() - float(state_data["issued_at"])))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            flow_age_seconds = "unavailable"
     except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError):
         return HTMLResponse("<h2>Autorização expirada</h2><p>Feche esta aba e conecte o Google Drive novamente nas Configurações.</p>", status_code=400)
     if not code:
@@ -258,6 +305,19 @@ def google_drive_oauth_callback(
     oauth_stage = "load_client_credentials"
     try:
         client_id, client_secret = _oauth_credentials(settings)
+        current_client_fingerprint = _oauth_pair_fingerprint(client_id, client_secret)
+        callback_redirect_uri = _callback_uri(request)
+        redirect_fingerprint = hashlib.sha256(redirect_uri.encode("utf-8")).hexdigest()[:12]
+        callback_redirect_fingerprint = hashlib.sha256(callback_redirect_uri.encode("utf-8")).hexdigest()[:12]
+        logger.info(
+            "Google Drive OAuth callback received: flow_id=%s flow_age_seconds=%s "
+            "credentials_match_state=%s callback_uri_matches_state=%s "
+            "redirect_fingerprint=%s callback_redirect_fingerprint=%s",
+            flow_id, flow_age_seconds,
+            "yes" if state_client_fingerprint and hmac.compare_digest(state_client_fingerprint, current_client_fingerprint) else "no",
+            "yes" if callback_redirect_uri == redirect_uri else "no",
+            redirect_fingerprint, callback_redirect_fingerprint,
+        )
         oauth_stage = "create_oauth_flow"
         client_config = {"web": {
             "client_id": client_id,
@@ -328,8 +388,10 @@ def google_drive_oauth_callback(
         if not isinstance(http_status, int):
             http_status = "unavailable"
         logger.warning(
-            "Google Drive OAuth callback failed: stage=%s exception_type=%s oauth_error=%s http_status=%s",
-            oauth_stage, type(exc).__name__, oauth_error, http_status,
+            "Google Drive OAuth callback failed: flow_id=%s stage=%s exception_type=%s "
+            "oauth_error=%s oauth_reason=%s http_status=%s",
+            flow_id, oauth_stage, type(exc).__name__, oauth_error,
+            _oauth_error_reason(exc), http_status,
         )
         message = str(exc) if isinstance(exc, (RuntimeError, GoogleDriveArchiveError)) else "Falha ao trocar o código OAuth. Confira as credenciais e o callback HTTPS do Google Cloud."
         return HTMLResponse(f"<h2>Falha ao conectar Google Drive</h2><p>{escape(message)}</p><p>Feche esta aba e revise as Configurações do Google OAuth.</p>", status_code=400)
