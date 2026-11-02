@@ -84,7 +84,7 @@ class DriveAssetConflict(GoogleDriveArchiveError):
 
 
 def google_drive_oauth_client_credentials(settings: Optional[Settings]) -> tuple[str, str]:
-    """Resolve a complete Drive OAuth pair, then falls back to legacy YouTube credentials."""
+    """Resolve Google Drive OAuth credentials without reading YouTube settings."""
     drive_client_id = str(getattr(settings, "google_drive_client_id", None) or "").strip()
     drive_secret = str(getattr(settings, "google_drive_client_secret", None) or "").strip()
     if drive_client_id and drive_secret:
@@ -94,16 +94,6 @@ def google_drive_oauth_client_credentials(settings: Optional[Settings]) -> tuple
     env_drive_secret = str(os.getenv("GOOGLE_DRIVE_CLIENT_SECRET") or "").strip()
     if env_drive_id and env_drive_secret:
         return env_drive_id, env_drive_secret
-
-    youtube_client_id = str(getattr(settings, "youtube_client_id", None) or "").strip()
-    youtube_secret = str(getattr(settings, "youtube_client_secret", None) or "").strip()
-    if youtube_client_id and youtube_secret:
-        return youtube_client_id, youtube_secret
-
-    env_youtube_id = str(os.getenv("YOUTUBE_CLIENT_ID") or "").strip()
-    env_youtube_secret = str(os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip()
-    if env_youtube_id and env_youtube_secret:
-        return env_youtube_id, env_youtube_secret
     return "", ""
 
 
