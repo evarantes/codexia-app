@@ -65,7 +65,7 @@ def _decrypt_refresh_token(token: str) -> str:
 
 
 def encrypt_drive_secret(value: str) -> str:
-    """Encrypt short-lived Drive capability URLs before persisting upload state."""
+    """Encrypt a Google Drive secret before persisting it."""
     return encrypt_refresh_token(value)
 
 
@@ -269,6 +269,7 @@ class GoogleDriveArchive:
                 row = (db.query(Settings)
                        .filter(Settings.google_drive_refresh_token.isnot(None))
                        .order_by(desc(Settings.id)).first())
+            client_id, client_secret = google_drive_oauth_client_credentials(row)
             return {
                 "id": getattr(row, "id", None),
                 "account_id": getattr(account, "id", None),
@@ -277,8 +278,8 @@ class GoogleDriveArchive:
                     (getattr(account, "refresh_token", None) or getattr(row, "google_drive_refresh_token", None) or "")
                 ),
                 "folder_id": (getattr(account, "folder_id", None) or getattr(row, "google_drive_folder_id", None) or "").strip(),
-                "client_id": google_drive_oauth_client_credentials(row)[0],
-                "client_secret": google_drive_oauth_client_credentials(row)[1],
+                "client_id": client_id,
+                "client_secret": client_secret,
             }
         finally:
             db.close()
