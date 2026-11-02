@@ -16,82 +16,97 @@ class CentralTransferTests(unittest.TestCase):
     def setUp(self):
         _ACK.clear()
 
-    def test_archive_auth_integrity_and_task_scoped_download(self):
+    def test_archive_rejects_relay_and_scopes_download(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             app = FastAPI(); app.include_router(router)
             roots = {kind: root / kind for kind in ('image', 'audio', 'video', 'caption', 'script')}
             env = {'CODEXIA_ASSET_ARCHIVE_ROLE': 'archive', 'CODEXIA_ASSET_TRANSFER_TOKEN': 'test-token'}
+            task_file = roots['image'] / 'task' / 'one.png'
+            other_file = roots['image'] / 'other' / 'one.png'
+            task_file.parent.mkdir(parents=True)
+            other_file.parent.mkdir(parents=True)
+            task_file.write_bytes(b'task image')
+            other_file.write_bytes(b'other task image')
+            indexed = {
+                'task': [{'kind': 'image', 'filename': 'one.png', 'path': str(task_file)}],
+                'other': [{'kind': 'image', 'filename': 'one.png', 'path': str(other_file)}],
+            }
             with patch.dict(os.environ, env), patch('app.services.central_asset_transfer.roots', return_value=roots), \
                  patch('app.services.central_asset_transfer.index_path', side_effect=lambda task: root / f'{task}.json'), \
+                 patch('app.services.production_manifest._read_json', side_effect=lambda path: {'files': indexed.get(Path(path).stem, [])}), \
                  patch('app.services.production_manifest.load_manifest', return_value={}):
                 client = TestClient(app)
                 url = '/internal/production-assets/task/image/one.png'
-                body = b'valid bytes'; sha = hashlib.sha256(body).hexdigest()
-                self.assertEqual(client.put(url, content=body).status_code, 401)
-                headers = {'X-Codexia-Asset-Token': 'test-token', 'X-Content-SHA256': sha}
-                self.assertEqual(client.put(url, content=b'bad', headers=headers).status_code, 422)
-                self.assertFalse((roots['image'] / 'task' / 'one.png').exists())
-                self.assertEqual(client.put(url, content=body, headers=headers).status_code, 200)
-                self.assertEqual(client.get(url, headers=headers).content, body)
-                self.assertEqual(client.get(url.replace('/task/', '/other/'), headers=headers).status_code, 404)
-                bad_headers = dict(headers, **{'X-Content-SHA256': hashlib.sha256(b'changed').hexdigest()})
-                conflict = client.put(url, content=b'changed', headers=bad_headers)
-                self.assertEqual(conflict.status_code, 409)
-                old_sha = hashlib.sha256(body).hexdigest()
-                self.assertEqual(conflict.json()['detail']['existing_sha256'], old_sha)
-                self.assertEqual((roots['image'] / 'task' / 'one.png').read_bytes(), body)
-                replace_headers = dict(bad_headers, **{'X-Expected-Previous-SHA256': old_sha})
-                self.assertEqual(client.put(url, content=b'changed', headers=replace_headers).status_code, 200)
-                self.assertEqual((roots['image'] / 'task' / 'one.png').read_bytes(), b'changed')
-                stale_headers = dict(headers, **{
-                    'X-Content-SHA256': hashlib.sha256(b'other change').hexdigest(),
-                    'X-Expected-Previous-SHA256': old_sha,
-                })
-                stale = client.put(url, content=b'other change', headers=stale_headers)
-                self.assertEqual(stale.status_code, 409)
-                self.assertEqual(stale.json()['detail']['existing_sha256'], hashlib.sha256(b'changed').hexdigest())
-                # Same filename from another production is an independent asset.
-                other_body = b'other production content'
-                other_headers = dict(headers, **{'X-Content-SHA256': hashlib.sha256(other_body).hexdigest()})
+                headers = {'X-Codexia-Asset-Token': 'test-token'}
+                self.assertEqual(client.put(url, content=b'valid bytes').status_code, 401)
+                # The main server is metadata/control-plane only. Old worker
+                # clients are rejected before the media body is relayed here.
+                self.assertEqual(client.put(url, content=b'valid bytes', headers=headers).status_code, 410)
+                self.assertEqual(client.get(url, headers=headers).content, b'task image')
                 other_url = url.replace('/task/', '/other/')
-                self.assertEqual(client.put(other_url, content=other_body, headers=other_headers).status_code, 200)
-                self.assertEqual(client.get(other_url, headers=other_headers).content, other_body)
-                self.assertEqual((roots['image'] / 'task' / 'one.png').read_bytes(), b'changed')
-                self.assertEqual((roots['image'] / 'other' / 'one.png').read_bytes(), other_body)
-                # Retries for identical content succeed without conflict.
-                changed_headers = dict(headers, **{'X-Content-SHA256': hashlib.sha256(b'changed').hexdigest()})
-                self.assertEqual(client.put(url, content=b'changed', headers=changed_headers).status_code, 200)
-                self.assertEqual(client.get(url, headers=headers).content, b'changed')
+                self.assertEqual(client.get(other_url, headers=headers).content, b'other task image')
+                self.assertEqual(client.get(url.replace('/task/', '/missing/'), headers=headers).status_code, 404)
 
     def test_unconfirmed_upload_preserves_source(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'CODEXIA_ASSET_ARCHIVE_URL': 'https://archive.example', 'CODEXIA_ASSET_TRANSFER_TOKEN': 'test'}):
             p = Path(directory) / 'one.png'; p.write_bytes(b'image')
             transfer = CentralAssetTransfer()
-            response = Mock(status_code=200); response.json.return_value = {'sha256': 'wrong', 'size': 5}
-            transfer.session.put = Mock(return_value=response)
-            with self.assertRaisesRegex(RuntimeError, 'integridade'):
-                transfer.publish('task', p, 'image')
+            index_response = Mock(status_code=200); index_response.json.return_value = {'files': []}
+            session_response = Mock(status_code=200)
+            session_response.json.return_value = {
+                'upload_url': 'https://www.googleapis.com/upload/drive/v3/files?upload_id=test',
+                'drive_account_id': 1,
+            }
+            query_response = Mock(status_code=308, headers={})
+            upload_response = Mock(status_code=201)
+            upload_response.json.return_value = {
+                'id': 'drive-file', 'size': str(p.stat().st_size), 'md5Checksum': 'wrong',
+            }
+            transfer.session.get = Mock(return_value=index_response)
+            transfer.session.post = Mock(return_value=session_response)
+            transfer.session.put = Mock()
+            with patch('app.services.central_asset_transfer.requests.put', side_effect=[query_response, upload_response]):
+                with self.assertRaisesRegex(RuntimeError, 'checksum'):
+                    transfer.publish('task', p, 'image')
             self.assertTrue(p.exists())
             self.assertFalse(_ACK)
+            transfer.session.put.assert_not_called()
 
     def test_publish_retries_name_conflict_with_compare_and_swap(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'CODEXIA_ASSET_ARCHIVE_URL': 'https://archive.example', 'CODEXIA_ASSET_TRANSFER_TOKEN': 'test'}):
             p = Path(directory) / 'one.png'; p.write_bytes(b'new image')
             transfer = CentralAssetTransfer()
+            index_response = Mock(status_code=200); index_response.json.return_value = {'files': []}
             old_sha = hashlib.sha256(b'old image').hexdigest()
             new_sha = hashlib.sha256(b'new image').hexdigest()
             conflict = Mock(status_code=409)
             conflict.json.return_value = {'detail': {'existing_sha256': old_sha}}
-            success = Mock(status_code=200)
-            success.json.return_value = {'sha256': new_sha, 'size': p.stat().st_size}
-            transfer.session.put = Mock(side_effect=[conflict, success])
+            session_response = Mock(status_code=200)
+            session_response.json.return_value = {
+                'upload_url': 'https://www.googleapis.com/upload/drive/v3/files?upload_id=test',
+                'drive_account_id': 1,
+            }
+            registered = Mock(status_code=200)
+            registered.json.return_value = {'entry': {'sha256': new_sha, 'size': p.stat().st_size}}
+            query_response = Mock(status_code=308, headers={})
+            upload_response = Mock(status_code=201)
+            upload_response.json.return_value = {
+                'id': 'drive-file', 'size': str(p.stat().st_size),
+                'md5Checksum': hashlib.md5(b'new image').hexdigest(),
+            }
+            transfer.session.get = Mock(return_value=index_response)
+            transfer.session.post = Mock(side_effect=[conflict, session_response, registered])
+            transfer.session.put = Mock()
 
-            transfer.publish('task', p, 'image')
+            with patch('app.services.central_asset_transfer.requests.put', side_effect=[query_response, upload_response]):
+                transfer.publish('task', p, 'image')
 
-            self.assertEqual(transfer.session.put.call_count, 2)
-            self.assertNotIn('X-Expected-Previous-SHA256', transfer.session.put.call_args_list[0].kwargs['headers'])
-            self.assertEqual(transfer.session.put.call_args_list[1].kwargs['headers']['X-Expected-Previous-SHA256'], old_sha)
+            self.assertEqual(transfer.session.post.call_count, 3)
+            self.assertEqual(transfer.session.post.call_args_list[0].kwargs['json']['expected_previous_sha256'], '')
+            self.assertEqual(transfer.session.post.call_args_list[1].kwargs['json']['expected_previous_sha256'], old_sha)
+            self.assertEqual(transfer.session.post.call_args_list[0].args[0].rsplit('/', 1)[-1], 'upload-session')
+            transfer.session.put.assert_not_called()
             self.assertEqual(_ACK[(transfer.url, 'task', str(p), 'image', 'one.png')], (p.stat().st_size, p.stat().st_mtime_ns))
 
     def test_hydration_maps_nested_seed_audio_and_image_paths(self):
@@ -113,7 +128,10 @@ class CentralTransferTests(unittest.TestCase):
             shared = root / 'shared.png'; shared.write_bytes(b'shared')
             other = root / 'other'; other.mkdir(); (other / 'manifest.json').write_text('{}')
             transfer = CentralAssetTransfer()
-            response = Mock(); response.json.return_value = {'files': [{'sha256': hashlib.sha256(b'own').hexdigest()}, {'sha256': hashlib.sha256(b'shared').hexdigest()}]}
+            response = Mock(); response.json.return_value = {'files': [
+                {'drive_file_id': 'own-drive-id', 'sha256': hashlib.sha256(b'own').hexdigest()},
+                {'drive_file_id': 'shared-drive-id', 'sha256': hashlib.sha256(b'shared').hexdigest()},
+            ]}
             transfer.session.get = Mock(return_value=response)
             with patch('app.services.production_manifest.manifest_dir', return_value=taskdir), \
                  patch('app.services.production_manifest._root_dir', return_value=root), \

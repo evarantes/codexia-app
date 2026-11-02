@@ -27,7 +27,7 @@ from sqlalchemy import desc
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.database import SessionLocal
-from app.models import Settings
+from app.models import GoogleDriveAccount, Settings
 from app.routers.auth import SECRET_KEY
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
@@ -64,6 +64,15 @@ def _decrypt_refresh_token(token: str) -> str:
         raise GoogleDriveArchiveError("A chave SECRET_KEY mudou; reconecte a conta do Google Drive.") from exc
 
 
+def encrypt_drive_secret(value: str) -> str:
+    """Encrypt short-lived Drive capability URLs before persisting upload state."""
+    return encrypt_refresh_token(value)
+
+
+def decrypt_drive_secret(value: str) -> str:
+    return _decrypt_refresh_token(value)
+
+
 class GoogleDriveArchiveError(RuntimeError):
     pass
 
@@ -97,12 +106,138 @@ def _valid_kind_filename(kind: str, filename: str) -> tuple[str, str]:
 
 
 class GoogleDriveArchive:
-    def __init__(self, user_id: Optional[int] = None):
+    def __init__(self, user_id: Optional[int] = None, account_id: Optional[int] = None,
+                 access_token: Optional[str] = None, folder_id: Optional[str] = None):
         self.user_id = user_id
+        self.account_id = int(account_id) if account_id not in (None, "") else None
+        self.access_token = str(access_token or "").strip()
+        self.access_folder_id = str(folder_id or "").strip()
 
-    def _settings(self) -> Dict[str, Any]:
+    @staticmethod
+    def _ensure_legacy_account(db):
+        legacy = db.query(GoogleDriveAccount).filter(
+            GoogleDriveAccount.is_legacy.is_(True)
+        ).order_by(GoogleDriveAccount.id.asc()).first()
+        if legacy:
+            return legacy
+        if db.query(GoogleDriveAccount).count():
+            return None
+        settings = (db.query(Settings)
+                    .filter(Settings.google_drive_refresh_token.isnot(None))
+                    .order_by(desc(Settings.id)).first())
+        token = str(getattr(settings, "google_drive_refresh_token", None) or "").strip()
+        if not token:
+            return None
+        legacy = GoogleDriveAccount(
+            label="Conta Google Drive existente",
+            refresh_token=token,
+            folder_id=getattr(settings, "google_drive_folder_id", None),
+            enabled=True,
+            is_primary=True,
+            is_legacy=True,
+        )
+        db.add(legacy)
+        db.commit()
+        db.refresh(legacy)
+        return legacy
+
+    @classmethod
+    def for_task(cls, task: str, user_id: Optional[int] = None) -> "GoogleDriveArchive":
+        """Keep every project's files on one Drive account for its lifetime."""
+        from app.services.central_asset_transfer import index_path, task_drive_account, task_key
+        from app.services.production_manifest import _read_json
+
+        task = task_key(task)
+        pinned = task_drive_account(task)
+        if pinned is not None:
+            return cls(user_id=user_id, account_id=pinned)
+
+        index = _read_json(index_path(task))
+        files = index.get("files") or []
+        legacy_refs = any(
+            item.get("drive_file_id") and item.get("drive_account_id") in (None, "")
+            for item in files if isinstance(item, dict)
+        )
         db = SessionLocal()
         try:
+            if legacy_refs:
+                legacy = cls._ensure_legacy_account(db)
+                if legacy is None:
+                    legacy = db.query(GoogleDriveAccount).filter(
+                        GoogleDriveAccount.is_primary.is_(True)
+                    ).order_by(GoogleDriveAccount.id.asc()).first()
+                if legacy:
+                    return cls(user_id=user_id, account_id=legacy.id)
+
+            accounts = db.query(GoogleDriveAccount).filter(
+                GoogleDriveAccount.enabled.is_(True)
+            ).order_by(GoogleDriveAccount.id.asc()).all()
+            if accounts:
+                # Rendezvous hashing moves only a subset of projects when an
+                # account is added or paused, instead of reassigning all work.
+                selected = max(
+                    accounts,
+                    key=lambda account: hashlib.sha256(
+                        f"{task}:{account.id}".encode("utf-8")
+                    ).digest(),
+                )
+                return cls(user_id=user_id, account_id=selected.id)
+            if db.query(GoogleDriveAccount).count():
+                raise GoogleDriveArchiveError(
+                    "Nenhuma conta do Google Drive está ativa para novos projetos. Ative uma conta nas Configurações."
+                )
+            legacy = cls._ensure_legacy_account(db)
+            if legacy:
+                return cls(user_id=user_id, account_id=legacy.id)
+        finally:
+            db.close()
+        return cls(user_id=user_id)
+
+    @classmethod
+    def for_asset(cls, entry: Dict[str, Any]) -> "GoogleDriveArchive":
+        """Resolve the account that owns an asset, including pre-pool archives."""
+        account_id = entry.get("drive_account_id")
+        if account_id not in (None, ""):
+            return cls(account_id=int(account_id))
+        db = SessionLocal()
+        try:
+            account = cls._ensure_legacy_account(db)
+            if account is None:
+                account = db.query(GoogleDriveAccount).filter(
+                    GoogleDriveAccount.is_primary.is_(True)
+                ).order_by(GoogleDriveAccount.id.asc()).first()
+            if account:
+                return cls(account_id=account.id)
+        finally:
+            db.close()
+        return cls()
+
+    def _settings(self) -> Dict[str, Any]:
+        if self.access_token:
+            return {
+                "id": None,
+                "account_id": self.account_id,
+                "user_id": self.user_id,
+                "refresh_token": "",
+                "folder_id": self.access_folder_id,
+                "client_id": "",
+                "client_secret": "",
+            }
+        db = SessionLocal()
+        try:
+            account = None
+            if self.account_id is not None:
+                account = db.query(GoogleDriveAccount).filter(
+                    GoogleDriveAccount.id == self.account_id
+                ).first()
+                if account is None:
+                    raise GoogleDriveArchiveError(
+                        "A conta do Google Drive vinculada a este projeto não existe mais."
+                    )
+            else:
+                account = db.query(GoogleDriveAccount).order_by(
+                    GoogleDriveAccount.is_primary.desc(), GoogleDriveAccount.id.asc()
+                ).first()
             row = None
             if self.user_id is not None:
                 row = db.query(Settings).filter(Settings.user_id == int(self.user_id)).order_by(desc(Settings.id)).first()
@@ -112,9 +247,12 @@ class GoogleDriveArchive:
                        .order_by(desc(Settings.id)).first())
             return {
                 "id": getattr(row, "id", None),
+                "account_id": getattr(account, "id", None),
                 "user_id": getattr(row, "user_id", None),
-                "refresh_token": _decrypt_refresh_token(getattr(row, "google_drive_refresh_token", None) or ""),
-                "folder_id": (getattr(row, "google_drive_folder_id", None) or "").strip(),
+                "refresh_token": _decrypt_refresh_token(
+                    (getattr(account, "refresh_token", None) or getattr(row, "google_drive_refresh_token", None) or "")
+                ),
+                "folder_id": (getattr(account, "folder_id", None) or getattr(row, "google_drive_folder_id", None) or "").strip(),
                 "client_id": (os.getenv("GOOGLE_DRIVE_CLIENT_ID") or getattr(row, "youtube_client_id", None) or os.getenv("YOUTUBE_CLIENT_ID") or "").strip(),
                 "client_secret": (os.getenv("GOOGLE_DRIVE_CLIENT_SECRET") or getattr(row, "youtube_client_secret", None) or os.getenv("YOUTUBE_CLIENT_SECRET") or "").strip(),
             }
@@ -122,10 +260,14 @@ class GoogleDriveArchive:
             db.close()
 
     def is_configured(self) -> bool:
+        if self.access_token:
+            return True
         values = self._settings()
         return bool((values["refresh_token"] or os.getenv("GOOGLE_DRIVE_REFRESH_TOKEN")) and values["client_id"] and values["client_secret"])
 
     def credentials(self) -> Credentials:
+        if self.access_token:
+            return Credentials(token=self.access_token, scopes=[DRIVE_SCOPE])
         values = self._settings()
         refresh_token = values["refresh_token"] or (os.getenv("GOOGLE_DRIVE_REFRESH_TOKEN") or "").strip()
         if not (refresh_token and values["client_id"] and values["client_secret"]):
@@ -160,14 +302,21 @@ class GoogleDriveArchive:
     def drive_service(self):
         return build("drive", "v3", credentials=self.credentials(), cache_discovery=False)
 
-    def _save_folder_id(self, settings_id: Optional[int], folder_id: str) -> None:
-        if not settings_id:
+    def _save_folder_id(self, settings_id: Optional[int], folder_id: str,
+                        account_id: Optional[int] = None) -> None:
+        if not settings_id and not account_id:
             return
         db = SessionLocal()
         try:
-            row = db.query(Settings).filter(Settings.id == int(settings_id)).first()
+            if account_id:
+                row = db.query(GoogleDriveAccount).filter(GoogleDriveAccount.id == int(account_id)).first()
+            else:
+                row = db.query(Settings).filter(Settings.id == int(settings_id)).first()
             if row is not None:
-                row.google_drive_folder_id = folder_id
+                if account_id:
+                    row.folder_id = folder_id
+                else:
+                    row.google_drive_folder_id = folder_id
                 db.commit()
         finally:
             db.close()
@@ -192,7 +341,7 @@ class GoogleDriveArchive:
                 "appProperties": {"codexia_archive": "root-v1"},
             }, fields="id").execute()
             folder_id = str(created["id"])
-        self._save_folder_id(values.get("id"), folder_id)
+        self._save_folder_id(values.get("id"), folder_id, values.get("account_id"))
         return folder_id
 
     def root_folder_id(self) -> str:
@@ -252,6 +401,48 @@ class GoogleDriveArchive:
             "archive_bytes": total_bytes,
         }
 
+    @classmethod
+    def archive_usage_all(cls, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """Aggregate archive usage across active and historical Drive accounts."""
+        db = SessionLocal()
+        try:
+            accounts = db.query(GoogleDriveAccount).order_by(
+                GoogleDriveAccount.is_primary.desc(), GoogleDriveAccount.id.asc()
+            ).all()
+            metadata = [
+                {"id": item.id, "label": item.label, "enabled": bool(item.enabled),
+                 "is_primary": bool(item.is_primary)}
+                for item in accounts
+            ]
+        finally:
+            db.close()
+        if not metadata:
+            return cls(user_id=user_id).archive_usage()
+
+        results = []
+        total_files = 0
+        total_bytes = 0
+        errors = 0
+        for account in metadata:
+            try:
+                usage = cls(account_id=account["id"]).archive_usage()
+            except Exception:
+                usage = {"status": "error", "connected": False, "archive_files": 0,
+                         "archive_bytes": 0, "error": "Não foi possível consultar esta conta do Drive."}
+            account.update(usage)
+            total_files += int(usage.get("archive_files") or 0)
+            total_bytes += int(usage.get("archive_bytes") or 0)
+            errors += int(usage.get("status") == "error")
+            results.append(account)
+        return {
+            "status": "partial" if errors else "connected",
+            "connected": any(item.get("connected") for item in results),
+            "archive_files": total_files,
+            "archive_bytes": total_bytes,
+            "accounts": results,
+            "errors": errors,
+        }
+
     def _task_folder(self, service, root_id: str, task: str) -> str:
         task = _valid_task(task)
         query = (
@@ -295,6 +486,76 @@ class GoogleDriveArchive:
             raise DriveAssetConflict(existing_sha)
         return values, service, parent_id, existing, False
 
+    def create_upload_session(self, task: str, kind: str, filename: str,
+                              sha256: str, size: int,
+                              expected_previous_sha256: str = "") -> Dict[str, Any]:
+        """Authorize a resumable upload; media bytes go from the worker to Drive."""
+        task = _valid_task(task)
+        kind, filename = _valid_kind_filename(kind, filename)
+        size = int(size)
+        if size <= 0 or not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")):
+            raise GoogleDriveArchiveError("Tamanho ou SHA256 inválido para upload.")
+        if expected_previous_sha256 and not re.fullmatch(
+            r"[0-9a-f]{64}", str(expected_previous_sha256 or "")
+        ):
+            raise GoogleDriveArchiveError("SHA256 anterior inválido para substituição.")
+        values, _service, parent_id, existing, already = self._prepare_upload(
+            task, kind, filename, sha256, size, expected_previous_sha256,
+        )
+        account_id = values.get("account_id")
+        if already:
+            return {
+                "already_present": True,
+                "entry": {
+                    "kind": kind, "filename": filename,
+                    "drive_file_id": existing["id"], "drive_account_id": account_id,
+                    "sha256": sha256, "size": size,
+                },
+            }
+
+        credentials = self.credentials()
+        if not credentials.valid:
+            credentials.refresh(GoogleRequest())
+        mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        metadata = {"appProperties": self._app_properties(task, kind, sha256)}
+        params = {"uploadType": "resumable", "fields": "id,name,size,md5Checksum,appProperties"}
+        if existing:
+            url = f"{DRIVE_UPLOAD_URL}/{quote(str(existing['id']), safe='')}"
+            method = "PATCH"
+        else:
+            url = DRIVE_UPLOAD_URL
+            method = "POST"
+            metadata.update({"name": filename, "mimeType": mimetype, "parents": [parent_id]})
+        headers = {
+            "Authorization": f"Bearer {credentials.token}",
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": mimetype,
+            "X-Upload-Content-Length": str(size),
+        }
+        try:
+            response = requests.request(
+                method, url, params=params, json=metadata, headers=headers,
+                timeout=(15, 60), allow_redirects=False,
+            )
+        except Exception as exc:
+            raise GoogleDriveArchiveError("Falha ao abrir sessão direta de upload no Google Drive.") from exc
+        if response.status_code not in (200, 201):
+            raise GoogleDriveArchiveError(
+                f"Google Drive recusou a sessão direta de upload (HTTP {response.status_code})."
+            )
+        session_url = str(response.headers.get("Location") or "").strip()
+        if not session_url.startswith("https://"):
+            raise GoogleDriveArchiveError("Google Drive não retornou uma sessão HTTPS válida.")
+        return {
+            "already_present": False,
+            "upload_url": session_url,
+            "drive_account_id": account_id,
+            "kind": kind,
+            "filename": filename,
+            "sha256": sha256,
+            "size": size,
+        }
+
     @staticmethod
     def _app_properties(task: str, kind: str, sha256: str) -> Dict[str, str]:
         return {"task": task, "kind": kind, "sha256": sha256, "archive_version": "1"}
@@ -320,7 +581,8 @@ class GoogleDriveArchive:
             task, kind, filename, sha256, size, expected_previous_sha256,
         )
         if already:
-            return {"kind": kind, "filename": filename, "drive_file_id": existing["id"], "sha256": sha256, "size": size}
+            return {"kind": kind, "filename": filename, "drive_file_id": existing["id"],
+                    "drive_account_id": values.get("account_id"), "sha256": sha256, "size": size}
         mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         media = MediaFileUpload(str(path), mimetype=mimetype, resumable=True, chunksize=UPLOAD_CHUNK_SIZE)
         body = {"appProperties": self._app_properties(task, kind, sha256)}
@@ -339,7 +601,8 @@ class GoogleDriveArchive:
             raise GoogleDriveArchiveError("Upload retomável para o Google Drive falhou; cópia original preservada.") from exc
         if str(response.get("md5Checksum") or "").lower() != md5sum or int(response.get("size") or -1) != size:
             raise GoogleDriveArchiveError("Google Drive não confirmou checksum/tamanho; cópia original preservada.")
-        return {"kind": kind, "filename": filename, "drive_file_id": response["id"], "sha256": sha256, "size": size}
+        return {"kind": kind, "filename": filename, "drive_file_id": response["id"],
+                "drive_account_id": values.get("account_id"), "sha256": sha256, "size": size}
 
     async def upload_stream(self, task: str, kind: str, filename: str, chunks: AsyncIterable[bytes],
                             expected_sha256: str, expected_size: int,
@@ -360,7 +623,8 @@ class GoogleDriveArchive:
         except Exception as exc:
             raise GoogleDriveArchiveError("Não foi possível preparar o ativo no Google Drive; fonte preservada.") from exc
         if already:
-            return {"kind": kind, "filename": filename, "drive_file_id": existing["id"], "sha256": expected_sha256, "size": expected_size}
+            return {"kind": kind, "filename": filename, "drive_file_id": existing["id"],
+                    "drive_account_id": values.get("account_id"), "sha256": expected_sha256, "size": expected_size}
 
         credentials = self.credentials()
         # Make a fresh access token available before starting the resumable HTTP session.
@@ -451,11 +715,13 @@ class GoogleDriveArchive:
         if not final_metadata or str(final_metadata.get("md5Checksum") or "").lower() != md5sum or int(final_metadata.get("size") or -1) != expected_size:
             raise GoogleDriveArchiveError("Google Drive não confirmou checksum/tamanho; cópia temporária preservada.")
         return {"kind": kind, "filename": filename, "drive_file_id": final_metadata["id"],
-                "sha256": expected_sha256, "size": expected_size}
+                "drive_account_id": values.get("account_id"), "sha256": expected_sha256, "size": expected_size}
 
     def get_metadata(self, file_id: str) -> Dict[str, Any]:
         try:
-            return self.drive_service().files().get(fileId=file_id, fields="id,name,size,mimeType,md5Checksum").execute()
+            return self.drive_service().files().get(
+                fileId=file_id, fields="id,name,size,mimeType,md5Checksum,appProperties"
+            ).execute()
         except Exception as exc:
             raise GoogleDriveArchiveError("Não foi possível consultar o ativo no Google Drive.") from exc
 

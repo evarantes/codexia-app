@@ -4527,7 +4527,7 @@
                         <div class="flex flex-wrap items-center justify-between gap-2">
                             <div>
                                 <h3 class="font-bold text-slate-900">Arquivo permanente no Google Drive</h3>
-                                <p class="mt-1 text-sm text-slate-600">Depois de conectar, novas mídias vão direto ao Drive. CX33 e servidor principal mantêm arquivos locais só durante a produção; a mídia antiga só é removida após confirmação de checksum.</p>
+                                <p class="mt-1 text-sm text-slate-600">Cada projeto fica em uma pasta própria no Drive. Projetos concluídos e com falha podem ser retomados: o Codexia recupera os arquivos para o CX33 quando necessário e só remove cópias locais após conferir a integridade.</p>
                             </div>
                             <span class="rounded px-2 py-1 text-xs font-bold" :class="googleDriveStatus.connected ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'">
                                 {{ googleDriveStatus.connected ? 'Conectado' : 'Não conectado' }}
@@ -4535,18 +4535,45 @@
                         </div>
                         <p v-if="googleDriveStatus.error" class="mt-2 text-sm text-red-700">{{ googleDriveStatus.error }}</p>
                         <p v-if="googleDriveRedirectUri" class="mt-2 break-all text-xs text-slate-500">Callback OAuth: {{ googleDriveRedirectUri }}</p>
+                        <div class="mt-3 rounded border border-blue-100 bg-white p-3">
+                            <label class="mb-1 block text-sm font-semibold text-slate-700">Adicionar outra conta</label>
+                            <div class="flex flex-wrap gap-2">
+                                <input v-model="googleDriveAccountLabel" maxlength="120" class="min-w-[220px] flex-1 rounded border p-2 text-sm" placeholder="Ex.: Drive principal, Drive 2">
+                                <button type="button" @click="connectGoogleDrive()" class="rounded bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800">Conectar conta</button>
+                            </div>
+                        </div>
+                        <div v-if="googleDriveAccounts.length" class="mt-3 space-y-2">
+                            <div v-for="account in googleDriveAccounts" :key="account.id" class="rounded border bg-white p-3">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <div class="font-semibold text-slate-800">{{ account.label }}</div>
+                                        <div class="mt-1 flex flex-wrap gap-1 text-xs">
+                                            <span v-if="account.is_primary" class="rounded bg-blue-100 px-2 py-1 text-blue-800">Principal</span>
+                                            <span v-if="account.enabled" class="rounded bg-green-100 px-2 py-1 text-green-800">Recebe projetos novos</span>
+                                            <span v-else class="rounded bg-slate-100 px-2 py-1 text-slate-600">Pausada para projetos novos</span>
+                                            <span v-if="account.is_legacy" class="rounded bg-amber-100 px-2 py-1 text-amber-800">Mantida para arquivos antigos</span>
+                                        </div>
+                                    </div>
+                                    <div class="flex flex-wrap gap-2">
+                                        <button v-if="!account.is_primary" type="button" @click="setGoogleDrivePrimary(account)" class="rounded border px-2 py-1 text-xs font-semibold hover:bg-slate-50">Definir principal</button>
+                                        <button type="button" @click="toggleGoogleDriveAccount(account)" class="rounded border px-2 py-1 text-xs font-semibold hover:bg-slate-50">{{ account.enabled ? 'Pausar novos projetos' : 'Ativar para novos projetos' }}</button>
+                                        <button type="button" @click="connectGoogleDrive(account)" class="rounded border px-2 py-1 text-xs font-semibold hover:bg-slate-50">Reconectar</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <p class="text-xs text-slate-500">Os projetos novos são distribuídos entre as contas ativas. Cada projeto permanece na mesma conta; pausá-la não apaga nem desconecta o arquivo histórico.</p>
+                        </div>
                         <div class="mt-3 flex flex-wrap gap-2">
-                            <button type="button" @click="connectGoogleDrive" class="rounded bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800">Conectar Google Drive</button>
                             <button type="button" @click="fetchGoogleDriveStatus" :disabled="googleDriveStatus.checking" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Atualizar status</button>
-                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Migrando...' : 'Liberar espaço migrando arquivos antigos' }}</button>
+                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Arquivando projetos...' : 'Arquivar projetos antigos e liberar espaço' }}</button>
                         </div>
                         <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
-                            Migração: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived || 0 }} arquivos · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
+                            Arquivamento: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos · {{ googleDriveMigration.archived || 0 }} arquivos · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
                         </p>
                         <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
                             <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
                         </ul>
-                        <p class="mt-2 text-xs text-slate-500">A migração processa até 5 arquivos antigos por rodada e ignora itens alterados nas últimas 24 horas. Banco de dados, código e cache ativo continuam nos servidores.</p>
+                        <p class="mt-2 text-xs text-slate-500">Cada rodada arquiva até 5 projetos concluídos, publicados, pausados ou com falha, sem atividade nas últimas 24 horas. Cópias compartilhadas só são removidas quando todos os projetos que as usam estão conferidos no Drive. Banco de dados, código e cache ativo continuam nos servidores.</p>
                     </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <div class="flex items-center justify-between">
@@ -5619,7 +5646,9 @@
                     officialChannelLogoUploading: false,
                     officialChannelLogoMessage: '',
                     officialChannelLogoMessageType: 'success',
-                    googleDriveStatus: { connected: false, checking: false, error: '' },
+                    googleDriveStatus: { connected: false, checking: false, error: '', enabledAccounts: 0 },
+                    googleDriveAccounts: [],
+                    googleDriveAccountLabel: '',
                     googleDriveRedirectUri: '',
                     googleDriveMigration: null,
                     googleDriveMigrationBusy: false,
@@ -7555,30 +7584,60 @@
                 async fetchGoogleDriveStatus() {
                     this.googleDriveStatus.checking = true;
                     try {
-                        const response = await this.authFetch('/settings/google-drive/status');
+                        const response = await this.authFetch('/settings/google-drive/accounts');
                         const data = await response.json().catch(() => ({}));
                         if (!response.ok) throw new Error(data.detail || 'Falha ao consultar o Google Drive.');
-                        this.googleDriveStatus = { connected: !!data.connected, checking: false, error: data.error || '' };
+                        this.googleDriveAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+                        this.googleDriveStatus = { connected: !!data.connected, checking: false, error: data.error || '', enabledAccounts: Number(data.enabled_accounts || 0) };
                     } catch (error) {
-                        this.googleDriveStatus = { connected: false, checking: false, error: error && error.message ? error.message : 'Falha ao consultar o Google Drive.' };
+                        this.googleDriveStatus = { connected: false, checking: false, error: error && error.message ? error.message : 'Falha ao consultar o Google Drive.', enabledAccounts: 0 };
                     }
                 },
-                async connectGoogleDrive() {
+                async connectGoogleDrive(account = null) {
                     try {
-                        const response = await this.authFetch('/settings/google-drive/auth-url');
+                        const label = String(account && account.label ? account.label : this.googleDriveAccountLabel || '').trim();
+                        if (!label) throw new Error('Digite um nome para identificar a conta antes de conectar.');
+                        const params = new URLSearchParams({ label });
+                        if (account && account.id) params.set('account_id', String(account.id));
+                        const response = await this.authFetch(`/settings/google-drive/auth-url?${params.toString()}`);
                         const data = await response.json().catch(() => ({}));
                         if (!response.ok || !data.auth_url) throw new Error(data.detail || 'Não foi possível iniciar a autorização do Drive.');
                         this.googleDriveRedirectUri = data.redirect_uri || '';
                         const popup = window.open(data.auth_url, '_blank');
                         if (!popup) window.location.href = data.auth_url;
+                        if (!account) this.googleDriveAccountLabel = '';
                     } catch (error) {
                         this.googleDriveStatus.error = error && error.message ? error.message : 'Falha ao conectar o Google Drive.';
                     }
                 },
+                async setGoogleDrivePrimary(account) {
+                    try {
+                        const response = await this.authFetch(`/settings/google-drive/accounts/${encodeURIComponent(account.id)}/primary`, { method: 'POST' });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || 'Não foi possível definir a conta principal.');
+                        await this.fetchGoogleDriveStatus();
+                    } catch (error) {
+                        this.googleDriveStatus.error = error && error.message ? error.message : 'Falha ao alterar a conta principal.';
+                    }
+                },
+                async toggleGoogleDriveAccount(account) {
+                    try {
+                        const response = await this.authFetch(`/settings/google-drive/accounts/${encodeURIComponent(account.id)}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ enabled: !account.enabled })
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || 'Não foi possível alterar o estado da conta.');
+                        await this.fetchGoogleDriveStatus();
+                    } catch (error) {
+                        this.googleDriveStatus.error = error && error.message ? error.message : 'Falha ao ativar ou pausar a conta.';
+                    }
+                },
                 async startGoogleDriveMigration() {
-                    if (!confirm('Arquivar e remover do servidor até 5 mídias com mais de 24 horas? Cada arquivo só será removido depois da confirmação do Google Drive.')) return;
+                    if (!confirm('Arquivar no Google Drive até 5 projetos concluídos, pausados ou com falha, sem atividade há mais de 24 horas? Os arquivos locais só serão removidos após a confirmação de integridade de todos os projetos que compartilham o mesmo arquivo.')) return;
                     this.googleDriveMigrationBusy = true;
-                    this.googleDriveMigration = { status: 'iniciando', archived: 0, bytes_freed: 0, errors: [] };
+                    this.googleDriveMigration = { status: 'iniciando', archived: 0, archived_projects: 0, bytes_freed: 0, errors: [] };
                     try {
                         const response = await this.authFetch('/settings/google-drive/migrate/start?limit=5', { method: 'POST' });
                         const data = await response.json().catch(() => ({}));
@@ -7586,7 +7645,7 @@
                         localStorage.setItem('google_drive_migration_job', data.job_id);
                         await this.pollGoogleDriveMigration(data.job_id);
                     } catch (error) {
-                        this.googleDriveMigration = { status: 'falhou', archived: 0, bytes_freed: 0, errors: [error && error.message ? error.message : 'Falha ao migrar arquivos.'] };
+                        this.googleDriveMigration = { status: 'falhou', archived: 0, archived_projects: 0, bytes_freed: 0, errors: [error && error.message ? error.message : 'Falha ao arquivar projetos.'] };
                         this.googleDriveMigrationBusy = false;
                     }
                 },

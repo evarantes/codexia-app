@@ -179,6 +179,16 @@
       drive && drive.status === 'checking' ? 'Consultando…' :
       drive && drive.status === 'error' ? 'Consulta indisponível' : 'Não conectado'));
     target.append(row);
+    (Array.isArray(drive.accounts) ? drive.accounts : []).forEach((account) => {
+      const details = el('div', 'crm-storage');
+      const accountRow = el('div', 'crm-metric-line');
+      accountRow.append(
+        el('span', '', `${account.label || 'Conta'}${account.is_primary ? ' · principal' : ''}${account.enabled ? '' : ' · pausada'}`),
+        el('b', '', `${gb(account.archive_bytes)} · ${number(account.archive_files, 0)} arquivos`),
+      );
+      details.append(accountRow);
+      target.append(details);
+    });
   }
 
   function compactServer(server, label) {
