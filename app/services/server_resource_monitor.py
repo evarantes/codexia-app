@@ -152,7 +152,7 @@ def _refresh_drive_usage(user_id: int) -> None:
     try:
         from app.services.google_drive_archive import GoogleDriveArchive
 
-        result = GoogleDriveArchive(user_id=user_id).archive_usage()
+        result = GoogleDriveArchive.archive_usage_all(user_id=user_id)
     except Exception:
         result = {"status": "error", "connected": False, "error": "Não foi possível consultar o arquivo do Drive."}
     with _DRIVE_CACHE_LOCK:

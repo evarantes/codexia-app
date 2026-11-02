@@ -7,12 +7,16 @@ import os
 import re
 import shutil
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import requests
 
 LOCK = threading.RLock()
 _ACK = {}
+_PUBLISH_LOCKS = {}
+_PUBLISH_LOCKS_GUARD = threading.Lock()
 EXTENSIONS = {'image': {'.png', '.jpg', '.jpeg', '.webp'},
               'audio': {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'},
               'video': {'.mp4', '.mov', '.mkv', '.webm'},
@@ -65,6 +69,77 @@ def index_path(task):
     return manifest_dir(task_key(task)) / 'central-index.json'
 
 
+@contextmanager
+def task_index_lock(task):
+    """Serialize project-index updates across API worker processes."""
+    lock_path = index_path(task).with_suffix('.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a+b') as stream:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - local Windows development
+            yield
+        else:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_publish_lock(key):
+    with _PUBLISH_LOCKS_GUARD:
+        entry = _PUBLISH_LOCKS.get(key)
+        if entry is None:
+            entry = {'lock': threading.Lock(), 'references': 0}
+            _PUBLISH_LOCKS[key] = entry
+        entry['references'] += 1
+        return entry
+
+
+def _release_publish_lock(key, entry):
+    with _PUBLISH_LOCKS_GUARD:
+        entry['references'] -= 1
+        if entry['references'] <= 0 and _PUBLISH_LOCKS.get(key) is entry:
+            _PUBLISH_LOCKS.pop(key, None)
+
+
+def task_drive_account(task):
+    """Return the immutable Drive account pinned to a production, if any."""
+    from app.services.production_manifest import _read_json
+    data = _read_json(index_path(task_key(task)))
+    account_id = data.get('drive_account_id')
+    if account_id not in (None, ''):
+        return int(account_id)
+    for item in data.get('files') or []:
+        if item.get('drive_file_id') and item.get('drive_account_id') not in (None, ''):
+            return int(item['drive_account_id'])
+    return None
+
+
+def pin_task_drive_account(task, account_id):
+    """Pin a project before upload sessions are issued; never move an archive."""
+    from app.services.production_manifest import _atomic_write_json, _read_json
+    task = task_key(task)
+    account_id = int(account_id)
+    with LOCK, task_index_lock(task):
+        path = index_path(task)
+        data = _read_json(path)
+        current = data.get('drive_account_id')
+        if current not in (None, '') and int(current) != account_id:
+            raise ValueError('Este projeto já está vinculado a outra conta do Google Drive.')
+        referenced = {
+            int(item['drive_account_id'])
+            for item in data.get('files') or []
+            if item.get('drive_file_id') and item.get('drive_account_id') not in (None, '')
+        }
+        if referenced and referenced != {account_id}:
+            raise ValueError('Os ativos deste projeto apontam para contas diferentes do Google Drive.')
+        data['drive_account_id'] = account_id
+        _atomic_write_json(path, data)
+    return account_id
+
+
 def central_index(task, verify=True):
     from app.services.production_manifest import load_manifest, _read_json
     entries = list((_read_json(index_path(task)).get('files') or []))
@@ -113,14 +188,45 @@ def find_drive_asset(kind, filename):
         return None
 
 
-def register(task, entry):
+def register(task, entry, expected_previous_sha256=None):
     from app.services.production_manifest import _atomic_write_json, _read_json
-    with LOCK:
+    with LOCK, task_index_lock(task):
         path = index_path(task)
         data = _read_json(path)
+        account_id = entry.get('drive_account_id')
+        current_account_id = data.get('drive_account_id')
+        if account_id not in (None, ''):
+            account_id = int(account_id)
+            if current_account_id not in (None, '') and int(current_account_id) != account_id:
+                raise ValueError('O ativo foi enviado a uma conta diferente da conta vinculada ao projeto.')
+            data['drive_account_id'] = account_id
         entries = {(e['kind'], e['filename']): e for e in data.get('files') or []}
+        existing = entries.get((entry['kind'], entry['filename']))
+        session_key = f"{entry['kind']}/{entry['filename']}"
+        pending = (data.get('pending_uploads') or {}).get(session_key)
+        if pending and (
+            pending.get('sha256') != entry.get('sha256')
+            or int(pending.get('size') or -1) != int(entry.get('size') or -2)
+        ):
+            raise ValueError('O arquivo concluído não corresponde à sessão de upload ativa.')
+        if existing and existing.get('drive_file_id') and existing.get('sha256') != entry.get('sha256'):
+            previous = str(
+                expected_previous_sha256
+                or (pending or {}).get('expected_previous_sha256')
+                or ''
+            ).strip().lower()
+            if not previous or str(existing.get('sha256') or '') != previous:
+                raise ValueError('Uma versão mais recente deste ativo já foi registrada no Google Drive.')
+        if (existing and existing.get('drive_account_id') not in (None, '')
+                and account_id not in (None, '')
+                and int(existing['drive_account_id']) != account_id):
+            raise ValueError('O nome do ativo já está vinculado a outra conta do Google Drive.')
         entries[(entry['kind'], entry['filename'])] = entry
-        _atomic_write_json(path, {'files': list(entries.values())})
+        data['files'] = list(entries.values())
+        pending = data.get('pending_uploads') or {}
+        pending.pop(session_key, None)
+        data['pending_uploads'] = pending
+        _atomic_write_json(path, data)
 
 
 class CentralAssetTransfer:
@@ -142,6 +248,9 @@ class CentralAssetTransfer:
     def endpoint(self, task, suffix=''):
         return f'{self.url}/internal/production-assets/{task_key(task)}{suffix}'
 
+    def drive_endpoint(self, task, suffix=''):
+        return f'{self.url}/settings/google-drive/{task_key(task)}{suffix}'
+
     def _remote_index(self, task):
         task = task_key(task)
         if task in self._remote_index_cache:
@@ -150,6 +259,8 @@ class CentralAssetTransfer:
         response.raise_for_status()
         entries = {}
         for item in response.json().get('files') or []:
+            if not item.get('drive_file_id'):
+                continue
             kind = str(item.get('kind') or '')
             filename = str(item.get('filename') or '')
             if kind in EXTENSIONS and Path(filename).name == filename:
@@ -165,12 +276,35 @@ class CentralAssetTransfer:
             return
         p = Path(path)
         filename = filename or p.name
+        lock_key = (self.url, task_key(task), str(kind), str(filename))
+        entry = _acquire_publish_lock(lock_key)
+        try:
+            with entry['lock']:
+                return self._publish_locked(task, p, kind, filename)
+        finally:
+            _release_publish_lock(lock_key, entry)
+
+    def _publish_locked(self, task, p, kind, filename):
+        if not self.enabled:
+            return
         key = (self.url, str(task), str(p), kind, filename)
         stamp = (p.stat().st_size, p.stat().st_mtime_ns)
         if _ACK.get(key) == stamp:
             return
-        sha = digest(p)
-        size = p.stat().st_size
+        size = stamp[0]
+        sha_hasher = hashlib.sha256()
+        expected_md5 = hashlib.md5()
+        hashed_size = 0
+        with p.open('rb') as stream:
+            for hash_chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                hashed_size += len(hash_chunk)
+                sha_hasher.update(hash_chunk)
+                expected_md5.update(hash_chunk)
+        current_stat = p.stat()
+        if (hashed_size != size or current_stat.st_size != stamp[0]
+                or current_stat.st_mtime_ns != stamp[1]):
+            raise RuntimeError('O arquivo local mudou durante a preparação; nova tentativa será necessária.')
+        sha = sha_hasher.hexdigest()
         try:
             existing = self._remote_index(task).get((kind, filename))
         except Exception:
@@ -183,50 +317,164 @@ class CentralAssetTransfer:
             _ACK[key] = stamp
             return
         expected_previous_sha = ''
-        response = None
         for _attempt in range(3):
-            headers = {'X-Content-SHA256': sha, 'X-Content-Length': str(size)}
-            if expected_previous_sha:
-                headers['X-Expected-Previous-SHA256'] = expected_previous_sha
-            with p.open('rb') as stream:
-                response = self.session.put(self.endpoint(task, f'/{kind}/{filename}'), data=stream,
-                    headers=headers, timeout=(10, 1800), allow_redirects=False)
-            if response.status_code != 409:
-                response.raise_for_status()
-                break
-
-            # A renderer can publish an early checkpoint while an MP4 is still
-            # being finalized. If the same task/name now contains those earlier
-            # bytes, replace them only with a compare-and-swap against the hash
-            # returned by the archive. This also recovers retries racing each
-            # other without clobbering a newer upload.
-            try:
-                detail = response.json().get('detail') or {}
-                existing_sha = str(detail.get('existing_sha256') or '').strip().lower() if isinstance(detail, dict) else ''
-            except Exception:
-                existing_sha = ''
-            if not re.fullmatch(r'[0-9a-f]{64}', existing_sha):
-                response.raise_for_status()
-            if existing_sha == sha:
-                # O arquivo central já contém exatamente estes bytes: trata como
-                # sucesso idempotente para permitir reenvios após reinício do worker.
+            response = self.session.post(
+                self.drive_endpoint(task, '/upload-session'),
+                json={
+                    'kind': kind,
+                    'filename': filename,
+                    'sha256': sha,
+                    'size': size,
+                    'expected_previous_sha256': expected_previous_sha,
+                },
+                timeout=(10, 90),
+                allow_redirects=False,
+            )
+            if response.status_code == 409:
+                # A renderer can publish an early checkpoint while an MP4 is
+                # still being finalized. Replace it only against the previous
+                # hash returned by Drive's compare-and-swap check.
+                try:
+                    detail = response.json().get('detail') or {}
+                    existing_sha = str(detail.get('existing_sha256') or '').strip().lower() if isinstance(detail, dict) else ''
+                except Exception:
+                    existing_sha = ''
+                if not re.fullmatch(r'[0-9a-f]{64}', existing_sha):
+                    response.raise_for_status()
+                if existing_sha == sha:
+                    self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
+                        'sha256': sha,
+                        'size': size,
+                    }
+                    _ACK[key] = stamp
+                    return
+                expected_previous_sha = existing_sha
+                continue
+            response.raise_for_status()
+            session = response.json()
+            if session.get('already_present'):
+                entry = session.get('entry') or {}
+                if entry.get('sha256') != sha or int(entry.get('size') or -1) != size:
+                    raise RuntimeError('Google Drive retornou um ativo diferente do arquivo local.')
                 _ACK[key] = stamp
                 self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
                     'sha256': sha,
                     'size': size,
                 }
                 return
-            expected_previous_sha = existing_sha
-        else:
-            response.raise_for_status()
-        result = response.json()
-        if result.get('sha256') != sha or int(result.get('size', -1)) != p.stat().st_size:
-            raise RuntimeError('Arquivo central não confirmou integridade; cópia local preservada.')
-        _ACK[key] = stamp
-        self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
-            'sha256': sha,
-            'size': size,
-        }
+            upload_url = str(session.get('upload_url') or '')
+            if not upload_url.startswith('https://www.googleapis.com/upload/drive/v3/files'):
+                raise RuntimeError('O servidor não retornou uma sessão direta válida do Google Drive.')
+
+            def query_drive_session():
+                try:
+                    response = requests.put(
+                        upload_url,
+                        data=b'',
+                        headers={
+                            'Content-Length': '0',
+                            'Content-Range': f'bytes */{size}',
+                        },
+                        timeout=(15, 60),
+                        allow_redirects=False,
+                    )
+                except requests.RequestException as exc:
+                    raise RuntimeError(
+                        'Não foi possível consultar a sessão retomável do Google Drive; arquivo local preservado.'
+                    ) from exc
+                if response.status_code == 308:
+                    server_range = str(response.headers.get('Range') or '')
+                    match = re.search(r'bytes=0-(\d+)$', server_range)
+                    return (int(match.group(1)) + 1 if match else 0), None
+                if response.status_code in (200, 201):
+                    return size, response.json()
+                if response.status_code in (404, 410):
+                    raise RuntimeError(
+                        'A sessão de upload do Google Drive expirou; o arquivo local foi preservado.'
+                    )
+                response.raise_for_status()
+                raise RuntimeError('Google Drive retornou um estado inesperado para a sessão retomável.')
+
+            # The session URL may survive a CX33 restart. Query Drive before
+            # sending anything so an already accepted range is never replayed.
+            offset, final_metadata = query_drive_session()
+            with p.open('rb') as stream:
+                while offset < size and final_metadata is None:
+                    stream.seek(offset)
+                    chunk = stream.read(min(8 * 1024 * 1024, size - offset))
+                    if not chunk:
+                        raise RuntimeError('O arquivo local mudou durante o upload direto ao Google Drive.')
+                    end = offset + len(chunk) - 1
+                    upload_headers = {
+                        'Content-Length': str(len(chunk)),
+                        'Content-Range': f'bytes {offset}-{end}/{size}',
+                    }
+                    try:
+                        uploaded = requests.put(
+                            upload_url, data=chunk, headers=upload_headers,
+                            timeout=(15, 1800), allow_redirects=False,
+                        )
+                    except requests.RequestException:
+                        uploaded = None
+                    if uploaded is None or uploaded.status_code == 503:
+                        retry_after = int((uploaded.headers.get('Retry-After') if uploaded else 0) or 0)
+                        if retry_after > 0:
+                            time.sleep(min(60, retry_after))
+                        # Query Drive's resumable session to recover an unknown
+                        # response without retransferring bytes through Codexia.
+                        offset, final_metadata = query_drive_session()
+                        if final_metadata is None:
+                            continue
+                        break
+                    if uploaded.status_code == 308:
+                        server_range = str(uploaded.headers.get('Range') or '')
+                        match = re.search(r'bytes=0-(\d+)$', server_range)
+                        next_offset = int(match.group(1)) + 1 if match else 0
+                        if next_offset <= offset or next_offset > size:
+                            raise RuntimeError('Google Drive retornou uma posição inválida para o upload retomável.')
+                        offset = next_offset
+                        continue
+                    if uploaded.status_code in (200, 201):
+                        final_metadata = uploaded.json()
+                        offset = size
+                        break
+                    if uploaded.status_code in (404, 410):
+                        raise RuntimeError('A sessão de upload do Google Drive expirou; o arquivo local foi preservado.')
+                    uploaded.raise_for_status()
+
+            if (not final_metadata
+                    or int(final_metadata.get('size') or -1) != size
+                    or str(final_metadata.get('md5Checksum') or '').lower() != expected_md5.hexdigest()):
+                raise RuntimeError('Google Drive não confirmou o tamanho e checksum; arquivo local preservado.')
+            final_stat = p.stat()
+            if final_stat.st_size != stamp[0] or final_stat.st_mtime_ns != stamp[1]:
+                raise RuntimeError('O arquivo local mudou durante o upload; ele foi preservado para nova tentativa.')
+            entry = {
+                'kind': kind,
+                'filename': filename,
+                'drive_file_id': str(final_metadata.get('id') or ''),
+                'drive_account_id': session.get('drive_account_id'),
+                'sha256': sha,
+                'size': size,
+            }
+            registered = self.session.post(
+                self.drive_endpoint(task, '/register'),
+                json=entry,
+                timeout=(10, 90),
+                allow_redirects=False,
+            )
+            registered.raise_for_status()
+            result = registered.json().get('entry') or {}
+            if result.get('sha256') != sha or int(result.get('size') or -1) != size:
+                raise RuntimeError('O servidor principal não confirmou os metadados do arquivo no Drive.')
+            _ACK[key] = stamp
+            self._remote_index_cache.setdefault(task_key(task), {})[(kind, filename)] = {
+                'sha256': sha,
+                'size': size,
+            }
+            return
+
+        raise RuntimeError('Google Drive não aceitou a substituição após várias tentativas.')
 
     def hydrate(self, task):
         if not self.enabled:
@@ -237,6 +485,16 @@ class CentralAssetTransfer:
         cache = manifest_dir(task) / 'central-cache'
         cache.mkdir(exist_ok=True)
         mapping = {}
+        access_token = None
+        drive_files = [entry for entry in response.json().get('files') or [] if entry.get('drive_file_id')]
+        if drive_files:
+            access_response = self.session.get(
+                self.drive_endpoint(task, '/access'), timeout=(10, 90), allow_redirects=False
+            )
+            access_response.raise_for_status()
+            access_token = str(access_response.json().get('access_token') or '')
+            if not access_token:
+                raise RuntimeError('O servidor não autorizou a recuperação direta do Google Drive.')
         for entry in response.json().get('files') or []:
             kind, filename = entry['kind'], entry['filename']
             archive_path(kind, filename)  # validate server metadata before constructing a URL/path
@@ -246,8 +504,34 @@ class CentralAssetTransfer:
                 continue
             tmp = dest.with_suffix(dest.suffix + '.part')
             try:
-                with self.session.get(self.endpoint(task, f'/{kind}/{filename}'), stream=True,
-                        timeout=(10, 300), allow_redirects=False) as download:
+                if entry.get('drive_file_id'):
+                    drive_url = (
+                        'https://www.googleapis.com/drive/v3/files/'
+                        f"{quote(str(entry['drive_file_id']), safe='')}"
+                    )
+                    download = requests.get(
+                        drive_url, params={'alt': 'media'},
+                        headers={'Authorization': f'Bearer {access_token}'},
+                        stream=True, timeout=(15, 300), allow_redirects=True,
+                    )
+                    if download.status_code == 401:
+                        download.close()
+                        access_response = self.session.get(
+                            self.drive_endpoint(task, '/access'), timeout=(10, 90), allow_redirects=False
+                        )
+                        access_response.raise_for_status()
+                        access_token = str(access_response.json().get('access_token') or '')
+                        download = requests.get(
+                            drive_url, params={'alt': 'media'},
+                            headers={'Authorization': f'Bearer {access_token}'},
+                            stream=True, timeout=(15, 300), allow_redirects=True,
+                        )
+                else:
+                    download = self.session.get(
+                        self.endpoint(task, f'/{kind}/{filename}'), stream=True,
+                        timeout=(10, 300), allow_redirects=False,
+                    )
+                with download:
                     download.raise_for_status()
                     with tmp.open('wb') as stream:
                         for chunk in download.iter_content(1024 * 1024):
@@ -255,7 +539,10 @@ class CentralAssetTransfer:
                 if digest(tmp) != entry['sha256'] or tmp.stat().st_size != entry['size']:
                     raise RuntimeError('Ativo recebido incompleto; render não iniciado.')
                 os.replace(tmp, dest)
-                record_artifact(task, str(dest), kind=kind, source='central_archive')
+                record_artifact(
+                    task, str(dest), kind=kind,
+                    source='google_drive_archive' if entry.get('drive_file_id') else 'central_archive',
+                )
                 mapping[filename] = str(dest)
             finally:
                 tmp.unlink(missing_ok=True)
@@ -285,7 +572,10 @@ class CentralAssetTransfer:
         from app.services.production_manifest import manifest_dir, load_manifest, _root_dir, _read_json
         response = self.session.get(self.endpoint(task), timeout=(10, 60), allow_redirects=False)
         response.raise_for_status()
-        hashes = {e['sha256'] for e in response.json().get('files') or []}
+        hashes = {
+            e['sha256'] for e in response.json().get('files') or []
+            if e.get('drive_file_id') and e.get('sha256')
+        }
         shared = set()
         for manifest in _root_dir().glob('*/manifest.json'):
             if manifest.parent.name == str(task):
@@ -322,7 +612,7 @@ class CentralAssetTransfer:
         target_free_gb=5.0,
         max_tasks=50,
     ):
-        """Mantém o worker temporário e o servidor principal como arquivo permanente.
+        """Mantém o CX33 como worker temporário e o Google Drive como arquivo permanente.
 
         Tarefas em execução permanecem intocadas. Ativos de tarefas pendentes,
         pausadas, falhas ou concluídas são enviados ao arquivo central e removidos
@@ -413,8 +703,8 @@ class CentralAssetTransfer:
                     continue
 
                 checked += 1
-                # Arquiva primeiro os ativos antigos que ainda não chegaram ao
-                # servidor principal; só depois remove cópias confirmadas.
+                # Envia ativos antigos diretamente ao Drive; só depois remove
+                # cópias locais confirmadas por checksum e metadados centrais.
                 self.publish_manifest(task_id)
                 self.clean_cache(task_id)
             except Exception:

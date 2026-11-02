@@ -278,6 +278,21 @@ class Settings(Base):
     
     is_active = Column(Boolean, default=True)
 
+
+class GoogleDriveAccount(Base):
+    """Admin-managed Drive accounts used to shard project archives."""
+    __tablename__ = "google_drive_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String(120), nullable=False)
+    refresh_token = Column(String, nullable=False)
+    folder_id = Column(String, nullable=True)
+    enabled = Column(Boolean, default=True, server_default=text("true"), nullable=False)
+    is_primary = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    is_legacy = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
 class Customer(Base):
     __tablename__ = "customers"
 

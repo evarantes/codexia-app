@@ -829,7 +829,7 @@ def _drive_media_response(request: Request, kind: str, filename: str, media_type
     entry = find_drive_asset(kind, filename)
     if not entry:
         return None
-    return GoogleDriveArchive().stream_response(
+    return GoogleDriveArchive.for_asset(entry).stream_response(
         entry,
         range_header=request.headers.get("range", ""),
         media_type=media_type,
