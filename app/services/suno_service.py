@@ -18,18 +18,25 @@ SUNO_BASE = "https://api.sunoapi.org/api/v1"
 CALLBACK_PLACEHOLDER = "https://example.com/suno-callback"
 
 
-def get_suno_api_key() -> Optional[str]:
-    key = os.getenv("SUNO_API_KEY")
-    if key and key.strip():
-        return key.strip()
+def get_suno_api_key(user_id: Optional[int] = None) -> Optional[str]:
+    """Resolve Suno from Codexia settings, scoped to the current user.
+
+    A global (user_id=NULL) configuration is shared intentionally by the
+    administrator. Never fall back to another user's private settings.
+    """
     db = SessionLocal()
     try:
-        s = db.query(Settings).first()
-        if s and s.suno_api_key and s.suno_api_key.strip():
-            return s.suno_api_key.strip()
+        if user_id is not None:
+            setting = db.query(Settings).filter(Settings.user_id == user_id).first()
+            if setting and setting.suno_api_key and setting.suno_api_key.strip():
+                return setting.suno_api_key.strip()
+        setting = db.query(Settings).filter(Settings.user_id.is_(None)).first()
+        if setting and setting.suno_api_key and setting.suno_api_key.strip():
+            return setting.suno_api_key.strip()
     finally:
         db.close()
-    return None
+    key = os.getenv("SUNO_API_KEY")
+    return key.strip() if key and key.strip() else None
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
