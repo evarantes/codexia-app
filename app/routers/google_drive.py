@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -41,6 +42,7 @@ from app.services.google_drive_archive import (
 )
 
 router = APIRouter(prefix="/settings/google-drive", tags=["Google Drive archive"])
+logger = logging.getLogger(__name__)
 _STATE = URLSafeTimedSerializer(SECRET_KEY, salt="codexia-google-drive-oauth-v1")
 _ARCHIVABLE_STATUSES = {
     "completed", "awaiting_review", "approved", "rendered_upload_failed",
@@ -253,8 +255,10 @@ def google_drive_oauth_callback(
     if not code:
         return HTMLResponse("<h2>Código Google ausente</h2><p>Feche esta aba e tente conectar novamente.</p>", status_code=400)
     settings = _get_or_create_settings_row(db, user_id=user_id)
+    oauth_stage = "load_client_credentials"
     try:
         client_id, client_secret = _oauth_credentials(settings)
+        oauth_stage = "create_oauth_flow"
         client_config = {"web": {
             "client_id": client_id,
             "client_secret": client_secret,
@@ -264,8 +268,10 @@ def google_drive_oauth_callback(
         }}
         flow = Flow.from_client_config(client_config, scopes=[DRIVE_SCOPE], state=state)
         flow.redirect_uri = redirect_uri
+        oauth_stage = "exchange_authorization_code"
         flow.fetch_token(code=code)
         credentials = flow.credentials
+        oauth_stage = "persist_refresh_token"
         account = None
         if account_id is not None:
             account = db.query(GoogleDriveAccount).filter(
@@ -312,7 +318,20 @@ def google_drive_oauth_callback(
         invalidate_drive_usage_cache(user_id)
     except Exception as exc:
         db.rollback()
-        message = str(exc) if isinstance(exc, (RuntimeError, GoogleDriveArchiveError)) else "Falha ao trocar o código OAuth. Confira o callback HTTPS cadastrado no Google Cloud."
+        oauth_error = getattr(exc, "error", None)
+        if not isinstance(oauth_error, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", oauth_error):
+            oauth_error = "unavailable"
+        response = getattr(exc, "response", None)
+        http_status = getattr(response, "status_code", None)
+        if not isinstance(http_status, int):
+            http_status = getattr(exc, "status_code", None)
+        if not isinstance(http_status, int):
+            http_status = "unavailable"
+        logger.warning(
+            "Google Drive OAuth callback failed: stage=%s exception_type=%s oauth_error=%s http_status=%s",
+            oauth_stage, type(exc).__name__, oauth_error, http_status,
+        )
+        message = str(exc) if isinstance(exc, (RuntimeError, GoogleDriveArchiveError)) else "Falha ao trocar o código OAuth. Confira as credenciais e o callback HTTPS do Google Cloud."
         return HTMLResponse(f"<h2>Falha ao conectar Google Drive</h2><p>{escape(message)}</p><p>Feche esta aba e revise as Configurações do Google OAuth.</p>", status_code=400)
     return HTMLResponse(
         "<!doctype html><html lang='pt-BR'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
