@@ -129,14 +129,19 @@ class CentralTransferTests(unittest.TestCase):
             other = root / 'other'; other.mkdir(); (other / 'manifest.json').write_text('{}')
             transfer = CentralAssetTransfer()
             response = Mock(); response.json.return_value = {'files': [
-                {'drive_file_id': 'own-drive-id', 'sha256': hashlib.sha256(b'own').hexdigest()},
-                {'drive_file_id': 'shared-drive-id', 'sha256': hashlib.sha256(b'shared').hexdigest()},
+                {'kind': 'image', 'filename': 'one.png', 'drive_file_id': 'own-drive-id',
+                 'sha256': hashlib.sha256(b'own').hexdigest(), 'size': len(b'own')},
+                {'kind': 'image', 'filename': 'shared.png', 'drive_file_id': 'shared-drive-id',
+                 'sha256': hashlib.sha256(b'shared').hexdigest(), 'size': len(b'shared')},
             ]}
             transfer.session.get = Mock(return_value=response)
             with patch('app.services.production_manifest.manifest_dir', return_value=taskdir), \
                  patch('app.services.production_manifest._root_dir', return_value=root), \
                  patch('app.services.central_asset_transfer.roots', return_value={'image': root}), \
-                 patch('app.services.production_manifest.load_manifest', return_value={'artifacts': [{'original_path': str(own)}, {'original_path': str(shared)}]}), \
+                 patch('app.services.production_manifest.load_manifest', return_value={'artifacts': [
+                     {'kind': 'image', 'original_path': str(own)},
+                     {'kind': 'image', 'original_path': str(shared)},
+                 ]}), \
                  patch('app.services.production_manifest._read_json', return_value={'artifacts': [{'original_path': str(shared)}]}):
                 response.raise_for_status.side_effect = RuntimeError('archive unavailable')
                 with self.assertRaises(RuntimeError):

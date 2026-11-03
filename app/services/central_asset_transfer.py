@@ -575,18 +575,15 @@ class CentralAssetTransfer:
         )
 
         task = task_key(task)
-        try:
-            response = self.session.get(
-                self.endpoint(task, "/drive-index"),
-                timeout=(10, 60),
-                allow_redirects=False,
-            )
-            response.raise_for_status()
-            response_payload = response.json()
-        except Exception:
-            return {"files_deleted": 0, "bytes_freed": 0, "errors": 1}
+        response = self.session.get(
+            self.endpoint(task, "/drive-index"),
+            timeout=(10, 60),
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        response_payload = response.json()
         if not isinstance(response_payload, dict):
-            return {"files_deleted": 0, "bytes_freed": 0, "errors": 1}
+            raise RuntimeError("Índice central do Google Drive inválido; arquivos locais preservados.")
         verified = {}
         ambiguous = set()
         for entry in response_payload.get("files") or []:
