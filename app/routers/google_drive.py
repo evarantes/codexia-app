@@ -28,8 +28,9 @@ from app.models import GoogleDriveAccount, Settings, User
 from app.routers.auth import SECRET_KEY, get_current_admin_user
 from app.routers.settings import _get_or_create_settings_row
 from app.services.central_asset_transfer import (
-    digest, index_path, pin_task_drive_account, register as register_asset,
-    roots, task_index_lock, task_key,
+    cleanup_confirmed_worker_cache_job, digest, index_path,
+    pin_task_drive_account, register as register_asset, roots,
+    task_index_lock, task_key,
 )
 from app.services.google_drive_archive import (
     DRIVE_SCOPE,
@@ -812,9 +813,11 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
     errors = []
     bytes_freed = 0
     archived_projects = 0
+    selected_task_ids = []
     try:
         projects, inodes, candidates = _project_archive_inventory()
         selected = candidates[:limit]
+        selected_task_ids = [str(project["task_id"]) for project in selected]
         payload["total_candidates"] = len(selected)
         _write_job(job_id, payload)
         for project in selected:
@@ -862,6 +865,49 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
         bytes_freed = _remove_fully_archived_aliases(projects, inodes)
     except Exception as exc:
         errors.append(str(exc)[:240])
+
+    worker_cleanup_status = "not_needed"
+    if selected_task_ids:
+        try:
+            from app.redis_client import queue
+
+            worker_job = queue.enqueue(
+                cleanup_confirmed_worker_cache_job,
+                selected_task_ids,
+                max_tasks=len(selected_task_ids),
+                job_timeout=4 * 60 * 60,
+                result_ttl=7 * 24 * 60 * 60,
+                failure_ttl=7 * 24 * 60 * 60,
+                description="Remover do CX33 arquivos confirmados no Google Drive",
+            )
+            if hasattr(worker_job, "id"):
+                payload["worker_cleanup_job_id"] = str(worker_job.id)
+                worker_cleanup_status = "queued"
+            elif isinstance(worker_job, dict):
+                # Development's explicitly enabled inline queue returns results
+                # directly; production always receives an RQ job handle.
+                payload["worker_cleanup_result"] = worker_job
+                if not worker_job.get("enabled", True):
+                    payload["worker_cleanup_message"] = (
+                        "O CX33 não está configurado para consultar o arquivo central; nenhum arquivo dele foi removido."
+                    )
+                elif int(worker_job.get("errors") or 0) > 0:
+                    payload["worker_cleanup_message"] = (
+                        "Alguns arquivos do CX33 não puderam ser verificados e permaneceram no disco."
+                    )
+                worker_cleanup_status = "finished"
+            else:
+                worker_cleanup_status = "queued"
+        except Exception as exc:
+            logger.warning(
+                "Google Drive migration could not queue CX33 cleanup: job_id=%s exception_type=%s",
+                job_id, type(exc).__name__,
+            )
+            worker_cleanup_status = "not_queued"
+            payload["worker_cleanup_message"] = (
+                "O CX33 não recebeu a solicitação; os arquivos locais dele foram mantidos."
+            )
+    payload["worker_cleanup_status"] = worker_cleanup_status
     payload.update({
         "status": "completed" if not errors else ("completed_with_errors" if archived or skipped else "failed"),
         "archived": archived,
@@ -902,4 +948,43 @@ def start_google_drive_migration(
 
 @router.get("/migrate/{job_id}")
 def google_drive_migration_status(job_id: str, current_user: User = Depends(get_current_admin_user)):
-    return _read_job(job_id)
+    payload = _read_job(job_id)
+    worker_job_id = str(payload.get("worker_cleanup_job_id") or "").strip()
+    if not worker_job_id:
+        return payload
+    if payload.get("worker_cleanup_status") in {"finished", "failed", "stopped", "canceled", "cancelled"}:
+        return payload
+    try:
+        from rq.job import Job
+        from app.redis_client import conn
+
+        if conn is None:
+            payload["worker_cleanup_status"] = "unavailable"
+            return payload
+        worker_job = Job.fetch(worker_job_id, connection=conn)
+        status = worker_job.get_status(refresh=True)
+        status = str(getattr(status, "value", status) or "unknown").lower()
+        payload["worker_cleanup_status"] = status
+        if status == "finished":
+            result = worker_job.result
+            if isinstance(result, dict):
+                payload["worker_cleanup_result"] = result
+                if not result.get("enabled", True):
+                    payload["worker_cleanup_message"] = (
+                        "O CX33 não está configurado para consultar o arquivo central; nenhum arquivo dele foi removido."
+                    )
+                elif int(result.get("errors") or 0) > 0:
+                    payload["worker_cleanup_message"] = (
+                        "Alguns arquivos do CX33 não puderam ser verificados e permaneceram no disco."
+                    )
+        elif status in {"failed", "stopped", "canceled", "cancelled"}:
+            payload["worker_cleanup_message"] = (
+                "A limpeza do CX33 não terminou; os arquivos ainda presentes foram mantidos."
+            )
+        if payload.get("worker_cleanup_status") in {"finished", "failed", "stopped", "canceled", "cancelled"}:
+            _write_job(job_id, payload)
+    except Exception:
+        # Redis may be temporarily unreachable while the RQ worker continues.
+        # Keep this state nonterminal so the page will retry its status poll.
+        payload["worker_cleanup_status"] = "unavailable"
+    return payload

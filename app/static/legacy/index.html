@@ -4540,7 +4540,7 @@
                         <div class="flex flex-wrap items-center justify-between gap-2">
                             <div>
                                 <h3 class="font-bold text-slate-900">Arquivo permanente no Google Drive</h3>
-                                <p class="mt-1 text-sm text-slate-600">Cada projeto fica em uma pasta própria no Drive. Projetos concluídos e com falha podem ser retomados: o Codexia recupera os arquivos para o CX33 quando necessário e só remove cópias locais após conferir a integridade.</p>
+                                <p class="mt-1 text-sm text-slate-600">Cada projeto fica em uma pasta própria no Drive. Projetos concluídos e com falha podem ser retomados: o Codexia recupera os arquivos para o CX33 quando necessário. A limpeza alcança o servidor principal e o CX33 somente depois de confirmar nome, SHA-256 e tamanho no índice do Drive.</p>
                             </div>
                             <span class="rounded px-2 py-1 text-xs font-bold" :class="googleDriveStatus.connected ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'">
                                 {{ googleDriveStatus.connected ? 'Conectado' : 'Não conectado' }}
@@ -4578,15 +4578,20 @@
                         </div>
                         <div class="mt-3 flex flex-wrap gap-2">
                             <button type="button" @click="fetchGoogleDriveStatus" :disabled="googleDriveStatus.checking" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Atualizar status</button>
-                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Arquivando projetos...' : 'Arquivar projetos antigos e liberar espaço' }}</button>
+                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Liberando espaço nos servidores...' : 'Arquivar projetos antigos e liberar espaço' }}</button>
                         </div>
                         <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
-                            Arquivamento: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos · {{ googleDriveMigration.archived || 0 }} arquivos · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
+                            Servidor principal: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos · {{ googleDriveMigration.archived || 0 }} arquivos enviados · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
                         </p>
+                        <p v-if="googleDriveMigration && googleDriveMigration.worker_cleanup_status" class="mt-1 text-sm text-slate-700">
+                            CX33: {{ googleDriveMigration.worker_cleanup_status }}<template v-if="googleDriveMigration.worker_cleanup_result"> · {{ googleDriveMigration.worker_cleanup_result.files_deleted || 0 }} arquivos removidos · {{ formatBytes(googleDriveMigration.worker_cleanup_result.reclaimed_bytes || 0) }} liberados no disco</template>
+                        </p>
+                        <p v-if="googleDriveMigration && googleDriveMigration.worker_cleanup_message" class="mt-1 text-xs text-amber-700">{{ googleDriveMigration.worker_cleanup_message }}</p>
+                        <p v-if="googleDriveMigration && googleDriveMigration.status_poll_error" class="mt-1 text-xs text-amber-700">{{ googleDriveMigration.status_poll_error }} · tentando consultar novamente.</p>
                         <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
                             <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
                         </ul>
-                        <p class="mt-2 text-xs text-slate-500">Cada rodada arquiva até 5 projetos concluídos, publicados, pausados ou com falha, sem atividade nas últimas 24 horas. Cópias compartilhadas só são removidas quando todos os projetos que as usam estão conferidos no Drive. Banco de dados, código e cache ativo continuam nos servidores.</p>
+                        <p class="mt-2 text-xs text-slate-500">Cada rodada arquiva até 5 projetos concluídos, publicados, pausados ou com falha, sem atividade nas últimas 24 horas. Arquivos ativos, alterados, compartilhados sem conferência e sem correspondência exata de nome, SHA-256 e tamanho são preservados. Banco de dados, código e cache ativo continuam nos servidores.</p>
                     </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <div class="flex items-center justify-between">
@@ -7651,7 +7656,7 @@
                     }
                 },
                 async startGoogleDriveMigration() {
-                    if (!confirm('Arquivar no Google Drive até 5 projetos concluídos, pausados ou com falha, sem atividade há mais de 24 horas? Os arquivos locais só serão removidos após a confirmação de integridade de todos os projetos que compartilham o mesmo arquivo.')) return;
+                    if (!confirm('Arquivar no Google Drive até 5 projetos concluídos, pausados ou com falha, sem atividade há mais de 24 horas, e liberar espaço no servidor principal e no CX33? Cada cópia só será removida quando nome, SHA-256 e tamanho corresponderem ao índice confirmado do Drive. Arquivos ativos, alterados, compartilhados sem conferência e não confirmados serão mantidos.')) return;
                     this.googleDriveMigrationBusy = true;
                     this.googleDriveMigration = { status: 'iniciando', archived: 0, archived_projects: 0, bytes_freed: 0, errors: [] };
                     try {
@@ -7666,23 +7671,29 @@
                     }
                 },
                 async pollGoogleDriveMigration(jobId) {
-                    for (let attempt = 0; attempt < 720; attempt += 1) {
+                    const migrationTerminal = new Set(['completed', 'completed_with_errors', 'failed']);
+                    const workerCleanupTerminal = new Set(['not_needed', 'not_queued', 'finished', 'failed', 'stopped', 'canceled', 'cancelled']);
+                    for (let attempt = 0; attempt < 2880; attempt += 1) {
                         await new Promise(resolve => setTimeout(resolve, 5000));
                         try {
                             const response = await this.authFetch(`/settings/google-drive/migrate/${encodeURIComponent(jobId)}`);
                             const data = await response.json().catch(() => ({}));
                             if (!response.ok) throw new Error(data.detail || 'Falha ao consultar a migração.');
                             this.googleDriveMigration = data;
-                            if (['completed', 'completed_with_errors', 'failed'].includes(data.status)) {
+                            const mainDone = migrationTerminal.has(String(data.status || '').toLowerCase());
+                            const workerStatus = String(data.worker_cleanup_status || 'not_needed').toLowerCase();
+                            const workerDone = workerCleanupTerminal.has(workerStatus);
+                            if (mainDone && workerDone) {
                                 localStorage.removeItem('google_drive_migration_job');
                                 this.googleDriveMigrationBusy = false;
                                 await this.fetchGoogleDriveStatus();
                                 return;
                             }
                         } catch (error) {
-                            this.googleDriveMigration = { ...(this.googleDriveMigration || {}), status: 'não foi possível atualizar', errors: [error && error.message ? error.message : 'Falha ao consultar a migração.'] };
-                            this.googleDriveMigrationBusy = false;
-                            return;
+                            this.googleDriveMigration = {
+                                ...(this.googleDriveMigration || {}),
+                                status_poll_error: error && error.message ? error.message : 'Falha ao consultar a migração.'
+                            };
                         }
                     }
                     this.googleDriveMigrationBusy = false;

@@ -566,43 +566,268 @@ class CentralAssetTransfer:
             self.publish(task, named, 'script')
 
     def clean_cache(self, task):
-        """Delete verified task media only; preserve files referenced by another task."""
+        """Remove only stable local copies matching the authoritative Drive index."""
         if not self.enabled:
-            return
-        from app.services.production_manifest import manifest_dir, load_manifest, _root_dir, _read_json
-        response = self.session.get(self.endpoint(task), timeout=(10, 60), allow_redirects=False)
-        response.raise_for_status()
-        hashes = {
-            e['sha256'] for e in response.json().get('files') or []
-            if e.get('drive_file_id') and e.get('sha256')
-        }
-        shared = set()
-        for manifest in _root_dir().glob('*/manifest.json'):
-            if manifest.parent.name == str(task):
+            return {"files_deleted": 0, "bytes_freed": 0}
+
+        from app.services.production_manifest import (
+            _read_json, _root_dir, load_manifest, manifest_dir,
+        )
+
+        task = task_key(task)
+        try:
+            response = self.session.get(
+                self.endpoint(task, "/drive-index"),
+                timeout=(10, 60),
+                allow_redirects=False,
+            )
+            response.raise_for_status()
+            response_payload = response.json()
+        except Exception:
+            return {"files_deleted": 0, "bytes_freed": 0, "errors": 1}
+        if not isinstance(response_payload, dict):
+            return {"files_deleted": 0, "bytes_freed": 0, "errors": 1}
+        verified = {}
+        ambiguous = set()
+        for entry in response_payload.get("files") or []:
+            if not isinstance(entry, dict) or not entry.get("drive_file_id"):
                 continue
-            for item in _read_json(manifest).get('artifacts') or []:
-                for key in ('original_path', 'durable_path'):
-                    if item.get(key):
-                        shared.add(str(Path(item[key]).resolve()))
+            kind = str(entry.get("kind") or "")
+            filename = str(entry.get("filename") or "")
+            sha = str(entry.get("sha256") or "").strip().lower()
+            try:
+                size = int(entry.get("size"))
+                archive_path(kind, filename, task=task)
+            except (TypeError, ValueError):
+                continue
+            if size <= 0 or not re.fullmatch(r"[0-9a-f]{64}", sha):
+                continue
+            key = (kind, filename)
+            value = (sha, size)
+            if key in verified and verified[key] != value:
+                ambiguous.add(key)
+                verified.pop(key, None)
+            elif key not in ambiguous:
+                verified[key] = value
+        if not verified:
+            return {"files_deleted": 0, "bytes_freed": 0, "errors": 0}
+
         manifest_root = manifest_dir(task)
-        candidates = set((manifest_root / 'central-cache').glob('*'))
-        candidates.update(manifest_root.glob(f'{task_key(task)}-*-script.json'))
-        local_script = manifest_root / 'script.json'
-        if local_script.is_file():
-            candidates.add(local_script)
-        for item in load_manifest(task).get('artifacts') or []:
-            if item.get('source') == 'filesystem_checkpoint':
+        allowed = [Path(root).resolve() for root in roots().values()]
+        # Each local path is mapped to the exact Drive name that represents it.
+        # Manifest durable copies can have generated filenames, so they use the
+        # artifact's original filename just as publish_manifest() does.
+        candidates = {}
+
+        def add_candidate(raw_path, refs):
+            if not raw_path:
+                return
+            path = Path(raw_path)
+            try:
+                if path.is_symlink() or not path.is_file():
+                    return
+                resolved = path.resolve(strict=True)
+                if not any(resolved.is_relative_to(root) for root in allowed):
+                    return
+            except (OSError, RuntimeError):
+                return
+            candidates.setdefault(resolved, set()).update(refs)
+
+        for path in (manifest_root / "central-cache").glob("*"):
+            kind = next((name for name, extensions in EXTENSIONS.items()
+                         if path.suffix.lower() in extensions), None)
+            if kind:
+                add_candidate(path, {(kind, path.name)})
+        for path in manifest_root.glob(f"{task}-*-script.json"):
+            add_candidate(path, {("script", path.name)})
+
+        local_script = manifest_root / "script.json"
+        add_candidate(local_script, {("script", f"{task}-script.json")})
+
+        for item in load_manifest(task).get("artifacts") or []:
+            if not isinstance(item, dict) or item.get("source") == "filesystem_checkpoint":
                 continue
-            for key in ('original_path', 'durable_path'):
-                if item.get(key):
-                    candidates.add(Path(item[key]))
-        allowed = [r.resolve() for r in roots().values()]
-        for p in candidates:
-            resolved = p.resolve()
-            if str(resolved) in shared or not any(resolved.is_relative_to(r) for r in allowed):
+            kind = str(item.get("kind") or "").strip().lower()
+            if kind not in EXTENSIONS:
                 continue
-            if p.is_file() and digest(p) in hashes:
-                p.unlink()
+            original_path = str(item.get("original_path") or "")
+            filename = Path(original_path).name if original_path else ""
+            if not filename:
+                continue
+            ref = {(kind, filename)}
+            for key in ("original_path", "durable_path"):
+                add_candidate(item.get(key), ref)
+
+        # A path shared by another project's manifest is retained even if it is
+        # also listed for this task. Unlisted hard links are retained as well.
+        shared_paths = set()
+        for manifest in Path(_root_dir()).glob("*/manifest.json"):
+            if manifest.parent.name == task:
+                continue
+            for item in _read_json(manifest).get("artifacts") or []:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("original_path", "durable_path"):
+                    raw = item.get(key)
+                    if not raw:
+                        continue
+                    path = Path(raw)
+                    try:
+                        if path.is_symlink():
+                            continue
+                        shared_paths.add(path.resolve(strict=True))
+                    except (OSError, RuntimeError):
+                        continue
+
+        groups = {}
+        for path, refs in candidates.items():
+            try:
+                info = path.stat()
+                inode = (int(info.st_dev), int(info.st_ino))
+                groups.setdefault(inode, []).append((path, refs, info))
+            except OSError:
+                continue
+
+        files_deleted = 0
+        bytes_freed = 0
+        for inode, group in groups.items():
+            if any(path in shared_paths for path, _, _ in group):
+                continue
+            try:
+                link_count = int(group[0][2].st_nlink)
+                if link_count != len(group) or any(int(info.st_nlink) != link_count for _, _, info in group):
+                    continue
+                expected = set()
+                for _, refs, _ in group:
+                    expected.update(refs)
+                if not expected or any(ref not in verified for ref in expected):
+                    continue
+                # Identical inode aliases may be removed together only when
+                # every alias is named by this task's manifest and verified.
+                actual_sha = digest(group[0][0])
+                actual_size = int(group[0][2].st_size)
+                if any(verified[ref] != (actual_sha, actual_size) for ref in expected):
+                    continue
+                stable = True
+                for path, _, before in group:
+                    after = path.stat()
+                    if (path.is_symlink()
+                            or (int(after.st_dev), int(after.st_ino)) != inode
+                            or int(after.st_size) != int(before.st_size)
+                            or int(after.st_mtime_ns) != int(before.st_mtime_ns)
+                            or int(after.st_nlink) != link_count):
+                        stable = False
+                        break
+                if not stable:
+                    continue
+                for path, _, _ in group:
+                    path.unlink(missing_ok=True)
+                    files_deleted += 1
+                bytes_freed += actual_size
+            except OSError:
+                continue
+
+        return {"files_deleted": files_deleted, "bytes_freed": bytes_freed, "errors": 0}
+
+    def cleanup_confirmed_worker_cache(
+        self,
+        task_ids=None,
+        *,
+        current_task=None,
+        max_tasks=50,
+    ):
+        """Clean Drive-confirmed files for terminal tasks on this worker only."""
+        try:
+            task_limit = max(1, min(100, int(max_tasks)))
+        except (TypeError, ValueError):
+            task_limit = 50
+
+        if not self.enabled:
+            return {
+                "enabled": False,
+                "tasks_checked": 0,
+                "tasks_cleaned": 0,
+                "files_deleted": 0,
+                "bytes_freed": 0,
+                "free_before_bytes": 0,
+                "free_after_bytes": 0,
+                "reclaimed_bytes": 0,
+                "errors": 0,
+            }
+
+        storage_paths = set()
+        for root in roots().values():
+            try:
+                resolved = Path(root).resolve()
+                if resolved.exists():
+                    storage_paths.add((int(resolved.stat().st_dev), str(resolved)))
+            except OSError:
+                continue
+        paths_by_device = {}
+        for device, path in storage_paths:
+            paths_by_device.setdefault(device, path)
+
+        def free_bytes():
+            total = 0
+            for path in paths_by_device.values():
+                try:
+                    total += int(shutil.disk_usage(path).free)
+                except OSError:
+                    continue
+            return total
+
+        before = free_bytes()
+        checked = 0
+        cleaned = 0
+        files_deleted = 0
+        bytes_freed = 0
+        errors = 0
+        from app.services.production_manifest import _root_dir
+        from app.services.task_manager import get_task
+
+        if task_ids is None:
+            manifests = list(Path(_root_dir()).glob("*/manifest.json"))
+            manifests.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0)
+            candidates = [path.parent.name for path in manifests]
+        else:
+            supplied_ids = [task_ids] if isinstance(task_ids, str) else (task_ids or [])
+            candidates = list(dict.fromkeys(str(value) for value in supplied_ids))
+        for task_id in candidates:
+            if checked >= task_limit:
+                break
+            if task_id == str(current_task or "") or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+                continue
+            try:
+                task = get_task(task_id)
+                status = str((task if isinstance(task, dict) else {}).get("status") or "").strip().lower()
+                if status not in {
+                    "completed", "awaiting_review", "approved",
+                    "rendered_upload_failed", "failed", "paused",
+                    "cancelled", "published",
+                }:
+                    continue
+                checked += 1
+                result = self.clean_cache(task_id)
+                errors += int(result.get("errors") or 0)
+                if result["files_deleted"]:
+                    cleaned += 1
+                    files_deleted += int(result["files_deleted"])
+                    bytes_freed += int(result["bytes_freed"])
+            except Exception:
+                errors += 1
+
+        after = free_bytes()
+        return {
+            "enabled": bool(self.enabled),
+            "tasks_checked": checked,
+            "tasks_cleaned": cleaned,
+            "files_deleted": files_deleted,
+            "bytes_freed": bytes_freed,
+            "free_before_bytes": before,
+            "free_after_bytes": after,
+            "reclaimed_bytes": max(0, after - before),
+            "errors": errors,
+        }
 
 
     def cleanup_archived_worker_cache(
@@ -612,117 +837,30 @@ class CentralAssetTransfer:
         target_free_gb=5.0,
         max_tasks=50,
     ):
-        """Mantém o CX33 como worker temporário e o Google Drive como arquivo permanente.
-
-        Tarefas em execução permanecem intocadas. Ativos de tarefas pendentes,
-        pausadas, falhas ou concluídas são enviados ao arquivo central e removidos
-        do CX33 somente depois que o SHA-256 é confirmado.
-        """
-        if not self.enabled:
-            return {
-                "enabled": False,
-                "free_before_gb": 0.0,
-                "free_after_gb": 0.0,
-                "reclaimed_gb": 0.0,
-                "tasks_checked": 0,
-                "errors": 0,
-            }
-
-        from app.services.production_manifest import _root_dir, load_manifest, manifest_dir
-        from app.services.task_manager import get_task
-
-        storage_path = "/data" if os.path.isdir("/data") else "/"
+        """Compatibility wrapper for the safe, Drive-confirmed cache sweep."""
+        report = self.cleanup_confirmed_worker_cache(
+            current_task=current_task, max_tasks=max_tasks
+        )
+        before = int(report.get("free_before_bytes") or 0)
+        after = int(report.get("free_after_bytes") or 0)
         try:
             target_gb = max(1.0, min(50.0, float(target_free_gb)))
-        except Exception:
+        except (TypeError, ValueError):
             target_gb = 5.0
-        try:
-            task_limit = max(1, min(50, int(max_tasks)))
-        except Exception:
-            task_limit = 50
-
-        def _free_bytes():
-            return int(shutil.disk_usage(storage_path).free)
-
-        before = _free_bytes()
-        checked = 0
-        errors = 0
-        manifests = []
-        try:
-            manifests = list(_root_dir().glob("*/manifest.json"))
-            manifests.sort(key=lambda item: item.stat().st_mtime)
-        except Exception:
-            manifests = []
-
-        allowed_roots = [root.resolve() for root in roots().values()]
-
-        def _is_tracked_local_file(candidate):
-            try:
-                resolved = Path(candidate).resolve()
-                return (
-                    resolved.is_file()
-                    and any(resolved.is_relative_to(root) for root in allowed_roots)
-                )
-            except Exception:
-                return False
-
-        for manifest_path in manifests:
-            task_id = manifest_path.parent.name
-            if task_id == str(current_task or ""):
-                continue
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
-                continue
-            try:
-                task = get_task(task_id) or {}
-                status = str(task.get("status") or "").strip().lower()
-                if status not in {
-                    "completed",
-                    "awaiting_review",
-                    "approved",
-                    "rendered_upload_failed",
-                    "failed",
-                    "paused",
-                    "pending",
-                }:
-                    continue
-
-                task_manifest_dir = manifest_dir(task_id)
-                local_candidates = list((task_manifest_dir / "central-cache").glob("*"))
-                local_candidates.extend(task_manifest_dir.glob(f"{task_id}-*-script.json"))
-                local_script = task_manifest_dir / "script.json"
-                if local_script.is_file():
-                    local_candidates.append(local_script)
-                for artifact in load_manifest(task_id).get("artifacts") or []:
-                    if artifact.get("source") == "filesystem_checkpoint":
-                        continue
-                    for key in ("original_path", "durable_path"):
-                        raw_path = artifact.get(key)
-                        if raw_path:
-                            local_candidates.append(Path(raw_path))
-                if not any(_is_tracked_local_file(path) for path in local_candidates):
-                    continue
-
-                checked += 1
-                # Envia ativos antigos diretamente ao Drive; só depois remove
-                # cópias locais confirmadas por checksum e metadados centrais.
-                self.publish_manifest(task_id)
-                self.clean_cache(task_id)
-            except Exception:
-                errors += 1
-            if checked >= task_limit:
-                break
-
-        after = _free_bytes()
-        return {
-            "enabled": True,
-            "storage_path": storage_path,
+        report.update({
             "target_free_gb": round(target_gb, 2),
             "free_before_gb": round(before / (1024 ** 3), 2),
             "free_after_gb": round(after / (1024 ** 3), 2),
             "reclaimed_gb": round(max(0, after - before) / (1024 ** 3), 2),
-            "tasks_checked": checked,
-            "errors": errors,
-        }
+        })
+        return report
+
+
+def cleanup_confirmed_worker_cache_job(task_ids=None, *, max_tasks=25, **_queue_options):
+    """RQ entry point for Google Drive-confirmed cleanup on the CX33 worker."""
+    return CentralAssetTransfer().cleanup_confirmed_worker_cache(
+        task_ids=task_ids, max_tasks=max_tasks
+    )
 
 
 def map_cached_references(value, mapping):
