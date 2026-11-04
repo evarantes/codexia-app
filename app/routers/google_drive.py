@@ -1307,10 +1307,6 @@ def _run_migration(
         payload["worker_cleanup_task_ids"] = list(dict.fromkeys(previous_ids + selected_task_ids))
         worker_cleanup_status = "deferred" if payload["worker_cleanup_task_ids"] else "not_needed"
     else:
-        worker_cleanup_status = _queue_confirmed_worker_cleanup(
-            job_id, {**payload, "worker_cleanup_task_ids": selected_task_ids}
-        )
-        # Preserve any job handle and user-facing cleanup message created above.
         cleanup_payload = {**payload, "worker_cleanup_task_ids": selected_task_ids}
         worker_cleanup_status = _queue_confirmed_worker_cleanup(job_id, cleanup_payload)
         payload.update({
@@ -1514,7 +1510,7 @@ def start_google_drive_migration(
         "overall_archived_bytes": progress["archived_bytes_before"],
     })
     background_tasks.add_task(
-        _run_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
+        _run_full_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
     )
     return {"job_id": job_id, "status": "queued", "message": "Arquivamento por projeto iniciado. Tarefas ativas e projetos atualizados nas últimas 24 horas serão ignorados."}
 
