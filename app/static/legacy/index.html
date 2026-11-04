@@ -7863,124 +7863,77 @@
                     }
 
                     this.googleDriveMigrationBusy = true;
+                    this.googleDriveMigrationNotice = 'Iniciando o backup completo no servidor. Depois da confirmação, a página pode ser fechada.';
                     this.googleDriveMigration = {
-                        status: 'iniciando', archived: 0, archived_projects: 0,
-                        processed_projects: 0, processed_files: 0, archived_bytes: 0,
-                        bytes_freed: 0, errors: [],
+                        status: 'iniciando',
+                        archived: 0,
+                        archived_projects: 0,
+                        processed_projects: 0,
+                        processed_files: 0,
+                        archived_bytes: 0,
+                        bytes_freed: 0,
+                        errors: [],
                         overall_total_projects: totalProjects,
                         overall_total_files: totalFiles,
                         overall_total_bytes: totalBytes,
                         overall_processed_projects: 0,
                         overall_processed_files: 0,
-                        overall_archived_bytes: 0
+                        overall_archived_bytes: 0,
+                        batch_number: 1
                     };
-                    const totals = {
-                        archived: 0, archived_projects: 0, bytes_freed: 0,
-                        processed_projects: 0, processed_files: 0, archived_bytes: 0,
-                        error_count: 0, errors: [], worker_files_deleted: 0,
-                        worker_reclaimed_bytes: 0, worker_messages: []
-                    };
-                    let cursor = null;
                     try {
-                        for (let batch = 1; batch <= 500; batch += 1) {
-                            const params = new URLSearchParams({
-                                limit: '25',
-                                overall_total_projects: String(totalProjects),
-                                overall_total_files: String(totalFiles),
-                                overall_total_bytes: String(totalBytes),
-                                completed_projects_before: String(totals.processed_projects),
-                                completed_files_before: String(totals.processed_files),
-                                archived_bytes_before: String(totals.archived_bytes),
-                                batch_number: String(batch)
-                            });
-                            if (cursor) {
-                                params.set('after_updated_at', String(cursor.updated_at));
-                                params.set('after_task_id', String(cursor.task_id));
-                            }
-                            const response = await this.authFetch('/settings/google-drive/migrate/start?' + params.toString(), { method: 'POST' });
-                            const started = await response.json().catch(() => ({}));
-                            if (!response.ok || !started.job_id) throw new Error(started.detail || 'Não foi possível iniciar o backup.');
-                            localStorage.setItem('google_drive_migration_job', started.job_id);
-                            const result = await this.pollGoogleDriveMigration(started.job_id, true);
-                            if (!result) {
-                                this.googleDriveMigration = {
-                                    ...(this.googleDriveMigration || {}), ...totals,
-                                    status: 'consulta_expirada',
-                                    errors: [...totals.errors, 'A consulta automática expirou. Clique em Atualizar status para consultar o job no servidor; o backup não foi reiniciado.'].slice(-50)
-                                };
-                                break;
-                            }
-                            totals.archived += Number(result.archived || 0);
-                            totals.archived_projects += Number(result.archived_projects || 0);
-                            totals.bytes_freed += Number(result.bytes_freed || 0);
-                            totals.processed_projects += Number(result.processed_projects || 0);
-                            totals.processed_files += Number(result.processed_files || 0);
-                            totals.archived_bytes += Number(result.archived_bytes || 0);
-                            totals.error_count += Number(result.error_count || (Array.isArray(result.errors) ? result.errors.length : 0));
-                            totals.errors.push(...(Array.isArray(result.errors) ? result.errors : []));
-                            totals.errors = totals.errors.slice(-50);
-                            if (result.worker_cleanup_result) {
-                                totals.worker_files_deleted += Number(result.worker_cleanup_result.files_deleted || 0);
-                                totals.worker_reclaimed_bytes += Number(result.worker_cleanup_result.reclaimed_bytes || 0);
-                            }
-                            if (result.worker_cleanup_message && !totals.worker_messages.includes(result.worker_cleanup_message)) {
-                                totals.worker_messages.push(result.worker_cleanup_message);
-                            }
-                            const remaining = Number(result.remaining_candidates || 0);
+                        const params = new URLSearchParams({
+                            limit: '25',
+                            overall_total_projects: String(totalProjects),
+                            overall_total_files: String(totalFiles),
+                            overall_total_bytes: String(totalBytes),
+                            batch_number: '1'
+                        });
+                        const response = await this.authFetch('/settings/google-drive/migrate/start?' + params.toString(), { method: 'POST' });
+                        const started = await response.json().catch(() => ({}));
+                        if (!response.ok || !started.job_id) {
+                            throw new Error(started.detail || 'Não foi possível iniciar o backup.');
+                        }
+                        try { localStorage.setItem('google_drive_migration_job', started.job_id); } catch (_) {}
+                        this.googleDriveMigration = {
+                            ...this.googleDriveMigration,
+                            ...started,
+                            overall_total_projects: totalProjects,
+                            overall_total_files: totalFiles,
+                            overall_total_bytes: totalBytes,
+                            overall_processed_projects: 0,
+                            overall_processed_files: 0,
+                            overall_archived_bytes: 0,
+                            batch_number: 1
+                        };
+                        this.googleDriveMigrationNotice = 'Backup iniciado no servidor. Os próximos lotes também serão executados no servidor; a página não precisa ficar aberta.';
+                        const result = await this.pollGoogleDriveMigration(started.job_id, true);
+                        if (!result) {
+                            this.googleDriveMigrationNotice = 'A consulta desta página atingiu o limite de espera. O backup não foi reiniciado e pode ser consultado novamente pelo botão Atualizar status.';
                             this.googleDriveMigration = {
-                                ...result,
-                                ...totals,
-                                status: result.status === 'failed' ? 'failed' : (totals.error_count ? 'processing_with_errors' : 'processing'),
-                                worker_cleanup_result: totals.worker_files_deleted || totals.worker_reclaimed_bytes
-                                    ? { files_deleted: totals.worker_files_deleted, reclaimed_bytes: totals.worker_reclaimed_bytes }
-                                    : result.worker_cleanup_result,
-                                worker_cleanup_message: totals.worker_messages.join(' '),
-                                overall_total_projects: totalProjects,
-                                overall_total_files: totalFiles,
-                                overall_total_bytes: totalBytes,
-                                overall_processed_projects: totals.processed_projects,
-                                overall_processed_files: totals.processed_files,
-                                overall_archived_bytes: totals.archived_bytes,
-                                batch_number: batch,
-                                remaining_candidates: remaining
+                                ...(this.googleDriveMigration || {}),
+                                status_poll_error: 'A consulta automática parou de aguardar; o job permanece salvo no servidor.'
                             };
-                            if (!result.has_more_candidates) {
-                                this.googleDriveMigration.status = totals.error_count && result.status !== 'failed'
-                                    ? 'completed_with_errors'
-                                    : (result.status || 'completed');
-                                this.googleDriveMigration.overall_total_projects = Math.max(totalProjects, totals.processed_projects);
-                                break;
-                            }
-                            const nextCursor = result.last_candidate_cursor;
-                            if (!nextCursor || !nextCursor.task_id
-                                || (cursor && Number(nextCursor.updated_at) === Number(cursor.updated_at)
-                                    && String(nextCursor.task_id) === String(cursor.task_id))) {
-                                this.googleDriveMigration.status = result.status === 'failed' ? 'failed' : 'completed_with_errors';
-                                this.googleDriveMigration.errors = [
-                                    ...(this.googleDriveMigration.errors || []),
-                                    'O backup não avançou para o próximo lote; os itens não confirmados foram mantidos.'
-                                ].slice(-50);
-                                break;
-                            }
-                            cursor = nextCursor;
+                            return;
                         }
-                        if (String(this.googleDriveMigration && this.googleDriveMigration.status || '').startsWith('processing')) {
-                            this.googleDriveMigration.status = 'completed_with_errors';
-                            this.googleDriveMigration.errors = [
-                                ...(this.googleDriveMigration.errors || []),
-                                'O limite de 500 lotes foi atingido; inicie outro backup para continuar.'
-                            ].slice(-50);
+                        const finalStatus = String(result.status || '').toLowerCase();
+                        if (['completed', 'completed_with_errors', 'failed'].includes(finalStatus) && !result.has_more_candidates) {
+                            try { localStorage.removeItem('google_drive_migration_job'); } catch (_) {}
                         }
-                        const finalStatus = String(this.googleDriveMigration && this.googleDriveMigration.status || '').toLowerCase();
-                        if (finalStatus === 'completed' && !this.googleDriveMigration.has_more_candidates) {
-                            localStorage.removeItem('google_drive_migration_job');
-                        }
+                        this.googleDriveMigrationNotice = finalStatus === 'completed'
+                            ? 'Backup concluído. Os arquivos foram conferidos e a limpeza segura foi processada.'
+                            : finalStatus === 'completed_with_errors'
+                                ? 'Backup concluído com itens que precisam de revisão; os arquivos sem confirmação foram mantidos.'
+                                : finalStatus === 'failed'
+                                    ? 'O backup terminou com falha. Os arquivos sem confirmação foram mantidos.'
+                                    : 'O servidor atualizou o status do backup.';
                         await this.fetchGoogleDriveStatus();
                     } catch (error) {
+                        const message = error && error.message ? error.message : 'Falha ao iniciar o backup.';
+                        this.googleDriveMigrationNotice = message;
                         this.googleDriveMigration = {
-                            ...(this.googleDriveMigration || {}), ...totals,
-                            status: 'falhou',
-                            errors: [...(totals.errors || []), error && error.message ? error.message : 'Falha ao arquivar projetos.'].slice(-50)
+                            ...(this.googleDriveMigration || {}),
+                            status_poll_error: message
                         };
                     } finally {
                         this.googleDriveMigrationBusy = false;
