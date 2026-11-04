@@ -5,10 +5,13 @@ import json
 import hashlib
 import hmac
 import logging
+import math
+import mimetypes
 import os
 import re
 import secrets
 import shutil
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -25,10 +28,10 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from app.database import SessionLocal, get_db
 from app.models import GoogleDriveAccount, Settings, User
-from app.routers.auth import SECRET_KEY, get_current_admin_user
+from app.routers.auth import SECRET_KEY, get_current_admin_user, get_current_user
 from app.routers.settings import _get_or_create_settings_row
 from app.services.central_asset_transfer import (
-    cleanup_confirmed_worker_cache_job, digest, index_path,
+    cleanup_confirmed_worker_cache_job, digest, index_path, preserves_final_video,
     pin_task_drive_account, register as register_asset, roots,
     task_index_lock, task_key,
 )
@@ -47,6 +50,7 @@ from app.services.google_drive_archive import (
 router = APIRouter(prefix="/settings/google-drive", tags=["Google Drive archive"])
 logger = logging.getLogger(__name__)
 _STATE = URLSafeTimedSerializer(SECRET_KEY, salt="codexia-google-drive-oauth-v1")
+_DOWNLOAD_STATE = URLSafeTimedSerializer(SECRET_KEY, salt="codexia-google-drive-download-v1")
 _ARCHIVABLE_STATUSES = {
     "completed", "awaiting_review", "approved", "rendered_upload_failed",
     "failed", "paused", "cancelled", "published",
@@ -55,8 +59,10 @@ _MIGRATION_EXTENSIONS = {
     "video": {".mp4", ".mov", ".mkv", ".webm"},
     "audio": {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"},
     "image": {".png", ".jpg", ".jpeg", ".webp"},
+    "caption": {".srt", ".vtt", ".ass"},
 }
 _UPLOAD_SESSION_TTL_SECONDS = 4 * 60 * 60
+_DOWNLOAD_TOKEN_TTL_SECONDS = 10 * 60
 
 
 @contextmanager
@@ -644,13 +650,159 @@ def _local_archive_path(raw: Any, allowed_roots: list[Path]) -> Optional[Path]:
         return None
 
 
+def _saved_music_archive_projects() -> list[Dict[str, Any]]:
+    """Inventory Suno/MusicGen outputs and lyrics without marking them for deletion."""
+    from app.config import COVERS_OUTPUT_DIR, MUSIC_OUTPUT_DIR, VIDEO_OUTPUT_DIR
+    from app.models import SavedMusic, SavedMusicShort
+
+    db = SessionLocal()
+    projects = []
+    try:
+        items = db.query(SavedMusic).order_by(SavedMusic.id.asc()).all()
+        allowed_roots = [Path(value).resolve() for value in roots().values()]
+        allowed_roots.extend(Path(value).resolve() for value in (
+            COVERS_OUTPUT_DIR, MUSIC_OUTPUT_DIR, VIDEO_OUTPUT_DIR,
+        ))
+        projects_by_music_id = {}
+        for item in items:
+            task_id = f"music-{int(item.id)}"
+            assets = {}
+            sources = (
+                ("audio", (getattr(item, "music_filename", None), getattr(item, "music_url", None)), MUSIC_OUTPUT_DIR),
+                ("audio", (getattr(item, "hq_wav_filename", None), getattr(item, "hq_wav_url", None)), MUSIC_OUTPUT_DIR),
+                ("image", (getattr(item, "cover_filename", None), getattr(item, "cover_url", None)), COVERS_OUTPUT_DIR),
+                ("video", (getattr(item, "clip_filename", None), getattr(item, "clip_url", None)), VIDEO_OUTPUT_DIR),
+            )
+            for kind, values, root in sources:
+                raw = next((str(value).strip() for value in values if str(value or "").strip()), "")
+                if not raw:
+                    continue
+                filename = Path(raw.replace("\\", "/").split("?", 1)[0].split("#", 1)[0]).name
+                if not filename or Path(filename).suffix.lower() not in _MIGRATION_EXTENSIONS.get(kind, set()):
+                    continue
+                path = _local_archive_path(Path(root) / filename, allowed_roots)
+                if path:
+                    assets.setdefault((kind, filename), {"kind": kind, "filename": filename, "path": path})
+            metadata_filename = f"{task_id}-lyrics.json"
+            metadata = json.dumps({
+                "saved_music_id": int(item.id),
+                "title": str(getattr(item, "title", None) or "Música"),
+                "lyrics": str(getattr(item, "lyrics", None) or ""),
+                "genre": str(getattr(item, "genre", None) or ""),
+                "vocal_gender": str(getattr(item, "vocal_gender", None) or ""),
+                "with_vocals": bool(getattr(item, "with_vocals", False)),
+                "created_at": getattr(item, "created_at", None).isoformat() if getattr(item, "created_at", None) else None,
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            assets[("script", metadata_filename)] = {
+                "kind": "script", "filename": metadata_filename, "content": metadata,
+            }
+            project = {
+                "task_id": task_id,
+                "status": "completed",
+                "updated_at": _timestamp(getattr(item, "updated_at", None) or getattr(item, "created_at", None)),
+                "manifest_path": None,
+                "script_path": None,
+                "assets": assets,
+                "preserve_local": True,
+            }
+            projects.append(project)
+            projects_by_music_id[int(item.id)] = project
+
+        # Music clips are stored in their own table, so include them in the
+        # parent song's archive and lookup button as well.
+        shorts = db.query(SavedMusicShort).order_by(SavedMusicShort.id.asc()).all()
+        for short in shorts:
+            parent_id = int(getattr(short, "parent_saved_music_id", 0) or 0)
+            project = projects_by_music_id.get(parent_id)
+            if project is None:
+                continue
+            raw = str(getattr(short, "clip_filename", None) or getattr(short, "clip_url", None) or "").strip()
+            if raw:
+                filename = Path(raw.replace("\\", "/").split("?", 1)[0].split("#", 1)[0]).name
+                if filename and Path(filename).suffix.lower() in _MIGRATION_EXTENSIONS["video"]:
+                    path = _local_archive_path(Path(VIDEO_OUTPUT_DIR) / filename, allowed_roots)
+                    if path:
+                        project["assets"].setdefault(
+                            ("video", filename),
+                            {"kind": "video", "filename": filename, "path": path},
+                        )
+            metadata_filename = f"music-{parent_id}-short-{int(short.id)}.json"
+            metadata = json.dumps({
+                "saved_music_id": parent_id,
+                "saved_music_short_id": int(short.id),
+                "title": str(getattr(short, "title", None) or "Clipe curto"),
+                "start_sec": getattr(short, "start_sec", None),
+                "end_sec": getattr(short, "end_sec", None),
+                "youtube_video_id": str(getattr(short, "youtube_video_id", None) or ""),
+                "created_at": getattr(short, "created_at", None).isoformat() if getattr(short, "created_at", None) else None,
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            project["assets"][("script", metadata_filename)] = {
+                "kind": "script", "filename": metadata_filename, "content": metadata,
+            }
+    finally:
+        db.close()
+    return projects
+
+
+def _versioned_archive_filename(filename: str, sha256: str) -> str:
+    """Give conflicting historical contents an immutable name in Drive."""
+    path = Path(filename)
+    suffix = path.suffix
+    marker = f"__sha256-{sha256}"
+    max_stem = 240 - len(suffix) - len(marker)
+    return f"{path.stem[:max_stem]}{marker}{suffix}"
+
+
+def _project_needs_archive(project: Dict[str, Any], digest_cache: Optional[Dict[tuple, str]] = None) -> bool:
+    """Skip a project only when each current local asset has a verified index entry."""
+    task_id = str(project.get("task_id") or "")
+    index = _drive_index_for_task(task_id)
+    assets = dict(project.get("assets") or {})
+    for path, filename in (
+        (project.get("manifest_path"), f"{task_id}-manifest.json"),
+        (project.get("script_path"), f"{task_id}-script.json"),
+    ):
+        if path and Path(path).is_file():
+            assets.setdefault(("script", filename), {"kind": "script", "filename": filename, "path": path})
+    for (kind, filename), asset in assets.items():
+        if "content" in asset:
+            content = str(asset.get("content") or "").encode("utf-8")
+            sha256 = hashlib.sha256(content).hexdigest()
+            size = len(content)
+        else:
+            path = Path(asset["path"])
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                size = int(stat.st_size)
+                digest_key = (int(stat.st_dev), int(stat.st_ino), size, int(stat.st_mtime_ns), int(stat.st_ctime_ns))
+                sha256 = digest_cache.get(digest_key) if digest_cache is not None else None
+                if not sha256:
+                    sha256 = digest(path)
+                    if digest_cache is not None:
+                        digest_cache[digest_key] = sha256
+            except OSError:
+                return True
+        exact = index.get((kind, filename)) or {}
+        if exact.get("sha256") == sha256 and int(exact.get("size") or -1) == size:
+            continue
+        versioned = index.get((kind, _versioned_archive_filename(filename, sha256))) or {}
+        if versioned.get("sha256") == sha256 and int(versioned.get("size") or -1) == size:
+            continue
+        return True
+    return False
+
+
 def _project_archive_inventory():
     """Index terminal project assets and every manifest-known hard-link alias."""
+    from app.config import COVERS_OUTPUT_DIR
     from app.services.production_manifest import _read_json, _root_dir
     from app.services.task_manager import get_task
 
     manifest_root = Path(_root_dir()).resolve()
     allowed_roots = [Path(value).resolve() for value in roots().values()]
+    allowed_roots.append(Path(COVERS_OUTPUT_DIR).resolve())
     allowed_roots.append(manifest_root)
     cutoff = time.time() - 24 * 60 * 60
     projects: Dict[str, Dict[str, Any]] = {}
@@ -717,13 +869,20 @@ def _project_archive_inventory():
 
         projects[task_id] = project
 
+    for music_project in _saved_music_archive_projects():
+        projects[music_project["task_id"]] = music_project
+
+    digest_cache: Dict[tuple, str] = {}
     candidates = [
         project for project in projects.values()
-        if project["status"] in _ARCHIVABLE_STATUSES
-        and project["updated_at"] <= cutoff
-        and (project["assets"] or project["manifest_path"].is_file())
+        if (
+            project.get("preserve_local")
+            or (project["status"] in _ARCHIVABLE_STATUSES and project["updated_at"] <= cutoff)
+        )
+        and (project["assets"] or (project.get("manifest_path") and project["manifest_path"].is_file()))
+        and _project_needs_archive(project, digest_cache)
     ]
-    candidates.sort(key=lambda item: item["updated_at"] or 0.0)
+    candidates.sort(key=lambda item: (item["updated_at"] or 0.0, str(item.get("task_id") or "")))
     return projects, inodes, candidates
 
 
@@ -741,12 +900,90 @@ def _drive_index_for_task(task_id: str) -> Dict[tuple[str, str], Dict[str, Any]]
         return {}
 
 
+def _authorize_archive_project(task_id: str, user: User) -> None:
+    """Limit search links to the project owner, while admins can inspect any archive."""
+    if getattr(user, "is_admin", False):
+        return
+    from app.models import SavedMusic, VideoTask
+
+    db = SessionLocal()
+    try:
+        if re.fullmatch(r"music-[0-9]{1,12}", task_id):
+            row = db.query(SavedMusic).filter(SavedMusic.id == int(task_id.split("-", 1)[1])).first()
+        else:
+            row = db.query(VideoTask).filter(VideoTask.id == task_id).first()
+        if not row or int(getattr(row, "user_id", -1) or -1) != int(user.id):
+            raise HTTPException(404, "Projeto não encontrado.")
+    finally:
+        db.close()
+
+
+@router.get("/{task}/search")
+def search_google_drive_project_archive(
+    task: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Find this project's verified Drive copies and issue short-lived download links."""
+    try:
+        task = task_key(task)
+    except ValueError as exc:
+        raise HTTPException(400, "ID de projeto inválido.") from exc
+    _authorize_archive_project(task, current_user)
+    files = []
+    for (kind, filename), entry in sorted(_drive_index_for_task(task).items()):
+        sha256 = str(entry.get("sha256") or "").strip().lower()
+        try:
+            from app.services.central_asset_transfer import archive_path
+            size = int(entry.get("size") or 0)
+            archive_path(kind, filename)
+        except (TypeError, ValueError):
+            continue
+        if not entry.get("drive_file_id") or not re.fullmatch(r"[0-9a-f]{64}", sha256) or size <= 0:
+            continue
+        token = _DOWNLOAD_STATE.dumps({"task": task, "kind": kind, "filename": filename})
+        files.append({
+            "kind": kind,
+            "filename": filename,
+            "size": size,
+            "sha256": sha256,
+            "download_url": f"/settings/google-drive/download/{token}",
+        })
+    return {"task_id": task, "files": files}
+
+
+@router.get("/download/{token}", include_in_schema=False)
+def download_google_drive_archive_file(token: str, request: Request):
+    """Stream one indexed asset through a short-lived, signed browser download URL."""
+    try:
+        payload = _DOWNLOAD_STATE.loads(token, max_age=_DOWNLOAD_TOKEN_TTL_SECONDS)
+        task = task_key(payload.get("task"))
+        kind = str(payload.get("kind") or "")
+        filename = str(payload.get("filename") or "")
+        entry = _drive_index_for_task(task).get((kind, filename))
+        if not entry or not entry.get("drive_file_id"):
+            raise HTTPException(404, "Arquivo não encontrado no backup do projeto.")
+        from app.services.central_asset_transfer import archive_path
+        archive_path(kind, filename)
+    except (BadSignature, SignatureExpired, ValueError, TypeError) as exc:
+        raise HTTPException(403, "Link de download inválido ou expirado; faça a busca novamente.") from exc
+    response = GoogleDriveArchive.for_asset(entry).stream_response(
+        entry,
+        range_header=request.headers.get("range", ""),
+        media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+    )
+    if hasattr(response, "headers"):
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
 def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: Dict[tuple[int, int], Dict[str, Any]]) -> int:
     """Remove only known links after every owning task has a matching Drive copy."""
+    from app.config import COVERS_OUTPUT_DIR
     from app.services.production_manifest import _root_dir
 
     manifest_root = Path(_root_dir()).resolve()
     allowed_roots = [Path(value).resolve() for value in roots().values()]
+    allowed_roots.append(Path(COVERS_OUTPUT_DIR).resolve())
     allowed_roots.append(manifest_root)
     index_cache: Dict[str, Dict[tuple[str, str], Dict[str, Any]]] = {}
     freed_before = shutil.disk_usage("/data" if os.path.isdir("/data") else "/").free
@@ -755,6 +992,14 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
     for group in inodes.values():
         owners = group["owners"]
         if not owners or len(group["paths"]) != int(group["link_count"] or 0):
+            continue
+        # Keep videos for successful/finalized projects. Failed project videos
+        # are still protected by the checksum check below and remain recoverable.
+        if any(
+            kind == "video" and preserves_final_video(projects.get(task_id, {}).get("status"))
+            for task_id, refs in owners.items()
+            for kind, _ in refs
+        ):
             continue
         if any(
             projects.get(task_id, {}).get("status") not in _ARCHIVABLE_STATUSES
@@ -781,13 +1026,14 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
             if task_id not in index_cache:
                 index_cache[task_id] = _drive_index_for_task(task_id)
             index = index_cache[task_id]
-            for ref in refs:
-                entry = index.get(ref) or {}
-                if (str(entry.get("sha256") or "") != expected_sha
-                        or int(entry.get("size") or -1) != expected_size):
-                    complete = False
-                    break
-            if not complete:
+            verified_kinds = {
+                indexed_kind
+                for (indexed_kind, _indexed_filename), entry in index.items()
+                if str(entry.get("sha256") or "") == expected_sha
+                and int(entry.get("size") or -1) == expected_size
+            }
+            if any(kind not in verified_kinds for kind, _filename in refs):
+                complete = False
                 break
         if not complete:
             continue
@@ -804,7 +1050,13 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
     return max(0, int(freed_after - freed_before))
 
 
-def _run_migration(job_id: str, user_id: int, limit: int) -> None:
+def _run_migration(
+    job_id: str,
+    user_id: int,
+    limit: int,
+    after_updated_at: Optional[float] = None,
+    after_task_id: str = "",
+) -> None:
     payload = _read_job(job_id)
     payload.update({"status": "processing", "started_at": datetime.now(timezone.utc).isoformat()})
     _write_job(job_id, payload)
@@ -816,9 +1068,25 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
     selected_task_ids = []
     try:
         projects, inodes, candidates = _project_archive_inventory()
+        if after_updated_at is not None and after_task_id:
+            cursor = (after_updated_at, after_task_id)
+            candidates = [
+                project for project in candidates
+                if (float(project.get("updated_at") or 0.0), str(project.get("task_id") or "")) > cursor
+            ]
         selected = candidates[:limit]
-        selected_task_ids = [str(project["task_id"]) for project in selected]
+        selected_task_ids = [
+            str(project["task_id"]) for project in selected
+            if not project.get("preserve_local")
+        ]
         payload["total_candidates"] = len(selected)
+        payload["remaining_candidates"] = max(0, len(candidates) - len(selected))
+        payload["has_more_candidates"] = len(candidates) > len(selected)
+        if selected:
+            payload["last_candidate_cursor"] = {
+                "updated_at": float(selected[-1].get("updated_at") or 0.0),
+                "task_id": str(selected[-1].get("task_id") or ""),
+            }
         _write_job(job_id, payload)
         for project in selected:
             task_id = project["task_id"]
@@ -827,20 +1095,39 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
             if account_id is not None:
                 pin_task_drive_account(task_id, account_id)
             assets = dict(project["assets"])
-            for path, filename in (
-                (project["manifest_path"], f"{task_id}-manifest.json"),
-                (project["script_path"], f"{task_id}-script.json"),
-            ):
-                if path.is_file():
-                    assets.setdefault(("script", filename), {"kind": "script", "filename": filename, "path": path})
+            if not project.get("preserve_local"):
+                for path, filename in (
+                    (project["manifest_path"], f"{task_id}-manifest.json"),
+                    (project["script_path"], f"{task_id}-script.json"),
+                ):
+                    if path and path.is_file():
+                        assets.setdefault(("script", filename), {"kind": "script", "filename": filename, "path": path})
             project_ok = bool(assets)
+            staged_metadata = []
             try:
+                for asset in assets.values():
+                    if "content" not in asset:
+                        continue
+                    temp_dir = "/dev/shm" if os.path.isdir("/dev/shm") and os.access("/dev/shm", os.W_OK) else None
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb", prefix="codexia-drive-", suffix=".json",
+                        dir=temp_dir, delete=False,
+                    ) as staged:
+                        staged.write(str(asset.pop("content") or "").encode("utf-8"))
+                        asset["path"] = Path(staged.name)
+                        staged_metadata.append(Path(staged.name))
                 for asset in assets.values():
                     path = Path(asset["path"])
                     try:
                         source_sha = digest(path)
                         source_size = path.stat().st_size
-                        entry = archive.upload_path(task_id, asset["kind"], asset["filename"], path)
+                        try:
+                            entry = archive.upload_path(task_id, asset["kind"], asset["filename"], path)
+                        except DriveAssetConflict:
+                            # Preserve the old Drive file and archive this
+                            # differing local version under a content address.
+                            versioned_name = _versioned_archive_filename(asset["filename"], source_sha)
+                            entry = archive.upload_path(task_id, asset["kind"], versioned_name, path)
                         if digest(path) != source_sha or int(entry.get("size") or -1) != source_size or entry.get("sha256") != source_sha:
                             raise RuntimeError("A cópia local mudou ou o Drive não confirmou o mesmo conteúdo.")
                         register_asset(task_id, entry)
@@ -852,6 +1139,10 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
                     archived_projects += 1
             except Exception as exc:
                 errors.append(f"{task_id}: {str(exc)[:200]}")
+                project_ok = False
+            finally:
+                for path in staged_metadata:
+                    path.unlink(missing_ok=True)
             payload.update({
                 "archived": archived,
                 "archived_projects": archived_projects,
@@ -914,6 +1205,7 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
         "archived_projects": archived_projects,
         "skipped": skipped,
         "bytes_freed": bytes_freed,
+        "error_count": len(errors),
         "errors": errors[-10:],
         "finished_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -927,6 +1219,8 @@ def _run_migration(job_id: str, user_id: int, limit: int) -> None:
 def start_google_drive_migration(
     background_tasks: BackgroundTasks,
     limit: int = 5,
+    after_updated_at: Optional[float] = None,
+    after_task_id: str = "",
     current_user: User = Depends(get_current_admin_user),
 ):
     archive = GoogleDriveArchive(user_id=current_user.id)
@@ -936,13 +1230,25 @@ def start_google_drive_migration(
         raise HTTPException(503, str(exc))
     if not configured:
         raise HTTPException(400, "Conecte o Google Drive antes de iniciar a migração.")
+    after_task_id = str(after_task_id or "").strip()
+    if (after_updated_at is None) != (not after_task_id):
+        raise HTTPException(400, "Cursor do backup incompleto.")
+    if after_updated_at is not None and (not math.isfinite(after_updated_at) or after_updated_at < 0):
+        raise HTTPException(400, "Cursor do backup inválido.")
+    if after_task_id:
+        try:
+            task_key(after_task_id)
+        except ValueError as exc:
+            raise HTTPException(400, "Cursor do backup inválido.") from exc
     limit = max(1, min(25, int(limit)))
     job_id = uuid.uuid4().hex
     _write_job(job_id, {
         "job_id": job_id, "status": "queued", "requested_limit": limit,
         "archived": 0, "archived_projects": 0, "skipped": 0, "bytes_freed": 0, "errors": [],
     })
-    background_tasks.add_task(_run_migration, job_id, int(current_user.id), limit)
+    background_tasks.add_task(
+        _run_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
+    )
     return {"job_id": job_id, "status": "queued", "message": "Arquivamento por projeto iniciado. Tarefas ativas e projetos atualizados nas últimas 24 horas serão ignorados."}
 
 

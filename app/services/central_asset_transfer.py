@@ -21,6 +21,13 @@ EXTENSIONS = {'image': {'.png', '.jpg', '.jpeg', '.webp'},
               'audio': {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'},
               'video': {'.mp4', '.mov', '.mkv', '.webm'},
               'caption': {'.srt', '.vtt', '.ass'}, 'script': {'.json'}}
+_VIDEO_RETENTION_STATUSES = {
+    'completed', 'awaiting_review', 'approved', 'rendered_upload_failed', 'published',
+}
+
+
+def preserves_final_video(status):
+    return str(status or '').strip().lower() in _VIDEO_RETENTION_STATUSES
 
 
 def digest(path):
@@ -573,6 +580,7 @@ class CentralAssetTransfer:
         from app.services.production_manifest import (
             _read_json, _root_dir, load_manifest, manifest_dir,
         )
+        from app.services.task_manager import get_task
 
         task = task_key(task)
         response = self.session.get(
@@ -610,7 +618,15 @@ class CentralAssetTransfer:
             return {"files_deleted": 0, "bytes_freed": 0, "errors": 0}
 
         manifest_root = manifest_dir(task)
+        manifest = load_manifest(task)
+        try:
+            task_info = get_task(task) or {}
+        except Exception:
+            task_info = {}
+        task_status = str(task_info.get('status') or manifest.get('status') or '').strip().lower()
         allowed = [Path(root).resolve() for root in roots().values()]
+        from app.config import COVERS_OUTPUT_DIR
+        allowed.append(Path(COVERS_OUTPUT_DIR).resolve())
         # Each local path is mapped to the exact Drive name that represents it.
         # Manifest durable copies can have generated filenames, so they use the
         # artifact's original filename just as publish_manifest() does.
@@ -641,7 +657,7 @@ class CentralAssetTransfer:
         local_script = manifest_root / "script.json"
         add_candidate(local_script, {("script", f"{task}-script.json")})
 
-        for item in load_manifest(task).get("artifacts") or []:
+        for item in manifest.get("artifacts") or []:
             if not isinstance(item, dict) or item.get("source") == "filesystem_checkpoint":
                 continue
             kind = str(item.get("kind") or "").strip().lower()
@@ -697,13 +713,19 @@ class CentralAssetTransfer:
                 expected = set()
                 for _, refs, _ in group:
                     expected.update(refs)
-                if not expected or any(ref not in verified for ref in expected):
+                if (any(kind == 'video' for kind, _ in expected)
+                        and preserves_final_video(task_status)):
+                    # Keep finished video outputs locally available.
                     continue
                 # Identical inode aliases may be removed together only when
-                # every alias is named by this task's manifest and verified.
+                # every alias is represented in this task's verified archive.
                 actual_sha = digest(group[0][0])
                 actual_size = int(group[0][2].st_size)
-                if any(verified[ref] != (actual_sha, actual_size) for ref in expected):
+                expected_kinds = {kind for kind, _ in expected}
+                if (not expected_kinds
+                        or any(not any(key[0] == kind and value == (actual_sha, actual_size)
+                                       for key, value in verified.items())
+                               for kind in expected_kinds)):
                     continue
                 stable = True
                 for path, _, before in group:

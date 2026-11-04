@@ -1047,6 +1047,10 @@
                                 </div>
                             </div>
                             <div class="flex gap-2 flex-wrap">
+                                <button @click="searchDriveArchiveFor('music-' + String(item.id), item.title || 'Música salva')" :disabled="driveArchiveRecovery.loading" class="bg-indigo-50 border border-indigo-200 text-indigo-800 px-4 py-2 rounded hover:bg-indigo-100 disabled:opacity-50 flex items-center gap-2">
+                                    <i class="fas fa-box-archive"></i>
+                                    Buscar no backup
+                                </button>
                                 <button @click="loadSavedMusicItem(item)" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 flex items-center gap-2">
                                     <i class="fas fa-upload"></i>
                                     Usar
@@ -2264,6 +2268,7 @@
                                         <span :class="item.recoverable ? 'bg-red-100 text-red-800' : (item.is_current ? 'bg-blue-100 text-blue-800' : (String(item.status || '').toLowerCase() === 'paused' ? 'bg-gray-200 text-gray-800' : 'bg-yellow-100 text-yellow-800'))" class="px-2 py-1 rounded text-xs font-bold">
                                             {{ item.status }}
                                         </span>
+                                        <button v-if="item.task_id" @click="searchDriveArchiveFor(item.task_id, item.title || 'Projeto de vídeo')" :disabled="driveArchiveRecovery.loading" class="px-2 py-1 rounded border bg-indigo-50 hover:bg-indigo-100 text-indigo-800 disabled:opacity-50 text-xs">Buscar no backup</button>
                                         <button v-if="item.can_open" @click="openStoryTaskFromQueue(item)" class="px-2 py-1 rounded border bg-white hover:bg-gray-100 text-xs">Abrir</button>
                                         <button v-if="item.recoverable" @click="retryStoryTaskFromQueue(item)" :disabled="ytStoryRetryLoading" class="px-2 py-1 rounded border bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 text-xs flex items-center gap-1">
                                             <i :class="ytStoryRetryLoading ? 'fas fa-spinner fa-spin' : 'fas fa-rotate-right'"></i>
@@ -2439,6 +2444,9 @@
                                             </div>
                                         </td>
                                         <td class="p-3 flex gap-2">
+                                            <button v-if="video.task_id" @click="searchDriveArchiveFor(video.task_id, video.title || 'Projeto de vídeo')" :disabled="driveArchiveRecovery.loading" class="text-indigo-700 hover:text-indigo-900 p-2 disabled:opacity-50" title="Buscar arquivos deste projeto no backup">
+                                                <i class="fas fa-box-archive"></i>
+                                            </button>
                                             <button @click="showVideoDetails(video)" class="text-blue-600 hover:text-blue-800" title="Ver Detalhes/Logs">
                                                 <i class="fas fa-info-circle"></i>
                                             </button>
@@ -2551,6 +2559,7 @@
                                         </td>
                                         <td class="p-3 flex gap-2 flex-wrap">
                                             <template v-if="(video._source || 'scheduled') === 'production'">
+                                                <button v-if="video.task_id" @click="searchDriveArchiveFor(video.task_id, video.title || 'Projeto de vídeo')" :disabled="driveArchiveRecovery.loading" class="text-indigo-700 hover:text-indigo-900 bg-indigo-50 p-2 rounded text-sm disabled:opacity-50" title="Buscar no backup"><i class="fas fa-box-archive"></i> Backup</button>
                                                 <button @click="watchProductionVideo(video)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-play"></i> Visualizar</button>
                                                 <button @click="saveProductionVideoSchedule(video)" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded" title="Agendar publicação"><i class="fas fa-calendar-check"></i> Agendar</button>
                                                 <button @click="publishVideo(video)" class="text-green-700 hover:text-green-900 bg-green-100 hover:bg-green-200 p-2 rounded font-medium" title="Publicar agora"><i class="fas fa-upload"></i> Publicar agora</button>
@@ -2619,6 +2628,7 @@
                                                     </span>
                                                 </td>
                                                 <td class="p-3 flex gap-2 flex-wrap">
+                                                    <button v-if="block.parent.task_id" @click="searchDriveArchiveFor(block.parent.task_id, block.parent.title || 'Projeto de vídeo')" :disabled="driveArchiveRecovery.loading" class="text-indigo-700 hover:text-indigo-900 bg-indigo-50 p-2 rounded text-sm disabled:opacity-50" title="Buscar no backup"><i class="fas fa-box-archive"></i> Backup</button>
                                                     <button @click="viewPublishedVideo(block.parent)" class="text-indigo-600 hover:text-indigo-800 p-2" title="Visualizar"><i class="fas fa-eye"></i> Visualizar</button>
                                                     <button @click="regenerateScheduledVideo(block.parent)" class="text-orange-600 hover:text-orange-800 p-2" title="Regerar"><i class="fas fa-sync"></i> Regenerar</button>
                                                     <button @click="createShortsFromPublishedVideo(block.parent)" :disabled="ytPublishedShortsLoadingId === block.parent.id" class="text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 p-2 rounded text-sm disabled:opacity-50" title="Criar shorts deste vídeo"><i class="fas fa-bolt"></i> Criar shorts</button>
@@ -4540,7 +4550,7 @@
                         <div class="flex flex-wrap items-center justify-between gap-2">
                             <div>
                                 <h3 class="font-bold text-slate-900">Arquivo permanente no Google Drive</h3>
-                                <p class="mt-1 text-sm text-slate-600">Cada projeto fica em uma pasta própria no Drive. Projetos concluídos e com falha podem ser retomados: o Codexia recupera os arquivos para o CX33 quando necessário. A limpeza alcança o servidor principal e o CX33 somente depois de confirmar nome, SHA-256 e tamanho no índice do Drive.</p>
+                                <p class="mt-1 text-sm text-slate-600">Cada projeto fica em uma pasta própria no Drive. Projetos concluídos e com falha podem ser retomados: o Codexia recupera os arquivos para o CX33 quando necessário. A limpeza só ocorre após confirmar no Drive a cópia original ou versionada, o SHA-256 e o tamanho.</p>
                             </div>
                             <span class="rounded px-2 py-1 text-xs font-bold" :class="googleDriveStatus.connected ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'">
                                 {{ googleDriveStatus.connected ? 'Conectado' : 'Não conectado' }}
@@ -4578,10 +4588,12 @@
                         </div>
                         <div class="mt-3 flex flex-wrap gap-2">
                             <button type="button" @click="fetchGoogleDriveStatus" :disabled="googleDriveStatus.checking" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Atualizar status</button>
-                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Liberando espaço nos servidores...' : 'Arquivar projetos antigos e liberar espaço' }}</button>
+                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Fazendo backup em lotes...' : 'Fazer backup completo e liberar espaço' }}</button>
                         </div>
                         <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
                             Servidor principal: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos · {{ googleDriveMigration.archived || 0 }} arquivos enviados · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
+                            <template v-if="googleDriveMigration.batch_number"> · lote {{ googleDriveMigration.batch_number }}<template v-if="googleDriveMigration.remaining_candidates"> · {{ googleDriveMigration.remaining_candidates }} projetos nos próximos lotes</template></template>
+                            <template v-if="googleDriveMigration.error_count"> · {{ googleDriveMigration.error_count }} itens precisam de revisão</template>
                         </p>
                         <p v-if="googleDriveMigration && googleDriveMigration.worker_cleanup_status" class="mt-1 text-sm text-slate-700">
                             CX33: {{ googleDriveMigration.worker_cleanup_status }}<template v-if="googleDriveMigration.worker_cleanup_result"> · {{ googleDriveMigration.worker_cleanup_result.files_deleted || 0 }} arquivos removidos · {{ formatBytes(googleDriveMigration.worker_cleanup_result.reclaimed_bytes || 0) }} liberados no disco</template>
@@ -4591,7 +4603,7 @@
                         <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
                             <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
                         </ul>
-                        <p class="mt-2 text-xs text-slate-500">Cada rodada arquiva até 5 projetos concluídos, publicados, pausados ou com falha, sem atividade nas últimas 24 horas. Arquivos ativos, alterados, compartilhados sem conferência e sem correspondência exata de nome, SHA-256 e tamanho são preservados. Banco de dados, código e cache ativo continuam nos servidores.</p>
+                        <p class="mt-2 text-xs text-slate-500">O backup percorre os projetos estáveis em lotes de até 25; projetos ativos ou atualizados nas últimas 24 horas ficam para uma rodada futura. Cópias diferentes já existentes no Drive são mantidas junto da nova versão verificada. Vídeos finais e arquivos da biblioteca de músicas permanecem nos servidores; letras, roteiros, imagens e áudios-fonte só são removidos depois da confirmação por SHA-256 e tamanho. Banco de dados, código e cache ativo continuam nos servidores.</p>
                     </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <div class="flex items-center justify-between">
@@ -5213,6 +5225,33 @@
             </div>
         </div>
 
+        <div v-if="driveArchiveRecovery.open" class="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" @click.self="closeDriveArchiveRecovery">
+            <section class="w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-xl bg-white shadow-2xl">
+                <header class="flex items-start justify-between gap-4 border-b p-5">
+                    <div class="min-w-0">
+                        <h2 class="text-lg font-bold text-gray-900">Backup no Google Drive</h2>
+                        <p class="mt-1 truncate text-sm text-gray-600">{{ driveArchiveRecovery.title }} · {{ driveArchiveRecovery.taskId }}</p>
+                    </div>
+                    <button @click="closeDriveArchiveRecovery" class="rounded border px-3 py-1 text-gray-600 hover:bg-gray-100">Fechar</button>
+                </header>
+                <div class="max-h-[65vh] overflow-y-auto p-5">
+                    <p v-if="driveArchiveRecovery.loading" class="text-sm text-gray-600">Consultando o índice confirmado do Drive…</p>
+                    <p v-else-if="driveArchiveRecovery.error" class="rounded bg-red-50 p-3 text-sm text-red-700">{{ driveArchiveRecovery.error }}</p>
+                    <p v-else-if="!driveArchiveRecovery.files.length" class="rounded bg-gray-50 p-3 text-sm text-gray-600">Nenhum arquivo deste projeto foi confirmado no backup.</p>
+                    <ul v-else class="space-y-2">
+                        <li v-for="file in driveArchiveRecovery.files" :key="file.kind + '/' + file.filename" class="flex flex-col gap-2 rounded border p-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div class="min-w-0">
+                                <div class="break-all text-sm font-semibold text-gray-900">{{ file.filename }}</div>
+                                <div class="mt-1 text-xs text-gray-500">{{ file.kind }} · {{ formatBytes(file.size) }} · SHA-256 {{ String(file.sha256 || '').slice(0, 12) }}</div>
+                            </div>
+                            <a :href="file.download_url" target="_blank" rel="noopener" class="shrink-0 rounded bg-indigo-600 px-3 py-2 text-center text-sm font-semibold text-white hover:bg-indigo-700">Baixar</a>
+                        </li>
+                    </ul>
+                    <p class="mt-4 text-xs text-gray-500">O link de download expira em 10 minutos. Letras salvas permanecem na biblioteca de músicas; os arquivos locais das músicas não são removidos por este backup.</p>
+                </div>
+            </section>
+        </div>
+
     </div>
 
     <script>
@@ -5670,6 +5709,7 @@
                     googleDriveRedirectUri: '',
                     googleDriveMigration: null,
                     googleDriveMigrationBusy: false,
+                    driveArchiveRecovery: { open: false, taskId: '', title: '', loading: false, error: '', files: [] },
                     officialChannelLogoPreviewUrl: '',
                     officialChannelLogoPreviewObjectUrl: '',
                     settings: {
@@ -7602,6 +7642,27 @@
                     }
                     return `${amount.toFixed(1)} ${units[unit]}`;
                 },
+                async searchDriveArchiveFor(taskId, title) {
+                    const safeTaskId = String(taskId || '').trim();
+                    if (!safeTaskId) return;
+                    this.driveArchiveRecovery = {
+                        open: true, taskId: safeTaskId, title: String(title || 'Projeto'),
+                        loading: true, error: '', files: []
+                    };
+                    try {
+                        const response = await this.authFetch(`/settings/google-drive/${encodeURIComponent(safeTaskId)}/search`);
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || 'Não foi possível consultar o backup deste projeto.');
+                        this.driveArchiveRecovery.files = Array.isArray(data.files) ? data.files : [];
+                    } catch (error) {
+                        this.driveArchiveRecovery.error = error && error.message ? error.message : 'Falha ao consultar o backup.';
+                    } finally {
+                        this.driveArchiveRecovery.loading = false;
+                    }
+                },
+                closeDriveArchiveRecovery() {
+                    this.driveArchiveRecovery = { open: false, taskId: '', title: '', loading: false, error: '', files: [] };
+                },
                 async fetchGoogleDriveStatus() {
                     this.googleDriveStatus.checking = true;
                     try {
@@ -7656,21 +7717,99 @@
                     }
                 },
                 async startGoogleDriveMigration() {
-                    if (!confirm('Arquivar no Google Drive até 5 projetos concluídos, pausados ou com falha, sem atividade há mais de 24 horas, e liberar espaço no servidor principal e no CX33? Cada cópia só será removida quando nome, SHA-256 e tamanho corresponderem ao índice confirmado do Drive. Arquivos ativos, alterados, compartilhados sem conferência e não confirmados serão mantidos.')) return;
+                    if (!confirm('Fazer o backup de todos os projetos estáveis e das músicas salvas em lotes de até 25. O sistema confere tamanho e SHA-256 antes de registrar cada arquivo. Vídeos concluídos e arquivos locais das músicas serão mantidos. Arquivos de projetos antigos só serão removidos depois da confirmação; versões diferentes que já existam no Drive serão preservadas e receberão uma cópia com nome versionado. Projetos ativos ou atualizados nas últimas 24 horas ficam para depois. Continuar?')) return;
                     this.googleDriveMigrationBusy = true;
                     this.googleDriveMigration = { status: 'iniciando', archived: 0, archived_projects: 0, bytes_freed: 0, errors: [] };
+                    const totals = {
+                        archived: 0, archived_projects: 0, bytes_freed: 0,
+                        error_count: 0, errors: [], worker_files_deleted: 0,
+                        worker_reclaimed_bytes: 0, worker_messages: []
+                    };
+                    let cursor = null;
                     try {
-                        const response = await this.authFetch('/settings/google-drive/migrate/start?limit=5', { method: 'POST' });
-                        const data = await response.json().catch(() => ({}));
-                        if (!response.ok || !data.job_id) throw new Error(data.detail || 'Não foi possível iniciar a migração.');
-                        localStorage.setItem('google_drive_migration_job', data.job_id);
-                        await this.pollGoogleDriveMigration(data.job_id);
+                        for (let batch = 1; batch <= 500; batch += 1) {
+                            const params = new URLSearchParams({ limit: '25' });
+                            if (cursor) {
+                                params.set('after_updated_at', String(cursor.updated_at));
+                                params.set('after_task_id', String(cursor.task_id));
+                            }
+                            const response = await this.authFetch(`/settings/google-drive/migrate/start?${params.toString()}`, { method: 'POST' });
+                            const started = await response.json().catch(() => ({}));
+                            if (!response.ok || !started.job_id) throw new Error(started.detail || 'Não foi possível iniciar o backup.');
+                            localStorage.setItem('google_drive_migration_job', started.job_id);
+                            const result = await this.pollGoogleDriveMigration(started.job_id, true);
+                            if (!result) {
+                                this.googleDriveMigration = {
+                                    ...(this.googleDriveMigration || {}), ...totals,
+                                    status: 'interrompido',
+                                    errors: [...totals.errors, 'A consulta do lote expirou; é seguro iniciar o backup novamente.'].slice(-50)
+                                };
+                                break;
+                            }
+                            totals.archived += Number(result.archived || 0);
+                            totals.archived_projects += Number(result.archived_projects || 0);
+                            totals.bytes_freed += Number(result.bytes_freed || 0);
+                            totals.error_count += Number(result.error_count || (Array.isArray(result.errors) ? result.errors.length : 0));
+                            totals.errors.push(...(Array.isArray(result.errors) ? result.errors : []));
+                            totals.errors = totals.errors.slice(-50);
+                            if (result.worker_cleanup_result) {
+                                totals.worker_files_deleted += Number(result.worker_cleanup_result.files_deleted || 0);
+                                totals.worker_reclaimed_bytes += Number(result.worker_cleanup_result.reclaimed_bytes || 0);
+                            }
+                            if (result.worker_cleanup_message && !totals.worker_messages.includes(result.worker_cleanup_message)) {
+                                totals.worker_messages.push(result.worker_cleanup_message);
+                            }
+                            const remaining = Number(result.remaining_candidates || 0);
+                            this.googleDriveMigration = {
+                                ...result,
+                                ...totals,
+                                status: result.status === 'failed' ? 'failed' : (totals.error_count ? 'processing_with_errors' : 'processing'),
+                                worker_cleanup_result: totals.worker_files_deleted || totals.worker_reclaimed_bytes
+                                    ? { files_deleted: totals.worker_files_deleted, reclaimed_bytes: totals.worker_reclaimed_bytes }
+                                    : result.worker_cleanup_result,
+                                worker_cleanup_message: totals.worker_messages.join(' '),
+                                batch_number: batch,
+                                remaining_candidates: remaining
+                            };
+                            if (!result.has_more_candidates) {
+                                this.googleDriveMigration.status = totals.error_count && result.status !== 'failed'
+                                    ? 'completed_with_errors'
+                                    : (result.status || 'completed');
+                                break;
+                            }
+                            const nextCursor = result.last_candidate_cursor;
+                            if (!nextCursor || !nextCursor.task_id
+                                || (cursor && Number(nextCursor.updated_at) === Number(cursor.updated_at)
+                                    && String(nextCursor.task_id) === String(cursor.task_id))) {
+                                this.googleDriveMigration.status = result.status === 'failed' ? 'failed' : 'completed_with_errors';
+                                this.googleDriveMigration.errors = [
+                                    ...(this.googleDriveMigration.errors || []),
+                                    'O backup não avançou para o próximo lote; os itens não confirmados foram mantidos.'
+                                ].slice(-50);
+                                break;
+                            }
+                            cursor = nextCursor;
+                        }
+                        if (String(this.googleDriveMigration && this.googleDriveMigration.status || '').startsWith('processing')) {
+                            this.googleDriveMigration.status = 'completed_with_errors';
+                            this.googleDriveMigration.errors = [
+                                ...(this.googleDriveMigration.errors || []),
+                                'O limite de 500 lotes foi atingido; inicie outro backup para continuar.'
+                            ].slice(-50);
+                        }
+                        localStorage.removeItem('google_drive_migration_job');
+                        await this.fetchGoogleDriveStatus();
                     } catch (error) {
-                        this.googleDriveMigration = { status: 'falhou', archived: 0, archived_projects: 0, bytes_freed: 0, errors: [error && error.message ? error.message : 'Falha ao arquivar projetos.'] };
+                        this.googleDriveMigration = {
+                            ...(this.googleDriveMigration || {}), ...totals,
+                            status: 'falhou',
+                            errors: [...(totals.errors || []), error && error.message ? error.message : 'Falha ao arquivar projetos.'].slice(-50)
+                        };
+                    } finally {
                         this.googleDriveMigrationBusy = false;
                     }
                 },
-                async pollGoogleDriveMigration(jobId) {
+                async pollGoogleDriveMigration(jobId, keepBusy = false) {
                     const migrationTerminal = new Set(['completed', 'completed_with_errors', 'failed']);
                     const workerCleanupTerminal = new Set(['not_needed', 'not_queued', 'finished', 'failed', 'stopped', 'canceled', 'cancelled']);
                     for (let attempt = 0; attempt < 2880; attempt += 1) {
@@ -7684,10 +7823,10 @@
                             const workerStatus = String(data.worker_cleanup_status || 'not_needed').toLowerCase();
                             const workerDone = workerCleanupTerminal.has(workerStatus);
                             if (mainDone && workerDone) {
-                                localStorage.removeItem('google_drive_migration_job');
-                                this.googleDriveMigrationBusy = false;
-                                await this.fetchGoogleDriveStatus();
-                                return;
+                                if (!keepBusy) localStorage.removeItem('google_drive_migration_job');
+                                if (!keepBusy) this.googleDriveMigrationBusy = false;
+                                if (!keepBusy) await this.fetchGoogleDriveStatus();
+                                return data;
                             }
                         } catch (error) {
                             this.googleDriveMigration = {
@@ -7696,7 +7835,8 @@
                             };
                         }
                     }
-                    this.googleDriveMigrationBusy = false;
+                    if (!keepBusy) this.googleDriveMigrationBusy = false;
+                    return null;
                 },
                 async fetchSettings() {
                     try {
