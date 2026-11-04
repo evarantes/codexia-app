@@ -795,6 +795,32 @@ def _project_needs_archive(project: Dict[str, Any], digest_cache: Optional[Dict[
     return False
 
 
+def _migration_assets_for_project(project: Dict[str, Any]) -> Dict[tuple[str, str], Dict[str, Any]]:
+    """Return the same local assets the migration worker will archive."""
+    assets = dict(project.get("assets") or {})
+    if not project.get("preserve_local"):
+        task_id = str(project.get("task_id") or "")
+        for path, filename in (
+            (project.get("manifest_path"), f"{task_id}-manifest.json"),
+            (project.get("script_path"), f"{task_id}-script.json"),
+        ):
+            if path and Path(path).is_file():
+                assets.setdefault(("script", filename), {
+                    "kind": "script", "filename": filename, "path": path,
+                })
+    return assets
+
+
+def _migration_asset_size(asset: Dict[str, Any]) -> int:
+    if "content" in asset:
+        return len(str(asset.get("content") or "").encode("utf-8"))
+    try:
+        path = Path(asset.get("path") or "")
+        return int(path.stat().st_size) if path.is_file() else 0
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
 def _project_archive_inventory():
     """Index terminal project assets and every manifest-known hard-link alias."""
     from app.config import COVERS_OUTPUT_DIR
@@ -1051,21 +1077,91 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
     return max(0, int(freed_after - freed_before))
 
 
+def _queue_confirmed_worker_cleanup(job_id: str, payload: Dict[str, Any]) -> str:
+    task_ids = list(dict.fromkeys(
+        str(task_id) for task_id in (payload.get("worker_cleanup_task_ids") or [])
+        if str(task_id).strip()
+    ))
+    if not task_ids:
+        return "not_needed"
+    try:
+        from app.redis_client import queue
+
+        worker_job = queue.enqueue(
+            cleanup_confirmed_worker_cache_job,
+            task_ids,
+            max_tasks=len(task_ids),
+            job_timeout=4 * 60 * 60,
+            result_ttl=7 * 24 * 60 * 60,
+            failure_ttl=7 * 24 * 60 * 60,
+            description="Remover do CX33 arquivos confirmados no Google Drive",
+        )
+        if hasattr(worker_job, "id"):
+            payload["worker_cleanup_job_id"] = str(worker_job.id)
+            return "queued"
+        if isinstance(worker_job, dict):
+            payload["worker_cleanup_result"] = worker_job
+            if not worker_job.get("enabled", True):
+                payload["worker_cleanup_message"] = (
+                    "O CX33 não está configurado para consultar o arquivo central; nenhum arquivo dele foi removido."
+                )
+            elif int(worker_job.get("errors") or 0) > 0:
+                payload["worker_cleanup_message"] = (
+                    "Alguns arquivos do CX33 não puderam ser verificados e permaneceram no disco."
+                )
+            return "finished"
+        return "queued"
+    except Exception as exc:
+        logger.warning(
+            "Google Drive migration could not queue CX33 cleanup: job_id=%s exception_type=%s",
+            job_id, type(exc).__name__,
+        )
+        payload["worker_cleanup_message"] = (
+            "O CX33 não recebeu a solicitação; os arquivos locais dele foram mantidos."
+        )
+        return "not_queued"
+
+
 def _run_migration(
     job_id: str,
     user_id: int,
     limit: int,
     after_updated_at: Optional[float] = None,
     after_task_id: str = "",
+    defer_worker_cleanup: bool = False,
 ) -> None:
     payload = _read_job(job_id)
-    payload.update({"status": "processing", "started_at": datetime.now(timezone.utc).isoformat()})
+    completed_projects_before = int(
+        payload.get("overall_processed_projects") or payload.get("completed_projects_before") or 0
+    )
+    completed_files_before = int(
+        payload.get("overall_processed_files") or payload.get("completed_files_before") or 0
+    )
+    archived_bytes_before = int(
+        payload.get("overall_archived_bytes") or payload.get("archived_bytes_before") or 0
+    )
+    archived_before = int(payload.get("archived") or 0)
+    archived_projects_before = int(payload.get("archived_projects") or 0)
+    skipped_before = int(payload.get("skipped") or 0)
+    bytes_freed_before = int(payload.get("bytes_freed") or 0)
+    error_count_before = int(payload.get("error_count") or 0)
+    errors = list(payload.get("errors") or [])
+    payload.update({
+        "status": "processing",
+        "started_at": payload.get("started_at") or datetime.now(timezone.utc).isoformat(),
+        "overall_processed_projects": completed_projects_before,
+        "overall_processed_files": completed_files_before,
+        "overall_archived_bytes": archived_bytes_before,
+    })
     _write_job(job_id, payload)
     archived = 0
     skipped = 0
-    errors = []
     bytes_freed = 0
     archived_projects = 0
+    processed_projects = 0
+    processed_files = 0
+    archived_bytes = 0
+    batch_error_count = 0
     selected_task_ids = []
     try:
         projects, inodes, candidates = _project_archive_inventory()
@@ -1083,6 +1179,14 @@ def _run_migration(
         payload["total_candidates"] = len(selected)
         payload["remaining_candidates"] = max(0, len(candidates) - len(selected))
         payload["has_more_candidates"] = len(candidates) > len(selected)
+        payload["batch_total_files"] = sum(
+            len(_migration_assets_for_project(project)) for project in selected
+        )
+        payload["batch_total_bytes"] = sum(
+            _migration_asset_size(asset)
+            for project in selected
+            for asset in _migration_assets_for_project(project).values()
+        )
         if selected:
             payload["last_candidate_cursor"] = {
                 "updated_at": float(selected[-1].get("updated_at") or 0.0),
@@ -1095,14 +1199,7 @@ def _run_migration(
             account_id = archive._settings().get("account_id")
             if account_id is not None:
                 pin_task_drive_account(task_id, account_id)
-            assets = dict(project["assets"])
-            if not project.get("preserve_local"):
-                for path, filename in (
-                    (project["manifest_path"], f"{task_id}-manifest.json"),
-                    (project["script_path"], f"{task_id}-script.json"),
-                ):
-                    if path and path.is_file():
-                        assets.setdefault(("script", filename), {"kind": "script", "filename": filename, "path": path})
+            assets = _migration_assets_for_project(project)
             project_ok = bool(assets)
             staged_metadata = []
             try:
@@ -1118,9 +1215,10 @@ def _run_migration(
                         asset["path"] = Path(staged.name)
                         staged_metadata.append(Path(staged.name))
                 asset_items = list(assets.values())
+                total_projects = int(payload.get("overall_total_projects") or 0) or len(selected)
                 payload.update({
-                    "current_project_index": project_index,
-                    "current_project_total": len(selected),
+                    "current_project_index": completed_projects_before + project_index,
+                    "current_project_total": max(total_projects, completed_projects_before + len(selected)),
                     "current_asset_index": 0,
                     "current_asset_total": len(asset_items),
                     "current_asset": "",
@@ -1128,14 +1226,15 @@ def _run_migration(
                 _write_job(job_id, payload)
                 for asset_index, asset in enumerate(asset_items, start=1):
                     payload.update({
-                        "current_project_index": project_index,
-                        "current_project_total": len(selected),
+                        "current_project_index": completed_projects_before + project_index,
+                        "current_project_total": max(total_projects, completed_projects_before + len(selected)),
                         "current_asset_index": asset_index,
                         "current_asset_total": len(asset_items),
                         "current_asset": str(asset.get("filename") or ""),
                     })
                     _write_job(job_id, payload)
                     path = Path(asset["path"])
+                    source_size = 0
                     try:
                         source_sha = digest(path)
                         source_size = path.stat().st_size
@@ -1150,16 +1249,24 @@ def _run_migration(
                             raise RuntimeError("A cópia local mudou ou o Drive não confirmou o mesmo conteúdo.")
                         register_asset(task_id, entry)
                         archived += 1
+                        archived_bytes += source_size
                     except Exception as exc:
                         project_ok = False
                         errors.append(f"{task_id}/{asset['filename']}: {str(exc)[:180]}")
+                        batch_error_count += 1
                     finally:
+                        processed_files += 1
                         payload.update({
-                            "archived": archived,
-                            "archived_projects": archived_projects,
-                            "skipped": skipped,
-                            "bytes_freed": bytes_freed,
-                            "errors": errors[-10:],
+                            "archived": archived_before + archived,
+                            "archived_projects": archived_projects_before + archived_projects,
+                            "processed_files": completed_files_before + processed_files,
+                            "archived_bytes": archived_bytes_before + archived_bytes,
+                            "overall_processed_files": completed_files_before + processed_files,
+                            "overall_archived_bytes": archived_bytes_before + archived_bytes,
+                            "skipped": skipped_before + skipped,
+                            "bytes_freed": bytes_freed_before + bytes_freed,
+                            "error_count": error_count_before + batch_error_count,
+                            "errors": errors[-50:],
                             "current_asset_index": asset_index,
                         })
                         _write_job(job_id, payload)
@@ -1167,16 +1274,25 @@ def _run_migration(
                     archived_projects += 1
             except Exception as exc:
                 errors.append(f"{task_id}: {str(exc)[:200]}")
+                batch_error_count += 1
                 project_ok = False
             finally:
                 for path in staged_metadata:
                     path.unlink(missing_ok=True)
+            processed_projects += 1
             payload.update({
-                "archived": archived,
-                "archived_projects": archived_projects,
-                "skipped": skipped,
-                "bytes_freed": bytes_freed,
-                "errors": errors[-10:],
+                "archived": archived_before + archived,
+                "archived_projects": archived_projects_before + archived_projects,
+                "processed_projects": completed_projects_before + processed_projects,
+                "overall_processed_projects": completed_projects_before + processed_projects,
+                "overall_processed_files": completed_files_before + processed_files,
+                "overall_archived_bytes": archived_bytes_before + archived_bytes,
+                "archived_bytes": archived_bytes_before + archived_bytes,
+                "processed_files": completed_files_before + processed_files,
+                "skipped": skipped_before + skipped,
+                "bytes_freed": bytes_freed_before + bytes_freed,
+                "error_count": error_count_before + batch_error_count,
+                "errors": errors[-50:],
             })
             _write_job(job_id, payload)
         # This sweep sees shared hard links across projects. It removes them only
@@ -1184,63 +1300,162 @@ def _run_migration(
         bytes_freed = _remove_fully_archived_aliases(projects, inodes)
     except Exception as exc:
         errors.append(str(exc)[:240])
+        batch_error_count += 1
 
-    worker_cleanup_status = "not_needed"
-    if selected_task_ids:
-        try:
-            from app.redis_client import queue
+    if defer_worker_cleanup:
+        previous_ids = list(payload.get("worker_cleanup_task_ids") or [])
+        payload["worker_cleanup_task_ids"] = list(dict.fromkeys(previous_ids + selected_task_ids))
+        worker_cleanup_status = "deferred" if payload["worker_cleanup_task_ids"] else "not_needed"
+    else:
+        cleanup_payload = {**payload, "worker_cleanup_task_ids": selected_task_ids}
+        worker_cleanup_status = _queue_confirmed_worker_cleanup(job_id, cleanup_payload)
+        payload.update({
+            key: value for key, value in cleanup_payload.items()
+            if key in {"worker_cleanup_job_id", "worker_cleanup_result", "worker_cleanup_message"}
+        })
 
-            worker_job = queue.enqueue(
-                cleanup_confirmed_worker_cache_job,
-                selected_task_ids,
-                max_tasks=len(selected_task_ids),
-                job_timeout=4 * 60 * 60,
-                result_ttl=7 * 24 * 60 * 60,
-                failure_ttl=7 * 24 * 60 * 60,
-                description="Remover do CX33 arquivos confirmados no Google Drive",
-            )
-            if hasattr(worker_job, "id"):
-                payload["worker_cleanup_job_id"] = str(worker_job.id)
-                worker_cleanup_status = "queued"
-            elif isinstance(worker_job, dict):
-                # Development's explicitly enabled inline queue returns results
-                # directly; production always receives an RQ job handle.
-                payload["worker_cleanup_result"] = worker_job
-                if not worker_job.get("enabled", True):
-                    payload["worker_cleanup_message"] = (
-                        "O CX33 não está configurado para consultar o arquivo central; nenhum arquivo dele foi removido."
-                    )
-                elif int(worker_job.get("errors") or 0) > 0:
-                    payload["worker_cleanup_message"] = (
-                        "Alguns arquivos do CX33 não puderam ser verificados e permaneceram no disco."
-                    )
-                worker_cleanup_status = "finished"
-            else:
-                worker_cleanup_status = "queued"
-        except Exception as exc:
-            logger.warning(
-                "Google Drive migration could not queue CX33 cleanup: job_id=%s exception_type=%s",
-                job_id, type(exc).__name__,
-            )
-            worker_cleanup_status = "not_queued"
-            payload["worker_cleanup_message"] = (
-                "O CX33 não recebeu a solicitação; os arquivos locais dele foram mantidos."
-            )
     payload["worker_cleanup_status"] = worker_cleanup_status
+    current_error_count = error_count_before + batch_error_count
+    has_more = bool(payload.get("has_more_candidates"))
+    final_status = "completed" if current_error_count == 0 else (
+        "completed_with_errors" if archived_before + archived or skipped_before + skipped else "failed"
+    )
     payload.update({
-        "status": "completed" if not errors else ("completed_with_errors" if archived or skipped else "failed"),
-        "archived": archived,
-        "archived_projects": archived_projects,
-        "skipped": skipped,
-        "bytes_freed": bytes_freed,
-        "error_count": len(errors),
-        "errors": errors[-10:],
-        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "status": "processing" if defer_worker_cleanup and has_more else final_status,
+        "archived": archived_before + archived,
+        "archived_projects": archived_projects_before + archived_projects,
+        "processed_projects": completed_projects_before + processed_projects,
+        "processed_files": completed_files_before + processed_files,
+        "archived_bytes": archived_bytes_before + archived_bytes,
+        "overall_processed_projects": completed_projects_before + processed_projects,
+        "overall_processed_files": completed_files_before + processed_files,
+        "overall_archived_bytes": archived_bytes_before + archived_bytes,
+        "skipped": skipped_before + skipped,
+        "bytes_freed": bytes_freed_before + bytes_freed,
+        "error_count": current_error_count,
+        "errors": errors[-50:],
     })
+    if payload["status"] == "processing":
+        payload.pop("finished_at", None)
+    else:
+        payload["finished_at"] = datetime.now(timezone.utc).isoformat()
     _write_job(job_id, payload)
     from app.services.server_resource_monitor import invalidate_drive_usage_cache
 
     invalidate_drive_usage_cache(user_id)
+
+
+def _run_full_migration(
+    job_id: str,
+    user_id: int,
+    limit: int,
+    after_updated_at: Optional[float] = None,
+    after_task_id: str = "",
+) -> None:
+    cursor_updated_at = after_updated_at
+    cursor_task_id = after_task_id
+    previous_cursors = set()
+    try:
+        for batch_number in range(1, 501):
+            payload = _read_job(job_id)
+            payload.update({
+                "status": "processing",
+                "batch_number": batch_number,
+                "current_project_index": int(payload.get("overall_processed_projects") or 0),
+                "current_asset_index": 0,
+                "current_asset_total": 0,
+                "current_asset": "",
+            })
+            _write_job(job_id, payload)
+            _run_migration(
+                job_id, user_id, limit, cursor_updated_at, cursor_task_id,
+                defer_worker_cleanup=True,
+            )
+            payload = _read_job(job_id)
+            if not payload.get("has_more_candidates"):
+                break
+            next_cursor = payload.get("last_candidate_cursor") or {}
+            next_updated_at = next_cursor.get("updated_at")
+            next_task_id = str(next_cursor.get("task_id") or "")
+            cursor_key = (float(next_updated_at or 0.0), next_task_id)
+            if next_updated_at is None or not next_task_id or cursor_key in previous_cursors:
+                errors = list(payload.get("errors") or [])
+                errors.append("O backup não avançou para o próximo lote; os itens não confirmados foram mantidos.")
+                payload.update({
+                    "status": "completed_with_errors" if int(payload.get("archived") or 0) else "failed",
+                    "error_count": int(payload.get("error_count") or 0) + 1,
+                    "errors": errors[-50:],
+                    "has_more_candidates": False,
+                    "remaining_candidates": 0,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                })
+                _write_job(job_id, payload)
+                break
+            previous_cursors.add(cursor_key)
+            cursor_updated_at = float(next_updated_at)
+            cursor_task_id = next_task_id
+        else:
+            payload = _read_job(job_id)
+            errors = list(payload.get("errors") or [])
+            errors.append("O limite de 500 lotes foi atingido; inicie outro backup para continuar.")
+            payload.update({
+                "status": "completed_with_errors" if int(payload.get("archived") or 0) else "failed",
+                "error_count": int(payload.get("error_count") or 0) + 1,
+                "errors": errors[-50:],
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            })
+            _write_job(job_id, payload)
+    except Exception as exc:
+        payload = _read_job(job_id)
+        errors = list(payload.get("errors") or [])
+        errors.append(str(exc)[:240])
+        payload.update({
+            "status": "completed_with_errors" if int(payload.get("archived") or 0) else "failed",
+            "error_count": int(payload.get("error_count") or 0) + 1,
+            "errors": errors[-50:],
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        })
+        _write_job(job_id, payload)
+
+    payload = _read_job(job_id)
+    payload["worker_cleanup_status"] = _queue_confirmed_worker_cleanup(job_id, payload)
+    if payload.get("status") == "processing":
+        error_count = int(payload.get("error_count") or 0)
+        payload["status"] = "completed" if error_count == 0 else (
+            "completed_with_errors" if int(payload.get("archived") or 0) else "failed"
+        )
+    payload["finished_at"] = datetime.now(timezone.utc).isoformat()
+    _write_job(job_id, payload)
+    from app.services.server_resource_monitor import invalidate_drive_usage_cache
+
+    invalidate_drive_usage_cache(user_id)
+
+
+@router.get("/migrate/estimate")
+def estimate_google_drive_migration(current_user: User = Depends(get_current_admin_user)):
+    """Read-only estimate of stable project assets eligible for the Drive archive."""
+    archive = GoogleDriveArchive(user_id=current_user.id)
+    try:
+        if not archive.is_configured():
+            raise HTTPException(400, "Conecte o Google Drive antes de estimar o backup.")
+    except GoogleDriveArchiveError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    _projects, _inodes, candidates = _project_archive_inventory()
+    total_files = 0
+    total_bytes = 0
+    for project in candidates:
+        assets = _migration_assets_for_project(project)
+        total_files += len(assets)
+        total_bytes += sum(_migration_asset_size(asset) for asset in assets.values())
+
+    return {
+        "status": "estimated",
+        "total_projects": len(candidates),
+        "total_files": total_files,
+        "total_bytes": total_bytes,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.post("/migrate/start")
@@ -1249,6 +1464,13 @@ def start_google_drive_migration(
     limit: int = 5,
     after_updated_at: Optional[float] = None,
     after_task_id: str = "",
+    overall_total_projects: int = 0,
+    overall_total_files: int = 0,
+    overall_total_bytes: int = 0,
+    completed_projects_before: int = 0,
+    completed_files_before: int = 0,
+    archived_bytes_before: int = 0,
+    batch_number: int = 1,
     current_user: User = Depends(get_current_admin_user),
 ):
     archive = GoogleDriveArchive(user_id=current_user.id)
@@ -1270,12 +1492,25 @@ def start_google_drive_migration(
             raise HTTPException(400, "Cursor do backup inválido.") from exc
     limit = max(1, min(25, int(limit)))
     job_id = uuid.uuid4().hex
+    progress = {
+        "overall_total_projects": max(0, int(overall_total_projects)),
+        "overall_total_files": max(0, int(overall_total_files)),
+        "overall_total_bytes": max(0, int(overall_total_bytes)),
+        "completed_projects_before": max(0, int(completed_projects_before)),
+        "completed_files_before": max(0, int(completed_files_before)),
+        "archived_bytes_before": max(0, int(archived_bytes_before)),
+        "batch_number": max(1, int(batch_number)),
+    }
     _write_job(job_id, {
         "job_id": job_id, "created_by": int(current_user.id), "status": "queued", "requested_limit": limit,
         "archived": 0, "archived_projects": 0, "skipped": 0, "bytes_freed": 0, "errors": [],
+        **progress,
+        "overall_processed_projects": progress["completed_projects_before"],
+        "overall_processed_files": progress["completed_files_before"],
+        "overall_archived_bytes": progress["archived_bytes_before"],
     })
     background_tasks.add_task(
-        _run_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
+        _run_full_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
     )
     return {"job_id": job_id, "status": "queued", "message": "Arquivamento por projeto iniciado. Tarefas ativas e projetos atualizados nas últimas 24 horas serão ignorados."}
 
