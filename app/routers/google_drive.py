@@ -795,6 +795,32 @@ def _project_needs_archive(project: Dict[str, Any], digest_cache: Optional[Dict[
     return False
 
 
+def _migration_assets_for_project(project: Dict[str, Any]) -> Dict[tuple[str, str], Dict[str, Any]]:
+    """Return the same local assets the migration worker will archive."""
+    assets = dict(project.get("assets") or {})
+    if not project.get("preserve_local"):
+        task_id = str(project.get("task_id") or "")
+        for path, filename in (
+            (project.get("manifest_path"), f"{task_id}-manifest.json"),
+            (project.get("script_path"), f"{task_id}-script.json"),
+        ):
+            if path and Path(path).is_file():
+                assets.setdefault(("script", filename), {
+                    "kind": "script", "filename": filename, "path": path,
+                })
+    return assets
+
+
+def _migration_asset_size(asset: Dict[str, Any]) -> int:
+    if "content" in asset:
+        return len(str(asset.get("content") or "").encode("utf-8"))
+    try:
+        path = Path(asset.get("path") or "")
+        return int(path.stat().st_size) if path.is_file() else 0
+    except (OSError, TypeError, ValueError):
+        return 0
+
+
 def _project_archive_inventory():
     """Index terminal project assets and every manifest-known hard-link alias."""
     from app.config import COVERS_OUTPUT_DIR
@@ -1059,13 +1085,25 @@ def _run_migration(
     after_task_id: str = "",
 ) -> None:
     payload = _read_job(job_id)
-    payload.update({"status": "processing", "started_at": datetime.now(timezone.utc).isoformat()})
+    completed_projects_before = int(payload.get("completed_projects_before") or 0)
+    completed_files_before = int(payload.get("completed_files_before") or 0)
+    archived_bytes_before = int(payload.get("archived_bytes_before") or 0)
+    payload.update({
+        "status": "processing",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "overall_processed_projects": completed_projects_before,
+        "overall_processed_files": completed_files_before,
+        "overall_archived_bytes": archived_bytes_before,
+    })
     _write_job(job_id, payload)
     archived = 0
     skipped = 0
     errors = []
     bytes_freed = 0
     archived_projects = 0
+    processed_projects = 0
+    processed_files = 0
+    archived_bytes = 0
     selected_task_ids = []
     try:
         projects, inodes, candidates = _project_archive_inventory()
@@ -1083,6 +1121,14 @@ def _run_migration(
         payload["total_candidates"] = len(selected)
         payload["remaining_candidates"] = max(0, len(candidates) - len(selected))
         payload["has_more_candidates"] = len(candidates) > len(selected)
+        payload["batch_total_files"] = sum(
+            len(_migration_assets_for_project(project)) for project in selected
+        )
+        payload["batch_total_bytes"] = sum(
+            _migration_asset_size(asset)
+            for project in selected
+            for asset in _migration_assets_for_project(project).values()
+        )
         if selected:
             payload["last_candidate_cursor"] = {
                 "updated_at": float(selected[-1].get("updated_at") or 0.0),
@@ -1095,14 +1141,7 @@ def _run_migration(
             account_id = archive._settings().get("account_id")
             if account_id is not None:
                 pin_task_drive_account(task_id, account_id)
-            assets = dict(project["assets"])
-            if not project.get("preserve_local"):
-                for path, filename in (
-                    (project["manifest_path"], f"{task_id}-manifest.json"),
-                    (project["script_path"], f"{task_id}-script.json"),
-                ):
-                    if path and path.is_file():
-                        assets.setdefault(("script", filename), {"kind": "script", "filename": filename, "path": path})
+            assets = _migration_assets_for_project(project)
             project_ok = bool(assets)
             staged_metadata = []
             try:
@@ -1136,6 +1175,7 @@ def _run_migration(
                     })
                     _write_job(job_id, payload)
                     path = Path(asset["path"])
+                    source_size = 0
                     try:
                         source_sha = digest(path)
                         source_size = path.stat().st_size
@@ -1150,13 +1190,19 @@ def _run_migration(
                             raise RuntimeError("A cópia local mudou ou o Drive não confirmou o mesmo conteúdo.")
                         register_asset(task_id, entry)
                         archived += 1
+                        archived_bytes += source_size
                     except Exception as exc:
                         project_ok = False
                         errors.append(f"{task_id}/{asset['filename']}: {str(exc)[:180]}")
                     finally:
+                        processed_files += 1
                         payload.update({
                             "archived": archived,
                             "archived_projects": archived_projects,
+                            "processed_files": processed_files,
+                            "archived_bytes": archived_bytes,
+                            "overall_processed_files": completed_files_before + processed_files,
+                            "overall_archived_bytes": archived_bytes_before + archived_bytes,
                             "skipped": skipped,
                             "bytes_freed": bytes_freed,
                             "errors": errors[-10:],
@@ -1171,9 +1217,16 @@ def _run_migration(
             finally:
                 for path in staged_metadata:
                     path.unlink(missing_ok=True)
+            processed_projects += 1
             payload.update({
                 "archived": archived,
                 "archived_projects": archived_projects,
+                "processed_projects": processed_projects,
+                "overall_processed_projects": completed_projects_before + processed_projects,
+                "overall_processed_files": completed_files_before + processed_files,
+                "overall_archived_bytes": archived_bytes_before + archived_bytes,
+                "archived_bytes": archived_bytes,
+                "processed_files": processed_files,
                 "skipped": skipped,
                 "bytes_freed": bytes_freed,
                 "errors": errors[-10:],
@@ -1231,6 +1284,12 @@ def _run_migration(
         "status": "completed" if not errors else ("completed_with_errors" if archived or skipped else "failed"),
         "archived": archived,
         "archived_projects": archived_projects,
+        "processed_projects": processed_projects,
+        "processed_files": processed_files,
+        "archived_bytes": archived_bytes,
+        "overall_processed_projects": completed_projects_before + processed_projects,
+        "overall_processed_files": completed_files_before + processed_files,
+        "overall_archived_bytes": archived_bytes_before + archived_bytes,
         "skipped": skipped,
         "bytes_freed": bytes_freed,
         "error_count": len(errors),
@@ -1243,12 +1302,46 @@ def _run_migration(
     invalidate_drive_usage_cache(user_id)
 
 
+@router.get("/migrate/estimate")
+def estimate_google_drive_migration(current_user: User = Depends(get_current_admin_user)):
+    """Read-only estimate of stable project assets eligible for the Drive archive."""
+    archive = GoogleDriveArchive(user_id=current_user.id)
+    try:
+        if not archive.is_configured():
+            raise HTTPException(400, "Conecte o Google Drive antes de estimar o backup.")
+    except GoogleDriveArchiveError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    _projects, _inodes, candidates = _project_archive_inventory()
+    total_files = 0
+    total_bytes = 0
+    for project in candidates:
+        assets = _migration_assets_for_project(project)
+        total_files += len(assets)
+        total_bytes += sum(_migration_asset_size(asset) for asset in assets.values())
+
+    return {
+        "status": "estimated",
+        "total_projects": len(candidates),
+        "total_files": total_files,
+        "total_bytes": total_bytes,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @router.post("/migrate/start")
 def start_google_drive_migration(
     background_tasks: BackgroundTasks,
     limit: int = 5,
     after_updated_at: Optional[float] = None,
     after_task_id: str = "",
+    overall_total_projects: int = 0,
+    overall_total_files: int = 0,
+    overall_total_bytes: int = 0,
+    completed_projects_before: int = 0,
+    completed_files_before: int = 0,
+    archived_bytes_before: int = 0,
+    batch_number: int = 1,
     current_user: User = Depends(get_current_admin_user),
 ):
     archive = GoogleDriveArchive(user_id=current_user.id)
@@ -1270,9 +1363,22 @@ def start_google_drive_migration(
             raise HTTPException(400, "Cursor do backup inválido.") from exc
     limit = max(1, min(25, int(limit)))
     job_id = uuid.uuid4().hex
+    progress = {
+        "overall_total_projects": max(0, int(overall_total_projects)),
+        "overall_total_files": max(0, int(overall_total_files)),
+        "overall_total_bytes": max(0, int(overall_total_bytes)),
+        "completed_projects_before": max(0, int(completed_projects_before)),
+        "completed_files_before": max(0, int(completed_files_before)),
+        "archived_bytes_before": max(0, int(archived_bytes_before)),
+        "batch_number": max(1, int(batch_number)),
+    }
     _write_job(job_id, {
         "job_id": job_id, "created_by": int(current_user.id), "status": "queued", "requested_limit": limit,
         "archived": 0, "archived_projects": 0, "skipped": 0, "bytes_freed": 0, "errors": [],
+        **progress,
+        "overall_processed_projects": progress["completed_projects_before"],
+        "overall_processed_files": progress["completed_files_before"],
+        "overall_archived_bytes": progress["archived_bytes_before"],
     })
     background_tasks.add_task(
         _run_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
