@@ -599,6 +599,7 @@ def _job_path(job_id: str) -> Path:
 
 
 def _write_job(job_id: str, payload: Dict[str, Any]) -> None:
+    payload["status_updated_at"] = datetime.now(timezone.utc).isoformat()
     path = _job_path(job_id)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -1088,7 +1089,7 @@ def _run_migration(
                 "task_id": str(selected[-1].get("task_id") or ""),
             }
         _write_job(job_id, payload)
-        for project in selected:
+        for project_index, project in enumerate(selected, start=1):
             task_id = project["task_id"]
             archive = GoogleDriveArchive.for_task(task_id, user_id=user_id)
             account_id = archive._settings().get("account_id")
@@ -1116,7 +1117,24 @@ def _run_migration(
                         staged.write(str(asset.pop("content") or "").encode("utf-8"))
                         asset["path"] = Path(staged.name)
                         staged_metadata.append(Path(staged.name))
-                for asset in assets.values():
+                asset_items = list(assets.values())
+                payload.update({
+                    "current_project_index": project_index,
+                    "current_project_total": len(selected),
+                    "current_asset_index": 0,
+                    "current_asset_total": len(asset_items),
+                    "current_asset": "",
+                })
+                _write_job(job_id, payload)
+                for asset_index, asset in enumerate(asset_items, start=1):
+                    payload.update({
+                        "current_project_index": project_index,
+                        "current_project_total": len(selected),
+                        "current_asset_index": asset_index,
+                        "current_asset_total": len(asset_items),
+                        "current_asset": str(asset.get("filename") or ""),
+                    })
+                    _write_job(job_id, payload)
                     path = Path(asset["path"])
                     try:
                         source_sha = digest(path)
@@ -1135,6 +1153,16 @@ def _run_migration(
                     except Exception as exc:
                         project_ok = False
                         errors.append(f"{task_id}/{asset['filename']}: {str(exc)[:180]}")
+                    finally:
+                        payload.update({
+                            "archived": archived,
+                            "archived_projects": archived_projects,
+                            "skipped": skipped,
+                            "bytes_freed": bytes_freed,
+                            "errors": errors[-10:],
+                            "current_asset_index": asset_index,
+                        })
+                        _write_job(job_id, payload)
                 if project_ok:
                     archived_projects += 1
             except Exception as exc:
@@ -1243,13 +1271,34 @@ def start_google_drive_migration(
     limit = max(1, min(25, int(limit)))
     job_id = uuid.uuid4().hex
     _write_job(job_id, {
-        "job_id": job_id, "status": "queued", "requested_limit": limit,
+        "job_id": job_id, "created_by": int(current_user.id), "status": "queued", "requested_limit": limit,
         "archived": 0, "archived_projects": 0, "skipped": 0, "bytes_freed": 0, "errors": [],
     })
     background_tasks.add_task(
         _run_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
     )
     return {"job_id": job_id, "status": "queued", "message": "Arquivamento por projeto iniciado. Tarefas ativas e projetos atualizados nas últimas 24 horas serão ignorados."}
+
+
+@router.get("/migrate/latest")
+def latest_google_drive_migration(current_user: User = Depends(get_current_admin_user)):
+    latest_payload = None
+    latest_modified = -1.0
+    for path in _migration_dir().glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            owner_id = payload.get("created_by")
+            if owner_id is not None and int(owner_id) != int(current_user.id):
+                continue
+            modified = path.stat().st_mtime
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        if modified > latest_modified:
+            latest_payload = payload
+            latest_modified = modified
+    if latest_payload is None:
+        raise HTTPException(404, "Nenhum backup do Google Drive foi encontrado.")
+    return latest_payload
 
 
 @router.get("/migrate/{job_id}")

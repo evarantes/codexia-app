@@ -4593,13 +4593,16 @@
                         <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
                             Servidor principal: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos · {{ googleDriveMigration.archived || 0 }} arquivos enviados · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
                             <template v-if="googleDriveMigration.batch_number"> · lote {{ googleDriveMigration.batch_number }}<template v-if="googleDriveMigration.remaining_candidates"> · {{ googleDriveMigration.remaining_candidates }} projetos nos próximos lotes</template></template>
+                            <template v-if="googleDriveMigration.current_project_total"> · projeto {{ googleDriveMigration.current_project_index || 0 }}/{{ googleDriveMigration.current_project_total }}</template>
+                            <template v-if="googleDriveMigration.current_asset_total"> · arquivo {{ googleDriveMigration.current_asset_index || 0 }}/{{ googleDriveMigration.current_asset_total }}<template v-if="googleDriveMigration.current_asset">: {{ googleDriveMigration.current_asset }}</template></template>
+                            <template v-if="googleDriveMigration.status_updated_at"> · atualizado {{ formatDriveMigrationTime(googleDriveMigration.status_updated_at) }}</template>
                             <template v-if="googleDriveMigration.error_count"> · {{ googleDriveMigration.error_count }} itens precisam de revisão</template>
                         </p>
                         <p v-if="googleDriveMigration && googleDriveMigration.worker_cleanup_status" class="mt-1 text-sm text-slate-700">
                             CX33: {{ googleDriveMigration.worker_cleanup_status }}<template v-if="googleDriveMigration.worker_cleanup_result"> · {{ googleDriveMigration.worker_cleanup_result.files_deleted || 0 }} arquivos removidos · {{ formatBytes(googleDriveMigration.worker_cleanup_result.reclaimed_bytes || 0) }} liberados no disco</template>
                         </p>
                         <p v-if="googleDriveMigration && googleDriveMigration.worker_cleanup_message" class="mt-1 text-xs text-amber-700">{{ googleDriveMigration.worker_cleanup_message }}</p>
-                        <p v-if="googleDriveMigration && googleDriveMigration.status_poll_error" class="mt-1 text-xs text-amber-700">{{ googleDriveMigration.status_poll_error }} · tentando consultar novamente.</p>
+                        <p v-if="googleDriveMigration && googleDriveMigration.status_poll_error" class="mt-1 text-xs text-amber-700">{{ googleDriveMigration.status_poll_error }} · clique em Atualizar status para tentar novamente.</p>
                         <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
                             <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
                         </ul>
@@ -7642,6 +7645,12 @@
                     }
                     return `${amount.toFixed(1)} ${units[unit]}`;
                 },
+                formatDriveMigrationTime(value) {
+                    const date = new Date(value);
+                    return Number.isNaN(date.getTime())
+                        ? String(value || '')
+                        : date.toLocaleString('pt-BR');
+                },
                 async searchDriveArchiveFor(taskId, title) {
                     const safeTaskId = String(taskId || '').trim();
                     if (!safeTaskId) return;
@@ -7670,10 +7679,57 @@
                         const data = await response.json().catch(() => ({}));
                         if (!response.ok) throw new Error(data.detail || 'Falha ao consultar o Google Drive.');
                         this.googleDriveAccounts = Array.isArray(data.accounts) ? data.accounts : [];
-                        this.googleDriveStatus = { connected: !!data.connected, checking: false, error: data.error || '', enabledAccounts: Number(data.enabled_accounts || 0) };
+                        this.googleDriveStatus = { connected: !!data.connected, checking: true, error: data.error || '', enabledAccounts: Number(data.enabled_accounts || 0) };
                     } catch (error) {
-                        this.googleDriveStatus = { connected: false, checking: false, error: error && error.message ? error.message : 'Falha ao consultar o Google Drive.', enabledAccounts: 0 };
+                        this.googleDriveStatus = {
+                            ...this.googleDriveStatus,
+                            checking: true,
+                            error: error && error.message ? error.message : 'Falha ao consultar o Google Drive.'
+                        };
                     }
+                    try {
+                        let jobId = '';
+                        try { jobId = localStorage.getItem('google_drive_migration_job') || ''; } catch (_) {}
+                        let response = null;
+                        if (jobId) {
+                            response = await this.authFetch(`/settings/google-drive/migrate/${encodeURIComponent(jobId)}`);
+                            if (response.status === 404) {
+                                try { localStorage.removeItem('google_drive_migration_job'); } catch (_) {}
+                                jobId = '';
+                                response = null;
+                            }
+                        }
+                        if (!jobId) {
+                            response = await this.authFetch('/settings/google-drive/migrate/latest');
+                            if (response.status === 404) response = null;
+                        }
+                        if (!response) {
+                            this.googleDriveMigration = null;
+                        } else {
+                            const migration = await response.json().catch(() => ({}));
+                            if (!response.ok) throw new Error(migration.detail || 'Falha ao consultar o backup no servidor.');
+                            if (migration.job_id) {
+                                try { localStorage.setItem('google_drive_migration_job', migration.job_id); } catch (_) {}
+                            }
+                            this.googleDriveMigration = { ...migration, status_poll_error: '' };
+                            const terminal = new Set(['completed', 'completed_with_errors', 'failed']);
+                            const workerTerminal = new Set(['not_needed', 'not_queued', 'finished', 'failed', 'stopped', 'canceled', 'cancelled']);
+                            const mainDone = terminal.has(String(migration.status || '').toLowerCase());
+                            const workerDone = workerTerminal.has(String(migration.worker_cleanup_status || 'not_needed').toLowerCase());
+                            if (migration.job_id && (!mainDone || !workerDone) && !this.googleDriveMigrationBusy) {
+                                this.googleDriveMigrationBusy = true;
+                                this.pollGoogleDriveMigration(String(migration.job_id)).finally(() => {
+                                    if (this.googleDriveMigrationBusy) this.googleDriveMigrationBusy = false;
+                                });
+                            }
+                        }
+                    } catch (error) {
+                        this.googleDriveMigration = {
+                            ...(this.googleDriveMigration || {}),
+                            status_poll_error: error && error.message ? error.message : 'Falha ao consultar o backup no servidor.'
+                        };
+                    }
+                    this.googleDriveStatus.checking = false;
                 },
                 async connectGoogleDrive(account = null) {
                     try {
@@ -7741,8 +7797,8 @@
                             if (!result) {
                                 this.googleDriveMigration = {
                                     ...(this.googleDriveMigration || {}), ...totals,
-                                    status: 'interrompido',
-                                    errors: [...totals.errors, 'A consulta do lote expirou; é seguro iniciar o backup novamente.'].slice(-50)
+                                    status: 'consulta_expirada',
+                                    errors: [...totals.errors, 'A consulta automática expirou. Clique em Atualizar status para consultar o job no servidor; o backup não foi reiniciado.'].slice(-50)
                                 };
                                 break;
                             }
@@ -7797,7 +7853,10 @@
                                 'O limite de 500 lotes foi atingido; inicie outro backup para continuar.'
                             ].slice(-50);
                         }
-                        localStorage.removeItem('google_drive_migration_job');
+                        const finalStatus = String(this.googleDriveMigration && this.googleDriveMigration.status || '').toLowerCase();
+                        if (finalStatus === 'completed' && !this.googleDriveMigration.has_more_candidates) {
+                            localStorage.removeItem('google_drive_migration_job');
+                        }
                         await this.fetchGoogleDriveStatus();
                     } catch (error) {
                         this.googleDriveMigration = {
@@ -7823,7 +7882,7 @@
                             const workerStatus = String(data.worker_cleanup_status || 'not_needed').toLowerCase();
                             const workerDone = workerCleanupTerminal.has(workerStatus);
                             if (mainDone && workerDone) {
-                                if (!keepBusy) localStorage.removeItem('google_drive_migration_job');
+                                if (!keepBusy && !data.has_more_candidates) localStorage.removeItem('google_drive_migration_job');
                                 if (!keepBusy) this.googleDriveMigrationBusy = false;
                                 if (!keepBusy) await this.fetchGoogleDriveStatus();
                                 return data;
@@ -12781,13 +12840,6 @@
                 } catch (_) {}
                 this.fetchYoutubeStats();
                 this.fetchGoogleDriveStatus();
-                try {
-                    const driveJobId = localStorage.getItem('google_drive_migration_job');
-                    if (driveJobId) {
-                        this.googleDriveMigrationBusy = true;
-                        this.pollGoogleDriveMigration(driveJobId);
-                    }
-                } catch (_) {}
             }
         }).mount('#app')
     </script>
