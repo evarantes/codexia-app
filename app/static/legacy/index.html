@@ -4587,9 +4587,10 @@
                             <p class="text-xs text-slate-500">Os projetos novos são distribuídos entre as contas ativas. Cada projeto permanece na mesma conta; pausá-la não apaga nem desconecta o arquivo histórico.</p>
                         </div>
                         <div class="mt-3 flex flex-wrap gap-2">
-                            <button type="button" @click="fetchGoogleDriveStatus" :disabled="googleDriveStatus.checking" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Atualizar status</button>
+                            <button type="button" @click="fetchGoogleDriveStatus" :disabled="googleDriveStatus.checking" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">{{ googleDriveStatus.checking ? 'Consultando...' : 'Atualizar status' }}</button>
                             <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Fazendo backup em lotes...' : 'Fazer backup completo e liberar espaço' }}</button>
                         </div>
+                        <p v-if="googleDriveMigrationNotice" role="status" aria-live="polite" class="mt-2 text-sm text-slate-700">{{ googleDriveMigrationNotice }}</p>
                         <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
                             Servidor principal: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos · {{ googleDriveMigration.archived || 0 }} arquivos enviados · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
                             <template v-if="googleDriveMigration.batch_number"> · lote {{ googleDriveMigration.batch_number }}<template v-if="googleDriveMigration.remaining_candidates"> · {{ googleDriveMigration.remaining_candidates }} projetos nos próximos lotes</template></template>
@@ -5711,6 +5712,7 @@
                     googleDriveAccountLabel: '',
                     googleDriveRedirectUri: '',
                     googleDriveMigration: null,
+                    googleDriveMigrationNotice: '',
                     googleDriveMigrationBusy: false,
                     driveArchiveRecovery: { open: false, taskId: '', title: '', loading: false, error: '', files: [] },
                     officialChannelLogoPreviewUrl: '',
@@ -7674,6 +7676,7 @@
                 },
                 async fetchGoogleDriveStatus() {
                     this.googleDriveStatus.checking = true;
+                    this.googleDriveMigrationNotice = 'Consultando o status salvo no servidor...';
                     try {
                         const response = await this.authFetch('/settings/google-drive/accounts');
                         const data = await response.json().catch(() => ({}));
@@ -7705,6 +7708,7 @@
                         }
                         if (!response) {
                             this.googleDriveMigration = null;
+                            this.googleDriveMigrationNotice = 'O servidor não encontrou um job de backup salvo. Nenhum novo backup foi iniciado.';
                         } else {
                             const migration = await response.json().catch(() => ({}));
                             if (!response.ok) throw new Error(migration.detail || 'Falha ao consultar o backup no servidor.');
@@ -7712,6 +7716,9 @@
                                 try { localStorage.setItem('google_drive_migration_job', migration.job_id); } catch (_) {}
                             }
                             this.googleDriveMigration = { ...migration, status_poll_error: '' };
+                            this.googleDriveMigrationNotice = migration.status
+                                ? `Status atualizado pelo servidor: ${migration.status}.`
+                                : 'O servidor respondeu, mas o job não trouxe um status.';
                             const terminal = new Set(['completed', 'completed_with_errors', 'failed']);
                             const workerTerminal = new Set(['not_needed', 'not_queued', 'finished', 'failed', 'stopped', 'canceled', 'cancelled']);
                             const mainDone = terminal.has(String(migration.status || '').toLowerCase());
@@ -7724,9 +7731,11 @@
                             }
                         }
                     } catch (error) {
+                        const message = error && error.message ? error.message : 'Falha ao consultar o backup no servidor.';
+                        this.googleDriveMigrationNotice = `Falha ao atualizar o status: ${message}`;
                         this.googleDriveMigration = {
                             ...(this.googleDriveMigration || {}),
-                            status_poll_error: error && error.message ? error.message : 'Falha ao consultar o backup no servidor.'
+                            status_poll_error: message
                         };
                     }
                     this.googleDriveStatus.checking = false;
