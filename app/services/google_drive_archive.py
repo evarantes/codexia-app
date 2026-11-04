@@ -497,8 +497,11 @@ class GoogleDriveArchive:
         existing_size = int((existing or {}).get("size") or 0)
         if existing and existing_sha == sha256 and existing_size == size:
             return values, service, parent_id, existing, True
-        if existing and existing_sha and existing_sha != expected_previous_sha256:
-            raise DriveAssetConflict(existing_sha)
+        if (existing
+                and (not expected_previous_sha256 or existing_sha != expected_previous_sha256)):
+            # A pre-indexed Drive file without a SHA is not safe to replace.
+            # Migration code can keep it and upload a separately named version.
+            raise DriveAssetConflict(existing_sha or "unverified")
         return values, service, parent_id, existing, False
 
     def create_upload_session(self, task: str, kind: str, filename: str,
