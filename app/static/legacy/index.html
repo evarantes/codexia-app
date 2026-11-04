@@ -7906,7 +7906,7 @@
                             overall_archived_bytes: 0,
                             batch_number: 1
                         };
-                        this.googleDriveMigrationNotice = 'Backup iniciado no servidor. Os próximos lotes também serão executados no servidor; a página não precisa ficar aberta.';
+                        this.googleDriveMigrationNotice = 'Backup iniciado no servidor. Os lotes continuam sem a página aberta e o computador pode ser desligado; evite reiniciar ou implantar o Codexia até o backup terminar.';
                         const result = await this.pollGoogleDriveMigration(started.job_id, true);
                         if (!result) {
                             this.googleDriveMigrationNotice = 'A consulta desta página atingiu o limite de espera. O backup não foi reiniciado e pode ser consultado novamente pelo botão Atualizar status.';
