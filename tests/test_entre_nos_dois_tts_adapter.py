@@ -26,6 +26,13 @@ class ApprovedTTSAdapterTests(unittest.TestCase):
             project_id=42,
             manifest=self.manifest,
             post_audio=self.mock_post,
+            verify_voices=lambda **kwargs: {
+                "all_accessible": True,
+                "checked": [
+                    {"speaker": speaker, "voice_id": voice_id}
+                    for speaker, voice_id in self.manifest["approved_voices"].items()
+                ],
+            },
         )
         args.update(overrides)
         return generate_pilot_audio(**args)
@@ -71,6 +78,22 @@ class ApprovedTTSAdapterTests(unittest.TestCase):
         manifest["segments"][0]["voice_id"] = "unapproved"
         with self.assertRaises(ValueError):
             self.invoke(manifest=manifest)
+        self.mock_post.assert_not_called()
+
+    def test_preflight_blocks_billing(self):
+        with self.assertRaises(SpeechGenerationError):
+            self.invoke(verify_voices=lambda **kwargs: {"all_accessible": False, "checked": []})
+        self.mock_post.assert_not_called()
+
+    def test_preflight_requires_exact_voices(self):
+        with self.assertRaises(SpeechGenerationError):
+            self.invoke(verify_voices=lambda **kwargs: {
+                "all_accessible": True,
+                "checked": [
+                    {"speaker": "Gabriel", "voice_id": "wrong-id"},
+                    {"speaker": "Helena", "voice_id": self.manifest["approved_voices"]["Helena"]},
+                ],
+            })
         self.mock_post.assert_not_called()
 
     def test_stops_at_first_invalid_audio(self):
