@@ -27,11 +27,12 @@ jobs:
       - name: Install minimal import dependency
         run: python -m pip install --quiet "SQLAlchemy>=2.0,<3.0"
       - name: Compile standalone voice modules
-        run: python -m compileall -q app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py
+        run: python -m compileall -q app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py app/services/entre_nos_dois_voice_check.py
       - name: Test only isolated program contracts
         run: |
           python -m unittest -v \
             tests.test_entre_nos_dois \
             tests.test_entre_nos_dois_voice_plan \
             tests.test_entre_nos_dois_tts_adapter \
-            tests.test_entre_nos_dois_voice_preflight
+            tests.test_entre_nos_dois_voice_preflight \
+            tests.test_entre_nos_dois_voice_check
