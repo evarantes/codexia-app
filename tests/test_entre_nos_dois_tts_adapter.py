@@ -47,6 +47,20 @@ class ApprovedTTSAdapterTests(unittest.TestCase):
         self.assertEqual(self.mock_post.call_count, 4)
         self.assertTrue(all(s["reused"] for s in result["segments"]))
 
+    def test_invalid_cache_is_not_silently_reused_or_charged_again(self):
+        first = self.invoke()
+        Path(first["segments"][0]["path"]).write_bytes(b"invalid preexisting data" * 200)
+        self.mock_post.reset_mock()
+        with self.assertRaises(SpeechGenerationError):
+            self.invoke()
+        self.mock_post.assert_not_called()
+
+    def test_output_filenames_identify_different_voices(self):
+        result = self.invoke()
+        names = [Path(seg["path"]).name for seg in result["segments"]]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(len(name.rsplit("_", 1)[-1]) == 20 for name in names))
+
     def test_rejects_unapproved_budget_before_network(self):
         with self.assertRaises(ValueError):
             self.invoke(approved_max_characters=self.limit - 1)
