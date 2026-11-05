@@ -30,11 +30,13 @@ GABRIEL = VirtualHost(
     name="Gabriel",
     personality="Acolhedor, sensato, bem-humorado e capaz de reconhecer erros.",
     voice_style="pt-BR; masculino; médio-grave; natural; pausas e respiração.",
+    provider_voice_id="ceOf6Sb1xKhC0ZVxHIzb",  # Andrey — selecionada pelo usuário
 )
 HELENA = VirtualHost(
     name="Helena",
     personality="Perspicaz, afetuosa, espontânea, firme e respeitosa.",
     voice_style="pt-BR; feminino; expressivo; caloroso; pausas e respiração.",
+    provider_voice_id="EMGk4qRFrRTnkdPoTzu3",  # Luciana — selecionada pelo usuário
 )
 HOSTS: Tuple[VirtualHost, ...] = (GABRIEL, HELENA)
 
@@ -80,6 +82,8 @@ def build_test_plan(*, project_id: int, reference_keys: dict[str, str],
         raise ValueError("Cadastre as referências visuais privadas de ambos os personagens.")
     if any(not voice_ids.get(h.name) for h in HOSTS):
         raise ValueError("Aprove uma voz para cada personagem.")
+    if any(voice_ids.get(h.name) != h.provider_voice_id for h in HOSTS):
+        raise ValueError("A voz informada não corresponde à voz oficialmente aprovada para o apresentador.")
     if any(not reference_keys[h.name].startswith(f"projects/{project_id}/") for h in HOSTS):
         raise ValueError("Referência visual fora do projeto.")
     if reference_keys["Gabriel"] == reference_keys["Helena"]:
