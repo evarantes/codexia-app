@@ -635,6 +635,11 @@ class CentralAssetTransfer:
         def add_candidate(raw_path, refs):
             if not raw_path:
                 return
+            # Production scripts are retained locally so the user can revise
+            # a completed or failed production without restoring from Drive.
+            refs = {(kind, filename) for kind, filename in refs if kind != 'script'}
+            if not refs:
+                return
             path = Path(raw_path)
             try:
                 if path.is_symlink() or not path.is_file():
