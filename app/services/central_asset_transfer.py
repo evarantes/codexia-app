@@ -30,11 +30,24 @@ def preserves_final_video(status):
     return str(status or '').strip().lower() in _VIDEO_RETENTION_STATUSES
 
 
-def digest(path):
+def digest(path, progress_callback=None):
     h = hashlib.sha256()
+    total = 0
+    try:
+        total = int(os.path.getsize(path)) if progress_callback else 0
+    except OSError:
+        total = 0
+    processed = 0
     with open(path, 'rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             h.update(chunk)
+            processed += len(chunk)
+            if progress_callback:
+                try:
+                    progress_callback(processed, total)
+                except Exception:
+                    # Progress reporting must never interrupt checksum work.
+                    pass
     return h.hexdigest()
 
 

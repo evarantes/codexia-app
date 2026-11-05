@@ -78,8 +78,9 @@ class GoogleDriveArchiveError(RuntimeError):
 
 
 class DriveAssetConflict(GoogleDriveArchiveError):
-    def __init__(self, existing_sha256: str):
+    def __init__(self, existing_sha256: str, source_sha256: str = ""):
         self.existing_sha256 = existing_sha256
+        self.source_sha256 = source_sha256
         super().__init__("O Google Drive já contém uma versão diferente deste ativo.")
 
 
@@ -501,7 +502,7 @@ class GoogleDriveArchive:
                 and (not expected_previous_sha256 or existing_sha != expected_previous_sha256)):
             # A pre-indexed Drive file without a SHA is not safe to replace.
             # Migration code can keep it and upload a separately named version.
-            raise DriveAssetConflict(existing_sha or "unverified")
+            raise DriveAssetConflict(existing_sha or "unverified", sha256)
         return values, service, parent_id, existing, False
 
     def create_upload_session(self, task: str, kind: str, filename: str,
@@ -579,10 +580,15 @@ class GoogleDriveArchive:
         return {"task": task, "kind": kind, "sha256": sha256, "archive_version": "1"}
 
     def upload_path(self, task: str, kind: str, filename: str, path: str | Path,
-                    expected_previous_sha256: str = "", progress_callback=None) -> Dict[str, Any]:
+                    expected_previous_sha256: str = "", progress_callback=None,
+                    verification_callback=None) -> Dict[str, Any]:
         task = _valid_task(task)
         kind, filename = _valid_kind_filename(kind, filename)
         path = Path(path)
+        try:
+            initial_stat = path.stat()
+        except OSError as exc:
+            raise GoogleDriveArchiveError("A cópia local não está mais disponível; nenhum arquivo foi removido.") from exc
         sha = hashlib.sha256()
         md5 = hashlib.md5()
         size = 0
@@ -591,16 +597,33 @@ class GoogleDriveArchive:
                 size += len(chunk)
                 sha.update(chunk)
                 md5.update(chunk)
+                if verification_callback:
+                    try:
+                        verification_callback(size, int(initial_stat.st_size))
+                    except Exception:
+                        # Progress reporting must never interrupt a verified upload.
+                        pass
         sha256 = sha.hexdigest()
         md5sum = md5.hexdigest()
         if not size:
             raise GoogleDriveArchiveError("Arquivo vazio não pode ser arquivado.")
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise GoogleDriveArchiveError("A cópia local não está mais disponível; nenhum arquivo foi removido.") from exc
+        if (int(stat.st_size) != size
+                or int(stat.st_mtime_ns) != int(initial_stat.st_mtime_ns)
+                or int(stat.st_ctime_ns) != int(initial_stat.st_ctime_ns)):
+            raise GoogleDriveArchiveError("A cópia local mudou durante a verificação; tente novamente.")
         values, service, parent_id, existing, already = self._prepare_upload(
             task, kind, filename, sha256, size, expected_previous_sha256,
         )
         if already:
             if str((existing or {}).get("md5Checksum") or "").lower() != md5sum:
-                raise DriveAssetConflict("A cópia existente não confere com o checksum do arquivo local.")
+                raise DriveAssetConflict(
+                    "A cópia existente não confere com o checksum do arquivo local.",
+                    sha256,
+                )
             return {"kind": kind, "filename": filename, "drive_file_id": existing["id"],
                     "drive_account_id": values.get("account_id"), "sha256": sha256, "size": size}
         mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -627,6 +650,14 @@ class GoogleDriveArchive:
             raise GoogleDriveArchiveError("Upload retomável para o Google Drive falhou; cópia original preservada.") from exc
         if str(response.get("md5Checksum") or "").lower() != md5sum or int(response.get("size") or -1) != size:
             raise GoogleDriveArchiveError("Google Drive não confirmou checksum/tamanho; cópia original preservada.")
+        try:
+            final_stat = path.stat()
+        except OSError as exc:
+            raise GoogleDriveArchiveError("A cópia local mudou durante o envio; a mídia local foi preservada.") from exc
+        if (int(final_stat.st_size) != size
+                or int(final_stat.st_mtime_ns) != int(initial_stat.st_mtime_ns)
+                or int(final_stat.st_ctime_ns) != int(initial_stat.st_ctime_ns)):
+            raise GoogleDriveArchiveError("A cópia local mudou durante o envio; a mídia local foi preservada.")
         return {"kind": kind, "filename": filename, "drive_file_id": response["id"],
                 "drive_account_id": values.get("account_id"), "sha256": sha256, "size": size}
 

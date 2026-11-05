@@ -4604,6 +4604,9 @@
                                 <span>Projetos processados: {{ googleDriveMigration.overall_processed_projects || 0 }} / {{ googleDriveMigration.overall_total_projects }}</span>
                                 <strong>{{ googleDriveMigrationProgressPercent() }}%</strong>
                             </div>
+                            <p v-if="googleDriveMigration.batch_total" class="mt-1 text-xs text-slate-600">
+                                Grupo {{ googleDriveMigration.batch_number || 1 }} / {{ googleDriveMigration.batch_total }} · projeto {{ googleDriveMigration.batch_project_index || 1 }} / {{ googleDriveMigration.batch_project_total || 10 }} deste grupo · conferência e limpeza por projeto
+                            </p>
                             <div class="mt-2 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigrationProgressPercent()" aria-valuemin="0" aria-valuemax="100">
                                 <div class="h-full rounded bg-emerald-600 transition-all" :style="{ width: googleDriveMigrationProgressPercent() + '%' }"></div>
                             </div>
@@ -4620,9 +4623,19 @@
                                 <span>Decorrido: {{ formatDriveDuration(googleDriveElapsedSeconds()) }}</span>
                                 <span>Falta: {{ typeof googleDriveMigration.estimated_remaining_seconds === 'number' ? formatDriveDuration(googleDriveMigration.estimated_remaining_seconds) : 'calculando após o primeiro envio' }}</span>
                             </div>
-                            <p v-if="googleDriveMigration.current_project_task_id" class="mt-2 text-xs text-slate-600">
+                            <p v-if="googleDriveMigration.current_project_task_id && !['inventory', 'verifying_inventory'].includes(String(googleDriveMigration.stage_phase || '').toLowerCase())" class="mt-2 text-xs text-slate-600">
                                 Projeto {{ googleDriveMigration.current_project_index || 0 }}/{{ googleDriveMigration.current_project_total || googleDriveMigration.overall_total_projects || 0 }} · {{ googleDriveMigration.current_project_task_id }}
                             </p>
+                            <p v-if="['inventory', 'verifying_inventory'].includes(String(googleDriveMigration.stage_phase || '').toLowerCase())" class="mt-2 text-xs text-slate-600">
+                                Inventário local: {{ googleDriveMigration.inventory_manifests_scanned || 0 }} manifestos lidos<span v-if="googleDriveMigration.inventory_projects_total"> · {{ googleDriveMigration.inventory_projects_scanned || 0 }} / {{ googleDriveMigration.inventory_projects_total }} projetos conferidos</span>
+                            </p>
+                            <template v-if="googleDriveMigration.current_asset && ['verifying_inventory', 'verifying_asset'].includes(String(googleDriveMigration.stage_phase || '').toLowerCase())">
+                                <p class="mt-1 break-all text-xs text-slate-700">Conferindo arquivo: {{ googleDriveMigration.current_asset }} · {{ formatBytes(googleDriveMigration.current_asset_size_bytes || 0) }}</p>
+                                <div class="mt-1 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigration.current_asset_size_bytes ? Math.min(100, Math.floor((googleDriveMigration.current_asset_verification_bytes || 0) * 100 / googleDriveMigration.current_asset_size_bytes)) : 0" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso da verificação do arquivo">
+                                    <div class="h-full rounded bg-indigo-600 transition-all" :style="{ width: (googleDriveMigration.current_asset_size_bytes ? Math.min(100, Math.floor((googleDriveMigration.current_asset_verification_bytes || 0) * 100 / googleDriveMigration.current_asset_size_bytes)) : 0) + '%' }"></div>
+                                </div>
+                                <p class="mt-1 text-xs text-slate-500">Lido para conferir o checksum: {{ formatBytes(googleDriveMigration.current_asset_verification_bytes || 0) }} / {{ formatBytes(googleDriveMigration.current_asset_size_bytes || 0) }}</p>
+                            </template>
                             <template v-if="googleDriveMigration.current_asset && googleDriveMigration.stage_phase === 'uploading'">
                                 <p class="mt-1 break-all text-xs text-slate-700">Arquivo atual: {{ googleDriveMigration.current_asset }} · {{ formatBytes(googleDriveMigration.current_asset_size_bytes || 0) }} · {{ googleDriveMigration.current_asset_percent || 0 }}%</p>
                                 <div class="mt-1 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigration.current_asset_percent || 0" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso do arquivo atual">
@@ -4653,7 +4666,7 @@
                         <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
                             <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
                         </ul>
-                        <p class="mt-2 text-xs text-slate-500">O worker processa um projeto por etapa e só enfileira o próximo depois de confirmar o envio e concluir a limpeza segura. Projetos ativos ou atualizados nas últimas 24 horas ficam para outra rodada. Cópias diferentes no Drive são preservadas; vídeos finais e arquivos da biblioteca de músicas permanecem nos servidores. Banco de dados, código, letras, roteiros e cache ativo não são removidos.</p>
+                        <p class="mt-2 text-xs text-slate-500">O acompanhamento organiza os projetos em grupos de até 10, mas processa um por vez: envia, confirma a integridade no Drive e faz a limpeza segura antes de passar ao próximo. Você pode pausar após qualquer projeto. Projetos ativos ou atualizados nas últimas 24 horas ficam para outra rodada. Cópias diferentes no Drive são preservadas; vídeos finais e arquivos da biblioteca de músicas permanecem nos servidores. Banco de dados, código, letras, roteiros e cache ativo não são removidos.</p>
                     </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <div class="flex items-center justify-between">
@@ -7736,6 +7749,9 @@
                 googleDriveMigrationStageLabel(value) {
                     const labels = {
                         queued: 'Aguardando o worker',
+                        inventory: 'Lendo inventário local',
+                        verifying_inventory: 'Conferindo arquivos já arquivados no Drive',
+                        verifying_asset: 'Verificando checksum do arquivo',
                         uploading: 'Enviando e confirmando no Google Drive',
                         cleaning_main: 'Limpando cópias confirmadas no armazenamento principal',
                         cleaning_worker: 'Limpando cópias confirmadas no CX33',
