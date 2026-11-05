@@ -5,6 +5,7 @@ o usuário precisa autorizar o custo e NÃO há tentativas automáticas pagas.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,15 @@ AUDIO_FORMAT = "mp3_44100_128"
 
 class SpeechGenerationError(RuntimeError):
     pass
+
+
+def _valid_mp3_header(audio: bytes) -> bool:
+    """Cheap transport check; full decoding is required before approval."""
+    return (
+        isinstance(audio, bytes)
+        and len(audio) > 1024
+        and (audio.startswith(b"ID3") or audio[:2] in (bytes.fromhex("fffb"), bytes.fromhex("fff3"), bytes.fromhex("fff2")))
+    )
 
 
 def generate_pilot_audio(
@@ -63,20 +73,26 @@ def generate_pilot_audio(
 
     completed = []
     for segment in canonical["segments"]:
-        name = f"{segment['index']:02d}_{segment['speaker'].lower()}.mp3"
+        fingerprint = hashlib.sha256(
+            (segment["voice_id"] + "\\n" + VOICE_MODEL + "\\n" + segment["text"]).encode("utf-8")
+        ).hexdigest()[:16]
+        name = f"{segment['index']:02d}_{segment['speaker'].lower()}_{fingerprint}.mp3"
         destination = target_dir / name
         # Evita cobranças repetidas na retomada. O validador do áudio real
         # (ffprobe/escuta) deve ocorrer antes da aprovação audiovisual.
-        if destination.is_file() and destination.stat().st_size > 1024:
-            completed.append({"index": segment["index"], "speaker": segment["speaker"], "path": str(destination), "reused": True})
-            continue
+        if destination.is_file():
+            existing = destination.read_bytes()
+            if _valid_mp3_header(existing):
+                completed.append({"index": segment["index"], "speaker": segment["speaker"], "path": str(destination), "reused": True})
+                continue
+            raise SpeechGenerationError("Áudio em cache inválido; revisão manual obrigatória antes de repetir cobrança")
         payload = {
             "text": segment["text"],
             "model_id": VOICE_MODEL,
         }
         url = f"{ELEVEN_API_ROOT}/text-to-speech/{segment['voice_id']}?output_format={AUDIO_FORMAT}"
         audio = post_audio(url, payload, api_key)
-        if not isinstance(audio, bytes) or len(audio) <= 1024 or not audio.startswith(b"ID3") and audio[:2] != b"\\xff\\xfb":
+        if not _valid_mp3_header(audio):
             raise SpeechGenerationError(f"Áudio inválido no trecho {segment['index']}; não continuar com novas chamadas pagas")
         temp = destination.with_suffix(".part")
         try:
