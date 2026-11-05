@@ -11,7 +11,7 @@ class EntreNosDoisTests(unittest.TestCase):
             "Gabriel": "projects/42/hosts/gabriel/reference.png",
             "Helena": "projects/42/hosts/helena/reference.png",
         }
-        self.voices = {"Gabriel": "voice-a", "Helena": "voice-b"}
+        self.voices = {"Gabriel": "ceOf6Sb1xKhC0ZVxHIzb", "Helena": "EMGk4qRFrRTnkdPoTzu3"}
 
     def test_stable_host_names(self):
         self.assertEqual([h.name for h in HOSTS], ["Gabriel", "Helena"])
@@ -38,9 +38,13 @@ class EntreNosDoisTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_test_plan(project_id=42, reference_keys={"Gabriel": self.refs["Gabriel"], "Helena": self.refs["Gabriel"]}, voice_ids=self.voices)
 
+    def test_wrong_approved_voice_is_rejected(self):
+        with self.assertRaises(ValueError):
+            build_test_plan(project_id=42, reference_keys=self.refs, voice_ids={"Gabriel": "wrong", "Helena": self.voices["Helena"]})
+
     def test_missing_approved_voice(self):
         with self.assertRaises(ValueError):
-            build_test_plan(project_id=42, reference_keys=self.refs, voice_ids={"Gabriel": "voice-a"})
+            build_test_plan(project_id=42, reference_keys=self.refs, voice_ids={"Gabriel": self.voices["Gabriel"]})
 
     def test_dialogue_duration_mismatch(self):
         with self.assertRaises(ValueError):
