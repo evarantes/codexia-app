@@ -13,6 +13,7 @@ from urllib import error, request
 from typing import Callable, Optional
 
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
+from app.services.entre_nos_dois_voice_preflight import check_approved_voices
 
 ELEVEN_API_ROOT = "https://api.elevenlabs.io/v1"
 VOICE_MODEL = "eleven_multilingual_v2"
@@ -40,6 +41,7 @@ def generate_pilot_audio(
     project_id: int,
     manifest: Optional[dict] = None,
     post_audio: Optional[Callable[[str, dict, str], bytes]] = None,
+    verify_voices: Optional[Callable[..., dict]] = None,
 ) -> dict:
     """Gera os quatro MP3s após aprovação explícita de consumo.
 
@@ -72,6 +74,8 @@ def generate_pilot_audio(
         post_audio = _post_elevenlabs
 
     completed = []
+    preflight_passed = False
+    verify_voices = verify_voices or check_approved_voices
     for segment in canonical["segments"]:
         fingerprint = hashlib.sha256(
             (segment["voice_id"] + "\\n" + VOICE_MODEL + "\\n" + segment["text"]).encode("utf-8")
@@ -86,6 +90,14 @@ def generate_pilot_audio(
                 completed.append({"index": segment["index"], "speaker": segment["speaker"], "path": str(destination), "reused": True})
                 continue
             raise SpeechGenerationError("Áudio em cache inválido; revisão manual obrigatória antes de repetir cobrança")
+        if not preflight_passed:
+            verification = verify_voices(api_key=api_key)
+            if not verification.get("all_accessible") or len(verification.get("checked", [])) != len(canonical["approved_voices"]):
+                raise SpeechGenerationError("Acesso às vozes não confirmado; nenhuma geração paga executada")
+            verified_ids = {entry.get("speaker"): entry.get("voice_id") for entry in verification["checked"]}
+            if verified_ids != canonical["approved_voices"]:
+                raise SpeechGenerationError("IDs de voz divergentes; geração paga bloqueada")
+            preflight_passed = True
         payload = {
             "text": segment["text"],
             "model_id": VOICE_MODEL,
