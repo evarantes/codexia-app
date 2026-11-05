@@ -20,7 +20,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from google_auth_oauthlib.flow import Flow
 from sqlalchemy.orm import Session
@@ -599,7 +599,22 @@ def _job_path(job_id: str) -> Path:
 
 
 def _write_job(job_id: str, payload: Dict[str, Any]) -> None:
-    payload["status_updated_at"] = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    payload["status_updated_at"] = now.isoformat()
+    started_at = _timestamp(payload.get("started_at"), 0.0)
+    if started_at > 0:
+        payload["elapsed_seconds"] = max(0, int(now.timestamp() - started_at))
+    total_bytes = int(payload.get("overall_total_bytes") or 0)
+    archived_bytes = int(payload.get("overall_archived_bytes") or 0)
+    current_size = int(payload.get("current_asset_size_bytes") or 0)
+    current_uploaded = min(current_size, int(payload.get("current_asset_uploaded_bytes") or 0))
+    effective_bytes = min(total_bytes, archived_bytes + current_uploaded) if total_bytes > 0 else 0
+    elapsed = int(payload.get("elapsed_seconds") or 0)
+    if total_bytes > 0 and effective_bytes > 0 and elapsed > 0:
+        rate = effective_bytes / elapsed
+        payload["estimated_remaining_seconds"] = max(0, int((total_bytes - effective_bytes) / rate)) if rate > 0 else None
+    elif total_bytes <= 0:
+        payload["estimated_remaining_seconds"] = None
     path = _job_path(job_id)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -1013,12 +1028,39 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
     allowed_roots.append(Path(COVERS_OUTPUT_DIR).resolve())
     allowed_roots.append(manifest_root)
     index_cache: Dict[str, Dict[tuple[str, str], Dict[str, Any]]] = {}
-    freed_before = shutil.disk_usage("/data" if os.path.isdir("/data") else "/").free
+
+    def free_bytes_for_managed_storage() -> int:
+        paths_by_device = {}
+        for root in allowed_roots:
+            try:
+                if root.exists():
+                    paths_by_device.setdefault(int(root.stat().st_dev), root)
+            except OSError:
+                continue
+        total = 0
+        for root in paths_by_device.values():
+            try:
+                total += int(shutil.disk_usage(root).free)
+            except OSError:
+                continue
+        return total
+
+    freed_before = free_bytes_for_managed_storage()
     cutoff = time.time() - 24 * 60 * 60
 
     for group in inodes.values():
         owners = group["owners"]
         if not owners or len(group["paths"]) != int(group["link_count"] or 0):
+            continue
+        # Saved Music and Suno outputs are archived for recovery, but remain in
+        # the product library by design.
+        if any(projects.get(task_id, {}).get("preserve_local") for task_id in owners):
+            continue
+        if any(
+            kind == "script"
+            for refs in owners.values()
+            for kind, _filename in refs
+        ):
             continue
         # Keep videos for successful/finalized projects. Failed project videos
         # are still protected by the checksum check below and remain recoverable.
@@ -1073,7 +1115,7 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
             except OSError:
                 continue
 
-    freed_after = shutil.disk_usage("/data" if os.path.isdir("/data") else "/").free
+    freed_after = free_bytes_for_managed_storage()
     return max(0, int(freed_after - freed_before))
 
 
@@ -1222,34 +1264,60 @@ def _run_migration(
                     "current_asset_index": 0,
                     "current_asset_total": len(asset_items),
                     "current_asset": "",
+                    "current_asset_size_bytes": 0,
+                    "current_asset_uploaded_bytes": 0,
+                    "current_project_task_id": str(task_id),
+                    "stage_phase": "uploading",
                 })
                 _write_job(job_id, payload)
                 for asset_index, asset in enumerate(asset_items, start=1):
+                    path = Path(asset["path"])
+                    try:
+                        source_size = int(path.stat().st_size)
+                    except OSError:
+                        source_size = 0
                     payload.update({
                         "current_project_index": completed_projects_before + project_index,
                         "current_project_total": max(total_projects, completed_projects_before + len(selected)),
                         "current_asset_index": asset_index,
                         "current_asset_total": len(asset_items),
                         "current_asset": str(asset.get("filename") or ""),
+                        "current_asset_size_bytes": source_size,
+                        "current_asset_uploaded_bytes": 0,
+                        "current_asset_percent": 0,
+                        "stage_phase": "uploading",
                     })
                     _write_job(job_id, payload)
-                    path = Path(asset["path"])
-                    source_size = 0
                     try:
                         source_sha = digest(path)
-                        source_size = path.stat().st_size
+
+                        def report_upload_progress(uploaded: int, total: int) -> None:
+                            payload["current_asset_size_bytes"] = int(total)
+                            payload["current_asset_uploaded_bytes"] = int(uploaded)
+                            payload["current_asset_percent"] = (
+                                min(100, int(uploaded * 100 / total)) if total > 0 else 0
+                            )
+                            _write_job(job_id, payload)
+
                         try:
-                            entry = archive.upload_path(task_id, asset["kind"], asset["filename"], path)
+                            entry = archive.upload_path(
+                                task_id, asset["kind"], asset["filename"], path,
+                                progress_callback=report_upload_progress,
+                            )
                         except DriveAssetConflict:
                             # Preserve the old Drive file and archive this
                             # differing local version under a content address.
                             versioned_name = _versioned_archive_filename(asset["filename"], source_sha)
-                            entry = archive.upload_path(task_id, asset["kind"], versioned_name, path)
+                            entry = archive.upload_path(
+                                task_id, asset["kind"], versioned_name, path,
+                                progress_callback=report_upload_progress,
+                            )
                         if digest(path) != source_sha or int(entry.get("size") or -1) != source_size or entry.get("sha256") != source_sha:
                             raise RuntimeError("A cópia local mudou ou o Drive não confirmou o mesmo conteúdo.")
                         register_asset(task_id, entry)
                         archived += 1
                         archived_bytes += source_size
+                        report_upload_progress(source_size, source_size)
                     except Exception as exc:
                         project_ok = False
                         errors.append(f"{task_id}/{asset['filename']}: {str(exc)[:180]}")
@@ -1268,6 +1336,8 @@ def _run_migration(
                             "error_count": error_count_before + batch_error_count,
                             "errors": errors[-50:],
                             "current_asset_index": asset_index,
+                            "current_asset_uploaded_bytes": 0,
+                            "current_asset_percent": 0,
                         })
                         _write_job(job_id, payload)
                 if project_ok:
@@ -1297,7 +1367,13 @@ def _run_migration(
             _write_job(job_id, payload)
         # This sweep sees shared hard links across projects. It removes them only
         # after each owning project has a checksum-verified Drive entry.
+        payload["stage_phase"] = "cleaning_main"
+        _write_job(job_id, payload)
         bytes_freed = _remove_fully_archived_aliases(projects, inodes)
+        payload["current_stage_main_cleanup_complete"] = True
+        payload["main_cleanup_bytes_freed_this_stage"] = int(bytes_freed)
+        payload["stage_phase"] = "cleaning_worker"
+        _write_job(job_id, payload)
     except Exception as exc:
         errors.append(str(exc)[:240])
         batch_error_count += 1
@@ -1321,7 +1397,7 @@ def _run_migration(
         "completed_with_errors" if archived_before + archived or skipped_before + skipped else "failed"
     )
     payload.update({
-        "status": "processing" if defer_worker_cleanup and has_more else final_status,
+        "status": "processing" if defer_worker_cleanup else final_status,
         "archived": archived_before + archived,
         "archived_projects": archived_projects_before + archived_projects,
         "processed_projects": completed_projects_before + processed_projects,
@@ -1431,6 +1507,211 @@ def _run_full_migration(
     invalidate_drive_usage_cache(user_id)
 
 
+def _queue_migration_stage(
+    job_id: str,
+    user_id: int,
+    after_updated_at: Optional[float] = None,
+    after_task_id: str = "",
+    *,
+    resume_current_stage: bool = False,
+) -> Optional[str]:
+    """Queue one project-sized migration stage on the persistent RQ worker."""
+    payload = _read_job(job_id)
+    payload.update({
+        "status": "queued",
+        "stage_phase": "queued",
+        "stage_cursor_after_updated_at": after_updated_at,
+        "stage_cursor_after_task_id": str(after_task_id or ""),
+    })
+    if not resume_current_stage:
+        payload.update({
+            "stage_baseline_projects": int(payload.get("overall_processed_projects") or 0),
+            "stage_baseline_files": int(payload.get("overall_processed_files") or 0),
+            "stage_baseline_archived_bytes": int(payload.get("overall_archived_bytes") or 0),
+            "stage_baseline_archived": int(payload.get("archived") or 0),
+            "stage_baseline_archived_projects": int(payload.get("archived_projects") or 0),
+            "stage_baseline_bytes_freed": int(payload.get("bytes_freed") or 0),
+            "stage_baseline_main_bytes_freed": int(payload.get("main_bytes_freed") or 0),
+            "stage_baseline_worker_bytes_freed": int(payload.get("worker_bytes_freed") or 0),
+            "stage_baseline_error_count": int(payload.get("error_count") or 0),
+            "stage_baseline_errors": list(payload.get("errors") or [])[-50:],
+            "current_stage_main_cleanup_complete": False,
+            "main_cleanup_bytes_freed_this_stage": 0,
+            "current_asset_uploaded_bytes": 0,
+            "current_asset_percent": 0,
+            "current_project_task_id": "",
+            "current_asset": "",
+            "current_asset_size_bytes": 0,
+            "current_asset_total": 0,
+            "current_asset_index": 0,
+            "worker_cleanup_status": "pending",
+            "worker_cleanup_result": None,
+            "worker_cleanup_message": "",
+        })
+    else:
+        payload["stage_phase"] = "cleaning_worker"
+    _write_job(job_id, payload)
+    from app.redis_client import queue
+
+    worker_job = queue.enqueue(
+        _run_migration_stage,
+        job_id,
+        int(user_id),
+        after_updated_at,
+        str(after_task_id or ""),
+        job_timeout=4 * 60 * 60,
+        result_ttl=7 * 24 * 60 * 60,
+        failure_ttl=7 * 24 * 60 * 60,
+        description=f"Arquivar um projeto no Google Drive ({job_id[:8]})",
+    )
+    worker_job_id = str(getattr(worker_job, "id", "") or "")
+    if worker_job_id:
+        payload = _read_job(job_id)
+        payload["stage_job_id"] = worker_job_id
+        payload["stage_job_status"] = "queued"
+        _write_job(job_id, payload)
+    return worker_job_id or None
+
+
+def _run_migration_stage(
+    job_id: str,
+    user_id: int,
+    after_updated_at: Optional[float] = None,
+    after_task_id: str = "",
+) -> None:
+    """Archive, verify, and clean one project, then enqueue the next stage."""
+    payload = _read_job(job_id)
+    payload.update({
+        "status": "processing",
+        "stage_job_status": "started",
+        "stage_phase": "cleaning_worker" if payload.get("current_stage_main_cleanup_complete") else "uploading",
+        "started_at": payload.get("started_at") or datetime.now(timezone.utc).isoformat(),
+        "stage_cursor_after_updated_at": after_updated_at,
+        "stage_cursor_after_task_id": str(after_task_id or ""),
+    })
+    _write_job(job_id, payload)
+
+    try:
+        if not payload.get("current_stage_main_cleanup_complete"):
+            _run_migration(
+                job_id,
+                int(user_id),
+                1,
+                after_updated_at,
+                str(after_task_id or ""),
+                defer_worker_cleanup=True,
+            )
+
+        payload = _read_job(job_id)
+        if (not payload.get("current_stage_main_cleanup_complete")
+                and bool(payload.get("has_more_candidates"))
+                and int(payload.get("overall_processed_projects") or 0)
+                <= int(payload.get("stage_baseline_projects") or 0)
+                and not payload.get("current_project_task_id")):
+            raise RuntimeError("O inventário não concluiu esta etapa; ela pode ser retomada com segurança.")
+        task_ids = list(dict.fromkeys(
+            str(value) for value in (payload.get("worker_cleanup_task_ids") or [])
+            if str(value).strip()
+        ))
+        stage_baseline_worker = int(payload.get("stage_baseline_worker_bytes_freed") or 0)
+        stage_baseline_main = int(payload.get("stage_baseline_main_bytes_freed") or 0)
+        stage_baseline_bytes = int(payload.get("stage_baseline_bytes_freed") or 0)
+        stage_main_delta = max(0, int(payload.get("main_cleanup_bytes_freed_this_stage") or 0))
+        payload["stage_phase"] = "cleaning_worker"
+        payload["worker_cleanup_status"] = "processing" if task_ids else "not_needed"
+        _write_job(job_id, payload)
+
+        cleanup_result = None
+        if task_ids:
+            cleanup_result = cleanup_confirmed_worker_cache_job(task_ids, max_tasks=len(task_ids))
+        worker_delta = int((cleanup_result or {}).get("reclaimed_bytes") or 0)
+        payload = _read_job(job_id)
+        if cleanup_result is not None:
+            payload["worker_cleanup_result"] = cleanup_result
+            payload["worker_cleanup_status"] = "finished"
+            if not cleanup_result.get("enabled"):
+                payload["worker_cleanup_message"] = (
+                    "O CX33 não confirmou a limpeza; os arquivos locais dele foram mantidos."
+                )
+            elif int(cleanup_result.get("errors") or 0) > 0:
+                payload["worker_cleanup_message"] = (
+                    "Alguns arquivos do CX33 não puderam ser verificados e permaneceram no disco."
+                )
+            if (not cleanup_result.get("enabled") or int(cleanup_result.get("errors") or 0) > 0):
+                errors = list(payload.get("errors") or [])
+                errors.append(str(payload.get("worker_cleanup_message") or "A limpeza do CX33 ficou incompleta."))
+                payload["errors"] = errors[-50:]
+                payload["error_count"] = int(payload.get("error_count") or 0) + 1
+        else:
+            payload["worker_cleanup_status"] = "not_needed"
+        payload["worker_cleanup_task_ids"] = []
+        payload["main_bytes_freed"] = stage_baseline_main + stage_main_delta
+        payload["worker_bytes_freed"] = stage_baseline_worker + worker_delta
+        payload["bytes_freed"] = stage_baseline_bytes + stage_main_delta + worker_delta
+        payload["current_stage_main_cleanup_complete"] = False
+        payload["stage_job_status"] = "finished"
+        payload["stage_phase"] = "stage_finished"
+
+        has_more = bool(payload.get("has_more_candidates"))
+        pause_requested = bool(payload.get("pause_requested"))
+        cursor = payload.get("last_candidate_cursor") or {}
+        cursor_updated_at = cursor.get("updated_at")
+        cursor_task_id = str(cursor.get("task_id") or "")
+        if has_more and (cursor_updated_at is None or not cursor_task_id):
+            errors = list(payload.get("errors") or [])
+            errors.append("Não foi possível identificar o próximo projeto; os arquivos sem confirmação foram mantidos.")
+            payload["errors"] = errors[-50:]
+            payload["error_count"] = int(payload.get("error_count") or 0) + 1
+            payload["has_more_candidates"] = False
+            has_more = False
+
+        if has_more and pause_requested:
+            payload.update({
+                "status": "paused",
+                "stage_phase": "paused",
+                "pause_requested": False,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            })
+            _write_job(job_id, payload)
+            return
+
+        if has_more:
+            _write_job(job_id, payload)
+            _queue_migration_stage(job_id, int(user_id), float(cursor_updated_at), cursor_task_id)
+            return
+
+        error_count = int(payload.get("error_count") or 0)
+        if error_count:
+            final_status = "completed_with_errors" if int(payload.get("archived") or 0) else "failed"
+        else:
+            final_status = "completed"
+        payload.update({
+            "status": final_status,
+            "stage_phase": "completed",
+            "pause_requested": False,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "remaining_candidates": 0,
+            "has_more_candidates": False,
+        })
+        _write_job(job_id, payload)
+        from app.services.server_resource_monitor import invalidate_drive_usage_cache
+
+        invalidate_drive_usage_cache(int(user_id))
+    except Exception as exc:
+        payload = _read_job(job_id)
+        errors = list(payload.get("errors") or [])
+        errors.append(f"Etapa interrompida: {str(exc)[:220]}")
+        payload.update({
+            "status": "interrupted",
+            "stage_job_status": "failed",
+            "stage_phase": "interrupted",
+            "resume_available": True,
+            "errors": errors[-50:],
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        })
+        _write_job(job_id, payload)
+
+
 @router.get("/migrate/estimate")
 def estimate_google_drive_migration(current_user: User = Depends(get_current_admin_user)):
     """Read-only estimate of stable project assets eligible for the Drive archive."""
@@ -1460,7 +1741,6 @@ def estimate_google_drive_migration(current_user: User = Depends(get_current_adm
 
 @router.post("/migrate/start")
 def start_google_drive_migration(
-    background_tasks: BackgroundTasks,
     limit: int = 5,
     after_updated_at: Optional[float] = None,
     after_task_id: str = "",
@@ -1504,15 +1784,117 @@ def start_google_drive_migration(
     _write_job(job_id, {
         "job_id": job_id, "created_by": int(current_user.id), "status": "queued", "requested_limit": limit,
         "archived": 0, "archived_projects": 0, "skipped": 0, "bytes_freed": 0, "errors": [],
+        "main_bytes_freed": 0, "worker_bytes_freed": 0,
+        "worker_cleanup_status": "not_started", "stage_phase": "queued",
+        "started_at": datetime.now(timezone.utc).isoformat(),
         **progress,
         "overall_processed_projects": progress["completed_projects_before"],
         "overall_processed_files": progress["completed_files_before"],
         "overall_archived_bytes": progress["archived_bytes_before"],
     })
-    background_tasks.add_task(
-        _run_full_migration, job_id, int(current_user.id), limit, after_updated_at, after_task_id,
-    )
-    return {"job_id": job_id, "status": "queued", "message": "Arquivamento por projeto iniciado. Tarefas ativas e projetos atualizados nas últimas 24 horas serão ignorados."}
+    try:
+        stage_job_id = _queue_migration_stage(
+            job_id, int(current_user.id), after_updated_at, after_task_id,
+        )
+    except Exception as exc:
+        payload = _read_job(job_id)
+        payload.update({
+            "status": "failed",
+            "stage_phase": "queue_failed",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "errors": [f"Não foi possível enviar a etapa para o worker: {type(exc).__name__}"],
+        })
+        _write_job(job_id, payload)
+        raise HTTPException(503, "A fila do worker está indisponível. Nenhum arquivo foi removido.") from exc
+    payload = _read_job(job_id)
+    return {
+        **payload,
+        "stage_job_id": stage_job_id,
+        "message": "Backup iniciado em etapas de um projeto. Cada etapa confirma o Drive e conclui a limpeza segura antes de enfileirar a próxima.",
+    }
+
+
+@router.post("/migrate/{job_id}/pause")
+def pause_google_drive_migration(job_id: str, current_user: User = Depends(get_current_admin_user)):
+    payload = _read_job(job_id)
+    if int(payload.get("created_by") or current_user.id) != int(current_user.id):
+        raise HTTPException(404, "Migração não encontrada.")
+    if str(payload.get("status") or "").lower() not in {"queued", "processing"}:
+        raise HTTPException(409, "Só é possível pausar um backup em andamento.")
+    payload["pause_requested"] = True
+    payload["pause_requested_at"] = datetime.now(timezone.utc).isoformat()
+    _write_job(job_id, payload)
+    return {
+        "job_id": job_id,
+        "status": payload.get("status"),
+        "message": "A pausa será aplicada após a etapa atual e sua limpeza segura.",
+    }
+
+
+@router.post("/migrate/{job_id}/resume")
+def resume_google_drive_migration(job_id: str, current_user: User = Depends(get_current_admin_user)):
+    payload = _read_job(job_id)
+    if int(payload.get("created_by") or current_user.id) != int(current_user.id):
+        raise HTTPException(404, "Migração não encontrada.")
+    status = str(payload.get("status") or "").lower()
+    if status not in {"paused", "interrupted"}:
+        raise HTTPException(409, "O backup não está pausado nem interrompido.")
+    if status == "interrupted" and not payload.get("stage_job_id"):
+        raise HTTPException(409, "Este backup antigo não tem uma etapa retomável. Inicie um novo backup para enviar apenas as pendências.")
+
+    if status == "paused":
+        cursor = payload.get("last_candidate_cursor") or {}
+        after_updated_at = cursor.get("updated_at")
+        after_task_id = str(cursor.get("task_id") or "")
+        resume_current_stage = False
+    else:
+        after_updated_at = payload.get("stage_cursor_after_updated_at")
+        after_task_id = str(payload.get("stage_cursor_after_task_id") or "")
+        resume_current_stage = bool(payload.get("current_stage_main_cleanup_complete"))
+        if not resume_current_stage:
+            payload.update({
+                "overall_processed_projects": int(payload.get("stage_baseline_projects") or 0),
+                "overall_processed_files": int(payload.get("stage_baseline_files") or 0),
+                "overall_archived_bytes": int(payload.get("stage_baseline_archived_bytes") or 0),
+                "processed_projects": int(payload.get("stage_baseline_projects") or 0),
+                "processed_files": int(payload.get("stage_baseline_files") or 0),
+                "archived_bytes": int(payload.get("stage_baseline_archived_bytes") or 0),
+                "archived": int(payload.get("stage_baseline_archived") or 0),
+                "archived_projects": int(payload.get("stage_baseline_archived_projects") or 0),
+                "bytes_freed": int(payload.get("stage_baseline_bytes_freed") or 0),
+                "main_bytes_freed": int(payload.get("stage_baseline_main_bytes_freed") or 0),
+                "worker_bytes_freed": int(payload.get("stage_baseline_worker_bytes_freed") or 0),
+                "error_count": int(payload.get("stage_baseline_error_count") or 0),
+                "errors": list(payload.get("stage_baseline_errors") or []),
+                "worker_cleanup_task_ids": [],
+                "current_project_task_id": "",
+                "current_asset": "",
+                "current_asset_size_bytes": 0,
+                "current_asset_uploaded_bytes": 0,
+                "current_asset_percent": 0,
+            })
+    if (after_updated_at is None) != (not after_task_id):
+        raise HTTPException(409, "O ponto seguro de retomada não está completo. Inicie um novo backup para enviar as pendências.")
+    payload.update({
+        "status": "queued",
+        "pause_requested": False,
+        "resume_available": False,
+    })
+    _write_job(job_id, payload)
+    try:
+        stage_job_id = _queue_migration_stage(
+            job_id,
+            int(current_user.id),
+            after_updated_at,
+            after_task_id,
+            resume_current_stage=resume_current_stage,
+        )
+    except Exception as exc:
+        payload = _read_job(job_id)
+        payload.update({"status": "interrupted", "resume_available": True})
+        _write_job(job_id, payload)
+        raise HTTPException(503, "A fila do worker está indisponível. Os arquivos sem confirmação foram mantidos.") from exc
+    return {"job_id": job_id, "status": "queued", "stage_job_id": stage_job_id}
 
 
 @router.get("/migrate/latest")
@@ -1539,8 +1921,80 @@ def latest_google_drive_migration(current_user: User = Depends(get_current_admin
 @router.get("/migrate/{job_id}")
 def google_drive_migration_status(job_id: str, current_user: User = Depends(get_current_admin_user)):
     payload = _read_job(job_id)
+    stage_job_id = str(payload.get("stage_job_id") or "").strip()
+    status = str(payload.get("status") or "").lower()
+    if stage_job_id and status in {"queued", "processing"}:
+        try:
+            from rq.job import Job
+            from app.redis_client import conn
+
+            if conn is None:
+                payload["stage_job_status"] = "unavailable"
+            else:
+                worker_job = Job.fetch(stage_job_id, connection=conn)
+                rq_status = worker_job.get_status(refresh=True)
+                rq_status = str(getattr(rq_status, "value", rq_status) or "unknown").lower()
+                payload["stage_job_status"] = rq_status
+                if rq_status in {"failed", "stopped", "canceled", "cancelled"}:
+                    errors = list(payload.get("errors") or [])
+                    errors.append("A etapa do worker foi interrompida. Os arquivos sem confirmação foram mantidos.")
+                    payload.update({
+                        "status": "interrupted",
+                        "stage_phase": "interrupted",
+                        "resume_available": True,
+                        "errors": errors[-50:],
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                    _write_job(job_id, payload)
+                elif rq_status == "finished" and status in {"queued", "processing"}:
+                    last_update = _timestamp(payload.get("status_updated_at"), 0.0)
+                    if last_update and time.time() - last_update > 10 * 60:
+                        errors = list(payload.get("errors") or [])
+                        errors.append("O worker concluiu a etapa sem registrar a próxima. As cópias não confirmadas foram mantidas.")
+                        payload.update({
+                            "status": "interrupted",
+                            "stage_phase": "interrupted",
+                            "resume_available": True,
+                            "errors": errors[-50:],
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        _write_job(job_id, payload)
+        except Exception:
+            # Redis status is supplemental; stored progress remains available.
+            payload["stage_job_status"] = "unavailable"
+    elif not stage_job_id and status in {"queued", "processing"}:
+        # Old in-process migrations stop updating their JSON when the web
+        # process is redeployed. Report them as interrupted after a long idle.
+        last_update = _timestamp(payload.get("status_updated_at"), 0.0)
+        if last_update and time.time() - last_update > 60 * 60:
+            errors = list(payload.get("errors") or [])
+            errors.append("Este backup antigo parou de atualizar. Inicie um novo backup para enviar apenas as pendências; cópias sem confirmação permanecem locais.")
+            payload.update({
+                "status": "interrupted",
+                "stage_phase": "interrupted",
+                "resume_available": True,
+                "errors": errors[-50:],
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            })
+            _write_job(job_id, payload)
+    started_at = _timestamp(payload.get("started_at"), 0.0)
+    if started_at:
+        payload["elapsed_seconds"] = max(0, int(time.time() - started_at))
+        total_bytes = int(payload.get("overall_total_bytes") or 0)
+        effective_bytes = min(
+            total_bytes,
+            int(payload.get("overall_archived_bytes") or 0)
+            + min(
+                int(payload.get("current_asset_size_bytes") or 0),
+                int(payload.get("current_asset_uploaded_bytes") or 0),
+            ),
+        ) if total_bytes > 0 else 0
+        elapsed = int(payload.get("elapsed_seconds") or 0)
+        if total_bytes > 0 and effective_bytes > 0 and elapsed > 0:
+            rate = effective_bytes / elapsed
+            payload["estimated_remaining_seconds"] = max(0, int((total_bytes - effective_bytes) / rate)) if rate > 0 else None
     worker_job_id = str(payload.get("worker_cleanup_job_id") or "").strip()
-    if not worker_job_id:
+    if stage_job_id or not worker_job_id:
         return payload
     if payload.get("worker_cleanup_status") in {"finished", "failed", "stopped", "canceled", "cancelled"}:
         return payload

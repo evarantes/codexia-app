@@ -579,7 +579,7 @@ class GoogleDriveArchive:
         return {"task": task, "kind": kind, "sha256": sha256, "archive_version": "1"}
 
     def upload_path(self, task: str, kind: str, filename: str, path: str | Path,
-                    expected_previous_sha256: str = "") -> Dict[str, Any]:
+                    expected_previous_sha256: str = "", progress_callback=None) -> Dict[str, Any]:
         task = _valid_task(task)
         kind, filename = _valid_kind_filename(kind, filename)
         path = Path(path)
@@ -599,6 +599,8 @@ class GoogleDriveArchive:
             task, kind, filename, sha256, size, expected_previous_sha256,
         )
         if already:
+            if str((existing or {}).get("md5Checksum") or "").lower() != md5sum:
+                raise DriveAssetConflict("A cópia existente não confere com o checksum do arquivo local.")
             return {"kind": kind, "filename": filename, "drive_file_id": existing["id"],
                     "drive_account_id": values.get("account_id"), "sha256": sha256, "size": size}
         mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -614,7 +616,13 @@ class GoogleDriveArchive:
         try:
             response = None
             while response is None:
-                _, response = request.next_chunk()
+                status, response = request.next_chunk()
+                if progress_callback and status is not None:
+                    try:
+                        progress_callback(min(size, max(0, int(status.progress() * size))), size)
+                    except Exception:
+                        # Progress reporting must never interrupt a verified upload.
+                        pass
         except Exception as exc:
             raise GoogleDriveArchiveError("Upload retomável para o Google Drive falhou; cópia original preservada.") from exc
         if str(response.get("md5Checksum") or "").lower() != md5sum or int(response.get("size") or -1) != size:
