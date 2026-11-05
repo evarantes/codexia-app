@@ -1,0 +1,35 @@
+name: Entre Nos Dois Voice Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/services/entre_nos_dois*.py"
+      - "tests/test_entre_nos_dois*.py"
+      - ".github/workflows/entre-nos-dois-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  voice-contract:
+    name: Approved voices and TTS safety (no paid API calls)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile standalone voice modules
+        run: python -m compileall -q app/services/entre_nos_dois.py app/services/entre_nos_dois_voice_plan.py app/services/entre_nos_dois_tts_adapter.py app/services/entre_nos_dois_voice_preflight.py
+      - name: Test only isolated program contracts
+        run: |
+          python -m unittest -v \
+            tests.test_entre_nos_dois \
+            tests.test_entre_nos_dois_voice_plan \
+            tests.test_entre_nos_dois_tts_adapter \
+            tests.test_entre_nos_dois_voice_preflight
