@@ -4589,7 +4589,7 @@
                         <div class="mt-3 flex flex-wrap gap-2">
                             <button type="button" @click="fetchGoogleDriveStatus" :disabled="googleDriveStatus.checking" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">{{ googleDriveStatus.checking ? 'Consultando...' : 'Atualizar status' }}</button>
                             <button type="button" @click="estimateGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy || googleDriveMigrationEstimateBusy" :title="googleDriveMigrationBusy ? 'A estimativa será liberada quando o backup atual terminar.' : 'Calcular projetos, arquivos e tamanho estimado do próximo backup.'" class="rounded border bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">{{ googleDriveMigrationBusy ? 'Backup em andamento' : (googleDriveMigrationEstimateBusy ? 'Analisando arquivos...' : 'Estimar backup') }}</button>
-                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy || googleDriveMigrationEstimateBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationEstimateBusy ? 'Analisando arquivos...' : (googleDriveMigrationBusy ? 'Fazendo backup em lotes...' : 'Fazer backup completo e liberar espaço') }}</button>
+                            <button type="button" @click="startGoogleDriveMigration" :disabled="!googleDriveStatus.connected || !googleDriveStatus.enabledAccounts || googleDriveMigrationBusy || googleDriveMigrationEstimateBusy" class="rounded bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ googleDriveMigrationEstimateBusy ? 'Analisando arquivos...' : (googleDriveMigrationBusy ? 'Fazendo backup em etapas...' : (googleDriveMigration && googleDriveMigration.status === 'interrupted' ? 'Enviar pendências e continuar' : 'Fazer backup completo e liberar espaço')) }}</button>
                         </div>
                         <p v-if="googleDriveMigrationBusy" role="status" class="mt-2 text-xs text-amber-700">
                             O backup atual ainda está em andamento. A estimativa do próximo backup ficará disponível quando ele terminar.
@@ -4608,11 +4608,37 @@
                                 <div class="h-full rounded bg-emerald-600 transition-all" :style="{ width: googleDriveMigrationProgressPercent() + '%' }"></div>
                             </div>
                             <p class="mt-2 text-xs text-slate-600">
-                                Arquivos conferidos: {{ googleDriveMigration.overall_processed_files || 0 }} / {{ googleDriveMigration.overall_total_files || 0 }} · volume confirmado: {{ formatBytes(googleDriveMigration.overall_archived_bytes || 0) }} / {{ formatBytes(googleDriveMigration.overall_total_bytes || 0) }}
+                                Arquivos avaliados: {{ googleDriveMigration.overall_processed_files || 0 }} / {{ googleDriveMigration.overall_total_files || 0 }} · volume confirmado no Drive: {{ formatBytes(googleDriveMigration.overall_archived_bytes || 0) }} / {{ formatBytes(googleDriveMigration.overall_total_bytes || 0) }} ({{ googleDriveMigrationBytesProgressPercent() }}%)
                             </p>
+                            <div class="mt-2 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigrationBytesProgressPercent()" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso por tamanho confirmado">
+                                <div class="h-full rounded bg-blue-600 transition-all" :style="{ width: googleDriveMigrationBytesProgressPercent() + '%' }"></div>
+                            </div>
+                        </div>
+                        <div v-if="googleDriveMigration" class="mt-3 rounded border border-slate-200 bg-white p-3 text-sm text-slate-700">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <strong>Etapa: {{ googleDriveMigrationStageLabel(googleDriveMigration.stage_phase || googleDriveMigration.status) }}</strong>
+                                <span>Decorrido: {{ formatDriveDuration(googleDriveElapsedSeconds()) }}</span>
+                                <span>Falta: {{ typeof googleDriveMigration.estimated_remaining_seconds === 'number' ? formatDriveDuration(googleDriveMigration.estimated_remaining_seconds) : 'calculando após o primeiro envio' }}</span>
+                            </div>
+                            <p v-if="googleDriveMigration.current_project_task_id" class="mt-2 text-xs text-slate-600">
+                                Projeto {{ googleDriveMigration.current_project_index || 0 }}/{{ googleDriveMigration.current_project_total || googleDriveMigration.overall_total_projects || 0 }} · {{ googleDriveMigration.current_project_task_id }}
+                            </p>
+                            <template v-if="googleDriveMigration.current_asset && googleDriveMigration.stage_phase === 'uploading'">
+                                <p class="mt-1 break-all text-xs text-slate-700">Arquivo atual: {{ googleDriveMigration.current_asset }} · {{ formatBytes(googleDriveMigration.current_asset_size_bytes || 0) }} · {{ googleDriveMigration.current_asset_percent || 0 }}%</p>
+                                <div class="mt-1 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigration.current_asset_percent || 0" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso do arquivo atual">
+                                    <div class="h-full rounded bg-indigo-600 transition-all" :style="{ width: (googleDriveMigration.current_asset_percent || 0) + '%' }"></div>
+                                </div>
+                                <p class="mt-1 text-xs text-slate-500">Enviado nesta etapa: {{ formatBytes(googleDriveMigration.current_asset_uploaded_bytes || 0) }} / {{ formatBytes(googleDriveMigration.current_asset_size_bytes || 0) }}</p>
+                            </template>
+                            <p class="mt-2 text-xs text-slate-700">Espaço realmente liberado até agora: {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} · mídia principal {{ formatBytes(googleDriveMigration.main_bytes_freed || 0) }} · limpeza CX33 {{ formatBytes(googleDriveMigration.worker_bytes_freed || 0) }}</p>
+                            <p v-if="googleDriveMigration.status === 'completed' || googleDriveMigration.status === 'completed_with_errors'" class="mt-1 text-xs font-semibold text-emerald-800">Processo encerrado. Espaço total liberado: {{ formatBytes(googleDriveMigration.bytes_freed || 0) }}.</p>
+                            <div class="mt-2 flex flex-wrap gap-2">
+                                <button v-if="googleDriveMigrationBusy && ['queued', 'processing'].includes(String(googleDriveMigration.status || '').toLowerCase())" type="button" @click="pauseGoogleDriveMigration" class="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900">Pausar após esta etapa</button>
+                                <button v-if="googleDriveMigration.status === 'paused' || (googleDriveMigration.status === 'interrupted' && googleDriveMigration.stage_job_id)" type="button" @click="resumeGoogleDriveMigration" class="rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-900">Retomar etapa segura</button>
+                            </div>
                         </div>
                         <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
-                            Servidor principal: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos confirmados · {{ googleDriveMigration.archived || 0 }} arquivos confirmados · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
+                            Backup: {{ googleDriveMigration.status }} · {{ googleDriveMigration.archived_projects || 0 }} projetos confirmados · {{ googleDriveMigration.archived || 0 }} arquivos confirmados · {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} liberados
                             <template v-if="googleDriveMigration.batch_number"> · lote {{ googleDriveMigration.batch_number }}<template v-if="googleDriveMigration.remaining_candidates"> · {{ googleDriveMigration.remaining_candidates }} projetos nos próximos lotes</template></template>
                             <template v-if="googleDriveMigration.current_project_total"> · projeto {{ googleDriveMigration.current_project_index || 0 }}/{{ googleDriveMigration.current_project_total }}</template>
                             <template v-if="googleDriveMigration.current_asset_total"> · arquivo {{ googleDriveMigration.current_asset_index || 0 }}/{{ googleDriveMigration.current_asset_total }}<template v-if="googleDriveMigration.current_asset">: {{ googleDriveMigration.current_asset }}</template></template>
@@ -4627,7 +4653,7 @@
                         <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
                             <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
                         </ul>
-                        <p class="mt-2 text-xs text-slate-500">O backup percorre os projetos estáveis em lotes de até 25; projetos ativos ou atualizados nas últimas 24 horas ficam para uma rodada futura. Cópias diferentes já existentes no Drive são mantidas junto da nova versão verificada. Vídeos finais e arquivos da biblioteca de músicas permanecem nos servidores; letras, roteiros, imagens e áudios-fonte só são removidos depois da confirmação por SHA-256 e tamanho. Banco de dados, código e cache ativo continuam nos servidores.</p>
+                        <p class="mt-2 text-xs text-slate-500">O worker processa um projeto por etapa e só enfileira o próximo depois de confirmar o envio e concluir a limpeza segura. Projetos ativos ou atualizados nas últimas 24 horas ficam para outra rodada. Cópias diferentes no Drive são preservadas; vídeos finais e arquivos da biblioteca de músicas permanecem nos servidores. Banco de dados, código, letras, roteiros e cache ativo não são removidos.</p>
                     </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <div class="flex items-center justify-between">
@@ -5736,6 +5762,7 @@
                     googleDriveMigrationEstimateBusy: false,
                     googleDriveMigrationNotice: '',
                     googleDriveMigrationBusy: false,
+                    googleDriveMigrationClock: Date.now(),
                     driveArchiveRecovery: { open: false, taskId: '', title: '', loading: false, error: '', files: [] },
                     officialChannelLogoPreviewUrl: '',
                     officialChannelLogoPreviewObjectUrl: '',
@@ -6176,6 +6203,9 @@
                 if (loader) loader.style.display = 'none';
 
                 // Start polling for scheduled videos progress
+                setInterval(() => {
+                    this.googleDriveMigrationClock = Date.now();
+                }, 1000);
                 setInterval(() => {
                     try { if (document && document.hidden) return; } catch (e) {}
                     if (Number(this.scheduleListOffset || 0) > 0) return;
@@ -7675,6 +7705,47 @@
                         ? String(value || '')
                         : date.toLocaleString('pt-BR');
                 },
+                formatDriveDuration(value) {
+                    const seconds = Math.max(0, Math.floor(Number(value || 0)));
+                    if (seconds >= 86400) {
+                        const days = Math.floor(seconds / 86400);
+                        const hours = Math.floor((seconds % 86400) / 3600);
+                        return `${days}d ${hours}h`;
+                    }
+                    if (seconds >= 3600) {
+                        const hours = Math.floor(seconds / 3600);
+                        const minutes = Math.floor((seconds % 3600) / 60);
+                        return `${hours}h ${minutes}min`;
+                    }
+                    if (seconds >= 60) {
+                        const minutes = Math.floor(seconds / 60);
+                        return `${minutes}min ${seconds % 60}s`;
+                    }
+                    return `${seconds}s`;
+                },
+                googleDriveElapsedSeconds() {
+                    const migration = this.googleDriveMigration || {};
+                    const started = Date.parse(migration.started_at || '');
+                    if (!Number.isFinite(started)) return Number(migration.elapsed_seconds || 0);
+                    const terminal = new Set(['completed', 'completed_with_errors', 'failed', 'interrupted', 'paused']);
+                    const end = terminal.has(String(migration.status || '').toLowerCase())
+                        ? (Date.parse(migration.finished_at || '') || Number(this.googleDriveMigrationClock || Date.now()))
+                        : Number(this.googleDriveMigrationClock || Date.now());
+                    return Math.max(0, Math.floor((end - started) / 1000));
+                },
+                googleDriveMigrationStageLabel(value) {
+                    const labels = {
+                        queued: 'Aguardando o worker',
+                        uploading: 'Enviando e confirmando no Google Drive',
+                        cleaning_main: 'Limpando cópias confirmadas no armazenamento principal',
+                        cleaning_worker: 'Limpando cópias confirmadas no CX33',
+                        stage_finished: 'Etapa concluída',
+                        paused: 'Pausado após uma etapa segura',
+                        interrupted: 'Interrompido; arquivos sem confirmação preservados',
+                        completed: 'Concluído',
+                    };
+                    return labels[String(value || '').toLowerCase()] || String(value || 'Preparando');
+                },
                 async searchDriveArchiveFor(taskId, title) {
                     const safeTaskId = String(taskId || '').trim();
                     if (!safeTaskId) return;
@@ -7741,11 +7812,18 @@
                             this.googleDriveMigrationNotice = migration.status
                                 ? `Status atualizado pelo servidor: ${migration.status}.`
                                 : 'O servidor respondeu, mas o job não trouxe um status.';
-                            const terminal = new Set(['completed', 'completed_with_errors', 'failed']);
+                            const terminal = new Set(['completed', 'completed_with_errors', 'failed', 'interrupted', 'paused']);
                             const workerTerminal = new Set(['not_needed', 'not_queued', 'finished', 'failed', 'stopped', 'canceled', 'cancelled']);
                             const mainDone = terminal.has(String(migration.status || '').toLowerCase());
                             const workerDone = workerTerminal.has(String(migration.worker_cleanup_status || 'not_needed').toLowerCase());
-                            if (migration.job_id && (!mainDone || !workerDone) && !this.googleDriveMigrationBusy) {
+                            if (mainDone && ['interrupted', 'paused'].includes(String(migration.status || '').toLowerCase())) {
+                                this.googleDriveMigrationBusy = false;
+                                this.googleDriveMigrationNotice = migration.status === 'interrupted'
+                                    ? 'A etapa foi interrompida. Os arquivos sem confirmação continuam no servidor; use “Enviar pendências e continuar” para iniciar outra rodada segura.'
+                                    : 'Backup pausado depois de concluir a etapa atual.';
+                            }
+                            const pausedOrInterrupted = ['paused', 'interrupted'].includes(String(migration.status || '').toLowerCase());
+                            if (migration.job_id && (!mainDone || (!workerDone && !pausedOrInterrupted)) && !this.googleDriveMigrationBusy) {
                                 this.googleDriveMigrationBusy = true;
                                 this.pollGoogleDriveMigration(String(migration.job_id)).finally(() => {
                                     if (this.googleDriveMigrationBusy) this.googleDriveMigrationBusy = false;
@@ -7836,6 +7914,17 @@
                     if (total <= 0) return 0;
                     return Math.max(0, Math.min(100, Math.floor(done * 100 / total)));
                 },
+                googleDriveMigrationBytesProgressPercent() {
+                    const migration = this.googleDriveMigration || {};
+                    const total = Number(migration.overall_total_bytes || 0);
+                    if (total <= 0) return 0;
+                    const archived = Number(migration.overall_archived_bytes || 0);
+                    const current = Math.min(
+                        Number(migration.current_asset_size_bytes || 0),
+                        Number(migration.current_asset_uploaded_bytes || 0)
+                    );
+                    return Math.max(0, Math.min(100, Math.floor((archived + current) * 100 / total)));
+                },
                 async startGoogleDriveMigration() {
                     let estimate = this.googleDriveMigrationEstimate;
                     const estimateTime = Date.parse(estimate && estimate.generated_at || '');
@@ -7886,7 +7975,7 @@
                     };
                     try {
                         const params = new URLSearchParams({
-                            limit: '25',
+                            limit: '1',
                             overall_total_projects: String(totalProjects),
                             overall_total_files: String(totalFiles),
                             overall_total_bytes: String(totalBytes),
@@ -7909,7 +7998,7 @@
                             overall_archived_bytes: 0,
                             batch_number: 1
                         };
-                        this.googleDriveMigrationNotice = 'Backup iniciado no servidor. Os lotes continuam sem a página aberta e o computador pode ser desligado; evite reiniciar ou implantar o Codexia até o backup terminar.';
+                        this.googleDriveMigrationNotice = 'Backup iniciado no worker em etapas de um projeto. A página pode ser fechada; o worker atualiza o status e só agenda a próxima etapa após a conferência e a limpeza seguras.';
                         const result = await this.pollGoogleDriveMigration(started.job_id, true);
                         if (!result) {
                             this.googleDriveMigrationNotice = 'A consulta desta página atingiu o limite de espera. O backup não foi reiniciado e pode ser consultado novamente pelo botão Atualizar status.';
@@ -7943,7 +8032,7 @@
                     }
                 },
                 async pollGoogleDriveMigration(jobId, keepBusy = false) {
-                    const migrationTerminal = new Set(['completed', 'completed_with_errors', 'failed']);
+                    const migrationTerminal = new Set(['completed', 'completed_with_errors', 'failed', 'interrupted', 'paused']);
                     const workerCleanupTerminal = new Set(['not_needed', 'not_queued', 'finished', 'failed', 'stopped', 'canceled', 'cancelled']);
                     for (let attempt = 0; attempt < 2880; attempt += 1) {
                         await new Promise(resolve => setTimeout(resolve, 5000));
@@ -7955,7 +8044,8 @@
                             const mainDone = migrationTerminal.has(String(data.status || '').toLowerCase());
                             const workerStatus = String(data.worker_cleanup_status || 'not_needed').toLowerCase();
                             const workerDone = workerCleanupTerminal.has(workerStatus);
-                            if (mainDone && workerDone) {
+                            const stoppedSafely = ['interrupted', 'paused'].includes(String(data.status || '').toLowerCase());
+                            if (mainDone && (workerDone || stoppedSafely)) {
                                 if (!keepBusy && !data.has_more_candidates) localStorage.removeItem('google_drive_migration_job');
                                 if (!keepBusy) this.googleDriveMigrationBusy = false;
                                 if (!keepBusy) await this.fetchGoogleDriveStatus();
@@ -7970,6 +8060,37 @@
                     }
                     if (!keepBusy) this.googleDriveMigrationBusy = false;
                     return null;
+                },
+                async pauseGoogleDriveMigration() {
+                    const jobId = String(this.googleDriveMigration && this.googleDriveMigration.job_id || '');
+                    if (!jobId) return;
+                    try {
+                        const response = await this.authFetch(`/settings/google-drive/migrate/${encodeURIComponent(jobId)}/pause`, { method: 'POST' });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || 'Não foi possível solicitar a pausa.');
+                        this.googleDriveMigrationNotice = data.message || 'A pausa será aplicada ao fim da etapa atual.';
+                        await this.fetchGoogleDriveStatus();
+                    } catch (error) {
+                        this.googleDriveMigrationNotice = error && error.message ? error.message : 'Falha ao solicitar a pausa.';
+                    }
+                },
+                async resumeGoogleDriveMigration() {
+                    const jobId = String(this.googleDriveMigration && this.googleDriveMigration.job_id || '');
+                    if (!jobId) return;
+                    this.googleDriveMigrationBusy = true;
+                    this.googleDriveMigrationNotice = 'Retomando do último ponto seguro...';
+                    try {
+                        const response = await this.authFetch(`/settings/google-drive/migrate/${encodeURIComponent(jobId)}/resume`, { method: 'POST' });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(data.detail || 'Não foi possível retomar o backup.');
+                        try { localStorage.setItem('google_drive_migration_job', data.job_id || jobId); } catch (_) {}
+                        this.googleDriveMigration = { ...(this.googleDriveMigration || {}), ...data, status: 'queued' };
+                        await this.pollGoogleDriveMigration(data.job_id || jobId, true);
+                    } catch (error) {
+                        this.googleDriveMigrationNotice = error && error.message ? error.message : 'Falha ao retomar o backup.';
+                    } finally {
+                        this.googleDriveMigrationBusy = false;
+                    }
                 },
                 async fetchSettings() {
                     try {
