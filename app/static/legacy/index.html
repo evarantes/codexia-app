@@ -4600,28 +4600,47 @@
                         </p>
                         <p v-if="googleDriveMigrationNotice" role="status" aria-live="polite" class="mt-2 text-sm text-slate-700">{{ googleDriveMigrationNotice }}</p>
                         <div v-if="googleDriveMigration && googleDriveMigration.overall_total_projects" class="mt-3 rounded border border-slate-200 bg-white p-3 text-sm text-slate-700">
-                            <div class="flex items-center justify-between gap-3">
-                                <span>Projetos processados: {{ googleDriveMigration.overall_processed_projects || 0 }} / {{ googleDriveMigration.overall_total_projects }}</span>
-                                <strong>{{ googleDriveMigrationProgressPercent() }}%</strong>
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <strong>Projetos elegíveis no Codexia: {{ googleDriveMigration.overall_total_projects }}</strong>
+                                <span>Lote {{ googleDriveMigration.batch_number || 1 }} / {{ googleDriveMigration.batch_total || Math.ceil(googleDriveMigration.overall_total_projects / 10) }}</span>
                             </div>
-                            <p v-if="googleDriveMigration.batch_total" class="mt-1 text-xs text-slate-600">
-                                Grupo {{ googleDriveMigration.batch_number || 1 }} / {{ googleDriveMigration.batch_total }} · projeto {{ googleDriveMigration.batch_project_index || 1 }} / {{ googleDriveMigration.batch_project_total || 10 }} deste grupo · conferência e limpeza por projeto
+                            <div class="mt-2 flex items-center justify-between gap-3">
+                                <span v-if="googleDriveMigration.batch_project_total">Projetos processados neste lote: {{ googleDriveMigration.batch_processed_projects || 0 }} / {{ googleDriveMigration.batch_project_total }}</span>
+                                <span v-else-if="['completed', 'completed_with_errors'].includes(String(googleDriveMigration.status || '').toLowerCase())">Todos os lotes foram concluídos</span>
+                                <span v-else>Projetos processados neste lote: {{ googleDriveMigration.batch_processed_projects || 0 }} / 10</span>
+                                <strong>{{ googleDriveMigrationBatchProgressPercent() }}%</strong>
+                            </div>
+                            <div class="mt-2 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigrationBatchProgressPercent()" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso do lote atual">
+                                <div class="h-full rounded bg-emerald-600 transition-all" :style="{ width: googleDriveMigrationBatchProgressPercent() + '%' }"></div>
+                            </div>
+                            <p class="mt-2 text-xs text-slate-600">
+                                Progresso geral: {{ googleDriveMigration.overall_processed_projects || 0 }} / {{ googleDriveMigration.overall_total_projects }} projetos · {{ googleDriveMigrationProgressPercent() }}% processados · faltam {{ googleDriveMigrationRemainingProjects() }} ({{ googleDriveMigrationRemainingPercent() }}%).
                             </p>
-                            <div class="mt-2 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigrationProgressPercent()" aria-valuemin="0" aria-valuemax="100">
-                                <div class="h-full rounded bg-emerald-600 transition-all" :style="{ width: googleDriveMigrationProgressPercent() + '%' }"></div>
+                            <div class="mt-1 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigrationProgressPercent()" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso geral dos projetos">
+                                <div class="h-full rounded bg-indigo-600 transition-all" :style="{ width: googleDriveMigrationProgressPercent() + '%' }"></div>
                             </div>
                             <p class="mt-2 text-xs text-slate-600">
                                 Arquivos avaliados: {{ googleDriveMigration.overall_processed_files || 0 }} / {{ googleDriveMigration.overall_total_files || 0 }} · volume confirmado no Drive: {{ formatBytes(googleDriveMigration.overall_archived_bytes || 0) }} / {{ formatBytes(googleDriveMigration.overall_total_bytes || 0) }} ({{ googleDriveMigrationBytesProgressPercent() }}%)
                             </p>
-                            <div class="mt-2 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigrationBytesProgressPercent()" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso por tamanho confirmado">
+                            <div class="mt-1 h-2 overflow-hidden rounded bg-slate-200" role="progressbar" :aria-valuenow="googleDriveMigrationBytesProgressPercent()" aria-valuemin="0" aria-valuemax="100" aria-label="Progresso por tamanho confirmado">
                                 <div class="h-full rounded bg-blue-600 transition-all" :style="{ width: googleDriveMigrationBytesProgressPercent() + '%' }"></div>
                             </div>
+                            <p v-if="googleDriveMigration.average_batch_seconds" class="mt-2 text-xs text-slate-600">
+                                Média observada por lote de 10: {{ formatDriveDuration(googleDriveMigration.average_batch_seconds) }}<span v-if="typeof googleDriveMigration.estimated_batch_remaining_seconds === 'number'"> · previsão para concluir este lote: {{ formatDriveDuration(googleDriveMigration.estimated_batch_remaining_seconds) }}</span>
+                            </p>
+                            <p v-else class="mt-2 text-xs text-slate-600">
+                                Referência inicial: cerca de 30 min por lote de até 10 projetos. A previsão real será calculada com o primeiro lote concluído.
+                            </p>
+                            <p v-if="!googleDriveMigration.average_batch_seconds && googleDriveMigrationBatchElapsedSeconds() > 1800" class="mt-1 text-xs font-medium text-amber-700">
+                                O primeiro lote já passou da referência de 30 min; o tempo real será recalculado quando este lote terminar.
+                            </p>
                         </div>
                         <div v-if="googleDriveMigration" class="mt-3 rounded border border-slate-200 bg-white p-3 text-sm text-slate-700">
                             <div class="flex flex-wrap items-center justify-between gap-2">
                                 <strong>Etapa: {{ googleDriveMigrationStageLabel(googleDriveMigration.stage_phase || googleDriveMigration.status) }}</strong>
-                                <span>Decorrido: {{ formatDriveDuration(googleDriveElapsedSeconds()) }}</span>
-                                <span>Falta: {{ typeof googleDriveMigration.estimated_remaining_seconds === 'number' ? formatDriveDuration(googleDriveMigration.estimated_remaining_seconds) : 'calculando após o primeiro envio' }}</span>
+                                <span>Decorrido total: {{ formatDriveDuration(googleDriveElapsedSeconds()) }}</span>
+                                <span v-if="googleDriveMigration.batch_size">Decorrido neste lote: {{ formatDriveDuration(googleDriveMigrationBatchElapsedSeconds()) }}</span>
+                                <span>Falta: {{ typeof googleDriveMigration.estimated_remaining_seconds === 'number' ? formatDriveDuration(googleDriveMigration.estimated_remaining_seconds) : 'calculando no primeiro lote' }}</span>
                             </div>
                             <p v-if="googleDriveMigration.current_project_task_id && !['inventory', 'verifying_inventory'].includes(String(googleDriveMigration.stage_phase || '').toLowerCase())" class="mt-2 text-xs text-slate-600">
                                 Projeto {{ googleDriveMigration.current_project_index || 0 }}/{{ googleDriveMigration.current_project_total || googleDriveMigration.overall_total_projects || 0 }} · {{ googleDriveMigration.current_project_task_id }}
@@ -4646,8 +4665,8 @@
                             <p class="mt-2 text-xs text-slate-700">Espaço realmente liberado até agora: {{ formatBytes(googleDriveMigration.bytes_freed || 0) }} · mídia principal {{ formatBytes(googleDriveMigration.main_bytes_freed || 0) }} · limpeza CX33 {{ formatBytes(googleDriveMigration.worker_bytes_freed || 0) }}</p>
                             <p v-if="googleDriveMigration.status === 'completed' || googleDriveMigration.status === 'completed_with_errors'" class="mt-1 text-xs font-semibold text-emerald-800">Processo encerrado. Espaço total liberado: {{ formatBytes(googleDriveMigration.bytes_freed || 0) }}.</p>
                             <div class="mt-2 flex flex-wrap gap-2">
-                                <button v-if="googleDriveMigrationBusy && ['queued', 'processing'].includes(String(googleDriveMigration.status || '').toLowerCase())" type="button" @click="pauseGoogleDriveMigration" class="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900">Pausar após esta etapa</button>
-                                <button v-if="googleDriveMigration.status === 'paused' || (googleDriveMigration.status === 'interrupted' && googleDriveMigration.stage_job_id)" type="button" @click="resumeGoogleDriveMigration" class="rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-900">Retomar etapa segura</button>
+                                <button v-if="googleDriveMigrationBusy && ['queued', 'processing'].includes(String(googleDriveMigration.status || '').toLowerCase())" type="button" @click="pauseGoogleDriveMigration" class="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900">Pausar após este lote</button>
+                                <button v-if="googleDriveMigration.status === 'paused' || (googleDriveMigration.status === 'interrupted' && googleDriveMigration.stage_job_id)" type="button" @click="resumeGoogleDriveMigration" class="rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-900">Retomar lote seguro</button>
                             </div>
                         </div>
                         <p v-if="googleDriveMigration" class="mt-3 text-sm text-slate-700">
@@ -4666,7 +4685,7 @@
                         <ul v-if="googleDriveMigration && googleDriveMigration.errors && googleDriveMigration.errors.length" class="mt-2 list-disc pl-5 text-xs text-red-700">
                             <li v-for="(error, idx) in googleDriveMigration.errors" :key="idx">{{ error }}</li>
                         </ul>
-                        <p class="mt-2 text-xs text-slate-500">O acompanhamento organiza os projetos em grupos de até 10, mas processa um por vez: envia, confirma a integridade no Drive e faz a limpeza segura antes de passar ao próximo. Você pode pausar após qualquer projeto. Projetos ativos ou atualizados nas últimas 24 horas ficam para outra rodada. Cópias diferentes no Drive são preservadas; vídeos finais e arquivos da biblioteca de músicas permanecem nos servidores. Banco de dados, código, letras, roteiros e cache ativo não são removidos.</p>
+                        <p class="mt-2 text-xs text-slate-500">Cada execução processa até 10 projetos em sequência, confirma cada arquivo no Drive e só então faz a limpeza segura do lote. A estimativa inicial é cerca de 30 minutos por lote e será ajustada pelo tempo real medido. Você pode pausar ao fim do lote. Projetos ativos ou atualizados nas últimas 24 horas ficam para outra rodada. Cópias diferentes no Drive são preservadas; vídeos finais e arquivos da biblioteca de músicas permanecem nos servidores. Banco de dados, código, letras, roteiros e cache ativo não são removidos.</p>
                     </div>
                     <div class="mb-4 p-4 bg-gray-50 border rounded-lg">
                         <div class="flex items-center justify-between">
@@ -7746,6 +7765,9 @@
                         : Number(this.googleDriveMigrationClock || Date.now());
                     return Math.max(0, Math.floor((end - started) / 1000));
                 },
+                googleDriveMigrationBatchElapsedSeconds() {
+                    return Math.max(0, Math.floor(Number(this.googleDriveMigration && this.googleDriveMigration.batch_elapsed_seconds || 0)));
+                },
                 googleDriveMigrationStageLabel(value) {
                     const labels = {
                         queued: 'Aguardando o worker',
@@ -7930,6 +7952,22 @@
                     if (total <= 0) return 0;
                     return Math.max(0, Math.min(100, Math.floor(done * 100 / total)));
                 },
+                googleDriveMigrationRemainingProjects() {
+                    const migration = this.googleDriveMigration || {};
+                    return Math.max(0, Number(migration.overall_total_projects || 0) - Number(migration.overall_processed_projects || 0));
+                },
+                googleDriveMigrationRemainingPercent() {
+                    return Math.max(0, 100 - this.googleDriveMigrationProgressPercent());
+                },
+                googleDriveMigrationBatchProgressPercent() {
+                    const migration = this.googleDriveMigration || {};
+                    const terminal = ['completed', 'completed_with_errors'].includes(String(migration.status || '').toLowerCase());
+                    if (terminal && !Number(migration.batch_project_total || 0)) return 100;
+                    const total = Number(migration.batch_project_total || Math.min(10, Number(migration.overall_total_projects || 0)));
+                    const done = Number(migration.batch_processed_projects || 0);
+                    if (total <= 0) return 0;
+                    return Math.max(0, Math.min(100, Math.floor(done * 100 / total)));
+                },
                 googleDriveMigrationBytesProgressPercent() {
                     const migration = this.googleDriveMigration || {};
                     const total = Number(migration.overall_total_bytes || 0);
@@ -7971,7 +8009,7 @@
                     }
 
                     this.googleDriveMigrationBusy = true;
-                    this.googleDriveMigrationNotice = 'Iniciando o backup completo no servidor. Depois da confirmação, a página pode ser fechada.';
+                    this.googleDriveMigrationNotice = 'Iniciando o backup no servidor em lotes sequenciais de até 10 projetos. Depois da confirmação, a página pode ser fechada.';
                     this.googleDriveMigration = {
                         status: 'iniciando',
                         archived: 0,
@@ -7987,11 +8025,17 @@
                         overall_processed_projects: 0,
                         overall_processed_files: 0,
                         overall_archived_bytes: 0,
-                        batch_number: 1
+                        batch_number: 1,
+                        batch_size: 10,
+                        batch_project_total: Math.min(10, totalProjects),
+                        batch_processed_projects: 0,
+                        batch_total: Math.ceil(totalProjects / 10),
+                        batch_duration_target_seconds: 1800,
+                        batch_duration_history: []
                     };
                     try {
                         const params = new URLSearchParams({
-                            limit: '1',
+                            limit: '10',
                             overall_total_projects: String(totalProjects),
                             overall_total_files: String(totalFiles),
                             overall_total_bytes: String(totalBytes),
@@ -8012,9 +8056,14 @@
                             overall_processed_projects: 0,
                             overall_processed_files: 0,
                             overall_archived_bytes: 0,
-                            batch_number: 1
+                            batch_number: 1,
+                            batch_size: 10,
+                            batch_project_total: Math.min(10, totalProjects),
+                            batch_processed_projects: 0,
+                            batch_total: Math.ceil(totalProjects / 10),
+                            batch_duration_target_seconds: 1800
                         };
-                        this.googleDriveMigrationNotice = 'Backup iniciado no worker em etapas de um projeto. A página pode ser fechada; o worker atualiza o status e só agenda a próxima etapa após a conferência e a limpeza seguras.';
+                        this.googleDriveMigrationNotice = 'Backup iniciado no worker em lotes sequenciais de até 10 projetos. A página pode ser fechada; o worker confirma os arquivos e faz a limpeza segura antes do próximo lote.';
                         const result = await this.pollGoogleDriveMigration(started.job_id, true);
                         if (!result) {
                             this.googleDriveMigrationNotice = 'A consulta desta página atingiu o limite de espera. O backup não foi reiniciado e pode ser consultado novamente pelo botão Atualizar status.';
@@ -8094,7 +8143,7 @@
                     const jobId = String(this.googleDriveMigration && this.googleDriveMigration.job_id || '');
                     if (!jobId) return;
                     this.googleDriveMigrationBusy = true;
-                    this.googleDriveMigrationNotice = 'Retomando do último ponto seguro...';
+                    this.googleDriveMigrationNotice = 'Retomando do último ponto seguro e iniciando o próximo lote...';
                     try {
                         const response = await this.authFetch(`/settings/google-drive/migrate/${encodeURIComponent(jobId)}/resume`, { method: 'POST' });
                         const data = await response.json().catch(() => ({}));
@@ -13052,7 +13101,3 @@
                 this.fetchYoutubeStats();
                 this.fetchGoogleDriveStatus();
             }
-        }).mount('#app')
-    </script>
-</body>
-</html>

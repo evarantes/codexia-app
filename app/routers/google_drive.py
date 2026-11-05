@@ -63,6 +63,8 @@ _MIGRATION_EXTENSIONS = {
 }
 _UPLOAD_SESSION_TTL_SECONDS = 4 * 60 * 60
 _DOWNLOAD_TOKEN_TTL_SECONDS = 10 * 60
+_MIGRATION_BATCH_SIZE = 10
+_MIGRATION_BATCH_REFERENCE_SECONDS = 30 * 60
 
 
 @contextmanager
@@ -598,23 +600,60 @@ def _job_path(job_id: str) -> Path:
     return _migration_dir() / f"{job_id}.json"
 
 
-def _write_job(job_id: str, payload: Dict[str, Any]) -> None:
-    now = datetime.now(timezone.utc)
-    payload["status_updated_at"] = now.isoformat()
+def _refresh_migration_timing(payload: Dict[str, Any], now: Optional[datetime] = None) -> None:
+    now = now or datetime.now(timezone.utc)
+    now_seconds = now.timestamp()
     started_at = _timestamp(payload.get("started_at"), 0.0)
     if started_at > 0:
-        payload["elapsed_seconds"] = max(0, int(now.timestamp() - started_at))
-    total_bytes = int(payload.get("overall_total_bytes") or 0)
-    archived_bytes = int(payload.get("overall_archived_bytes") or 0)
-    current_size = int(payload.get("current_asset_size_bytes") or 0)
-    current_uploaded = min(current_size, int(payload.get("current_asset_uploaded_bytes") or 0))
-    effective_bytes = min(total_bytes, archived_bytes + current_uploaded) if total_bytes > 0 else 0
-    elapsed = int(payload.get("elapsed_seconds") or 0)
-    if total_bytes > 0 and effective_bytes > 0 and elapsed > 0:
-        rate = effective_bytes / elapsed
-        payload["estimated_remaining_seconds"] = max(0, int((total_bytes - effective_bytes) / rate)) if rate > 0 else None
-    elif total_bytes <= 0:
+        payload["elapsed_seconds"] = max(0, int(now_seconds - started_at))
+
+    batch_started_at = _timestamp(payload.get("batch_started_at"), 0.0)
+    if batch_started_at > 0:
+        payload["batch_elapsed_seconds"] = max(0, int(now_seconds - batch_started_at))
+
+    history = payload.get("batch_duration_history") or []
+    samples = [
+        (max(0.0, float(item.get("seconds") or 0)), max(0, int(item.get("projects") or 0)))
+        for item in history
+        if isinstance(item, dict) and int(item.get("projects") or 0) > 0
+    ]
+    total_sample_projects = sum(projects for _seconds, projects in samples)
+    if total_sample_projects:
+        average_project_seconds = sum(seconds for seconds, _projects in samples) / total_sample_projects
+        payload["average_batch_seconds"] = int(round(average_project_seconds * _MIGRATION_BATCH_SIZE))
+        total_projects = int(payload.get("overall_total_projects") or 0)
+        overall_done = int(payload.get("overall_processed_projects") or 0)
+        baseline = int(payload.get("stage_baseline_projects") or payload.get("batch_baseline_projects") or 0)
+        batch_total = int(payload.get("batch_project_total") or 0)
+        batch_done = max(0, min(batch_total, overall_done - baseline))
+        payload["estimated_batch_remaining_seconds"] = max(
+            0, int(round(average_project_seconds * max(0, batch_total - batch_done)))
+        ) if batch_total else None
+        payload["estimated_remaining_seconds"] = max(
+            0, int(round(average_project_seconds * max(0, total_projects - overall_done)))
+        ) if total_projects else None
+    elif int(payload.get("batch_size") or 0):
+        payload["average_batch_seconds"] = None
+        payload["estimated_batch_remaining_seconds"] = None
         payload["estimated_remaining_seconds"] = None
+    else:
+        total_bytes = int(payload.get("overall_total_bytes") or 0)
+        archived_bytes = int(payload.get("overall_archived_bytes") or 0)
+        current_size = int(payload.get("current_asset_size_bytes") or 0)
+        current_uploaded = min(current_size, int(payload.get("current_asset_uploaded_bytes") or 0))
+        effective_bytes = min(total_bytes, archived_bytes + current_uploaded) if total_bytes > 0 else 0
+        elapsed = int(payload.get("elapsed_seconds") or 0)
+        if total_bytes > 0 and effective_bytes > 0 and elapsed > 0:
+            rate = effective_bytes / elapsed
+            payload["estimated_remaining_seconds"] = max(0, int((total_bytes - effective_bytes) / rate)) if rate > 0 else None
+        elif total_bytes <= 0:
+            payload["estimated_remaining_seconds"] = None
+
+
+def _write_job(job_id: str, payload: Dict[str, Any]) -> None:
+    now = datetime.now(timezone.utc)
+    _refresh_migration_timing(payload, now)
+    payload["status_updated_at"] = now.isoformat()
     path = _job_path(job_id)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -1252,6 +1291,7 @@ def _run_migration(
     skipped_before = int(payload.get("skipped") or 0)
     bytes_freed_before = int(payload.get("bytes_freed") or 0)
     error_count_before = int(payload.get("error_count") or 0)
+    batch_baseline_projects = int(payload.get("stage_baseline_projects") or completed_projects_before)
     errors = list(payload.get("errors") or [])
     payload.update({
         "status": "processing",
@@ -1259,6 +1299,16 @@ def _run_migration(
         "overall_processed_projects": completed_projects_before,
         "overall_processed_files": completed_files_before,
         "overall_archived_bytes": archived_bytes_before,
+        "batch_size": _MIGRATION_BATCH_SIZE,
+        "batch_baseline_projects": batch_baseline_projects,
+        "batch_processed_projects": max(0, completed_projects_before - batch_baseline_projects),
+        "batch_project_total": min(
+            _MIGRATION_BATCH_SIZE,
+            max(0, int(payload.get("overall_total_projects") or 0) - batch_baseline_projects),
+        ) or _MIGRATION_BATCH_SIZE,
+        "batch_number": math.ceil(batch_baseline_projects / _MIGRATION_BATCH_SIZE) + 1,
+        "batch_total": int(math.ceil(int(payload.get("overall_total_projects") or 0) / _MIGRATION_BATCH_SIZE)),
+        "batch_duration_target_seconds": _MIGRATION_BATCH_REFERENCE_SECONDS,
     })
     _write_job(job_id, payload)
     archived = 0
@@ -1295,6 +1345,12 @@ def _run_migration(
                 payload["inventory_projects_total"] = int(progress.get("projects_total") or 0)
             if not payload.get("overall_total_projects") and progress.get("projects_total"):
                 payload["overall_total_projects"] = int(progress["projects_total"])
+                total_projects = int(payload["overall_total_projects"])
+                payload["batch_total"] = int(math.ceil(total_projects / _MIGRATION_BATCH_SIZE))
+                payload["batch_project_total"] = min(
+                    _MIGRATION_BATCH_SIZE,
+                    max(0, total_projects - batch_baseline_projects),
+                ) or _MIGRATION_BATCH_SIZE
             if progress.get("task_id"):
                 payload["current_project_task_id"] = str(progress["task_id"])
             if "asset" in progress:
@@ -1340,11 +1396,13 @@ def _run_migration(
             payload["remaining_candidates"] = remaining
             payload["has_more_candidates"] = bool(selected and remaining)
             if selected and known_total:
-                next_index = completed_projects_before + 1
-                payload["batch_number"] = ((next_index - 1) // 10) + 1
-                payload["batch_project_index"] = ((next_index - 1) % 10) + 1
-                payload["batch_project_total"] = min(10, known_total - ((payload["batch_number"] - 1) * 10))
-                payload["batch_total"] = int(math.ceil(known_total / 10))
+                payload["batch_number"] = math.ceil(batch_baseline_projects / _MIGRATION_BATCH_SIZE) + 1
+                payload["batch_project_total"] = len(selected)
+                payload["batch_processed_projects"] = max(
+                    0, completed_projects_before - batch_baseline_projects
+                )
+                payload["batch_project_current_index"] = 1
+                payload["batch_total"] = int(math.ceil(known_total / _MIGRATION_BATCH_SIZE))
             elif not selected and known_total:
                 # The estimate can become stale while the job waits in the queue.
                 # If no projects remain after checking the cursor, close the bar
@@ -1354,6 +1412,10 @@ def _run_migration(
                 payload["overall_total_bytes"] = archived_bytes_before
                 payload["remaining_candidates"] = 0
                 payload["has_more_candidates"] = False
+                payload["batch_total"] = int(math.ceil(completed_projects_before / _MIGRATION_BATCH_SIZE))
+                payload["batch_project_total"] = 0
+                payload["batch_processed_projects"] = 0
+                payload["batch_project_current_index"] = 0
         else:
             payload["remaining_candidates"] = max(0, len(candidates) - len(selected))
             payload["has_more_candidates"] = len(candidates) > len(selected)
@@ -1403,6 +1465,7 @@ def _run_migration(
                 payload.update({
                     "current_project_index": completed_projects_before + project_index,
                     "current_project_total": max(total_projects, completed_projects_before + len(selected)),
+                    "batch_project_current_index": project_index,
                     "current_asset_index": 0,
                     "current_asset_total": len(asset_items),
                     "current_asset": "",
@@ -1529,6 +1592,9 @@ def _run_migration(
                 "archived_projects": archived_projects_before + archived_projects,
                 "processed_projects": completed_projects_before + processed_projects,
                 "overall_processed_projects": completed_projects_before + processed_projects,
+                "batch_processed_projects": processed_projects,
+                "batch_project_current_index": 0,
+                "batch_project_total": len(selected),
                 "overall_processed_files": completed_files_before + processed_files,
                 "overall_archived_bytes": archived_bytes_before + archived_bytes,
                 "archived_bytes": archived_bytes_before + archived_bytes,
@@ -1704,10 +1770,25 @@ def _queue_migration_stage(
         "stage_phase": "queued",
         "stage_cursor_after_updated_at": after_updated_at,
         "stage_cursor_after_task_id": str(after_task_id or ""),
+        "batch_size": _MIGRATION_BATCH_SIZE,
+        "batch_duration_target_seconds": _MIGRATION_BATCH_REFERENCE_SECONDS,
     })
     if not resume_current_stage:
+        batch_baseline = int(payload.get("overall_processed_projects") or 0)
+        total_projects = int(payload.get("overall_total_projects") or 0)
         payload.update({
-            "stage_baseline_projects": int(payload.get("overall_processed_projects") or 0),
+            "stage_baseline_projects": batch_baseline,
+            "batch_baseline_projects": batch_baseline,
+            "batch_processed_projects": 0,
+            "batch_project_total": min(
+                _MIGRATION_BATCH_SIZE,
+                max(0, total_projects - batch_baseline),
+            ) or _MIGRATION_BATCH_SIZE,
+            "batch_project_current_index": 0,
+            "batch_number": math.ceil(batch_baseline / _MIGRATION_BATCH_SIZE) + 1,
+            "batch_total": int(math.ceil(total_projects / _MIGRATION_BATCH_SIZE)) if total_projects else 0,
+            "batch_started_at": "",
+            "batch_elapsed_seconds": 0,
             "stage_baseline_files": int(payload.get("overall_processed_files") or 0),
             "stage_baseline_archived_bytes": int(payload.get("overall_archived_bytes") or 0),
             "stage_baseline_archived": int(payload.get("archived") or 0),
@@ -1744,7 +1825,7 @@ def _queue_migration_stage(
         job_timeout=4 * 60 * 60,
         result_ttl=7 * 24 * 60 * 60,
         failure_ttl=7 * 24 * 60 * 60,
-        description=f"Arquivar um projeto no Google Drive ({job_id[:8]})",
+        description=f"Arquivar lote de até 10 projetos no Google Drive ({job_id[:8]})",
     )
     worker_job_id = str(getattr(worker_job, "id", "") or "")
     if worker_job_id:
@@ -1761,8 +1842,12 @@ def _run_migration_stage(
     after_updated_at: Optional[float] = None,
     after_task_id: str = "",
 ) -> None:
-    """Archive, verify, and clean one project, then enqueue the next stage."""
+    """Archive, verify, and clean up to ten projects, then enqueue the next batch."""
     payload = _read_job(job_id)
+    batch_baseline = int(payload.get("stage_baseline_projects") or 0)
+    total_projects = int(payload.get("overall_total_projects") or 0)
+    if not payload.get("current_stage_main_cleanup_complete"):
+        payload["batch_started_at"] = datetime.now(timezone.utc).isoformat()
     payload.update({
         "status": "processing",
         "stage_job_status": "started",
@@ -1770,6 +1855,18 @@ def _run_migration_stage(
         "started_at": payload.get("started_at") or datetime.now(timezone.utc).isoformat(),
         "stage_cursor_after_updated_at": after_updated_at,
         "stage_cursor_after_task_id": str(after_task_id or ""),
+        "batch_size": _MIGRATION_BATCH_SIZE,
+        "batch_baseline_projects": batch_baseline,
+        "batch_processed_projects": max(
+            0, int(payload.get("overall_processed_projects") or 0) - batch_baseline
+        ),
+        "batch_project_total": min(
+            _MIGRATION_BATCH_SIZE,
+            max(0, total_projects - batch_baseline),
+        ) or _MIGRATION_BATCH_SIZE,
+        "batch_number": math.ceil(batch_baseline / _MIGRATION_BATCH_SIZE) + 1,
+        "batch_total": int(math.ceil(total_projects / _MIGRATION_BATCH_SIZE)) if total_projects else 0,
+        "batch_duration_target_seconds": _MIGRATION_BATCH_REFERENCE_SECONDS,
     })
     _write_job(job_id, payload)
 
@@ -1778,7 +1875,7 @@ def _run_migration_stage(
             _run_migration(
                 job_id,
                 int(user_id),
-                1,
+                _MIGRATION_BATCH_SIZE,
                 after_updated_at,
                 str(after_task_id or ""),
                 defer_worker_cleanup=True,
@@ -1834,6 +1931,27 @@ def _run_migration_stage(
         payload["current_stage_main_cleanup_complete"] = False
         payload["stage_job_status"] = "finished"
         payload["stage_phase"] = "stage_finished"
+
+        batch_processed = max(
+            0,
+            min(
+                _MIGRATION_BATCH_SIZE,
+                int(payload.get("overall_processed_projects") or 0) - batch_baseline,
+            ),
+        )
+        batch_started_at = _timestamp(payload.get("batch_started_at"), 0.0)
+        if batch_processed and batch_started_at:
+            marker_cursor = payload.get("last_candidate_cursor") or {}
+            batch_marker = f"{batch_baseline}:{marker_cursor.get('updated_at')}:{marker_cursor.get('task_id') or ''}"
+            recorded_marker = str(payload.get("last_batch_duration_marker") or "")
+            if batch_marker != recorded_marker:
+                history = list(payload.get("batch_duration_history") or [])
+                history.append({
+                    "seconds": max(1, int(time.time() - batch_started_at)),
+                    "projects": batch_processed,
+                })
+                payload["batch_duration_history"] = history[-10:]
+                payload["last_batch_duration_marker"] = batch_marker
 
         has_more = bool(payload.get("has_more_candidates"))
         pause_requested = bool(payload.get("pause_requested"))
@@ -1924,7 +2042,7 @@ def estimate_google_drive_migration(current_user: User = Depends(get_current_adm
 
 @router.post("/migrate/start")
 def start_google_drive_migration(
-    limit: int = 5,
+    limit: int = _MIGRATION_BATCH_SIZE,
     after_updated_at: Optional[float] = None,
     after_task_id: str = "",
     overall_total_projects: int = 0,
@@ -1953,7 +2071,7 @@ def start_google_drive_migration(
             task_key(after_task_id)
         except ValueError as exc:
             raise HTTPException(400, "Cursor do backup inválido.") from exc
-    limit = max(1, min(25, int(limit)))
+    limit = _MIGRATION_BATCH_SIZE
     job_id = uuid.uuid4().hex
     progress = {
         "overall_total_projects": max(0, int(overall_total_projects)),
@@ -1963,6 +2081,13 @@ def start_google_drive_migration(
         "completed_files_before": max(0, int(completed_files_before)),
         "archived_bytes_before": max(0, int(archived_bytes_before)),
         "batch_number": max(1, int(batch_number)),
+        "batch_size": _MIGRATION_BATCH_SIZE,
+        "batch_project_total": min(_MIGRATION_BATCH_SIZE, max(0, int(overall_total_projects))),
+        "batch_processed_projects": 0,
+        "batch_project_current_index": 0,
+        "batch_total": int(math.ceil(max(0, int(overall_total_projects)) / _MIGRATION_BATCH_SIZE)),
+        "batch_duration_target_seconds": _MIGRATION_BATCH_REFERENCE_SECONDS,
+        "batch_duration_history": [],
     }
     _write_job(job_id, {
         "job_id": job_id, "created_by": int(current_user.id), "status": "queued", "requested_limit": limit,
@@ -1993,7 +2118,7 @@ def start_google_drive_migration(
     return {
         **payload,
         "stage_job_id": stage_job_id,
-        "message": "Backup iniciado em etapas de um projeto. Cada etapa confirma o Drive e conclui a limpeza segura antes de enfileirar a próxima.",
+        "message": "Backup iniciado em lotes sequenciais de até 10 projetos. Cada arquivo é confirmado no Drive; a limpeza segura só remove cópias verificadas.",
     }
 
 
@@ -2010,7 +2135,7 @@ def pause_google_drive_migration(job_id: str, current_user: User = Depends(get_c
     return {
         "job_id": job_id,
         "status": payload.get("status"),
-        "message": "A pausa será aplicada após a etapa atual e sua limpeza segura.",
+        "message": "A pausa será aplicada após o lote atual e a limpeza segura dos arquivos confirmados.",
     }
 
 
@@ -2062,6 +2187,9 @@ def resume_google_drive_migration(job_id: str, current_user: User = Depends(get_
         "status": "queued",
         "pause_requested": False,
         "resume_available": False,
+        "requested_limit": _MIGRATION_BATCH_SIZE,
+        "batch_size": _MIGRATION_BATCH_SIZE,
+        "batch_duration_target_seconds": _MIGRATION_BATCH_REFERENCE_SECONDS,
     })
     _write_job(job_id, payload)
     try:
@@ -2160,22 +2288,7 @@ def google_drive_migration_status(job_id: str, current_user: User = Depends(get_
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             })
             _write_job(job_id, payload)
-    started_at = _timestamp(payload.get("started_at"), 0.0)
-    if started_at:
-        payload["elapsed_seconds"] = max(0, int(time.time() - started_at))
-        total_bytes = int(payload.get("overall_total_bytes") or 0)
-        effective_bytes = min(
-            total_bytes,
-            int(payload.get("overall_archived_bytes") or 0)
-            + min(
-                int(payload.get("current_asset_size_bytes") or 0),
-                int(payload.get("current_asset_uploaded_bytes") or 0),
-            ),
-        ) if total_bytes > 0 else 0
-        elapsed = int(payload.get("elapsed_seconds") or 0)
-        if total_bytes > 0 and effective_bytes > 0 and elapsed > 0:
-            rate = effective_bytes / elapsed
-            payload["estimated_remaining_seconds"] = max(0, int((total_bytes - effective_bytes) / rate)) if rate > 0 else None
+    _refresh_migration_timing(payload)
     worker_job_id = str(payload.get("worker_cleanup_job_id") or "").strip()
     if stage_job_id or not worker_job_id:
         return payload
