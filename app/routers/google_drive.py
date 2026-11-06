@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -691,20 +692,37 @@ def _timestamp(value: Any, fallback: float = 0.0) -> float:
     return fallback
 
 
-def _local_archive_path(raw: Any, allowed_roots: list[Path]) -> Optional[Path]:
+def _local_archive_path(
+    raw: Any,
+    allowed_roots: list[Path],
+    path_cache: Optional[Dict[str, Optional[Path]]] = None,
+    stat_cache: Optional[Dict[str, os.stat_result]] = None,
+) -> Optional[Path]:
     value = str(raw or "").strip()
     if not value:
         return None
+    if path_cache is not None and value in path_cache:
+        return path_cache[value]
     path = Path(value)
+    resolved = None
     try:
-        if path.is_symlink() or not path.is_file():
+        # One lstat replaces separate is_symlink/is_file checks. The resolved
+        # path is still constrained to managed roots before it can be archived.
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            if path_cache is not None:
+                path_cache[value] = None
             return None
         resolved = path.resolve(strict=True)
         if not any(resolved.is_relative_to(root) for root in allowed_roots):
-            return None
-        return resolved
+            resolved = None
+        elif stat_cache is not None:
+            stat_cache[str(resolved)] = info
     except (OSError, RuntimeError):
-        return None
+        resolved = None
+    if path_cache is not None:
+        path_cache[value] = resolved
+    return resolved
 
 
 def _saved_music_archive_projects() -> list[Dict[str, Any]]:
@@ -934,7 +952,7 @@ def _project_archive_inventory(
     """Index terminal project assets and every manifest-known hard-link alias."""
     from app.config import COVERS_OUTPUT_DIR
     from app.services.production_manifest import _read_json, _root_dir
-    from app.services.task_manager import get_task
+    from app.models import VideoTask
 
     manifest_root = Path(_root_dir()).resolve()
     allowed_roots = [Path(value).resolve() for value in roots().values()]
@@ -943,24 +961,44 @@ def _project_archive_inventory(
     cutoff = time.time() - 24 * 60 * 60
     projects: Dict[str, Dict[str, Any]] = {}
     inodes: Dict[tuple[int, int], Dict[str, Any]] = {}
+    # Fetch terminal task metadata in one database round trip instead of
+    # opening a SQLAlchemy session for every manifest in a large archive.
+    manifest_paths = list(manifest_root.glob("*/manifest.json"))
+    task_ids = [
+        item.parent.name for item in manifest_paths
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item.parent.name)
+    ]
+    task_snapshots: Dict[str, Dict[str, Any]] = {}
+    if task_ids:
+        db = SessionLocal()
+        try:
+            rows = db.query(VideoTask.id, VideoTask.status, VideoTask.updated_at).filter(
+                VideoTask.id.in_(task_ids)
+            ).all()
+            task_snapshots = {
+                str(row.id): {"status": row.status, "updated_at": row.updated_at}
+                for row in rows
+            }
+        except Exception:
+            db.rollback()
+            task_snapshots = {}
+        finally:
+            db.close()
 
-    manifests_scanned = 0
-    for manifest_path in manifest_root.glob("*/manifest.json"):
-        manifests_scanned += 1
-        if progress_callback:
-            progress_callback({
-                "phase": "inventory",
-                "task_id": manifest_path.parent.name,
-                "manifests_scanned": manifests_scanned,
-            })
+    def scan_manifest(manifest_path: Path):
         task_id = manifest_path.parent.name
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
-            continue
+            return None, {}
         manifest = _read_json(manifest_path)
-        try:
-            task = get_task(task_id) or {}
-        except Exception:
-            task = {}
+        task = task_snapshots.get(task_id)
+        # Preserve the legacy Redis/in-memory fallback only for tasks with no
+        # row in the bulk database snapshot.
+        if task is None:
+            try:
+                from app.services.task_manager import get_task
+                task = get_task(task_id) or {}
+            except Exception:
+                task = {}
         status = str(task.get("status") or manifest.get("status") or "").strip().lower()
         try:
             manifest_mtime = manifest_path.stat().st_mtime
@@ -976,6 +1014,9 @@ def _project_archive_inventory(
             "script_path": manifest_path.parent / "script.json",
             "assets": {},
         }
+        local_path_cache: Dict[str, Optional[Path]] = {}
+        local_stat_cache: Dict[str, os.stat_result] = {}
+        local_inodes: Dict[tuple[int, int], Dict[str, Any]] = {}
         for artifact in manifest.get("artifacts") or []:
             if not isinstance(artifact, dict):
                 continue
@@ -984,7 +1025,10 @@ def _project_archive_inventory(
                 continue
             aliases = []
             for key in ("durable_path", "original_path"):
-                candidate = _local_archive_path(artifact.get(key), allowed_roots)
+                candidate = _local_archive_path(
+                    artifact.get(key), allowed_roots,
+                    path_cache=local_path_cache, stat_cache=local_stat_cache,
+                )
                 if candidate and candidate not in aliases:
                     aliases.append(candidate)
             if not aliases:
@@ -998,11 +1042,14 @@ def _project_archive_inventory(
             project["assets"].setdefault(ref_key, {"kind": kind, "filename": filename, "path": source})
             for alias in aliases:
                 try:
-                    info = alias.stat()
+                    info = local_stat_cache.get(str(alias))
+                    if info is None:
+                        info = alias.stat()
+                        local_stat_cache[str(alias)] = info
                 except OSError:
                     continue
                 inode_key = (int(info.st_dev), int(info.st_ino))
-                group = inodes.setdefault(inode_key, {
+                group = local_inodes.setdefault(inode_key, {
                     "device": inode_key[0], "inode": inode_key[1],
                     "size": int(info.st_size), "link_count": int(info.st_nlink),
                     "paths": set(), "owners": {},
@@ -1010,8 +1057,39 @@ def _project_archive_inventory(
                 group["paths"].add(alias)
                 group["link_count"] = max(group["link_count"], int(info.st_nlink))
                 group["owners"].setdefault(task_id, set()).add(ref_key)
+        return project, local_inodes
 
-        projects[task_id] = project
+    manifests_scanned = 0
+    scan_workers = min(2, len(manifest_paths)) if manifest_paths else 1
+    with ThreadPoolExecutor(max_workers=scan_workers) as scan_pool:
+        future_paths = {
+            scan_pool.submit(scan_manifest, manifest_path): manifest_path
+            for manifest_path in manifest_paths
+        }
+        for future in as_completed(future_paths):
+            manifest_path = future_paths[future]
+            project, local_inodes = future.result()
+            manifests_scanned += 1
+            if project:
+                projects[str(project["task_id"])] = project
+            for inode_key, local_group in local_inodes.items():
+                group = inodes.get(inode_key)
+                if group is None:
+                    inodes[inode_key] = local_group
+                    continue
+                group["size"] = max(int(group.get("size") or 0), int(local_group.get("size") or 0))
+                group["link_count"] = max(
+                    int(group.get("link_count") or 0), int(local_group.get("link_count") or 0)
+                )
+                group["paths"].update(local_group["paths"])
+                for task_id, refs in local_group["owners"].items():
+                    group["owners"].setdefault(task_id, set()).update(refs)
+            if progress_callback:
+                progress_callback({
+                    "phase": "inventory",
+                    "task_id": manifest_path.parent.name,
+                    "manifests_scanned": manifests_scanned,
+                })
 
     for music_project in _saved_music_archive_projects():
         projects[music_project["task_id"]] = music_project
