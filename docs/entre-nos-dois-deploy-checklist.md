@@ -72,9 +72,35 @@ real, créditos, impostos e aprovação explícita da despesa. O painel
 exibe `generation_enabled=false` até que exista uma integração de execução
 segura, auditável e com limite monetário.
 
+## Geração de voz por fala — desligada por padrão
+
+Existe um endpoint administrativo `POST /studio/entre-nos-dois/audio/generate/{index}`
+que **pode** enviar uma única fala à ElevenLabs. Só é liberado com as duas
+variáveis privadas de ambiente `CODEXIA_STUDIO_ENABLE_PAID_TTS=1` e
+`CODEXIA_STUDIO_MAX_TTS_USD` maior que zero; sem ambas a API responde 403.
+O formulário só aparece quando o servidor confirma que o recurso está habilitado.
+
+Cada requisição exige confirmação escrita `AUTORIZO FALA N`, SHA-256 do
+roteiro original, tarifa USD por mil caracteres conferida pelo operador
+na conta do fornecedor, teto em dólares para aquela fala, acesso confirmado
+aos dois IDs de voz por consulta gratuita, e inexistência de um MP3 já salvo.
+É gravada uma **reserva durável antes do POST pago**. Se o envio falhar ou
+ficar incerto, a reserva não é apagada: a equipe precisa consultar o histórico
+do fornecedor e reconciliar antes de qualquer tentativa nova. Não existe
+retry automático. O MP3 validado e sua duração ficam privados, para revisão
+humana. **Nada é publicado automaticamente.**
+
+O teto é calculado com base na **tarifa fornecida pelo operador** e não é
+um limite imposto pela API ElevenLabs nem garantia de preço final. Portanto,
+é obrigatório conferir a política de créditos, multiplicadores e tarifas
+reais do plano antes de habilitar o recurso; não fazer a ativação cegamente.
+Não colocar `ELEVENLABS_API_KEY` em logs ou no repositório. No Compose padrão
+de homologação a geração continua **desabilitada** e nenhuma chave paga é
+configurada. A instalação desse código não autoriza despesas.
+
 ## Ainda não disponível
 
-- O painel **não** produz áudio nem vídeo; não há botão de geração paga liberado.
+- O painel pode importar e revisar áudios; a síntese paga por fala só funciona se o operador habilitar explicitamente o recurso e configurar credenciais/teto. Vídeo e lip-sync ainda não são gerados pelo Studio.
 - As imagens separadas de cada personagem precisam ser enviadas ao armazenamento privado do servidor; a imagem conjunta aprovada anteriormente não foi importada automaticamente.
 - Nenhum deploy de produção é realizado por este PR em rascunho.
 - O worker local no PC ficará para fase posterior: agora a operação fica no Codexia e nos fornecedores externos de IA.
