@@ -16,6 +16,7 @@ on:
       - "docker-compose.entre-nos-dois-staging.yml"
       - "Dockerfile.studio-staging"
       - "scripts/entre_nos_dois_staging_schema.py"
+      - "scripts/entre_nos_dois_staging_http_e2e.py"
       - ".github/workflows/entre-nos-dois-tests.yml"
   workflow_dispatch:
 
@@ -85,6 +86,16 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:18080/health
           python scripts/entre_nos_dois_smoke.py --base-url http://127.0.0.1:18080
+      - name: Create disposable staging administrator
+        run: |
+          docker compose -f docker-compose.entre-nos-dois-staging.yml exec -T studio-api python -c "from scripts.entre_nos_dois_staging_admin import bootstrap_admin; bootstrap_admin('ci-studio@example.test','ci-initial-staging-passphrase-123')"
+      - name: Verify actual login, forced rotation and private image upload
+        run: |
+          python scripts/entre_nos_dois_staging_http_e2e.py \\
+            --base-url http://127.0.0.1:18080 \\
+            --email ci-studio@example.test \\
+            --initial-password ci-initial-staging-passphrase-123 \\
+            --new-password ci-renewed-staging-passphrase-456
       - name: Collect startup logs on failure
         if: failure()
         run: docker compose -f docker-compose.entre-nos-dois-staging.yml logs --tail=100 studio-api studio-db
