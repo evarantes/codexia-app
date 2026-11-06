@@ -96,6 +96,23 @@ class ApprovedTTSAdapterTests(unittest.TestCase):
             })
         self.mock_post.assert_not_called()
 
+    def test_timeout_blocks_second_paid_request(self):
+        self.mock_post.side_effect = TimeoutError("unconfirmed remote billing")
+        with self.assertRaises(SpeechGenerationError):
+            self.invoke()
+        self.assertEqual(self.mock_post.call_count, 1)
+        self.mock_post.side_effect = None
+        self.mock_post.return_value = b"ID3" + b"0" * 2048
+        with self.assertRaises(SpeechGenerationError):
+            self.invoke()
+        self.assertEqual(self.mock_post.call_count, 1)
+        reservations = list(Path(self.temp.name).rglob("*.request-pending"))
+        self.assertEqual(len(reservations), 1)
+
+    def test_success_clears_pending_reservations(self):
+        self.invoke()
+        self.assertFalse(list(Path(self.temp.name).rglob("*.request-pending")))
+
     def test_stops_at_first_invalid_audio(self):
         self.mock_post.return_value = b"not an mp3"
         with self.assertRaises(SpeechGenerationError):
