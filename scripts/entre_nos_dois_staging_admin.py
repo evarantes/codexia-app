@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import getpass
 import os
+from urllib.parse import urlsplit
 
 
 class StagingBootstrapError(RuntimeError):
@@ -17,8 +18,12 @@ class StagingBootstrapError(RuntimeError):
 def ensure_staging_environment() -> None:
     if os.getenv("APP_ENV", "").strip().lower() != "staging":
         raise StagingBootstrapError("Bloqueado: exige APP_ENV=staging.")
-    url = os.getenv("DATABASE_URL", "").lower()
-    if "codexia_staging" not in url or "studio-db" not in url:
+    url = urlsplit(os.getenv("DATABASE_URL", ""))
+    if (
+        url.scheme not in ("postgres", "postgresql")
+        or url.hostname != "studio-db"
+        or url.path != "/codexia_staging"
+    ):
         raise StagingBootstrapError("Bloqueado: banco de homologação não confirmado.")
 
 
@@ -30,7 +35,6 @@ def bootstrap_admin(email: str, password: str, *, session_factory=None) -> dict:
     if not isinstance(password, str) or len(password) < 16 or len(password) > 72:
         raise StagingBootstrapError("A senha deve ter entre 16 e 72 caracteres.")
     from app.models import User
-    from app.routers.auth import get_password_hash
     if session_factory is None:
         from app.database import SessionLocal
         session_factory = SessionLocal
@@ -41,6 +45,7 @@ def bootstrap_admin(email: str, password: str, *, session_factory=None) -> dict:
             raise StagingBootstrapError(
                 "Já existem usuários neste banco. Cadastro automático bloqueado."
             )
+        from app.routers.auth import get_password_hash
         user = User(
             email=email,
             name="Admin Entre Nós Dois (homologação)",
