@@ -41,6 +41,21 @@ O CI de homologação gera um MP3 sintético de um segundo pelo FFmpeg apenas
 para verificar o upload, leitura autenticada e bloqueio de acesso anônimo.
 Esse sinal de teste não é áudio de personagem.
 
+## Prévia sequencial dos personagens e áudios medidos (sem render)
+
+Após importar os **quatro** MP3s, a rota administrativa
+`GET /studio/entre-nos-dois/audio/timeline` calcula os inícios e fins
+reais das falas e a duração total, com pausas de 0,35 s entre turnos.
+O botão **Ouvir diálogo completo** reproduz sequencialmente as quatro falas
+e acompanha a alternância de retratos e texto no navegador. O botão Parar
+interrompe a sequência. Se algum MP3 faltar, a reprodução contínua fica
+desabilitada; não há extrapolação fictícia de duração.
+
+Isso é um **storyboard audível**, não um vídeo renderizado e nem sincronização
+labial. A aprovação criativa e a geração de cenas continuam etapas distintas.
+O CI testa a linha do tempo com quatro MP3s sintéticos locais e nenhum
+fornecedor pago.
+
 ## Ainda não disponível
 
 - O painel **não** produz áudio nem vídeo; não há botão de geração paga liberado.
