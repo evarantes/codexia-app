@@ -113,3 +113,49 @@ def list_segment_audio(*, user_id: int) -> dict:
         "requires_human_review": True,
         "auto_publish": False,
     }
+
+
+def preview_audio_timeline(*, user_id: int, pause_seconds: float = 0.35) -> dict:
+    """Measured browser storyboard, no rendering, TTS, lip-sync or publishing.
+
+    Incomplete audio never masquerades as a fully timed pilot.
+    """
+    if type(pause_seconds) not in (int, float) or not 0 <= pause_seconds <= 2:
+        raise StudioAudioError("Pausa inválida.")
+    data = list_segment_audio(user_id=user_id)
+    segments = data["segments"]
+    if not data["all_uploaded"]:
+        return {
+            "ready": False,
+            "missing_indices": [x["index"] for x in segments if not x["uploaded"]],
+            "segments": [],
+            "total_seconds": None,
+            "planned_seconds": 30,
+            "auto_publish": False,
+        }
+    elapsed = 0.0
+    scenes = []
+    for segment in segments:
+        duration = float(segment["duration_seconds"])
+        scenes.append({
+            "index": segment["index"],
+            "speaker": segment["speaker"],
+            "text": segment["text"],
+            "start_seconds": round(elapsed, 3),
+            "end_seconds": round(elapsed + duration, 3),
+            "duration_seconds": duration,
+        })
+        elapsed += duration
+        if segment["index"] != segments[-1]["index"]:
+            elapsed += pause_seconds
+    return {
+        "ready": True,
+        "missing_indices": [],
+        "segments": scenes,
+        "pause_seconds": pause_seconds,
+        "total_seconds": round(elapsed, 3),
+        "planned_seconds": 30,
+        "requires_human_review": True,
+        "is_rendered_video": False,
+        "auto_publish": False,
+    }
