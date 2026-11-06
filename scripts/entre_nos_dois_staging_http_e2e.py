@@ -144,6 +144,24 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert scene_after["signed_asset_urls_created"] is False
     assert scene_after["billable_calls_performed"] is False
 
+    # Complete visual inputs: a full four-scene plan is now ready for
+    # *human provider review* but still cannot export assets or spend money.
+    code, body = call(base, "/studio/entre-nos-dois/references/Gabriel", method="PUT",
+                      token=token, data=pixel_png(), content_type="application/octet-stream")
+    assert code == 200 and json.loads(body)["private"] is True
+    code, body = call(base, "/studio/entre-nos-dois/scene/readiness?usd_per_second=0.20", token=token)
+    assert code == 200
+    scene_complete = json.loads(body)
+    assert scene_complete["inputs_ready"] is True
+    assert len(scene_complete["scenes"]) == 4
+    assert scene_complete["missing"] == []
+    assert scene_complete["estimated_total_usd"] is not None
+    assert scene_complete["generation_enabled"] is False
+    assert scene_complete["private_media_export_authorized"] is False
+    assert scene_complete["signed_asset_urls_created"] is False
+    assert scene_complete["rendered_video_ready"] is False
+    assert scene_complete["auto_publish"] is False
+
     old_login = parse.urlencode({"username": email, "password": initial_password}).encode()
     new_login = parse.urlencode({"username": email, "password": next_password}).encode()
     assert call(base, "/token", method="POST", data=old_login,
@@ -151,7 +169,7 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert call(base, "/token", method="POST", data=new_login,
                 content_type="application/x-www-form-urlencoded")[0] == 200
 
-    return {"staging_e2e": "passed", "checks": 24, "billable_calls": 0, "published": False}
+    return {"staging_e2e": "passed", "checks": 30, "billable_calls": 0, "published": False}
 
 
 if __name__ == "__main__":
