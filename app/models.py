@@ -281,6 +281,41 @@ class Settings(Base):
     is_active = Column(Boolean, default=True)
 
 
+class YouTubeChannelAccount(Base):
+    """OAuth connection for an additional YouTube channel; refresh tokens are encrypted."""
+    __tablename__ = "youtube_channel_accounts"
+    __table_args__ = (
+        UniqueConstraint("user_id", "channel_id", name="uq_youtube_channel_accounts_user_channel"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel_id = Column(String(128), nullable=False)
+    channel_title = Column(String(255), nullable=False)
+    thumbnail_url = Column(Text, nullable=True)
+    refresh_token_encrypted = Column(Text, nullable=False)
+    scopes_json = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, server_default=text("true"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ProjectYouTubeChannelBinding(Base):
+    """Selected YouTube channel for a user-owned Codexia project/module."""
+    __tablename__ = "project_youtube_channel_bindings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_key", name="uq_project_youtube_channel_user_project"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_key = Column(String(64), nullable=False)
+    youtube_channel_account_id = Column(
+        Integer, ForeignKey("youtube_channel_accounts.id", ondelete="CASCADE"), nullable=False,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class GoogleDriveAccount(Base):
     """Admin-managed Drive accounts used to shard project archives."""
     __tablename__ = "google_drive_accounts"
