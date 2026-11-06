@@ -56,6 +56,22 @@ labial. A aprovação criativa e a geração de cenas continuam etapas distintas
 O CI testa a linha do tempo com quatro MP3s sintéticos locais e nenhum
 fornecedor pago.
 
+## Orçamento de voz sem cobranças
+
+A rota `GET /studio/entre-nos-dois/voice-cost-worksheet` retorna o manifesto
+das quatro falas, a quantidade exata de caracteres e um SHA-256 que identifica
+o texto e os IDs de voz oficiais. Administradores podem opcionalmente informar
+`usd_per_1000_characters` para simular custos no painel. O valor informado
+não é obtido nem validado na ElevenLabs e **não constitui preço contratado
+ou limite aprovado**. O cálculo não consulta provedores, não gera arquivos
+e não libera nenhuma chamada paga.
+
+Antes de habilitar o TTS, ainda é necessário confirmar disponibilidade
+de Andrey e Luciana na mesma conta/API, elegibilidade do modelo, tarifa
+real, créditos, impostos e aprovação explícita da despesa. O painel
+exibe `generation_enabled=false` até que exista uma integração de execução
+segura, auditável e com limite monetário.
+
 ## Ainda não disponível
 
 - O painel **não** produz áudio nem vídeo; não há botão de geração paga liberado.
