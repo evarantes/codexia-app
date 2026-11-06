@@ -8,6 +8,7 @@ import re
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -572,20 +573,82 @@ class CentralAssetTransfer:
         if not self.enabled:
             return
         from app.services.production_manifest import load_manifest, manifest_dir
+
+        pending = []
         for entry in load_manifest(task).get('artifacts') or []:
             p = Path(entry.get('durable_path') or entry.get('original_path') or '')
-            if (entry.get('kind') in EXTENSIONS
-                    and (include_video or entry.get('kind') != 'video')
+            kind = entry.get('kind')
+            if (kind in EXTENSIONS
+                    and (include_video or kind != 'video')
                     and p.is_file()):
-                self.publish(task, p, entry['kind'], Path(entry.get('original_path') or p).name)
+                filename = Path(entry.get('original_path') or p).name
+                pending.append((p, kind, filename))
         script = manifest_dir(task) / 'script.json'
         if script.is_file():
             # Distinct task filename prevents scripts from overwriting each other.
             named = script.with_name(f'{task_key(task)}-{digest(script)[:16]}-script.json')
             named.write_bytes(script.read_bytes())
-            self.publish(task, named, 'script')
+            pending.append((named, 'script', named.name))
+        if not pending:
+            return
 
-    def clean_cache(self, task):
+        # The production checkpoint path also archives files for new projects.
+        # Upload independent assets concurrently with isolated HTTP sessions,
+        # while sharing the already fetched index snapshot between workers.
+        try:
+            remote_index = self._remote_index(task)
+        except Exception:
+            remote_index = None
+        thread_context = threading.local()
+
+        def publish_one(item):
+            p, kind, filename = item
+            transfer = getattr(thread_context, 'transfer', None)
+            if transfer is None:
+                transfer = CentralAssetTransfer()
+                if remote_index is not None:
+                    transfer._remote_index_cache[task_key(task)] = dict(remote_index)
+                thread_context.transfer = transfer
+            return transfer.publish(task, p, kind, filename)
+
+        with ThreadPoolExecutor(max_workers=min(3, len(pending))) as pool:
+            list(pool.map(publish_one, pending))
+
+    def _worker_manifest_path_owners(self):
+        """Read manifest ownership once for a cleanup batch on the worker."""
+        from app.services.production_manifest import _read_json, _root_dir
+
+        owners = {}
+        resolved_cache = {}
+        for manifest in Path(_root_dir()).glob("*/manifest.json"):
+            task_id = manifest.parent.name
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+                continue
+            for item in _read_json(manifest).get("artifacts") or []:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("original_path", "durable_path"):
+                    raw = item.get(key)
+                    if not raw:
+                        continue
+                    raw_path = str(raw)
+                    if raw_path in resolved_cache:
+                        resolved = resolved_cache[raw_path]
+                    else:
+                        path = Path(raw_path)
+                        try:
+                            if path.is_symlink():
+                                resolved = None
+                            else:
+                                resolved = path.resolve(strict=True)
+                        except (OSError, RuntimeError):
+                            resolved = None
+                        resolved_cache[raw_path] = resolved
+                    if resolved is not None:
+                        owners.setdefault(resolved, set()).add(task_id)
+        return owners
+
+    def clean_cache(self, task, *, shared_path_owners=None):
         """Remove only stable local copies matching the authoritative Drive index."""
         if not self.enabled:
             return {"files_deleted": 0, "bytes_freed": 0}
@@ -689,26 +752,29 @@ class CentralAssetTransfer:
             for key in ("original_path", "durable_path"):
                 add_candidate(item.get(key), ref)
 
-        # A path shared by another project's manifest is retained even if it is
-        # also listed for this task. Unlisted hard links are retained as well.
-        shared_paths = set()
-        for manifest in Path(_root_dir()).glob("*/manifest.json"):
-            if manifest.parent.name == task:
-                continue
-            for item in _read_json(manifest).get("artifacts") or []:
-                if not isinstance(item, dict):
+        # A batch caller supplies one precomputed ownership map so this task
+        # does not rescan every other project's manifest.
+        shared_paths = None
+        if shared_path_owners is None:
+            # Keep the standalone cleanup path safe and backward compatible.
+            shared_paths = set()
+            for manifest in Path(_root_dir()).glob("*/manifest.json"):
+                if manifest.parent.name == task:
                     continue
-                for key in ("original_path", "durable_path"):
-                    raw = item.get(key)
-                    if not raw:
+                for item in _read_json(manifest).get("artifacts") or []:
+                    if not isinstance(item, dict):
                         continue
-                    path = Path(raw)
-                    try:
-                        if path.is_symlink():
+                    for key in ("original_path", "durable_path"):
+                        raw = item.get(key)
+                        if not raw:
                             continue
-                        shared_paths.add(path.resolve(strict=True))
-                    except (OSError, RuntimeError):
-                        continue
+                        path = Path(raw)
+                        try:
+                            if path.is_symlink():
+                                continue
+                            shared_paths.add(path.resolve(strict=True))
+                        except (OSError, RuntimeError):
+                            continue
 
         groups = {}
         for path, refs in candidates.items():
@@ -722,7 +788,14 @@ class CentralAssetTransfer:
         files_deleted = 0
         bytes_freed = 0
         for inode, group in groups.items():
-            if any(path in shared_paths for path, _, _ in group):
+            if shared_path_owners is None:
+                is_shared = any(path in shared_paths for path, _, _ in group)
+            else:
+                is_shared = any(
+                    any(owner != task for owner in shared_path_owners.get(path, ()))
+                    for path, _, _ in group
+                )
+            if is_shared:
                 continue
             try:
                 link_count = int(group[0][2].st_nlink)
@@ -814,6 +887,14 @@ class CentralAssetTransfer:
             return total
 
         before = free_bytes()
+        try:
+            # This is the expensive cross-project scan. Do it once for the
+            # whole batch instead of once for every task being cleaned.
+            shared_path_owners = self._worker_manifest_path_owners()
+        except Exception:
+            # If the shared ownership index cannot be built, clean_cache falls
+            # back to its original per-task scan rather than weakening safety.
+            shared_path_owners = None
         checked = 0
         cleaned = 0
         files_deleted = 0
@@ -844,7 +925,9 @@ class CentralAssetTransfer:
                 }:
                     continue
                 checked += 1
-                result = self.clean_cache(task_id)
+                result = self.clean_cache(
+                    task_id, shared_path_owners=shared_path_owners
+                )
                 errors += int(result.get("errors") or 0)
                 if result["files_deleted"]:
                     cleaned += 1
