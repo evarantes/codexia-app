@@ -9,6 +9,8 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: "no"
+    # Esquema exclusivo de staging; não importa app.main nem inicia monitor/filas.
+    command: ["sh", "-c", "python scripts/apply_migrations.py && uvicorn app.studio_staging:app --host 0.0.0.0 --port 8000"]
     environment:
       APP_ENV: staging
       DATABASE_URL: postgresql://codexia_staging:${CODEXIA_STAGING_DB_PASSWORD:?Defina CODEXIA_STAGING_DB_PASSWORD}@studio-db:5432/codexia_staging
