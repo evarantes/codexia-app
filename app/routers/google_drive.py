@@ -14,6 +14,8 @@ import shutil
 import tempfile
 import time
 import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import escape
@@ -832,6 +834,22 @@ def _project_needs_archive(
             path = Path(asset["path"])
             if not path.is_file():
                 continue
+            # New archive entries cannot be skipped: avoid hashing large media
+            # just to conclude that this project still needs an upload. The
+            # upload path computes and verifies SHA-256 before Drive receives
+            # bytes, and cleanup still requires a confirmed index entry.
+            exact = index.get((kind, filename)) or {}
+            if not exact:
+                original = Path(filename)
+                versioned_prefix = f"{original.stem}__sha256-"
+                has_versioned_copy = any(
+                    indexed_kind == kind
+                    and indexed_name.startswith(versioned_prefix)
+                    and indexed_name.endswith(original.suffix)
+                    for indexed_kind, indexed_name in index
+                )
+                if not has_versioned_copy:
+                    return True
             try:
                 stat = path.stat()
                 size = int(stat.st_size)
@@ -1445,6 +1463,9 @@ def _run_migration(
             account_id = archive._settings().get("account_id")
             if account_id is not None:
                 pin_task_drive_account(task_id, account_id)
+            # Create the project's Drive folder before parallel uploads so
+            # worker threads cannot race to create duplicate folders.
+            archive.prepare_task_folder(task_id)
             assets = _migration_assets_for_project(project)
             project_ok = bool(assets)
             staged_metadata = []
@@ -1476,54 +1497,90 @@ def _run_migration(
                     "stage_phase": "uploading",
                 })
                 _write_job(job_id, payload)
+                max_parallel_uploads = max(1, min(3, len(asset_items)))
+                upload_lock = threading.Lock()
+                progress_state = {}
+                last_progress_write = 0.0
+
                 for asset_index, asset in enumerate(asset_items, start=1):
                     path = Path(asset["path"])
                     try:
-                        source_size = int(path.stat().st_size)
-                        source_stat = path.stat()
+                        stat = path.stat()
+                        source_size = int(stat.st_size)
                     except OSError:
+                        stat = None
                         source_size = 0
-                        source_stat = None
-                    payload.update({
-                        "current_project_index": completed_projects_before + project_index,
-                        "current_project_total": max(total_projects, completed_projects_before + len(selected)),
-                        "current_asset_index": asset_index,
-                        "current_asset_total": len(asset_items),
-                        "current_asset": str(asset.get("filename") or ""),
-                        "current_asset_size_bytes": source_size,
-                        "current_asset_verification_bytes": 0,
-                        "current_asset_uploaded_bytes": 0,
-                        "current_asset_percent": 0,
-                        "stage_phase": "uploading",
-                    })
-                    _write_job(job_id, payload)
+                    progress_state[asset_index] = {
+                        "filename": str(asset.get("filename") or ""),
+                        "size": source_size,
+                        "verified": 0,
+                        "uploaded": 0,
+                        "phase": "queued",
+                    }
+
+                def publish_parallel_progress(force: bool = False) -> None:
+                    nonlocal last_progress_write
+                    with upload_lock:
+                        now = time.monotonic()
+                        if not force and now - last_progress_write < 2:
+                            return
+                        last_progress_write = now
+                        entries = list(progress_state.values())
+                        pending_entries = [
+                            item for item in entries
+                            if item.get("phase") in {"queued", "verifying", "uploading"}
+                        ]
+                        total_size = sum(max(0, int(item.get("size") or 0)) for item in pending_entries)
+                        verified = sum(max(0, int(item.get("verified") or 0)) for item in pending_entries)
+                        uploaded = sum(max(0, int(item.get("uploaded") or 0)) for item in pending_entries)
+                        active = sum(item.get("phase") in {"verifying", "uploading"} for item in entries)
+                        payload.update({
+                            "current_project_index": completed_projects_before + project_index,
+                            "current_project_total": max(total_projects, completed_projects_before + len(selected)),
+                            "current_asset_index": min(len(asset_items), processed_files + 1),
+                            "current_asset_total": len(asset_items),
+                            "current_asset": (f"Envio paralelo: {active} ativo(s), limite {max_parallel_uploads}" if active else "Preparando próximo arquivo"),
+                            "current_asset_size_bytes": total_size,
+                            "current_asset_verification_bytes": verified,
+                            "current_asset_uploaded_bytes": uploaded,
+                            "current_asset_percent": min(100, int(uploaded * 100 / total_size)) if total_size else 0,
+                            "parallel_uploads_active": active,
+                            "parallel_uploads_limit": max_parallel_uploads,
+                            "stage_phase": "verifying_asset" if any(
+                                item.get("phase") == "verifying" for item in entries
+                            ) else "uploading",
+                        })
+                        _write_job(job_id, payload)
+
+                def upload_one(asset_index: int, asset: Dict[str, Any]):
+                    path = Path(asset["path"])
                     try:
-                        last_verification_write = 0.0
+                        source_stat = path.stat()
+                        source_size = int(source_stat.st_size)
+                    except OSError as exc:
+                        return asset_index, asset, 0, None, exc
 
-                        def report_verification_progress(processed: int, total: int) -> None:
-                            nonlocal last_verification_write
-                            now = time.monotonic()
-                            if now - last_verification_write < 3 and processed < total:
-                                return
-                            last_verification_write = now
-                            payload.update({
-                                "stage_phase": "verifying_asset",
-                                "current_asset_size_bytes": int(total),
-                                "current_asset_verification_bytes": int(processed),
-                                "current_asset_uploaded_bytes": 0,
-                            })
-                            _write_job(job_id, payload)
+                    def report_verification_progress(processed: int, total: int) -> None:
+                        with upload_lock:
+                            state = progress_state[asset_index]
+                            state["phase"] = "verifying"
+                            state["size"] = int(total or source_size)
+                            state["verified"] = int(processed)
+                        publish_parallel_progress()
 
-                        def report_upload_progress(uploaded: int, total: int) -> None:
-                            payload["current_asset_size_bytes"] = int(total)
-                            payload["current_asset_uploaded_bytes"] = int(uploaded)
-                            payload["current_asset_verification_bytes"] = 0
-                            payload["current_asset_percent"] = (
-                                min(100, int(uploaded * 100 / total)) if total > 0 else 0
-                            )
-                            payload["stage_phase"] = "uploading"
-                            _write_job(job_id, payload)
+                    def report_upload_progress(uploaded: int, total: int) -> None:
+                        with upload_lock:
+                            state = progress_state[asset_index]
+                            state["phase"] = "uploading"
+                            state["size"] = int(total or source_size)
+                            state["uploaded"] = int(uploaded)
+                            state["verified"] = 0
+                        publish_parallel_progress()
 
+                    with upload_lock:
+                        progress_state[asset_index]["phase"] = "verifying"
+                    publish_parallel_progress(force=True)
+                    try:
                         try:
                             entry = archive.upload_path(
                                 task_id, asset["kind"], asset["filename"], path,
@@ -1531,8 +1588,6 @@ def _run_migration(
                                 verification_callback=report_verification_progress,
                             )
                         except DriveAssetConflict as conflict:
-                            # Preserve the old Drive file and archive this
-                            # differing local version under a content address.
                             source_sha = str(conflict.source_sha256 or "").strip().lower()
                             if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
                                 source_sha = digest(path)
@@ -1542,41 +1597,62 @@ def _run_migration(
                                 progress_callback=report_upload_progress,
                                 verification_callback=report_verification_progress,
                             )
+                        final_stat = path.stat()
                         if (int(entry.get("size") or -1) != source_size
                                 or not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256") or ""))):
                             raise RuntimeError("O Drive não confirmou o tamanho e checksum do arquivo.")
-                        final_stat = path.stat()
-                        if (source_stat is None or int(final_stat.st_size) != int(source_stat.st_size)
+                        if (int(final_stat.st_size) != int(source_stat.st_size)
                                 or int(final_stat.st_mtime_ns) != int(source_stat.st_mtime_ns)
                                 or int(final_stat.st_ctime_ns) != int(source_stat.st_ctime_ns)):
                             raise RuntimeError("O arquivo local mudou durante o envio e foi preservado para nova conferência.")
-                        register_asset(task_id, entry)
-                        archived += 1
-                        archived_bytes += source_size
-                        report_upload_progress(source_size, source_size)
+                        return asset_index, asset, source_size, entry, None
                     except Exception as exc:
-                        project_ok = False
-                        errors.append(f"{task_id}/{asset['filename']}: {str(exc)[:180]}")
-                        batch_error_count += 1
-                    finally:
-                        processed_files += 1
-                        payload.update({
-                            "archived": archived_before + archived,
-                            "archived_projects": archived_projects_before + archived_projects,
-                            "processed_files": completed_files_before + processed_files,
-                            "archived_bytes": archived_bytes_before + archived_bytes,
-                            "overall_processed_files": completed_files_before + processed_files,
-                            "overall_archived_bytes": archived_bytes_before + archived_bytes,
-                            "skipped": skipped_before + skipped,
-                            "bytes_freed": bytes_freed_before + bytes_freed,
-                            "error_count": error_count_before + batch_error_count,
-                            "errors": errors[-50:],
-                            "current_asset_index": asset_index,
-                            "current_asset_verification_bytes": 0,
-                            "current_asset_uploaded_bytes": 0,
-                            "current_asset_percent": 0,
-                        })
-                        _write_job(job_id, payload)
+                        return asset_index, asset, source_size, None, exc
+
+                publish_parallel_progress(force=True)
+                with ThreadPoolExecutor(max_workers=max_parallel_uploads) as upload_pool:
+                    futures = [
+                        upload_pool.submit(upload_one, asset_index, asset)
+                        for asset_index, asset in enumerate(asset_items, start=1)
+                    ]
+                    for future in as_completed(futures):
+                        asset_index, asset, source_size, entry, upload_error = future.result()
+                        try:
+                            if upload_error is not None:
+                                raise upload_error
+                            register_asset(task_id, entry)
+                            archived += 1
+                            archived_bytes += source_size
+                            with upload_lock:
+                                progress_state[asset_index]["phase"] = "completed"
+                                progress_state[asset_index]["uploaded"] = source_size
+                                progress_state[asset_index]["verified"] = source_size
+                        except Exception as exc:
+                            project_ok = False
+                            errors.append(f"{task_id}/{asset['filename']}: {str(exc)[:180]}")
+                            batch_error_count += 1
+                            with upload_lock:
+                                progress_state[asset_index]["phase"] = "failed"
+                                progress_state[asset_index]["uploaded"] = 0
+                        finally:
+                            processed_files += 1
+                            with upload_lock:
+                                payload.update({
+                                    "archived": archived_before + archived,
+                                    "archived_projects": archived_projects_before + archived_projects,
+                                    "processed_files": completed_files_before + processed_files,
+                                    "archived_bytes": archived_bytes_before + archived_bytes,
+                                    "overall_processed_files": completed_files_before + processed_files,
+                                    "overall_archived_bytes": archived_bytes_before + archived_bytes,
+                                    "skipped": skipped_before + skipped,
+                                    "bytes_freed": bytes_freed_before + bytes_freed,
+                                    "error_count": error_count_before + batch_error_count,
+                                    "errors": errors[-50:],
+                                })
+                                # A final update is useful even when the normal
+                                # progress-write throttle has not elapsed.
+                                last_progress_write = 0.0
+                            publish_parallel_progress(force=True)
                 if project_ok:
                     archived_projects += 1
             except Exception as exc:

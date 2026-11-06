@@ -12,6 +12,7 @@ import hashlib
 import mimetypes
 import os
 import re
+import random
 import threading
 import time
 from pathlib import Path
@@ -127,6 +128,7 @@ class GoogleDriveArchive:
         self.account_id = int(account_id) if account_id not in (None, "") else None
         self.access_token = str(access_token or "").strip()
         self.access_folder_id = str(folder_id or "").strip()
+        self._task_folder_cache: Dict[tuple, str] = {}
 
     @staticmethod
     def _ensure_legacy_account(db):
@@ -476,6 +478,32 @@ class GoogleDriveArchive:
         }, fields="id").execute()
         return str(created["id"])
 
+    def _task_folder_id(self, service, values: Dict[str, Any], task: str) -> str:
+        task = _valid_task(task)
+        cache_key = (values.get("account_id"), values.get("folder_id"), task)
+        with _LOCK:
+            cached = self._task_folder_cache.get(cache_key)
+            if cached:
+                return cached
+            root_id = self._get_root_folder(service, values)
+            folder_id = self._task_folder(service, root_id, task)
+            self._task_folder_cache[cache_key] = folder_id
+            return folder_id
+
+    def prepare_task_folder(self, task: str) -> str:
+        """Create/find and cache project folders before parallel uploads."""
+        task = _valid_task(task)
+        values = self._settings()
+        try:
+            with _LOCK:
+                return self._task_folder_id(self.drive_service(), values, task)
+        except GoogleDriveArchiveError:
+            raise
+        except Exception as exc:
+            raise GoogleDriveArchiveError(
+                "Falha ao preparar a pasta do projeto no Google Drive."
+            ) from exc
+
     def _find_file(self, service, parent_id: str, kind: str, filename: str) -> Optional[Dict[str, Any]]:
         query = (
             f"{_quoted(parent_id)} in parents and name = {_quoted(filename)} "
@@ -491,8 +519,7 @@ class GoogleDriveArchive:
                         expected_previous_sha256: str = ""):
         values = self._settings()
         service = self.drive_service()
-        root_id = self._get_root_folder(service, values)
-        parent_id = self._task_folder(service, root_id, task)
+        parent_id = self._task_folder_id(service, values, task)
         existing = self._find_file(service, parent_id, kind, filename)
         existing_sha = str(((existing or {}).get("appProperties") or {}).get("sha256") or "")
         existing_size = int((existing or {}).get("size") or 0)
@@ -638,8 +665,42 @@ class GoogleDriveArchive:
                                              fields="id,name,size,md5Checksum,appProperties")
         try:
             response = None
+            retry_attempt = 0
             while response is None:
-                status, response = request.next_chunk()
+                try:
+                    status, response = request.next_chunk()
+                    retry_attempt = 0
+                except Exception as exc:
+                    http_response = getattr(exc, "resp", None)
+                    http_status = int(getattr(http_response, "status", 0) or 0)
+                    rate_limited = False
+                    if http_status == 403:
+                        try:
+                            error_body = getattr(exc, "content", b"")
+                            if isinstance(error_body, bytes):
+                                error_body = error_body.decode("utf-8", errors="ignore")
+                            error_payload = json.loads(error_body or "{}")
+                            reasons = [
+                                str(item.get("reason") or "")
+                                for item in ((error_payload.get("error") or {}).get("errors") or [])
+                                if isinstance(item, dict)
+                            ]
+                            rate_limited = any(
+                                reason in {"rateLimitExceeded", "userRateLimitExceeded"}
+                                for reason in reasons
+                            )
+                        except (TypeError, ValueError, AttributeError):
+                            rate_limited = False
+                    retryable_status = http_status in {429, 500, 502, 503, 504}
+                    if (not retryable_status and not rate_limited) or retry_attempt >= 5:
+                        raise
+                    # Keep the same resumable request and back off on transient
+                    # Drive errors instead of failing a whole project on one
+                    # throttled or temporarily unavailable chunk.
+                    delay = min(2 ** retry_attempt, 16)
+                    time.sleep(delay + random.uniform(0, delay * 0.25))
+                    retry_attempt += 1
+                    continue
                 if progress_callback and status is not None:
                     try:
                         progress_callback(min(size, max(0, int(status.progress() * size))), size)
