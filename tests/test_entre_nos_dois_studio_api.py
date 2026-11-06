@@ -29,8 +29,12 @@ class StudioOverviewTests(unittest.TestCase):
         self.assertIn('"production_ready": False', self.source)
         self.assertIn('"audio_generated": False', self.source)
         self.assertIn('"lip_sync_generated": False', self.source)
-        self.assertNotIn('api_key', self.source)
-        self.assertNotIn('provider_voice_id":', self.source)
+        overview = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "overview")
+        overview_source = ast.get_source_segment(self.source, overview)
+        self.assertNotIn('api_key', overview_source)
+        self.assertNotIn('provider_voice_id":', overview_source)
+        readiness = next(n for n in self.module.body if isinstance(n, ast.FunctionDef) and n.name == "readiness")
+        self.assertIn('Depends(get_current_admin_user)', ast.get_source_segment(self.source, readiness))
 
 
 if __name__ == "__main__":
