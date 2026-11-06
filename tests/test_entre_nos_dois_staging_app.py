@@ -1,5 +1,8 @@
 """Safety checks for the intentionally limited Entre Nós Dois staging ASGI app."""
 import ast
+import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -10,6 +13,16 @@ class StudioOnlyStagingTests(unittest.TestCase):
         cls.source = Path("app/studio_staging.py").read_text(encoding="utf-8")
         cls.compose = Path("docker-compose.entre-nos-dois-staging.yml").read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.source)
+
+    def test_staging_router_package_never_loads_production_modules(self):
+        env = {**os.environ, "APP_ENV": "staging"}
+        check = (
+            "import app.routers, sys; "
+            "assert 'app.routers.youtube' not in sys.modules; "
+            "assert 'app.routers.cinematic_campaign' not in sys.modules; "
+            "assert 'app.services.cinematic_ui_patch' not in sys.modules"
+        )
+        subprocess.run([sys.executable, "-c", check], env=env, check=True, timeout=15)
 
     def test_does_not_import_main_or_start_workers(self):
         for text in (
