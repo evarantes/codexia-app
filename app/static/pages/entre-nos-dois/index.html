@@ -25,8 +25,9 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 </div>
 <section class="card" style="margin-top:18px"><h2>Imagens oficiais para o teste</h2><p class="muted">Envie uma imagem separada de cada personagem (JPG, PNG ou WebP, até 8 MB). Ficam armazenadas em área privada e não são enviadas a provedores nesta etapa.</p><div class="grid"><div><label for="gabriel-upload">Gabriel</label><input id="gabriel-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-gabriel" type="button">Salvar Gabriel</button><p id="gabriel-status" class="muted">Ainda não verificado.</p><img id="gabriel-preview" alt="Referência privada de Gabriel" style="display:none;width:100%;max-width:220px;border-radius:10px"></div><div><label for="helena-upload">Helena</label><input id="helena-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-helena" type="button">Salvar Helena</button><p id="helena-status" class="muted">Ainda não verificado.</p><img id="helena-preview" alt="Referência privada de Helena" style="display:none;width:100%;max-width:220px;border-radius:10px"></div></div><p id="upload-message" class="muted" role="status"></p></section>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div><p id="next-action" class="notice" role="status" aria-live="polite">Verificando próximo passo...</p></section>
-<section class="card" style="margin-top:18px"><h2>Prévia do episódio — sem custo</h2><p class="muted">Simulação visual do roteiro: não reproduz as vozes Andrey/Luciana nem vídeo com sincronização labial. Clique para conferir os turnos antes da produção.</p>
+<section class="card" style="margin-top:18px"><h2>Prévia do episódio — sem custo</h2><p class="muted">Simulação visual do roteiro com imagens privadas cadastradas: não reproduz as vozes Andrey/Luciana nem vídeo com sincronização labial. Clique para conferir os turnos antes da produção.</p>
 <div id="episode-preview" style="border:1px solid #596682;background:linear-gradient(115deg,#22334d,#2e243e);border-radius:14px;min-height:195px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px" aria-live="polite">
+<img id="preview-image" alt="Imagem cadastrada do personagem nesta fala" style="display:none;width:160px;height:160px;object-fit:cover;border:2px solid #8c9ac3;border-radius:18px" />
 <div id="preview-host" class="eyebrow">Prévia pronta para navegar</div>
 <div id="preview-line" style="font-size:clamp(17px,3vw,23px);line-height:1.5;max-width:700px">Carregue o roteiro para conferir a primeira fala.</div>
 <div id="preview-position" class="muted">Sem geração de mídia</div>
@@ -44,6 +45,8 @@ let previewDialogue=[],previewIndex=0;
 function renderPreview(){
  const t=previewDialogue[previewIndex];
  document.getElementById('preview-host').textContent=t?String(t.speaker)+' · '+(t.speaker==='Gabriel'?'Andrey':'Luciana'):'Prévia de roteiro';
+ const selected=t?String(t.speaker).toLowerCase():'';const image=document.getElementById('preview-image');
+ if(selected&&previews[selected]){image.src=previews[selected];image.style.display='block'}else{image.removeAttribute('src');image.style.display='none'}
  document.getElementById('preview-line').textContent=t?String(t.text):'Ainda não há roteiro disponível.';
  document.getElementById('preview-position').textContent=t?'Fala '+(previewIndex+1)+' de '+previewDialogue.length+' · quadro demonstrativo':'Sem geração de mídia';
  document.getElementById('preview-prev').disabled=previewIndex===0;
@@ -64,6 +67,7 @@ async function updateHostImages(){
     if(result.ok){previews[k]=URL.createObjectURL(await result.blob());img.src=previews[k];img.style.display='block'}
   }
  }
+ renderPreview();
 }
 async function saveHostImage(host){
  const k=host.toLowerCase(),file=document.getElementById(k+'-upload').files[0];
