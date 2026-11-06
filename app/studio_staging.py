@@ -1,6 +1,6 @@
 """Minimal Studio-only ASGI application for disposable staging.
 
-Does NOT import app.main, mount the main dashboard, start scheduler/monitor,
+Does NOT import the main API, mount the main dashboard, start scheduler/monitor,
 queue workers, legacy startup recovery or any generation endpoints.
 Uses a standalone PostgreSQL database via APP_ENV=staging.
 """
