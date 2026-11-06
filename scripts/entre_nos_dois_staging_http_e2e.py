@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import struct
+import subprocess
 import zlib
 from urllib import error, parse, request
 
@@ -80,6 +81,23 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert steps["helena_image"] == "configured"
     assert call(base, "/studio/entre-nos-dois/references/Helena/image")[0] in (401, 403)
 
+    # Real 1-second disposable MP3 with no speech or copyrighted content.
+    mp3 = subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=1", "-ac", "1", "-ar", "16000",
+         "-b:a", "16k", "-f", "mp3", "pipe:1"],
+        check=True, capture_output=True, timeout=15,
+    ).stdout
+    assert mp3.startswith(b"ID3") and len(mp3) > 500
+    code, body = call(base, "/studio/entre-nos-dois/audio/1", method="PUT", token=token,
+                      data=mp3, content_type="audio/mpeg")
+    assert code == 200 and json.loads(body)["private"] is True
+    code, body = call(base, "/studio/entre-nos-dois/audio/1/file", token=token)
+    assert code == 200 and body.startswith(b"ID3")
+    assert call(base, "/studio/entre-nos-dois/audio/1/file")[0] in (401, 403)
+    code, body = call(base, "/studio/entre-nos-dois/audio", token=token)
+    assert code == 200 and json.loads(body)["segments"][0]["uploaded"] is True
+
     old_login = parse.urlencode({"username": email, "password": initial_password}).encode()
     new_login = parse.urlencode({"username": email, "password": next_password}).encode()
     assert call(base, "/token", method="POST", data=old_login,
@@ -87,7 +105,7 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert call(base, "/token", method="POST", data=new_login,
                 content_type="application/x-www-form-urlencoded")[0] == 200
 
-    return {"staging_e2e": "passed", "checks": 10, "billable_calls": 0, "published": False}
+    return {"staging_e2e": "passed", "checks": 14, "billable_calls": 0, "published": False}
 
 
 if __name__ == "__main__":
