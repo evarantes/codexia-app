@@ -1270,7 +1270,7 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
         if not owners or len(group["paths"]) != int(group["link_count"] or 0):
             continue
         if any(
-            kind == "script"
+            kind in {"script", "caption"}
             for refs in owners.values()
             for kind, _filename in refs
         ):
