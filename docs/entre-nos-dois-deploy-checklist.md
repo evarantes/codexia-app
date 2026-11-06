@@ -80,9 +80,22 @@ fortes diferentes dos de produção; não copie credenciais de produção. A con
 da imagem pode consumir recursos do servidor. Validar RAM, CPU e espaço livre
 antes de iniciar. Não habilitar um domínio público sem TLS e autenticação.
 
-Criar um **administrador próprio de homologação** pelo processo autorizado
-de cadastro do Codexia, sem copiar usuários, tokens ou dados de produção.
-Apenas então executar os testes autenticados com
+Criar um **administrador próprio de homologação**, sem copiar usuários,
+tokens ou dados da produção. Após confirmar as migrações do banco e que ele
+está vazio, executar interativamente **somente no container de homologação**:
+
+```bash
+docker compose -f docker-compose.entre-nos-dois-staging.yml exec studio-api python -m scripts.entre_nos_dois_staging_admin
+```
+
+O comando solicita o e-mail e a senha nova pelo terminal (sem ecoar a senha).
+Exige `APP_ENV=staging`, exige o banco isolado `studio-db/codexia_staging`,
+e recusa a criação quando já existe qualquer usuário. **Nunca** utilize
+a mesma senha do Codexia de produção. O usuário de homologação precisa
+alterar sua senha no primeiro acesso.
+
+Depois, fazer login em `/token` pelo fluxo normal do Codexia,
+sem gravar o token no repositório, e executar os testes autenticados com
 `CODEXIA_STUDIO_SMOKE_TOKEN` local, como explicado acima.
 
 Para desligar sem apagar a biblioteca de imagens, use:
