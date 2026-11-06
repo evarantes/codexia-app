@@ -17,6 +17,7 @@ from app.database import get_db
 from app.models import User, Settings
 from app.services.provider_config import resolve_secret, normalize_secret
 from app.services.entre_nos_dois_readiness import summarize_readiness
+from app.services.entre_nos_dois_cost_worksheet import worksheet, CostWorksheetError
 from app.services.entre_nos_dois_references import (
     StudioReferenceError, host_reference_status, reference_file, store_host_reference, private_storage_health,
 )
@@ -68,6 +69,18 @@ def overview(current_user: User = Depends(get_current_admin_user)):
         "requires_human_cost_approval": True,
         "auto_publish": False,
     }
+
+@router.get("/voice-cost-worksheet")
+def voice_cost_worksheet(
+    usd_per_1000_characters: str | None = None,
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Human cost worksheet only; not a price lookup or payment permission."""
+    try:
+        return worksheet(usd_per_1000_characters=usd_per_1000_characters)
+    except CostWorksheetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
 
 @router.get("/readiness")
 def readiness(
