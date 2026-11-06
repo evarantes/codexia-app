@@ -131,8 +131,9 @@ document.getElementById('studio-logout').addEventListener('click',()=>{
 const studioFetch=(url,options={})=>fetch(url,{...options,cache:'no-store',headers:{...authHeaders(),...(options.headers||{})}});
 const previews={};
 const audioPreviewUrls={};
-let sequencePlayer=null,sequenceIndices=[],sequenceCursor=0;
+let sequencePlayer=null,sequenceIndices=[],sequenceCursor=0,sequencePauseTimer=null;
 function stopAudioSequence(){
+ if(sequencePauseTimer!==null){clearTimeout(sequencePauseTimer);sequencePauseTimer=null}
  sequenceIndices=[];sequenceCursor=0;
  if(sequencePlayer){sequencePlayer.pause();sequencePlayer.removeAttribute('src');sequencePlayer=null}
  document.getElementById('stop-audio-sequence').disabled=true;
@@ -145,7 +146,7 @@ function playNextAudioTurn(){
  if(!url){stopAudioSequence();return}
  previewIndex=index-1;renderPreview();
  sequencePlayer=new Audio(url);
- sequencePlayer.addEventListener('ended',()=>{sequencePlayer=null;playNextAudioTurn()},{once:true});
+ sequencePlayer.addEventListener('ended',()=>{sequencePlayer=null;sequencePauseTimer=setTimeout(()=>{sequencePauseTimer=null;playNextAudioTurn()},350)},{once:true});
  sequencePlayer.addEventListener('error',()=>{stopAudioSequence();document.getElementById('audio-review-message').textContent='Falha ao reproduzir uma das falas.'},{once:true});
  const p=sequencePlayer.play();
  if(p&&typeof p.catch==='function')p.catch(()=>{stopAudioSequence();document.getElementById('audio-review-message').textContent='Reprodução bloqueada pelo navegador; toque em Ouvir novamente.'});
