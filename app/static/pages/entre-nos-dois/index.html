@@ -25,6 +25,12 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 </div>
 <section class="card" style="margin-top:18px"><h2>Imagens oficiais para o teste</h2><p class="muted">Envie uma imagem separada de cada personagem (JPG, PNG ou WebP, até 8 MB). Ficam armazenadas em área privada e não são enviadas a provedores nesta etapa.</p><div class="grid"><div><label for="gabriel-upload">Gabriel</label><input id="gabriel-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-gabriel" type="button">Salvar Gabriel</button><p id="gabriel-status" class="muted">Ainda não verificado.</p><img id="gabriel-preview" alt="Referência privada de Gabriel" style="display:none;width:100%;max-width:220px;border-radius:10px"></div><div><label for="helena-upload">Helena</label><input id="helena-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-helena" type="button">Salvar Helena</button><p id="helena-status" class="muted">Ainda não verificado.</p><img id="helena-preview" alt="Referência privada de Helena" style="display:none;width:100%;max-width:220px;border-radius:10px"></div></div><p id="upload-message" class="muted" role="status"></p></section>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div><p id="next-action" class="notice" role="status" aria-live="polite">Verificando próximo passo...</p></section>
+<section class="card" style="margin-top:18px"><h2>Prévia do episódio — sem custo</h2><p class="muted">Simulação visual do roteiro: não reproduz as vozes Andrey/Luciana nem vídeo com sincronização labial. Clique para conferir os turnos antes da produção.</p>
+<div id="episode-preview" style="border:1px solid #596682;background:linear-gradient(115deg,#22334d,#2e243e);border-radius:14px;min-height:195px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px" aria-live="polite">
+<div id="preview-host" class="eyebrow">Prévia pronta para navegar</div>
+<div id="preview-line" style="font-size:clamp(17px,3vw,23px);line-height:1.5;max-width:700px">Carregue o roteiro para conferir a primeira fala.</div>
+<div id="preview-position" class="muted">Sem geração de mídia</div>
+</div><p style="display:flex;gap:8px;flex-wrap:wrap"><button id="preview-prev" type="button">Fala anterior</button><button id="preview-next" type="button">Próxima fala</button></p></section>
 <section class="card" style="margin-top:18px"><h2>Diálogo do teste</h2><ol id="dialogue"><li class="muted">Carregando roteiro...</li></ol><p class="muted" id="disclosure"></p></section>
 <footer>O piloto usa vozes e personagens virtuais. A duração só poderá ser confirmada após a geração e medição dos áudios.</footer>
 </main>
@@ -34,6 +40,16 @@ const readinessEndpoint='/studio/entre-nos-dois/readiness';
 const authHeaders=()=>{const token=localStorage.getItem('access_token');return token?{'Authorization':'Bearer '+token}:{}};
 const studioFetch=(url,options={})=>fetch(url,{...options,cache:'no-store',headers:{...authHeaders(),...(options.headers||{})}});
 const previews={};
+let previewDialogue=[],previewIndex=0;
+function renderPreview(){
+ const t=previewDialogue[previewIndex];
+ document.getElementById('preview-host').textContent=t?String(t.speaker)+' · '+(t.speaker==='Gabriel'?'Andrey':'Luciana'):'Prévia de roteiro';
+ document.getElementById('preview-line').textContent=t?String(t.text):'Ainda não há roteiro disponível.';
+ document.getElementById('preview-position').textContent=t?'Fala '+(previewIndex+1)+' de '+previewDialogue.length+' · quadro demonstrativo':'Sem geração de mídia';
+ document.getElementById('preview-prev').disabled=previewIndex===0;
+ document.getElementById('preview-next').disabled=!t||previewIndex===previewDialogue.length-1;
+}
+
 async function updateHostImages(){
  const response=await studioFetch('/studio/entre-nos-dois/references');
  if(!response.ok)throw new Error(response.status===503?'Configure o volume privado persistente do Studio no servidor.':'Não foi possível verificar as imagens.');
@@ -80,6 +96,7 @@ async function refresh(){
    }
    pilot.textContent=escapeText(data.pilot_title)+' · alvo '+escapeText(data.target_duration_seconds)+' segundos · '+escapeText(data.estimated_characters)+' caracteres';
    dialogue.replaceChildren();
+   previewDialogue=Array.isArray(data.dialogue)?data.dialogue:[];previewIndex=0;renderPreview();
    for(const turn of data.dialogue||[]){
      const li=document.createElement('li'),strong=document.createElement('strong');
      strong.textContent=escapeText(turn.speaker)+': ';
@@ -105,6 +122,9 @@ async function refresh(){
  }catch(err){hosts.textContent=err.message;pilot.textContent='Não disponível';dialogue.replaceChildren();document.querySelector('#readiness').textContent=err.message;}
 }
 document.querySelector('#refresh').addEventListener('click',refresh);
+document.querySelector('#preview-prev').addEventListener('click',()=>{previewIndex=Math.max(0,previewIndex-1);renderPreview()});
+document.querySelector('#preview-next').addEventListener('click',()=>{previewIndex=Math.min(previewDialogue.length-1,previewIndex+1);renderPreview()});
+renderPreview();
 for(const host of ['Gabriel','Helena'])document.getElementById('upload-'+host.toLowerCase()).addEventListener('click',()=>saveHostImage(host));
 document.querySelector('#verify-voices').addEventListener('click',async()=>{
  const button=document.querySelector('#verify-voices');
