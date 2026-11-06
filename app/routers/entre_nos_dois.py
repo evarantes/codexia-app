@@ -9,6 +9,7 @@ import os
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from pathlib import Path
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -18,6 +19,7 @@ from app.models import User, Settings
 from app.services.provider_config import resolve_secret, normalize_secret
 from app.services.entre_nos_dois_readiness import summarize_readiness
 from app.services.entre_nos_dois_cost_worksheet import worksheet, CostWorksheetError
+from app.services.entre_nos_dois_tts_single import submit_one_turn, PaidPilotTtsError
 from app.services.entre_nos_dois_references import (
     StudioReferenceError, host_reference_status, reference_file, store_host_reference, private_storage_health,
 )
@@ -189,6 +191,45 @@ def pilot_audio_status(current_user: User = Depends(get_current_admin_user)):
         return list_segment_audio(user_id=current_user.id)
     except (StudioAudioError, OSError) as exc:
         raise HTTPException(status_code=503, detail="Armazenamento privado de áudio indisponível.") from None
+
+
+
+class PilotPaidVoiceApproval(BaseModel):
+    quote_digest: str
+    usd_per_1000_characters: str
+    approved_max_usd: str
+    confirmation: str
+    rate_checked_in_provider_account: bool = False
+
+
+@router.post("/audio/generate/{index}")
+def generate_single_pilot_turn(
+    index: int,
+    approval: PilotPaidVoiceApproval,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Paid path is disabled unless the operator explicitly enables and caps it."""
+    if os.getenv("CODEXIA_STUDIO_ENABLE_PAID_TTS") != "1":
+        raise HTTPException(status_code=403, detail="Geração paga não habilitada.")
+    settings = (
+        db.query(Settings).filter(Settings.user_id == current_user.id)
+        .order_by(Settings.id.desc()).first()
+    )
+    own_settings = settings if settings is not None else SimpleNamespace()
+    credential = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
+    try:
+        return submit_one_turn(
+            user_id=current_user.id, index=index,
+            api_key=credential.get("value") or "",
+            quote_digest=approval.quote_digest,
+            usd_per_1000_characters=approval.usd_per_1000_characters,
+            approved_max_usd=approval.approved_max_usd,
+            confirmation=approval.confirmation,
+            rate_checked_in_provider_account=approval.rate_checked_in_provider_account,
+        )
+    except (PaidPilotTtsError, CostWorksheetError, StudioAudioError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.get("/audio/timeline")
