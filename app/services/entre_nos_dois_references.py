@@ -87,5 +87,19 @@ def host_reference_status(*, user_id: int) -> dict:
 
 
 def private_storage_health(user_id: int | None = None) -> dict:
-    """Report whether the existing Codexia Google Drive settings are usable."""
-    return drive_storage_health(user_id=user_id)
+    """Drive is the media store; the private volume holds only small safety metadata."""
+    drive = drive_storage_health(user_id=user_id)
+    if not drive.get("ready"):
+        return drive
+    try:
+        root = _storage_root()
+        with tempfile.NamedTemporaryFile(prefix=".studio-metadata-check-", dir=root, delete=True) as file:
+            file.write(b"ok")
+            file.flush()
+            os.fsync(file.fileno())
+    except StudioReferenceError as exc:
+        reason = "public_directory" if "diretório público" in str(exc) else "metadata_storage_unavailable"
+        return {"ready": False, "reason": reason}
+    except (OSError, ValueError):
+        return {"ready": False, "reason": "metadata_storage_unavailable"}
+    return {"ready": True, "reason": "drive_and_metadata_ready"}
