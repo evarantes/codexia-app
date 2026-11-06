@@ -42,7 +42,7 @@ class StudioReadinessTests(unittest.TestCase):
             visual_assets={"Helena": True, "Gabriel": True},
         )
         self.assertFalse(result["can_prepare_visual_pilot"])
-        self.assertEqual(result["next_action"], "Configurar armazenamento privado")
+        self.assertEqual(result["next_action"], "Conectar o Google Drive e configurar o volume de metadados")
 
     def test_missing_keys_are_visible(self):
         result = summarize_readiness(elevenlabs_configured=False, fal_configured=False)
