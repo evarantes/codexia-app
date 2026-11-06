@@ -806,7 +806,8 @@ class CentralAssetTransfer:
                 actual_sha = digest(group[0][0])
                 actual_size = int(group[0][2].st_size)
                 expected_kinds = {kind for kind, _ in expected}
-                if (not expected_kinds
+                if ("caption" in expected_kinds
+                        or not expected_kinds
                         or any(not any(key[0] == kind and value == (actual_sha, actual_size)
                                        for key, value in verified.items())
                                for kind in expected_kinds)):
