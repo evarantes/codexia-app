@@ -25,4 +25,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3).close()" || exit 1
 
-CMD ["sh", "-c", "python scripts/entre_nos_dois_staging_schema.py && uvicorn app.studio_staging:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "python -m scripts.entre_nos_dois_staging_schema && uvicorn app.studio_staging:app --host 0.0.0.0 --port 8000"]
