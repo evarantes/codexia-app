@@ -89,14 +89,22 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
         check=True, capture_output=True, timeout=15,
     ).stdout
     assert mp3.startswith(b"ID3") and len(mp3) > 500
-    code, body = call(base, "/studio/entre-nos-dois/audio/1", method="PUT", token=token,
-                      data=mp3, content_type="audio/mpeg")
-    assert code == 200 and json.loads(body)["private"] is True
-    code, body = call(base, "/studio/entre-nos-dois/audio/1/file", token=token)
-    assert code == 200 and body.startswith(b"ID3")
-    assert call(base, "/studio/entre-nos-dois/audio/1/file")[0] in (401, 403)
+    for index in (1, 2, 3, 4):
+        code, body = call(base, f"/studio/entre-nos-dois/audio/{index}", method="PUT", token=token,
+                          data=mp3, content_type="audio/mpeg")
+        assert code == 200 and json.loads(body)["private"] is True
+        code, body = call(base, f"/studio/entre-nos-dois/audio/{index}/file", token=token)
+        assert code == 200 and body.startswith(b"ID3")
+        assert call(base, f"/studio/entre-nos-dois/audio/{index}/file")[0] in (401, 403)
     code, body = call(base, "/studio/entre-nos-dois/audio", token=token)
-    assert code == 200 and json.loads(body)["segments"][0]["uploaded"] is True
+    assert code == 200 and json.loads(body)["all_uploaded"] is True
+    code, body = call(base, "/studio/entre-nos-dois/audio/timeline", token=token)
+    assert code == 200
+    timeline = json.loads(body)
+    assert timeline["ready"] is True and len(timeline["segments"]) == 4
+    assert 4.0 <= timeline["total_seconds"] <= 6.0
+    assert timeline["is_rendered_video"] is False and timeline["auto_publish"] is False
+    assert call(base, "/studio/entre-nos-dois/audio/timeline")[0] in (401, 403)
 
     old_login = parse.urlencode({"username": email, "password": initial_password}).encode()
     new_login = parse.urlencode({"username": email, "password": next_password}).encode()
@@ -105,7 +113,7 @@ def exercise(base: str, *, email: str, initial_password: str, next_password: str
     assert call(base, "/token", method="POST", data=new_login,
                 content_type="application/x-www-form-urlencoded")[0] == 200
 
-    return {"staging_e2e": "passed", "checks": 14, "billable_calls": 0, "published": False}
+    return {"staging_e2e": "passed", "checks": 20, "billable_calls": 0, "published": False}
 
 
 if __name__ == "__main__":
