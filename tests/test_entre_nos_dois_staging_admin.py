@@ -1,5 +1,7 @@
 import os
+import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.entre_nos_dois_staging_admin import (
@@ -20,6 +22,14 @@ class StagingFirstAdminTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "APP_ENV": "staging",
             "DATABASE_URL": "postgresql://user:pass@production-db:5432/codexia",
+        }):
+            with self.assertRaises(StagingBootstrapError):
+                ensure_staging_environment()
+
+    def test_deceptive_database_url_is_blocked(self):
+        with patch.dict(os.environ, {
+            "APP_ENV": "staging",
+            "DATABASE_URL": "postgresql://studio-db@production-db:5432/codexia_staging",
         }):
             with self.assertRaises(StagingBootstrapError):
                 ensure_staging_environment()
@@ -54,7 +64,7 @@ class StagingFirstAdminTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "APP_ENV": "staging",
             "DATABASE_URL": "postgresql://user:pass@studio-db:5432/codexia_staging",
-        }):
+        }), patch.dict(sys.modules, {"app.models": SimpleNamespace(User=object())}):
             with self.assertRaises(StagingBootstrapError):
                 bootstrap_admin("admin@example.com", "example-secure-passphrase", session_factory=lambda: db)
         self.assertTrue(db.rolled_back)
