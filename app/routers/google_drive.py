@@ -2028,6 +2028,10 @@ def _run_migration_stage(
 ) -> None:
     """Archive, verify, and clean up to ten projects, then enqueue the next batch."""
     payload = _read_job(job_id)
+    if not payload.get("verified_archive_cleanup_sweep_done"):
+        # A pre-deploy stage may already say its cleanup completed; force one
+        # new pass so archived files from earlier batches are considered.
+        payload["current_stage_main_cleanup_complete"] = False
     batch_baseline = int(payload.get("stage_baseline_projects") or 0)
     total_projects = int(payload.get("overall_total_projects") or 0)
     if not payload.get("current_stage_main_cleanup_complete"):
