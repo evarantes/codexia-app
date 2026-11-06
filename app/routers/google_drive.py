@@ -832,6 +832,22 @@ def _project_needs_archive(
             path = Path(asset["path"])
             if not path.is_file():
                 continue
+            # New archive entries cannot be skipped: avoid hashing large media
+            # just to conclude that this project still needs an upload. The
+            # upload path computes and verifies SHA-256 before Drive receives
+            # bytes, and cleanup still requires a confirmed index entry.
+            exact = index.get((kind, filename)) or {}
+            if not exact:
+                original = Path(filename)
+                versioned_prefix = f"{original.stem}__sha256-"
+                has_versioned_copy = any(
+                    indexed_kind == kind
+                    and indexed_name.startswith(versioned_prefix)
+                    and indexed_name.endswith(original.suffix)
+                    for indexed_kind, indexed_name in index
+                )
+                if not has_versioned_copy:
+                    return True
             try:
                 stat = path.stat()
                 size = int(stat.st_size)
