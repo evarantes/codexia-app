@@ -24,7 +24,10 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <label>E-mail<input id="studio-login-email" type="email" autocomplete="username" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
 <label>Senha<input id="studio-login-password" type="password" autocomplete="current-password" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
 <button id="studio-login-submit" type="submit">Entrar no Studio</button><button id="studio-logout" type="button">Sair</button>
-</form><p id="studio-login-status" class="muted" role="status" aria-live="polite">Autenticação necessária para dados e imagens privados.</p></section>
+</form><form id="studio-password-form" style="display:none;margin-top:15px;gap:10px;flex-wrap:wrap;align-items:end">
+<label>Nova senha (16 a 72 caracteres)<input id="studio-new-password" type="password" autocomplete="new-password" minlength="16" maxlength="72" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
+<label>Confirmar nova senha<input id="studio-new-password-confirm" type="password" autocomplete="new-password" minlength="16" maxlength="72" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
+<button type="submit">Trocar senha e abrir Studio</button></form><p id="studio-login-status" class="muted" role="status" aria-live="polite">Autenticação necessária para dados e imagens privados.</p></section>
 <div class="grid">
 <section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais devem ser carregadas em armazenamento privado antes de qualquer animação.</p></section>
 <section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button> <button id="verify-voices" type="button">Verificar vozes (sem gerar áudio)</button><p id="voice-check-result" class="muted" role="status" aria-live="polite">A disponibilidade real das vozes ainda não foi consultada.</p></section>
@@ -47,6 +50,8 @@ const readinessEndpoint='/studio/entre-nos-dois/readiness';
 const studioTokenKey='entre_nos_dois_admin_token';
 const authHeaders=()=>{if(sessionStorage.getItem('entre_nos_dois_logged_out')==='1')return {};const token=sessionStorage.getItem(studioTokenKey)||localStorage.getItem('access_token');return token?{'Authorization':'Bearer '+token}:{}};
 const loginStatus=document.getElementById('studio-login-status');
+let pendingStagingToken=null;
+let initialPassword=null;
 document.getElementById('studio-login-form').addEventListener('submit',async(event)=>{
  event.preventDefault();const button=document.getElementById('studio-login-submit');
  button.disabled=true;loginStatus.textContent='Conferindo acesso administrativo...';
@@ -58,18 +63,55 @@ document.getElementById('studio-login-form').addEventListener('submit',async(eve
    if(!response.ok)throw new Error('E-mail ou senha não aceitos.');
    const data=await response.json();
    if(!data.access_token)throw new Error('O login não retornou sessão válida.');
+   if(data.must_change_password){
+     pendingStagingToken=data.access_token;
+     initialPassword=password;
+     document.getElementById('studio-password-form').style.display='flex';
+     loginStatus.textContent='Para continuar, troque a senha temporária do administrador de homologação.';
+     return;
+   }
    const admin=await fetch('/studio/entre-nos-dois/overview',{headers:{Authorization:'Bearer '+data.access_token},cache:'no-store'});
    if(!admin.ok)throw new Error('Esta conta não tem permissão administrativa neste ambiente.');
    sessionStorage.removeItem('entre_nos_dois_logged_out');
    sessionStorage.setItem(studioTokenKey,data.access_token);
-   document.getElementById('studio-login-password').value='';
    loginStatus.textContent='Administrador autenticado nesta aba.';
    await refresh();
  }catch(error){sessionStorage.removeItem(studioTokenKey);loginStatus.textContent=error.message;}
  finally{button.disabled=false;document.getElementById('studio-login-password').value='';}
 });
+document.getElementById('studio-password-form').addEventListener('submit',async(event)=>{
+ event.preventDefault();
+ if(!pendingStagingToken||!initialPassword){loginStatus.textContent='Inicie o login novamente.';return;}
+ const form=document.getElementById('studio-password-form'),next=document.getElementById('studio-new-password').value;
+ if(next!==document.getElementById('studio-new-password-confirm').value){loginStatus.textContent='As novas senhas não coincidem.';return;}
+ const button=form.querySelector('button');button.disabled=true;
+ try{
+   const response=await fetch('/staging/change-password',{
+     method:'POST',cache:'no-store',
+     headers:{'Content-Type':'application/json','Authorization':'Bearer '+pendingStagingToken},
+     body:JSON.stringify({current_password:initialPassword,new_password:next})
+   });
+   if(!response.ok)throw new Error('Não foi possível trocar a senha. Verifique os requisitos.');
+   const admin=await fetch('/studio/entre-nos-dois/overview',{
+     cache:'no-store',headers:{Authorization:'Bearer '+pendingStagingToken}
+   });
+   if(!admin.ok)throw new Error('Senha alterada, mas a sessão não pôde ser validada. Faça login novamente.');
+   sessionStorage.removeItem('entre_nos_dois_logged_out');
+   sessionStorage.setItem(studioTokenKey,pendingStagingToken);
+   loginStatus.textContent='Senha alterada. Administrador autenticado nesta aba.';
+   form.style.display='none';await refresh();
+ }catch(error){loginStatus.textContent=error.message;}
+ finally{
+   initialPassword=null;pendingStagingToken=null;button.disabled=false;
+   document.getElementById('studio-new-password').value='';
+   document.getElementById('studio-new-password-confirm').value='';
+   document.getElementById('studio-login-password').value='';
+ }
+});
 document.getElementById('studio-logout').addEventListener('click',()=>{
  sessionStorage.removeItem(studioTokenKey);
+ pendingStagingToken=null;initialPassword=null;
+ document.getElementById('studio-password-form').style.display='none';
  sessionStorage.setItem('entre_nos_dois_logged_out','1');
  loginStatus.textContent='Sessão do Studio encerrada nesta aba.';
  for(const k of Object.keys(previews)){URL.revokeObjectURL(previews[k]);delete previews[k]}
