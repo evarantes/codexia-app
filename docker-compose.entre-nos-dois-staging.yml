@@ -7,14 +7,12 @@ services:
   studio-api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.studio-staging
     restart: "no"
-    # Esquema exclusivo de staging; não importa app.main nem inicia monitor/filas.
-    command: ["sh", "-c", "python scripts/apply_migrations.py && uvicorn app.studio_staging:app --host 0.0.0.0 --port 8000"]
+    # O Dockerfile reduzido cria e verifica apenas o schema de homologação.
     environment:
       APP_ENV: staging
       DATABASE_URL: postgresql://codexia_staging:${CODEXIA_STAGING_DB_PASSWORD:?Defina CODEXIA_STAGING_DB_PASSWORD}@studio-db:5432/codexia_staging
-      REDIS_URL: redis://studio-redis:6379/0
       SECRET_KEY: ${CODEXIA_STAGING_SECRET_KEY:?Defina CODEXIA_STAGING_SECRET_KEY}
       CODEXIA_STUDIO_PRIVATE_DIR: /data/studio-private
       # Não configurar ELEVENLABS_API_KEY, FAL_KEY ou tokens do YouTube na homologação.
@@ -24,8 +22,6 @@ services:
       - studio_private:/data/studio-private
     depends_on:
       studio-db:
-        condition: service_healthy
-      studio-redis:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
@@ -41,15 +37,6 @@ services:
       - studio_db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U codexia_staging -d codexia_staging"]
-      interval: 5s
-      retries: 20
-      timeout: 3s
-
-  studio-redis:
-    image: redis:7-alpine
-    restart: "no"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 20
       timeout: 3s
