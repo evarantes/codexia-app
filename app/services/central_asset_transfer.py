@@ -22,13 +22,6 @@ EXTENSIONS = {'image': {'.png', '.jpg', '.jpeg', '.webp'},
               'audio': {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'},
               'video': {'.mp4', '.mov', '.mkv', '.webm'},
               'caption': {'.srt', '.vtt', '.ass'}, 'script': {'.json'}}
-_VIDEO_RETENTION_STATUSES = {
-    'completed', 'awaiting_review', 'approved', 'rendered_upload_failed', 'published',
-}
-
-
-def preserves_final_video(status):
-    return str(status or '').strip().lower() in _VIDEO_RETENTION_STATUSES
 
 
 def digest(path, progress_callback=None):
@@ -804,10 +797,6 @@ class CentralAssetTransfer:
                 expected = set()
                 for _, refs, _ in group:
                     expected.update(refs)
-                if (any(kind == 'video' for kind, _ in expected)
-                        and preserves_final_video(task_status)):
-                    # Keep finished video outputs locally available.
-                    continue
                 # Identical inode aliases may be removed together only when
                 # every alias is represented in this task's verified archive.
                 actual_sha = digest(group[0][0])
