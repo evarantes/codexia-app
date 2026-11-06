@@ -988,18 +988,10 @@ def _project_archive_inventory(
         finally:
             db.close()
 
-    manifests_scanned = 0
-    for manifest_path in manifest_paths:
-        manifests_scanned += 1
-        if progress_callback:
-            progress_callback({
-                "phase": "inventory",
-                "task_id": manifest_path.parent.name,
-                "manifests_scanned": manifests_scanned,
-            })
+    def scan_manifest(manifest_path: Path):
         task_id = manifest_path.parent.name
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
-            continue
+            return None, {}
         manifest = _read_json(manifest_path)
         task = task_snapshots.get(task_id)
         # Preserve the legacy Redis/in-memory fallback only for tasks with no
@@ -1025,6 +1017,9 @@ def _project_archive_inventory(
             "script_path": manifest_path.parent / "script.json",
             "assets": {},
         }
+        local_path_cache: Dict[str, Optional[Path]] = {}
+        local_stat_cache: Dict[str, os.stat_result] = {}
+        local_inodes: Dict[tuple[int, int], Dict[str, Any]] = {}
         for artifact in manifest.get("artifacts") or []:
             if not isinstance(artifact, dict):
                 continue
@@ -1035,7 +1030,7 @@ def _project_archive_inventory(
             for key in ("durable_path", "original_path"):
                 candidate = _local_archive_path(
                     artifact.get(key), allowed_roots,
-                    path_cache=path_cache, stat_cache=stat_cache,
+                    path_cache=local_path_cache, stat_cache=local_stat_cache,
                 )
                 if candidate and candidate not in aliases:
                     aliases.append(candidate)
@@ -1050,14 +1045,14 @@ def _project_archive_inventory(
             project["assets"].setdefault(ref_key, {"kind": kind, "filename": filename, "path": source})
             for alias in aliases:
                 try:
-                    info = stat_cache.get(str(alias))
+                    info = local_stat_cache.get(str(alias))
                     if info is None:
                         info = alias.stat()
-                        stat_cache[str(alias)] = info
+                        local_stat_cache[str(alias)] = info
                 except OSError:
                     continue
                 inode_key = (int(info.st_dev), int(info.st_ino))
-                group = inodes.setdefault(inode_key, {
+                group = local_inodes.setdefault(inode_key, {
                     "device": inode_key[0], "inode": inode_key[1],
                     "size": int(info.st_size), "link_count": int(info.st_nlink),
                     "paths": set(), "owners": {},
@@ -1065,8 +1060,39 @@ def _project_archive_inventory(
                 group["paths"].add(alias)
                 group["link_count"] = max(group["link_count"], int(info.st_nlink))
                 group["owners"].setdefault(task_id, set()).add(ref_key)
+        return project, local_inodes
 
-        projects[task_id] = project
+    manifests_scanned = 0
+    scan_workers = min(2, len(manifest_paths)) if manifest_paths else 1
+    with ThreadPoolExecutor(max_workers=scan_workers) as scan_pool:
+        future_paths = {
+            scan_pool.submit(scan_manifest, manifest_path): manifest_path
+            for manifest_path in manifest_paths
+        }
+        for future in as_completed(future_paths):
+            manifest_path = future_paths[future]
+            project, local_inodes = future.result()
+            manifests_scanned += 1
+            if project:
+                projects[str(project["task_id"])] = project
+            for inode_key, local_group in local_inodes.items():
+                group = inodes.get(inode_key)
+                if group is None:
+                    inodes[inode_key] = local_group
+                    continue
+                group["size"] = max(int(group.get("size") or 0), int(local_group.get("size") or 0))
+                group["link_count"] = max(
+                    int(group.get("link_count") or 0), int(local_group.get("link_count") or 0)
+                )
+                group["paths"].update(local_group["paths"])
+                for task_id, refs in local_group["owners"].items():
+                    group["owners"].setdefault(task_id, set()).update(refs)
+            if progress_callback:
+                progress_callback({
+                    "phase": "inventory",
+                    "task_id": manifest_path.parent.name,
+                    "manifests_scanned": manifests_scanned,
+                })
 
     for music_project in _saved_music_archive_projects():
         projects[music_project["task_id"]] = music_project
