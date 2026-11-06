@@ -55,6 +55,13 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <p><button id="play-audio-sequence" type="button" disabled>Ouvir diálogo completo</button> <button id="stop-audio-sequence" type="button" disabled>Parar reprodução</button></p>
 <p id="audio-timeline-summary" class="muted">A linha do tempo será calculada após importar os quatro MP3s.</p>
 <p id="audio-review-message" role="status" class="muted"></p></section>
+<section class="card" style="margin-top:18px"><h2>Preparação das cenas com sincronização labial</h2>
+<p class="muted">Este quadro verifica retratos e quatro áudios privados e calcula apenas uma estimativa de planejamento. Não envia imagens ou voz para fornecedores e não renderiza vídeo.</p>
+<label>Tarifa informada (US$ por segundo de cena)<input id="scene-rate" type="text" inputmode="decimal" placeholder="Opcional — conferir no provedor" style="padding:10px;border-radius:8px;max-width:210px;display:block"></label>
+<button id="scene-check" type="button">Verificar as quatro cenas</button>
+<p id="scene-status" class="muted" role="status">Aguardando verificação administrativa.</p>
+<div id="scene-lines"></div>
+</section>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div><p id="next-action" class="notice" role="status" aria-live="polite">Verificando próximo passo...</p></section>
 <section class="card" style="margin-top:18px"><h2>Prévia do episódio — sem custo</h2><p class="muted">Simulação visual do roteiro com imagens privadas cadastradas: não reproduz as vozes Andrey/Luciana nem vídeo com sincronização labial. Clique para conferir os turnos antes da produção.</p>
 <div id="episode-preview" style="border:1px solid #596682;background:linear-gradient(115deg,#22334d,#2e243e);border-radius:14px;min-height:195px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px" aria-live="polite">
@@ -218,6 +225,26 @@ async function refreshAudioReview(){
  }
 }
 
+async function refreshSceneReadiness(){
+ const out=document.getElementById('scene-status'),lines=document.getElementById('scene-lines');
+ const rate=document.getElementById('scene-rate').value.trim().replace(',','.');
+ const url='/studio/entre-nos-dois/scene/readiness'+(rate?'?usd_per_second='+encodeURIComponent(rate):'');
+ try{
+  const res=await studioFetch(url);
+  if(!res.ok){const info=await res.json().catch(()=>({}));throw new Error(info.detail||'Consulta indisponível.')}
+  const plan=await res.json();
+  out.textContent=plan.inputs_ready
+   ?'Quatro cenas preparáveis; duração medida '+plan.measured_total_seconds+'s, estimativa de US$ '+plan.estimated_total_usd+'. Preço não verificado; nenhuma mídia enviada.'
+   :'Pendências: '+plan.missing.join(', ')+'. Nenhuma geração de vídeo realizada.';
+  lines.replaceChildren();
+  for(const item of plan.scenes){
+   const line=document.createElement('p');line.className='muted';
+   line.textContent='Cena '+item.scene_index+' · '+item.speaker+' · '+item.duration_seconds+'s · estimativa US$ '+item.estimated_usd;
+   lines.append(line);
+  }
+ }catch(error){out.textContent=error.message}
+}
+document.getElementById('scene-check').addEventListener('click',refreshSceneReadiness);
 let currentVoiceQuote=null;
 async function refreshVoiceGenerationGate(){
  const panel=document.getElementById('paid-tts-controls');
@@ -349,6 +376,7 @@ async function refresh(){
    try{await refreshAudioReview()}catch(err){document.getElementById('audio-review-message').textContent=err.message}
    await refreshCostWorksheet()
    await refreshVoiceGenerationGate()
+   await refreshSceneReadiness()
    const readiness=document.querySelector('#readiness');
    readiness.replaceChildren();
    const statusResp=await studioFetch(readinessEndpoint);
