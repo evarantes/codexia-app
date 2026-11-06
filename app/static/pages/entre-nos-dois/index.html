@@ -21,7 +21,7 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <p class="notice"><strong>Ambiente de prévia, somente leitura.</strong> Nenhum botão nesta tela gera áudio, vídeo, cobra créditos ou publica no YouTube. O envio pago permanece bloqueado até validação e autorização.</p>
 <div class="grid">
 <section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais devem ser carregadas em armazenamento privado antes de qualquer animação.</p></section>
-<section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button></section>
+<section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button> <button id="verify-voices" type="button">Verificar vozes (sem gerar áudio)</button><p id="voice-check-result" class="muted" role="status" aria-live="polite">A disponibilidade real das vozes ainda não foi consultada.</p></section>
 </div>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div></section>
 <section class="card" style="margin-top:18px"><h2>Diálogo do teste</h2><ol id="dialogue"><li class="muted">Carregando roteiro...</li></ol><p class="muted" id="disclosure"></p></section>
@@ -69,6 +69,26 @@ async function refresh(){
    }
  }catch(err){hosts.textContent=err.message;pilot.textContent='Não disponível';dialogue.replaceChildren();document.querySelector('#readiness').textContent=err.message;}
 }
-document.querySelector('#refresh').addEventListener('click',refresh);refresh();
+document.querySelector('#refresh').addEventListener('click',refresh);
+document.querySelector('#verify-voices').addEventListener('click',async()=>{
+ const button=document.querySelector('#verify-voices');
+ const output=document.querySelector('#voice-check-result');
+ button.disabled=true;
+ output.textContent='Consultando disponibilidade dos identificadores de voz, sem sintetizar áudio...';
+ try{
+   const response=await fetch('/studio/entre-nos-dois/verify-voices',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Accept':'application/json'}});
+   if(!response.ok)throw new Error(response.status===401||response.status===403?'Acesso administrativo necessário.':'A consulta não pôde ser concluída.');
+   const data=await response.json();
+   if(data.status==='ready_for_cost_approval') {
+     output.textContent='Vozes acessíveis pela API configurada: '+(data.voices||[]).map(v=>v.speaker+' ('+v.provider_name+')').join(' e ')+'. Nenhum áudio gerado.';
+     output.className='ready';
+   }else{
+     output.textContent=data.message||'Acesso às vozes ainda não confirmado.';
+     output.className='status';
+   }
+ }catch(error){output.textContent=error.message;output.className='status';}
+ finally{button.disabled=false;}
+});
+refresh();
 </script>
 </body></html>
