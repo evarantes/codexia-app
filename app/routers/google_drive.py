@@ -1526,16 +1526,20 @@ def _run_migration(
                             return
                         last_progress_write = now
                         entries = list(progress_state.values())
-                        total_size = sum(max(0, int(item.get("size") or 0)) for item in entries)
-                        verified = sum(max(0, int(item.get("verified") or 0)) for item in entries)
-                        uploaded = sum(max(0, int(item.get("uploaded") or 0)) for item in entries)
+                        pending_entries = [
+                            item for item in entries
+                            if item.get("phase") in {"queued", "verifying", "uploading"}
+                        ]
+                        total_size = sum(max(0, int(item.get("size") or 0)) for item in pending_entries)
+                        verified = sum(max(0, int(item.get("verified") or 0)) for item in pending_entries)
+                        uploaded = sum(max(0, int(item.get("uploaded") or 0)) for item in pending_entries)
                         active = sum(item.get("phase") in {"verifying", "uploading"} for item in entries)
                         payload.update({
                             "current_project_index": completed_projects_before + project_index,
                             "current_project_total": max(total_projects, completed_projects_before + len(selected)),
                             "current_asset_index": min(len(asset_items), processed_files + 1),
                             "current_asset_total": len(asset_items),
-                            "current_asset": f"Envio paralelo: {active} ativo(s) de até {max_parallel_uploads}",
+                            "current_asset": (f"Envio paralelo: {active} ativo(s), limite {max_parallel_uploads}" if active else "Preparando próximo arquivo"),
                             "current_asset_size_bytes": total_size,
                             "current_asset_verification_bytes": verified,
                             "current_asset_uploaded_bytes": uploaded,
