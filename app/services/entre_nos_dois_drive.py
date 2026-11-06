@@ -56,6 +56,8 @@ def store_asset_bytes(*, user_id: int, kind: str, filename: str, body: bytes, me
 
 def find_asset(*, user_id: int, kind: str, filename: str) -> dict | None:
     task = task_for_user(user_id)
+    if not drive_storage_health(user_id=user_id).get("ready"):
+        return None
     try:
         from app.services.central_asset_transfer import central_index
         return next(
