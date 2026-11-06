@@ -13,6 +13,10 @@ main{max-width:1080px;margin:auto;padding:26px 20px 60px}.notice{background:#202
 ol{padding-left:22px}li{line-height:1.6;margin:12px 0}li strong{color:#ead49e}.status{color:#f0cb77;font-weight:700}.ready{color:#84d9b0;font-weight:700}footer{margin-top:24px;color:#adbad0;font-size:13px}
 button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:#29456e;color:white;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}button:hover:not(:disabled){background:#37598d}
 @media(max-width:720px){.grid{grid-template-columns:1fr}header{padding:22px 20px}}
+.studio-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0}
+.studio-tabs button[aria-selected="true"]{background:#6840b6;border-color:#a68aff}
+.video-row{border-top:1px solid #364557;padding:14px 0}.video-row h3{margin:0 0 8px}.video-meta{display:flex;gap:12px;flex-wrap:wrap}
+[hidden]{display:none!important}
 </style>
 </head>
 <body>
@@ -28,6 +32,11 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <label>Nova senha (16 a 72 caracteres)<input id="studio-new-password" type="password" autocomplete="new-password" minlength="16" maxlength="72" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
 <label>Confirmar nova senha<input id="studio-new-password-confirm" type="password" autocomplete="new-password" minlength="16" maxlength="72" required style="display:block;padding:10px;border-radius:8px;max-width:320px;width:100%"></label>
 <button type="submit">Trocar senha e abrir Studio</button></form><p id="studio-login-status" class="muted" role="status" aria-live="polite">Autenticação necessária para dados e imagens privados.</p></section>
+<div class="studio-tabs" role="tablist" aria-label="Seções de Entre Nós Dois">
+<button class="studio-tab" type="button" role="tab" aria-selected="true" aria-controls="tab-preparation" data-target="tab-preparation">Preparação</button>
+<button class="studio-tab" type="button" role="tab" aria-selected="false" aria-controls="tab-videos" data-target="tab-videos">Vídeos do projeto</button>
+</div>
+<div id="tab-preparation" role="tabpanel">
 <div class="grid">
 <section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais ficam na pasta privada do Entre Nós Dois no Google Drive antes de qualquer animação.</p></section>
 <section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button> <button id="verify-voices" type="button">Verificar vozes (sem gerar áudio)</button><p id="voice-check-result" class="muted" role="status" aria-live="polite">A disponibilidade real das vozes ainda não foi consultada.</p></section>
@@ -72,6 +81,13 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 </div><p style="display:flex;gap:8px;flex-wrap:wrap"><button id="preview-prev" type="button">Fala anterior</button><button id="preview-next" type="button">Próxima fala</button></p></section>
 <section class="card" style="margin-top:18px"><h2>Diálogo do teste</h2><ol id="dialogue"><li class="muted">Carregando roteiro...</li></ol><p class="muted" id="disclosure"></p></section>
 <footer>O piloto usa vozes e personagens virtuais. A duração só poderá ser confirmada após a geração e medição dos áudios.</footer>
+</div>
+<section id="tab-videos" class="card" role="tabpanel" hidden>
+<h2>Vídeos do Entre Nós Dois</h2>
+<p class="muted">Esta lista é separada das demais produções do Codexia. Ela mostra apenas episódios associados ao módulo e ao seu usuário.</p>
+<button id="refresh-project-videos" type="button">Atualizar lista</button>
+<div id="project-video-list" aria-live="polite"><p class="muted">Abra esta aba para consultar os episódios.</p></div>
+</section>
 </main>
 <script>
 const base='/studio/entre-nos-dois/overview';
@@ -398,6 +414,37 @@ document.querySelector('#preview-prev').addEventListener('click',()=>{previewInd
 document.querySelector('#preview-next').addEventListener('click',()=>{previewIndex=Math.min(previewDialogue.length-1,previewIndex+1);renderPreview()});
 renderPreview();
 for(const host of ['Gabriel','Helena'])document.getElementById('upload-'+host.toLowerCase()).addEventListener('click',()=>saveHostImage(host));
+async function refreshProjectVideos(){
+ const holder=document.querySelector('#project-video-list');
+ holder.textContent='Carregando vídeos do projeto...';
+ try{
+  const response=await studioFetch('/studio/entre-nos-dois/videos');
+  if(!response.ok)throw new Error(response.status===401||response.status===403?'Entre no Studio para ver os episódios.':'Não foi possível carregar os vídeos do projeto.');
+  const data=await response.json();holder.replaceChildren();
+  if(!(data.items||[]).length){holder.textContent='Ainda não há episódios registrados nesta aba.';return}
+  for(const item of data.items){
+   const row=document.createElement('article');row.className='video-row';
+   const title=document.createElement('h3');title.textContent=item.title||'Episódio sem título';
+   const meta=document.createElement('div');meta.className='video-meta muted';
+   const state=document.createElement('span');state.textContent='Status: '+(item.status||'pendente');
+   const progress=document.createElement('span');progress.textContent='Progresso: '+Number(item.progress||0)+'%';
+   const content=document.createElement('span');content.textContent='Tipo: '+(item.content_type||'episódio');
+   meta.append(state,progress,content);row.append(title,meta);
+   if(item.message){const message=document.createElement('p');message.className='muted';message.textContent=item.message;row.append(message)}
+   if(item.error){const error=document.createElement('p');error.className='status';error.textContent=item.error;row.append(error)}
+   if(item.youtube_url){const link=document.createElement('a');link.href=item.youtube_url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Abrir no YouTube';row.append(link)}
+   holder.append(row);
+  }
+ }catch(error){holder.textContent=error.message}
+}
+document.querySelector('#refresh-project-videos').addEventListener('click',refreshProjectVideos);
+document.querySelectorAll('.studio-tab').forEach(button=>button.addEventListener('click',async()=>{
+ const target=button.dataset.target;
+ document.querySelectorAll('.studio-tab').forEach(tab=>tab.setAttribute('aria-selected',String(tab===button)));
+ document.querySelector('#tab-preparation').hidden=target!=='tab-preparation';
+ document.querySelector('#tab-videos').hidden=target!=='tab-videos';
+ if(target==='tab-videos')await refreshProjectVideos();
+}));
 document.querySelector('#verify-voices').addEventListener('click',async()=>{
  const button=document.querySelector('#verify-voices');
  const output=document.querySelector('#voice-check-result');
