@@ -43,7 +43,7 @@ class StudioOnlyStagingTests(unittest.TestCase):
         dockerfile = Path("Dockerfile.studio-staging").read_text(encoding="utf-8")
         self.assertIn("python scripts/entre_nos_dois_staging_schema.py", dockerfile)
         self.assertNotIn("playwright install", dockerfile)
-        self.assertNotIn("ffmpeg", dockerfile.lower())
+        self.assertNotIn("apt-get", dockerfile.lower())
         self.assertNotIn("uvicorn app.main:app", self.compose)
 
     def test_login_is_only_for_active_admin_and_expires(self):
