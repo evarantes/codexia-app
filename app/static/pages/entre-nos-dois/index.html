@@ -23,6 +23,7 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <section class="card"><h2>Apresentadores oficiais</h2><div id="hosts"><p class="muted">Carregando vozes...</p></div><p class="muted">As imagens oficiais devem ser carregadas em armazenamento privado antes de qualquer animação.</p></section>
 <section class="card"><h2>Estado do piloto</h2><p id="pilot" class="muted">Carregando...</p><p><strong>Áudio real:</strong> <span class="status">Pendente</span></p><p><strong>Sincronização labial:</strong> <span class="status">Pendente</span></p><p><strong>Geração paga:</strong> <span class="status">Bloqueada</span></p><button id="refresh" type="button">Atualizar situação</button> <button id="verify-voices" type="button">Verificar vozes (sem gerar áudio)</button><p id="voice-check-result" class="muted" role="status" aria-live="polite">A disponibilidade real das vozes ainda não foi consultada.</p></section>
 </div>
+<section class="card" style="margin-top:18px"><h2>Imagens oficiais para o teste</h2><p class="muted">Envie uma imagem separada de cada personagem (JPG, PNG ou WebP, até 8 MB). Ficam armazenadas em área privada e não são enviadas a provedores nesta etapa.</p><div class="grid"><div><label for="gabriel-upload">Gabriel</label><input id="gabriel-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-gabriel" type="button">Salvar Gabriel</button><p id="gabriel-status" class="muted">Ainda não verificado.</p><img id="gabriel-preview" alt="Referência privada de Gabriel" style="display:none;width:100%;max-width:220px;border-radius:10px"></div><div><label for="helena-upload">Helena</label><input id="helena-upload" type="file" accept="image/png,image/jpeg,image/webp"><button id="upload-helena" type="button">Salvar Helena</button><p id="helena-status" class="muted">Ainda não verificado.</p><img id="helena-preview" alt="Referência privada de Helena" style="display:none;width:100%;max-width:220px;border-radius:10px"></div></div><p id="upload-message" class="muted" role="status"></p></section>
 <section class="card" style="margin-top:18px"><h2>Preparação para o primeiro teste</h2><p class="muted">O status abaixo informa apenas a configuração presente. Não comprova saldo, acesso à voz ou arquivos válidos.</p><div id="readiness"><p class="muted">Carregando verificações...</p></div></section>
 <section class="card" style="margin-top:18px"><h2>Diálogo do teste</h2><ol id="dialogue"><li class="muted">Carregando roteiro...</li></ol><p class="muted" id="disclosure"></p></section>
 <footer>O piloto usa vozes e personagens virtuais. A duração só poderá ser confirmada após a geração e medição dos áudios.</footer>
@@ -30,11 +31,43 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <script>
 const base='/studio/entre-nos-dois/overview';
 const readinessEndpoint='/studio/entre-nos-dois/readiness';
+const authHeaders=()=>{const token=localStorage.getItem('access_token');return token?{'Authorization':'Bearer '+token}:{}};
+const studioFetch=(url,options={})=>fetch(url,{...options,cache:'no-store',headers:{...authHeaders(),...(options.headers||{})}});
+const previews={};
+async function updateHostImages(){
+ const response=await studioFetch('/studio/entre-nos-dois/references');
+ if(!response.ok)throw new Error(response.status===503?'Configure o volume privado persistente do Studio no servidor.':'Não foi possível verificar as imagens.');
+ const info=await response.json();
+ for(const host of ['Gabriel','Helena']){
+  const k=host.toLowerCase(),img=document.getElementById(k+'-preview');
+  document.getElementById(k+'-status').textContent=info.hosts[host]?'✓ Imagem privada cadastrada':'Imagem ainda não cadastrada';
+  if(previews[k]){URL.revokeObjectURL(previews[k]);delete previews[k]}
+  img.style.display='none';
+  if(info.hosts[host]){
+    const result=await studioFetch('/studio/entre-nos-dois/references/'+host+'/image');
+    if(result.ok){previews[k]=URL.createObjectURL(await result.blob());img.src=previews[k];img.style.display='block'}
+  }
+ }
+}
+async function saveHostImage(host){
+ const k=host.toLowerCase(),file=document.getElementById(k+'-upload').files[0];
+ const msg=document.getElementById('upload-message'),button=document.getElementById('upload-'+k);
+ if(!file){msg.textContent='Escolha primeiro uma imagem de '+host+'.';return}
+ if(file.size>8*1024*1024){msg.textContent='A imagem não pode ultrapassar 8 MB.';return}
+ button.disabled=true;msg.textContent='Salvando imagem privada de '+host+'...';
+ try{
+  const r=await studioFetch('/studio/entre-nos-dois/references/'+host,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:file});
+  if(!r.ok){const error=await r.json().catch(()=>({}));throw new Error(typeof error.detail==='string'?error.detail:'Não foi possível salvar a imagem.')}
+  msg.textContent='Imagem de '+host+' cadastrada na área privada.';
+  await updateHostImages();
+ }catch(err){msg.textContent=err.message}finally{button.disabled=false}
+}
+
 const escapeText=x=>String(x??'');
 async function refresh(){
  const hosts=document.querySelector('#hosts'),pilot=document.querySelector('#pilot'),dialogue=document.querySelector('#dialogue');
  try{
-   const response=await fetch(base,{credentials:'same-origin',cache:'no-store'});
+   const response=await studioFetch(base);
    if(response.status===401||response.status===403){throw new Error('Acesso restrito. Faça login como administrador.');}
    if(!response.ok)throw new Error('Não foi possível consultar o estado do piloto.');
    const data=await response.json();
@@ -54,9 +87,10 @@ async function refresh(){
      dialogue.append(li);
    }
    document.querySelector('#disclosure').textContent=escapeText(data.disclosure);
+   try{await updateHostImages()}catch(err){document.getElementById('upload-message').textContent=err.message}
    const readiness=document.querySelector('#readiness');
    readiness.replaceChildren();
-   const statusResp=await fetch(readinessEndpoint,{credentials:'same-origin',cache:'no-store'});
+   const statusResp=await studioFetch(readinessEndpoint);
    if(!statusResp.ok){throw new Error('Não foi possível consultar as integrações.');}
    const snapshot=await statusResp.json();
    for(const step of snapshot.steps||[]){
@@ -70,13 +104,14 @@ async function refresh(){
  }catch(err){hosts.textContent=err.message;pilot.textContent='Não disponível';dialogue.replaceChildren();document.querySelector('#readiness').textContent=err.message;}
 }
 document.querySelector('#refresh').addEventListener('click',refresh);
+for(const host of ['Gabriel','Helena'])document.getElementById('upload-'+host.toLowerCase()).addEventListener('click',()=>saveHostImage(host));
 document.querySelector('#verify-voices').addEventListener('click',async()=>{
  const button=document.querySelector('#verify-voices');
  const output=document.querySelector('#voice-check-result');
  button.disabled=true;
  output.textContent='Consultando disponibilidade dos identificadores de voz, sem sintetizar áudio...';
  try{
-   const response=await fetch('/studio/entre-nos-dois/verify-voices',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Accept':'application/json'}});
+   const response=await studioFetch('/studio/entre-nos-dois/verify-voices',{method:'POST',headers:{'Accept':'application/json'}});
    if(!response.ok)throw new Error(response.status===401||response.status===403?'Acesso administrativo necessário.':'A consulta não pôde ser concluída.');
    const data=await response.json();
    if(data.status==='ready_for_cost_approval') {
