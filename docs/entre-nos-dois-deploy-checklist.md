@@ -23,6 +23,24 @@ Não há autorização para chamadas pagas ou publicação automática.
 - Antes de qualquer chamada com cobrança: verificar preços na conta do provedor, conferir referências e áudio, definir limite, salvar recibo durável e confirmar explicitamente qual cena será gerada.
 - Revisão humana obrigatória antes de renderizar todo o episódio ou publicar no YouTube.
 
+## Revisão privada das quatro falas em MP3
+
+O Studio agora permite importar um MP3 por fala do roteiro, ouvir cada arquivo
+no navegador e consultar sua duração real, **sem fazer nenhuma chamada de
+geração paga**. Os arquivos são privados por administrador, limitados a
+10 MB e 45 segundos cada; somente administradores autenticados conseguem
+importar ou reproduzir. O roteiro e a ordem Helena/Gabriel permanecem fixos.
+
+Esse recurso permite avaliar narração de arquivos gerados fora do Studio,
+mas **não prova por si só que as vozes são Andrey e Luciana**, nem garante
+sincronização labial, qualidade ou custo. O operador deve verificar os áudios
+antes de aprovar a etapa audiovisual. Não compartilhar URLs de download
+protegidas nem guardar os arquivos no repositório Git.
+
+O CI de homologação gera um MP3 sintético de um segundo pelo FFmpeg apenas
+para verificar o upload, leitura autenticada e bloqueio de acesso anônimo.
+Esse sinal de teste não é áudio de personagem.
+
 ## Ainda não disponível
 
 - O painel **não** produz áudio nem vídeo; não há botão de geração paga liberado.
