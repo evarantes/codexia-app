@@ -22,13 +22,6 @@ EXTENSIONS = {'image': {'.png', '.jpg', '.jpeg', '.webp'},
               'audio': {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'},
               'video': {'.mp4', '.mov', '.mkv', '.webm'},
               'caption': {'.srt', '.vtt', '.ass'}, 'script': {'.json'}}
-_VIDEO_RETENTION_STATUSES = {
-    'completed', 'awaiting_review', 'approved', 'rendered_upload_failed', 'published',
-}
-
-
-def preserves_final_video(status):
-    return str(status or '').strip().lower() in _VIDEO_RETENTION_STATUSES
 
 
 def digest(path, progress_callback=None):
@@ -190,15 +183,19 @@ def central_index(task, verify=True):
     return list(unique.values())
 
 
-def find_drive_asset(kind, filename):
-    """Find the most recently indexed Drive copy for public media routes."""
+def find_drive_asset(kind, filename, task=None):
+    """Find an indexed Drive copy, optionally within one exact project."""
     from app.services.production_manifest import _root_dir, _read_json
     if kind not in EXTENSIONS or Path(str(filename or '')).name != str(filename or ''):
         return None
     matches = []
     try:
-        indexes = list(_root_dir().glob('*/central-index.json'))
-        indexes.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        if task is not None:
+            candidate = index_path(task)
+            indexes = [candidate] if candidate.is_file() else []
+        else:
+            indexes = list(_root_dir().glob('*/central-index.json'))
+            indexes.sort(key=lambda item: item.stat().st_mtime, reverse=True)
         for path in indexes:
             for entry in (_read_json(path).get('files') or []):
                 if (entry.get('kind') == kind and entry.get('filename') == filename
@@ -804,16 +801,13 @@ class CentralAssetTransfer:
                 expected = set()
                 for _, refs, _ in group:
                     expected.update(refs)
-                if (any(kind == 'video' for kind, _ in expected)
-                        and preserves_final_video(task_status)):
-                    # Keep finished video outputs locally available.
-                    continue
                 # Identical inode aliases may be removed together only when
                 # every alias is represented in this task's verified archive.
                 actual_sha = digest(group[0][0])
                 actual_size = int(group[0][2].st_size)
                 expected_kinds = {kind for kind, _ in expected}
-                if (not expected_kinds
+                if ("caption" in expected_kinds
+                        or not expected_kinds
                         or any(not any(key[0] == kind and value == (actual_sha, actual_size)
                                        for key, value in verified.items())
                                for kind in expected_kinds)):

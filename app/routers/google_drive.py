@@ -34,7 +34,7 @@ from app.models import GoogleDriveAccount, Settings, User
 from app.routers.auth import SECRET_KEY, get_current_admin_user, get_current_user
 from app.routers.settings import _get_or_create_settings_row
 from app.services.central_asset_transfer import (
-    cleanup_confirmed_worker_cache_job, digest, index_path, preserves_final_video,
+    cleanup_confirmed_worker_cache_job, digest, index_path,
     pin_task_drive_account, register as register_asset, roots,
     task_index_lock, task_key,
 )
@@ -726,7 +726,7 @@ def _local_archive_path(
 
 
 def _saved_music_archive_projects() -> list[Dict[str, Any]]:
-    """Inventory Suno/MusicGen outputs and lyrics without marking them for deletion."""
+    """Inventory saved music assets for verified Drive archiving and cold cleanup."""
     from app.config import COVERS_OUTPUT_DIR, MUSIC_OUTPUT_DIR, VIDEO_OUTPUT_DIR
     from app.models import SavedMusic, SavedMusicShort
 
@@ -778,7 +778,6 @@ def _saved_music_archive_projects() -> list[Dict[str, Any]]:
                 "manifest_path": None,
                 "script_path": None,
                 "assets": assets,
-                "preserve_local": True,
             }
             projects.append(project)
             projects_by_music_id[int(item.id)] = project
@@ -1092,15 +1091,34 @@ def _project_archive_inventory(
                 })
 
     for music_project in _saved_music_archive_projects():
-        projects[music_project["task_id"]] = music_project
+        task_id = str(music_project["task_id"])
+        projects[task_id] = music_project
+        for (kind, filename), asset in (music_project.get("assets") or {}).items():
+            raw_path = asset.get("path")
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                resolved = path.resolve(strict=True)
+                info = resolved.stat()
+            except (OSError, RuntimeError):
+                continue
+            inode_key = (int(info.st_dev), int(info.st_ino))
+            group = inodes.setdefault(inode_key, {
+                "device": inode_key[0], "inode": inode_key[1],
+                "size": int(info.st_size), "link_count": int(info.st_nlink),
+                "paths": set(), "owners": {},
+            })
+            group["paths"].add(resolved)
+            group["link_count"] = max(int(group.get("link_count") or 0), int(info.st_nlink))
+            group["owners"].setdefault(task_id, set()).add((kind, filename))
 
     digest_cache: Dict[tuple, str] = {}
     eligible_projects = [
         project for project in projects.values()
-        if (
-            project.get("preserve_local")
-            or (project["status"] in _ARCHIVABLE_STATUSES and project["updated_at"] <= cutoff)
-        )
+        if project["status"] in _ARCHIVABLE_STATUSES and project["updated_at"] <= cutoff
         and (project["assets"] or (project.get("manifest_path") and project["manifest_path"].is_file()))
     ]
     eligible_projects.sort(key=lambda item: (item["updated_at"] or 0.0, str(item.get("task_id") or "")))
@@ -1251,22 +1269,10 @@ def _remove_fully_archived_aliases(projects: Dict[str, Dict[str, Any]], inodes: 
         owners = group["owners"]
         if not owners or len(group["paths"]) != int(group["link_count"] or 0):
             continue
-        # Saved Music and Suno outputs are archived for recovery, but remain in
-        # the product library by design.
-        if any(projects.get(task_id, {}).get("preserve_local") for task_id in owners):
-            continue
         if any(
-            kind == "script"
+            kind in {"script", "caption"}
             for refs in owners.values()
             for kind, _filename in refs
-        ):
-            continue
-        # Keep videos for successful/finalized projects. Failed project videos
-        # are still protected by the checksum check below and remain recoverable.
-        if any(
-            kind == "video" and preserves_final_video(projects.get(task_id, {}).get("status"))
-            for task_id, refs in owners.items()
-            for kind, _ in refs
         ):
             continue
         if any(

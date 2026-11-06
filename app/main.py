@@ -820,7 +820,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 # Servir vídeos: tenta VIDEO_OUTPUT_DIR e depois app/static/videos (Render e múltiplas instâncias)
-from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, STATIC_DIR, BOOKS_OUTPUT_DIR, COVERS_OUTPUT_DIR, BRANDING_OUTPUT_DIR
+from app.config import VIDEO_OUTPUT_DIR, MUSIC_OUTPUT_DIR, AUDIO_OUTPUT_DIR, IMAGES_OUTPUT_DIR, STATIC_DIR, BOOKS_OUTPUT_DIR, COVERS_OUTPUT_DIR, BRANDING_OUTPUT_DIR
 from app.services.central_asset_transfer import find_drive_asset
 from app.services.google_drive_archive import GoogleDriveArchive
 
@@ -852,6 +852,22 @@ def _resolve_video_path(safe_name: str):
 
 def _resolve_music_path(safe_name: str):
     for directory in (MUSIC_OUTPUT_DIR, str(STATIC_DIR / "music"), os.path.join("app", "static", "music")):
+        if directory:
+            filepath = os.path.join(directory, safe_name)
+            if os.path.isfile(filepath):
+                return filepath
+    return None
+
+def _resolve_audio_path(safe_name: str):
+    for directory in (AUDIO_OUTPUT_DIR, str(STATIC_DIR / "audio"), os.path.join("app", "static", "audio")):
+        if directory:
+            filepath = os.path.join(directory, safe_name)
+            if os.path.isfile(filepath):
+                return filepath
+    return None
+
+def _resolve_image_path(safe_name: str):
+    for directory in (IMAGES_OUTPUT_DIR, str(STATIC_DIR / "images"), os.path.join("app", "static", "images")):
         if directory:
             filepath = os.path.join(directory, safe_name)
             if os.path.isfile(filepath):
@@ -979,6 +995,8 @@ def _guess_audio_media_type(filename: str) -> str:
         return "audio/aac"
     if ext == ".ogg":
         return "audio/ogg"
+    if ext == ".flac":
+        return "audio/flac"
     return "application/octet-stream"
 
 def _guess_book_media_type(filename: str) -> str:
@@ -1045,6 +1063,88 @@ def _media_file_response(request: Request, filepath: str, media_type: str):
         "Content-Length": str(content_length),
     }
     return StreamingResponse(_iterfile(filepath, start, end), status_code=206, media_type=media_type, headers=headers)
+
+@app.get("/static/audio/{filename:path}")
+@app.get("/media/audio/{filename:path}")
+def serve_audio_media(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_audio_path(safe_name)
+    if not filepath:
+        archived = _drive_media_response(request, "audio", safe_name, _guess_audio_media_type(safe_name))
+        if archived:
+            return archived
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _media_file_response(request, filepath, _guess_audio_media_type(safe_name))
+
+@app.head("/static/audio/{filename:path}")
+@app.head("/media/audio/{filename:path}")
+def head_audio_media(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_audio_path(safe_name)
+    if not filepath:
+        archived = _drive_media_response(request, "audio", safe_name, _guess_audio_media_type(safe_name), head=True)
+        if archived:
+            return archived
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(filepath, media_type=_guess_audio_media_type(safe_name), headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
+
+@app.get("/static/images/{filename:path}")
+@app.get("/media/images/{filename:path}")
+def serve_image_media(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_image_path(safe_name)
+    if not filepath:
+        archived = _drive_media_response(request, "image", safe_name, _guess_image_media_type(safe_name))
+        if archived:
+            return archived
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _media_file_response(request, filepath, _guess_image_media_type(safe_name))
+
+@app.head("/static/images/{filename:path}")
+@app.head("/media/images/{filename:path}")
+def head_image_media(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_image_path(safe_name)
+    if not filepath:
+        archived = _drive_media_response(request, "image", safe_name, _guess_image_media_type(safe_name), head=True)
+        if archived:
+            return archived
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(filepath, media_type=_guess_image_media_type(safe_name), headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
+
+@app.get("/media/covers/{filename:path}")
+def serve_cover_media(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_cover_path(safe_name)
+    if not filepath:
+        archived = _drive_media_response(request, "image", safe_name, _guess_image_media_type(safe_name))
+        if archived:
+            return archived
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _media_file_response(request, filepath, _guess_image_media_type(safe_name))
+
+@app.head("/media/covers/{filename:path}")
+def head_cover_media(filename: str, request: Request):
+    safe_name = os.path.basename(filename).strip()
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        raise HTTPException(status_code=404, detail="Not Found")
+    filepath = _resolve_cover_path(safe_name)
+    if not filepath:
+        archived = _drive_media_response(request, "image", safe_name, _guess_image_media_type(safe_name), head=True)
+        if archived:
+            return archived
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(filepath, media_type=_guess_image_media_type(safe_name), headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"})
 
 @app.get("/static/music/{filename:path}")
 def serve_music_static(filename: str, request: Request):

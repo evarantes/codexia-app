@@ -29,6 +29,8 @@ from app.routers.auth import get_current_user, SECRET_KEY, ALGORITHM
 from app.models import User, VideoTask, SavedMusic, SavedMusicShort, SystemNotification, ScheduledVideo
 from app.services.task_manager import create_task, update_task, get_task, request_cancel_task, is_task_cancel_requested, mark_task_deleted
 from app.config import MUSIC_OUTPUT_DIR, MUSIC_URL_PREFIX, absolute_path_for_music, absolute_path_for_video, absolute_path_for_static, VIDEO_OUTPUT_DIR, VIDEO_URL_PREFIX, STATIC_DIR
+from app.services.central_asset_transfer import find_drive_asset
+from app.services.google_drive_archive import GoogleDriveArchive
 
 router = APIRouter(prefix="/music", tags=["music"])
 
@@ -38,6 +40,23 @@ def _safe_basename(url_or_name: str) -> str:
         return ""
     s = s.replace("\\", "/").split("?", 1)[0].split("#", 1)[0].strip()
     return os.path.basename(s) if s else ""
+
+def _saved_music_drive_response(item: SavedMusic, kind: str, filename: str, media_type: str, download_name: str = ""):
+    name = _safe_basename(filename)
+    if not name:
+        return None
+    try:
+        entry = find_drive_asset(kind, name, task=f"music-{int(item.id)}")
+        if not entry:
+            return None
+        response = GoogleDriveArchive.for_asset(entry).stream_response(entry, media_type=media_type)
+        if download_name:
+            safe_download_name = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(download_name))[:100]
+            if safe_download_name:
+                response.headers["Content-Disposition"] = f'attachment; filename="{safe_download_name}"'
+        return response
+    except Exception:
+        return None
 
 def _ensure_hq_wav_for_item(db: Session, item: SavedMusic) -> Optional[str]:
     in_ref = (item.hq_wav_filename or item.hq_wav_url or item.music_filename or item.music_url or "").strip()
@@ -1019,9 +1038,15 @@ def download_saved_music_wav(item_id: int, user: User = Depends(get_current_user
     if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Sem permissão para baixar este item.")
 
+    archived_name = _safe_basename(item.hq_wav_filename or item.hq_wav_url)
+    archived = _saved_music_drive_response(
+        item, "audio", archived_name, "audio/wav", download_name=f"{_sanitize_title(item.title) or 'musica'}.wav"
+    )
+    if archived:
+        return archived
     path = _ensure_hq_wav_for_item(db, item)
     if not path or not os.path.isfile(path):
-        raise HTTPException(status_code=503, detail="Não foi possível gerar o WAV agora.")
+        raise HTTPException(status_code=503, detail="Não foi possível gerar ou recuperar o WAV agora.")
     try:
         db.commit()
     except Exception:
@@ -1042,9 +1067,15 @@ def download_saved_music_cover(item_id: int, user: User = Depends(get_current_us
     if item.user_id and item.user_id != user.id and not getattr(user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Sem permissão para baixar este item.")
 
+    archived_name = _safe_basename(item.cover_filename or item.cover_url)
+    archived = _saved_music_drive_response(
+        item, "image", archived_name, "image/png", download_name=f"{_sanitize_title(item.title) or 'capa'}_3000x3000.png"
+    )
+    if archived:
+        return archived
     path = _ensure_cover_for_item(db, item)
     if not path or not os.path.isfile(path):
-        raise HTTPException(status_code=503, detail="Não foi possível gerar a capa agora.")
+        raise HTTPException(status_code=503, detail="Não foi possível gerar ou recuperar a capa agora.")
     try:
         db.commit()
     except Exception:
