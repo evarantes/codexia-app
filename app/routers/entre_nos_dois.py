@@ -22,15 +22,16 @@ from app.services.entre_nos_dois_cost_worksheet import worksheet, CostWorksheetE
 from app.services.entre_nos_dois_tts_single import submit_one_turn, PaidPilotTtsError
 from app.services.entre_nos_dois_scene_readiness import lip_sync_readiness, LipSyncReadinessError
 from app.services.entre_nos_dois_references import (
-    StudioReferenceError, host_reference_status, reference_file, store_host_reference, private_storage_health,
+    StudioReferenceError, host_reference_status, store_host_reference, private_storage_health,
 )
 from app.services.entre_nos_dois_voice_check import run_voice_check
 from app.services.entre_nos_dois_audio_review import (
-    MAX_AUDIO_BYTES, StudioAudioError, audio_file, list_segment_audio, store_segment_audio, preview_audio_timeline,
+    MAX_AUDIO_BYTES, StudioAudioError, list_segment_audio, store_segment_audio, preview_audio_timeline,
 )
 from app.routers.auth import get_current_admin_user
 from app.services.entre_nos_dois import HOSTS, PILOT_TITLE, PROGRAM_DISCLOSURE, PROGRAM_TITLE
 from app.services.entre_nos_dois_voice_plan import prepare_speech_manifest
+from app.services.entre_nos_dois_drive import find_asset, stream_asset, EntreNosDoisDriveError
 
 router = APIRouter(prefix="/studio/entre-nos-dois", tags=["studio-entre-nos-dois"])
 
@@ -120,7 +121,7 @@ def readiness(
     own_settings = settings if settings is not None else SimpleNamespace()
     elevenlabs = resolve_secret("elevenlabs_api_key", "ELEVENLABS_API_KEY", own_settings)
     fal_configured = bool(normalize_secret(os.getenv("FAL_KEY")))
-    storage_health = private_storage_health()
+    storage_health = private_storage_health(user_id=current_user.id)
     storage_configured = storage_health["ready"]
     visual_assets = {}
     if storage_configured:
@@ -191,18 +192,18 @@ async def upload_reference(
 
 @router.get("/references/{host}/image")
 def get_reference_image(host: str, current_user: User = Depends(get_current_admin_user)):
-    """Private image delivery; never expose filesystem paths or public asset URLs."""
+    """Private image delivery streamed from the user's isolated Drive folder."""
+    if host not in {"Gabriel", "Helena"}:
+        raise HTTPException(status_code=400, detail="Personagem inválido.")
     try:
-        path = reference_file(user_id=current_user.id, host=host)
-    except StudioReferenceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Imagem ainda não cadastrada.")
-    return FileResponse(
-        str(path), media_type="image/png",
-        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
-    )
-
+        entry = find_asset(user_id=current_user.id, kind="image", filename=f"{host.lower()}.png")
+        if not entry:
+            raise HTTPException(status_code=404, detail="Imagem ainda não cadastrada.")
+        response = stream_asset(entry, media_type="image/png")
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except EntreNosDoisDriveError:
+        raise HTTPException(status_code=503, detail="Imagem privada indisponível no Google Drive.") from None
 
 @router.get("/audio")
 def pilot_audio_status(current_user: User = Depends(get_current_admin_user)):
@@ -310,15 +311,15 @@ async def upload_pilot_audio(
 
 @router.get("/audio/{index}/file")
 def play_pilot_audio(index: int, current_user: User = Depends(get_current_admin_user)):
-    """Protected stream for listening, never a publicly mounted MP3."""
+    """Protected stream from Drive; no full-size MP3 is retained on the app volume."""
+    if type(index) is not int or index < 1:
+        raise HTTPException(status_code=400, detail="Trecho inválido.")
     try:
-        path = audio_file(user_id=current_user.id, index=index)
-    except StudioAudioError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except StudioReferenceError:
-        raise HTTPException(status_code=503, detail="Armazenamento privado indisponível.") from None
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Trecho de áudio ainda não cadastrado.")
-    return FileResponse(str(path), media_type="audio/mpeg", headers={
-        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
-    })
+        entry = find_asset(user_id=current_user.id, kind="audio", filename=f"segment-{index:02d}.mp3")
+        if not entry:
+            raise HTTPException(status_code=404, detail="Trecho de áudio ainda não cadastrado.")
+        response = stream_asset(entry, media_type="audio/mpeg")
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except EntreNosDoisDriveError:
+        raise HTTPException(status_code=503, detail="Áudio privado indisponível no Google Drive.") from None
