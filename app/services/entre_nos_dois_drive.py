@@ -73,6 +73,7 @@ def asset_present(*, user_id: int, kind: str, filename: str) -> bool:
 
 def stream_asset(entry: dict, *, media_type: str, range_header: str = "", head: bool = False):
     try:
+        from app.services.google_drive_archive import GoogleDriveArchive
         archive = GoogleDriveArchive.for_asset(entry)
         return archive.stream_response(entry, range_header=range_header, media_type=media_type, head=head)
     except Exception as exc:
