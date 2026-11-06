@@ -40,6 +40,14 @@ button{border:1px solid #7595ba;padding:11px 16px;border-radius:10px;background:
 <button id="tts-calculate" type="button">Calcular estimativa</button>
 <p id="tts-cost-summary" class="muted" role="status" aria-live="polite">Carregando total de caracteres...</p>
 <div id="tts-cost-lines"></div>
+<div id="paid-tts-controls" style="display:none;border-top:1px solid #364557;margin-top:14px;padding-top:14px">
+<p class="muted">Geração paga individual, somente quando liberada no servidor. Confira a tarifa real na conta ElevenLabs e aprove a fala específica; estimativas não garantem a cobrança real.</p>
+<label for="tts-single-index">Fala</label><select id="tts-single-index"><option value="1">1 · Helena</option><option value="2">2 · Gabriel</option><option value="3">3 · Helena</option><option value="4">4 · Gabriel</option></select>
+<label for="tts-approved-max">Teto aprovado para esta fala (US$)</label><input id="tts-approved-max" type="text" inputmode="decimal" placeholder="Ex.: 0.10" style="padding:10px;max-width:150px;border-radius:8px">
+<label><input id="tts-rate-verified" type="checkbox"> Conferi na conta do fornecedor a tarifa informada, o modelo e a voz</label>
+<label for="tts-confirmation">Confirmação escrita</label><input id="tts-confirmation" type="text" placeholder="AUTORIZO FALA 1" style="padding:10px;max-width:240px;border-radius:8px">
+<button id="tts-generate-single" type="button">Gerar somente a fala selecionada</button>
+<p id="tts-paid-message" class="muted" role="status"></p></div>
 </section>
 <section class="card" style="margin-top:18px"><h2>Revisão de áudio — quatro falas</h2>
 <p class="muted">Importe MP3s previamente gerados com as vozes escolhidas para ouvir e conferir o diálogo. O Studio não sintetiza voz nem gera custos nesta etapa. Cada arquivo é privado, limitado a 10 MB e 45 segundos; a duração será medida automaticamente.</p>
@@ -210,6 +218,41 @@ async function refreshAudioReview(){
  }
 }
 
+let currentVoiceQuote=null;
+async function refreshVoiceGenerationGate(){
+ const panel=document.getElementById('paid-tts-controls');
+ const response=await studioFetch('/studio/entre-nos-dois/voice-generation-gate');
+ if(!response.ok){panel.style.display='none';return}
+ const info=await response.json();
+ panel.style.display=info.enabled?'block':'none';
+}
+document.getElementById('tts-generate-single').addEventListener('click',async()=>{
+ const output=document.getElementById('tts-paid-message');
+ const button=document.getElementById('tts-generate-single');
+ const rate=document.getElementById('tts-cost-rate').value.trim().replace(',','.');
+ const max=document.getElementById('tts-approved-max').value.trim().replace(',','.');
+ const index=Number(document.getElementById('tts-single-index').value);
+ if(!currentVoiceQuote||!currentVoiceQuote.estimated_total_usd||currentVoiceQuote.operator_entered_usd_per_1000_characters!==rate){
+  output.textContent='Calcule novamente usando a tarifa conferida na conta.';return
+ }
+ button.disabled=true;output.textContent='Enviando somente uma fala autorizada; não feche esta aba durante a operação.';
+ try{
+  const response=await studioFetch('/studio/entre-nos-dois/audio/generate/'+index,{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({
+    quote_digest:currentVoiceQuote.manifest_sha256,
+    usd_per_1000_characters:rate,approved_max_usd:max,
+    confirmation:document.getElementById('tts-confirmation').value.trim(),
+    rate_checked_in_provider_account:document.getElementById('tts-rate-verified').checked
+   })
+  });
+  const body=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(body.detail||'Geração não autorizada. Confira o histórico antes de repetir.');
+  output.textContent='Fala '+index+' gerada e salva. Revise o áudio; não houve publicação.';
+  await refreshAudioReview();
+ }catch(error){output.textContent=error.message}
+ finally{button.disabled=false}
+});
 async function refreshCostWorksheet(rate=null){
  const output=document.getElementById('tts-cost-summary'),lines=document.getElementById('tts-cost-lines');
  const url='/studio/entre-nos-dois/voice-cost-worksheet'+(rate===null?'':'?usd_per_1000_characters='+encodeURIComponent(rate));
@@ -217,6 +260,7 @@ async function refreshCostWorksheet(rate=null){
   const result=await studioFetch(url);
   if(!result.ok){const info=await result.json().catch(()=>({}));throw new Error(info.detail||'Não foi possível calcular o orçamento.')}
   const quote=await result.json();
+  currentVoiceQuote=quote;
   output.textContent=quote.estimated_total_usd
     ?'Estimativa: US$ '+quote.estimated_total_usd+' para '+quote.total_characters+' caracteres (tarifa não verificada; nenhuma cobrança).'
     :'Roteiro: '+quote.total_characters+' caracteres, quatro falas. Tarifa real ainda não conferida.';
@@ -304,6 +348,7 @@ async function refresh(){
    try{await updateHostImages()}catch(err){document.getElementById('upload-message').textContent=err.message}
    try{await refreshAudioReview()}catch(err){document.getElementById('audio-review-message').textContent=err.message}
    await refreshCostWorksheet()
+   await refreshVoiceGenerationGate()
    const readiness=document.querySelector('#readiness');
    readiness.replaceChildren();
    const statusResp=await studioFetch(readinessEndpoint);
