@@ -20,6 +20,9 @@
     #codexia-resource-monitor .crm-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
     #codexia-resource-monitor .crm-head strong{font-size:14px}
     #codexia-resource-monitor .crm-head small{display:block;color:#64748b;font-size:10px}
+    #codexia-resource-monitor .crm-note{margin:-2px 0 9px;padding:7px 9px;border-radius:9px;background:#eff6ff;color:#334155;font-size:10px;line-height:1.45}
+    #codexia-resource-monitor .crm-card-note{margin:-2px 0 7px;color:#64748b;font-size:10px;line-height:1.4}
+    #codexia-resource-monitor .crm-guidance{margin-top:4px;color:#64748b;font-size:9px;line-height:1.35}
     #codexia-resource-monitor .crm-refresh{border:1px solid #cbd5e1;background:white;border-radius:8px;padding:6px 9px;color:#334155;cursor:pointer}
     #codexia-resource-monitor .crm-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     #codexia-resource-monitor .crm-card{min-width:0;background:white;border:1px solid #e2e8f0;border-radius:12px;padding:10px}
@@ -55,6 +58,7 @@
         <div><strong>Recursos dos servidores</strong><small id="crm-updated">Coletando dados...</small></div>
         <button class="crm-refresh" id="crm-refresh" type="button">Atualizar</button>
       </div>
+      <div class="crm-note">Verde significa dentro do ideal; amarelo pede atenção; vermelho indica limite crítico. Este painel mede os servidores — o andamento do backup aparece na seção do Google Drive.</div>
       <div class="crm-grid">
         <article class="crm-card" id="crm-principal"></article>
         <article class="crm-card" id="crm-cx33"></article>
@@ -101,18 +105,20 @@
     return node;
   };
 
-  function metricRow(label, value, usedPercent) {
+  function metricRow(label, value, usedPercent, guidance, tone) {
     const wrap = el('div', 'crm-metric');
     const line = el('div', 'crm-metric-line');
     line.append(el('span', '', label), el('b', '', value));
     wrap.append(line);
     if (usedPercent !== undefined && usedPercent !== null) {
-      const bar = el('div', `crm-bar${usedPercent >= 95 ? ' critical' : usedPercent >= 85 ? ' warning' : ''}`);
+      const resolvedTone = tone || (usedPercent >= 95 ? 'critical' : usedPercent >= 85 ? 'warning' : 'good');
+      const bar = el('div', `crm-bar${resolvedTone === 'critical' ? ' critical' : resolvedTone === 'warning' ? ' warning' : ''}`);
       const fill = document.createElement('i');
       fill.style.width = `${percent(usedPercent)}%`;
       bar.append(fill);
       wrap.append(bar);
     }
+    if (guidance) wrap.append(el('div', 'crm-guidance', guidance));
     return wrap;
   }
 
@@ -133,38 +139,94 @@
     return 'good';
   }
 
+  function healthExplanation(server, status) {
+    if (status === 'offline') return 'Sem atualização recente deste servidor.';
+    if (server && server.status === 'starting') return 'Conectado; aguardando a primeira leitura de recursos.';
+    const resources = (server && server.resources) || {};
+    const memory = resources.memory || {};
+    const swap = resources.swap || {};
+    const storage = Array.isArray(resources.storage) ? resources.storage : [];
+    const critical = [];
+    const warnings = [];
+    storage.forEach((disk) => {
+      const areas = (disk.areas || []).join('/');
+      const free = Number(disk.free_bytes || 0);
+      if (free <= 2 * (1024 ** 3)) critical.push(`espaço crítico em ${areas || 'disco'}`);
+      else if (free <= 5 * (1024 ** 3)) warnings.push(`pouco espaço em ${areas || 'disco'}`);
+    });
+    const available = Number(memory.available_mb || 0);
+    if (Number(memory.total_mb || 0) > 0) {
+      if (available <= 384) critical.push('RAM disponível muito baixa');
+      else if (available <= 768) warnings.push('pouca RAM disponível');
+    }
+    const swapPercent = Number(swap.used_percent || 0);
+    if (swapPercent >= 95) critical.push('swap quase cheia');
+    else if (swapPercent >= 85) warnings.push('swap bastante usada');
+    if (Number((resources.cpu || {}).load_per_core || 0) >= 2.5) warnings.push('carga de CPU alta');
+    if (critical.length) return `Crítico: ${critical.join('; ')}.`;
+    if (warnings.length) return `Atenção: ${warnings.join('; ')}.`;
+    return 'Recursos dentro da faixa ideal.';
+  }
+
   function renderServer(target, label, server) {
     target.replaceChildren();
     const status = serverHealth(server);
     const title = el('div', 'crm-card-title');
-    title.append(el('span', '', label), el('span', `crm-status ${status}`, status === 'good' ? 'Online' : status === 'warning' ? 'Atenção' : status === 'critical' ? 'Crítico' : 'Sem sinal'));
+    title.append(el('span', '', label), el('span', `crm-status ${status}`, status === 'good' ? 'Tudo bem' : status === 'warning' ? 'Atenção' : status === 'critical' ? 'Crítico' : 'Sem sinal'));
     target.append(title);
-    if (status === 'offline') {
-      target.append(el('div', 'crm-empty', 'Sem atualização recente deste servidor.'));
-      return;
-    }
-    if (server.status === 'starting') {
-      target.append(el('div', 'crm-empty', 'Worker conectado; aguardando o primeiro envio de métricas.'));
-      return;
-    }
+    target.append(el('div', 'crm-card-note', healthExplanation(server, status)));
+    if (status === 'offline' || server.status === 'starting') return;
 
     const r = server.resources || {};
     const memory = r.memory || {};
-    target.append(metricRow('RAM usada', `${mb(memory.used_mb)} / ${mb(memory.total_mb)} · ${number(memory.used_percent)}%`, memory.used_percent));
+    const available = Number(memory.available_mb || 0);
+    const memoryKnown = Number(memory.total_mb || 0) > 0;
+    const memoryTone = !memoryKnown ? 'good' : available <= 384 ? 'critical' : available <= 768 ? 'warning' : 'good';
+    target.append(metricRow(
+      'RAM usada',
+      `${mb(memory.used_mb)} / ${mb(memory.total_mb)} · ${number(memory.used_percent)}%`,
+      memory.used_percent,
+      'Ideal: >768 MB livres · atenção: 384–768 MB · crítico: ≤384 MB.',
+      memoryTone,
+    ));
     const swap = r.swap || {};
     if (Number(swap.total_mb || 0) > 0) {
-      target.append(metricRow('Swap usada', `${mb(swap.used_mb)} / ${mb(swap.total_mb)} · ${number(swap.used_percent)}%`, swap.used_percent));
+      const swapPercent = Number(swap.used_percent || 0);
+      const swapTone = swapPercent >= 95 ? 'critical' : swapPercent >= 85 ? 'warning' : 'good';
+      target.append(metricRow(
+        'Swap usada',
+        `${mb(swap.used_mb)} / ${mb(swap.total_mb)} · ${number(swapPercent)}%`,
+        swapPercent,
+        'Ideal: <85% · atenção: 85–94% · crítico: ≥95%.',
+        swapTone,
+      ));
     }
     const cpu = r.cpu || {};
     if (Number(cpu.logical_cores || 0) > 0) {
-      target.append(metricRow('Carga CPU', `${number(cpu.load_1m)} · ${number(cpu.logical_cores, 0)} núcleos`));
+      const cpuLoad = Number(cpu.load_per_core || 0);
+      const cpuTone = cpuLoad >= 2.5 ? 'warning' : 'good';
+      target.append(metricRow(
+        'Carga CPU',
+        `${number(cpu.load_1m)} · ${number(cpu.logical_cores, 0)} núcleos`,
+        null,
+        'Ideal: carga por núcleo <2,5 · acima disso, atenção.',
+        cpuTone,
+      ));
     }
     const storage = Array.isArray(r.storage) ? r.storage : [];
     if (!storage.length) target.append(el('div', 'crm-empty', 'Volumes não identificados.'));
     storage.forEach((disk) => {
       const entry = el('div', 'crm-storage');
+      const freeBytes = Number(disk.free_bytes || 0);
+      const diskTone = freeBytes <= 2 * (1024 ** 3) ? 'critical' : freeBytes <= 5 * (1024 ** 3) ? 'warning' : 'good';
       entry.append(el('div', 'crm-storage-name', (disk.areas || []).join(' · ') || 'Armazenamento'));
-      entry.append(metricRow('Livre / total', `${gb(disk.free_bytes)} / ${gb(disk.total_bytes)} · ${number(disk.used_percent)}% usado`, disk.used_percent));
+      entry.append(metricRow(
+        'Livre / total',
+        `${gb(freeBytes)} / ${gb(disk.total_bytes)} · ${number(disk.used_percent)}% usado`,
+        disk.used_percent,
+        'Ideal: >5 GB livres · atenção: >2–5 GB · crítico: ≤2 GB.',
+        diskTone,
+      ));
       target.append(entry);
     });
   }
@@ -174,7 +236,7 @@
     target.replaceChildren();
     const row = el('div', 'crm-metric-line');
     const connected = drive && drive.connected === true;
-    row.append(el('b', '', 'Google Drive · arquivo Codexia'));
+    row.append(el('b', '', 'Google Drive · total arquivado'));
     row.append(el('b', '', connected ? `${gb(drive.archive_bytes)} · ${number(drive.archive_files, 0)} arquivos` :
       drive && drive.status === 'checking' ? 'Consultando…' :
       drive && drive.status === 'error' ? 'Consulta indisponível' : 'Não conectado'));
@@ -197,8 +259,11 @@
     const r = server.resources || {};
     const memory = r.memory || {};
     const storage = Array.isArray(r.storage) ? r.storage : [];
-    const free = storage.length ? Math.min(...storage.map((disk) => Number(disk.free_bytes || 0))) : null;
-    return `${label}: RAM ${mb(memory.available_mb)} livre · disco ${free === null ? '—' : gb(free)} livre`;
+    const systemDisk = storage.find((disk) => (disk.areas || []).includes('Sistema')) || storage[0];
+    const dataDisk = storage.find((disk) => (disk.areas || []).includes('Dados'));
+    const systemFree = systemDisk ? gb(systemDisk.free_bytes) : '—';
+    const dataText = dataDisk && dataDisk !== systemDisk ? ` · dados ${gb(dataDisk.free_bytes)} livre` : '';
+    return `${label}: RAM ${mb(memory.available_mb)} livre · sistema ${systemFree} livre${dataText}`;
   }
 
   function overallHealth(data) {
@@ -232,7 +297,10 @@
       renderServer($('crm-principal'), 'Servidor principal', servers.principal);
       renderServer($('crm-cx33'), 'CX33 · produção', servers.cx33);
       renderDrive(data.google_drive || {});
-      root.dataset.health = overallHealth(data);
+      const health = overallHealth(data);
+      root.dataset.health = health;
+      $('crm-toggle-label').textContent = health === 'good' ? 'Tudo bem' :
+        health === 'warning' ? 'Atenção' : health === 'critical' ? 'Crítico' : 'Sem sinal';
       const mainText = compactServer(servers.principal, 'Principal');
       const workerText = compactServer(servers.cx33, 'CX33');
       $('crm-summary').textContent = `${mainText} | ${workerText}`;
