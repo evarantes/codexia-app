@@ -19,6 +19,17 @@ class SceneReadinessTests(unittest.TestCase):
         env = patch.dict(os.environ, {"CODEXIA_STUDIO_PRIVATE_DIR": temporary.name})
         env.start()
         self.addCleanup(env.stop)
+        self.assets = {}
+        def save_asset(*, user_id, kind, filename, body, metadata=None):
+            self.assets[(user_id, kind, filename)] = {"kind": kind, "filename": filename, "sha256": "test", "duration_seconds": (metadata or {}).get("duration_seconds")}
+        self.save_refs = patch("app.services.entre_nos_dois_references.store_asset_bytes", side_effect=save_asset)
+        self.save_audio = patch("app.services.entre_nos_dois_audio_review.store_asset_bytes", side_effect=save_asset)
+        finder = lambda *, user_id, kind, filename: self.assets.get((user_id, kind, filename))
+        self.find_refs = patch("app.services.entre_nos_dois_references.find_asset", side_effect=finder)
+        self.find_audio = patch("app.services.entre_nos_dois_audio_review.find_asset", side_effect=finder)
+        for mocked in (self.save_refs, self.save_audio, self.find_refs, self.find_audio): mocked.start()
+        self.addCleanup(self.save_refs.stop); self.addCleanup(self.save_audio.stop)
+        self.addCleanup(self.find_refs.stop); self.addCleanup(self.find_audio.stop)
 
     def test_missing_media_is_explicit_and_not_billable(self):
         result = lip_sync_readiness(user_id=42)
