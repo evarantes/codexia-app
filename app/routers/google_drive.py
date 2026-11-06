@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -708,8 +709,7 @@ def _local_archive_path(
         # One lstat replaces separate is_symlink/is_file checks. The resolved
         # path is still constrained to managed roots before it can be archived.
         info = path.lstat()
-        import stat as stat_module
-        if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             if path_cache is not None:
                 path_cache[value] = None
             return None
@@ -961,9 +961,6 @@ def _project_archive_inventory(
     cutoff = time.time() - 24 * 60 * 60
     projects: Dict[str, Dict[str, Any]] = {}
     inodes: Dict[tuple[int, int], Dict[str, Any]] = {}
-    path_cache: Dict[str, Optional[Path]] = {}
-    stat_cache: Dict[str, os.stat_result] = {}
-
     # Fetch terminal task metadata in one database round trip instead of
     # opening a SQLAlchemy session for every manifest in a large archive.
     manifest_paths = list(manifest_root.glob("*/manifest.json"))
